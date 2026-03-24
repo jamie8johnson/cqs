@@ -36,22 +36,22 @@ pub(crate) fn cmd_impact(
     let chunk = resolved.chunk;
 
     // Run shared impact analysis
-    let result = analyze_impact(&store, &chunk.name, depth, include_types)?;
+    let result = analyze_impact(&store, &chunk.name, depth, include_types, &root)?;
 
     // Compute test suggestions if requested
     let suggestions = if do_suggest_tests {
-        suggest_tests(&store, &result)
+        suggest_tests(&store, &result, &root)
     } else {
         Vec::new()
     };
 
     if matches!(format, OutputFormat::Mermaid) {
-        println!("{}", impact_to_mermaid(&result, &root));
+        println!("{}", impact_to_mermaid(&result));
         return Ok(());
     }
 
     if matches!(format, OutputFormat::Json) {
-        let mut json = impact_to_json(&result, &root);
+        let mut json = impact_to_json(&result);
         if do_suggest_tests {
             let suggestions_json: Vec<_> = suggestions
                 .iter()

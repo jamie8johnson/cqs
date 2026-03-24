@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::parser::{ChunkType, Language};
-use crate::store::StoreError;
+use crate::AnalysisError;
 
 use crate::store::helpers::{CallGraph, SearchFilter};
 use crate::store::SearchResult;
@@ -23,7 +23,7 @@ use crate::Store;
 pub const DEFAULT_MAX_EXPANDED_NODES: usize = 200;
 
 /// Options for gather operation
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GatherOptions {
     pub expand_depth: usize,
     pub direction: GatherDirection,
@@ -241,7 +241,7 @@ impl GatheredChunk {
 }
 
 /// Result of a gather operation
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct GatherResult {
     pub chunks: Vec<GatheredChunk>,
     pub expansion_capped: bool,
@@ -382,7 +382,7 @@ pub fn gather(
     query_text: &str,
     opts: &GatherOptions,
     project_root: &Path,
-) -> Result<GatherResult, StoreError> {
+) -> Result<GatherResult, AnalysisError> {
     let graph = store.get_call_graph()?;
     gather_with_graph(
         store,
@@ -405,7 +405,7 @@ pub fn gather_with_graph(
     opts: &GatherOptions,
     project_root: &Path,
     graph: &CallGraph,
-) -> Result<GatherResult, StoreError> {
+) -> Result<GatherResult, AnalysisError> {
     let _span = tracing::info_span!(
         "gather",
         query_len = query_text.len(),
@@ -479,7 +479,7 @@ pub fn gather_cross_index(
     query_text: &str,
     opts: &GatherOptions,
     project_root: &Path,
-) -> Result<GatherResult, StoreError> {
+) -> Result<GatherResult, AnalysisError> {
     gather_cross_index_with_index(
         project_store,
         ref_idx,
@@ -501,7 +501,7 @@ pub fn gather_cross_index_with_index(
     opts: &GatherOptions,
     project_root: &Path,
     project_index: Option<&dyn crate::index::VectorIndex>,
-) -> Result<GatherResult, StoreError> {
+) -> Result<GatherResult, AnalysisError> {
     let _span = tracing::info_span!(
         "gather_cross_index",
         ref_name = %ref_idx.name,

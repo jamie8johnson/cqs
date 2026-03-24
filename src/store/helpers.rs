@@ -194,7 +194,7 @@ pub struct ChunkSummary {
     pub id: String,
     /// Source file path (always forward-slash normalized, not OS-native).
     ///
-    /// Paths are normalized by `normalize_origin()` during indexing: backslashes
+    /// Paths are normalized by `normalize_path()` during indexing: backslashes
     /// are converted to forward slashes for consistent cross-platform storage and
     /// querying. The path itself is typically absolute.
     #[serde(serialize_with = "crate::serialize_path_normalized")]

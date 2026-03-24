@@ -28,11 +28,11 @@ pub struct TestInfo {
 }
 
 impl TestInfo {
-    /// Serialize to JSON, relativizing file paths against the project root.
-    pub fn to_json(&self, root: &std::path::Path) -> serde_json::Value {
+    /// Serialize to JSON. Paths are already relative to the project root.
+    pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "name": self.name,
-            "file": crate::rel_display(&self.file, root),
+            "file": crate::normalize_path(&self.file),
             "line": self.line,
             "call_depth": self.call_depth,
         })

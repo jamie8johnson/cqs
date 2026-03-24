@@ -120,6 +120,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/{stem}.test.js")),
+    test_name_suggestion: Some(|name| format!("test('{}', ...)", name)),
     type_query: None,
     common_types: &[
         "Array", "Map", "Set", "Promise", "Date", "Error", "RegExp", "Function", "Object",

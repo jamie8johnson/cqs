@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::batch::resume_or_fetch_doc_batch;
+use super::batch::BatchPhase2;
 use super::{Client, LlmConfig, LlmError, MAX_BATCH_SIZE, MAX_CONTENT_CHARS};
 use crate::store::ChunkSummary;
 use crate::Store;
@@ -255,20 +255,9 @@ pub fn doc_comment_pass(
     uncached.truncate(uncached_cap);
 
     // Phase 2: Submit batch for uncached candidates (or resume pending)
-    let api_results: HashMap<String, String> = if uncached.is_empty() {
-        // Check for pending batch from previous interrupted run
-        match store.get_pending_doc_batch_id() {
-            Ok(Some(pending)) => {
-                tracing::info!(batch_id = %pending, "Resuming pending doc batch");
-                resume_or_fetch_doc_batch(&client, store, &pending, false)?
-            }
-            _ => HashMap::new(),
-        }
-    } else {
-        // Build batch items
-        let mut batch_items: Vec<(String, String, String, String)> = Vec::new();
+    let batch_items: Vec<(String, String, String, String)> = {
+        let mut items = Vec::new();
         let mut queued_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
-
         for cs in &uncached {
             if queued_hashes.insert(cs.content_hash.clone()) {
                 let content = if cs.content.len() > MAX_CONTENT_CHARS {
@@ -276,60 +265,33 @@ pub fn doc_comment_pass(
                 } else {
                     cs.content.clone()
                 };
-                batch_items.push((
+                items.push((
                     cs.content_hash.clone(),
                     content,
                     cs.chunk_type.to_string(),
                     cs.language.to_string(),
                 ));
-                if batch_items.len() >= MAX_BATCH_SIZE {
+                if items.len() >= MAX_BATCH_SIZE {
                     break;
                 }
             }
         }
-
-        // Check for pending batch
-        let batch_id = match store.get_pending_doc_batch_id() {
-            Ok(Some(pending)) => {
-                tracing::info!(batch_id = %pending, "Found pending doc batch, checking status");
-                match client.check_batch_status(&pending) {
-                    Ok(status)
-                        if status == "in_progress"
-                            || status == "finalizing"
-                            || status == "created"
-                            || status == "ended" =>
-                    {
-                        tracing::info!(batch_id = %pending, status = %status, "Resuming pending doc batch");
-                        pending
-                    }
-                    _ => {
-                        tracing::info!(
-                            count = batch_items.len(),
-                            "Submitting doc batch to Claude API"
-                        );
-                        let id = client.submit_doc_batch(&batch_items, 800)?;
-                        if let Err(e) = store.set_pending_doc_batch_id(Some(&id)) {
-                            tracing::warn!(error = %e, "Failed to store pending doc batch ID");
-                        }
-                        id
-                    }
-                }
-            }
-            _ => {
-                tracing::info!(
-                    count = batch_items.len(),
-                    "Submitting doc batch to Claude API"
-                );
-                let id = client.submit_doc_batch(&batch_items, 800)?;
-                if let Err(e) = store.set_pending_doc_batch_id(Some(&id)) {
-                    tracing::warn!(error = %e, "Failed to store pending doc batch ID");
-                }
-                id
-            }
-        };
-
-        resume_or_fetch_doc_batch(&client, store, &batch_id, false)?
+        items
     };
+
+    let phase2 = BatchPhase2 {
+        purpose: "doc-comment",
+        max_tokens: 800,
+        quiet: false,
+    };
+    let api_results: HashMap<String, String> = phase2.submit_or_resume(
+        &client,
+        store,
+        &batch_items,
+        &|s| s.get_pending_doc_batch_id(),
+        &|s, id| s.set_pending_doc_batch_id(id),
+        &|c, items, max_tok| c.submit_doc_batch(items, max_tok),
+    )?;
 
     // Phase 3: Build results from cached + API responses
     // Deduplicate by content_hash: multiple chunks can share the same hash

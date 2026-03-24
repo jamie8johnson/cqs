@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use cqs::ci::{run_ci_analysis, GateThreshold};
+use cqs::ci::run_ci_analysis;
 use cqs::ReviewResult;
 use cqs::RiskLevel;
 
@@ -32,7 +32,7 @@ pub(crate) fn cmd_ci(
     base: Option<&str>,
     from_stdin: bool,
     format: &crate::cli::OutputFormat,
-    gate: &crate::cli::GateLevel,
+    gate: &crate::cli::GateThreshold,
     max_tokens: Option<usize>,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_ci", ?format, ?gate, ?max_tokens).entered();
@@ -44,13 +44,6 @@ pub(crate) fn cmd_ci(
     let json = matches!(format, crate::cli::OutputFormat::Json);
     let (store, root, _) = crate::cli::open_project_store_readonly()?;
 
-    // Convert CLI gate level to library type
-    let threshold = match gate {
-        crate::cli::GateLevel::High => GateThreshold::High,
-        crate::cli::GateLevel::Medium => GateThreshold::Medium,
-        crate::cli::GateLevel::Off => GateThreshold::Off,
-    };
-
     // Get diff text
     let diff_text = if from_stdin {
         super::read_stdin()?
@@ -59,7 +52,7 @@ pub(crate) fn cmd_ci(
     };
 
     // Run CI analysis
-    let mut report = run_ci_analysis(&store, &diff_text, &root, threshold)?;
+    let mut report = run_ci_analysis(&store, &diff_text, &root, *gate)?;
 
     // Apply token budget
     let token_count_used =

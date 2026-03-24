@@ -54,6 +54,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     stopwords: STOPWORDS,
     extract_return_nl: |_| None,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/spec/{stem}_spec.rb")),
+    test_name_suggestion: None,
     type_query: None,
     common_types: &[],
     container_body_kinds: &[],

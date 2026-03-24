@@ -234,19 +234,13 @@ pub(in crate::cli::batch) fn dispatch_review(
 pub(in crate::cli::batch) fn dispatch_ci(
     ctx: &BatchContext,
     base: Option<&str>,
-    gate: &crate::cli::GateLevel,
+    gate: &crate::cli::GateThreshold,
     tokens: Option<usize>,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_ci", ?gate).entered();
 
-    let threshold = match gate {
-        crate::cli::GateLevel::High => cqs::ci::GateThreshold::High,
-        crate::cli::GateLevel::Medium => cqs::ci::GateThreshold::Medium,
-        crate::cli::GateLevel::Off => cqs::ci::GateThreshold::Off,
-    };
-
     let diff_text = crate::cli::commands::run_git_diff(base)?;
-    let mut report = cqs::ci::run_ci_analysis(&ctx.store(), &diff_text, &ctx.root, threshold)?;
+    let mut report = cqs::ci::run_ci_analysis(&ctx.store(), &diff_text, &ctx.root, *gate)?;
 
     // Apply token budget if specified
     if let Some(budget) = tokens {

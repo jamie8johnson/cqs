@@ -185,7 +185,14 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
 /// recognizable help output). This prevents accidentally running an unrelated
 /// binary that happens to share the name.
 fn find_7z() -> Result<String> {
-    for name in &["7z", "7za", "p7zip"] {
+    // Check common names first, then Windows default install path
+    let candidates: Vec<String> = vec![
+        "7z".to_string(),
+        "7za".to_string(),
+        "p7zip".to_string(),
+        r"C:\Program Files\7-Zip\7z.exe".to_string(),
+    ];
+    for name in &candidates {
         match std::process::Command::new(name)
             .arg("--help")
             .stdout(std::process::Stdio::null())
@@ -199,7 +206,7 @@ fn find_7z() -> Result<String> {
         }
     }
     anyhow::bail!(
-        "7z not found. Install: `sudo apt install p7zip-full` (Linux) or `brew install p7zip` (macOS)"
+        "7z not found. Install: `sudo apt install p7zip-full` (Linux), `brew install p7zip` (macOS), or 7-Zip (Windows)"
     )
 }
 

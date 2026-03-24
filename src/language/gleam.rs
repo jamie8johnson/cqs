@@ -112,6 +112,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, _parent| format!("test/{stem}_test.gleam")),
+    test_name_suggestion: None,
     type_query: None,
     common_types: &[
         "Int", "Float", "String", "Bool", "List", "Result", "Option", "Nil", "BitArray", "Dict",

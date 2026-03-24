@@ -42,7 +42,7 @@ pub(crate) fn cmd_plan(
         plan(&store, &embedder, description, &root, limit).context("Plan generation failed")?;
 
     if json {
-        let mut json_val = plan_to_json(&result, &root);
+        let mut json_val = plan_to_json(&result);
         if let Some(budget) = tokens {
             json_val["token_budget"] = serde_json::json!(budget);
         }

@@ -123,6 +123,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/{stem}Tests.m")),
+    test_name_suggestion: None,
     type_query: None,
     common_types: &[],
     container_body_kinds: &["implementation_definition"],

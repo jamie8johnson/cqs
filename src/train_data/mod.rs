@@ -370,6 +370,7 @@ fn build_bm25_corpus(repo_path: &Path, parser: &Parser) -> Vec<(String, String)>
         .git_ignore(true)
         .build();
 
+    let mut corpus_parse_failures: usize = 0;
     for entry in walker.flatten() {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
@@ -391,7 +392,10 @@ fn build_bm25_corpus(repo_path: &Path, parser: &Parser) -> Vec<(String, String)>
             parser.parse_file(&path_owned)
         })) {
             Ok(Ok(c)) => c,
-            Ok(Err(_)) | Err(_) => continue,
+            Ok(Err(_)) | Err(_) => {
+                corpus_parse_failures += 1;
+                continue;
+            }
         };
 
         for chunk in &chunks {
@@ -420,6 +424,10 @@ fn build_bm25_corpus(repo_path: &Path, parser: &Parser) -> Vec<(String, String)>
             let hash = blake3::hash(chunk.content.as_bytes()).to_hex().to_string();
             docs.push((hash, chunk.content.clone()));
         }
+    }
+
+    if corpus_parse_failures > 0 {
+        tracing::warn!(corpus_parse_failures, "Corpus files failed to parse");
     }
 
     docs

@@ -214,10 +214,13 @@ pub fn search_across_projects(
         return Err(ProjectError::NoProjects);
     }
 
-    let project_results: Vec<Vec<CrossProjectResult>> = registry
-        .project
-        .par_iter()
-        .filter_map(|entry| {
+    // RM-25: Cap concurrency to 4 threads — each project opens Store + HNSW (~200MB).
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().build().unwrap());
+    let project_results: Vec<Vec<CrossProjectResult>> = pool.install(|| {
+        registry.project.par_iter().filter_map(|entry| {
             // Prefer .cqs, fall back to legacy .cq
             let index_path = {
                 let new_path = entry.path.join(".cqs/index.db");
@@ -278,7 +281,8 @@ pub fn search_across_projects(
                 }
             }
         })
-        .collect();
+        .collect()
+    });
 
     let mut all_results: Vec<CrossProjectResult> = project_results.into_iter().flatten().collect();
 

@@ -207,6 +207,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/{stem}Test.kt")),
+    test_name_suggestion: Some(|name| super::pascal_test_name("test", name)),
     type_query: Some(TYPE_QUERY),
     common_types: COMMON_TYPES,
     container_body_kinds: &["class_body"],

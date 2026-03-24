@@ -461,7 +461,8 @@ Key commands (`--json` works on all commands; `--format mermaid` also accepted o
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```
 
-## Supported Languages
+<details>
+<summary><h2>Supported Languages (51)</h2></summary>
 
 - ASP.NET Web Forms (ASPX/ASCX/ASMX — C#/VB.NET code-behind in server script blocks and `<% %>` expressions, delegates to C#/VB.NET grammars)
 - Bash (functions, command calls)
@@ -514,6 +515,8 @@ Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after
 - XML (elements, processing instructions)
 - YAML (mapping keys, sequences, documents)
 - Zig (functions, structs, enums, unions, error sets, test declarations)
+
+</details>
 
 ## Indexing
 
@@ -616,7 +619,8 @@ Cold latency includes process startup, model init, and DB open. Batch mode (`cqs
 | CPU  | ~20ms        | ~15ms/doc       |
 | CUDA | ~3ms         | ~0.3ms/doc      |
 
-## GPU Acceleration (Optional)
+<details>
+<summary><h2>GPU Acceleration (Optional)</h2></summary>
 
 cqs works on CPU out of the box. GPU acceleration has two independent components:
 
@@ -669,6 +673,8 @@ Same as Linux, plus:
 ```bash
 cqs doctor  # Shows execution provider (CUDA or CPU) and CAGRA availability
 ```
+
+</details>
 
 ## Contributing
 

@@ -1,6 +1,6 @@
 //! HyDE (Hypothetical Document Embeddings) query prediction pass.
 
-use super::batch::resume_or_fetch_hyde_batch;
+use super::batch::BatchPhase2;
 use super::{
     Client, LlmConfig, LlmError, HYDE_MAX_TOKENS, MAX_BATCH_SIZE, MAX_CONTENT_CHARS,
     MIN_CONTENT_CHARS,
@@ -121,83 +121,20 @@ pub fn hyde_query_pass(
     );
 
     // Phase 2: Submit batch to Claude API (or resume a pending one)
-    let api_generated = if batch_items.is_empty() {
-        // No new items needed, but check if a previous batch is still pending
-        match store.get_pending_hyde_batch_id() {
-            Ok(Some(pending)) => {
-                tracing::info!(batch_id = %pending, "Resuming pending HyDE batch");
-                let count = resume_or_fetch_hyde_batch(&client, store, &pending, quiet)?;
-                tracing::info!(
-                    count,
-                    "Fetched pending HyDE batch results — new chunks will be processed on next run"
-                );
-                count
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to read pending HyDE batch ID");
-                0
-            }
-            _ => 0,
-        }
-    } else {
-        // Check for a pending batch from a previous interrupted run
-        let batch_id = match store.get_pending_hyde_batch_id() {
-            Ok(Some(pending)) => {
-                tracing::info!(batch_id = %pending, "Found pending HyDE batch, checking status");
-                match client.check_batch_status(&pending) {
-                    Ok(status)
-                        if status == "in_progress"
-                            || status == "finalizing"
-                            || status == "created"
-                            || status == "ended" =>
-                    {
-                        tracing::info!(batch_id = %pending, status = %status, "Pending HyDE batch still active, resuming");
-                        pending
-                    }
-                    _ => {
-                        tracing::warn!(old_batch = %pending, "Pending HyDE batch status unknown, submitting fresh");
-                        tracing::info!(
-                            count = batch_items.len(),
-                            "Submitting HyDE batch to Claude API"
-                        );
-                        let id = client.submit_hyde_batch(&batch_items, HYDE_MAX_TOKENS)?;
-                        if let Err(e) = store.set_pending_hyde_batch_id(Some(&id)) {
-                            tracing::warn!(error = %e, "Failed to store pending HyDE batch ID");
-                        }
-                        tracing::info!(batch_id = %id, "HyDE batch submitted, waiting for results");
-                        id
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to read pending HyDE batch ID");
-                tracing::info!(
-                    count = batch_items.len(),
-                    "Submitting HyDE batch to Claude API"
-                );
-                let id = client.submit_hyde_batch(&batch_items, HYDE_MAX_TOKENS)?;
-                if let Err(e) = store.set_pending_hyde_batch_id(Some(&id)) {
-                    tracing::warn!(error = %e, "Failed to store pending HyDE batch ID");
-                }
-                tracing::info!(batch_id = %id, "HyDE batch submitted, waiting for results");
-                id
-            }
-            _ => {
-                tracing::info!(
-                    count = batch_items.len(),
-                    "Submitting HyDE batch to Claude API"
-                );
-                let id = client.submit_hyde_batch(&batch_items, HYDE_MAX_TOKENS)?;
-                if let Err(e) = store.set_pending_hyde_batch_id(Some(&id)) {
-                    tracing::warn!(error = %e, "Failed to store pending HyDE batch ID");
-                }
-                tracing::info!(batch_id = %id, "HyDE batch submitted, waiting for results");
-                id
-            }
-        };
-
-        resume_or_fetch_hyde_batch(&client, store, &batch_id, quiet)?
+    let phase2 = BatchPhase2 {
+        purpose: "hyde",
+        max_tokens: HYDE_MAX_TOKENS,
+        quiet,
     };
+    let api_results = phase2.submit_or_resume(
+        &client,
+        store,
+        &batch_items,
+        &|s| s.get_pending_hyde_batch_id(),
+        &|s, id| s.set_pending_hyde_batch_id(id),
+        &|c, items, max_tok| c.submit_hyde_batch(items, max_tok),
+    )?;
+    let api_generated = api_results.len();
 
     tracing::info!(api_generated, cached, skipped, "HyDE query pass complete");
 

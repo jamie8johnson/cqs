@@ -83,3 +83,41 @@ pub(crate) struct DeadArgs {
     #[arg(long, default_value = "low")]
     pub min_confidence: DeadConfidence,
 }
+
+/// Arguments for the `index` command.
+#[derive(Args, Debug, Clone)]
+pub(crate) struct IndexArgs {
+    /// Re-index all files, ignore mtime cache
+    #[arg(long)]
+    pub force: bool,
+    /// Show what would be indexed, don't write
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Index files ignored by .gitignore
+    #[arg(long)]
+    pub no_ignore: bool,
+    /// Generate LLM summaries for functions (requires ANTHROPIC_API_KEY)
+    #[cfg(feature = "llm-summaries")]
+    #[arg(long)]
+    pub llm_summaries: bool,
+    /// Generate and write back doc comments for undocumented functions (requires --llm-summaries)
+    #[cfg(feature = "llm-summaries")]
+    #[arg(long)]
+    pub improve_docs: bool,
+    /// Regenerate doc comments for all functions, even those with existing docs (requires --improve-docs)
+    #[cfg(feature = "llm-summaries")]
+    #[arg(long)]
+    pub improve_all: bool,
+    /// Maximum number of functions to generate docs for (used with --improve-docs)
+    #[cfg(feature = "llm-summaries")]
+    #[arg(long)]
+    pub max_docs: Option<usize>,
+    /// Generate hyde query predictions for functions (requires ANTHROPIC_API_KEY)
+    #[cfg(feature = "llm-summaries")]
+    #[arg(long)]
+    pub hyde_queries: bool,
+    /// Maximum number of functions to generate hyde predictions for
+    #[cfg(feature = "llm-summaries")]
+    #[arg(long)]
+    pub max_hyde: Option<usize>,
+}

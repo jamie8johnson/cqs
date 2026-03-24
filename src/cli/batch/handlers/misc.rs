@@ -205,9 +205,9 @@ pub(in crate::cli::batch) fn dispatch_task(
 
     // Full waterfall budgeting (same as CLI) when --tokens is specified
     let json = if let Some(budget) = tokens {
-        crate::cli::commands::task::task_to_budgeted_json(&result, &ctx.root, embedder, budget)
+        crate::cli::commands::task::task_to_budgeted_json(&result, embedder, budget)
     } else {
-        cqs::task_to_json(&result, &ctx.root)
+        cqs::task_to_json(&result)
     };
 
     Ok(json)
@@ -243,7 +243,7 @@ pub(in crate::cli::batch) fn dispatch_scout(
     let result = cqs::scout(&ctx.store(), embedder, query, &ctx.root, limit)?;
 
     let Some(budget) = tokens else {
-        return Ok(cqs::scout_to_json(&result, &ctx.root));
+        return Ok(cqs::scout_to_json(&result));
     };
 
     // Batch-fetch content for all chunks
@@ -289,7 +289,7 @@ pub(in crate::cli::batch) fn dispatch_scout(
         .collect();
 
     // Build JSON with content for packed items
-    let mut json = cqs::scout_to_json(&result, &ctx.root);
+    let mut json = cqs::scout_to_json(&result);
     if let Some(groups) = json.get_mut("file_groups").and_then(|v| v.as_array_mut()) {
         for group in groups {
             if let Some(chunks) = group.get_mut("chunks").and_then(|v| v.as_array_mut()) {
@@ -558,7 +558,7 @@ pub(in crate::cli::batch) fn dispatch_plan(
     let result = cqs::plan::plan(&ctx.store(), embedder, description, &ctx.root, limit)
         .context("Plan generation failed")?;
 
-    let mut json = cqs::plan::plan_to_json(&result, &ctx.root);
+    let mut json = cqs::plan::plan_to_json(&result);
     if let Some(budget) = tokens {
         json["token_budget"] = serde_json::json!(budget);
     }

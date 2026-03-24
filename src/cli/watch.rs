@@ -144,8 +144,12 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
     // give the same answer with more syscalls and less portability across WSL versions.
     // If the project root is on a Linux filesystem inside WSL (e.g. /home/...), inotify works
     // fine and we leave use_poll false.
-    let use_poll =
-        poll || (cqs::config::is_wsl() && root.to_str().is_some_and(|p| p.starts_with("/mnt/")));
+    // PB-21: Also detect //wsl.localhost/ and //wsl$/ UNC paths
+    let use_poll = poll
+        || (cqs::config::is_wsl()
+            && root
+                .to_str()
+                .is_some_and(|p| p.starts_with("/mnt/") || p.starts_with("//wsl")));
 
     if cqs::config::is_wsl() && !use_poll {
         tracing::warn!("WSL detected: inotify may be unreliable on Windows filesystem mounts. Use --poll or 'cqs index' periodically.");
@@ -295,11 +299,14 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
                     drop(lock);
                 } else {
                     cycles_since_clear += 1;
-                    // Clear embedder session after ~5 minutes idle (3000 cycles at 100ms)
+                    // Clear embedder session and HNSW index after ~5 minutes idle
+                    // (3000 cycles at 100ms). Frees GPU/memory when watch is idle.
                     if cycles_since_clear >= 3000 {
                         if let Some(emb) = embedder.get() {
                             emb.clear_session();
                         }
+                        hnsw_index = None;
+                        incremental_count = 0;
                         cycles_since_clear = 0;
                     }
                 }

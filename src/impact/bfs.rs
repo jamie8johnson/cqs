@@ -1,6 +1,6 @@
 //! BFS graph traversal for impact analysis
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use crate::store::CallGraph;
 
@@ -40,6 +40,10 @@ pub(super) fn reverse_bfs(
 /// Instead of calling `reverse_bfs()` N times (one per changed function),
 /// starts BFS from all targets at once. Each node gets the minimum depth
 /// from any starting node. Returns ancestors with their minimum depths.
+///
+/// Production code uses `reverse_bfs_multi_attributed` instead (same traversal
+/// but also tracks which source produced each path). Kept for tests.
+#[cfg(test)]
 pub(super) fn reverse_bfs_multi(
     graph: &CallGraph,
     targets: &[&str],
@@ -85,27 +89,118 @@ pub(super) fn reverse_bfs_multi(
     ancestors
 }
 
+/// Multi-source reverse BFS that tracks which target (by index) first reached each node.
+///
+/// Like [`reverse_bfs_multi`], starts BFS from all targets simultaneously and records
+/// minimum depth. Additionally tracks which target index produced the shortest path to
+/// each node, enabling per-source attribution without separate BFS calls.
+///
+/// Returns `HashMap<node_name, (min_depth, source_index)>` where `source_index` is
+/// the index into `targets` that first reached the node at minimum depth.
+pub(super) fn reverse_bfs_multi_attributed(
+    graph: &CallGraph,
+    targets: &[&str],
+    max_depth: usize,
+) -> HashMap<String, (usize, usize)> {
+    // (depth, source_index)
+    let mut ancestors: HashMap<String, (usize, usize)> = HashMap::new();
+    // Queue entries: (node_name, depth, source_index)
+    let mut queue: VecDeque<(String, usize, usize)> = VecDeque::new();
+
+    for (idx, &target) in targets.iter().enumerate() {
+        match ancestors.entry(target.to_string()) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert((0, idx));
+                queue.push_back((target.to_string(), 0, idx));
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                // Duplicate target name — first occurrence wins at depth 0
+            }
+        }
+    }
+
+    while let Some((current, d, src)) = queue.pop_front() {
+        if d >= max_depth {
+            continue;
+        }
+        // Skip stale queue entries (same logic as reverse_bfs_multi)
+        if ancestors
+            .get(&current)
+            .is_some_and(|&(stored_d, _)| d > stored_d)
+        {
+            continue;
+        }
+        if let Some(callers) = graph.reverse.get(&current) {
+            for caller in callers {
+                match ancestors.entry(caller.clone()) {
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert((d + 1, src));
+                        queue.push_back((caller.clone(), d + 1, src));
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                        if d + 1 < e.get().0 {
+                            *e.get_mut() = (d + 1, src);
+                            queue.push_back((caller.clone(), d + 1, src));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ancestors
+}
+
 /// Build a test reachability map via forward BFS from all test nodes.
 ///
 /// Walks forward edges (caller -> callee) from each test node, collecting
 /// all functions reachable within `max_depth` hops. Returns a map of
 /// `function_name -> count of tests that reach it`.
 ///
-/// This is O(T * avg_fan_out * depth) where T = test count, which is typically
-/// much cheaper than N * reverse_bfs when N (target count) > T.
-pub(super) fn test_reachability(
+/// **Optimization (PERF-23):** Tests with identical first-hop callee sets
+/// produce identical reachable sets (beyond the test node itself). We group
+/// tests into equivalence classes by their direct callees and BFS once per
+/// unique class, multiplying counts by the class size.
+pub(crate) fn test_reachability(
     graph: &CallGraph,
     test_names: &[&str],
     max_depth: usize,
 ) -> HashMap<String, usize> {
     let mut counts: HashMap<String, usize> = HashMap::new();
 
+    // Step 1: Group tests by their first-hop callee set.
+    // Tests with the same direct callees will traverse the same subgraph
+    // (forward BFS from depth 1 onward is identical), so we only BFS once.
+    let mut equivalence_classes: HashMap<BTreeSet<&str>, usize> = HashMap::new();
     for &test_name in test_names {
-        // Forward BFS from this test node
-        let mut visited: HashMap<String, usize> = HashMap::new();
-        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-        visited.insert(test_name.to_string(), 0);
-        queue.push_back((test_name.to_string(), 0));
+        let callees: BTreeSet<&str> = graph
+            .forward
+            .get(test_name)
+            .map(|v| v.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        *equivalence_classes.entry(callees).or_default() += 1;
+    }
+
+    // Step 2: BFS once per unique callee set, multiply counts by class size.
+    let mut visited: HashMap<String, usize> = HashMap::new();
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+
+    for (callee_set, class_size) in &equivalence_classes {
+        if callee_set.is_empty() {
+            // Tests with no callees reach nothing — skip BFS entirely
+            continue;
+        }
+
+        // Reuse allocations: clear instead of reallocating
+        visited.clear();
+        queue.clear();
+
+        // Seed BFS from the shared callees at depth 1 (the test node itself
+        // is excluded from counts, so we start at depth 1 directly)
+        for &callee in callee_set {
+            visited.insert(callee.to_string(), 1);
+            queue.push_back((callee.to_string(), 1));
+        }
 
         while let Some((current, d)) = queue.pop_front() {
             if d >= max_depth {
@@ -121,11 +216,9 @@ pub(super) fn test_reachability(
             }
         }
 
-        // Count this test as reaching each visited function (excluding itself at depth 0)
-        for (name, depth) in &visited {
-            if *depth > 0 {
-                *counts.entry(name.clone()).or_default() += 1;
-            }
+        // Every function visited is reachable from all tests in this class
+        for name in visited.keys() {
+            *counts.entry(name.clone()).or_default() += class_size;
         }
     }
 
@@ -358,6 +451,145 @@ mod tests {
             result["root"], 2,
             "root should be depth 2 (deep+1), not 3 (from stale queue entry)"
         );
+    }
+
+    // ===== reverse_bfs_multi_attributed tests =====
+
+    #[test]
+    fn test_attributed_empty_targets() {
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse: HashMap::new(),
+        };
+        let result = reverse_bfs_multi_attributed(&graph, &[], 5);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_attributed_single_target() {
+        // Chain: A -> B -> target
+        let mut reverse = HashMap::new();
+        reverse.insert("target".to_string(), vec!["B".to_string()]);
+        reverse.insert("B".to_string(), vec!["A".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let result = reverse_bfs_multi_attributed(&graph, &["target"], 5);
+
+        assert_eq!(result["target"], (0, 0));
+        assert_eq!(result["B"], (1, 0));
+        assert_eq!(result["A"], (2, 0));
+    }
+
+    #[test]
+    fn test_attributed_two_sources_separate_chains() {
+        // A -> target0, B -> target1 (no overlap)
+        let mut reverse = HashMap::new();
+        reverse.insert("target0".to_string(), vec!["A".to_string()]);
+        reverse.insert("target1".to_string(), vec!["B".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let result = reverse_bfs_multi_attributed(&graph, &["target0", "target1"], 5);
+
+        assert_eq!(result["target0"], (0, 0));
+        assert_eq!(result["target1"], (0, 1));
+        assert_eq!(result["A"], (1, 0));
+        assert_eq!(result["B"], (1, 1));
+    }
+
+    #[test]
+    fn test_attributed_shared_ancestor_gets_closest_source() {
+        // shared -> mid -> target0  (depth 2 from target0)
+        // shared -> target1         (depth 1 from target1)
+        // shared should be attributed to target1 (index 1) at depth 1
+        let mut reverse = HashMap::new();
+        reverse.insert("target0".to_string(), vec!["mid".to_string()]);
+        reverse.insert("mid".to_string(), vec!["shared".to_string()]);
+        reverse.insert("target1".to_string(), vec!["shared".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let result = reverse_bfs_multi_attributed(&graph, &["target0", "target1"], 5);
+
+        assert_eq!(result["shared"].0, 1, "min depth is 1 from target1");
+        assert_eq!(result["shared"].1, 1, "attributed to target1 (index 1)");
+    }
+
+    #[test]
+    fn test_attributed_depth_matches_multi() {
+        // Verify depths agree with reverse_bfs_multi
+        let mut reverse = HashMap::new();
+        reverse.insert("target0".to_string(), vec!["mid".to_string()]);
+        reverse.insert("mid".to_string(), vec!["shared".to_string()]);
+        reverse.insert("target1".to_string(), vec!["shared".to_string()]);
+        reverse.insert("shared".to_string(), vec!["root".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+        let targets = &["target0", "target1"];
+
+        let multi = reverse_bfs_multi(&graph, targets, 5);
+        let attributed = reverse_bfs_multi_attributed(&graph, targets, 5);
+
+        for (name, &depth) in &multi {
+            assert_eq!(
+                attributed[name].0, depth,
+                "depth mismatch for {name}: multi={depth}, attributed={}",
+                attributed[name].0
+            );
+        }
+        assert_eq!(multi.len(), attributed.len());
+    }
+
+    #[test]
+    fn test_attributed_stale_queue_entry() {
+        // Same graph as test_reverse_bfs_multi_stale_queue_entry
+        // target1 <- mid <- deep, target2 <- deep, deep <- root
+        let mut reverse = HashMap::new();
+        reverse.insert("target1".to_string(), vec!["mid".to_string()]);
+        reverse.insert("mid".to_string(), vec!["deep".to_string()]);
+        reverse.insert("target2".to_string(), vec!["deep".to_string()]);
+        reverse.insert("deep".to_string(), vec!["root".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let result = reverse_bfs_multi_attributed(&graph, &["target1", "target2"], 5);
+
+        assert_eq!(result["deep"].0, 1, "depth 1 from target2");
+        assert_eq!(result["deep"].1, 1, "attributed to target2 (index 1)");
+        assert_eq!(result["root"].0, 2, "root at depth 2, not 3");
+        assert_eq!(result["root"].1, 1, "root attributed via target2's chain");
+    }
+
+    #[test]
+    fn test_attributed_depth_limit() {
+        // A -> B -> C -> target0, D -> target1 with depth limit 1
+        let mut reverse = HashMap::new();
+        reverse.insert("target0".to_string(), vec!["C".to_string()]);
+        reverse.insert("C".to_string(), vec!["B".to_string()]);
+        reverse.insert("B".to_string(), vec!["A".to_string()]);
+        reverse.insert("target1".to_string(), vec!["D".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let result = reverse_bfs_multi_attributed(&graph, &["target0", "target1"], 1);
+
+        assert_eq!(result["C"], (1, 0));
+        assert_eq!(result["D"], (1, 1));
+        assert!(!result.contains_key("B"), "B beyond depth limit");
+        assert!(!result.contains_key("A"), "A beyond depth limit");
     }
 
     // ===== test_reachability tests =====

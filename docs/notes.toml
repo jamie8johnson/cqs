@@ -297,7 +297,7 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "One-hot embeddings for HNSW test stability: sin-based make_embedding(seed) produced vectors too similar in 769-dim cosine space — HNSW approximate search couldn't reliably rank the exact match. Fix: one-hot-like vectors (0.01 baseline + 1.0 spike at seed-specific dimension). Cosine similarity ~0.01 between seeds, 1.0 for same seed. Reusable pattern for any HNSW test needing well-separated embeddings."
+text = "One-hot embeddings for HNSW test stability: sin-based make_embedding(seed) produced vectors too similar in 768-dim cosine space — HNSW approximate search couldn't reliably rank the exact match. Fix: one-hot-like vectors (0.01 baseline + 1.0 spike at seed-specific dimension). Cosine similarity ~0.01 between seeds, 1.0 for same seed. Reusable pattern for any HNSW test needing well-separated embeddings."
 mentions = [
     "src/hnsw/safety.rs",
     "src/hnsw/build.rs",

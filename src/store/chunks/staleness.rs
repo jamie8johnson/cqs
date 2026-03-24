@@ -204,6 +204,11 @@ impl Store {
                         }
                     };
 
+                    // PB-17: Origins in DB always use forward slashes (via normalize_path).
+                    debug_assert!(
+                        !origin.contains('\\'),
+                        "DB origin contains backslash: {origin}"
+                    );
                     let path = root.join(&origin);
                     let current_mtime = path
                         .metadata()

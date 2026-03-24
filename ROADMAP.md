@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v1.3.0
+## Current: v1.4.0
 
-v1.3.0: `--improve-all` doc generation, LoRA v5 default model, Windows build fix, security deps, 75 audit fixes. 51 languages. Three full audits (v0.12.3, v0.19.2, v1.3.0). Usage telemetry. 9-language training data pipeline.
+v1.4.0: Extension/Constructor ChunkTypes, batch cache invalidation, 4-file refactor split, R/Lua improvements. v1.4.0 audit: 70/74 findings fixed, 1916 tests. v1.3.0: `--improve-all` doc generation, LoRA v5 default model, Windows build fix, security deps, 75 audit fixes. 51 languages. Five full audits (v0.5.3, v0.12.3, v0.19.2, v1.0.13, v1.4.0). Usage telemetry. 9-language training data pipeline.
 
 ### 1.0.x Highlights
 

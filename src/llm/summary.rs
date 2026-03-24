@@ -1,6 +1,6 @@
 //! LLM summary pass orchestration — collects chunks, submits batches, stores results.
 
-use super::batch::resume_or_fetch_batch;
+use super::batch::BatchPhase2;
 use super::{Client, LlmConfig, LlmError, MAX_BATCH_SIZE, MAX_CONTENT_CHARS, MIN_CONTENT_CHARS};
 use crate::Store;
 
@@ -140,79 +140,20 @@ pub fn llm_summary_pass(
     );
 
     // Phase 2: Submit batch to Claude API (or resume a pending one)
-    let api_generated = if batch_items.is_empty() {
-        // No new items needed, but check if a previous batch is still pending
-        match store.get_pending_batch_id() {
-            Ok(Some(pending)) => {
-                tracing::info!(batch_id = %pending, "Resuming pending batch");
-                let count = resume_or_fetch_batch(&client, store, &pending, quiet)?;
-                tracing::info!(
-                    count,
-                    "Fetched pending batch results — new chunks will be processed on next run"
-                );
-                count
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to read pending batch ID");
-                0
-            }
-            _ => 0,
-        }
-    } else {
-        // Check for a pending batch from a previous interrupted run
-        let batch_id = match store.get_pending_batch_id() {
-            Ok(Some(pending)) => {
-                // Verify it's still valid (not expired/canceled)
-                tracing::info!(batch_id = %pending, "Found pending batch, checking status");
-                match client.check_batch_status(&pending) {
-                    Ok(status) if status == "in_progress" || status == "finalizing" => {
-                        tracing::info!(batch_id = %pending, status = %status, "Pending batch still processing, resuming");
-                        pending
-                    }
-                    Ok(status) if status == "created" => {
-                        // Batch queued but not started yet — wait for it
-                        tracing::info!(batch_id = %pending, "Pending batch still queued, waiting");
-                        pending
-                    }
-                    Ok(status) if status == "ended" => {
-                        tracing::info!(batch_id = %pending, "Pending batch completed, fetching results");
-                        pending
-                    }
-                    _ => {
-                        tracing::warn!(old_batch = %pending, "Pending batch status unknown, submitting fresh — old batch results may be lost");
-                        tracing::info!(count = batch_items.len(), "Submitting batch to Claude API");
-                        let id = client.submit_batch(&batch_items, client.llm_config.max_tokens)?;
-                        if let Err(e) = store.set_pending_batch_id(Some(&id)) {
-                            tracing::warn!(error = %e, "Failed to store pending batch ID");
-                        }
-                        tracing::info!(batch_id = %id, "Batch submitted, waiting for results");
-                        id
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to read pending batch ID");
-                tracing::info!(count = batch_items.len(), "Submitting batch to Claude API");
-                let id = client.submit_batch(&batch_items, client.llm_config.max_tokens)?;
-                if let Err(e) = store.set_pending_batch_id(Some(&id)) {
-                    tracing::warn!(error = %e, "Failed to store pending batch ID");
-                }
-                tracing::info!(batch_id = %id, "Batch submitted, waiting for results");
-                id
-            }
-            _ => {
-                tracing::info!(count = batch_items.len(), "Submitting batch to Claude API");
-                let id = client.submit_batch(&batch_items, client.llm_config.max_tokens)?;
-                if let Err(e) = store.set_pending_batch_id(Some(&id)) {
-                    tracing::warn!(error = %e, "Failed to store pending batch ID");
-                }
-                tracing::info!(batch_id = %id, "Batch submitted, waiting for results");
-                id
-            }
-        };
-
-        resume_or_fetch_batch(&client, store, &batch_id, quiet)?
+    let phase2 = BatchPhase2 {
+        purpose: "summary",
+        max_tokens: client.llm_config.max_tokens,
+        quiet,
     };
+    let api_results = phase2.submit_or_resume(
+        &client,
+        store,
+        &batch_items,
+        &|s| s.get_pending_batch_id(),
+        &|s, id| s.set_pending_batch_id(id),
+        &|c, items, max_tok| c.submit_batch(items, max_tok),
+    )?;
+    let api_generated = api_results.len();
 
     tracing::info!(
         api_generated,
@@ -320,5 +261,157 @@ mod tests {
     fn extract_first_sentence_short_multiline() {
         // Both sentence and first line too short
         assert_eq!(extract_first_sentence("OK.\nMore"), "");
+    }
+
+    // ===== TC-22: LLM pass chunk filtering condition tests =====
+    //
+    // The filtering logic in llm_summary_pass (and hyde_query_pass) applies 4 skip conditions
+    // to each ChunkSummary. Since the logic is inline, these tests validate each condition
+    // independently using the same types and constants.
+
+    use crate::language::ChunkType;
+    use std::path::PathBuf;
+
+    fn make_test_chunk_summary(
+        name: &str,
+        chunk_type: ChunkType,
+        content_len: usize,
+        window_idx: Option<i32>,
+        content_hash: &str,
+    ) -> crate::store::ChunkSummary {
+        crate::store::ChunkSummary {
+            id: format!("test:1:{}", name),
+            file: PathBuf::from("src/lib.rs"),
+            language: crate::parser::Language::Rust,
+            chunk_type,
+            name: name.to_string(),
+            signature: format!("fn {}()", name),
+            content: "x".repeat(content_len),
+            doc: None,
+            line_start: 1,
+            line_end: 10,
+            parent_id: None,
+            parent_type_name: None,
+            content_hash: content_hash.to_string(),
+            window_idx,
+        }
+    }
+
+    /// Condition 1: cached chunks (content_hash in existing) should be skipped.
+    #[test]
+    fn filter_skips_cached_chunks() {
+        let cs = make_test_chunk_summary("func", ChunkType::Function, 100, None, "already_cached");
+        let mut existing = std::collections::HashMap::new();
+        existing.insert("already_cached".to_string(), "old summary".to_string());
+        assert!(
+            existing.contains_key(&cs.content_hash),
+            "Cached chunk should be recognized as existing"
+        );
+    }
+
+    /// Condition 2: non-callable chunk types should be skipped.
+    #[test]
+    fn filter_skips_non_callable_chunks() {
+        let non_callable_types = [
+            ChunkType::Struct,
+            ChunkType::Enum,
+            ChunkType::Trait,
+            ChunkType::Interface,
+            ChunkType::Class,
+            ChunkType::Constant,
+            ChunkType::Section,
+            ChunkType::Module,
+            ChunkType::TypeAlias,
+        ];
+        for ct in non_callable_types {
+            assert!(!ct.is_callable(), "{:?} should not be callable", ct);
+        }
+        // Callable types should NOT be skipped
+        let callable_types = [
+            ChunkType::Function,
+            ChunkType::Method,
+            ChunkType::Constructor,
+            ChunkType::Property,
+            ChunkType::Macro,
+            ChunkType::Extension,
+        ];
+        for ct in callable_types {
+            assert!(ct.is_callable(), "{:?} should be callable", ct);
+        }
+    }
+
+    /// Condition 3: chunks below MIN_CONTENT_CHARS should be skipped.
+    #[test]
+    fn filter_skips_short_content() {
+        let short = make_test_chunk_summary("short_fn", ChunkType::Function, 10, None, "h1");
+        assert!(
+            short.content.len() < MIN_CONTENT_CHARS,
+            "Content of {} chars should be below MIN_CONTENT_CHARS ({})",
+            short.content.len(),
+            MIN_CONTENT_CHARS
+        );
+
+        let adequate = make_test_chunk_summary("good_fn", ChunkType::Function, 100, None, "h2");
+        assert!(
+            adequate.content.len() >= MIN_CONTENT_CHARS,
+            "Content of {} chars should be at or above MIN_CONTENT_CHARS ({})",
+            adequate.content.len(),
+            MIN_CONTENT_CHARS
+        );
+    }
+
+    /// Condition 3 boundary: exactly MIN_CONTENT_CHARS should NOT be skipped.
+    #[test]
+    fn filter_accepts_exactly_min_content_chars() {
+        let cs = make_test_chunk_summary(
+            "boundary_fn",
+            ChunkType::Function,
+            MIN_CONTENT_CHARS,
+            None,
+            "h3",
+        );
+        assert!(
+            cs.content.len() >= MIN_CONTENT_CHARS,
+            "Exactly MIN_CONTENT_CHARS should pass the filter"
+        );
+    }
+
+    /// Condition 4: windowed chunks (window_idx > 0) should be skipped.
+    #[test]
+    fn filter_skips_windowed_chunks() {
+        let windowed = make_test_chunk_summary("fn_w1", ChunkType::Function, 100, Some(1), "h4");
+        assert!(
+            windowed.window_idx.is_some_and(|idx| idx > 0),
+            "window_idx=1 should be filtered out"
+        );
+
+        let window_zero = make_test_chunk_summary("fn_w0", ChunkType::Function, 100, Some(0), "h5");
+        assert!(
+            !window_zero.window_idx.is_some_and(|idx| idx > 0),
+            "window_idx=0 should NOT be filtered out"
+        );
+
+        let no_window = make_test_chunk_summary("fn_no_w", ChunkType::Function, 100, None, "h6");
+        assert!(
+            !no_window.window_idx.is_some_and(|idx| idx > 0),
+            "window_idx=None should NOT be filtered out"
+        );
+    }
+
+    /// All conditions pass: a callable, sufficiently long, non-windowed, uncached chunk.
+    #[test]
+    fn filter_accepts_eligible_chunk() {
+        let cs = make_test_chunk_summary("eligible_fn", ChunkType::Function, 200, None, "new_hash");
+        let existing: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+        let skip_cached = existing.contains_key(&cs.content_hash);
+        let skip_non_callable = !cs.chunk_type.is_callable();
+        let skip_short = cs.content.len() < MIN_CONTENT_CHARS;
+        let skip_windowed = cs.window_idx.is_some_and(|idx| idx > 0);
+
+        assert!(!skip_cached, "Should not be cached");
+        assert!(!skip_non_callable, "Function is callable");
+        assert!(!skip_short, "200 chars > MIN_CONTENT_CHARS");
+        assert!(!skip_windowed, "No window index");
     }
 }

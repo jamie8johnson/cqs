@@ -150,12 +150,12 @@ pub(in crate::cli::batch) fn dispatch_impact(
     let chunk = &resolved.chunk;
     let depth = depth.clamp(1, 10);
 
-    let result = cqs::analyze_impact(&ctx.store(), &chunk.name, depth, include_types)?;
+    let result = cqs::analyze_impact(&ctx.store(), &chunk.name, depth, include_types, &ctx.root)?;
 
-    let mut json = cqs::impact_to_json(&result, &ctx.root);
+    let mut json = cqs::impact_to_json(&result);
 
     if do_suggest_tests {
-        let suggestions = cqs::suggest_tests(&ctx.store(), &result);
+        let suggestions = cqs::suggest_tests(&ctx.store(), &result, &ctx.root);
         let suggestions_json: Vec<_> = suggestions
             .iter()
             .map(|s| {
@@ -492,6 +492,6 @@ pub(in crate::cli::batch) fn dispatch_impact_diff(
         }));
     }
 
-    let result = cqs::analyze_diff_impact(&ctx.store(), changed)?;
-    Ok(cqs::diff_impact_to_json(&result, &ctx.root))
+    let result = cqs::analyze_diff_impact(&ctx.store(), changed, &ctx.root)?;
+    Ok(cqs::diff_impact_to_json(&result))
 }

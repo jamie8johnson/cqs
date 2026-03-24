@@ -164,6 +164,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/{stem}Test.java")),
+    test_name_suggestion: Some(|name| super::pascal_test_name("test", name)),
     type_query: Some(TYPE_QUERY),
     common_types: &[
         "String", "Object", "Integer", "Long", "Double", "Float", "Boolean", "Byte", "Character",

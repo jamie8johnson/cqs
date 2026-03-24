@@ -14,11 +14,11 @@ cqs has 35 CLI commands, 15 in batch mode, pipeline syntax, token budgeting, and
 
 **Schema v11:** `chunks`, `calls`, `function_calls`, `notes`, `type_edges` tables. Type-level dependency tracking via `type_edges`: source_chunk_id → target_type_name with edge_kind classification (Param, Return, Field, Impl, Bound, Alias). `cqs deps` command for forward/reverse queries.
 
-**Search pipeline:** FTS5 keyword → semantic embedding → RRF fusion → HNSW acceleration → unified (code + notes). Notes are separate results merged by score — they don't influence code ranking.
+**Search pipeline:** FTS5 keyword → semantic embedding → RRF fusion → HNSW acceleration. Notes boost code rankings via sentiment-based score multipliers but are not returned as search results.
 
 **Token budgeting:** Flat greedy knapsack by score. No information-type priority. Exception: `explain` hardcodes target-first, similar-second.
 
-**Embeddings:** 769-dim (768 E5-base-v2 + 1 sentiment), stored as BLOB in SQLite. `full_cosine_similarity()` exists for cross-store comparison. Reference system stores separate Store+HNSW per reference.
+**Embeddings:** 768-dim (E5-base-v2), stored as BLOB in SQLite. `full_cosine_similarity()` exists for cross-store comparison. Reference system stores separate Store+HNSW per reference.
 
 ---
 

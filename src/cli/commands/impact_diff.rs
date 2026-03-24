@@ -77,11 +77,11 @@ pub(crate) fn cmd_impact_diff(
     }
 
     // 4. Analyze impact
-    let result = analyze_diff_impact(&store, changed)?;
+    let result = analyze_diff_impact(&store, changed, &root)?;
 
     // 5. Display
     if json {
-        let json_val = diff_impact_to_json(&result, &root);
+        let json_val = diff_impact_to_json(&result);
         println!("{}", serde_json::to_string_pretty(&json_val)?);
     } else {
         display_diff_impact_text(&result, &root);

@@ -15,7 +15,7 @@ use crate::store::DeadConfidence;
 use crate::Store;
 
 /// Gate threshold level — determines when CI fails.
-#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum GateThreshold {
     /// Fail if any High-risk function is detected

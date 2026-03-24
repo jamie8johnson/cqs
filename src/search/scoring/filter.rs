@@ -87,7 +87,10 @@ pub(crate) fn build_filter_sql(filter: &SearchFilter) -> FilterSql {
         let placeholders: Vec<_> = (0..langs.len())
             .map(|i| format!("?{}", bind_values.len() + i + 1))
             .collect();
-        conditions.push(format!("language IN ({})", placeholders.join(",")));
+        conditions.push(format!(
+            "language COLLATE NOCASE IN ({})",
+            placeholders.join(",")
+        ));
         for lang in langs {
             bind_values.push(lang.to_string());
         }
@@ -251,7 +254,7 @@ mod tests {
         };
         let fsql = build_filter_sql(&filter);
         assert_eq!(fsql.conditions.len(), 1);
-        assert!(fsql.conditions[0].starts_with("language IN"));
+        assert!(fsql.conditions[0].starts_with("language COLLATE NOCASE IN"));
         assert_eq!(fsql.bind_values.len(), 2);
         assert_eq!(fsql.bind_values[0], "rust");
         assert_eq!(fsql.bind_values[1], "python");

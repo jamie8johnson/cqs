@@ -31,6 +31,10 @@ impl Store {
     ///
     /// Chunks are inserted in batches of 52 rows (52 * 19 params = 988 < SQLite's 999 limit).
     /// FTS operations remain per-row because FTS5 doesn't support INSERT OR REPLACE.
+    ///
+    /// **DS-19 warning:** Uses `INSERT OR REPLACE` which triggers `ON DELETE CASCADE` on
+    /// `calls` and `type_edges` tables. Callers must re-populate call graph edges after
+    /// this function if the chunks had existing relationships.
     pub fn upsert_chunks_batch(
         &self,
         chunks: &[(Chunk, Embedding)],
@@ -149,6 +153,8 @@ impl Store {
         &self,
         chunk_ids: &[&str],
     ) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        let _span =
+            tracing::debug_span!("get_enrichment_hashes_batch", count = chunk_ids.len()).entered();
         if chunk_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
@@ -188,6 +194,12 @@ impl Store {
         content_hashes: &[&str],
         purpose: &str,
     ) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        let _span = tracing::debug_span!(
+            "get_summaries_by_hashes",
+            count = content_hashes.len(),
+            purpose
+        )
+        .entered();
         if content_hashes.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
@@ -227,6 +239,8 @@ impl Store {
         &self,
         summaries: &[(String, String, String, String)],
     ) -> Result<usize, StoreError> {
+        let _span =
+            tracing::debug_span!("upsert_summaries_batch", count = summaries.len()).entered();
         if summaries.is_empty() {
             return Ok(0);
         }
@@ -263,6 +277,7 @@ impl Store {
         &self,
         purpose: &str,
     ) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        let _span = tracing::debug_span!("get_all_summaries", purpose).entered();
         self.rt.block_on(async {
             let rows: Vec<(String, String)> = sqlx::query_as(
                 "SELECT content_hash, summary FROM llm_summaries WHERE purpose = ?1",
@@ -276,6 +291,7 @@ impl Store {
 
     /// Delete orphan LLM summaries whose content_hash doesn't exist in any chunk.
     pub fn prune_orphan_summaries(&self) -> Result<usize, StoreError> {
+        let _span = tracing::debug_span!("prune_orphan_summaries").entered();
         self.rt.block_on(async {
             let result = sqlx::query(
                 "DELETE FROM llm_summaries WHERE content_hash NOT IN \
@@ -350,6 +366,12 @@ impl Store {
         source_mtime: Option<i64>,
         calls: &[(String, crate::parser::CallSite)],
     ) -> Result<usize, StoreError> {
+        let _span = tracing::info_span!(
+            "upsert_chunks_and_calls",
+            chunks = chunks.len(),
+            calls = calls.len()
+        )
+        .entered();
         let embedding_bytes: Vec<Vec<u8>> = chunks
             .iter()
             .map(|(_, emb)| embedding_to_bytes(emb))

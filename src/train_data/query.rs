@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 /// Strip conventional commit prefix: `type(scope)!: ...` → `...`
 fn conventional_prefix_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)^[a-z]+(\([^)]*\))?!?\s*:\s*").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?i)^[a-z]+(\([^)]*\))?!?\s*:\s*").expect("valid regex"))
 }
 
 /// Strip leading verb from common commit messages.
@@ -18,7 +18,7 @@ fn leading_verb_re() -> &'static Regex {
 /// Strip trailing PR/issue references: `(#123)`, `#123`, `(GH-45)`, etc.
 fn trailing_noise_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\s*\(?#\d+\)?\s*$").unwrap())
+    RE.get_or_init(|| Regex::new(r"\s*\(?#\d+\)?\s*$").expect("valid regex"))
 }
 
 /// Normalize a commit message into a search query.

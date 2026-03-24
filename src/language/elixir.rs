@@ -187,6 +187,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, _parent| format!("test/{stem}_test.exs")),
+    test_name_suggestion: Some(|name| format!("test \"{}\"", name)),
     type_query: None,
     common_types: &[],
     container_body_kinds: &["do_block"],

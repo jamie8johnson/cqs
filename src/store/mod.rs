@@ -497,6 +497,8 @@ impl Store {
                         s, e
                     ))
                 })?,
+                // EH-22: Missing key is OK — init() hasn't been called yet on a fresh DB.
+                // After init(), schema_version is guaranteed present.
                 None => 0,
             };
 
@@ -579,7 +581,10 @@ impl Store {
                         ));
                     }
                 } else {
-                    tracing::warn!(dim = %dim_str, "Failed to parse stored dimension");
+                    return Err(StoreError::Corruption(format!(
+                        "dimensions metadata '{}' is not a valid integer",
+                        dim_str
+                    )));
                 }
             }
 
@@ -827,103 +832,68 @@ impl Store {
         })
     }
 
-    /// Store a pending LLM batch ID so interrupted processes can resume polling.
-    pub fn set_pending_batch_id(&self, batch_id: Option<&str>) -> Result<(), StoreError> {
+    /// Set a metadata key/value pair, or delete it if `value` is `None`.
+    fn set_metadata_opt(&self, key: &str, value: Option<&str>) -> Result<(), StoreError> {
         self.rt.block_on(async {
-            match batch_id {
-                Some(id) => {
-                    sqlx::query(
-                        "INSERT OR REPLACE INTO metadata (key, value) VALUES ('pending_llm_batch', ?1)",
-                    )
-                    .bind(id)
-                    .execute(&self.pool)
-                    .await?;
+            match value {
+                Some(v) => {
+                    sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
+                        .bind(key)
+                        .bind(v)
+                        .execute(&self.pool)
+                        .await?;
                 }
                 None => {
-                    sqlx::query("DELETE FROM metadata WHERE key = 'pending_llm_batch'")
+                    sqlx::query("DELETE FROM metadata WHERE key = ?1")
+                        .bind(key)
                         .execute(&self.pool)
                         .await?;
                 }
             }
             Ok(())
         })
+    }
+
+    /// Get a metadata value by key, returning `None` if the key doesn't exist.
+    fn get_metadata_opt(&self, key: &str) -> Result<Option<String>, StoreError> {
+        self.rt.block_on(async {
+            let row: Option<(String,)> =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = ?1")
+                    .bind(key)
+                    .fetch_optional(&self.pool)
+                    .await?;
+            Ok(row.map(|(v,)| v))
+        })
+    }
+
+    /// Store a pending LLM batch ID so interrupted processes can resume polling.
+    pub fn set_pending_batch_id(&self, batch_id: Option<&str>) -> Result<(), StoreError> {
+        self.set_metadata_opt("pending_llm_batch", batch_id)
     }
 
     /// Get the pending LLM batch ID, if any.
     pub fn get_pending_batch_id(&self) -> Result<Option<String>, StoreError> {
-        self.rt.block_on(async {
-            let row: Option<(String,)> =
-                sqlx::query_as("SELECT value FROM metadata WHERE key = 'pending_llm_batch'")
-                    .fetch_optional(&self.pool)
-                    .await?;
-            Ok(row.map(|(v,)| v))
-        })
+        self.get_metadata_opt("pending_llm_batch")
     }
 
     /// Store a pending doc-comment batch ID so interrupted processes can resume polling.
     pub fn set_pending_doc_batch_id(&self, batch_id: Option<&str>) -> Result<(), StoreError> {
-        self.rt.block_on(async {
-            match batch_id {
-                Some(id) => {
-                    sqlx::query(
-                        "INSERT OR REPLACE INTO metadata (key, value) VALUES ('pending_doc_batch', ?1)",
-                    )
-                    .bind(id)
-                    .execute(&self.pool)
-                    .await?;
-                }
-                None => {
-                    sqlx::query("DELETE FROM metadata WHERE key = 'pending_doc_batch'")
-                        .execute(&self.pool)
-                        .await?;
-                }
-            }
-            Ok(())
-        })
+        self.set_metadata_opt("pending_doc_batch", batch_id)
     }
 
     /// Get the pending doc-comment batch ID, if any.
     pub fn get_pending_doc_batch_id(&self) -> Result<Option<String>, StoreError> {
-        self.rt.block_on(async {
-            let row: Option<(String,)> =
-                sqlx::query_as("SELECT value FROM metadata WHERE key = 'pending_doc_batch'")
-                    .fetch_optional(&self.pool)
-                    .await?;
-            Ok(row.map(|(v,)| v))
-        })
+        self.get_metadata_opt("pending_doc_batch")
     }
 
     /// Store a pending HyDE batch ID so interrupted processes can resume polling.
     pub fn set_pending_hyde_batch_id(&self, batch_id: Option<&str>) -> Result<(), StoreError> {
-        self.rt.block_on(async {
-            match batch_id {
-                Some(id) => {
-                    sqlx::query(
-                        "INSERT OR REPLACE INTO metadata (key, value) VALUES ('pending_hyde_batch', ?1)",
-                    )
-                    .bind(id)
-                    .execute(&self.pool)
-                    .await?;
-                }
-                None => {
-                    sqlx::query("DELETE FROM metadata WHERE key = 'pending_hyde_batch'")
-                        .execute(&self.pool)
-                        .await?;
-                }
-            }
-            Ok(())
-        })
+        self.set_metadata_opt("pending_hyde_batch", batch_id)
     }
 
     /// Get the pending HyDE batch ID, if any.
     pub fn get_pending_hyde_batch_id(&self) -> Result<Option<String>, StoreError> {
-        self.rt.block_on(async {
-            let row: Option<(String,)> =
-                sqlx::query_as("SELECT value FROM metadata WHERE key = 'pending_hyde_batch'")
-                    .fetch_optional(&self.pool)
-                    .await?;
-            Ok(row.map(|(v,)| v))
-        })
+        self.get_metadata_opt("pending_hyde_batch")
     }
 
     /// Get cached notes summaries (loaded on first call, invalidated on mutation).
@@ -1394,5 +1364,119 @@ mod tests {
         let cached = store.cached_notes_summaries().unwrap();
         assert_eq!(cached.len(), 1);
         assert_eq!(cached[0].text, "replaced note");
+    }
+
+    // ===== TC-17: check_model_version tests =====
+
+    fn make_test_store_initialized() -> (Store, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+        (store, dir)
+    }
+
+    #[test]
+    fn tc17_model_mismatch_returns_error() {
+        let (store, _dir) = make_test_store_initialized();
+        store
+            .set_metadata_opt("model_name", Some("wrong-model/v1"))
+            .unwrap();
+        let err = store.check_model_version().unwrap_err();
+        assert!(
+            matches!(err, StoreError::ModelMismatch(..)),
+            "Expected ModelMismatch, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn tc17_dimension_mismatch_returns_error() {
+        let (store, _dir) = make_test_store_initialized();
+        store.set_metadata_opt("dimensions", Some("999")).unwrap();
+        let err = store.check_model_version().unwrap_err();
+        assert!(
+            matches!(err, StoreError::DimensionMismatch(999, _)),
+            "Expected DimensionMismatch, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn tc17_corrupt_dimension_returns_corruption() {
+        let (store, _dir) = make_test_store_initialized();
+        store
+            .set_metadata_opt("dimensions", Some("not_a_number"))
+            .unwrap();
+        let err = store.check_model_version().unwrap_err();
+        assert!(
+            matches!(err, StoreError::Corruption(..)),
+            "Expected Corruption, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn tc17_correct_model_passes() {
+        let (store, _dir) = make_test_store_initialized();
+        assert!(store.check_model_version().is_ok());
+    }
+
+    // ===== TC-18: check_schema_version tests =====
+
+    #[test]
+    fn tc18_schema_newer_returns_error() {
+        let (store, _dir) = make_test_store_initialized();
+        let future_version = (CURRENT_SCHEMA_VERSION + 1).to_string();
+        store
+            .set_metadata_opt("schema_version", Some(&future_version))
+            .unwrap();
+        let err = store
+            .check_schema_version(std::path::Path::new("/test"))
+            .unwrap_err();
+        assert!(
+            matches!(err, StoreError::SchemaNewerThanCq(..)),
+            "Expected SchemaNewerThanCq, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn tc18_corrupt_schema_version_returns_corruption() {
+        let (store, _dir) = make_test_store_initialized();
+        store
+            .set_metadata_opt("schema_version", Some("garbage"))
+            .unwrap();
+        let err = store
+            .check_schema_version(std::path::Path::new("/test"))
+            .unwrap_err();
+        assert!(
+            matches!(err, StoreError::Corruption(..)),
+            "Expected Corruption, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn tc18_current_schema_passes() {
+        let (store, _dir) = make_test_store_initialized();
+        assert!(store
+            .check_schema_version(std::path::Path::new("/test"))
+            .is_ok());
+    }
+
+    #[test]
+    fn tc18_missing_schema_key_passes() {
+        // Fresh DB with metadata table but no schema_version key
+        let (store, _dir) = make_test_store_initialized();
+        store.rt.block_on(async {
+            sqlx::query("DELETE FROM metadata WHERE key = 'schema_version'")
+                .execute(&store.pool)
+                .await
+                .unwrap();
+        });
+        assert!(store
+            .check_schema_version(std::path::Path::new("/test"))
+            .is_ok());
     }
 }

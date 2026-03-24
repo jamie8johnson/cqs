@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::focused_read::COMMON_TYPES;
-use crate::store::helpers::StoreError;
 use crate::store::Store;
+use crate::AnalysisError;
 
 /// A function related to the target with overlap count.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -36,7 +36,7 @@ pub fn find_related(
     store: &Store,
     target_name: &str,
     limit: usize,
-) -> Result<RelatedResult, StoreError> {
+) -> Result<RelatedResult, AnalysisError> {
     let _span = tracing::info_span!("find_related", target = target_name, limit).entered();
     // Resolve target to get its chunk
     let resolved = crate::resolve_target(store, target_name)?;
@@ -114,7 +114,7 @@ fn find_type_overlap(
     target_name: &str,
     type_names: &[String],
     limit: usize,
-) -> Result<Vec<RelatedFunction>, StoreError> {
+) -> Result<Vec<RelatedFunction>, AnalysisError> {
     if type_names.is_empty() {
         return Ok(Vec::new());
     }

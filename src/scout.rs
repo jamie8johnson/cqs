@@ -7,7 +7,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::impact::compute_hints_with_graph;
 use crate::store::{ChunkSummary, NoteSummary, SearchFilter};
 use crate::{normalize_slashes, AnalysisError, Embedder, Store};
 
@@ -255,7 +254,17 @@ pub(crate) fn scout_core(
     let modify_threshold = compute_modify_threshold(&results, opts.min_gap_ratio);
     tracing::debug!(modify_threshold, "Gap-based threshold computed");
 
-    // 7. Build file groups
+    // 7. Batch-compute hints for all result chunks (PERF-20: single forward BFS)
+    let all_chunk_names: Vec<&str> = results.iter().map(|r| r.chunk.name.as_str()).collect();
+    let hints_batch =
+        crate::impact::compute_hints_batch(graph, test_chunks, &all_chunk_names, &caller_counts);
+    let hints_map: std::collections::HashMap<&str, &crate::impact::FunctionHints> = all_chunk_names
+        .iter()
+        .zip(hints_batch.iter())
+        .map(|(&name, hints)| (name, hints))
+        .collect();
+
+    // 8. Build file groups
     let mut groups: Vec<FileGroup> = file_map
         .into_iter()
         .map(|(file, chunks)| {
@@ -265,12 +274,14 @@ pub(crate) fn scout_core(
             let scout_chunks: Vec<ScoutChunk> = chunks
                 .iter()
                 .map(|(score, chunk)| {
-                    let hints = compute_hints_with_graph(
-                        graph,
-                        test_chunks,
-                        &chunk.name,
-                        caller_counts.get(&chunk.name).map(|&c| c as usize),
-                    );
+                    let default_hints = crate::impact::FunctionHints {
+                        caller_count: 0,
+                        test_count: 0,
+                    };
+                    let hints = hints_map
+                        .get(chunk.name.as_str())
+                        .copied()
+                        .unwrap_or(&default_hints);
 
                     let role = classify_role(
                         *score,
@@ -293,7 +304,7 @@ pub(crate) fn scout_core(
                 .collect();
 
             FileGroup {
-                file,
+                file: file.strip_prefix(root).unwrap_or(&file).to_path_buf(),
                 relevance_score,
                 chunks: scout_chunks,
                 is_stale,
@@ -428,14 +439,15 @@ fn note_mention_matches_file(mention: &str, file: &str) -> bool {
         && (file.len() == mention.len() || file.as_bytes()[file.len() - mention.len() - 1] == b'/')
 }
 
-/// Serialize scout result to JSON
-pub fn scout_to_json(result: &ScoutResult, root: &Path) -> serde_json::Value {
+/// Serialize scout result to JSON.
+///
+/// Paths in the result are already relative to the project root (set at
+/// construction time by `scout_core`).
+pub fn scout_to_json(result: &ScoutResult) -> serde_json::Value {
     let groups_json: Vec<_> = result
         .file_groups
         .iter()
         .map(|g| {
-            let rel = crate::rel_display(&g.file, root);
-
             let chunks_json: Vec<_> = g
                 .chunks
                 .iter()
@@ -454,7 +466,7 @@ pub fn scout_to_json(result: &ScoutResult, root: &Path) -> serde_json::Value {
                 .collect();
 
             serde_json::json!({
-                "file": rel,
+                "file": crate::normalize_path(&g.file),
                 "relevance_score": g.relevance_score,
                 "is_stale": g.is_stale,
                 "chunks": chunks_json,
@@ -703,7 +715,7 @@ mod tests {
                 stale_count: 0,
             },
         };
-        let json = scout_to_json(&result, Path::new("/project"));
+        let json = scout_to_json(&result);
         assert_eq!(json["file_groups"].as_array().unwrap().len(), 0);
         assert_eq!(json["relevant_notes"].as_array().unwrap().len(), 0);
         assert_eq!(json["summary"]["total_files"], 0);

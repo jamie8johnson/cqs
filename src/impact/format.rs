@@ -1,19 +1,20 @@
 //! JSON and Mermaid serialization for impact results
 
-use std::path::Path;
-
 use super::types::{DiffImpactResult, ImpactResult};
 
-/// Serialize impact result to JSON, relativizing paths against the project root
-pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
+/// Serialize impact result to JSON.
+///
+/// Paths in the result are already relative to the project root (set at
+/// construction time by `analyze_impact`). This function builds the JSON
+/// structure with computed count fields and conditional sections.
+pub fn impact_to_json(result: &ImpactResult) -> serde_json::Value {
     let callers_json: Vec<_> = result
         .callers
         .iter()
         .map(|c| {
-            let rel = crate::rel_display(&c.file, root);
             serde_json::json!({
                 "name": c.name,
-                "file": rel,
+                "file": crate::normalize_path(&c.file),
                 "line": c.line,
                 "call_line": c.call_line,
                 "snippet": c.snippet,
@@ -21,7 +22,7 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
         })
         .collect();
 
-    let tests_json: Vec<_> = result.tests.iter().map(|t| t.to_json(root)).collect();
+    let tests_json: Vec<_> = result.tests.iter().map(|t| t.to_json()).collect();
 
     let mut output = serde_json::json!({
         "function": result.function_name,
@@ -36,10 +37,9 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
             .transitive_callers
             .iter()
             .map(|c| {
-                let rel = crate::rel_display(&c.file, root);
                 serde_json::json!({
                     "name": c.name,
-                    "file": rel,
+                    "file": crate::normalize_path(&c.file),
                     "line": c.line,
                     "depth": c.depth,
                 })
@@ -61,10 +61,9 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
         .type_impacted
         .iter()
         .map(|ti| {
-            let rel = crate::rel_display(&ti.file, root);
             serde_json::json!({
                 "name": ti.name,
-                "file": rel,
+                "file": crate::normalize_path(&ti.file),
                 "line": ti.line,
                 "shared_types": ti.shared_types,
             })
@@ -81,8 +80,10 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
     output
 }
 
-/// Generate a mermaid diagram from impact result
-pub fn impact_to_mermaid(result: &ImpactResult, root: &Path) -> String {
+/// Generate a mermaid diagram from impact result.
+///
+/// Paths in the result are already relative to the project root.
+pub fn impact_to_mermaid(result: &ImpactResult) -> String {
     let mut lines = vec!["graph TD".to_string()];
     lines.push(format!(
         "    A[\"{}\"]\n    style A fill:#f96",
@@ -91,7 +92,7 @@ pub fn impact_to_mermaid(result: &ImpactResult, root: &Path) -> String {
 
     let mut idx = 1;
     for c in &result.callers {
-        let rel = crate::rel_display(&c.file, root);
+        let rel = crate::normalize_path(&c.file);
         let letter = node_letter(idx);
         lines.push(format!(
             "    {}[\"{} ({}:{})\"]",
@@ -105,7 +106,7 @@ pub fn impact_to_mermaid(result: &ImpactResult, root: &Path) -> String {
     }
 
     for t in &result.tests {
-        let rel = crate::rel_display(&t.file, root);
+        let rel = crate::normalize_path(&t.file);
         let letter = node_letter(idx);
         lines.push(format!(
             "    {}{{\"{}\\n{}\\ndepth: {}\"}}",
@@ -119,7 +120,7 @@ pub fn impact_to_mermaid(result: &ImpactResult, root: &Path) -> String {
     }
 
     for ti in &result.type_impacted {
-        let rel = crate::rel_display(&ti.file, root);
+        let rel = crate::normalize_path(&ti.file);
         let letter = node_letter(idx);
         let types_str = ti.shared_types.join(", ");
         lines.push(format!(
@@ -138,15 +139,17 @@ pub fn impact_to_mermaid(result: &ImpactResult, root: &Path) -> String {
     lines.join("\n")
 }
 
-/// Serialize diff impact result to JSON
-pub fn diff_impact_to_json(result: &DiffImpactResult, root: &Path) -> serde_json::Value {
+/// Serialize diff impact result to JSON.
+///
+/// Paths in the result are already relative to the project root.
+pub fn diff_impact_to_json(result: &DiffImpactResult) -> serde_json::Value {
     let changed_json: Vec<_> = result
         .changed_functions
         .iter()
         .map(|f| {
             serde_json::json!({
                 "name": f.name,
-                "file": f.file.display().to_string(),
+                "file": crate::normalize_path(&f.file),
                 "line_start": f.line_start,
             })
         })
@@ -156,10 +159,9 @@ pub fn diff_impact_to_json(result: &DiffImpactResult, root: &Path) -> serde_json
         .all_callers
         .iter()
         .map(|c| {
-            let rel = crate::rel_display(&c.file, root);
             serde_json::json!({
                 "name": c.name,
-                "file": rel,
+                "file": crate::normalize_path(&c.file),
                 "line": c.line,
                 "call_line": c.call_line,
             })
@@ -170,10 +172,9 @@ pub fn diff_impact_to_json(result: &DiffImpactResult, root: &Path) -> serde_json
         .all_tests
         .iter()
         .map(|t| {
-            let rel = crate::rel_display(&t.file, root);
             serde_json::json!({
                 "name": t.name,
-                "file": rel,
+                "file": crate::normalize_path(&t.file),
                 "line": t.line,
                 "via": t.via,
                 "call_depth": t.call_depth,
@@ -269,18 +270,19 @@ mod tests {
 
     #[test]
     fn test_impact_to_json_structure() {
+        // Paths are already relative (as produced by analyze_impact)
         let result = ImpactResult {
             function_name: "target_fn".to_string(),
             callers: vec![CallerDetail {
                 name: "caller_a".to_string(),
-                file: PathBuf::from("/project/src/lib.rs"),
+                file: PathBuf::from("src/lib.rs"),
                 line: 10,
                 call_line: 15,
                 snippet: Some("target_fn()".to_string()),
             }],
             tests: vec![TestInfo {
                 name: "test_target".to_string(),
-                file: PathBuf::from("/project/tests/test.rs"),
+                file: PathBuf::from("tests/test.rs"),
                 line: 1,
                 call_depth: 2,
             }],
@@ -288,8 +290,7 @@ mod tests {
             type_impacted: Vec::new(),
             degraded: false,
         };
-        let root = Path::new("/project");
-        let json = impact_to_json(&result, root);
+        let json = impact_to_json(&result);
 
         assert_eq!(json["function"], "target_fn");
         assert_eq!(json["caller_count"], 1);
@@ -315,15 +316,14 @@ mod tests {
             tests: Vec::new(),
             transitive_callers: vec![TransitiveCaller {
                 name: "indirect".to_string(),
-                file: PathBuf::from("/project/src/app.rs"),
+                file: PathBuf::from("src/app.rs"),
                 line: 5,
                 depth: 2,
             }],
             type_impacted: Vec::new(),
             degraded: false,
         };
-        let root = Path::new("/project");
-        let json = impact_to_json(&result, root);
+        let json = impact_to_json(&result);
 
         assert!(json["transitive_callers"].is_array());
         let trans = json["transitive_callers"].as_array().unwrap();
@@ -342,8 +342,7 @@ mod tests {
             type_impacted: Vec::new(),
             degraded: false,
         };
-        let root = Path::new("/project");
-        let json = impact_to_json(&result, root);
+        let json = impact_to_json(&result);
 
         assert_eq!(json["function"], "lonely");
         assert_eq!(json["caller_count"], 0);
@@ -357,6 +356,7 @@ mod tests {
 
     #[test]
     fn test_diff_impact_to_json_structure() {
+        // Paths are already relative (as produced by analyze_diff_impact)
         let result = DiffImpactResult {
             changed_functions: vec![ChangedFunction {
                 name: "changed_fn".to_string(),
@@ -365,14 +365,14 @@ mod tests {
             }],
             all_callers: vec![CallerDetail {
                 name: "caller_a".to_string(),
-                file: PathBuf::from("/project/src/app.rs"),
+                file: PathBuf::from("src/app.rs"),
                 line: 20,
                 call_line: 25,
                 snippet: None,
             }],
             all_tests: vec![DiffTestInfo {
                 name: "test_changed".to_string(),
-                file: PathBuf::from("/project/tests/test.rs"),
+                file: PathBuf::from("tests/test.rs"),
                 line: 1,
                 via: "changed_fn".to_string(),
                 call_depth: 1,
@@ -383,8 +383,7 @@ mod tests {
                 test_count: 1,
             },
         };
-        let root = Path::new("/project");
-        let json = diff_impact_to_json(&result, root);
+        let json = diff_impact_to_json(&result);
 
         let changed = json["changed_functions"].as_array().unwrap();
         assert_eq!(changed.len(), 1);
@@ -417,8 +416,7 @@ mod tests {
                 test_count: 0,
             },
         };
-        let root = Path::new("/project");
-        let json = diff_impact_to_json(&result, root);
+        let json = diff_impact_to_json(&result);
 
         assert_eq!(json["changed_functions"].as_array().unwrap().len(), 0);
         assert_eq!(json["callers"].as_array().unwrap().len(), 0);

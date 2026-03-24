@@ -187,16 +187,8 @@ impl std::fmt::Display for OutputFormat {
     }
 }
 
-/// Gate threshold level for CI pipeline
-#[derive(Clone, Debug, clap::ValueEnum)]
-pub enum GateLevel {
-    /// Fail if any High-risk function is detected
-    High,
-    /// Fail if any Medium or High risk function is detected
-    Medium,
-    /// Never fail — report only
-    Off,
-}
+/// Re-export `GateThreshold` so CLI and batch code can reference it directly.
+pub use cqs::ci::GateThreshold;
 
 /// Audit mode state for the audit-mode command
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -336,39 +328,8 @@ enum Commands {
     Doctor,
     /// Index current project
     Index {
-        /// Re-index all files, ignore mtime cache
-        #[arg(long)]
-        force: bool,
-        /// Show what would be indexed, don't write
-        #[arg(long)]
-        dry_run: bool,
-        /// Index files ignored by .gitignore
-        #[arg(long)]
-        no_ignore: bool,
-        /// Generate LLM summaries for functions (requires ANTHROPIC_API_KEY)
-        #[cfg(feature = "llm-summaries")]
-        #[arg(long)]
-        llm_summaries: bool,
-        /// Generate and write back doc comments for undocumented functions (requires --llm-summaries)
-        #[cfg(feature = "llm-summaries")]
-        #[arg(long)]
-        improve_docs: bool,
-        /// Regenerate doc comments for all functions, even those with existing docs (requires --improve-docs)
-        #[cfg(feature = "llm-summaries")]
-        #[arg(long)]
-        improve_all: bool,
-        /// Maximum number of functions to generate docs for (used with --improve-docs)
-        #[cfg(feature = "llm-summaries")]
-        #[arg(long)]
-        max_docs: Option<usize>,
-        /// Generate hyde query predictions for functions (requires ANTHROPIC_API_KEY)
-        #[cfg(feature = "llm-summaries")]
-        #[arg(long)]
-        hyde_queries: bool,
-        /// Maximum number of functions to generate hyde predictions for
-        #[cfg(feature = "llm-summaries")]
-        #[arg(long)]
-        max_hyde: Option<usize>,
+        #[command(flatten)]
+        args: args::IndexArgs,
     },
     /// Show index statistics
     Stats {
@@ -588,7 +549,7 @@ enum Commands {
         json: bool,
         /// Gate threshold: high, medium, off (default: high)
         #[arg(long, default_value = "high")]
-        gate: GateLevel,
+        gate: GateThreshold,
         /// Maximum token budget for output
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
@@ -833,60 +794,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Chat) => chat::cmd_chat(),
         Some(Commands::Init) => cmd_init(&cli),
         Some(Commands::Doctor) => cmd_doctor(),
-        Some(Commands::Index {
-            force,
-            dry_run,
-            no_ignore,
-            #[cfg(feature = "llm-summaries")]
-            llm_summaries,
-            #[cfg(feature = "llm-summaries")]
-            improve_docs,
-            #[cfg(feature = "llm-summaries")]
-            improve_all,
-            #[cfg(feature = "llm-summaries")]
-            max_docs,
-            #[cfg(feature = "llm-summaries")]
-            hyde_queries,
-            #[cfg(feature = "llm-summaries")]
-            max_hyde,
-        }) => {
-            #[cfg(feature = "llm-summaries")]
-            let use_llm = llm_summaries;
-            #[cfg(not(feature = "llm-summaries"))]
-            let use_llm = false;
-            #[cfg(feature = "llm-summaries")]
-            let use_improve_docs = improve_docs;
-            #[cfg(not(feature = "llm-summaries"))]
-            let use_improve_docs = false;
-            #[cfg(feature = "llm-summaries")]
-            let use_improve_all = improve_all;
-            #[cfg(not(feature = "llm-summaries"))]
-            let use_improve_all = false;
-            #[cfg(feature = "llm-summaries")]
-            let use_max_docs = max_docs;
-            #[cfg(not(feature = "llm-summaries"))]
-            let use_max_docs: Option<usize> = None;
-            #[cfg(feature = "llm-summaries")]
-            let use_hyde = hyde_queries;
-            #[cfg(not(feature = "llm-summaries"))]
-            let use_hyde = false;
-            #[cfg(feature = "llm-summaries")]
-            let use_max_hyde = max_hyde;
-            #[cfg(not(feature = "llm-summaries"))]
-            let use_max_hyde: Option<usize> = None;
-            cmd_index(
-                &cli,
-                force,
-                dry_run,
-                no_ignore,
-                use_llm,
-                use_improve_docs,
-                use_improve_all,
-                use_max_docs,
-                use_hyde,
-                use_max_hyde,
-            )
-        }
+        Some(Commands::Index { ref args }) => cmd_index(&cli, args),
         Some(Commands::Stats { json }) => cmd_stats(&cli, json),
         Some(Commands::Watch {
             debounce,
@@ -1206,15 +1114,10 @@ mod tests {
     fn test_cmd_index() {
         let cli = Cli::try_parse_from(["cqs", "index"]).unwrap();
         match cli.command {
-            Some(Commands::Index {
-                force,
-                dry_run,
-                no_ignore,
-                ..
-            }) => {
-                assert!(!force);
-                assert!(!dry_run);
-                assert!(!no_ignore);
+            Some(Commands::Index { ref args }) => {
+                assert!(!args.force);
+                assert!(!args.dry_run);
+                assert!(!args.no_ignore);
             }
             _ => panic!("Expected Index command"),
         }
@@ -1224,9 +1127,9 @@ mod tests {
     fn test_cmd_index_with_flags() {
         let cli = Cli::try_parse_from(["cqs", "index", "--force", "--dry-run"]).unwrap();
         match cli.command {
-            Some(Commands::Index { force, dry_run, .. }) => {
-                assert!(force);
-                assert!(dry_run);
+            Some(Commands::Index { ref args }) => {
+                assert!(args.force);
+                assert!(args.dry_run);
             }
             _ => panic!("Expected Index command"),
         }
@@ -2045,7 +1948,7 @@ mod tests {
                 assert!(!stdin);
                 assert!(matches!(format, OutputFormat::Text));
                 assert!(!json);
-                assert!(matches!(gate, GateLevel::High));
+                assert!(matches!(gate, GateThreshold::High));
                 assert!(tokens.is_none());
             }
             _ => panic!("Expected Ci command"),
@@ -2057,7 +1960,7 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "ci", "--gate", "medium"]).unwrap();
         match cli.command {
             Some(Commands::Ci { gate, .. }) => {
-                assert!(matches!(gate, GateLevel::Medium));
+                assert!(matches!(gate, GateThreshold::Medium));
             }
             _ => panic!("Expected Ci command"),
         }
@@ -2068,7 +1971,7 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "ci", "--gate", "off"]).unwrap();
         match cli.command {
             Some(Commands::Ci { gate, .. }) => {
-                assert!(matches!(gate, GateLevel::Off));
+                assert!(matches!(gate, GateThreshold::Off));
             }
             _ => panic!("Expected Ci command"),
         }

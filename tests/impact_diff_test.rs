@@ -199,7 +199,7 @@ fn test_diff_impact_aggregation() {
 
     assert_eq!(changed.len(), 2, "Should find fn_a and fn_b");
 
-    let result = analyze_diff_impact(&store, changed).unwrap();
+    let result = analyze_diff_impact(&store, changed, std::path::Path::new("/test")).unwrap();
     // shared_caller appears once even though it calls both changed functions
     assert!(
         result.all_callers.len() <= 1,
@@ -212,7 +212,7 @@ fn test_diff_impact_aggregation() {
 fn test_diff_impact_empty_functions() {
     let store = TestStore::new();
 
-    let result = analyze_diff_impact(&store, vec![]).unwrap();
+    let result = analyze_diff_impact(&store, vec![], std::path::Path::new("/test")).unwrap();
     assert!(result.changed_functions.is_empty());
     assert!(result.all_callers.is_empty());
     assert!(result.all_tests.is_empty());
@@ -255,7 +255,7 @@ diff --git a/src/search.rs b/src/search.rs
     assert_eq!(changed.len(), 1);
     assert_eq!(changed[0].name, "search_fn");
 
-    let result = analyze_diff_impact(&store, changed).unwrap();
+    let result = analyze_diff_impact(&store, changed, std::path::Path::new("/test")).unwrap();
 
     assert_eq!(result.summary.changed_count, 1);
     // cmd_query should be in callers
@@ -318,7 +318,7 @@ fn test_diff_impact_all_tests_populated() {
         line_start: 10,
     }];
 
-    let result = analyze_diff_impact(&store, changed).unwrap();
+    let result = analyze_diff_impact(&store, changed, std::path::Path::new("/test")).unwrap();
 
     // all_tests should contain test_caller
     assert_eq!(result.summary.test_count, 1, "Should find 1 affected test");
@@ -389,7 +389,7 @@ fn test_diff_impact_via_attribution_multiple_functions() {
         },
     ];
 
-    let result = analyze_diff_impact(&store, changed).unwrap();
+    let result = analyze_diff_impact(&store, changed, std::path::Path::new("/test")).unwrap();
 
     assert_eq!(result.summary.test_count, 2, "Should find 2 affected tests");
 
@@ -456,7 +456,7 @@ fn test_diff_impact_shared_test_via_minimum_depth() {
         },
     ];
 
-    let result = analyze_diff_impact(&store, changed).unwrap();
+    let result = analyze_diff_impact(&store, changed, std::path::Path::new("/test")).unwrap();
 
     assert_eq!(
         result.summary.test_count, 1,

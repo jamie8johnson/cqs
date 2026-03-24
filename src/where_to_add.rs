@@ -51,10 +51,13 @@ pub struct FileSuggestion {
 }
 
 impl FileSuggestion {
-    /// Serialize to JSON, relativizing file paths against the project root.
-    pub fn to_json(&self, root: &std::path::Path) -> serde_json::Value {
+    /// Serialize to JSON. Uses `normalize_path` for forward-slash normalization.
+    ///
+    /// If paths should be relative to the project root, callers must ensure
+    /// `self.file` was relativized before calling (e.g., via `strip_prefix`).
+    pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
-            "file": crate::rel_display(&self.file, root),
+            "file": crate::normalize_path(&self.file),
             "score": self.score,
             "insertion_line": self.insertion_line,
             "near_function": self.near_function,
@@ -302,15 +305,349 @@ fn detect_error_style(chunks: &[ChunkSummary], patterns: &[(&str, &str)]) -> Str
     String::new()
 }
 
+// ---------------------------------------------------------------------------
+// Data-driven pattern extraction
+//
+// Most languages follow the same 4-step pattern:
+//   1. extract_imports(chunks, prefixes, MAX_IMPORT_COUNT)
+//   2. detect_error_style(chunks, error_patterns)
+//   3. Visibility counting via signature inspection
+//   4. Return (imports, visibility)
+//
+// Languages with truly custom logic (Rust, TS/JS, Go) keep dedicated arms.
+// Everything else is driven by `LanguagePatternDef` lookup tables.
+// ---------------------------------------------------------------------------
+
+/// How to detect dominant visibility from chunk signatures.
+enum VisibilityRule {
+    /// Fixed string, no detection needed (e.g., "module-level", "default").
+    Fixed(&'static str),
+    /// Majority wins: count chunks where signature contains `keyword`.
+    /// `(keyword, if_majority, if_minority)`.
+    SigContainsMajority {
+        keyword: &'static str,
+        if_majority: &'static str,
+        if_minority: &'static str,
+    },
+    /// Majority wins: count chunks where signature starts with `prefix`.
+    /// `(prefix, if_majority, if_minority)`.
+    SigStartsMajority {
+        prefix: &'static str,
+        if_majority: &'static str,
+        if_minority: &'static str,
+    },
+    /// Two-keyword comparison: public vs internal (for .NET languages).
+    /// Counts `contains(pub_kw)` vs `contains(int_kw)`.
+    TwoKeywordCompare {
+        pub_keyword: &'static str,
+        int_keyword: &'static str,
+        if_pub_wins: &'static str,
+        if_int_wins: &'static str,
+    },
+    /// Solidity: `public || external` vs rest.
+    SigContainsEitherMajority {
+        keyword_a: &'static str,
+        keyword_b: &'static str,
+        if_majority: &'static str,
+        if_minority: &'static str,
+    },
+}
+
+/// Data-driven definition for per-language pattern extraction.
+struct LanguagePatternDef {
+    import_prefixes: &'static [&'static str],
+    error_patterns: &'static [(&'static str, &'static str)],
+    visibility: VisibilityRule,
+}
+
+/// Evaluate a `VisibilityRule` against chunks, returning the visibility string.
+fn eval_visibility(rule: &VisibilityRule, chunks: &[ChunkSummary]) -> String {
+    match rule {
+        VisibilityRule::Fixed(s) => (*s).to_string(),
+        VisibilityRule::SigContainsMajority {
+            keyword,
+            if_majority,
+            if_minority,
+        } => {
+            let count = chunks
+                .iter()
+                .filter(|c| c.signature.contains(keyword))
+                .count();
+            if count > chunks.len() / 2 {
+                if_majority
+            } else {
+                if_minority
+            }
+            .to_string()
+        }
+        VisibilityRule::SigStartsMajority {
+            prefix,
+            if_majority,
+            if_minority,
+        } => {
+            let count = chunks
+                .iter()
+                .filter(|c| c.signature.starts_with(prefix))
+                .count();
+            if count > chunks.len() / 2 {
+                if_majority
+            } else {
+                if_minority
+            }
+            .to_string()
+        }
+        VisibilityRule::TwoKeywordCompare {
+            pub_keyword,
+            int_keyword,
+            if_pub_wins,
+            if_int_wins,
+        } => {
+            let pub_count = chunks
+                .iter()
+                .filter(|c| c.signature.contains(pub_keyword))
+                .count();
+            let int_count = chunks
+                .iter()
+                .filter(|c| c.signature.contains(int_keyword))
+                .count();
+            if pub_count >= int_count {
+                if_pub_wins
+            } else {
+                if_int_wins
+            }
+            .to_string()
+        }
+        VisibilityRule::SigContainsEitherMajority {
+            keyword_a,
+            keyword_b,
+            if_majority,
+            if_minority,
+        } => {
+            let count = chunks
+                .iter()
+                .filter(|c| c.signature.contains(keyword_a) || c.signature.contains(keyword_b))
+                .count();
+            if count > chunks.len() / 2 {
+                if_majority
+            } else {
+                if_minority
+            }
+            .to_string()
+        }
+    }
+}
+
+/// Lookup table: language → pattern definition.
+///
+/// Returns `None` for languages with custom logic (Rust, TS/JS, Go) or
+/// non-code languages (SQL, Markdown, JSON, etc.) that have no patterns.
+fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
+    use Language::*;
+    // Static definitions — one per language family.
+    static PYTHON: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["import ", "from "],
+        error_patterns: &[("raise ", "raise"), ("try:", "try/except")],
+        visibility: VisibilityRule::Fixed("module-level"),
+    };
+    static C: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["#include"],
+        error_patterns: &[("errno", "errno"), ("perror", "perror")],
+        visibility: VisibilityRule::SigStartsMajority {
+            prefix: "static ",
+            if_majority: "static",
+            if_minority: "extern",
+        },
+    };
+    static CPP_LIKE: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["#include"],
+        error_patterns: &[
+            ("errno", "errno"),
+            ("throw ", "throw"),
+            ("try {", "try/catch"),
+        ],
+        visibility: VisibilityRule::SigStartsMajority {
+            prefix: "static ",
+            if_majority: "static",
+            if_minority: "extern",
+        },
+    };
+    static JAVA: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["import "],
+        error_patterns: &[("throws ", "checked exceptions"), ("try {", "try/catch")],
+        visibility: VisibilityRule::SigContainsMajority {
+            keyword: "public",
+            if_majority: "public",
+            if_minority: "package-private",
+        },
+    };
+    static JVM: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["import "],
+        error_patterns: &[("throws ", "checked exceptions"), ("try {", "try/catch")],
+        visibility: VisibilityRule::SigContainsMajority {
+            keyword: "public",
+            if_majority: "public",
+            if_minority: "package-private",
+        },
+    };
+    static DOTNET: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["using ", "open "],
+        error_patterns: &[("throw ", "throw"), ("try {", "try/catch")],
+        visibility: VisibilityRule::TwoKeywordCompare {
+            pub_keyword: "public",
+            int_keyword: "internal",
+            if_pub_wins: "public",
+            if_int_wins: "internal",
+        },
+    };
+    static RUBY: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["require ", "require_relative "],
+        error_patterns: &[("raise ", "raise"), ("rescue", "begin/rescue")],
+        visibility: VisibilityRule::Fixed("module-level"),
+    };
+    static PHP: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["require ", "require_once ", "include ", "use "],
+        error_patterns: &[("throw ", "throw"), ("try {", "try/catch")],
+        visibility: VisibilityRule::SigContainsMajority {
+            keyword: "public",
+            if_majority: "public",
+            if_minority: "default",
+        },
+    };
+    static PERL: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["use ", "require "],
+        error_patterns: &[("die ", "die"), ("croak", "croak")],
+        visibility: VisibilityRule::Fixed("module-level"),
+    };
+    static LUA: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["require(", "require \"", "require '"],
+        error_patterns: &[("error(", "error"), ("pcall(", "pcall")],
+        visibility: VisibilityRule::Fixed("module-level"),
+    };
+    static HASKELL: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["import "],
+        error_patterns: &[("error ", "error"), ("throwIO", "throwIO")],
+        visibility: VisibilityRule::Fixed("module-level"),
+    };
+    static OCAML: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["open "],
+        error_patterns: &[("raise ", "raise"), ("Result.", "Result")],
+        visibility: VisibilityRule::Fixed("module-level"),
+    };
+    static ELIXIR: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["import ", "alias ", "use ", "require "],
+        error_patterns: &[("raise ", "raise"), ("{:error,", "{:error, _}")],
+        visibility: VisibilityRule::SigStartsMajority {
+            prefix: "defp ",
+            if_majority: "private",
+            if_minority: "public",
+        },
+    };
+    static ERLANG: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["-include"],
+        error_patterns: &[("throw(", "throw"), ("{error,", "{error, _}")],
+        visibility: VisibilityRule::Fixed("module-level"),
+    };
+    static GLEAM: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["import "],
+        error_patterns: &[("Error(", "Error"), ("Result(", "Result")],
+        visibility: VisibilityRule::SigStartsMajority {
+            prefix: "pub ",
+            if_majority: "pub",
+            if_minority: "private",
+        },
+    };
+    static R_LANG: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["library(", "require("],
+        error_patterns: &[],
+        visibility: VisibilityRule::Fixed("default"),
+    };
+    static JULIA: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["using ", "import "],
+        error_patterns: &[("throw(", "throw"), ("error(", "error")],
+        visibility: VisibilityRule::Fixed("module-level"),
+    };
+    static ZIG: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["@import("],
+        error_patterns: &[("error.", "error set"), ("catch", "catch")],
+        visibility: VisibilityRule::SigStartsMajority {
+            prefix: "pub ",
+            if_majority: "pub",
+            if_minority: "private",
+        },
+    };
+    static SWIFT: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["import "],
+        error_patterns: &[("throw ", "throw"), ("try ", "do/catch")],
+        visibility: VisibilityRule::SigContainsMajority {
+            keyword: "public",
+            if_majority: "public",
+            if_minority: "internal",
+        },
+    };
+    static SOLIDITY: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["import "],
+        error_patterns: &[("revert ", "revert"), ("require(", "require")],
+        visibility: VisibilityRule::SigContainsEitherMajority {
+            keyword_a: "public",
+            keyword_b: "external",
+            if_majority: "public",
+            if_minority: "internal",
+        },
+    };
+    static BASH: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["source ", ". "],
+        error_patterns: &[("exit ", "exit code"), ("set -e", "set -e")],
+        visibility: VisibilityRule::Fixed("default"),
+    };
+    static POWERSHELL: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["Import-Module ", "using module "],
+        error_patterns: &[("throw ", "throw"), ("try {", "try/catch")],
+        visibility: VisibilityRule::Fixed("default"),
+    };
+
+    match lang {
+        Python => Some(&PYTHON),
+        Language::C => Some(&C),
+        Cpp | ObjC | Cuda | Glsl => Some(&CPP_LIKE),
+        Java => Some(&JAVA),
+        Scala | Kotlin => Some(&JVM),
+        CSharp | FSharp | VbNet | Razor | Aspx => Some(&DOTNET),
+        Ruby => Some(&RUBY),
+        Php => Some(&PHP),
+        Perl => Some(&PERL),
+        Lua => Some(&LUA),
+        Haskell => Some(&HASKELL),
+        OCaml => Some(&OCAML),
+        Elixir => Some(&ELIXIR),
+        Erlang => Some(&ERLANG),
+        Gleam => Some(&GLEAM),
+        R => Some(&R_LANG),
+        Julia => Some(&JULIA),
+        Zig => Some(&ZIG),
+        Swift => Some(&SWIFT),
+        Solidity => Some(&SOLIDITY),
+        Language::Bash => Some(&BASH),
+        PowerShell => Some(&POWERSHELL),
+        // Custom logic: Rust, TypeScript, JavaScript, Go — handled in extract_patterns
+        // Non-code: no meaningful patterns
+        _ => None,
+    }
+}
+
 /// Extract local coding patterns from a file's chunks.
 ///
 /// Iterates chunks individually instead of concatenating all content into
 /// one string (avoids a large allocation for files with many chunks).
+///
+/// Most languages use data-driven lookup via `pattern_def_for`. Three languages
+/// have custom logic: Rust (3-way visibility with `pub(crate)`), TS/JS (custom
+/// `require()` import matching), Go (name-based uppercase export detection).
 fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> LocalPatterns {
     let mut error_style = String::new();
     let mut has_inline_tests = false;
 
     let (imports, visibility) = match language {
+        // --- Custom logic: Rust (3-way pub(crate)/pub/private) ---
         Some(Language::Rust) => {
             let imports = extract_imports(chunks, &["use "], MAX_IMPORT_COUNT);
             has_inline_tests = chunks.iter().any(|c| c.content.contains("#[cfg(test)]"));
@@ -322,7 +659,6 @@ fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> Loca
                     ("Result<", "Result<>"),
                 ],
             );
-            // Dominant visibility
             let pub_crate = chunks
                 .iter()
                 .filter(|c| c.signature.contains("pub(crate)"))
@@ -344,14 +680,8 @@ fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> Loca
             };
             (imports, vis.to_string())
         }
-        Some(Language::Python) => {
-            let imports = extract_imports(chunks, &["import ", "from "], MAX_IMPORT_COUNT);
-            error_style =
-                detect_error_style(chunks, &[("raise ", "raise"), ("try:", "try/except")]);
-            (imports, "module-level".to_string())
-        }
+        // --- Custom logic: TS/JS (also matches `const x = require(...)`) ---
         Some(Language::TypeScript | Language::JavaScript) => {
-            // TS/JS also matches `const x = require(...)` — use custom logic
             let mut seen = std::collections::HashSet::new();
             let mut imports = Vec::new();
             for chunk in chunks {
@@ -382,6 +712,7 @@ fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> Loca
             };
             (imports, vis.to_string())
         }
+        // --- Custom logic: Go (uppercase name = exported) ---
         Some(Language::Go) => {
             let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
             error_style = detect_error_style(chunks, &[("error", "error return")]);
@@ -396,290 +727,20 @@ fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> Loca
             };
             (imports, vis.to_string())
         }
-        Some(Language::C) => {
-            let imports = extract_imports(chunks, &["#include"], MAX_IMPORT_COUNT);
-            error_style = detect_error_style(chunks, &[("errno", "errno"), ("perror", "perror")]);
-            // C: "static" means file-local, otherwise externally visible
-            let statics = chunks
-                .iter()
-                .filter(|c| c.signature.starts_with("static "))
-                .count();
-            let vis = if statics > chunks.len() / 2 {
-                "static"
-            } else {
-                "extern"
-            };
-            (imports, vis.to_string())
-        }
-        Some(Language::Java) => {
-            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
-            error_style = detect_error_style(
-                chunks,
-                &[("throws ", "checked exceptions"), ("try {", "try/catch")],
-            );
-            let public = chunks
-                .iter()
-                .filter(|c| c.signature.contains("public"))
-                .count();
-            let vis = if public > chunks.len() / 2 {
-                "public"
-            } else {
-                "package-private"
-            };
-            (imports, vis.to_string())
-        }
-        // C-like: reuse C patterns (#include, static/extern)
-        Some(Language::Cpp | Language::ObjC | Language::Cuda | Language::Glsl) => {
-            let imports = extract_imports(chunks, &["#include"], MAX_IMPORT_COUNT);
-            error_style = detect_error_style(
-                chunks,
-                &[
-                    ("errno", "errno"),
-                    ("throw ", "throw"),
-                    ("try {", "try/catch"),
-                ],
-            );
-            let statics = chunks
-                .iter()
-                .filter(|c| c.signature.starts_with("static "))
-                .count();
-            let vis = if statics > chunks.len() / 2 {
-                "static"
-            } else {
-                "extern"
-            };
-            (imports, vis.to_string())
-        }
-        // JVM: reuse Java patterns (import, public/package-private)
-        Some(Language::Scala | Language::Kotlin) => {
-            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
-            error_style = detect_error_style(
-                chunks,
-                &[("throws ", "checked exceptions"), ("try {", "try/catch")],
-            );
-            let public = chunks
-                .iter()
-                .filter(|c| c.signature.contains("public"))
-                .count();
-            let vis = if public > chunks.len() / 2 {
-                "public"
-            } else {
-                "package-private"
-            };
-            (imports, vis.to_string())
-        }
-        // .NET: using/open statements, public/internal visibility
-        Some(
-            Language::CSharp
-            | Language::FSharp
-            | Language::VbNet
-            | Language::Razor
-            | Language::Aspx,
-        ) => {
-            let imports = extract_imports(chunks, &["using ", "open "], MAX_IMPORT_COUNT);
-            error_style =
-                detect_error_style(chunks, &[("throw ", "throw"), ("try {", "try/catch")]);
-            let public = chunks
-                .iter()
-                .filter(|c| c.signature.contains("public"))
-                .count();
-            let internal = chunks
-                .iter()
-                .filter(|c| c.signature.contains("internal"))
-                .count();
-            let vis = if public >= internal {
-                "public"
-            } else {
-                "internal"
-            };
-            (imports, vis.to_string())
-        }
-        // Dynamic: require/use/include, mixed visibility
-        Some(Language::Ruby) => {
-            let imports =
-                extract_imports(chunks, &["require ", "require_relative "], MAX_IMPORT_COUNT);
-            error_style =
-                detect_error_style(chunks, &[("raise ", "raise"), ("rescue", "begin/rescue")]);
-            (imports, "module-level".to_string())
-        }
-        Some(Language::Php) => {
-            let imports = extract_imports(
-                chunks,
-                &["require ", "require_once ", "include ", "use "],
-                MAX_IMPORT_COUNT,
-            );
-            error_style =
-                detect_error_style(chunks, &[("throw ", "throw"), ("try {", "try/catch")]);
-            let public = chunks
-                .iter()
-                .filter(|c| c.signature.contains("public"))
-                .count();
-            let vis = if public > chunks.len() / 2 {
-                "public"
-            } else {
-                "default"
-            };
-            (imports, vis.to_string())
-        }
-        Some(Language::Perl) => {
-            let imports = extract_imports(chunks, &["use ", "require "], MAX_IMPORT_COUNT);
-            error_style = detect_error_style(chunks, &[("die ", "die"), ("croak", "croak")]);
-            (imports, "module-level".to_string())
-        }
-        Some(Language::Lua) => {
-            let imports = extract_imports(
-                chunks,
-                &["require(", "require \"", "require '"],
-                MAX_IMPORT_COUNT,
-            );
-            error_style = detect_error_style(chunks, &[("error(", "error"), ("pcall(", "pcall")]);
-            (imports, "module-level".to_string())
-        }
-        // Functional: import/use, module visibility
-        Some(Language::Haskell) => {
-            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
-            error_style =
-                detect_error_style(chunks, &[("error ", "error"), ("throwIO", "throwIO")]);
-            (imports, "module-level".to_string())
-        }
-        Some(Language::OCaml) => {
-            let imports = extract_imports(chunks, &["open "], MAX_IMPORT_COUNT);
-            error_style = detect_error_style(chunks, &[("raise ", "raise"), ("Result.", "Result")]);
-            (imports, "module-level".to_string())
-        }
-        Some(Language::Elixir) => {
-            let imports = extract_imports(
-                chunks,
-                &["import ", "alias ", "use ", "require "],
-                MAX_IMPORT_COUNT,
-            );
-            error_style =
-                detect_error_style(chunks, &[("raise ", "raise"), ("{:error,", "{:error, _}")]);
-            let private = chunks
-                .iter()
-                .filter(|c| c.signature.starts_with("defp "))
-                .count();
-            let vis = if private > chunks.len() / 2 {
-                "private"
-            } else {
-                "public"
-            };
-            (imports, vis.to_string())
-        }
-        Some(Language::Erlang) => {
-            let imports = extract_imports(chunks, &["-include"], MAX_IMPORT_COUNT);
-            error_style =
-                detect_error_style(chunks, &[("throw(", "throw"), ("{error,", "{error, _}")]);
-            (imports, "module-level".to_string())
-        }
-        Some(Language::Gleam) => {
-            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
-            error_style = detect_error_style(chunks, &[("Error(", "Error"), ("Result(", "Result")]);
-            let public = chunks
-                .iter()
-                .filter(|c| c.signature.starts_with("pub "))
-                .count();
-            let vis = if public > chunks.len() / 2 {
-                "pub"
-            } else {
-                "private"
-            };
-            (imports, vis.to_string())
-        }
-        // Data science: library/using
-        Some(Language::R) => {
-            let imports = extract_imports(chunks, &["library(", "require("], MAX_IMPORT_COUNT);
-            (imports, "default".to_string())
-        }
-        Some(Language::Julia) => {
-            let imports = extract_imports(chunks, &["using ", "import "], MAX_IMPORT_COUNT);
-            error_style = detect_error_style(chunks, &[("throw(", "throw"), ("error(", "error")]);
-            (imports, "module-level".to_string())
-        }
-        // Systems
-        Some(Language::Zig) => {
-            let imports = extract_imports(chunks, &["@import("], MAX_IMPORT_COUNT);
-            error_style =
-                detect_error_style(chunks, &[("error.", "error set"), ("catch", "catch")]);
-            let public = chunks
-                .iter()
-                .filter(|c| c.signature.starts_with("pub "))
-                .count();
-            let vis = if public > chunks.len() / 2 {
-                "pub"
-            } else {
-                "private"
-            };
-            (imports, vis.to_string())
-        }
-        Some(Language::Swift) => {
-            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
-            error_style = detect_error_style(chunks, &[("throw ", "throw"), ("try ", "do/catch")]);
-            let public = chunks
-                .iter()
-                .filter(|c| c.signature.contains("public"))
-                .count();
-            let vis = if public > chunks.len() / 2 {
-                "public"
-            } else {
-                "internal"
-            };
-            (imports, vis.to_string())
-        }
-        // Solidity: contract visibility
-        Some(Language::Solidity) => {
-            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
-            error_style =
-                detect_error_style(chunks, &[("revert ", "revert"), ("require(", "require")]);
-            let public = chunks
-                .iter()
-                .filter(|c| c.signature.contains("public") || c.signature.contains("external"))
-                .count();
-            let vis = if public > chunks.len() / 2 {
-                "public"
-            } else {
-                "internal"
-            };
-            (imports, vis.to_string())
-        }
-        // Shell: source/import
-        Some(Language::Bash) => {
-            let imports = extract_imports(chunks, &["source ", ". "], MAX_IMPORT_COUNT);
-            error_style =
-                detect_error_style(chunks, &[("exit ", "exit code"), ("set -e", "set -e")]);
-            (imports, "default".to_string())
-        }
-        Some(Language::PowerShell) => {
-            let imports = extract_imports(
-                chunks,
-                &["Import-Module ", "using module "],
-                MAX_IMPORT_COUNT,
-            );
-            error_style =
-                detect_error_style(chunks, &[("throw ", "throw"), ("try {", "try/catch")]);
-            (imports, "default".to_string())
-        }
-        // Non-code: no meaningful patterns
-        Some(
-            Language::Sql
-            | Language::Markdown
-            | Language::Json
-            | Language::Yaml
-            | Language::Toml
-            | Language::Xml
-            | Language::Ini
-            | Language::Css
-            | Language::Html
-            | Language::Svelte
-            | Language::Vue
-            | Language::Make
-            | Language::Nix
-            | Language::Latex
-            | Language::Protobuf
-            | Language::GraphQL
-            | Language::Hcl,
-        ) => (Vec::new(), "default".to_string()),
-        _ => (Vec::new(), "default".to_string()),
+        // --- Data-driven: lookup table handles all other languages ---
+        Some(lang) => match pattern_def_for(lang) {
+            Some(def) => {
+                let imports = extract_imports(chunks, def.import_prefixes, MAX_IMPORT_COUNT);
+                if !def.error_patterns.is_empty() {
+                    error_style = detect_error_style(chunks, def.error_patterns);
+                }
+                let vis = eval_visibility(&def.visibility, chunks);
+                (imports, vis)
+            }
+            // Non-code languages (SQL, Markdown, JSON, etc.)
+            None => (Vec::new(), "default".to_string()),
+        },
+        None => (Vec::new(), "default".to_string()),
     };
 
     LocalPatterns {

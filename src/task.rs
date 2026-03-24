@@ -160,13 +160,20 @@ pub fn task_with_resources(
         (Vec::new(), Vec::new())
     } else {
         let target_refs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
-        let (scores, tests) = compute_risk_and_tests(&target_refs, graph, test_chunks);
+        let (scores, raw_tests) = compute_risk_and_tests(&target_refs, graph, test_chunks);
         let risk = target_refs
             .iter()
             .zip(scores)
             .map(|(&n, r)| FunctionRisk {
                 name: n.to_string(),
                 risk: r,
+            })
+            .collect();
+        let tests = raw_tests
+            .into_iter()
+            .map(|t| crate::impact::TestInfo {
+                file: t.file.strip_prefix(root).unwrap_or(&t.file).to_path_buf(),
+                ..t
             })
             .collect();
         (risk, tests)
@@ -178,14 +185,21 @@ pub fn task_with_resources(
         query_embedding: Some(query_embedding.clone()),
         ..Default::default()
     };
-    let placement = match crate::where_to_add::suggest_placement_with_options(
+    let placement: Vec<_> = match crate::where_to_add::suggest_placement_with_options(
         store,
         embedder,
         description,
         3,
         &placement_opts,
     ) {
-        Ok(result) => result.suggestions,
+        Ok(result) => result
+            .suggestions
+            .into_iter()
+            .map(|mut s| {
+                s.file = s.file.strip_prefix(root).unwrap_or(&s.file).to_path_buf();
+                s
+            })
+            .collect(),
         Err(e) => {
             tracing::warn!(error = %e, "Placement suggestion failed, skipping");
             Vec::new()
@@ -255,10 +269,10 @@ pub(crate) fn compute_summary(
 
 /// Serialize task result to JSON.
 ///
-/// Uses manual construction since ScoutResult doesn't derive Serialize.
-/// Reuses `scout_to_json()` for the scout section.
-pub fn task_to_json(result: &TaskResult, root: &Path) -> serde_json::Value {
-    let scout_json = crate::scout::scout_to_json(&result.scout, root);
+/// Paths in the result are already relative to the project root (set at
+/// construction time). Uses `scout_to_json()` for the scout section.
+pub fn task_to_json(result: &TaskResult) -> serde_json::Value {
+    let scout_json = crate::scout::scout_to_json(&result.scout);
 
     let code_json: Vec<serde_json::Value> = result
         .code
@@ -276,9 +290,9 @@ pub fn task_to_json(result: &TaskResult, root: &Path) -> serde_json::Value {
         .iter()
         .map(|fr| fr.risk.to_json(&fr.name))
         .collect();
-    let tests_json: Vec<serde_json::Value> = result.tests.iter().map(|t| t.to_json(root)).collect();
+    let tests_json: Vec<serde_json::Value> = result.tests.iter().map(|t| t.to_json()).collect();
     let placement_json: Vec<serde_json::Value> =
-        result.placement.iter().map(|s| s.to_json(root)).collect();
+        result.placement.iter().map(|s| s.to_json()).collect();
 
     serde_json::json!({
         "description": result.description,
@@ -481,7 +495,7 @@ mod tests {
             },
         };
 
-        let json = task_to_json(&result, Path::new("/project"));
+        let json = task_to_json(&result);
         assert_eq!(json["description"], "test task");
         assert!(json["scout"].is_object());
         assert!(json["code"].is_array());
@@ -522,7 +536,7 @@ mod tests {
             },
         };
 
-        let json = task_to_json(&result, Path::new("/project"));
+        let json = task_to_json(&result);
         assert_eq!(json["code"].as_array().unwrap().len(), 0);
         assert_eq!(json["risk"].as_array().unwrap().len(), 0);
         assert_eq!(json["tests"].as_array().unwrap().len(), 0);
@@ -545,7 +559,7 @@ mod tests {
             scout,
             code: vec![GatheredChunk {
                 name: "fn_a".to_string(),
-                file: PathBuf::from("/project/src/lib.rs"),
+                file: PathBuf::from("src/lib.rs"),
                 line_start: 10,
                 line_end: 20,
                 language: Language::Rust,
@@ -569,12 +583,12 @@ mod tests {
             }],
             tests: vec![TestInfo {
                 name: "test_fn_a".to_string(),
-                file: PathBuf::from("/project/tests/a.rs"),
+                file: PathBuf::from("tests/a.rs"),
                 line: 5,
                 call_depth: 1,
             }],
             placement: vec![FileSuggestion {
-                file: PathBuf::from("/project/src/lib.rs"),
+                file: PathBuf::from("src/lib.rs"),
                 score: 0.85,
                 insertion_line: 25,
                 near_function: "fn_a".to_string(),
@@ -597,7 +611,7 @@ mod tests {
             },
         };
 
-        let json = task_to_json(&result, Path::new("/project"));
+        let json = task_to_json(&result);
 
         // Verify code section values
         let code = json["code"].as_array().unwrap();

@@ -24,7 +24,12 @@ pub(crate) fn cmd_doctor() -> Result<()> {
     // Check model
     match Embedder::new() {
         Ok(embedder) => {
-            println!("  {} Model: {}", "[✓]".green(), cqs::store::MODEL_NAME);
+            println!(
+                "  {} Model: {} (metadata: {})",
+                "[✓]".green(),
+                cqs::embedder::model_repo(),
+                cqs::store::MODEL_NAME
+            );
             println!("  {} Tokenizer: loaded", "[✓]".green());
             println!("  {} Execution: {}", "[✓]".green(), embedder.provider());
 

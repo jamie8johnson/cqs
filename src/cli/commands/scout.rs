@@ -97,7 +97,7 @@ pub(crate) fn cmd_scout(
     };
 
     if json {
-        let mut output = scout_to_json(&result, &root);
+        let mut output = scout_to_json(&result);
         // Inject content into chunks that fit in the token budget
         if let Some(ref cmap) = content_map {
             if let Some(groups) = output.get_mut("file_groups").and_then(|v| v.as_array_mut()) {

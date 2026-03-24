@@ -14,7 +14,16 @@ use super::DEFAULT_MAX_TEST_SEARCH_DEPTH;
 
 use crate::{normalize_path, normalize_slashes};
 
+use std::path::Path;
+
+/// Relativize a path against a root, returning the stripped version.
+fn rel_path(path: &std::path::PathBuf, root: &Path) -> std::path::PathBuf {
+    path.strip_prefix(root).unwrap_or(path).to_path_buf()
+}
+
 /// Run impact analysis: find callers, affected tests, and transitive callers.
+///
+/// Paths in the returned result are relative to `root`.
 ///
 /// When `include_types` is true, also performs one-hop type expansion: finds
 /// other functions that share type dependencies with the target via `type_edges`.
@@ -23,10 +32,11 @@ pub fn analyze_impact(
     target_name: &str,
     depth: usize,
     include_types: bool,
+    root: &Path,
 ) -> Result<ImpactResult, AnalysisError> {
     let _span =
         tracing::info_span!("analyze_impact", target = target_name, depth, include_types).entered();
-    let (callers, degraded) = build_caller_info(store, target_name)?;
+    let (callers, mut degraded) = build_caller_info(store, target_name, root)?;
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
     let tests = find_affected_tests_with_chunks(
@@ -34,18 +44,25 @@ pub fn analyze_impact(
         &test_chunks,
         target_name,
         DEFAULT_MAX_TEST_SEARCH_DEPTH,
-    );
+    )
+    .into_iter()
+    .map(|t| TestInfo {
+        file: rel_path(&t.file, root),
+        ..t
+    })
+    .collect();
     let transitive_callers = if depth > 1 {
-        find_transitive_callers(store, &graph, target_name, depth)?
+        find_transitive_callers(store, &graph, target_name, depth, root)?
     } else {
         Vec::new()
     };
 
     let type_impacted = if include_types {
-        match find_type_impacted(store, target_name) {
+        match find_type_impacted(store, target_name, root) {
             Ok(ti) => ti,
             Err(e) => {
                 tracing::warn!(target = target_name, error = %e, "Failed to compute type-impacted");
+                degraded = true;
                 Vec::new()
             }
         }
@@ -73,6 +90,7 @@ pub fn analyze_impact(
 fn build_caller_info(
     store: &Store,
     target_name: &str,
+    root: &Path,
 ) -> Result<(Vec<CallerDetail>, bool), StoreError> {
     let callers_ctx = store.get_callers_with_context(target_name)?;
 
@@ -98,7 +116,7 @@ fn build_caller_info(
         let snippet = extract_call_snippet_from_cache(&chunks_by_name, caller);
         callers.push(CallerDetail {
             name: caller.name.clone(),
-            file: caller.file.clone(),
+            file: rel_path(&caller.file, root),
             line: caller.line,
             call_line: caller.call_line,
             snippet,
@@ -191,6 +209,7 @@ fn find_transitive_callers(
     graph: &crate::store::CallGraph,
     target_name: &str,
     depth: usize,
+    root: &Path,
 ) -> Result<Vec<TransitiveCaller>, StoreError> {
     // Single graph traversal to collect all ancestors + depths
     let ancestors = reverse_bfs(graph, target_name, depth);
@@ -220,7 +239,7 @@ fn find_transitive_callers(
             if let Some(c) = chunks.first() {
                 result.push(TransitiveCaller {
                     name: name.to_string(),
-                    file: c.file.clone(),
+                    file: rel_path(&c.file, root),
                     line: c.line_start,
                     depth: *d,
                 });
@@ -235,7 +254,7 @@ fn find_transitive_callers(
 ///
 /// Loads its own call graph and test chunks — only called when `--suggest-tests`
 /// is set, so the normal path pays zero overhead.
-pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion> {
+pub fn suggest_tests(store: &Store, impact: &ImpactResult, root: &Path) -> Vec<TestSuggestion> {
     let _span = tracing::info_span!("suggest_tests", function = %impact.function_name).entered();
     let graph = match store.get_call_graph() {
         Ok(g) => g,
@@ -254,13 +273,15 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
 
     // Batch-fetch file chunks for all unique caller files upfront.
     // This avoids N+1 `get_chunks_by_origin` calls when processing untested callers.
+    // Paths in ImpactResult are relative; reconstruct absolute paths for store queries.
     let unique_files: Vec<String> = {
         let mut seen = HashSet::new();
         impact
             .callers
             .iter()
             .filter_map(|c| {
-                let f = c.file.to_string_lossy().to_string();
+                let abs = root.join(&c.file);
+                let f = abs.to_string_lossy().to_string();
                 if seen.insert(f.clone()) {
                     Some(f)
                 } else {
@@ -294,7 +315,7 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
         }
 
         // Use pre-fetched file chunks for inline test check, pattern, and language
-        let caller_file_key = caller.file.to_string_lossy().to_string();
+        let caller_file_key = root.join(&caller.file).to_string_lossy().to_string();
         let file_chunks = chunks_by_file
             .get(&caller_file_key)
             .map(|v| v.as_slice())
@@ -318,71 +339,12 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
 
         let language = file_chunks.first().map(|c| c.language);
 
-        // EX-16: Generate test name based on language conventions
+        // EX-18: Generate test name via LanguageDef.test_name_suggestion
         let base_name = caller.name.trim_start_matches("self.");
-        let test_name = match language {
-            Some(crate::parser::Language::JavaScript | crate::parser::Language::TypeScript) => {
-                format!("test('{base_name}', ...)")
-            }
-            Some(crate::parser::Language::Java | crate::parser::Language::Kotlin)
-                if !base_name.is_empty() =>
-            {
-                // Java/Kotlin: camelCase testMethodName
-                match base_name.chars().next() {
-                    Some(c) => {
-                        let first = c.to_uppercase().to_string();
-                        let rest = &base_name[c.len_utf8()..];
-                        format!("test{first}{rest}")
-                    }
-                    None => format!("test_{base_name}"),
-                }
-            }
-            Some(crate::parser::Language::CSharp) if !base_name.is_empty() => {
-                // C#: PascalCase convention (xUnit/NUnit/MSTest)
-                match base_name.chars().next() {
-                    Some(c) => {
-                        let first = c.to_uppercase().to_string();
-                        let rest = &base_name[c.len_utf8()..];
-                        format!("{first}{rest}_ShouldWork")
-                    }
-                    None => format!("Test_{base_name}"),
-                }
-            }
-            Some(crate::parser::Language::Go) => {
-                // Go: TestFunctionName (PascalCase)
-                match base_name.chars().next() {
-                    Some(c) => {
-                        let first = c.to_uppercase().to_string();
-                        let rest = &base_name[c.len_utf8()..];
-                        format!("Test{first}{rest}")
-                    }
-                    None => format!("Test_{base_name}"),
-                }
-            }
-            Some(crate::parser::Language::Ruby) => {
-                // Ruby/RSpec: test_function_name or it 'does something'
-                format!("test_{base_name}")
-            }
-            Some(crate::parser::Language::Swift) => {
-                // Swift: testFunctionName (camelCase)
-                match base_name.chars().next() {
-                    Some(c) => {
-                        let first = c.to_uppercase().to_string();
-                        let rest = &base_name[c.len_utf8()..];
-                        format!("test{first}{rest}")
-                    }
-                    None => format!("test_{base_name}"),
-                }
-            }
-            Some(crate::parser::Language::Elixir) => {
-                // Elixir: test "description"
-                format!("test \"{base_name}\"")
-            }
-            _ => {
-                // Rust, Python, C, SQL, etc. — snake_case test_ prefix
-                format!("test_{base_name}")
-            }
-        };
+        let test_name = language
+            .and_then(|lang| lang.def().test_name_suggestion)
+            .map(|suggest_fn| suggest_fn(base_name))
+            .unwrap_or_else(|| format!("test_{base_name}"));
 
         // Suggest file location
         let caller_file_str = normalize_path(&caller.file);
@@ -436,7 +398,11 @@ fn suggest_test_file(source: &str) -> String {
 /// 2. Filter out common types (String, Vec, etc.)
 /// 3. For each remaining type, find other users via `get_type_users_batch`
 /// 4. Aggregate by function name, track which types are shared
-fn find_type_impacted(store: &Store, target_name: &str) -> Result<Vec<TypeImpacted>, StoreError> {
+fn find_type_impacted(
+    store: &Store,
+    target_name: &str,
+    root: &Path,
+) -> Result<Vec<TypeImpacted>, StoreError> {
     let _span = tracing::info_span!("find_type_impacted", target = target_name).entered();
 
     let type_pairs = store.get_types_used_by(target_name)?;
@@ -503,7 +469,7 @@ fn find_type_impacted(store: &Store, target_name: &str) -> Result<Vec<TypeImpact
             let (file, line) = chunk_info.remove(&name)?;
             Some(TypeImpacted {
                 name,
-                file,
+                file: rel_path(&file, root),
                 line,
                 shared_types: types,
             })

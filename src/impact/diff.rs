@@ -8,7 +8,7 @@ use crate::AnalysisError;
 use crate::Store;
 
 use super::analysis::extract_call_snippet_from_cache;
-use super::bfs::{reverse_bfs, reverse_bfs_multi};
+use super::bfs::reverse_bfs_multi_attributed;
 use super::types::{
     CallerDetail, ChangedFunction, DiffImpactResult, DiffImpactSummary, DiffTestInfo,
 };
@@ -48,7 +48,18 @@ pub fn map_hunks_to_functions(
             if hunk.count == 0 {
                 continue;
             }
-            let hunk_end = hunk.start.saturating_add(hunk.count); // exclusive
+            // AC-14: Skip malformed hunks where start + count overflows u32
+            let hunk_end = match hunk.start.checked_add(hunk.count) {
+                Some(end) => end,
+                None => {
+                    tracing::warn!(
+                        start = hunk.start,
+                        count = hunk.count,
+                        "Malformed hunk: overflow"
+                    );
+                    continue;
+                }
+            };
             for chunk in &chunks {
                 // Overlap: hunk [start, start+count) vs chunk [line_start, line_end]
                 if hunk.start <= chunk.line_end
@@ -75,13 +86,16 @@ pub fn map_hunks_to_functions(
 pub fn analyze_diff_impact(
     store: &Store,
     changed: Vec<ChangedFunction>,
+    root: &Path,
 ) -> Result<DiffImpactResult, AnalysisError> {
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
-    analyze_diff_impact_with_graph(store, changed, &graph, &test_chunks)
+    analyze_diff_impact_with_graph(store, changed, &graph, &test_chunks, root)
 }
 
 /// Like [`analyze_diff_impact`] but accepts pre-loaded graph and test chunks.
+///
+/// Paths in the returned result are relative to `root`.
 ///
 /// Use when the caller already has the graph/test_chunks (e.g., `review_diff`
 /// which also needs them for risk scoring).
@@ -90,6 +104,7 @@ pub fn analyze_diff_impact_with_graph(
     changed: Vec<ChangedFunction>,
     graph: &crate::store::CallGraph,
     test_chunks: &[crate::store::ChunkSummary],
+    root: &Path,
 ) -> Result<DiffImpactResult, AnalysisError> {
     let _span = tracing::info_span!("analyze_diff_impact", changed_count = changed.len()).entered();
     if changed.is_empty() {
@@ -139,14 +154,18 @@ pub fn analyze_diff_impact_with_graph(
             HashMap::new()
         });
 
-    // Build CallerDetail with snippets from cache
+    // Build CallerDetail with snippets from cache (paths relative to root)
     let all_callers: Vec<CallerDetail> = deduped_callers
         .iter()
         .map(|caller| {
             let snippet = extract_call_snippet_from_cache(&chunks_by_name, caller);
             CallerDetail {
                 name: caller.name.clone(),
-                file: caller.file.clone(),
+                file: caller
+                    .file
+                    .strip_prefix(root)
+                    .unwrap_or(&caller.file)
+                    .to_path_buf(),
                 line: caller.line,
                 call_line: caller.call_line,
                 snippet,
@@ -154,36 +173,23 @@ pub fn analyze_diff_impact_with_graph(
         })
         .collect();
 
-    // Affected tests via multi-source reverse BFS — single traversal for discovery
+    // Single attributed BFS: discovers all reachable ancestors AND tracks which
+    // changed function (by index) produced the shortest path to each node.
+    // Replaces both reverse_bfs_multi (discovery) and N×reverse_bfs (attribution).
     let start_names: Vec<&str> = changed.iter().map(|f| f.name.as_str()).collect();
-    let ancestors = reverse_bfs_multi(graph, &start_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
-
-    // Pre-compute per-function BFS for via attribution.
-    // reverse_bfs_multi merges all sources, losing which changed function reaches which test.
-    // Individual BFS per changed function lets us attribute each test to its closest source.
-    let per_function_ancestors: Vec<HashMap<String, usize>> = changed
-        .iter()
-        .map(|f| reverse_bfs(graph, &f.name, DEFAULT_MAX_TEST_SEARCH_DEPTH))
-        .collect();
+    let attributed =
+        reverse_bfs_multi_attributed(graph, &start_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
 
     for test in test_chunks {
-        if let Some(&depth) = ancestors.get(&test.name) {
+        if let Some(&(depth, source_idx)) = attributed.get(&test.name) {
             if depth > 0 {
-                // Attribute test to the changed function that reaches it at minimum depth
-                let mut best_via = None;
-                let mut best_depth = usize::MAX;
-                for (i, func_ancestors) in per_function_ancestors.iter().enumerate() {
-                    if let Some(&d) = func_ancestors.get(&test.name) {
-                        if d > 0 && d < best_depth {
-                            best_depth = d;
-                            best_via = Some(changed[i].name.clone());
-                        }
-                    }
-                }
-                let via = best_via.unwrap_or_else(|| {
-                    tracing::debug!(test = %test.name, "BFS anomaly: test found but no changed function path");
-                    "(unknown)".to_string()
-                });
+                let via = changed
+                    .get(source_idx)
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|| {
+                        tracing::debug!(test = %test.name, source_idx, "BFS anomaly: invalid source index");
+                        "(unknown)".to_string()
+                    });
 
                 match seen_tests.entry(test.name.clone()) {
                     std::collections::hash_map::Entry::Occupied(o) => {
@@ -197,7 +203,11 @@ pub fn analyze_diff_impact_with_graph(
                         v.insert(all_tests.len());
                         all_tests.push(DiffTestInfo {
                             name: test.name.clone(),
-                            file: test.file.clone(),
+                            file: test
+                                .file
+                                .strip_prefix(root)
+                                .unwrap_or(&test.file)
+                                .to_path_buf(),
                             line: test.line_start,
                             via,
                             call_depth: depth,
@@ -329,7 +339,14 @@ mod tests {
 
         let graph = make_empty_graph();
 
-        let result = analyze_diff_impact_with_graph(&store, changed, &graph, &test_chunks).unwrap();
+        let result = analyze_diff_impact_with_graph(
+            &store,
+            changed,
+            &graph,
+            &test_chunks,
+            std::path::Path::new(""),
+        )
+        .unwrap();
 
         assert!(
             result.all_tests.is_empty(),
@@ -361,7 +378,14 @@ mod tests {
             make_chunk_summary("test_fn", "tests/lib_test.rs", 50),
         ];
 
-        let result = analyze_diff_impact_with_graph(&store, changed, &graph, &test_chunks).unwrap();
+        let result = analyze_diff_impact_with_graph(
+            &store,
+            changed,
+            &graph,
+            &test_chunks,
+            std::path::Path::new(""),
+        )
+        .unwrap();
 
         assert_eq!(
             result.all_tests.len(),
@@ -380,7 +404,14 @@ mod tests {
         let graph = make_empty_graph();
         let test_chunks = vec![make_chunk_summary("some_test", "tests/foo.rs", 1)];
 
-        let result = analyze_diff_impact_with_graph(&store, vec![], &graph, &test_chunks).unwrap();
+        let result = analyze_diff_impact_with_graph(
+            &store,
+            vec![],
+            &graph,
+            &test_chunks,
+            std::path::Path::new(""),
+        )
+        .unwrap();
 
         assert!(result.changed_functions.is_empty());
         assert!(result.all_callers.is_empty());
@@ -445,7 +476,14 @@ mod tests {
         ];
         let test_chunks = vec![make_chunk_summary("test_t", "tests/t.rs", 5)];
 
-        let result = analyze_diff_impact_with_graph(&store, changed, &graph, &test_chunks).unwrap();
+        let result = analyze_diff_impact_with_graph(
+            &store,
+            changed,
+            &graph,
+            &test_chunks,
+            std::path::Path::new(""),
+        )
+        .unwrap();
 
         assert_eq!(result.all_tests.len(), 1);
         let test = &result.all_tests[0];
@@ -483,7 +521,14 @@ mod tests {
             make_chunk_summary("near_test", "tests/near.rs", 1),
         ];
 
-        let result = analyze_diff_impact_with_graph(&store, changed, &graph, &test_chunks).unwrap();
+        let result = analyze_diff_impact_with_graph(
+            &store,
+            changed,
+            &graph,
+            &test_chunks,
+            std::path::Path::new(""),
+        )
+        .unwrap();
 
         assert_eq!(result.all_tests.len(), 2);
         assert!(
@@ -526,7 +571,14 @@ mod tests {
         ];
         let test_chunks = vec![make_chunk_summary("test_t", "tests/t.rs", 5)];
 
-        let result = analyze_diff_impact_with_graph(&store, changed, &graph, &test_chunks).unwrap();
+        let result = analyze_diff_impact_with_graph(
+            &store,
+            changed,
+            &graph,
+            &test_chunks,
+            std::path::Path::new(""),
+        )
+        .unwrap();
 
         assert_eq!(result.all_tests.len(), 1, "test_t deduped to one entry");
         // Multi-BFS minimum depth: test_t is at depth 1 (from func_a).

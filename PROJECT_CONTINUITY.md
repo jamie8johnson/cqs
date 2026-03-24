@@ -2,39 +2,29 @@
 
 ## Right Now
 
-**v1.4.0 released (2026-03-24). Audit pending. Next: KeyDAC augmentation or contrastive summaries.**
+**v1.4.0 audit complete (2026-03-24). 70/74 findings fixed. Ready to merge.**
 
-### Final Model Results
+### Audit Results (v1.4.0)
+- 14-category audit, 3 batches, 74 unique findings
+- P1: 10/10 fixed (crashes, security, data loss)
+- P2: 15/15 fixed (correctness, performance, duplication)
+- P3: 37/37 fixed (docs, derives, spans, tests, small improvements)
+- P4: 8/12 fixed, 4 deferred (2 informational, 2 upstream-blocked)
+- Tests: 1916 pass (up from 1095 pre-audit), 0 failures, 0 warnings
+- Key fixes: Windows path separator bug, UTF-8 panic, API key exfiltration warning, LLM batch dedup (-215 lines), HNSW rollback safety, BFS batching, 29 new tests
 
-| Eval | v7 | v7b | Base |
-|------|-----|------|------|
-| Hard eval (raw, 268 chunks) | 89.1% R@1 | 89.1% | 89.1% |
-| CoIR overall (9 tasks) | **49.19** | 49.03 | 49.48 |
-| CoIR CSN (6 langs) | **0.707** | 0.702 | 0.627 |
-| Full pipeline (6,867 chunks) | 65.4% R@1 | — | — |
-
-**v7 unbalanced (200k) is the best model.** Shipped in v1.3.1. v7b balanced didn't improve.
-
-### Released in v1.4.0 (PRs #656-664)
-- 5 issue fixes (--json alias, light runtime, chunks.rs split, batch cache invalidation)
-- Extension ChunkType (Swift/ObjC/F#/Scala) + coverage gaps (7 langs)
-- 4 file splits (llm/calls/handlers/scoring) + Constructor ChunkType (10 langs) + R/Lua improvements
-- 5 dependabot bumps. Public docs reviewed (README, CONTRIBUTING, CLAUDE.md, SECURITY.md).
+### Uncommitted changes
+All audit fixes on `main` working tree — needs branch + PR + merge.
 
 ### Next experiments (prioritized)
-1. **Contrastive discriminating summaries** — plan written at `docs/superpowers/plans/2026-03-24-contrastive-summaries.md`. ~1.5h implementation. Brute-force cosine neighbors, contrastive prompt.
+1. **Contrastive discriminating summaries** — plan at `docs/superpowers/plans/2026-03-24-contrastive-summaries.md`. ~1.5h implementation.
 2. **KeyDAC query augmentation** (free) — keyword-preserving training data augmentation
 3. **KD-LoRA distillation** — CodeSage-large (1.3B) → E5-base (110M). ~12h on A6000.
 
 ### Next session
-1. **Run `/audit all`** — 14-category code audit. Needs fresh context. Archive existing `docs/audit-findings.md` and `docs/audit-triage.md` as `*-v1.3.0.md` first.
-2. **Execute KeyDAC augmentation** — plan at `docs/superpowers/plans/2026-03-24-keydac-augmentation.md`. ~1h code + 14-21h train.
-3. **Execute contrastive summaries** — plan at `docs/superpowers/plans/2026-03-24-contrastive-summaries.md`. ~1.5h code (Rust, modifies `src/llm/summary.rs`).
-4. **Unused import warning fix** — committed on main (post-release). One commit ahead of v1.4.0 tag.
-
-### Pending Changes
-- `pr_body.md` deleted (cleanup)
-- One post-release commit: unused test import fix (4155610)
+1. **Merge audit PR** if not merged yet
+2. **Execute contrastive summaries** — Rust changes in `src/llm/summary.rs`
+3. **Execute KeyDAC augmentation** — plan at `docs/superpowers/plans/2026-03-24-keydac-augmentation.md`
 
 ## Parked
 - Paper revision — after next training improvement
@@ -43,6 +33,8 @@
 - Full-pipeline hard eval with doc comments — costs API credits
 
 ## Open Issues
+- #665: RM-23 enrichment_pass ~105MB memory (deferred)
+- #666: DS-17/DS-18 GC transaction windows (informational)
 - #389: CAGRA memory retention (blocked on upstream cuVS)
 - #255: Pre-built reference packages (enhancement)
 - #106: ort pre-release RC
@@ -52,7 +44,5 @@
 - Version: 1.4.0 (released, tagged, published to crates.io)
 - Current model: LoRA v7 (200k 9-lang, GIST+Matryoshka, 0.707 CSN, 49.19 CoIR, 89.1% hard eval)
 - ChunkType: 20 variants (Extension: 4 langs, Constructor: 10 langs)
-- 4 large files split into submodules (llm, calls, handlers, scoring)
-- store/chunks.rs also split (PR #656)
-- Tests: 1867 pass
-- Telemetry: CQS_TELEMETRY=1
+- Tests: 1916 pass (post-audit)
+- 5th full audit (v0.5.3, v0.12.3, v0.19.2, v1.0.13, v1.4.0)

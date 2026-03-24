@@ -94,3 +94,127 @@ pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget, Sto
         alternatives: results,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::Chunk;
+    use crate::test_helpers::{mock_embedding, setup_store};
+    use std::path::PathBuf;
+
+    /// Insert a chunk into the store for testing resolve_target.
+    fn insert_chunk(store: &Store, name: &str, file: &str) {
+        let chunk = Chunk {
+            id: format!("{}:1:abcd1234", file),
+            file: PathBuf::from(file),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::language::ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {}()", name),
+            content: format!("fn {}() {{}}", name),
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash: format!("hash_{}", name),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+        let embedding = mock_embedding(1.0);
+        store.upsert_chunk(&chunk, &embedding, None).unwrap();
+    }
+
+    // ===== TC-19: resolve_target tests =====
+
+    #[test]
+    fn resolve_target_prefers_non_test_chunk() {
+        let (store, _dir) = setup_store();
+        // Insert a test chunk and a non-test chunk with the same name
+        insert_chunk(&store, "my_func", "src/lib.rs");
+        insert_chunk(&store, "test_my_func", "src/tests/lib_test.rs");
+        // Also insert a test-named variant
+        let test_chunk = Chunk {
+            id: "tests/test.rs:1:abcd1234".to_string(),
+            file: PathBuf::from("tests/test.rs"),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::language::ChunkType::Function,
+            name: "my_func".to_string(),
+            signature: "fn my_func()".to_string(),
+            content: "fn my_func() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash: "hash_my_func_test".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+        store
+            .upsert_chunk(&test_chunk, &mock_embedding(2.0), None)
+            .unwrap();
+
+        let result = resolve_target(&store, "my_func").unwrap();
+        // Should prefer the non-test chunk (src/lib.rs, not tests/)
+        let path = result.chunk.file.to_string_lossy().to_string();
+        assert!(
+            !path.contains("/tests/"),
+            "Should prefer non-test file, got: {}",
+            path
+        );
+        assert!(
+            result.alternatives.len() >= 2,
+            "Should have multiple alternatives"
+        );
+    }
+
+    #[test]
+    fn resolve_target_file_filter_narrows_result() {
+        let (store, _dir) = setup_store();
+        insert_chunk(&store, "parse", "src/parser/mod.rs");
+        insert_chunk(&store, "parse", "src/search/mod.rs");
+
+        let result = resolve_target(&store, "src/search/mod.rs:parse").unwrap();
+        let path = result.chunk.file.to_string_lossy().to_string();
+        assert!(
+            path.contains("search"),
+            "File filter should narrow to search module, got: {}",
+            path
+        );
+    }
+
+    #[test]
+    fn resolve_target_not_found_on_missing_name() {
+        let (store, _dir) = setup_store();
+        // Empty store, nothing indexed
+        let err = resolve_target(&store, "nonexistent_function").unwrap_err();
+        match err {
+            StoreError::NotFound(msg) => {
+                assert!(
+                    msg.contains("nonexistent_function"),
+                    "Error should mention the missing name, got: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected NotFound, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn resolve_target_file_filter_not_found() {
+        let (store, _dir) = setup_store();
+        insert_chunk(&store, "my_func", "src/lib.rs");
+
+        // File filter that doesn't match any result
+        let err = resolve_target(&store, "src/nonexistent.rs:my_func").unwrap_err();
+        match err {
+            StoreError::NotFound(msg) => {
+                assert!(
+                    msg.contains("nonexistent.rs"),
+                    "Error should mention the file filter, got: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected NotFound, got: {:?}", other),
+        }
+    }
+}

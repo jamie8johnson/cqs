@@ -222,6 +222,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/{stem}_test.go")),
+    test_name_suggestion: Some(|name| super::pascal_test_name("Test", name)),
     type_query: Some(TYPE_QUERY),
     common_types: &[
         "string", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32",

@@ -290,7 +290,7 @@ mod tests {
 /// Tries `python3` first, falls back to `python`. Validates that the candidate
 /// exits cleanly with `--version` to avoid running unrelated binaries.
 fn find_python() -> Result<String> {
-    for name in &["python3", "python"] {
+    for name in &["python3", "python", "py"] {
         match std::process::Command::new(name)
             .arg("--version")
             .stdout(std::process::Stdio::null())

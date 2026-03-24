@@ -20,7 +20,7 @@ pub struct TaskTemplate {
 }
 
 /// Result of a plan operation.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PlanResult {
     pub template: String,
     pub template_description: String,
@@ -148,7 +148,7 @@ const TEMPLATES: &[TemplateEntry] = &[
             checklist: &[
                 "src/language/mod.rs — Add one line to define_chunk_types! macro (Display, FromStr auto-generated)",
                 "src/language/mod.rs — Update is_callable() and human_name() if needed",
-                "src/parser/types.rs — Add capture name mapping in capture_name_to_chunk_type()",
+                "src/language/mod.rs — Add capture name mapping in capture_name_to_chunk_type()",
                 "src/nl.rs — Add natural language label for the variant",
                 "src/language/<lang>.rs — Add capture using the new variant name in chunk_query",
                 "tests/parser_test.rs — Parser tests for each language using the variant",
@@ -323,7 +323,10 @@ const TEMPLATES: &[TemplateEntry] = &[
 /// Falls back to "Fix a Bug" (index 2) if no keywords match.
 fn classify(description: &str) -> usize {
     let lower = description.to_lowercase();
-    let mut best_idx = 2; // default: Bug Fix
+    let mut best_idx = TEMPLATES
+        .iter()
+        .position(|e| e.template.name == "Fix a Bug")
+        .unwrap_or(0);
     let mut best_score = 0.0f32;
 
     for (i, entry) in TEMPLATES.iter().enumerate() {
@@ -398,8 +401,10 @@ pub fn plan(
 // ---------------------------------------------------------------------------
 
 /// Convert a PlanResult to JSON, including scout data.
-pub fn plan_to_json(result: &PlanResult, root: &Path) -> serde_json::Value {
-    let scout_json = crate::scout::scout_to_json(&result.scout, root);
+///
+/// Paths in the result are already relative to the project root.
+pub fn plan_to_json(result: &PlanResult) -> serde_json::Value {
+    let scout_json = crate::scout::scout_to_json(&result.scout);
     serde_json::json!({
         "template": result.template,
         "template_description": result.template_description,

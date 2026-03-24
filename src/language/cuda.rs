@@ -217,6 +217,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
     test_file_suggestion: None,
+    test_name_suggestion: None,
     type_query: None,
     common_types: &[
         "int", "char", "float", "double", "void", "long", "short", "unsigned", "size_t",

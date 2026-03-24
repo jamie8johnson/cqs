@@ -22,6 +22,8 @@ pub fn compute_hints_with_graph(
     function_name: &str,
     prefetched_caller_count: Option<usize>,
 ) -> FunctionHints {
+    let _span =
+        tracing::debug_span!("compute_hints_with_graph", function = function_name).entered();
     // Note: prefetched_caller_count (from get_caller_counts_batch / get_callers_full)
     // counts DB rows which may include duplicate caller names from different files.
     // graph.reverse counts unique caller names per the in-memory graph. These can
@@ -70,6 +72,34 @@ pub fn compute_hints(
         function_name,
         Some(caller_count),
     ))
+}
+
+/// Batch compute hints for multiple functions using forward BFS (PERF-20).
+///
+/// Single `test_reachability` call replaces N independent `reverse_bfs` calls.
+pub fn compute_hints_batch(
+    graph: &CallGraph,
+    test_chunks: &[crate::store::ChunkSummary],
+    names: &[&str],
+    caller_counts: &std::collections::HashMap<String, u64>,
+) -> Vec<FunctionHints> {
+    let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
+    let reachability = test_reachability(graph, &test_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
+
+    names
+        .iter()
+        .map(|&name| {
+            let caller_count = caller_counts
+                .get(name)
+                .map(|&c| c as usize)
+                .unwrap_or_else(|| graph.reverse.get(name).map(|v| v.len()).unwrap_or(0));
+            let test_count = reachability.get(name).copied().unwrap_or(0);
+            FunctionHints {
+                caller_count,
+                test_count,
+            }
+        })
+        .collect()
 }
 
 /// Compute risk scores for a batch of function names.
@@ -149,20 +179,22 @@ pub fn compute_risk_and_tests(
 ) -> (Vec<RiskScore>, Vec<super::TestInfo>) {
     let _span = tracing::info_span!("compute_risk_and_tests", targets = targets.len()).entered();
 
+    // AC-9: Use test_reachability (forward BFS) for risk scoring — same algorithm
+    // as compute_risk_batch — to prevent divergent test counts between commands.
+    let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
+    let reachability = test_reachability(graph, &test_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
+
     let mut scores = Vec::with_capacity(targets.len());
     let mut all_tests = Vec::new();
     let mut seen_tests = std::collections::HashSet::new();
 
     for &name in targets {
-        // Single BFS per target — reused for both risk and tests
+        // Reverse BFS for test collection/attribution (which tests reach this target)
         let ancestors = reverse_bfs(graph, name, DEFAULT_MAX_TEST_SEARCH_DEPTH);
 
-        // Risk scoring (same logic as compute_risk_batch)
+        // Risk scoring: use forward BFS reachability (consistent with compute_risk_batch)
         let caller_count = graph.reverse.get(name).map(|v| v.len()).unwrap_or(0);
-        let test_count = test_chunks
-            .iter()
-            .filter(|t| ancestors.get(&t.name).is_some_and(|&d| d > 0))
-            .count();
+        let test_count = reachability.get(name).copied().unwrap_or(0);
         let test_ratio = if caller_count == 0 {
             if test_count > 0 {
                 1.0
@@ -529,6 +561,132 @@ mod tests {
         // Actually with only 1 test this will still be high risk
         // Let's just verify blast_radius is set correctly
         assert_eq!(scores[0].caller_count, 16);
+    }
+
+    // ===== TC-20: compute_risk_batch additional boundary tests =====
+
+    #[test]
+    fn test_blast_radius_boundary_10_callers_is_medium() {
+        let mut reverse = HashMap::new();
+        // 10 callers → blast Medium (3..=10 range)
+        reverse.insert(
+            "ten_callers".to_string(),
+            (0..10).map(|i| format!("c{i}")).collect(),
+        );
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let scores = compute_risk_batch(&["ten_callers"], &graph, &test_chunks);
+        assert_eq!(
+            scores[0].blast_radius,
+            RiskLevel::Medium,
+            "10 callers should be Medium blast radius (3..=10)"
+        );
+        assert_eq!(scores[0].caller_count, 10);
+    }
+
+    #[test]
+    fn test_risk_score_formula_many_callers_no_tests() {
+        // 6 callers, 0 tests: score = 6 * (1.0 - 0.0) = 6.0 >= 5.0 → High
+        let mut reverse = HashMap::new();
+        reverse.insert(
+            "target".to_string(),
+            (0..6).map(|i| format!("c{i}")).collect(),
+        );
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
+        assert_eq!(scores[0].risk_level, RiskLevel::High);
+        assert!((scores[0].score - 6.0).abs() < 0.01);
+        assert_eq!(scores[0].test_count, 0);
+        assert!((scores[0].test_ratio - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_risk_medium_boundary() {
+        // 3 callers, 0 tests: score = 3 * 1.0 = 3.0. 3.0 >= 2.0 but < 5.0 → Medium
+        let mut reverse = HashMap::new();
+        reverse.insert(
+            "target".to_string(),
+            vec!["a", "b", "c"].into_iter().map(String::from).collect(),
+        );
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
+        assert_eq!(scores[0].risk_level, RiskLevel::Medium);
+        assert!((scores[0].score - 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_risk_low_below_medium_threshold() {
+        // 1 caller, 0 tests: score = 1.0 < 2.0 → Low
+        let mut reverse = HashMap::new();
+        reverse.insert("target".to_string(), vec!["a".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
+        assert_eq!(scores[0].risk_level, RiskLevel::Low);
+        assert!((scores[0].score - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_risk_zero_callers_with_test_is_low() {
+        // 0 callers, 1 test reachable: test_ratio = 1.0, score = 0.0 → Low
+        let mut forward = HashMap::new();
+        forward.insert("test_fn".to_string(), vec!["target".to_string()]);
+        let graph = CallGraph {
+            forward,
+            reverse: HashMap::new(),
+        };
+        let test_chunks = vec![crate::store::ChunkSummary {
+            id: "t1".to_string(),
+            file: PathBuf::from("tests/t.rs"),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::language::ChunkType::Function,
+            name: "test_fn".to_string(),
+            signature: String::new(),
+            content: String::new(),
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            parent_id: None,
+            parent_type_name: None,
+            content_hash: String::new(),
+            window_idx: None,
+        }];
+        let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
+        assert_eq!(scores[0].risk_level, RiskLevel::Low);
+        assert_eq!(scores[0].caller_count, 0);
+        // test_count depends on forward BFS from test_fn reaching target
+        // Since graph.reverse is empty, forward BFS from test_fn traverses forward edges:
+        // test_fn -> target. Reachability map has target reachable from test_fn.
+        assert_eq!(scores[0].test_count, 1);
+    }
+
+    #[test]
+    fn test_blast_radius_boundary_0_callers() {
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse: HashMap::new(),
+        };
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let scores = compute_risk_batch(&["orphan"], &graph, &test_chunks);
+        assert_eq!(
+            scores[0].blast_radius,
+            RiskLevel::Low,
+            "0 callers should be Low blast radius (0..=2)"
+        );
     }
 
     #[test]

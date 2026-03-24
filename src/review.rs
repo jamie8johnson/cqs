@@ -100,7 +100,7 @@ pub fn review_diff(
     let test_chunks = store.find_test_chunks()?;
 
     // 4. Impact analysis (reuses pre-loaded graph + test_chunks)
-    let impact = analyze_diff_impact_with_graph(store, changed, &graph, &test_chunks)?;
+    let impact = analyze_diff_impact_with_graph(store, changed, &graph, &test_chunks, root)?;
 
     // 5. Compute risk scores for changed functions (reuses same graph + test_chunks)
     let changed_names: Vec<&str> = impact

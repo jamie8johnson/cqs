@@ -243,6 +243,10 @@ pub struct LanguageDef {
     /// Receives `(stem, parent_dir)` and returns a suggested test path.
     /// `None` uses the fallback pattern `{parent}/tests/{stem}_test.{ext}`.
     pub test_file_suggestion: Option<fn(&str, &str) -> String>,
+    /// Suggest a test function name for a given function name (EX-18).
+    /// Receives `base_name` (stripped of `self.` prefix) and returns suggested test name.
+    /// `None` uses the fallback `test_{base_name}` (snake_case).
+    pub test_name_suggestion: Option<fn(&str) -> String>,
     /// Tree-sitter query for extracting type references (optional).
     /// Uses classified capture names: `@param_type`, `@return_type`, `@field_type`,
     /// `@impl_type`, `@bound_type`, `@alias_type`, `@type_ref` (catch-all).
@@ -296,6 +300,19 @@ pub struct LanguageDef {
     /// Empty by default. Only languages with embedded content (e.g., HTML with
     /// `<script>` and `<style>`) define injection rules.
     pub injections: &'static [InjectionRule],
+}
+
+/// Helper: PascalCase test name from a base function name with a given prefix.
+/// Used by language-specific `test_name_suggestion` closures.
+fn pascal_test_name(prefix: &str, base_name: &str) -> String {
+    match base_name.chars().next() {
+        Some(c) => {
+            let first = c.to_uppercase().to_string();
+            let rest = &base_name[c.len_utf8()..];
+            format!("{prefix}{first}{rest}")
+        }
+        None => format!("{prefix}_{base_name}"),
+    }
 }
 
 /// How to extract function signatures
@@ -515,7 +532,12 @@ impl ChunkType {
         Self::ALL
             .iter()
             .filter(|ct| ct.is_callable())
-            .map(|ct| format!("'{}'", ct))
+            .map(|ct| {
+                let s = ct.to_string();
+                // SEC-13: Guard against SQL injection if a future variant name contains quotes
+                debug_assert!(!s.contains('\''), "ChunkType display contains quote: {s}");
+                format!("'{}'", s)
+            })
             .collect::<Vec<_>>()
             .join(",")
     }

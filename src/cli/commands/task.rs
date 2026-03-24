@@ -45,7 +45,7 @@ pub(crate) fn cmd_task(
     if let Some(budget) = max_tokens {
         output_with_budget(&result, &root, &embedder, budget, json)?;
     } else if json {
-        let output = task_to_json(&result, &root);
+        let output = task_to_json(&result);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         output_text(&result, &root);
@@ -98,7 +98,7 @@ fn output_with_budget(
     let packed = waterfall_pack(result, embedder, budget, overhead);
 
     if json {
-        output_json_budgeted(result, root, &packed)?;
+        output_json_budgeted(result, &packed)?;
     } else {
         output_text_budgeted(result, root, &packed);
     }
@@ -151,9 +151,9 @@ pub(crate) fn waterfall_pack(
         index_pack(&group_counts, scout_budget, overhead_per_item, |i| {
             result.scout.file_groups[i].relevance_score
         });
-    // Charge only the budgeted portion to remaining — overshoot from first-item
-    // guarantee doesn't cascade into downstream section budgets
-    remaining = remaining.saturating_sub(scout_used.min(scout_budget));
+    // Charge actual usage to remaining — overshoot from first-item guarantee
+    // must reduce downstream budgets to prevent total overshoot
+    remaining = remaining.saturating_sub(scout_used);
 
     // 2. Code section (+ surplus) — pack gathered chunks by score
     let code_budget = ((budget as f64 * WATERFALL_CODE) as usize
@@ -285,12 +285,11 @@ pub(crate) fn waterfall_pack(
 /// Shared between CLI `cqs task --tokens --json` and batch `task --tokens`.
 pub(crate) fn task_to_budgeted_json(
     result: &cqs::TaskResult,
-    root: &std::path::Path,
     embedder: &Embedder,
     budget: usize,
 ) -> serde_json::Value {
     let packed = waterfall_pack(result, embedder, budget, super::JSON_OVERHEAD_PER_RESULT);
-    budgeted_json(result, root, &packed)
+    budgeted_json(result, &packed)
 }
 
 /// Constructs a JSON representation of a code analysis result with budget information.
@@ -306,16 +305,12 @@ pub(crate) fn task_to_budgeted_json(
 /// # Returns
 ///
 /// A `serde_json::Value` containing the complete budgeted analysis as a JSON object with fields for description, scout, code, risk, tests, placement, summary, token_count, and token_budget.
-fn budgeted_json(
-    result: &cqs::TaskResult,
-    root: &std::path::Path,
-    packed: &PackedSections,
-) -> serde_json::Value {
-    let mut scout_json = build_scout_json(result, root, &packed.scout);
-    let code_json = build_code_json(result, root, &packed.code);
+fn budgeted_json(result: &cqs::TaskResult, packed: &PackedSections) -> serde_json::Value {
+    let mut scout_json = build_scout_json(result, &packed.scout);
+    let code_json = build_code_json(result, &packed.code);
     let risk_json = build_risk_json(result, &packed.risk);
-    let tests_json = build_tests_json(result, root, &packed.tests);
-    let placement_json = build_placement_json(result, root, &packed.placement);
+    let tests_json = build_tests_json(result, &packed.tests);
+    let placement_json = build_placement_json(result, &packed.placement);
     let notes_json = build_notes_json(result, &packed.notes);
     scout_json["relevant_notes"] = serde_json::json!(notes_json);
 
@@ -354,12 +349,8 @@ fn budgeted_json(
 /// # Errors
 ///
 /// Returns an error if `serde_json::to_string_pretty()` fails during JSON serialization.
-fn output_json_budgeted(
-    result: &cqs::TaskResult,
-    root: &std::path::Path,
-    packed: &PackedSections,
-) -> Result<()> {
-    let output = budgeted_json(result, root, packed);
+fn output_json_budgeted(result: &cqs::TaskResult, packed: &PackedSections) -> Result<()> {
+    let output = budgeted_json(result, packed);
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
@@ -375,11 +366,7 @@ fn output_json_budgeted(
 /// # Returns
 ///
 /// A `serde_json::Value` containing a JSON object with selected file groups and their chunks, along with a summary of total files, functions, untested items, and stale items.
-fn build_scout_json(
-    result: &cqs::TaskResult,
-    root: &std::path::Path,
-    indices: &[usize],
-) -> serde_json::Value {
+fn build_scout_json(result: &cqs::TaskResult, indices: &[usize]) -> serde_json::Value {
     let groups: Vec<serde_json::Value> = indices
         .iter()
         .map(|&i| {
@@ -401,7 +388,7 @@ fn build_scout_json(
                 })
                 .collect();
             serde_json::json!({
-                "file": cqs::rel_display(&g.file, root),
+                "file": cqs::normalize_path(&g.file),
                 "relevance_score": g.relevance_score,
                 "is_stale": g.is_stale,
                 "chunks": chunks,
@@ -430,11 +417,7 @@ fn build_scout_json(
 /// # Returns
 ///
 /// A vector of JSON values representing the serialized code chunks. Chunks that fail to serialize are logged as warnings and excluded from the result.
-fn build_code_json(
-    result: &cqs::TaskResult,
-    _root: &std::path::Path,
-    indices: &[usize],
-) -> Vec<serde_json::Value> {
+fn build_code_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_json::Value> {
     indices
         .iter()
         .filter_map(|&i| match serde_json::to_value(&result.code[i]) {
@@ -471,45 +454,18 @@ fn build_risk_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_jso
 
 /// Converts a subset of test results to JSON format.
 ///
-/// # Arguments
-///
-/// * `result` - The task result containing all test data
-/// * `root` - The root path used as a base for JSON serialization
-/// * `indices` - Indices specifying which tests from the result to convert
-///
-/// # Returns
-///
-/// A vector of JSON values, one for each test at the specified indices, in the same order.
-fn build_tests_json(
-    result: &cqs::TaskResult,
-    root: &std::path::Path,
-    indices: &[usize],
-) -> Vec<serde_json::Value> {
-    indices
-        .iter()
-        .map(|&i| result.tests[i].to_json(root))
-        .collect()
+/// Paths in tests are already relative to the project root.
+fn build_tests_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_json::Value> {
+    indices.iter().map(|&i| result.tests[i].to_json()).collect()
 }
 
 /// Builds a JSON representation of task result placements for specified indices.
 ///
-/// # Arguments
-///
-/// * `result` - A reference to the TaskResult containing placement data
-/// * `root` - The root path used as context when converting placements to JSON
-/// * `indices` - A slice of indices specifying which placements to include in the output
-///
-/// # Returns
-///
-/// A vector of JSON values, each representing a placement converted using the provided root path.
-fn build_placement_json(
-    result: &cqs::TaskResult,
-    root: &std::path::Path,
-    indices: &[usize],
-) -> Vec<serde_json::Value> {
+/// Paths in placement are already relative to the project root.
+fn build_placement_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_json::Value> {
     indices
         .iter()
-        .map(|&i| result.placement[i].to_json(root))
+        .map(|&i| result.placement[i].to_json())
         .collect()
 }
 

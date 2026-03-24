@@ -135,6 +135,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, _parent| format!("test/{stem}Spec.hs")),
+    test_name_suggestion: None,
     type_query: None,
     common_types: &[
         "Int", "Integer", "Float", "Double", "Char", "String", "Bool", "IO", "Maybe", "Either",

@@ -176,6 +176,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/{stem}.test.ts")),
+    test_name_suggestion: Some(|name| format!("test('{}', ...)", name)),
     type_query: Some(TYPE_QUERY),
     common_types: &[
         "string", "number", "boolean", "void", "null", "undefined", "any", "never", "unknown",

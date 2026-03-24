@@ -295,6 +295,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/tests/{stem}_test.cpp")),
+    test_name_suggestion: None,
     type_query: Some(TYPE_QUERY),
     common_types: COMMON_TYPES,
     container_body_kinds: &["field_declaration_list"],

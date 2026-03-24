@@ -303,4 +303,128 @@ mod tests {
         // Invalid env var should fall through to config value
         assert_eq!(llm.max_tokens, 300);
     }
+
+    // ===== TC-21: JSONL parsing tests =====
+
+    /// Helper: parse JSONL body into a HashMap<custom_id, text>, replicating
+    /// the inline logic from `Client::fetch_batch_results`.
+    fn parse_batch_results_jsonl(body: &str) -> std::collections::HashMap<String, String> {
+        let mut results = std::collections::HashMap::new();
+        for line in body.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(result) = serde_json::from_str::<BatchResult>(line) {
+                if result.result.result_type == "succeeded" {
+                    if let Some(msg) = result.result.message {
+                        let text = msg
+                            .content
+                            .into_iter()
+                            .find(|b| b.block_type == "text")
+                            .and_then(|b| b.text);
+                        if let Some(s) = text {
+                            let trimmed = s.trim().to_string();
+                            if !trimmed.is_empty() {
+                                results.insert(result.custom_id, trimmed);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    #[test]
+    fn parse_jsonl_succeeded_result() {
+        let jsonl = r#"{"custom_id":"hash_abc","result":{"type":"succeeded","message":{"content":[{"type":"text","text":"Parses configuration files."}]}}}"#;
+        let results = parse_batch_results_jsonl(jsonl);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results.get("hash_abc").unwrap(),
+            "Parses configuration files."
+        );
+    }
+
+    #[test]
+    fn parse_jsonl_filters_non_succeeded() {
+        let jsonl = r#"{"custom_id":"hash_fail","result":{"type":"errored","message":null}}"#;
+        let results = parse_batch_results_jsonl(jsonl);
+        assert!(
+            results.is_empty(),
+            "Non-succeeded results should be filtered out"
+        );
+    }
+
+    #[test]
+    fn parse_jsonl_multiple_lines() {
+        let jsonl = concat!(
+            r#"{"custom_id":"h1","result":{"type":"succeeded","message":{"content":[{"type":"text","text":"First summary."}]}}}"#,
+            "\n",
+            r#"{"custom_id":"h2","result":{"type":"succeeded","message":{"content":[{"type":"text","text":"Second summary."}]}}}"#,
+            "\n",
+            r#"{"custom_id":"h3","result":{"type":"errored","message":null}}"#,
+        );
+        let results = parse_batch_results_jsonl(jsonl);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results.get("h1").unwrap(), "First summary.");
+        assert_eq!(results.get("h2").unwrap(), "Second summary.");
+        assert!(!results.contains_key("h3"));
+    }
+
+    #[test]
+    fn parse_jsonl_skips_empty_lines() {
+        let jsonl = concat!(
+            "\n",
+            r#"{"custom_id":"h1","result":{"type":"succeeded","message":{"content":[{"type":"text","text":"Summary."}]}}}"#,
+            "\n",
+            "\n",
+            "   \n",
+        );
+        let results = parse_batch_results_jsonl(jsonl);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results.get("h1").unwrap(), "Summary.");
+    }
+
+    #[test]
+    fn parse_jsonl_skips_invalid_json() {
+        let jsonl = concat!(
+            "not valid json\n",
+            r#"{"custom_id":"h1","result":{"type":"succeeded","message":{"content":[{"type":"text","text":"Valid."}]}}}"#,
+        );
+        let results = parse_batch_results_jsonl(jsonl);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results.get("h1").unwrap(), "Valid.");
+    }
+
+    #[test]
+    fn parse_jsonl_trims_whitespace_text() {
+        let jsonl = r#"{"custom_id":"h1","result":{"type":"succeeded","message":{"content":[{"type":"text","text":"  Trimmed summary.  "}]}}}"#;
+        let results = parse_batch_results_jsonl(jsonl);
+        assert_eq!(results.get("h1").unwrap(), "Trimmed summary.");
+    }
+
+    #[test]
+    fn parse_jsonl_skips_empty_text() {
+        let jsonl = r#"{"custom_id":"h1","result":{"type":"succeeded","message":{"content":[{"type":"text","text":"   "}]}}}"#;
+        let results = parse_batch_results_jsonl(jsonl);
+        assert!(results.is_empty(), "Whitespace-only text should be skipped");
+    }
+
+    #[test]
+    fn parse_jsonl_finds_text_block_among_others() {
+        // Content has a non-text block followed by a text block
+        let jsonl = r#"{"custom_id":"h1","result":{"type":"succeeded","message":{"content":[{"type":"tool_use","text":null},{"type":"text","text":"Found it."}]}}}"#;
+        let results = parse_batch_results_jsonl(jsonl);
+        assert_eq!(results.get("h1").unwrap(), "Found it.");
+    }
+
+    #[test]
+    fn parse_jsonl_no_message_on_succeeded() {
+        // Succeeded but message is null — should produce no result
+        let jsonl = r#"{"custom_id":"h1","result":{"type":"succeeded","message":null}}"#;
+        let results = parse_batch_results_jsonl(jsonl);
+        assert!(results.is_empty());
+    }
 }

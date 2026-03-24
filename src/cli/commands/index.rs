@@ -12,33 +12,44 @@ use std::sync::Arc;
 use cqs::{parse_notes, Embedder, HnswIndex, ModelInfo, Parser as CqParser, Store};
 
 use crate::cli::{
-    acquire_index_lock, check_interrupted, enumerate_files, find_project_root, reset_interrupted,
-    run_index_pipeline, signal, Cli,
+    acquire_index_lock, args::IndexArgs, check_interrupted, enumerate_files, find_project_root,
+    reset_interrupted, run_index_pipeline, signal, Cli,
 };
 
 /// Index codebase files for semantic search
 ///
 /// Parses source files, generates embeddings, and stores them in the index database.
 /// Uses incremental indexing by default (only re-embeds changed files).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn cmd_index(
-    cli: &Cli,
-    force: bool,
-    dry_run: bool,
-    no_ignore: bool,
-    #[allow(unused_variables)] // used only with llm-summaries feature
-    llm_summaries: bool,
-    #[allow(unused_variables)] // used only with llm-summaries feature
-    improve_docs: bool,
-    #[allow(unused_variables)] // used only with llm-summaries feature
-    improve_all: bool,
-    #[allow(unused_variables)] // used only with llm-summaries feature
-    max_docs: Option<usize>,
-    #[allow(unused_variables)] // used only with llm-summaries feature
-    hyde_queries: bool,
-    #[allow(unused_variables)] // used only with llm-summaries feature
-    max_hyde: Option<usize>,
-) -> Result<()> {
+pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
+    let force = args.force;
+    let dry_run = args.dry_run;
+    let no_ignore = args.no_ignore;
+
+    #[cfg(feature = "llm-summaries")]
+    let llm_summaries = args.llm_summaries;
+    #[cfg(not(feature = "llm-summaries"))]
+    let llm_summaries = false;
+    #[cfg(feature = "llm-summaries")]
+    let improve_docs = args.improve_docs;
+    #[cfg(not(feature = "llm-summaries"))]
+    let improve_docs = false;
+    #[cfg(feature = "llm-summaries")]
+    let improve_all = args.improve_all;
+    #[cfg(not(feature = "llm-summaries"))]
+    let improve_all = false;
+    #[cfg(feature = "llm-summaries")]
+    let max_docs = args.max_docs;
+    #[cfg(not(feature = "llm-summaries"))]
+    let max_docs: Option<usize> = None;
+    #[cfg(feature = "llm-summaries")]
+    let hyde_queries = args.hyde_queries;
+    #[cfg(not(feature = "llm-summaries"))]
+    let hyde_queries = false;
+    #[cfg(feature = "llm-summaries")]
+    let max_hyde = args.max_hyde;
+    #[cfg(not(feature = "llm-summaries"))]
+    let max_hyde: Option<usize> = None;
+
     reset_interrupted();
 
     // Validate: --improve-docs requires --llm-summaries

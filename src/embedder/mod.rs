@@ -22,15 +22,8 @@ const TOKENIZER_FILE: &str = "tokenizer.json";
 
 /// Retrieves the embedding model repository URL from the environment or returns a default value.
 ///
-/// # Returns
-///
-/// A `String` containing the embedding model repository URL. Returns the value of the `CQS_EMBEDDING_MODEL` environment variable if set, otherwise returns the default model repository.
-/// Retrieves the embedding model repository URL from the environment or returns a default value.
-///
-/// # Returns
-///
-/// A `String` containing the embedding model repository URL. Returns the value of the `CQS_EMBEDDING_MODEL` environment variable if set, otherwise returns the default model repository string.
-fn model_repo() -> String {
+/// Returns the value of `CQS_EMBEDDING_MODEL` env var if set, otherwise the default model repo.
+pub fn model_repo() -> String {
     std::env::var("CQS_EMBEDDING_MODEL").unwrap_or_else(|_| DEFAULT_MODEL_REPO.to_string())
 }
 

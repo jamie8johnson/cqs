@@ -82,7 +82,7 @@ pub(crate) struct BatchContext {
     file_set: RefCell<Option<HashSet<PathBuf>>>,
     notes_cache: RefCell<Option<Vec<cqs::note::Note>>>,
     // Single-threaded by design — RefCell is correct, no Mutex needed
-    // LRU-capped at 4 entries — each ReferenceIndex holds Store + HNSW (50-200MB)
+    // RM-27: Reduced from 4 to 2 — each ReferenceIndex holds Store + HNSW (50-200MB)
     refs: RefCell<lru::LruCache<String, ReferenceIndex>>,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
@@ -469,7 +469,7 @@ pub(crate) fn create_context() -> Result<BatchContext> {
         test_chunks: RefCell::new(None),
         file_set: RefCell::new(None),
         notes_cache: RefCell::new(None),
-        refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap())),
+        refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(2).unwrap())),
         root,
         cqs_dir,
         index_mtime: Cell::new(index_mtime),
@@ -500,7 +500,7 @@ fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
         test_chunks: RefCell::new(None),
         file_set: RefCell::new(None),
         notes_cache: RefCell::new(None),
-        refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap())),
+        refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(2).unwrap())),
         root,
         cqs_dir: cqs_dir.to_path_buf(),
         index_mtime: Cell::new(index_mtime),

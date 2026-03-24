@@ -7,7 +7,7 @@ use super::BatchContext;
 
 use crate::cli::args::{ContextArgs, DeadArgs, GatherArgs, ImpactArgs, ScoutArgs};
 use crate::cli::parse_nonzero_usize;
-use crate::cli::GateLevel;
+use crate::cli::GateThreshold;
 
 use super::handlers;
 
@@ -238,7 +238,7 @@ pub(crate) enum BatchCmd {
         base: Option<String>,
         /// Gate threshold (high, medium, off)
         #[arg(long, default_value = "off")]
-        gate: GateLevel,
+        gate: GateThreshold,
         /// Maximum token budget
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,

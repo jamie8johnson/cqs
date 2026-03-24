@@ -140,7 +140,7 @@ fn test_task_to_json_integration() {
         },
     };
 
-    let json = cqs::task_to_json(&result, std::path::Path::new("/project"));
+    let json = cqs::task_to_json(&result);
 
     // Verify structure
     assert_eq!(json["description"], "add fuzzy matching");
