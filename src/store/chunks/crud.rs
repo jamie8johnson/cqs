@@ -398,9 +398,8 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::super::test_utils::make_chunk;
-    use crate::parser::{Chunk, ChunkType, Language};
+    use crate::parser::Chunk;
     use crate::test_helpers::{mock_embedding, setup_store};
-    use std::path::PathBuf;
 
     // ===== upsert_chunks_batch tests =====
 
