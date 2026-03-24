@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-03-24
+
+### Fixed
+- **Corrupt dimension metadata** — `check_model_version` now returns `StoreError::Corruption` instead of silently passing on unparseable dimension metadata, preventing garbage search results.
+- **Windows path separator** — `prune_missing` and `list_stale_files` now use `origin_to_pathbuf()` for DB-to-native path conversion, fixing total index deletion on native Windows.
+- **UTF-8 panic** — `cmd_query` query preview uses `floor_char_boundary(200)` instead of byte slice, preventing panic on CJK/emoji queries.
+- **Watch dirty flag** — clears `hnsw_dirty` on reindex failure (HNSW still matches pre-failure state), preventing permanent brute-force fallback.
+- **API key exfiltration** — warns when `CQS_API_BASE` is non-default or non-HTTPS, since API key is sent to that URL.
+- **Wrong-file snippet** — `extract_call_snippet_from_cache` now prefers same-file chunks for common names like `new()`.
+- **Callable type filter** — `related.rs` uses `is_callable()` instead of hardcoded `Function|Method`, including Constructor/Property/Macro/Extension.
+- **Reranker panic** — guards `outputs[0]` with error instead of index panic on corrupt ONNX model.
+- **DiffImpactResult degraded** — added `degraded: bool` field to signal when callers/snippets were lost due to store errors.
+- **Pipeline error counting** — `PipelineStats` now tracks `call_write_errors` and `type_edge_write_errors`.
+- **BFS test counting** — `compute_risk_and_tests` uses `test_reachability` (forward BFS) matching `compute_risk_batch`, preventing divergent risk scores between commands.
+- **HNSW rollback safety** — save now backs up old files before overwriting; rollback restores them instead of deleting.
+- **Token budget overshoot** — waterfall budgeting subtracts actual usage from remaining, making budget a hard cap.
+- **Batch ID validation** — API-returned batch IDs validated before storage.
+- **Absolute path bypass** — `read_context_lines` now rejects absolute paths alongside `..` traversal.
+- **Type impact degraded** — `find_type_impacted` errors now set the `degraded` flag on `ImpactResult`.
+- **BM25 corpus errors** — parse failures during corpus build now counted and logged.
+- **Predictable temp files** — `doc_writer/rewriter.rs` uses `temp_suffix()` with cleanup on write failure.
+- **Windows executables** — `find_python` adds `py` launcher, `find_7z` adds default Windows path.
+- **Language filter case** — SQL `IN` clause uses `COLLATE NOCASE` matching app-code behavior.
+- **Checked hunk overflow** — `map_hunks_to_functions` uses `checked_add` instead of `saturating_add`.
+- **WSL UNC paths** — poll-mode detection includes `//wsl.localhost/` and `//wsl$/` paths.
+- **Stale docs** — ROADMAP version, MOONSHOT dimensions/notes behavior, plan.rs file path, doc comment references, notes.toml dimension, duplicated doc comment.
+
+### Changed
+- **JSON serialization** — paths are relative at construction time; `_to_json()` functions simplified to `serde_json::to_value()` wrappers. Consistent path format regardless of serialization path.
+- **LLM batch dedup** — extracted `submit_batch_inner`, `BatchPhase2` struct, generic metadata methods. -215 net lines across `batch.rs`, `summary.rs`, `hyde.rs`, `doc_comments.rs`, `store/mod.rs`.
+- **GateLevel/GateThreshold** — consolidated duplicate enums; `GateThreshold` now derives `clap::ValueEnum`.
+- **IndexArgs struct** — `cmd_index` takes `IndexArgs` instead of 10 positional parameters, eliminating 14-line `#[cfg]` scaffolding.
+- **Error type migration** — `gather()`/`find_related()` return `AnalysisError` instead of `StoreError`.
+- **NL ChunkType classification** — uses `is_container()`/`has_parent_context()` methods instead of hardcoded matches.
+- **Test name generation** — moved to `LanguageDef.test_name_suggestion` (65-line match → 4-line lookup).
+- **Template fallback** — `plan.rs` finds "Fix a Bug" by name instead of positional index.
+- **extract_patterns** — data-driven `LanguagePatternDef` replaces 383-line match (→109 lines).
+- **test_reachability** — first-hop equivalence class optimization; reuses allocations.
+- **Scout BFS batching** — single `compute_hints_batch` forward BFS replaces N per-function `reverse_bfs`.
+- **Diff BFS attribution** — `reverse_bfs_multi_attributed` replaces N+1 separate BFS calls.
+- **Batch query** — `map_hunks_to_functions` uses `get_chunks_by_origins_batch` (1 query vs N).
+- **Batch transaction** — `upsert_function_calls_batch` wraps all files in single transaction.
+- **Tensor copy** — `embed_batch` consumes ONNX output directly instead of `.to_vec()` (~50MB savings).
+- **Reranker batching** — caps inference at 64 pairs per call to bound GPU memory.
+- **BatchContext LRU** — reduced from 4 to 2 cached reference indexes (~400MB savings).
+- **Watch HNSW eviction** — HNSW index freed on idle alongside embedder session.
+- **Cross-project cap** — `search_across_projects` limited to 4 concurrent Store+HNSW opens.
+- **Clone derives** — added to `PlanResult`, `GatherOptions`, `GatherResult`.
+- **README** — collapsible `<details>` sections for Supported Languages and GPU Acceleration.
+
+### Added
+- **4 tracing spans** — `llm/batch.rs` functions, `upsert_chunks_and_calls`, 5 batch store methods, `compute_hints_with_graph`.
+- **29 new tests** — `check_model_version` (4), `check_schema_version` (4), `resolve_target` (4), `compute_risk_batch` (6), JSONL parsing (9), chunk filtering (6), `reverse_bfs_multi_attributed` (7), `read_context_lines` absolute path (1).
+- **`origin_to_pathbuf()`** — DB origin to native PathBuf conversion for Windows compatibility.
+- **`is_container()`/`has_parent_context()`** — ChunkType classification methods for NL generation.
+- **`compute_hints_batch()`** — batch forward BFS for scout/explain hint computation.
+- **`upsert_function_calls_batch()`** — single-transaction multi-file function call insertion.
+
 ## [1.4.0] - 2026-03-24
 
 ### Added
