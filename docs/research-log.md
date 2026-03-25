@@ -717,3 +717,147 @@ A6000 (Ampere, earlier sessions): all models showed 89.1% R@1 — suspect, needs
 5. Must re-run full matrix on A6000 after v8 training to confirm/deny
 
 **v8-keydac training:** in progress (80%, ~2h remaining). Will be the first model with cross-GPU comparison from day 1.
+
+### Planned: Exp 17 — Synthetic Query + Multi-Style Docstring Training Data (v9)
+
+**Based on Qodo-Embed-1 methodology** (68.53 CoIR with 1.5B model, Feb 2025). Their key: synthetic training data > model scale.
+
+**Qodo's pipeline (from their blog):**
+1. Scrape GitHub code, quality-filter
+2. Generate multi-style docstrings (formal Google-style + concise NL) for undocumented functions
+3. Generate 10-30 word NL search queries per function ("brief, concise, common programming terminology")
+4. Train on (docstring, code) + (query, code) pairs
+
+**Our adaptation (cheaper — we already have most of the infrastructure):**
+1. **Harvest existing pairs ($0):** HyDE predictions (~8k queries) + contrastive summaries (~2.6k) already in SQLite
+2. **Multi-style docstrings (~$0.76):** formal Google-style + question-form ("what problem does this solve?")
+3. **Synthetic search queries (~$0.38):** Qodo-style 10-30 word queries, 2 per function
+4. **Mix all sources:** 200k CSN + 243k KeyDAC + ~24k synthetic = ~467k pairs
+5. **Train v9** with GIST+Matryoshka, compare vs v8 (KeyDAC only) and v7 (no augmentation)
+
+**Total cost:** ~$1.14 API + training time. Plan: `docs/superpowers/plans/2026-03-25-synthetic-query-training.md`
+
+**Additionally:** Curriculum hard negative scheduling (CoRNStack/NV-Retriever). Start with easy negatives, progressively introduce harder ones. May fix the v5→v7→v7b hard eval degradation pattern.
+
+**Depends on:** v8 eval results + A6000 eval matrix sweep.
+
+## Literature Sweep 2 — 2026-03-25
+
+### New Strategies Found
+
+**1. Curriculum Hard Negative Mining** (CoRNStack ICLR 2025, NV-Retriever 2024)
+Start with easy negatives, progressively introduce harder ones. Prevents model collapse on adversarial negatives. Ring-based conditional sampling narrows the similarity band as embedding geometry matures. Could explain why v7b (more data) hurt — too many hard negatives too early.
+
+**2. Differentiable Hard Negatives** (CoCoHaNeRe, ACM TOSEM 2025)
+Recompute hard negative embeddings in the forward pass so gradients flow through them, instead of reusing stale embeddings from a memory bank. Our GIST guide model is frozen — CoCoHaNeRe says the negatives should be live.
+
+**3. Decoder-Only Backbone + Last-Token Pooling** (Jina Code Embeddings 2025)
+Jina switched from encoder-only (BERT/mean pooling) to decoder-only (Qwen2.5-Coder/last-token pooling) and got +1.2pp. Based on 5.5T token pre-training across 92+ languages. Last-token pooling outperforms mean pooling on decoder architectures. Training: InfoNCE loss, 8.3h for 0.5B on 4xA100.
+
+**4. Cross-Encoder Listwise Distillation** (arXiv 2505.19274)
+Train bi-encoder to match cross-encoder ranking, not just score. Different from our Exp 9 (direct reranking at query time, which was catastrophic). Distillation at training time teaches better ranking without runtime overhead.
+
+**5. Positive-Aware Hard Negative Mining** (NV-Retriever 2024)
+Use positive relevance score as anchor for selecting negatives. If a "negative" scores too close to positive → false negative → skip it. More direct than GIST guide model approach.
+
+**6. Multi-Task Training Data** (Jina Code 2025)
+5 task types: NL2Code, TechQA, Code2Code, Code2NL, Code2Completion. We only train on NL2Code. Adding Code2Code (similar function pairs) and TechQA (SO question→code) could broaden the model.
+
+**7. Efficient Code Embeddings from Generation Models** (arXiv 2508.21290, Aug 2025)
+Use autoregressive code generation models (pre-trained on code completion) as embedding backbones. The code generation pre-training gives deeper understanding of code semantics than masked language modeling.
+
+### Priority for us
+
+| Strategy | Effort | Impact | Plan |
+|----------|--------|--------|------|
+| Curriculum schedule | Low | Medium | Add to v9 — modify train_lora.py |
+| Synthetic queries + multi-style docs | Low | High | Already planned (Exp 17) |
+| Multi-task data (Code2Code, TechQA) | Medium | High | v10 experiment |
+| Cross-encoder distillation | High | Unknown | Research only |
+| Decoder-only backbone | Very High | High (long-term) | Not for E5 — would be v2 architecture |
+| Differentiable hard negatives | Medium | Unknown | Research only |
+
+### Sources
+- Jina Code Embeddings: jina.ai/news/jina-code-embeddings-sota-code-retrieval-at-0-5b-and-1-5b/
+- ByteDance Seed1.5-Embedding: seed.bytedance.com/en/blog/
+- CoCoHaNeRe: dl.acm.org/doi/10.1145/3695994
+- NV-Retriever: arXiv 2407.15831
+- Cross-Encoder Listwise Distillation: arXiv 2505.19274
+- Efficient Code Embeddings: arXiv 2508.21290
+- CoRNStack: arXiv 2412.01007
+- Qodo-Embed-1: qodo.ai/blog/qodo-embed-1
+
+## Tool: HuggingFace Papers Semantic Search API
+
+**Endpoint:** `GET https://huggingface.co/api/papers/search?q=<query>&limit=N`
+
+Hybrid semantic search over AI papers indexed by HuggingFace. Better than Semantic Scholar for ML/AI papers. OpenAPI spec at `https://huggingface.co/.well-known/openapi.json`.
+
+Other paper endpoints:
+- `GET /api/daily_papers?date=YYYY-MM-DD` — daily curated papers
+- `GET /api/papers?cursor=...&limit=N` — list all papers
+- `POST /api/papers/index` — index a new paper
+
+### Papers to investigate (found via HF search, 2026-03-25)
+
+| Paper | Date | Relevance |
+|-------|------|-----------|
+| Efficient fine-tuning of text embedding models: contrastive learning penalty (CLP) | 2024-12 | Alternative to GIST loss for preventing false negatives |
+| Learn Before Represent: Bridging Generative and Contrastive Learning for Domain-Specific LLM Embeddings | 2026-01 | Generative pre-task before contrastive — could help domain adaptation |
+| Rethinking Negative Pairs in Code Search | 2023-10 | Directly relevant — negative pair strategies for code search |
+| Conan-embedding: More and Better Negative Samples | 2024-08 | Negative sampling strategy improvements |
+| Improving Text Embeddings for Smaller Language Models Using Contrastive Fine-tuning | 2024-08 | Directly our use case — small model competitive via data |
+| Parameter-Efficient Transformer Embeddings | 2025-05 | LoRA-like efficiency for embeddings |
+| ReNeg: Learning Negative Embedding with Reward Guidance | 2024-12 | Reward-guided negative selection — RL for negatives |
+
+### Exp 16b: Authoritative A6000 Hard Eval Matrix — 2026-03-25
+
+**All models, 3x median, A6000 (Ampere). Definitive numbers replacing all prior hard eval claims.**
+
+| Model | R@1 (median) | R@1 (range) | R@5 | NDCG@10 | CSN |
+|-------|-------------|-------------|-----|---------|-----|
+| Base E5 | **92.7%** | 92.7-92.7 | 98.2% | 0.963 | 0.627 |
+| LoRA v5 (MNR) | 85.5% | 83.6-85.5 | 98.2% | 0.929 | 0.683 |
+| LoRA v7 (GIST) | 81.8% | 80.0-83.6 | 98.2% | 0.909 | 0.707 |
+| LoRA v7b (GIST) | 83.6% | 80.0-85.5 | 98.2% | 0.918 | 0.707 |
+| **v8-keydac** | **92.7%** | **92.7-92.7** | 98.2% | 0.963 | 0.652 |
+
+**Key findings:**
+1. Prior "all models at 89.1%" was wrong — v5/v7/v7b are 80-86%, not 89.1%
+2. v8-keydac matches base E5 exactly (92.7%, zero variance) — first LoRA to not degrade hard eval
+3. v5/v7/v7b show 3-5pp non-determinism per run; base and v8 show zero
+4. KeyDAC augmentation trades CSN recall (0.707→0.652) for hard eval precision (81.8→92.7)
+5. The specialization trade-off is real but v8 found a different point on the curve
+
+**v8 full results:**
+- Hard eval: 92.7% R@1 (3x identical)
+- Enriched hard eval: 92.7% R@1, 100% R@5
+- Full-pipeline (with HyDE): 96.3% R@1
+- CSN: 0.652 NDCG@10 (regression from v7's 0.707)
+
+### Exp 16c: Complete Non-CoIR Eval Matrix — 2026-03-25
+
+**Full-pipeline eval (v7 model + HyDE + contrastive summaries, 3x):**
+96.3% R@1 on all 3 runs. Zero non-determinism. 2 misses: TS mergeSort, TS insertionSort.
+
+**Stress eval (15,118 callable chunks from cqs index, A6000):**
+
+| Model | R@1 | R@5 | R@10 | Misses |
+|-------|-----|-----|------|--------|
+| Base E5 | 67.3% | 80.0% | 85.5% | 8 |
+| v5 | 67.3% | 80.0% | 85.5% | 8 |
+| v7 | 69.1% | 81.8% | 85.5% | 8 |
+| v7b | 69.1% | 81.8% | 87.3% | 7 |
+| v8 | 69.1% | 80.0% | 83.6% | 9 |
+
+In the 15k corpus, all models converge to ~67-69% R@1. The precision differences visible on the 268-chunk hard eval wash out at scale. Common misses: sorting algorithm confusion (insertion_sort vs helper functions), circuit breaker `shouldAllow` vs `allow`.
+
+**Complete authoritative matrix (A6000):**
+
+| Model | Hard R@1 | Enriched R@1 | Full-pipe R@1 | Stress R@1 | CSN |
+|-------|----------|-------------|---------------|-----------|-----|
+| Base E5 | 92.7% | 92.7% | — | 67.3% | 0.627 |
+| v5 | 85.5% | — | — | 67.3% | 0.683 |
+| v7 | 81.8% | — | — | 69.1% | 0.707 |
+| v7b | 83.6% | — | — | 69.1% | 0.707 |
+| **v8** | **92.7%** | 92.7% | **96.3%** | 69.1% | 0.652 |

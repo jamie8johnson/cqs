@@ -2,7 +2,7 @@
 
 ## Current: v1.4.2
 
-v1.4.2: Contrastive LLM summaries, FTS path filter fix, 34 adversarial tests, enriched hard eval, CI Node.js 24. Cross-GPU eval finding: LoRA trades hard eval precision for benchmark recall (base 90.9% → v7 83.6% R@1, but contrastive summaries recover to 92.7%). v8-keydac training in progress.
+v1.4.2: Contrastive LLM summaries, FTS path filter fix, 34 adversarial tests, enriched hard eval, CI Node.js 24. v8-keydac: first LoRA to match base on hard eval (92.7% R@1, zero non-determinism). Full-pipeline with HyDE: 96.3% R@1. CSN: 0.652 (v7 still best at 0.707). Full 9-task CoIR pending.
 
 ### 1.0.x Highlights
 
