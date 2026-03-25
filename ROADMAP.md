@@ -2,7 +2,7 @@
 
 ## Current: v1.4.2
 
-v1.4.2: Contrastive LLM summaries, FTS path filter fix, 34 adversarial tests, enriched hard eval, CI Node.js 24. v8-keydac: first LoRA to match base on hard eval (92.7% R@1, zero non-determinism). Full-pipeline with HyDE: 96.3% R@1. CSN: 0.652 (v7 still best at 0.707). Full 9-task CoIR pending.
+v1.4.2: Contrastive LLM summaries, FTS path filter fix, 34 adversarial tests, enriched hard eval, CI Node.js 24. v8-keydac: 92.7% R@1 hard eval (zero non-determinism), 96.3% full-pipeline, CSN 0.652 (language-specific regression). v7 remains best CSN (0.707). Next: v9 (~300k, balanced oversampling + synthetic queries + curriculum scheduling). Strategy: more diversity not volume. Target: CSN ≥ 0.70 AND hard eval ≥ 90%.
 
 ### 1.0.x Highlights
 

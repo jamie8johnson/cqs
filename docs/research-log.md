@@ -861,3 +861,169 @@ In the 15k corpus, all models converge to ~67-69% R@1. The precision differences
 | v7 | 81.8% | — | — | 69.1% | 0.707 |
 | v7b | 83.6% | — | — | 69.1% | 0.707 |
 | **v8** | **92.7%** | 92.7% | **96.3%** | 69.1% | 0.652 |
+
+## Architecture Notes — 2026-03-25
+
+### Why not SSMs (Mamba/S4) for code embeddings?
+- SSMs are unidirectional — embeddings need bidirectional context
+- No pre-trained code SSMs exist at any scale
+- Pooling over SSM hidden states loses the recurrence advantage
+- At 512-token chunks, SSM's linear-time advantage over transformers is negligible
+
+### Why not hybrid (Nemotron/Jamba) for code embeddings?
+- Hybrids mix attention + SSM for long-context generation efficiency
+- Embedding produces one vector from full input — no generation efficiency gain
+- No hybrid models pre-trained for code retrieval
+- Our chunks are 512 tokens — too short for hybrid architecture to matter
+
+### Decoder-only options for code embeddings
+Jina Code Embeddings (2025) proved decoder-only works: Qwen2.5-Coder backbone + last-token pooling + contrastive fine-tuning. +1.2pp over mean pooling. Key insight: decoder-only pre-trained on code > encoder-only pre-trained on text, when the code pre-training corpus is large enough (5.5T tokens).
+
+**Options for cqs v2 architecture:**
+1. **Qwen2.5-Coder-0.5B quantized to INT4** — ~125M effective params, code-native pre-training, last-token pooling. Same VRAM as current E5 after quantization. Most promising.
+2. **KD-LoRA distillation** (CodeSage 1.3B → E5 110M) — keeps current architecture, gains from larger teacher. Already planned.
+3. **Accept 0.5B** — 5x more VRAM but 15ms vs 3ms latency is irrelevant for agent tool.
+
+**Decision criteria:** If v9 (synthetic data + curriculum) plateaus on E5, switch to Qwen2.5-Coder-0.5B INT4. If v9 still shows gains, E5 has headroom left.
+
+### Key insight: architecture vs data pipeline
+The field is moving to decoder-only + code pre-training (Jina, Qodo). But our experiments show data pipeline engineering (contrastive summaries, KeyDAC, hard negatives) delivers comparable gains on a 110M encoder. The question is: do these gains stack with a better backbone, or do they become redundant when the backbone already understands code?
+
+Hypothesis: they stack. Code-native pre-training gives the backbone; data pipeline gives the fine-tuning signal. Jina trained on curated data (CommitPackFT, SWE-Bench, Spider, MBPP, CSN). Our pipeline adds contrastive summaries, HyDE predictions, and structural training signals that Jina doesn't have.
+
+### Insight: Training Data Quality as Primary Lever — 2026-03-25
+
+Every measurable gain across 8 training runs came from data/prompts, not architecture:
+
+| Change | What changed | Hard eval | CSN |
+|--------|-------------|-----------|-----|
+| v5→v7 | GIST loss (better negative filtering) | -3.7pp | +2.4pp |
+| v7→v8 | KeyDAC (query phrasing variation) | +10.9pp | -5.5pp |
+| None→enriched | Contrastive summaries (index-time NL) | +0pp | N/A |
+
+Model size (110M) and architecture (E5 encoder) unchanged across all runs.
+
+**The precision-recall trade-off question:** v8's CSN regression (-5.5pp) while gaining hard eval (+10.9pp) suggests E5-110M may not have capacity for both. KeyDAC teaches "this exact phrasing maps to this code" (precision) at the cost of "varied phrasings all map to similar code" (recall). A larger backbone might hold both.
+
+**But we haven't tested curriculum yet.** v7→v7b degradation and v8's CSN regression might share a root cause: the model sees hard negatives from step 1, learns to be cautious, and loses broad recall. Curriculum scheduling (easy→hard) could fix this by establishing recall first, then adding precision. If v9 with curriculum recovers CSN while keeping v8's hard eval — E5 has headroom. If it can't — time for Qwen2.5-Coder-0.5B.
+
+**Decision tree:**
+```
+v9 (synthetic + curriculum) results:
+  ├─ CSN ≥ 0.70 AND hard eval ≥ 90% → E5 has headroom, continue data improvements
+  ├─ CSN ≥ 0.70 BUT hard eval < 90% → curriculum fixed recall but lost precision, investigate
+  ├─ CSN < 0.70 AND hard eval ≥ 90% → same v8 pattern, E5 saturated → try Qwen 0.5B
+  └─ CSN < 0.70 AND hard eval < 90% → data quality issue, not architecture → debug pipeline
+```
+
+### Insight: Language Representation Matters — 2026-03-25
+
+Full per-language CSN analysis revealed v8's regression is language-specific:
+
+| Language | v7→v8 delta | Explanation |
+|----------|------------|-------------|
+| Python | +2.2pp | KeyDAC works well — Python identifiers are English words |
+| PHP | -12.3pp | Worst regression — PHP naming conventions differ |
+| JavaScript | -7.8pp | camelCase identifiers split differently |
+| Java | -8.1pp | Same camelCase issue |
+| Go | -3.8pp | Moderate — Go names are short |
+| Ruby | -2.8pp | Moderate — Ruby names are English-like |
+
+**v7b (balanced, 414k) vs v7 (unbalanced, 200k):** v7b improved Go (+0.8pp, the weakest language) but hurt Python (-1.2pp). We dismissed v7b because the average didn't improve, but the per-language story suggests balanced representation helps underrepresented languages.
+
+**v9 insight:** Combine v7b's balanced language mix with v8's KeyDAC augmentation + curriculum. The balanced mix provides per-language representation that KeyDAC alone can't compensate for. v8 pushed Python to 0.996 (near-ceiling) but collapsed PHP/JS/Java because the unbalanced 200k data is 41% Python vs 6% JavaScript.
+
+**RESULTS.md created** in training-data repo: comprehensive log of all CoIR/CSN/CCR per-language numbers mined from saved result files. 14 model variants, 9 CoIR tasks, 6 CSN languages, 6 CCR languages.
+
+### v9 Training Data Strategy — 2026-03-25
+
+**Decision: more diversity, not more volume.**
+
+Evidence from prior experiments:
+- More data helps monotonically (10k→200k) but with diminishing returns
+- More epochs (v4, 3ep) and more volume (v7b, 414k) showed flat/negative results
+- Data quality and diversity matter more than size
+
+**v9 data plan (~300k pairs):**
+1. **200k CSN+Stack base** — proven quality, 9 languages (keep unbalanced natural proportions as base)
+2. **Oversample underrepresented languages** — duplicate Go/Ruby/JS/C++/Rust/TS pairs to ~20k each (like v7b's balanced approach, but as additive oversampling not replacement)
+3. **78k harvested cqs pairs** — HyDE predictions (67k) + contrastive summaries (9k) + doc comments (1.4k). High quality, diverse query styles. Cap at 5% of total to avoid cqs-codebase bias.
+4. **~5k synthetic queries** — Qodo-style LLM-generated search queries ($0.38)
+5. **~5k multi-style docstrings** — formal + question-form ($0.76)
+6. **Curriculum hard negative scheduling** — easy→hard across training
+
+**What we're NOT doing:**
+- Mining more Stack data — CSN already covers 6 of 9 languages, Stack adds noise without filtering
+- More epochs — v4 showed over-specialization at 3 epochs
+- Larger training set — v7b (414k) didn't improve over v7 (200k), v8 (443k) regressed CSN
+
+**Expected outcome (per decision tree):**
+- Balanced language mix should recover Go/Ruby CSN without losing Python
+- Curriculum should preserve hard eval precision (v8's key win)
+- Synthetic queries should help CosQA (real-world phrasing)
+- Target: CSN ≥ 0.70 AND hard eval ≥ 90% (both sides of the trade-off)
+
+### Insight: Enrichment Stack Dominates Model Quality — 2026-03-25
+
+**The full pipeline (96.3% R@1) works despite v8's CoIR regression because the embedding model is the least important layer.**
+
+The 6-layer enrichment stack before embedding:
+1. FTS keyword search (BM25) — finds exact name matches regardless of embedding
+2. RRF fusion — combines keyword + semantic, compensates for weak semantic rankings
+3. Contrastive summaries — "unlike X, this does Y" makes any embedding model discriminating
+4. HyDE predictions — literal search queries baked into the embedding text
+5. Call graph context — caller/callee names cluster related functions
+6. Doc comments — structured param/return types add discrimination axes
+
+The embedding model sees enriched English text, not raw code. Any 110M model can embed "This function implements merge sort using divide-and-conquer" correctly.
+
+**Evidence:**
+- v8 regresses on every CoIR task (raw model) but hits 96.3% on full pipeline
+- Base E5 (no LoRA) hits 92.7% on hard eval — LoRA adds nothing when enrichment is present
+- v7 (best CSN) vs base (worst CSN) produce similar full-pipeline quality
+
+**Implication:** LoRA fine-tuning is optimizing the wrong layer for product quality. We should be optimizing enrichment text quality (better summaries, better HyDE prompts, more call graph coverage). The model weights are a commodity — the enrichment pipeline is the moat.
+
+**For the paper:** This is a strong claim. "Data pipeline engineering matters more than model quality" — not just for training data (which we already showed) but also for inference-time enrichment. The 110M model is sufficient when the text it embeds is good enough.
+
+**Counterargument:** CoIR/CSN still matter for: (1) users who can't run the enrichment stack (e.g., simple embedding-only search), (2) cross-project search (no call graph available for unfamiliar code), (3) initial index before summaries are generated. So we should still improve the raw model — just with the understanding that it's the floor, not the ceiling.
+
+### v8 CoIR Results (as they come in) — 2026-03-25
+
+| Task | Base | v7 | v8 | v8 vs base |
+|------|------|-----|-----|-----------|
+| CSN | 0.627 | **0.707** | 0.652 | +2.5pp |
+| CCR | **0.569** | 0.508 | 0.475 | -9.4pp |
+| CosQA | 0.329 | **0.354** | 0.294 | -3.5pp |
+| Apps | **0.115** | 0.105 | 0.088 | -2.7pp |
+| CodeTrans | **0.219** | 0.194 | 0.165 | -5.4pp |
+| SO-QA | pending | 0.882 | pending | |
+| CF-ST | pending | 0.737 | pending | |
+| CF-MT | pending | 0.382 | pending | |
+| text2sql | pending | 0.558 | pending | |
+
+v8 regresses on every completed task except CSN. KeyDAC query augmentation hurt broad retrieval while helping NL→code precision.
+
+### Why KeyDAC Hurt — 2026-03-25
+
+1. **Query simplification bias** — delete/swap/synonym teaches model to ignore "filler" words that carry intent on real queries
+2. **Keyword extraction too aggressive** — most CSN query tokens match code identifiers, leaving augmentation to modify the few connecting words that carry structural meaning
+3. **Unnatural augmented queries** — "find matching all files" (swap) is not how humans write; training on unnatural phrasing hurts natural query understanding
+4. **Original data dilution** — 243k augmented pairs diluted the 200k high-quality originals to 45% of training. Each original pair seen less frequently.
+
+**Fix for v9:** Reduce augmentation ratio (0.3x not 1.2x), weight originals higher, only augment short queries, curriculum (originals first → augmented later).
+
+### Model Switch: LoRA v7 → Base E5 — 2026-03-25
+
+**Decision:** Ship base E5 (`intfloat/e5-base-v2`) as cqs default model.
+
+**Rationale:**
+- Hard eval: base = v8 = 92.7%. LoRA adds nothing.
+- Product-relevant CoIR: base (61.1) > v8 (59.1). LoRA makes it worse.
+- Full pipeline: 96.3% R@1 regardless of model — enrichment stack dominates.
+- Shipping: `intfloat/e5-base-v2` is a well-known HF model, no custom hosting.
+- Non-determinism: base produces identical results every run.
+
+**Impact:** Users running `cqs index` after upgrade will get base E5 embeddings. Existing indexes with LoRA v7 embeddings still work (same 768-dim space, cosine similarity is compatible). Full reindex recommended but not required.
+
+**Research continues:** LoRA experiments ongoing. If v9 beats base on both hard eval AND CoIR, we ship it. The bar is now: must beat 92.7% hard eval AND 0.627 CSN.
