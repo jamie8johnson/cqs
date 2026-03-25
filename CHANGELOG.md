@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-03-25
+
+### Changed
+- **Default model switched to base E5** (`intfloat/e5-base-v2`) — the inference-time enrichment stack (contrastive summaries, HyDE, call graph context, hybrid retrieval) dominates retrieval quality. Base E5 achieves 92.7% R@1 on hard eval and 96.3% through the full pipeline, matching or exceeding all LoRA variants. Users should run `cqs index --force` after upgrading to rebuild embeddings.
+- **ONNX model path** — now loads from `onnx/model.onnx` subdirectory (matching `intfloat/e5-base-v2` HuggingFace repo layout).
+
+### Added
+- **Enriched hard eval** — `test_hard_with_summaries` injects pre-generated contrastive summaries into fixture embeddings. 92.7% R@1, 100% R@5.
+- **KeyDAC augmentation script** — `augment_keydac.py` generates keyword-preserving query rewrites for training data.
+- **Full model matrix eval** — `scripts/full_model_matrix_eval.sh` runs all models on A6000 with 3x median.
+- **v9 synthetic training plan** — balanced oversampling + synthetic queries + curriculum scheduling.
+- **CI Node.js 24** — `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`, `actions/checkout@v5`.
+
+### Removed
+- **Research log** — moved to private `cqs-training` repository.
+
 ## [1.4.2] - 2026-03-24
 
 ### Added
