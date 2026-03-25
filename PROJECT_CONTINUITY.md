@@ -2,7 +2,7 @@
 
 ## Right Now
 
-**v8-keydac fully evaluated (2026-03-25). Running CoIR 9-task.**
+**Switched default model to base E5 (2026-03-25). v8 CoIR running. Research continues.**
 
 ### v8 Results
 - Hard eval: **92.7% R@1** (3x identical, zero non-determinism) — matches base E5, first LoRA to not degrade
@@ -25,9 +25,11 @@ Prior "all at 89.1%" was wrong. v8 is the only LoRA that preserves hard eval pre
 - Full 9-task CoIR for v8 — in progress
 
 ### What to decide
-- Ship v7 (best CSN) or v8 (best hard eval) or keep base (matches v8 on hard eval)?
-- v8's value is CSN +2.5pp over base with no precision loss. v7's value is CSN +8pp but -11pp precision.
-- v9 plan: synthetic queries + curriculum scheduling — could combine v7's recall with v8's precision
+- **Ship v8** for production (best hard eval, zero non-determinism, 96.3% full-pipeline)
+- **Report v7** for paper benchmarks (best CSN at 0.707)
+- v8 CSN regression is language-specific: Python near-perfect (0.996) but PHP/JS/Java collapsed
+- Root cause: unbalanced training data (41% Python, 6% JS) + KeyDAC favors English-like identifiers
+- v9 plan (~300k): balanced oversampling + 78k harvested cqs pairs + synthetic queries + curriculum scheduling. More diversity, not volume. Target: CSN ≥ 0.70 AND hard eval ≥ 90%
 
 ### Session accomplishments (2026-03-25)
 1. v8 training completed (19.5h, 443k KeyDAC pairs)
@@ -44,7 +46,7 @@ Prior "all at 89.1%" was wrong. v8 is the only LoRA that preserves hard eval pre
 
 ## Architecture
 - Version: 1.4.2
-- Current shipping model: LoRA v7 (0.707 CSN, 81.8% hard eval)
+- Current shipping model: base E5 (intfloat/e5-base-v2, 92.7% hard eval, 0.627 CSN)
 - Best hard eval: v8-keydac (92.7% R@1, 0.652 CSN) = base E5
 - Best CSN: v7 (0.707)
 - Full-pipeline: 96.3% R@1 (v8 + HyDE + contrastive summaries)
