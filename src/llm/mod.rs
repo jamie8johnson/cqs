@@ -242,11 +242,30 @@ mod tests {
 
     #[test]
     fn llm_config_defaults_from_empty_config() {
+        // Save and clear env vars that LlmConfig::resolve reads
+        let saved_model = std::env::var("CQS_LLM_MODEL").ok();
+        let saved_base = std::env::var("CQS_API_BASE").ok();
+        let saved_tokens = std::env::var("CQS_LLM_MAX_TOKENS").ok();
+        std::env::remove_var("CQS_LLM_MODEL");
+        std::env::remove_var("CQS_API_BASE");
+        std::env::remove_var("CQS_LLM_MAX_TOKENS");
+
         let config = crate::config::Config::default();
         let llm = LlmConfig::resolve(&config);
         assert_eq!(llm.api_base, API_BASE);
         assert_eq!(llm.model, MODEL);
         assert_eq!(llm.max_tokens, MAX_TOKENS);
+
+        // Restore env vars
+        if let Some(v) = saved_model {
+            std::env::set_var("CQS_LLM_MODEL", v);
+        }
+        if let Some(v) = saved_base {
+            std::env::set_var("CQS_API_BASE", v);
+        }
+        if let Some(v) = saved_tokens {
+            std::env::set_var("CQS_LLM_MAX_TOKENS", v);
+        }
     }
 
     #[test]
