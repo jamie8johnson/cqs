@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v1.4.1
+## Current: v1.4.2
 
-v1.4.1: 70/74 audit findings fixed. Contrastive LLM summaries (embedding-neighbor context). FTS path filter fix. Full-pipeline eval: 92.7% R@1, 96.3% R@5, 0.9478 NDCG@10. v1.4.0: Extension/Constructor ChunkTypes, batch cache invalidation, 4-file refactor. 51 languages. Five full audits.
+v1.4.2: Contrastive LLM summaries, FTS path filter fix, 34 adversarial tests, enriched hard eval, CI Node.js 24. v1.4.1: 70/74 audit findings fixed. Full-pipeline eval: 92.7% R@1, 96.3% R@5, 0.9478 NDCG@10. 51 languages. Five full audits. v8-keydac training in progress (KeyDAC query augmentation, 443k pairs).
 
 ### 1.0.x Highlights
 
