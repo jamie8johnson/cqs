@@ -631,10 +631,7 @@ fn extract_md_file_stem(url: &str) -> Option<String> {
     }
     // Extract file stem (last path component without extension)
     // PB-28: Split on both `/` and `\` for cross-platform paths
-    let filename = path_part
-        .rsplit(|c| c == '/' || c == '\\')
-        .next()
-        .unwrap_or(path_part);
+    let filename = path_part.rsplit(['/', '\\']).next().unwrap_or(path_part);
     let stem = filename
         .strip_suffix(".mdx")
         .or_else(|| filename.strip_suffix(".md"))?;

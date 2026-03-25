@@ -236,10 +236,7 @@ pub fn is_test_chunk(name: &str, file: &str) -> bool {
     }
     // File-based patterns (by filename, not full path)
     // Split on both `/` and `\` for cross-platform paths
-    let filename = file
-        .rsplit(|c| c == '/' || c == '\\')
-        .next()
-        .unwrap_or(file);
+    let filename = file.rsplit(['/', '\\']).next().unwrap_or(file);
     if filename.contains("_test.")
         || filename.contains(".test.")
         || filename.contains(".spec.")
