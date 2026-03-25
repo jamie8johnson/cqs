@@ -2,54 +2,51 @@
 
 ## Right Now
 
-**v8-keydac training in progress (2026-03-24). PR #672 pending CI. All prior work merged.**
+**v8-keydac fully evaluated (2026-03-25). Running CoIR 9-task.**
 
-### Active
-- **v8-keydac training** running on A6000 (PID 255391). ETA ~14-21h. Log: `~/training-data/train_v8_keydac.log`
-  - Data: `augmented_200k_keydac.jsonl` (443k pairs = 200k original + 243k KeyDAC augmented)
-  - Config: 1 epoch, batch 32, GIST + Matryoshka, LoRA r=16
-- **PR #672** pending: enriched hard eval + KeyDAC script + CI Node.js 24 migration
-- **RTX 4000** (8GB) available for inference/eval while A6000 trains
+### v8 Results
+- Hard eval: **92.7% R@1** (3x identical, zero non-determinism) — matches base E5, first LoRA to not degrade
+- Enriched hard eval: 92.7% R@1, 100% R@5
+- Full-pipeline (with HyDE): **96.3% R@1**
+- CSN: **0.652** (regression from v7's 0.707 — KeyDAC traded benchmark for precision)
 
-### Session accomplishments (2026-03-24)
-1. v1.4.0 audit: 74 findings, 70 fixed (PRs #667, #668)
-2. v1.4.1 released: audit fixes
-3. Contrastive summaries: 92.7% R@1 full-pipeline (PR #669)
-4. v1.4.2 released: contrastive + adversarial tests (PRs #669, #670)
-5. Adversarial test hardening: 34 tests across 5 areas (PR #670)
-6. Enriched hard eval: 92.7% R@1, 100% R@5, 0.9624 NDCG@10 (PR #672)
-7. KeyDAC augmentation script + data generation (PR #672)
-8. v8 training kicked off
+### Authoritative A6000 Hard Eval Matrix (median of 3)
+| Model | R@1 | CSN |
+|-------|-----|-----|
+| Base E5 | 92.7% | 0.627 |
+| v5 (MNR) | 85.5% | 0.683 |
+| v7 (GIST) | 81.8% | 0.707 |
+| v7b (GIST) | 83.6% | 0.707 |
+| **v8 (KeyDAC)** | **92.7%** | 0.652 |
 
-### After training completes
-1. Export ONNX (opset-11 template)
-2. Run hard eval (raw + enriched) — compare v8 vs v7 vs base
-3. Run CoIR (9 tasks) — compare CSN, CosQA transfer
-4. If improved: publish model, bump cqs default, release v1.4.3
-5. Update research log with Exp 16 results
+Prior "all at 89.1%" was wrong. v8 is the only LoRA that preserves hard eval precision.
 
-### Next experiments
-1. **KD-LoRA distillation** — CodeSage-large → E5-base. ~12h. After v8 eval.
-2. **Paper** — with contrastive summaries + KeyDAC results
+### Remaining evals
+- Full 9-task CoIR for v8 — in progress
 
-## Parked
-- Paper revision — after v8 eval
-- Verified HF eval results — needs CoIR benchmark registration
+### What to decide
+- Ship v7 (best CSN) or v8 (best hard eval) or keep base (matches v8 on hard eval)?
+- v8's value is CSN +2.5pp over base with no precision loss. v7's value is CSN +8pp but -11pp precision.
+- v9 plan: synthetic queries + curriculum scheduling — could combine v7's recall with v8's precision
+
+### Session accomplishments (2026-03-25)
+1. v8 training completed (19.5h, 443k KeyDAC pairs)
+2. Authoritative A6000 matrix (debunked "all 89.1%")
+3. HyDE predictions generated (4304 functions, $0.38)
+4. 78k training pairs harvested (67k HyDE + 9k summaries + 1.4k docs)
+5. Python scripts audited and fixed (11 scripts, error handling + argparse)
+6. Stress eval script written
+7. Literature sweep 2 (7 new strategies, HF Papers API)
+8. Paper revised to v0.3
 
 ## Open Issues
-- #665: RM-23 enrichment_pass ~105MB memory (deferred)
-- #666: DS-17/DS-18 GC transaction windows (informational)
-- #389: CAGRA memory retention (blocked on upstream cuVS)
-- #255: Pre-built reference packages (enhancement)
-- #106: ort pre-release RC
-- #63: paste crate warning (monitoring)
+- #665, #666, #389, #255, #106, #63
 
 ## Architecture
-- Version: 1.4.2 (released, tagged, published to crates.io)
-- Current model: LoRA v7 (200k 9-lang, GIST+Matryoshka, 0.707 CSN, 49.19 CoIR)
-- Training: v8-keydac in progress (443k KeyDAC-augmented pairs)
-- Full-pipeline: 92.7% R@1, 0.9478 NDCG@10 (contrastive summaries)
-- Enriched hard eval: 92.7% R@1, 100% R@5, 0.9624 NDCG@10
-- Tests: 1395 lib + 34 adversarial
-- GPUs: A6000 48GB (training), RTX 4000 8GB (inference)
-- 5th full audit (v0.5.3, v0.12.3, v0.19.2, v1.0.13, v1.4.0)
+- Version: 1.4.2
+- Current shipping model: LoRA v7 (0.707 CSN, 81.8% hard eval)
+- Best hard eval: v8-keydac (92.7% R@1, 0.652 CSN) = base E5
+- Best CSN: v7 (0.707)
+- Full-pipeline: 96.3% R@1 (v8 + HyDE + contrastive summaries)
+- Paper: ~/training-data/paper/draft.md (v0.3)
+- Training repo: github.com/jamie8johnson/cqs-training
