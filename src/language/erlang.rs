@@ -152,6 +152,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "code_change",
     ],
     injections: &[],
+    doc_format: "erlang_edoc",
+    doc_convention: "Use EDoc format: @param, @returns, @throws tags.",
 };
 
 pub fn definition() -> &'static LanguageDef {

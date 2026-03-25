@@ -228,6 +228,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "poll",
     ],
     injections: &[],
+    doc_format: "triple_slash",
+    doc_convention: "Use `# Arguments`, `# Returns`, `# Errors`, `# Panics` sections as appropriate.",
 };
 
 pub fn definition() -> &'static LanguageDef {

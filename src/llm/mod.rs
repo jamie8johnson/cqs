@@ -28,6 +28,99 @@ pub use doc_comments::needs_doc_comment;
 pub use hyde::hyde_query_pass;
 pub use summary::llm_summary_pass;
 
+use crate::Store;
+
+/// An eligible chunk ready for LLM batch processing.
+///
+/// Contains the fields needed by both summary and HyDE passes:
+/// content_hash (dedup key), content, chunk_type string, and language string.
+pub(crate) struct EligibleChunk {
+    pub content_hash: String,
+    pub content: String,
+    pub chunk_type: String,
+    pub language: String,
+    pub signature: String,
+    pub name: String,
+}
+
+/// Scan the store for callable chunks eligible for LLM processing.
+///
+/// Shared between `llm_summary_pass` and `hyde_query_pass` (and `find_contrastive_neighbors`).
+/// Applies the 4-condition filter: skip cached (by `purpose`), skip non-callable,
+/// skip short content, skip windowed (window_idx > 0). Deduplicates by content_hash.
+///
+/// Returns at most `max_items` chunks. Pass `0` for unlimited.
+pub(crate) fn collect_eligible_chunks(
+    store: &Store,
+    purpose: &str,
+    max_items: usize,
+) -> Result<(Vec<EligibleChunk>, usize, usize), LlmError> {
+    let _span = tracing::info_span!("collect_eligible_chunks", purpose, max_items).entered();
+
+    let mut cached = 0usize;
+    let mut skipped = 0usize;
+    let mut cursor = 0i64;
+    const PAGE_SIZE: usize = 500;
+    let mut items: Vec<EligibleChunk> = Vec::new();
+    let mut queued_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let effective_limit = if max_items == 0 {
+        usize::MAX
+    } else {
+        max_items
+    };
+
+    let mut batch_full = false;
+    loop {
+        let (chunks, next) = store.chunks_paged(cursor, PAGE_SIZE)?;
+        if chunks.is_empty() {
+            break;
+        }
+        cursor = next;
+
+        let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
+        let existing = store.get_summaries_by_hashes(&hashes, purpose)?;
+
+        for cs in &chunks {
+            if existing.contains_key(&cs.content_hash) {
+                cached += 1;
+                continue;
+            }
+            if !cs.chunk_type.is_callable() {
+                skipped += 1;
+                continue;
+            }
+            if cs.content.len() < MIN_CONTENT_CHARS {
+                skipped += 1;
+                continue;
+            }
+            if cs.window_idx.is_some_and(|idx| idx > 0) {
+                skipped += 1;
+                continue;
+            }
+
+            if queued_hashes.insert(cs.content_hash.clone()) {
+                items.push(EligibleChunk {
+                    content_hash: cs.content_hash.clone(),
+                    content: cs.content.clone(),
+                    chunk_type: cs.chunk_type.to_string(),
+                    language: cs.language.to_string(),
+                    signature: cs.signature.clone(),
+                    name: cs.name.clone(),
+                });
+                if items.len() >= effective_limit {
+                    batch_full = true;
+                    break;
+                }
+            }
+        }
+        if batch_full {
+            break;
+        }
+    }
+
+    Ok((items, cached, skipped))
+}
+
 // doc_comment_pass returns Vec<crate::doc_writer::DocCommentResult>
 pub use doc_comments::doc_comment_pass;
 
@@ -50,6 +143,8 @@ pub enum LlmError {
     Json(#[from] serde_json::Error),
     #[error("Store error: {0}")]
     Store(#[from] crate::store::StoreError),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 const API_BASE: &str = "https://api.anthropic.com/v1";
@@ -74,11 +169,21 @@ pub struct LlmConfig {
 impl LlmConfig {
     /// Resolve config with priority: env vars > config file > hardcoded constants.
     pub fn resolve(config: &crate::config::Config) -> Self {
+        let api_base = std::env::var("CQS_LLM_API_BASE")
+            .or_else(|_| std::env::var("CQS_API_BASE"))
+            .ok()
+            .or_else(|| config.llm_api_base.clone())
+            .unwrap_or_else(|| API_BASE.to_string());
+
+        if !api_base.starts_with("https://") {
+            tracing::warn!(
+                api_base = %api_base,
+                "LLM API base does not use HTTPS — API key will be sent in cleartext"
+            );
+        }
+
         Self {
-            api_base: std::env::var("CQS_API_BASE")
-                .ok()
-                .or_else(|| config.llm_api_base.clone())
-                .unwrap_or_else(|| API_BASE.to_string()),
+            api_base,
             model: std::env::var("CQS_LLM_MODEL")
                 .ok()
                 .or_else(|| config.llm_model.clone())
@@ -93,13 +198,13 @@ impl LlmConfig {
 }
 
 /// Claude API client for generating summaries.
-pub struct Client {
+pub struct LlmClient {
     http: reqwest::blocking::Client,
     api_key: String,
     llm_config: LlmConfig,
 }
 
-impl Client {
+impl LlmClient {
     /// Creates a new LLM client instance with the specified API key and configuration.
     ///
     /// Initializes an HTTP client with a 60-second timeout and disables automatic redirect following. The API key is stored for use in subsequent requests.
@@ -245,9 +350,11 @@ mod tests {
         // Save and clear env vars that LlmConfig::resolve reads
         let saved_model = std::env::var("CQS_LLM_MODEL").ok();
         let saved_base = std::env::var("CQS_API_BASE").ok();
+        let saved_llm_base = std::env::var("CQS_LLM_API_BASE").ok();
         let saved_tokens = std::env::var("CQS_LLM_MAX_TOKENS").ok();
         std::env::remove_var("CQS_LLM_MODEL");
         std::env::remove_var("CQS_API_BASE");
+        std::env::remove_var("CQS_LLM_API_BASE");
         std::env::remove_var("CQS_LLM_MAX_TOKENS");
 
         let config = crate::config::Config::default();
@@ -262,6 +369,9 @@ mod tests {
         }
         if let Some(v) = saved_base {
             std::env::set_var("CQS_API_BASE", v);
+        }
+        if let Some(v) = saved_llm_base {
+            std::env::set_var("CQS_LLM_API_BASE", v);
         }
         if let Some(v) = saved_tokens {
             std::env::set_var("CQS_LLM_MAX_TOKENS", v);
@@ -294,6 +404,7 @@ mod tests {
         // Set env vars (scoped to this test via unsafe + cleanup)
         std::env::set_var("CQS_LLM_MODEL", "from-env");
         std::env::set_var("CQS_API_BASE", "https://from-env/v1");
+        std::env::remove_var("CQS_LLM_API_BASE"); // ensure primary is clear
         std::env::set_var("CQS_LLM_MAX_TOKENS", "500");
 
         let llm = LlmConfig::resolve(&config);
@@ -306,6 +417,44 @@ mod tests {
         assert_eq!(llm.model, "from-env");
         assert_eq!(llm.api_base, "https://from-env/v1");
         assert_eq!(llm.max_tokens, 500);
+    }
+
+    // AD-32: CQS_LLM_API_BASE takes priority over CQS_API_BASE
+    #[test]
+    fn llm_config_llm_api_base_takes_precedence() {
+        let config = crate::config::Config::default();
+
+        // Both set — CQS_LLM_API_BASE should win
+        std::env::set_var("CQS_LLM_API_BASE", "https://primary/v1");
+        std::env::set_var("CQS_API_BASE", "https://fallback/v1");
+
+        let llm = LlmConfig::resolve(&config);
+
+        std::env::remove_var("CQS_LLM_API_BASE");
+        std::env::remove_var("CQS_API_BASE");
+
+        assert_eq!(
+            llm.api_base, "https://primary/v1",
+            "CQS_LLM_API_BASE should take precedence over CQS_API_BASE"
+        );
+    }
+
+    // AD-32: CQS_API_BASE still works as fallback
+    #[test]
+    fn llm_config_api_base_fallback_still_works() {
+        let config = crate::config::Config::default();
+
+        std::env::remove_var("CQS_LLM_API_BASE");
+        std::env::set_var("CQS_API_BASE", "https://legacy/v1");
+
+        let llm = LlmConfig::resolve(&config);
+
+        std::env::remove_var("CQS_API_BASE");
+
+        assert_eq!(
+            llm.api_base, "https://legacy/v1",
+            "CQS_API_BASE should work as fallback when CQS_LLM_API_BASE is not set"
+        );
     }
 
     #[test]
@@ -326,7 +475,7 @@ mod tests {
     // ===== TC-21: JSONL parsing tests =====
 
     /// Helper: parse JSONL body into a HashMap<custom_id, text>, replicating
-    /// the inline logic from `Client::fetch_batch_results`.
+    /// the inline logic from `LlmClient::fetch_batch_results`.
     fn parse_batch_results_jsonl(body: &str) -> std::collections::HashMap<String, String> {
         let mut results = std::collections::HashMap::new();
         for line in body.lines() {

@@ -457,6 +457,9 @@ pub(crate) fn create_context() -> Result<BatchContext> {
     let index_mtime = std::fs::metadata(cqs_dir.join("index.db"))
         .and_then(|m| m.modified())
         .ok();
+    if index_mtime.is_none() {
+        tracing::debug!("Could not read index.db mtime — staleness detection will be skipped until first successful stat");
+    }
 
     Ok(BatchContext {
         store: RefCell::new(store),
@@ -661,10 +664,9 @@ mod tests {
         // Populate mutable caches
         *ctx.file_set.borrow_mut() = Some(HashSet::new());
         *ctx.notes_cache.borrow_mut() = Some(vec![]);
-        *ctx.call_graph.borrow_mut() = Some(std::sync::Arc::new(cqs::store::CallGraph {
-            forward: Default::default(),
-            reverse: Default::default(),
-        }));
+        *ctx.call_graph.borrow_mut() = Some(std::sync::Arc::new(
+            cqs::store::CallGraph::from_string_maps(Default::default(), Default::default()),
+        ));
         *ctx.test_chunks.borrow_mut() = Some(vec![]);
 
         // Verify caches are populated

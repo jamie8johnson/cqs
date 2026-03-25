@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current: v1.4.2
+## Current: v1.5.0
 
 v1.4.2: Contrastive LLM summaries, FTS path filter fix, 34 adversarial tests, enriched hard eval, CI Node.js 24. v8-keydac: 92.7% R@1 hard eval (zero non-determinism), 96.3% full-pipeline, CSN 0.652 (language-specific regression). v7 remains best CSN (0.707). Next: v9 (~300k, balanced oversampling + synthetic queries + curriculum scheduling). Strategy: more diversity not volume. Target: CSN ≥ 0.70 AND hard eval ≥ 90%.
 

@@ -170,6 +170,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     entry_point_names: &[],
     trait_method_names: &[],
     injections: &[],
+    doc_format: "lua_ldoc",
+    doc_convention: "Use LDoc format: @param, @return tags.",
 };
 
 pub fn definition() -> &'static LanguageDef {

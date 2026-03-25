@@ -5,6 +5,8 @@ pub(crate) mod batch;
 mod chat;
 mod commands;
 mod config;
+mod definitions;
+mod dispatch;
 mod display;
 mod enrichment;
 mod files;
@@ -14,6 +16,15 @@ pub(crate) mod staleness;
 pub(crate) mod telemetry;
 mod watch;
 
+// Re-export definitions (clap structs, enums, helpers) for external use
+pub(crate) use definitions::{
+    parse_nonzero_usize, validate_finite_f32, AuditModeState, GateThreshold,
+};
+pub use definitions::{Cli, OutputFormat};
+
+// Re-export dispatch entry point
+pub use dispatch::run_with;
+
 // Re-export for watch.rs and commands
 pub(crate) use config::find_project_root;
 pub(crate) use enrichment::enrichment_pass;
@@ -21,10 +32,9 @@ pub(crate) use files::{acquire_index_lock, enumerate_files, try_acquire_index_lo
 pub(crate) use pipeline::run_index_pipeline;
 pub(crate) use signal::{check_interrupted, reset_interrupted};
 
-/// Open the project store, returning the store, project root, and index directory.
-///
-/// Bails with a user-friendly message if no index exists.
-pub(crate) fn open_project_store(
+/// Shared helper: locate project root and index, open store with the given opener.
+fn open_store_with(
+    opener: fn(&std::path::Path) -> Result<cqs::Store, cqs::store::StoreError>,
 ) -> anyhow::Result<(cqs::Store, std::path::PathBuf, std::path::PathBuf)> {
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
@@ -34,9 +44,17 @@ pub(crate) fn open_project_store(
         anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
     }
 
-    let store = cqs::Store::open(&index_path)
+    let store = opener(&index_path)
         .map_err(|e| anyhow::anyhow!("Failed to open index at {}: {}", index_path.display(), e))?;
     Ok((store, root, cqs_dir))
+}
+
+/// Open the project store, returning the store, project root, and index directory.
+///
+/// Bails with a user-friendly message if no index exists.
+pub(crate) fn open_project_store(
+) -> anyhow::Result<(cqs::Store, std::path::PathBuf, std::path::PathBuf)> {
+    open_store_with(cqs::Store::open)
 }
 
 /// Open the project store with a single-threaded runtime for read-only commands.
@@ -46,17 +64,7 @@ pub(crate) fn open_project_store(
 /// Keeps full 256MB mmap and 16MB cache for search performance.
 pub(crate) fn open_project_store_readonly(
 ) -> anyhow::Result<(cqs::Store, std::path::PathBuf, std::path::PathBuf)> {
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = cqs::Store::open_light(&index_path)
-        .map_err(|e| anyhow::anyhow!("Failed to open index at {}: {}", index_path.display(), e))?;
-    Ok((store, root, cqs_dir))
+    open_store_with(cqs::Store::open_light)
 }
 
 /// Build the best available vector index for the store.
@@ -130,899 +138,11 @@ pub(crate) fn build_vector_index_with_config(
     Ok(cqs::HnswIndex::try_load_with_ef(cqs_dir, ef_search))
 }
 
-#[cfg(feature = "convert")]
-use commands::cmd_convert;
-use commands::{
-    cmd_audit_mode, cmd_blame, cmd_callees, cmd_callers, cmd_ci, cmd_context, cmd_dead, cmd_deps,
-    cmd_diff, cmd_doctor, cmd_drift, cmd_explain, cmd_gather, cmd_gc, cmd_health, cmd_impact,
-    cmd_impact_diff, cmd_index, cmd_init, cmd_notes, cmd_onboard, cmd_plan, cmd_project, cmd_query,
-    cmd_read, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats,
-    cmd_suggest, cmd_task, cmd_test_map, cmd_trace, cmd_train_data, cmd_where, NotesCommand,
-    ProjectCommand, RefCommand,
-};
-use config::apply_config_defaults;
-
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-
-/// Output format for commands that support text/json/mermaid
-#[derive(Clone, Debug, clap::ValueEnum)]
-pub enum OutputFormat {
-    Text,
-    Json,
-    Mermaid,
-}
-
-/// Parse an `OutputFormat` that only allows text or json (rejects mermaid at parse time).
-///
-/// Used by `review` and `ci` commands which accept `--format` but don't support mermaid output.
-/// Catches the error at argument parsing rather than failing at runtime.
-fn parse_text_or_json_format(s: &str) -> std::result::Result<OutputFormat, String> {
-    match s.to_ascii_lowercase().as_str() {
-        "text" => Ok(OutputFormat::Text),
-        "json" => Ok(OutputFormat::Json),
-        "mermaid" => {
-            Err("mermaid output is not supported for this command — use text or json".into())
-        }
-        other => Err(format!("invalid format '{other}' — expected text or json")),
-    }
-}
-
-impl std::fmt::Display for OutputFormat {
-    /// Formats the enum variant as a human-readable string representation.
-    ///
-    /// # Arguments
-    ///
-    /// * `f` - The formatter to write the output to
-    ///
-    /// # Returns
-    ///
-    /// A `std::fmt::Result` indicating success or formatting error
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Text => write!(f, "text"),
-            Self::Json => write!(f, "json"),
-            Self::Mermaid => write!(f, "mermaid"),
-        }
-    }
-}
-
-/// Re-export `GateThreshold` so CLI and batch code can reference it directly.
-pub use cqs::ci::GateThreshold;
-
-/// Audit mode state for the audit-mode command
-#[derive(Clone, Debug, clap::ValueEnum)]
-pub enum AuditModeState {
-    /// Enable audit mode
-    On,
-    /// Disable audit mode
-    Off,
-}
-
-/// Parse a non-zero usize for --tokens validation
-pub(crate) fn parse_nonzero_usize(s: &str) -> std::result::Result<usize, String> {
-    let val: usize = s.parse().map_err(|e| format!("{e}"))?;
-    if val == 0 {
-        return Err("value must be at least 1".to_string());
-    }
-    Ok(val)
-}
-
-/// Validate that a float parameter is finite (not NaN or Infinity).
-pub(crate) fn validate_finite_f32(val: f32, name: &str) -> anyhow::Result<f32> {
-    if val.is_finite() {
-        Ok(val)
-    } else {
-        anyhow::bail!("Invalid {name}: {val} (must be a finite number)")
-    }
-}
-
-#[derive(Parser)]
-#[command(name = "cqs")]
-#[command(about = "Semantic code search with local embeddings")]
-#[command(version)]
-pub struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
-
-    /// Search query (quote multi-word queries)
-    query: Option<String>,
-
-    /// Max results
-    #[arg(short = 'n', long, default_value = "5")]
-    limit: usize,
-
-    /// Min similarity threshold
-    ///
-    /// NOTE: `-t` is intentionally overloaded across subcommands.
-    /// In search/similar (here and top-level), it means "min similarity threshold" (default 0.3).
-    /// In diff/drift, it means "match threshold" for identity (default 0.95).
-    /// The semantics differ because the baseline similarity differs: search returns
-    /// low-similarity results worth filtering, while diff/drift compare known pairs
-    /// where 0.95+ means "unchanged".
-    #[arg(short = 't', long, default_value = "0.3")]
-    threshold: f32,
-
-    /// Weight for name matching in hybrid search (0.0-1.0)
-    #[arg(long, default_value = "0.2")]
-    name_boost: f32,
-
-    /// Filter by language
-    #[arg(short = 'l', long)]
-    lang: Option<String>,
-
-    /// Filter by chunk type (function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event, module, macro, object, typealias)
-    #[arg(long)]
-    chunk_type: Option<Vec<String>>,
-
-    /// Filter by path pattern (glob)
-    #[arg(short = 'p', long)]
-    path: Option<String>,
-
-    /// Filter by structural pattern (builder, error_swallow, async, mutex, unsafe, recursion)
-    #[arg(long)]
-    pattern: Option<String>,
-
-    /// Definition search: find by name only, skip embedding (faster)
-    #[arg(long)]
-    name_only: bool,
-
-    /// Pure semantic similarity, disable RRF hybrid search
-    #[arg(long)]
-    semantic_only: bool,
-
-    /// Re-rank results with cross-encoder (slower, more accurate)
-    #[arg(long)]
-    rerank: bool,
-
-    /// Output as JSON
-    #[arg(long)]
-    json: bool,
-
-    /// Show only file:line, no code
-    #[arg(long)]
-    no_content: bool,
-
-    /// Show N lines of context before/after the chunk
-    #[arg(short = 'C', long)]
-    context: Option<usize>,
-
-    /// Expand results with parent context (small-to-big retrieval)
-    #[arg(long)]
-    expand: bool,
-
-    /// Search only this reference index (skip project index)
-    #[arg(long = "ref")]
-    ref_name: Option<String>,
-
-    /// Include reference indexes in search results (default: project only)
-    #[arg(long)]
-    include_refs: bool,
-
-    /// Maximum token budget for results (packs highest-scoring into budget)
-    #[arg(long, value_parser = parse_nonzero_usize)]
-    tokens: Option<usize>,
-
-    /// Suppress progress output
-    #[arg(short, long)]
-    quiet: bool,
-
-    /// Disable staleness checks (skip per-file mtime comparison)
-    #[arg(long)]
-    no_stale_check: bool,
-
-    /// Disable search-time demotion of test functions and underscore-prefixed names
-    #[arg(long)]
-    no_demote: bool,
-
-    /// Show debug info (sets RUST_LOG=debug)
-    #[arg(short, long)]
-    pub verbose: bool,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Download model and create .cqs/
-    Init,
-    /// Check model, index, hardware
-    Doctor,
-    /// Index current project
-    Index {
-        #[command(flatten)]
-        args: args::IndexArgs,
-    },
-    /// Show index statistics
-    Stats {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Watch for changes and reindex
-    Watch {
-        /// Debounce interval in milliseconds
-        #[arg(long, default_value = "500")]
-        debounce: u64,
-        /// Index files ignored by .gitignore
-        #[arg(long)]
-        no_ignore: bool,
-        /// Use polling instead of inotify (reliable on WSL /mnt/ paths)
-        #[arg(long)]
-        poll: bool,
-    },
-    /// Batch mode: read commands from stdin, output JSONL
-    Batch,
-    /// Semantic git blame: who changed a function, when, and why
-    Blame {
-        /// Function name or file:function
-        name: String,
-        /// Max commits to show
-        #[arg(short = 'n', long, default_value = "10")]
-        depth: usize,
-        /// Also show callers of the function
-        #[arg(long)]
-        callers: bool,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Interactive REPL for cqs commands
-    Chat,
-    /// Generate shell completions
-    Completions {
-        /// Shell to generate completions for
-        #[arg(value_enum)]
-        shell: clap_complete::Shell,
-    },
-    /// Show type dependencies: who uses a type, or what types a function uses
-    Deps {
-        /// Type name (forward) or function name (with --reverse)
-        name: String,
-        /// Reverse: show types used by a function instead of type users
-        #[arg(long)]
-        reverse: bool,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Find functions that call a given function
-    Callers {
-        /// Function name to search for
-        name: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Find functions called by a given function
-    Callees {
-        /// Function name to search for
-        name: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Guided codebase tour: entry point → call chain → types → tests
-    Onboard {
-        /// Concept or query to explore
-        query: String,
-        /// Callee expansion depth
-        #[arg(short = 'd', long, default_value = "3")]
-        depth: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
-    },
-    /// List and manage notes
-    Notes {
-        #[command(subcommand)]
-        subcmd: NotesCommand,
-    },
-    /// Manage reference indexes for multi-index search
-    Ref {
-        #[command(subcommand)]
-        subcmd: RefCommand,
-    },
-    /// Semantic diff between indexed snapshots
-    Diff {
-        /// Reference name to compare from
-        source: String,
-        /// Reference name or "project" (default: project)
-        target: Option<String>,
-        /// Similarity threshold for "modified" (default: 0.95)
-        ///
-        /// `-t` here means "match threshold" — pairs above this are "unchanged",
-        /// below are "modified". Different from search's `-t` (min similarity 0.3).
-        /// See top-level threshold doc for rationale.
-        #[arg(short = 't', long, default_value = "0.95")]
-        threshold: f32,
-        /// Filter by language
-        #[arg(short = 'l', long)]
-        lang: Option<String>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Detect semantic drift between a reference and the project
-    Drift {
-        /// Reference name to compare against
-        reference: String,
-        /// Similarity threshold (default: 0.95)
-        ///
-        /// See Diff's `-t` doc — same overload rationale applies.
-        #[arg(short = 't', long, default_value = "0.95")]
-        threshold: f32,
-        /// Minimum drift to show (default: 0.0)
-        #[arg(long, default_value = "0.0")]
-        min_drift: f32,
-        /// Filter by language
-        #[arg(short = 'l', long)]
-        lang: Option<String>,
-        /// Maximum entries to show
-        #[arg(short = 'n', long)]
-        limit: Option<usize>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Generate a function card (signature, callers, callees, similar)
-    Explain {
-        /// Function name or file:function
-        name: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-        /// Maximum token budget (includes source content within budget)
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
-    },
-    /// Find code similar to a given function
-    Similar {
-        /// Function name or file:function (e.g., "search_filtered" or "src/search.rs:search_filtered")
-        target: String,
-        /// Max results
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
-        /// Min similarity threshold
-        #[arg(short = 't', long, default_value = "0.3")]
-        threshold: f32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Impact analysis: what breaks if you change a function
-    Impact {
-        #[command(flatten)]
-        args: args::ImpactArgs,
-        /// Output format: text, json, mermaid (use --json as shorthand for --format json)
-        #[arg(long, default_value = "text")]
-        format: OutputFormat,
-        /// Shorthand for --format json
-        #[arg(long, conflicts_with = "format")]
-        json: bool,
-    },
-    /// Impact analysis from a git diff — what callers and tests are affected
-    #[command(name = "impact-diff")]
-    ImpactDiff {
-        /// Git ref to diff against (default: unstaged changes)
-        #[arg(long)]
-        base: Option<String>,
-        /// Read diff from stdin instead of running git
-        #[arg(long)]
-        stdin: bool,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Comprehensive diff review: impact + notes + risk scoring
-    Review {
-        /// Git ref to diff against (default: unstaged changes)
-        #[arg(long)]
-        base: Option<String>,
-        /// Read diff from stdin instead of running git
-        #[arg(long)]
-        stdin: bool,
-        /// Output format: text, json (use --json as shorthand for --format json; mermaid not supported)
-        #[arg(long, default_value = "text", value_parser = parse_text_or_json_format)]
-        format: OutputFormat,
-        /// Shorthand for --format json
-        #[arg(long, conflicts_with = "format")]
-        json: bool,
-        /// Maximum token budget for output (truncates callers/tests lists)
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
-    },
-    /// CI pipeline analysis: impact + risk + dead code + gate
-    Ci {
-        /// Git ref to diff against (default: unstaged changes)
-        #[arg(long)]
-        base: Option<String>,
-        /// Read diff from stdin instead of running git
-        #[arg(long)]
-        stdin: bool,
-        /// Output format: text, json (use --json as shorthand for --format json; mermaid not supported)
-        #[arg(long, default_value = "text", value_parser = parse_text_or_json_format)]
-        format: OutputFormat,
-        /// Shorthand for --format json
-        #[arg(long, conflicts_with = "format")]
-        json: bool,
-        /// Gate threshold: high, medium, off (default: high)
-        #[arg(long, default_value = "high")]
-        gate: GateThreshold,
-        /// Maximum token budget for output
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
-    },
-    /// Trace call chain between two functions
-    Trace {
-        /// Source function name or file:function
-        source: String,
-        /// Target function name or file:function
-        target: String,
-        /// Max search depth (1-50)
-        #[arg(long, default_value = "10", value_parser = clap::value_parser!(u16).range(1..=50))]
-        max_depth: u16,
-        /// Output format: text, json, mermaid (use --json as shorthand for --format json)
-        #[arg(long, default_value = "text")]
-        format: OutputFormat,
-        /// Shorthand for --format json
-        #[arg(long, conflicts_with = "format")]
-        json: bool,
-    },
-    /// Find tests that exercise a function
-    TestMap {
-        /// Function name or file:function
-        name: String,
-        /// Max call chain depth to search
-        #[arg(long, default_value = "5")]
-        depth: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// What do I need to know to work on this file
-    Context {
-        #[command(flatten)]
-        args: args::ContextArgs,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Find functions with no callers (dead code detection)
-    Dead {
-        #[command(flatten)]
-        args: args::DeadArgs,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Gather minimal code context to answer a question
-    Gather {
-        #[command(flatten)]
-        args: args::GatherArgs,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Manage cross-project search registry
-    Project {
-        #[command(subcommand)]
-        subcmd: ProjectCommand,
-    },
-    /// Remove stale chunks and rebuild index
-    Gc {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Codebase quality snapshot — dead code, staleness, hotspots, coverage
-    Health {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Toggle audit mode (exclude notes from search/read)
-    #[command(name = "audit-mode")]
-    AuditMode {
-        /// State: on or off (omit to query current state)
-        state: Option<AuditModeState>,
-        /// Expiry duration (e.g., "30m", "1h", "2h30m")
-        #[arg(long, default_value = "30m")]
-        expires: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Check index freshness — list stale and missing files
-    Stale {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-        /// Show counts only, skip file list
-        #[arg(long)]
-        count_only: bool,
-    },
-    /// Auto-suggest notes from codebase patterns (dead code, untested hotspots)
-    Suggest {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-        /// Apply suggestions (add notes to docs/notes.toml)
-        #[arg(long)]
-        apply: bool,
-    },
-    /// Read a file with notes injected as comments
-    Read {
-        /// File path relative to project root
-        path: String,
-        /// Focus on a specific function (returns only that function + type deps)
-        #[arg(long)]
-        focus: Option<String>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Find functions related by shared callers, callees, or types
-    Related {
-        /// Function name or file:function
-        name: String,
-        /// Max results per category
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Suggest where to add new code matching a description
-    Where {
-        /// Description of the code to add
-        description: String,
-        /// Max file suggestions
-        #[arg(short = 'n', long, default_value = "3")]
-        limit: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Pre-investigation dashboard: search, group, count callers/tests, check staleness
-    Scout {
-        #[command(flatten)]
-        args: args::ScoutArgs,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Task planning with template classification: classify + scout + checklist
-    Plan {
-        /// Task description to plan
-        description: String,
-        /// Max scout file groups
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
-    },
-    /// One-shot implementation context: scout + code + impact + placement + notes
-    Task {
-        /// Task description
-        description: String,
-        /// Max file groups to return
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-        /// Maximum token budget (waterfall across sections)
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
-    },
-    /// Convert documents (PDF, HTML, CHM) to Markdown
-    #[cfg(feature = "convert")]
-    Convert {
-        /// File or directory to convert
-        path: String,
-        /// Output directory for .md files [default: same as input]
-        #[arg(short = 'o', long)]
-        output: Option<String>,
-        /// Overwrite existing .md files
-        #[arg(long)]
-        overwrite: bool,
-        /// Preview conversions without writing files
-        #[arg(long)]
-        dry_run: bool,
-        /// Cleaning rule tags (comma-separated, e.g. "aveva,generic") [default: all]
-        #[arg(long)]
-        clean_tags: Option<String>,
-    },
-    /// Generate training data for LoRA fine-tuning from git history
-    TrainData {
-        /// Paths to git repositories to process
-        #[arg(long, required = true, num_args = 1..)]
-        repos: Vec<std::path::PathBuf>,
-        /// Output JSONL file path
-        #[arg(long)]
-        output: std::path::PathBuf,
-        /// Maximum commits to process per repo (0 = unlimited)
-        #[arg(long, default_value = "0")]
-        max_commits: usize,
-        /// Minimum commit message length to include
-        #[arg(long, default_value = "15")]
-        min_msg_len: usize,
-        /// Maximum files changed per commit to include
-        #[arg(long, default_value = "20")]
-        max_files: usize,
-        /// Maximum identical-query triplets (dedup cap)
-        #[arg(long, default_value = "5")]
-        dedup_cap: usize,
-        /// Resume from checkpoint
-        #[arg(long)]
-        resume: bool,
-        /// Verbose output
-        #[arg(long)]
-        verbose: bool,
-    },
-}
-
-/// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
-pub fn run_with(mut cli: Cli) -> Result<()> {
-    // Log command for telemetry (opt-in via CQS_TELEMETRY=1)
-    let cqs_dir = cqs::resolve_index_dir(&find_project_root());
-    let telem_args: Vec<String> = std::env::args().collect();
-    let (telem_cmd, telem_query) = telemetry::describe_command(&telem_args);
-    telemetry::log_command(&cqs_dir, &telem_cmd, telem_query.as_deref(), None);
-
-    // Load config and apply defaults (CLI flags override config)
-    let config = cqs::config::Config::load(&find_project_root());
-    apply_config_defaults(&mut cli, &config);
-
-    // Clamp limit to prevent usize::MAX wrapping to -1 in SQLite queries
-    cli.limit = cli.limit.clamp(1, 100);
-
-    match cli.command {
-        Some(Commands::Batch) => batch::cmd_batch(),
-        Some(Commands::Blame {
-            ref name,
-            depth,
-            callers,
-            json,
-        }) => cmd_blame(name, json, depth, callers),
-        Some(Commands::Chat) => chat::cmd_chat(),
-        Some(Commands::Init) => cmd_init(&cli),
-        Some(Commands::Doctor) => cmd_doctor(),
-        Some(Commands::Index { ref args }) => cmd_index(&cli, args),
-        Some(Commands::Stats { json }) => cmd_stats(&cli, json),
-        Some(Commands::Watch {
-            debounce,
-            no_ignore,
-            poll,
-        }) => watch::cmd_watch(&cli, debounce, no_ignore, poll),
-        Some(Commands::Completions { shell }) => {
-            cmd_completions(shell);
-            Ok(())
-        }
-        Some(Commands::Deps {
-            ref name,
-            reverse,
-            json,
-        }) => cmd_deps(name, reverse, json),
-        Some(Commands::Callers { ref name, json }) => cmd_callers(name, json),
-        Some(Commands::Callees { ref name, json }) => cmd_callees(name, json),
-        Some(Commands::Onboard {
-            ref query,
-            depth,
-            json,
-            tokens,
-        }) => cmd_onboard(&cli, query, depth, json, tokens),
-        Some(Commands::Notes { ref subcmd }) => cmd_notes(&cli, subcmd),
-        Some(Commands::Ref { ref subcmd }) => cmd_ref(&cli, subcmd),
-        Some(Commands::Diff {
-            ref source,
-            ref target,
-            threshold,
-            ref lang,
-            json,
-        }) => cmd_diff(source, target.as_deref(), threshold, lang.as_deref(), json),
-        Some(Commands::Drift {
-            ref reference,
-            threshold,
-            min_drift,
-            ref lang,
-            limit,
-            json,
-        }) => cmd_drift(
-            reference,
-            threshold,
-            min_drift,
-            lang.as_deref(),
-            limit,
-            json,
-        ),
-        Some(Commands::Explain {
-            ref name,
-            json,
-            tokens,
-        }) => cmd_explain(&cli, name, json, tokens),
-        Some(Commands::Similar {
-            ref target,
-            limit,
-            threshold,
-            json,
-        }) => cmd_similar(&cli, target, limit, threshold, json),
-        Some(Commands::Impact {
-            ref args,
-            format,
-            json,
-        }) => {
-            let format = if json { OutputFormat::Json } else { format };
-            cmd_impact(
-                &args.name,
-                args.depth,
-                &format,
-                args.suggest_tests,
-                args.include_types,
-            )
-        }
-        Some(Commands::ImpactDiff {
-            ref base,
-            stdin,
-            json,
-        }) => cmd_impact_diff(&cli, base.as_deref(), stdin, json),
-        Some(Commands::Review {
-            ref base,
-            stdin,
-            format,
-            json,
-            tokens,
-        }) => {
-            let format = if json { OutputFormat::Json } else { format };
-            cmd_review(base.as_deref(), stdin, &format, tokens)
-        }
-        Some(Commands::Ci {
-            ref base,
-            stdin,
-            format,
-            json,
-            ref gate,
-            tokens,
-        }) => {
-            let format = if json { OutputFormat::Json } else { format };
-            cmd_ci(base.as_deref(), stdin, &format, gate, tokens)
-        }
-        Some(Commands::Trace {
-            ref source,
-            ref target,
-            max_depth,
-            format,
-            json,
-        }) => {
-            let format = if json { OutputFormat::Json } else { format };
-            cmd_trace(source, target, max_depth as usize, &format)
-        }
-        Some(Commands::TestMap {
-            ref name,
-            depth,
-            json,
-        }) => cmd_test_map(name, depth, json),
-        Some(Commands::Context { ref args, json }) => cmd_context(
-            &cli,
-            &args.path,
-            json,
-            args.summary,
-            args.compact,
-            args.tokens,
-        ),
-        Some(Commands::Dead { ref args, json }) => {
-            cmd_dead(&cli, json, args.include_pub, args.min_confidence)
-        }
-        Some(Commands::Gather { ref args, json }) => cmd_gather(
-            &cli,
-            &args.query,
-            args.expand,
-            args.direction,
-            args.limit,
-            args.tokens,
-            args.ref_name.as_deref(),
-            json,
-        ),
-        Some(Commands::Project { ref subcmd }) => cmd_project(subcmd),
-        Some(Commands::Gc { json }) => cmd_gc(json),
-        Some(Commands::Health { json }) => cmd_health(json),
-        Some(Commands::AuditMode {
-            ref state,
-            ref expires,
-            json,
-        }) => cmd_audit_mode(state.as_ref(), expires, json),
-        Some(Commands::Stale { json, count_only }) => cmd_stale(&cli, json, count_only),
-        Some(Commands::Suggest { json, apply }) => cmd_suggest(json, apply),
-        Some(Commands::Read {
-            ref path,
-            ref focus,
-            json,
-        }) => cmd_read(path, focus.as_deref(), json),
-        Some(Commands::Related {
-            ref name,
-            limit,
-            json,
-        }) => cmd_related(&cli, name, limit, json),
-        Some(Commands::Where {
-            ref description,
-            limit,
-            json,
-        }) => cmd_where(description, limit, json),
-        Some(Commands::Scout { ref args, json }) => {
-            cmd_scout(&cli, &args.query, args.limit, json, args.tokens)
-        }
-        Some(Commands::Plan {
-            ref description,
-            limit,
-            json,
-            tokens,
-        }) => cmd_plan(&cli, description, limit, json, tokens),
-        Some(Commands::Task {
-            ref description,
-            limit,
-            json,
-            tokens,
-        }) => cmd_task(&cli, description, limit, json, tokens),
-        #[cfg(feature = "convert")]
-        Some(Commands::Convert {
-            ref path,
-            ref output,
-            overwrite,
-            dry_run,
-            ref clean_tags,
-        }) => cmd_convert(
-            path,
-            output.as_deref(),
-            overwrite,
-            dry_run,
-            clean_tags.as_deref(),
-        ),
-        Some(Commands::TrainData {
-            repos,
-            output,
-            max_commits,
-            min_msg_len,
-            max_files,
-            dedup_cap,
-            resume,
-            verbose,
-        }) => cmd_train_data(cqs::train_data::TrainDataConfig {
-            repos,
-            output,
-            max_commits,
-            min_msg_len,
-            max_files,
-            dedup_cap,
-            resume,
-            verbose,
-        }),
-        None => match &cli.query {
-            Some(q) => cmd_query(&cli, q),
-            None => {
-                println!("Usage: cqs <query> or cqs <command>");
-                println!("Run 'cqs --help' for more information.");
-                Ok(())
-            }
-        },
-    }
-}
-
-/// Generate shell completion scripts for the specified shell
-fn cmd_completions(shell: clap_complete::Shell) {
-    use clap::CommandFactory;
-    clap_complete::generate(shell, &mut Cli::command(), "cqs", &mut std::io::stdout());
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+    use definitions::Commands;
 
     // ===== Default values tests =====
 
@@ -1209,7 +329,7 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "notes", "list"]).unwrap();
         match cli.command {
             Some(Commands::Notes { ref subcmd }) => match subcmd {
-                NotesCommand::List {
+                commands::NotesCommand::List {
                     warnings,
                     patterns,
                     json,
@@ -1231,7 +351,7 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "notes", "list", "--warnings"]).unwrap();
         match cli.command {
             Some(Commands::Notes { ref subcmd }) => match subcmd {
-                NotesCommand::List { warnings, .. } => {
+                commands::NotesCommand::List { warnings, .. } => {
                     assert!(warnings);
                 }
                 _ => panic!("Expected List subcommand"),
@@ -1246,7 +366,7 @@ mod tests {
             .unwrap();
         match cli.command {
             Some(Commands::Notes { ref subcmd }) => match subcmd {
-                NotesCommand::Add {
+                commands::NotesCommand::Add {
                     text, sentiment, ..
                 } => {
                     assert_eq!(text, "test note");
@@ -1271,7 +391,7 @@ mod tests {
         .unwrap();
         match cli.command {
             Some(Commands::Notes { ref subcmd }) => match subcmd {
-                NotesCommand::Add { mentions, .. } => {
+                commands::NotesCommand::Add { mentions, .. } => {
                     let m = mentions.as_ref().unwrap();
                     assert_eq!(m.len(), 2);
                     assert_eq!(m[0], "src/lib.rs");
@@ -1288,7 +408,7 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "notes", "remove", "some note text"]).unwrap();
         match cli.command {
             Some(Commands::Notes { ref subcmd }) => match subcmd {
-                NotesCommand::Remove { text, .. } => {
+                commands::NotesCommand::Remove { text, .. } => {
                     assert_eq!(text, "some note text");
                 }
                 _ => panic!("Expected Remove subcommand"),
@@ -1312,7 +432,7 @@ mod tests {
         .unwrap();
         match cli.command {
             Some(Commands::Notes { ref subcmd }) => match subcmd {
-                NotesCommand::Update {
+                commands::NotesCommand::Update {
                     text,
                     new_text,
                     new_sentiment,
@@ -1335,7 +455,7 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "ref", "add", "tokio", "/path/to/source"]).unwrap();
         match cli.command {
             Some(Commands::Ref { ref subcmd }) => match subcmd {
-                RefCommand::Add {
+                commands::RefCommand::Add {
                     name,
                     source,
                     weight,
@@ -1357,7 +477,7 @@ mod tests {
                 .unwrap();
         match cli.command {
             Some(Commands::Ref { ref subcmd }) => match subcmd {
-                RefCommand::Add { weight, .. } => {
+                commands::RefCommand::Add { weight, .. } => {
                     assert!((*weight - 0.5).abs() < 0.001);
                 }
                 _ => panic!("Expected Add subcommand"),
@@ -1372,7 +492,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Ref {
-                subcmd: RefCommand::List { .. }
+                subcmd: commands::RefCommand::List { .. }
             })
         ));
     }
@@ -1382,7 +502,7 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "ref", "remove", "tokio"]).unwrap();
         match cli.command {
             Some(Commands::Ref { ref subcmd }) => match subcmd {
-                RefCommand::Remove { name } => assert_eq!(name, "tokio"),
+                commands::RefCommand::Remove { name } => assert_eq!(name, "tokio"),
                 _ => panic!("Expected Remove subcommand"),
             },
             _ => panic!("Expected Ref command"),
@@ -1394,7 +514,7 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "ref", "update", "tokio"]).unwrap();
         match cli.command {
             Some(Commands::Ref { ref subcmd }) => match subcmd {
-                RefCommand::Update { name } => assert_eq!(name, "tokio"),
+                commands::RefCommand::Update { name } => assert_eq!(name, "tokio"),
                 _ => panic!("Expected Update subcommand"),
             },
             _ => panic!("Expected Ref command"),
@@ -1851,7 +971,7 @@ mod tests {
             llm_api_base: None,
             llm_max_tokens: None,
         };
-        apply_config_defaults(&mut cli, &config);
+        config::apply_config_defaults(&mut cli, &config);
 
         // CLI values should be preserved
         assert_eq!(cli.limit, 10);
@@ -1876,7 +996,7 @@ mod tests {
             llm_api_base: None,
             llm_max_tokens: None,
         };
-        apply_config_defaults(&mut cli, &config);
+        config::apply_config_defaults(&mut cli, &config);
 
         assert_eq!(cli.limit, 15);
         assert!((cli.threshold - 0.7).abs() < 0.001);
@@ -1889,7 +1009,7 @@ mod tests {
     fn test_apply_config_defaults_empty_config() {
         let mut cli = Cli::try_parse_from(["cqs", "query"]).unwrap();
         let config = cqs::config::Config::default();
-        apply_config_defaults(&mut cli, &config);
+        config::apply_config_defaults(&mut cli, &config);
 
         // Should keep CLI defaults
         assert_eq!(cli.limit, 5);
@@ -1906,19 +1026,19 @@ mod tests {
         // Verify that extremely large limits get clamped to 100
         let mut cli = Cli::try_parse_from(["cqs", "-n", "999", "query"]).unwrap();
         let config = cqs::config::Config::default();
-        apply_config_defaults(&mut cli, &config);
+        config::apply_config_defaults(&mut cli, &config);
         cli.limit = cli.limit.clamp(1, 100);
         assert_eq!(cli.limit, 100);
 
         // Verify that limit 0 gets clamped to 1
         let mut cli = Cli::try_parse_from(["cqs", "-n", "0", "query"]).unwrap();
-        apply_config_defaults(&mut cli, &config);
+        config::apply_config_defaults(&mut cli, &config);
         cli.limit = cli.limit.clamp(1, 100);
         assert_eq!(cli.limit, 1);
 
         // Verify normal limits pass through
         let mut cli = Cli::try_parse_from(["cqs", "-n", "10", "query"]).unwrap();
-        apply_config_defaults(&mut cli, &config);
+        config::apply_config_defaults(&mut cli, &config);
         cli.limit = cli.limit.clamp(1, 100);
         assert_eq!(cli.limit, 10);
     }

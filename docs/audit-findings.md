@@ -1,717 +1,519 @@
-# Audit Findings — v1.0.7
+## Documentation
 
-## API Design
-
-#### AD-13: `generate_nl_with_call_context` takes 5 positional parameters — `max_callers`/`max_callees` should live in `CallContext`
+#### DOC-22: SECURITY.md still lists LoRA model as default
 - **Difficulty:** easy
-- **Location:** src/nl.rs:274-279, src/cli/pipeline.rs:999-1005
-- **Description:** `generate_nl_with_call_context(chunk, ctx, callee_doc_freq, max_callers, max_callees)` has 5 positional parameters. The last two are configuration that controls how `ctx` is applied, but they are passed separately from it. The call site uses magic literals `5, 5` with inline comments to identify them (pipeline.rs:1003-1004). A new caller has to discover the intended defaults by reading the existing call site. `CallContext` is a public struct exported in `lib.rs:120`. Folding `max_callers` and `max_callees` into `CallContext` (with `Default` yielding 5) would make the API self-documenting and reduce the function arity. The IDF threshold (0.10, hardcoded at nl.rs:307) is a third implicit parameter that could join the same struct for completeness.
-- **Suggested fix:** Extend `CallContext` with the limits and reduce function arity:
-  ```rust
-  pub struct CallContext {
-      pub callers: Vec<String>,
-      pub callees: Vec<String>,
-      pub max_callers: usize,    // default: 5
-      pub max_callees: usize,    // default: 5
-      pub idf_threshold: f32,    // default: 0.10 (optional addition)
-  }
-  // Signature becomes:
-  pub fn generate_nl_with_call_context(chunk: &Chunk, ctx: &CallContext, callee_doc_freq: &HashMap<String, f32>) -> String
-  ```
+- **Location:** SECURITY.md:40-41
+- **Description:** v1.5.0 switched the default model to `intfloat/e5-base-v2`, but SECURITY.md line 40 still says `Default: huggingface.co/jamie8johnson/e5-base-v2-code-search (LoRA fine-tune)` and line 41 says `Fallback: intfloat/e5-base-v2 (via CQS_EMBEDDING_MODEL env var)`. The default/fallback relationship is now inverted — base E5 is the default, and users can override with `CQS_EMBEDDING_MODEL` to use the LoRA model.
+- **Suggested fix:** Swap default/fallback: `Default: intfloat/e5-base-v2` and `Override: jamie8johnson/e5-base-v2-code-search (LoRA fine-tune, via CQS_EMBEDDING_MODEL env var)`.
 
-#### AD-14: `callee_document_frequencies` return type forces callers to perform the frequency normalization themselves
+#### DOC-23: PRIVACY.md still lists LoRA model as default
 - **Difficulty:** easy
-- **Location:** src/store/calls.rs:1242, src/cli/pipeline.rs:926-929
-- **Description:** `callee_document_frequencies()` returns `Vec<(String, usize)>` (raw caller counts), but its sole caller immediately converts the result into `HashMap<String, f32>` (fractional frequencies, 0.0–1.0) by dividing each count by `total_chunks`. The function name uses the term "document frequencies", which in information retrieval means a ratio, but it returns raw counts. Callers must know to perform the division and must independently obtain `total_chunks` to do so. This splits a single conceptual operation across two call sites and introduces a second failure mode (wrong divisor). Additionally, the `usize` return requires a cast to `f32` in the caller, which is a silent precision loss for large codebases.
-- **Suggested fix:** Option A (naming): rename to `callee_caller_counts()` to match what the SQL actually returns (`COUNT(DISTINCT caller_name)` per callee). Option B (API): take `total_chunks: usize` as a parameter and return `HashMap<String, f32>` directly, keeping the normalization co-located with the function that knows the semantics.
+- **Location:** PRIVACY.md:26-27
+- **Description:** Same issue as DOC-22. Line 26 says `Default: jamie8johnson/e5-base-v2-code-search (LoRA fine-tune)` and line 27 says `Fallback: intfloat/e5-base-v2`. Inverted since v1.5.0.
+- **Suggested fix:** Swap default/override as in SECURITY.md.
 
-#### AD-15: `update_embeddings_batch` parameter tuple `(String, Embedding)` — `String` role undocumented
+#### DOC-24: SECURITY.md/PRIVACY.md model download size stale (~547MB)
 - **Difficulty:** easy
-- **Location:** src/store/chunks.rs:79-82
-- **Description:** `update_embeddings_batch(updates: &[(String, Embedding)])` takes a slice of tuples where `String` is a chunk ID. This is not stated in the function signature or the doc comment (there is no doc comment). Other store batch methods either use domain types (`&[(Chunk, Embedding)]` in `upsert_chunks_batch`) or document their tuple element roles. A reader encountering this signature cannot tell whether `String` is an ID, a name, a hash, or an origin path without tracing the call site. Prior audit AD-1 addressed the same class of issue for `file` fields (String → PathBuf). The fix here is lighter weight: a doc comment is sufficient; a newtype is optional.
-- **Suggested fix:** Add a doc comment:
-  ```rust
-  /// Update embeddings for existing chunks without changing their content.
-  ///
-  /// `updates` is a slice of `(chunk_id, embedding)` pairs. Chunk IDs not found
-  /// in the store are silently skipped (rows_affected == 0).
-  pub fn update_embeddings_batch(&self, updates: &[(String, Embedding)]) -> Result<usize, StoreError>
-  ```
+- **Location:** SECURITY.md:39, PRIVACY.md:28, src/cli/commands/init.rs:45
+- **Description:** The LoRA model was ~547MB. The base E5 ONNX model (now default) is ~438MB based on actual blob size in the HuggingFace cache. SECURITY.md, PRIVACY.md, and `init.rs` all still say "~547MB". Users on metered connections see a misleading size estimate.
+- **Suggested fix:** Update all three locations to `~438MB` (or `~440MB` for a round number).
 
-#### AD-16: `chunks_paged` cursor-return convention is ambiguous and inconsistent with `embedding_batches`
+#### DOC-25: README Retrieval Quality table header says "E5-base-v2 LoRA (cqs)"
 - **Difficulty:** easy
-- **Location:** src/store/chunks.rs:1085-1116
-- **Description:** `chunks_paged(after_rowid, limit)` returns `(Vec<ChunkSummary>, i64)` where the `i64` is the max rowid seen in the page, for use as the next `after_rowid`. Two issues:
-  1. When the returned vec is empty, the cursor is unchanged (equals `after_rowid`). The doc mentions "iteration is complete" but not what value the cursor holds, and a caller that passes the returned cursor unconditionally will loop forever.
-  2. `embedding_batches()` (same file, line 1312) solves identical pagination via an `Iterator` that handles the cursor internally — callers never see a raw rowid. Having both APIs for the same operation is inconsistent. The enrichment pass in `pipeline.rs` uses `chunks_paged` with manual cursor management; `embedding_batches` exists as the better pattern.
-- **Suggested fix:** Document the empty-page cursor value: "When the returned vec is empty, the returned cursor equals `after_rowid`; do not pass it to a subsequent call." Consider adding `chunks_batches(batch_size) -> impl Iterator<Item=Result<Vec<ChunkSummary>>>` analogous to `embedding_batches`, and routing `enrichment_pass` through it.
+- **Location:** README.md:574
+- **Description:** The Retrieval Quality comparison table header says `E5-base-v2 LoRA (cqs)`. Since v1.5.0, the default model is base E5 (not LoRA). The 92.7% R@1 number in the table is from the enriched hard eval (base E5 + contrastive summaries), not from the LoRA model. The header should reflect the actual model.
+- **Suggested fix:** Change header to `E5-base-v2 (cqs)` or `E5-base-v2 + enrichment (cqs)`.
 
-#### AD-17: `enrichment_pass` `quiet: bool` parameter — output-control concern leaks into internal pipeline function
+#### DOC-26: ROADMAP.md says "Current: v1.4.2" but Cargo.toml is v1.5.0
 - **Difficulty:** easy
-- **Location:** src/cli/pipeline.rs:911
-- **Description:** `enrichment_pass(store, embedder, quiet: bool)` has no doc comment and takes a `quiet` flag that controls progress-bar display and `eprintln!` output. `run_index_pipeline` (same file), which owns the first indexing pass, does not have a `quiet` flag — it emits output unconditionally via `eprintln!`. The asymmetry means these two closely related pipeline functions have inconsistent output contracts. `quiet` is a CLI concern (the user's `--quiet` flag from `index.rs:143`) flowing into an internal `pub(crate)` function, coupling the function to CLI semantics. It also lacks a doc comment explaining any of its parameters or return value.
-- **Suggested fix:** At minimum, add a doc comment:
-  ```rust
-  /// Re-embed all chunks with call graph context (caller/callee names).
-  ///
-  /// Returns the number of chunks re-embedded. Pass `quiet = true` to suppress
-  /// progress bar and eprintln output (e.g., in `--quiet` CLI mode).
-  ```
-  Longer-term: unify output policy with `run_index_pipeline` (both suppress or both accept a verbosity level).
+- **Location:** ROADMAP.md:3
+- **Description:** `ROADMAP.md` line 3 says `## Current: v1.4.2` but `Cargo.toml` is at v1.5.0 and CHANGELOG has a `[1.5.0]` entry dated 2026-03-25. The roadmap was not updated for the v1.5.0 release.
+- **Suggested fix:** Update to `## Current: v1.5.0` and add a summary line for v1.5.0 changes.
 
-## Observability
-
-#### OB-8: `enrichment_pass()` missing skip metrics and timing
+#### DOC-27: README TL;DR "89.1% Recall@1" ambiguous after model switch
 - **Difficulty:** easy
-- **Location:** src/cli/pipeline.rs:911-1029
-- **Description:** `enrichment_pass()` has a basic span but logs only final enriched_count. Missing:
-  1. Skip count: how many chunks had no callers/callees (line 985-986 silently skips)
-  2. Batch flush count: how many batches were flushed
-  3. Callee frequency count: total unique callees suppressed (could be valuable for tuning)
-  4. Timing context: how long the pass took (compare to pipeline main pass)
+- **Location:** README.md:5, README.md:398, README.md:544
+- **Description:** Three places in README say "89.1% Recall@1 on confusable function retrieval (92.7% with full enrichment pipeline)". The 89.1% was the raw hard eval number for both base E5 and LoRA v7. With v1.5.0 shipping base E5 as default, the user-facing number should lead with what the user actually gets out of the box. Since `cqs index --llm-summaries` enables the enrichment pipeline that reaches 92.7%, the raw 89.1% is the baseline. This is technically accurate but could be clearer — consider noting "89.1% raw, 92.7% with LLM enrichment" to distinguish.
+- **Suggested fix:** Low priority — the numbers are correct. Optionally clarify that 89.1% is without `--llm-summaries` and 92.7% is with it.
 
-  For comparison, `run_index_pipeline()` (line 889-897) logs detailed structured metrics: `total_embedded`, `total_cached`, `gpu_failures`, `parse_errors`, `total_type_edges`, `total_calls`. The enrichment pass should follow the same pattern.
-- **Suggested fix:** Add structured logging fields to the final `tracing::info!` call:
-  ```rust
-  tracing::info!(
-      enriched_count,
-      skipped_leaf_nodes = total_chunks - enriched_count,  // approximation at least
-      total_callee_freq_entries = callee_doc_freq.len(),
-      utility_callees_filtered = callees_suppressed_count,
-      "Enrichment pass complete"
-  );
-  ```
-  Also track `skipped_count` explicitly during the loop to get exact count.
-
-#### OB-9: `update_embeddings_batch()` uses per-row UPDATE instead of batch UPDATE
-- **Difficulty:** medium
-- **Location:** src/cli/pipeline.rs:1050, src/store/chunks.rs:79-105
-- **Description:** `update_embeddings_batch()` executes one `UPDATE` per embedding (line 95-100), unlike the pattern used by `upsert_chunks_batch()` which batches INSERT with `QueryBuilder`. For 64-item batches, this means 64 individual SQLite transactions within a single outer transaction, reducing observability and likely hurting latency.
-
-  The missing span context makes it hard to see: (a) how long embedding serialization takes, (b) how long the SQL executions take, (c) whether batching would help. The span captures `count` but no per-operation timing.
-- **Suggested fix:** Either:
-  1. Implement batch UPDATE with `QueryBuilder::push_values()` (prefer, matches `upsert_chunks_batch` pattern)
-  2. Add child spans around the loop to surface per-op cost:
-     ```rust
-     let _span = tracing::info_span!("embedding_serialization").entered();
-     let embedding_bytes = ...; // serialize
-     drop(_span);
-
-     let _span = tracing::info_span!("embedding_updates", count = updates.len()).entered();
-     for (...) { ... }  // individual updates
-     ```
-
-#### OB-10: `chunks_paged()` has debug span but no result metrics
+#### DOC-28: Cargo.toml description says "0.965 NDCG@10" — enriched eval shows 0.9624
 - **Difficulty:** easy
-- **Location:** src/store/chunks.rs:1085-1114
-- **Description:** `chunks_paged()` (debug-level span, line 1090) logs the inputs (`after_rowid`, `limit`) but not the output: how many chunks were returned. When called in a loop (enrichment_pass line 967), debug logs don't show progress. Compare to `upsert_chunks_batch` which logs `count` (input), and callers know how many were written. For pagination debugging, the actual chunk count retrieved is essential.
-- **Suggested fix:** Add `fetched` field to the span's structured data:
-  ```rust
-  let chunks: Vec<ChunkSummary> = ...;
-  let fetched = chunks.len();
-  tracing::debug!(fetched, "Paged {} chunks", fetched);
-  ```
-  Or use `Span::record()` if entering the span before the query is needed.
-
-#### OB-11: `flush_enrichment_batch()` missing tracing span
-- **Difficulty:** easy
-- **Location:** src/cli/pipeline.rs:1032-1054
-- **Description:** `flush_enrichment_batch()` has no tracing span, called from `enrichment_pass()` on each flush (line 1011, 1018). The function does three observable operations: (1) serialize NL texts, (2) embed documents, (3) update store. Without a span, it's invisible to structured logging. Callers only see the parent span from `enrichment_pass()`.
-- **Suggested fix:** Add tracing span with key metrics:
-  ```rust
-  fn flush_enrichment_batch(...) -> Result<usize> {
-      let _span = tracing::debug_span!("flush_enrichment_batch", batch_size = batch.len()).entered();
-      let texts: Vec<&str> = ...;
-      let embeddings = embedder.embed_documents(&texts)...?;
-      // span auto-records elapsed via tracing infrastructure
-      ...
-  }
-  ```
-
-#### OB-12: `callee_document_frequencies()` returns usize but no span context on result
-- **Difficulty:** easy
-- **Location:** src/store/calls.rs:1242-1261
-- **Description:** `callee_document_frequencies()` has a debug span but doesn't log the result: how many unique callees were found. For enrichment_pass (line 923), knowing "found 127 unique callees with frequency data" is useful for debugging IDF filtering logic. The span captures no output size.
-- **Suggested fix:** Record the result count in the span:
-  ```rust
-  let result: Vec<_> = ...;
-  let count = result.len();
-  tracing::debug!(count, "Computed callee frequencies");
-  Ok(result)
-  ```
+- **Location:** Cargo.toml:6
+- **Description:** Cargo.toml description says `0.965 NDCG@10`. The enriched hard eval (which is the v1.5.0 flagship metric) shows 0.9624 NDCG@10 per CLAUDE.md memory. The 0.965 was the pre-enrichment metric from an older eval run. The full-pipeline eval shows 0.9478 NDCG@10. Neither matches 0.965 exactly. The Cargo.toml metric should match one of the two measured values.
+- **Suggested fix:** Use `0.9624 NDCG@10` (enriched hard eval) or `0.9478 NDCG@10` (full-pipeline eval) — pick whichever metric the project wants to lead with in crates.io.
 
 ## Error Handling
 
-#### EH-8: `flush_enrichment_batch` leaves progress bar dangling on error
+#### EH-23: `find_contrastive_neighbors` failure silently degrades all summaries to non-contrastive
 - **Difficulty:** easy
-- **Location:** src/cli/pipeline.rs:1011, 1018 / src/cli/pipeline.rs:950-961
-- **Description:** `enrichment_pass` creates a `ProgressBar` at line 950, but when `flush_enrichment_batch` returns an error the `?` propagates immediately, bypassing `progress.finish_and_clear()` at line 1021. The progress bar is left in a spinning/incomplete state in the terminal. The caller in `index.rs` catches the error (line 149) and prints a warning, but the terminal is already corrupted with the dangling bar.
-- **Suggested fix:** Use a guard or call `progress.abandon()` before returning, or restructure with a closure/defer pattern:
-  ```rust
-  let result = (|| -> Result<usize> {
-      // loop body
-  })();
-  progress.finish_and_clear();
-  result
-  ```
+- **Location:** src/llm/summary.rs:46-52
+- **Description:** When `find_contrastive_neighbors` fails, the error is logged at `warn` level and the entire batch falls back to non-contrastive prompts (`neighbor_map` becomes empty HashMap). This is a correct recovery strategy, but the fallback is completely invisible to the caller — `llm_summary_pass` returns `Ok(count)` with no indication that summaries were generated without contrastive context. For a ~$0.38 Haiku batch, the user has no way to know their summaries are lower quality than expected.
+- **Suggested fix:** Add a `degraded: bool` field to the return value or log at `warn` level with an actionable message (e.g., "Run `cqs index --llm-summaries` again to retry contrastive generation"). Alternatively, propagate the error and let the caller decide.
 
-#### EH-9: `flush_enrichment_batch` silent truncation on embedding count mismatch
-- **Difficulty:** easy
-- **Location:** src/cli/pipeline.rs:1043-1047
-- **Description:** `batch.drain(..).zip(embeddings)` stops at the shorter iterator. If `embed_documents` returns fewer embeddings than texts (edge case in internal batching or a partial GPU failure), items are silently dropped from the batch — they are consumed by `drain` but never written to the store. The returned count will be understated, and there is no warning. The same pattern does not exist in `upsert_chunks_batch` which asserts lengths match.
-- **Suggested fix:** Assert or validate lengths before zipping:
-  ```rust
-  anyhow::ensure!(
-      embeddings.len() == texts.len(),
-      "Embedding count mismatch: expected {}, got {}",
-      texts.len(), embeddings.len()
-  );
-  ```
-
-#### EH-10: `update_embeddings_batch` silently no-ops for unknown chunk IDs
-- **Difficulty:** easy
-- **Location:** src/store/chunks.rs:95-100
-- **Description:** The `UPDATE chunks SET embedding = ?1 WHERE id = ?2` query executes without checking `rows_affected()`. If a chunk ID no longer exists (e.g., pruned between enrichment fetch and write, or a race with `delete_by_origin`), the UPDATE silently updates 0 rows. `enriched_count` in `enrichment_pass` is incremented for these phantom writes (it counts items in `updates`, not actual DB rows changed). No warning is emitted. The mismatch between claimed and actual enrichment count could mask stale data issues.
-- **Suggested fix:** Check rows_affected and emit a debug/warn if any ID was not found:
-  ```rust
-  let result = sqlx::query("UPDATE chunks SET embedding = ?1 WHERE id = ?2")
-      .bind(&embedding_bytes[i])
-      .bind(id)
-      .execute(&mut *tx)
-      .await?;
-  if result.rows_affected() == 0 {
-      tracing::debug!(chunk_id = %id, "Enrichment update found no row (pruned race?)");
-  }
-  ```
-
-#### EH-11: `flush_enrichment_batch` drains batch before store write — items lost on store error
+#### EH-24: `submit_or_resume` swallows `get_pending` error and returns empty results
 - **Difficulty:** medium
-- **Location:** src/cli/pipeline.rs:1043-1051
-- **Description:** `batch.drain(..)` is called to build `updates` (line 1044), emptying the batch before `store.update_embeddings_batch(...)` is called (line 1050). If the store write fails, the drained items are gone from `batch` — the caller cannot retry them. The `?` at line 1051 propagates the error, so in practice the enrichment pass aborts entirely, but the drain-before-write ordering means retry logic (if added later) would lose items. This is a latent correctness issue. By contrast, the drain should happen after a successful store write, or the IDs should be preserved for re-queue.
-- **Suggested fix:** Drain after success, or hold `updates` and only clear batch on success:
-  ```rust
-  let texts: Vec<&str> = batch.iter().map(|(_, nl)| nl.as_str()).collect();
-  let embeddings = embedder.embed_documents(&texts).context("...")?;
-  let updates: Vec<(String, Embedding)> = batch.iter()
-      .zip(embeddings)
-      .map(|((id, _), emb)| (id.clone(), emb.with_sentiment(0.0)))
-      .collect();
-  store.update_embeddings_batch(&updates).context("...")?;
-  batch.clear(); // only clear after successful write
-  Ok(updates.len())
-  ```
+- **Location:** src/llm/batch.rs:324-326
+- **Description:** In `BatchPhase2::submit_or_resume`, when `batch_items` is empty and `get_pending(store)` returns `Err(e)`, the error is logged at `warn` but the function returns `Ok(HashMap::new())`. This means a store corruption that prevents reading the pending batch ID causes all pending results to be silently lost — the batch was submitted and completed on Anthropic's side, but cqs never fetches the results. The API cost is wasted.
+- **Suggested fix:** Propagate the error when `batch_items` is empty and the sole purpose of the call is to check for pending batches. The caller can decide whether to continue. At minimum, escalate to `error!` level since this represents data loss.
 
-#### EH-12: `ProgressStyle::template().unwrap()` in production path
+#### EH-25: `submit_or_resume` discards pending batch on unknown status without logging the actual status
 - **Difficulty:** easy
-- **Location:** src/cli/pipeline.rs:956-957
-- **Description:** `ProgressStyle::default_bar().template("...").unwrap()` is called in the non-quiet code path of `enrichment_pass`. The template string is a compile-time literal so this is infallible in practice, but it is an `unwrap()` outside of tests in production code, violating the project convention (`No unwrap() except in tests`). A malformed template would panic at runtime.
-- **Suggested fix:** Replace with `expect("valid progress template")` to make the intent clear, or use `unwrap_or_else` with a fallback style. The same pattern appears in `run_index_pipeline` — check and fix consistently.
+- **Location:** src/llm/batch.rs:351-358
+- **Description:** When `check_batch_status` returns an `Err` or an unrecognized status, the code logs "Pending batch status unknown, submitting fresh" but does not include the actual status or error in the warning. If `check_batch_status` returned `Ok("processing")` (an unexpected but valid status), the user cannot tell from the log why their batch was abandoned.
+- **Suggested fix:** Include the actual status or error in the log message. For the `Err` case, log the error. For the `_` match arm, log the status string. Also consider whether unrecognized statuses should default to "wait and retry" rather than "abandon and resubmit" — resubmitting duplicates the API cost.
 
-## Documentation
-
-#### DOC-1: Language files list in CONTRIBUTING.md missing vue.rs and aspx.rs
+#### EH-26: `cli/batch/mod.rs` `create_context` silently ignores missing index.db mtime
 - **Difficulty:** easy
-- **Location:** CONTRIBUTING.md:124
-- **Description:** The Architecture Overview lists 49 language module files (rust.rs through markdown.rs), but cqs actually supports 51 languages. Vue (.vue files) and ASP.NET Web Forms (.aspx/.ascx/.asmx/.master files) were added in v0.28.0 (Vue) and v1.0.5 (ASPX) but the list is stale. The enum in `src/language/mod.rs` and the language count claims in README.md and lib.rs are all correct, only the CONTRIBUTING.md file list is incomplete.
-- **Suggested fix:** Append `vue.rs, aspx.rs` after `vbnet.rs,` on line 124 to show all 51 language modules.
+- **Location:** src/cli/batch/mod.rs:457-459
+- **Description:** The `index_mtime` is obtained via `.ok()`, meaning if `std::fs::metadata` or `.modified()` fail, the mtime is `None`. This is used later to detect index staleness — if `index_mtime` starts as `None`, the batch context will never detect that the index was rebuilt mid-session, since it compares `current_mtime != stored_mtime` and `None != Some(t)` is always true, causing unnecessary store reloads on every command.
+- **Suggested fix:** Log a warning when the initial mtime cannot be obtained. This is a diagnostic issue — the behavior is safe (over-reloading) but wastes time in batch/chat sessions.
 
-#### DOC-2: Function doc comment for IDF filtering threshold lacks explicit value
+#### EH-27: `store/helpers.rs` `content_hash` uses `try_get().unwrap_or_default()` — masks DB schema issues
 - **Difficulty:** easy
-- **Location:** src/nl.rs:265-330 (CallContext struct + generate_nl_with_call_context function)
-- **Description:** New function `generate_nl_with_call_context()` added in v1.0.7 (#590) has solid doc comments explaining the call-graph enrichment pass. However, the IDF filtering threshold is mentioned only inline as ">10% of chunks" in the code comment (line 288), but the rustdoc comment on the function doesn't state the exact threshold value (0.10 as f32). This makes the threshold non-discoverable via `rustdoc` without reading source code.
-- **Suggested fix:** Add threshold value to rustdoc comment: `/// Callees appearing in >10% of chunks are filtered as utilities (IDF threshold: 0.10).` This would make the threshold discoverable via `rustdoc` without reading source.
+- **Location:** src/store/helpers.rs:128
+- **Description:** `content_hash: row.try_get("content_hash").unwrap_or_default()` silently produces an empty string if the column is missing or has a type mismatch. Since `content_hash` is used as a cache key for LLM summaries and as an enrichment hash, an empty hash would cause all chunks to appear "already cached" or "already enriched" (empty string matches empty string), silently skipping LLM processing for the entire index.
+- **Suggested fix:** Use `row.get("content_hash")` (panics on missing column, which is correct for a required schema field) or propagate the error. The `window_idx` on line 129 correctly uses `unwrap_or(None)` since it's an optional column — `content_hash` is not optional.
 
-#### DOC-3: README.md schema version context unclear for upgrading users
+#### EH-28: `store/chunks/query.rs` metadata `unwrap_or_default()` hides missing schema version
 - **Difficulty:** easy
-- **Location:** README.md:35
-- **Description:** Line 35 states "(current schema: v12)" which is correct, but the upgrade instruction `cqs index --force` doesn't mention the v11→v12 migration is automatic. For users upgrading from v1.0.4 or earlier, the v11→v12 migration happens automatically during first index open. The comment is accurate but could be clearer about when rebuilds are required vs. automatic migrations.
-- **Suggested fix:** Minor improvement — change to "(current schema: v12, auto-migrates from v11)" to clarify the migration is automatic. Or add a note: "Schema changes in v1.0.5+ auto-migrate existing indexes."
+- **Location:** src/store/chunks/query.rs:97-98
+- **Description:** `model_name` and `created_at` use `.unwrap_or_default()` when reading from the metadata HashMap. If these keys are missing (corrupted metadata table), `IndexStats` reports empty strings for model name and creation date. For `model_name` this is benign, but empty `created_at` can confuse downstream logic that uses it for staleness detection.
+- **Suggested fix:** Low priority. The `schema_version` parsing on line 103-110 already has proper error logging with `tracing::warn!`. Apply the same pattern to `model_name` and `created_at` for consistency, or accept the current behavior as intentional graceful degradation.
 
-#### DOC-4: src/store/chunks.rs missing documented update pattern for new functions
+#### EH-29: `cli/display.rs` silently drops `read_context_lines` errors for context display
 - **Difficulty:** easy
-- **Location:** src/store/chunks.rs header comments (lines 1-5)
-- **Description:** Two new public functions added in v1.0.7 (#590): `update_embeddings_batch()` (line 79) and `chunks_paged()` (line 1085) are well-documented individually. However, the module's doc comment doesn't mention these new capabilities. Line 1 says "//! Chunk CRUD operations" but `update_embeddings_batch()` is not exactly CRUD — it's embedding-only update without content change. And `chunks_paged()` is cursor-based iteration. These are documented in the function comments but not in the module overview.
-- **Suggested fix:** Update module-level doc comment to include: `//! - Embedding-only updates (for enrichment passes)` and `//! - Cursor-based pagination (for streaming operations)`. This helps future readers understand the module scope.
+- **Location:** src/cli/display.rs:136, 163, 299, 327
+- **Description:** Four call sites use `if let Ok((before, _)) = read_context_lines(...)` without an else branch. When context line reading fails (file deleted between indexing and display, permission error, etc.), the context is silently omitted. This is correct behavior for display — showing results without context is better than crashing — but there's no diagnostic output to help users understand why context is missing.
+- **Suggested fix:** Low priority. Add `tracing::debug!` in the else branch for diagnosability. Not a bug, since omitting context is graceful degradation for a display-only feature.
+
+#### EH-30: `train_data/bm25.rs` `.unwrap_or_default()` on missing document content
+- **Difficulty:** easy
+- **Location:** src/train_data/bm25.rs:128
+- **Description:** In `BM25::top_k_negatives`, when a document hash from the BM25 index doesn't match any document in `self.docs`, the content defaults to an empty string via `.unwrap_or_default()`. This means the returned "hard negative" is an empty document — which is not a useful training example and could degrade fine-tuning quality if not filtered downstream.
+- **Suggested fix:** Filter out results where content is empty, or skip hashes that don't match any document. The issue is minor since this code path is only used for training data generation (offline), not production search.
+
+#### EH-31: `gather.rs` bridge search errors silently reduce result quality
+- **Difficulty:** easy
+- **Location:** src/gather.rs:605-612
+- **Description:** In the cross-reference `gather` path, when a bridge search fails for a reference seed, the error is logged at `warn` and the seed is skipped (`None`). If multiple bridge searches fail (e.g., project store is corrupted), the gathered results will contain only reference seeds with no project code — but the caller has no way to know the results are degraded. The `GatherResult` has no degradation flag.
+- **Suggested fix:** Add a `degraded: bool` or `bridge_failures: usize` field to `GatherResult` so the CLI layer can warn the user. This is analogous to the EH-18 finding from the v1.4.0 audit (which added `degraded` to `DiffImpactResult`).
 
 ## Code Quality
 
-#### CQ-7: `replace_file_chunks` is dead code — zero callers in production
+#### CQ-22: `index_pack` in task.rs duplicates `token_pack` in commands/mod.rs
 - **Difficulty:** easy
-- **Location:** src/store/chunks.rs:164-265
-- **Description:** `replace_file_chunks` (100 lines) has no callers in production code. The entire call graph: the function is called only from three unit tests in the same file (lines 1624, 1668, 1693). The pipeline uses `upsert_chunks_and_calls` instead, and the watch mode no longer calls this function. The function also duplicates ~65 lines of INSERT logic from the `batch_insert_chunks` private helper (itself used by `upsert_chunks_batch` and `upsert_chunks_and_calls`). Keeping dead code inflates maintenance surface: the INSERT SQL at line 203 must stay in sync with `batch_insert_chunks` at line 1356 (19 columns, same order), and the FTS batch logic at line 234 duplicates `upsert_fts_conditional`. The v1.0.5 audit fixed PERF-3 ("upsert_chunks_and_calls duplicates ~120 lines of chunk-upsert logic"), but `replace_file_chunks` was not addressed.
-- **Suggested fix:** Remove `replace_file_chunks`. Its test cases should be ported to test `upsert_chunks_and_calls` (the live path), or kept as integration tests exercising the actual pipeline. If the delete-and-replace semantic is needed in future, re-implement it by calling `delete_by_origin` followed by `upsert_chunks_batch`, or add it to `upsert_chunks_and_calls` with a `replace: bool` flag.
+- **Location:** src/cli/commands/task.rs:59-83, src/cli/commands/mod.rs:120-162
+- **Description:** `index_pack` (task.rs) and `token_pack` (commands/mod.rs) implement the same greedy knapsack packing algorithm — sort by score descending, pack items until budget exceeded, preserve original order. The only differences: `index_pack` returns indices while `token_pack` returns items directly, and `token_pack` has a first-item-exceeds-budget debug log. Both use the same score+overhead budget logic and original-order preservation. Six calls to `index_pack` in `waterfall_pack` could use a unified implementation.
+- **Suggested fix:** Generalize `token_pack` to also return indices (or expose the index-based variant), then delete `index_pack`. Alternatively, rewrite `index_pack` as a thin wrapper around `token_pack`.
 
-#### CQ-8: `extract_file_context` doc comment is a merged accident — two functions' docs fused into one
-- **Difficulty:** easy
-- **Location:** src/nl.rs:618-625
-- **Description:** The doc comment on `extract_file_context` at line 625 begins with the first two lines of what should be `truncate_doc`'s doc comment ("Truncate a doc comment to its first sentence (or 150 chars, whichever comes first). Keeps the most informative part of the doc within the embedding token budget.") followed by the correct doc for `extract_file_context` ("Extract concise module context from a file path..."). The `truncate_doc` function at line 674 has no doc comment at all — its doc was accidentally attached to the wrong function. This likely occurred when the two functions were defined adjacent and the doc comment blocks were merged during an edit.
-- **Suggested fix:** Split the doc comments: give `truncate_doc` its own doc ("Truncate a doc comment to its first sentence (or 150 chars, whichever comes first). Keeps the most informative part of the doc within the embedding token budget.") and give `extract_file_context` only its correct doc ("Extract concise module context from a file path...").
-
-#### CQ-9: `NlTemplate::Standard` doc comment is stale — claims "Current production template" but `Compact` is used
-- **Difficulty:** easy
-- **Location:** src/nl.rs:239-240
-- **Description:** The `Standard` variant's doc comment reads "Current production template: doc + 'A {type} named {name}' + params + returns". However, `generate_nl_description` (the production entry point) uses `NlTemplate::Compact`, not `Standard`. `Standard` is only exercised in the evaluation harness (`tests/model_eval.rs:511`). The stale comment creates false confidence: a reader could conclude `Standard` is the active format and write tests validating "A function named ..." structure, not knowing it's a retired experiment.
-- **Suggested fix:** Change the doc to "Baseline evaluation template (inactive): doc + 'A {type} named {name}' + params + returns. Use `Compact` for production. Kept for A/B testing via `model_eval`."
-
-#### CQ-10: `callee_document_frequencies` IDF metric is misnamed — counts distinct callers, not document occurrences
-- **Difficulty:** easy
-- **Location:** src/store/calls.rs:1242-1261, src/cli/pipeline.rs:920-929
-- **Description:** `callee_document_frequencies()` is named using information-retrieval terminology ("document frequency"), which conventionally means "the fraction of documents (here: chunks) in which a term (here: callee name) appears." The SQL implementation uses `COUNT(DISTINCT caller_name)` — counting how many unique *callers* reference each callee, not how many chunks contain it. The comment in `enrichment_pass` (line 922) reinforces the mislabeling: "A callee appearing in >10% of chunks is a utility". The denominator `total_chunks` compounds the confusion: dividing distinct-caller-count by total-chunks gives a ratio that has no standard IR interpretation. A callee called by 1 000 distinct callers in a 10 000-chunk index yields 0.10 and hits the threshold — but if those callers are spread across 9 000 unique chunks, the actual document frequency is 0.90. The metric may still work empirically (high-caller-count callees are utilities), but the semantic drift between the name, the comment, and the implementation creates a maintenance hazard: a future developer may "fix" the denominator to `DISTINCT_CALLERS` or change the SQL to `COUNT(DISTINCT chunk_id)` expecting equivalent behavior.
-- **Suggested fix:** Option A: Rename to `callee_caller_counts()` and update `enrichment_pass` comments to say "A callee called by >10% of unique callers is suppressed as a utility." Option B: Fix the SQL to use `COUNT(DISTINCT c.id)` with a JOIN to the chunks table, making it a true document frequency. Then the metric and name align.
-
-#### CQ-11: `batch_count_query` injects column names via `format!` — internal but creates fragile SQL generation pattern
-- **Difficulty:** easy
-- **Location:** src/store/calls.rs:1087-1115
-- **Description:** `batch_count_query(filter_column, group_column, count_expr, names)` constructs SQL by formatting column names and expressions directly into the query string (line 1100). The function is private (`async fn`) and all three callers (`get_caller_counts_batch`, `get_callee_counts_batch`) pass hardcoded string literals — so there is no current injection risk. However, the API signature accepts arbitrary `&str` for column names and SQL expressions, so a future caller could pass user-influenced strings. The pattern is also inconsistent with the rest of `store/`: all other dynamic SQL uses only `make_placeholders` for values (which are bound via sqlx parameters). Column-name parameterization is a qualitatively different operation with no parameterized equivalent in SQLite, and mixing it silently with sqlx's bound-parameter pattern makes auditing harder.
-- **Suggested fix:** Add a comment documenting that `filter_column`, `group_column`, and `count_expr` must be compile-time constants and must not accept user input. Or use an enum to restrict the valid column names:
-  ```rust
-  enum CountColumn { CalleeName, CallerName }
-  async fn batch_count_query(&self, filter: CountColumn, names: &[&str]) -> Result<...>
-  ```
-
-#### CQ-12: `generate_nl_with_call_context` has zero test coverage — new core function for SQ-4
-- **Difficulty:** easy
-- **Location:** src/nl.rs:274-322
-- **Description:** `generate_nl_with_call_context` was added in v1.0.7 (#590) as the key function for the SQ-4 call-graph enriched embeddings feature. It is public API (exported from `lib.rs:119`), called in production via `enrichment_pass`, and governs the embedding quality for all chunks with callers or callees. Despite being central to a major feature, it has zero unit tests in `nl.rs`. The test module (line 914) covers `tokenize_identifier`, `normalize_for_fts`, `extract_params_nl`, `extract_return_nl`, `generate_nl_description`, `parse_jsdoc_tags`, and `strip_markdown_noise` — but not `generate_nl_with_call_context` or its IDF-filtering behavior.
-- **Suggested fix:** Add unit tests covering:
-  1. Caller names appended correctly: `ctx.callers = ["foo", "bar"]` → NL includes "Called by: foo, bar"
-  2. Callee IDF filtering: a callee with `freq >= 0.10` is excluded; one with `freq < 0.10` is included
-  3. `max_callers`/`max_callees` truncation: more callers than limit → only first N appear
-  4. Empty caller/callee → returns base NL unchanged
-  5. Both empty → `extras.is_empty()` branch returns without trailing ". "
-
-## Test Coverage
-
-#### TC-B1: `update_embeddings_batch` and `chunks_paged` have zero unit tests
-- **Difficulty:** easy
-- **Location:** src/store/chunks.rs:79-111 (`update_embeddings_batch`), src/store/chunks.rs:983-1014 (`chunks_paged`)
-- **Description:** Both functions were added in v1.0.7 as core infrastructure for the SQ-4 enrichment pass. `update_embeddings_batch` is responsible for writing all enriched embeddings to the store; `chunks_paged` is the sole pagination mechanism for iterating chunks during enrichment. Neither has a single unit test in `store/chunks.rs`. The test module (line 1460+) covers `upsert_chunks_batch`, `embedding_batches`, `all_chunk_identities_filtered`, `get_chunks_by_origin`, and stale-file detection — but not the two new functions. Key behaviors that should be tested:
-  - `update_embeddings_batch`: writes embedding bytes correctly, skips unknown IDs without error, returns correct count of actually-updated rows, empty input returns 0.
-  - `chunks_paged`: returns chunks after cursor, advances cursor correctly, terminates when empty, handles `after_rowid = 0` (first page), handles store with exactly one chunk.
-- **Suggested fix:** Add tests for both. Minimal test for `update_embeddings_batch`: insert a chunk, call `update_embeddings_batch` with a new embedding, re-fetch and assert the embedding changed. Minimal test for `chunks_paged`: insert 3 chunks, call with `after_rowid=0, limit=2`, assert 2 returned and cursor advances; call again with the returned cursor, assert the remaining 1 is returned.
-
-#### TC-B2: `callee_caller_counts` has zero unit tests
-- **Difficulty:** easy
-- **Location:** src/store/calls.rs:1242-1261
-- **Description:** `callee_caller_counts()` is the source of truth for the IDF filter in `enrichment_pass`. It returns `(callee_name, distinct_caller_count)` pairs used to compute the frequency ratio that decides whether a callee appears in the enriched NL. Despite being the critical input to the IDF suppression logic, the function has no unit test. The calls.rs test module covers `get_caller_counts_batch`, `get_callee_counts_batch`, `find_shared_callers/callees`, dead code detection, and confidence scoring — but not `callee_caller_counts`. Without a test, a SQL change (e.g., removing `DISTINCT`) would go undetected until enrichment quality degraded.
-- **Suggested fix:** Add tests using the existing `seed_call_graph` fixture. In the seeded graph (A→B, A→C, B→C, D→B), `callee_caller_counts` should return: `func_b → 2` (called by func_a and func_d), `func_c → 2` (called by func_a and func_b). Test the empty store case (returns empty vec) and verify the DISTINCT behavior by having the same caller call the same callee twice (should still count as 1).
-
-#### TC-B3: `enrichment_pass` has no integration test — the SQ-4 feature path is untested end-to-end
+#### CQ-23: LLM chunk scanning loop duplicated across summary.rs and hyde.rs
 - **Difficulty:** medium
-- **Location:** src/cli/pipeline.rs:911-1036, tests/ (no matching test file)
-- **Description:** The SQ-4 enrichment pass is exercised only through the CLI (`cqs index`), which is covered by smoke tests. No integration test calls `enrichment_pass` directly with a seeded store and verifies that chunk embeddings are actually updated. The function is 125 lines with multiple failure points (stats, callee counts, identity load, callers/callees batch fetch, pagination loop, flush). No test covers: (a) a chunk with callers gets its embedding updated; (b) a leaf node (no callers, no callees) is correctly skipped; (c) the IDF filter correctly suppresses high-frequency callees in the NL; (d) the function returns 0 on an empty store. The existing `tests/store_calls_test.rs` tests the call graph store functions but not the enrichment pipeline.
-- **Suggested fix:** Add a test in `tests/` (or in a new `enrichment_test.rs`) that: creates a Store, inserts chunks with embeddings, seeds a call graph, calls `enrichment_pass` with a mock/CPU embedder, and asserts that the embedding for a chunk with callers has changed (not equal to original). Use `#[ignore]` if the embedder requires a downloaded model, or use a mock that returns deterministic vectors.
+- **Location:** src/llm/summary.rs:54-138, src/llm/hyde.rs:43-114
+- **Description:** Both `llm_summary_pass` and `hyde_query_pass` contain near-identical paged chunk scanning loops with the same 4-condition filter (cached, non-callable, too short, windowed), the same `queued_hashes` dedup, the same batch-full check, and the same counter tracking (cached/skipped). The filter conditions also appear a third time in `find_contrastive_neighbors` (summary.rs:206-217, minus the cache check). `doc_comments.rs` applies a similar filter with additional test/source checks. Any change to eligibility criteria must be replicated in 3-4 places.
+- **Suggested fix:** Extract a shared `collect_eligible_chunks` iterator or function in `llm/mod.rs` that yields `(ChunkSummary, is_cached)` tuples after applying the common filter. Each pass calls it with its own purpose-specific cache lookup and batch item builder. Reduces ~160 lines of near-identical scanning to a single ~40-line function.
 
-## Robustness
+#### CQ-24: `open_project_store` and `open_project_store_readonly` are near-identical
+- **Difficulty:** easy
+- **Location:** src/cli/mod.rs:27-40, src/cli/mod.rs:47-60
+- **Description:** These two functions share identical logic (find root, resolve dir, check exists, error message) differing only in `Store::open` vs `Store::open_light`. 13 lines duplicated for a one-method-call difference. Called from 30+ command files.
+- **Suggested fix:** Parameterize with a boolean or enum: `open_project_store_inner(light: bool)` and have the two public functions delegate.
 
-#### RB-B1: Name-based callers/callees lookup merges call context for same-named functions across files
+#### CQ-25: LLM-generated doc comments add noise without value on trivial functions
 - **Difficulty:** medium
-- **Location:** src/cli/pipeline.rs:940-948, src/store/calls.rs:625-667
-- **Description:** `enrichment_pass` looks up callers and callees by chunk name (`ci.name`), not by chunk ID. `get_callers_full_batch` groups by `callee_name` in `function_calls` — so all callers of *any* function named `parse` in the index are merged into one entry. When the loop later does `callers_map.get(&cs.name)` (line 980), a chunk named `parse` in `src/config.rs` gets the same callers list as a chunk named `parse` in `src/network.rs`, even though they are different functions. For common method names (`new`, `build`, `parse`, `from`, `into`), this produces spurious enrichment NL like "Called by: deserialize_config, connect_to_db, ..." for functions that are actually independent. This degrades embedding quality for functions with common names, which are often the most performance-critical ones (constructors, builders, converters).
-- **Suggested fix:** Two options. Option A (lightweight): post-filter the callers list by file — when processing `cs` with `cs.file = "src/config.rs"`, keep only CallerInfo entries where `caller.file == cs.file` (same-file callers are unambiguous). Option B (correct): look up callers/callees by chunk ID, not name. The `function_calls` table uses `caller_name`/`callee_name` (names, not IDs), so this would require a schema change to store chunk IDs. Document the current limitation in a code comment so future maintainers understand the approximation.
+- **Location:** Multiple files — highest density in src/cli/batch/handlers/*.rs, src/cli/commands/task.rs, src/gather.rs
+- **Description:** The v1.4.0 audit's SQ-8 doc generation pass added verbose `/// # Arguments` / `/// # Returns` doc comments to many trivial functions where the signature is self-documenting. Examples: `GatherOptions::with_expand_depth(mut self, depth: usize) -> Self` has a 7-line doc comment that says "Sets the maximum depth... # Arguments * `depth` - The maximum nesting level... # Returns Returns `self` to allow method chaining." The batch handlers have ~15-line docs for 5-line dispatch wrappers. Approximately 100+ instances across 43 files. These add ~2000 lines of LLM-generated boilerplate that increases scrolling without aiding comprehension.
+- **Suggested fix:** This is cosmetic, not a bug. For future `--improve-all` passes, consider filtering out builder methods and thin dispatch wrappers. Existing comments are harmless and removing them is not worth the churn. Note this for the doc generation heuristics rather than doing a cleanup.
 
-#### RB-B2: `enrichment_pass` loads the entire call graph into memory before processing any chunks
+#### CQ-26: `waterfall_pack` in task.rs is 150 lines of repetitive section packing
 - **Difficulty:** medium
-- **Location:** src/cli/pipeline.rs:936-948
-- **Description:** The enrichment pass makes three full-scan memory allocations before paging through chunks: `all_chunk_identities()` (all chunk names, IDs, and metadata), `get_callers_full_batch(&all_names)` (all caller lists for every name), and `get_callees_full_batch(&all_names)` (all callee lists for every name). For a large codebase (50K chunks, 200K call edges), this could hold ~200MB in memory simultaneously: all identities (~10MB), the callers HashMap (~50-100MB for Vec<CallerInfo> with file paths), and the callees HashMap (~50-100MB). The `chunks_paged` loop then iterates through the same data in pages — the page-based approach doesn't reduce peak memory because the full call graph is already loaded. The pagination only affects the `content`-heavy `ChunkSummary` structs.
-- **Suggested fix:** The current design is reasonable for codebases up to ~20K chunks. For larger codebases, the fix is to process chunks in pages and fetch callers/callees per page instead of loading everything up front. This requires one `get_callers_full_batch` call per page (500 chunks × N pages) instead of one global call. Add a comment documenting the memory model: "Loads full call graph into memory. For indexes with >50K chunks, consider switching to per-page caller/callee lookup."
+- **Location:** src/cli/commands/task.rs:125-281
+- **Description:** `waterfall_pack` repeats the same pattern 6 times: build text representations, call `count_tokens_batch`, call `index_pack`, subtract from remaining budget. Each section differs only in: which `result` field to iterate, what text to format, what score function to use, and what weight to apply. The function is 150 lines but the core logic is ~15 lines repeated with different field accessors.
+- **Suggested fix:** Extract a `pack_section` helper that takes a text builder closure, a score closure, and a budget weight. Would reduce `waterfall_pack` to ~40 lines of section declarations. Medium difficulty because the surplus-forwarding logic (unused budget from section N flows to section N+1) threads through each iteration.
+
+#### CQ-27: `cli/mod.rs` is 2043 lines — CLI definition, dispatch, and tests in one file
+- **Difficulty:** medium
+- **Location:** src/cli/mod.rs (2043 lines)
+- **Description:** `cli/mod.rs` contains the clap `Cli` struct definition (~320 lines of arg definitions), the `Commands` enum (~450 lines of subcommand definitions), the `run_with` dispatch function (~230 lines of match arms), utility functions, and ~1000 lines of CLI parsing tests. The file serves three distinct purposes: argument definition, dispatch routing, and parse testing. This is the largest file in the codebase and grows with every new command.
+- **Suggested fix:** Move the `Commands` enum and `run_with` dispatch to a separate `cli/dispatch.rs`. Move tests to `cli/tests.rs` or `cli/mod_tests.rs`. The `Cli` struct, `OutputFormat`, and utility functions stay in `mod.rs`. This would split a 2043-line file into three focused ~600-line files. Medium effort because of the tight coupling between `Cli`, `Commands`, and `run_with`.
+
+## Observability
+
+#### OB-19: `compute_hints_batch` missing tracing span
+- **Difficulty:** easy
+- **Location:** src/impact/hints.rs:80
+- **Description:** `compute_hints_batch` is a public function that performs batch hint computation (caller counts + test reachability) for multiple functions, including a full forward BFS via `test_reachability`. Its sibling `compute_risk_batch` (line 116) has a `tracing::info_span!` with `count = names.len()`, but `compute_hints_batch` has no span at all. Called from `scout.rs` and `cli/commands/impact.rs` where it processes 10+ functions per invocation. Without a span, batch hint computation time is invisible in trace output.
+- **Suggested fix:** Add `let _span = tracing::info_span!("compute_hints_batch", count = names.len()).entered();` at function entry, matching the pattern of `compute_risk_batch`.
+
+#### OB-20: `test_reachability` missing tracing span
+- **Difficulty:** easy
+- **Location:** src/impact/bfs.rs:164
+- **Description:** `test_reachability` is a `pub(crate)` function that performs a forward BFS from all test nodes through the call graph — potentially the most expensive single computation in the impact module. It builds equivalence classes from test nodes, runs forward BFS per class, and aggregates counts. Called from both `compute_hints_batch` and `compute_risk_batch`. Neither the function itself nor the per-class BFS iterations emit any tracing. On a large codebase with thousands of tests, this can take seconds with no visibility into where time is spent.
+- **Suggested fix:** Add `let _span = tracing::info_span!("test_reachability", test_count = test_names.len(), max_depth).entered();` at entry. Optionally add `tracing::debug!(equiv_classes = equivalence_classes.len(), "Test equivalence classes built");` after the grouping step to aid performance diagnosis.
+
+#### OB-21: `embed_query` missing tracing span
+- **Difficulty:** easy
+- **Location:** src/embedder/mod.rs:433
+- **Description:** `embed_query` is a high-traffic public function (called on every user search query) that has `tracing::trace!` for cache hit/miss but no `info_span!` or `debug_span!` at entry. Its companion `embed_documents` (line 411) has `tracing::info_span!("embed_documents", count = texts.len())`. When profiling query latency, `embed_query` time is invisible — only the inner `embed_batch` span appears, without the cache check overhead or the prefix construction being attributed to the query path.
+- **Suggested fix:** Add `let _span = tracing::debug_span!("embed_query").entered();` at function entry (after the empty check). Use `debug` level since this is called per-query and `info` would be noisy in batch operations.
+
+#### OB-22: `flush_enrichment_batch` missing tracing span
+- **Difficulty:** easy
+- **Location:** src/cli/enrichment.rs:268
+- **Description:** `flush_enrichment_batch` is called repeatedly during the enrichment pass to embed and store batches of enriched chunks. Each call embeds 64 chunks and writes them to the store. The parent `enrichment_pass` has a span, but the individual flush calls have no sub-spans. When diagnosing slow enrichment, it's impossible to distinguish time spent in embedding vs. store writes within each batch.
+- **Suggested fix:** Add `let _span = tracing::debug_span!("flush_enrichment_batch", count = batch.len()).entered();` at function entry. Debug level is appropriate since this is called many times per enrichment pass.
+
+## API Design
+
+#### AD-30: `cosine_similarity` returns `Option<f32>` but `full_cosine_similarity` returns bare `f32`
+- **Difficulty:** easy
+- **Location:** src/math.rs:13, src/math.rs:35
+- **Description:** Two sibling cosine similarity functions in the same module use inconsistent return types for the same category of failure. `cosine_similarity` returns `Option<f32>` (None on dimension mismatch or non-finite result), while `full_cosine_similarity` returns `f32` (0.0 on error). Both functions handle the same error conditions (dimension mismatch, non-finite output) but signal failure differently. Callers must remember which convention each function uses. `full_cosine_similarity` logs at `warn` level on mismatch but `cosine_similarity` returns None silently. The dimension-check logic also differs: `cosine_similarity` requires exactly `EMBEDDING_DIM`; `full_cosine_similarity` only requires `a.len() == b.len()`.
+- **Suggested fix:** Make `full_cosine_similarity` also return `Option<f32>`, returning `None` on dimension mismatch or zero-norm. The single caller in `diff.rs:173` already handles the 0.0 case — changing to `.unwrap_or(0.0)` preserves behavior. Alternatively, add a doc comment explaining the intentional divergence and when to use which function.
+
+#### AD-31: `Blame --depth` overloads `-n` short flag with different semantics than all other commands
+- **Difficulty:** easy
+- **Location:** src/cli/mod.rs:359
+- **Description:** `Blame` defines `#[arg(short = 'n', long, default_value = "10")] depth: usize` where `-n` means "max commits to show." In every other command that uses `-n` (`Similar`, `Drift`, `Related`, `Where`, `Scout`, `Plan`, `Task`), it is short for `--limit` (max results). The `Blame` command also names this parameter `depth`, but elsewhere `--depth` means graph traversal depth (`Impact`, `TestMap`, `Onboard`). This is a double overload: `-n` means something different, and `depth` means something different.
+- **Suggested fix:** Rename to `--limit` with `-n` short flag (consistent with all other commands) and update the help text to "Max commits to show." The parameter name `depth` should be reserved for graph traversal depth.
+
+#### AD-32: `CQS_API_BASE` env var breaks the `CQS_LLM_*` prefix convention
+- **Difficulty:** easy
+- **Location:** src/llm/mod.rs:78, src/config.rs:117-118
+- **Description:** The three LLM config env vars are: `CQS_LLM_MODEL`, `CQS_LLM_MAX_TOKENS`, and `CQS_API_BASE`. The third breaks the `CQS_LLM_` prefix pattern. The config file fields are consistent (`llm_model`, `llm_api_base`, `llm_max_tokens`) — only the env var is inconsistent. This makes it hard to discover all LLM-related env vars by prefix search.
+- **Suggested fix:** Accept `CQS_LLM_API_BASE` as the primary env var, with `CQS_API_BASE` as a deprecated fallback (`CQS_LLM_API_BASE.or(CQS_API_BASE)`). No external users means no deprecation cycle needed — but the SEC-10 audit finding (v1.4.0) validated this env var, so updating tests and docs is required.
+
+#### AD-33: Residual `to_json()` methods on types that already derive `Serialize` with `serialize_path_normalized`
+- **Difficulty:** easy
+- **Location:** src/impact/types.rs:32 (TestInfo), src/impact/types.rs:184 (RiskScore), src/where_to_add.rs:58 (FileSuggestion)
+- **Description:** AD-28 in the v1.4.0 audit fixed the core issue (inconsistent path format between `Serialize` and hand-built `to_json()`). The fix added `#[serde(serialize_with = "crate::serialize_path_normalized")]` to all PathBuf fields. However, the manual `to_json()` methods were not removed — they now duplicate what `serde_json::to_value()` would produce. `TestInfo`, `RiskScore`, and `FileSuggestion` each have both `derive(Serialize)` and a manual `to_json()` that does the same thing. Callers in `task_to_json`, `impact_to_json`, and `diff_impact_to_json` still call `.to_json()` instead of `serde_json::to_value()`. This creates maintenance burden: any field added to these structs must be added in two places.
+- **Suggested fix:** Remove `to_json()` from `TestInfo` and `FileSuggestion` (the `Serialize` derive produces identical output now). For `RiskScore`, the `to_json(&self, name: &str)` takes an external `name` parameter — this should become a method on `FunctionRisk` instead (which owns both `name` and `risk`). Update callers (`task_to_json`, `impact_to_json`, `diff_impact_to_json`) to use `serde_json::to_value()`.
+
+#### AD-34: `score_candidate` takes 9 positional parameters with `#[allow(clippy::too_many_arguments)]`
+- **Difficulty:** medium
+- **Location:** src/search/scoring/candidate.rs:210-221
+- **Description:** `score_candidate` takes 9 arguments: `embedding`, `query`, `name`, `file_part`, `filter`, `name_matcher`, `glob_matcher`, `note_index`, `threshold`. Both call sites (search/query.rs:156, search/query.rs:394) pass the same `filter`, `name_matcher`, `glob_matcher`, `note_index`, and `threshold` values for every candidate in a loop — these are effectively "scoring context" that doesn't change per-candidate. The `#[allow(clippy::too_many_arguments)]` suppresses the warning rather than addressing it.
+- **Suggested fix:** Group the 5 stable parameters into a `ScoringContext` struct: `{ filter, name_matcher, glob_matcher, note_index, threshold }`. The function signature becomes `score_candidate(embedding, query, name, file_part, ctx)` — 5 args, no clippy suppression needed. Both call sites construct `ScoringContext` once before the loop.
+
+#### AD-35: `TrainDataConfig` and `TrainDataStats` missing standard derives
+- **Difficulty:** easy
+- **Location:** src/train_data/mod.rs:58, src/train_data/mod.rs:70
+- **Description:** `TrainDataConfig` and `TrainDataStats` are plain structs without `Serialize`, `Debug`, or `Clone` derives. The `Triplet` type in the same module has `derive(Debug, Serialize)`. `TrainDataStats` contains useful post-run metrics (total_triplets, repos_processed, commits_skipped, language_counts) that could be output as JSON for pipeline integration. Currently the caller in `cli/commands/train_data.rs` manually formats these with `eprintln!`. `TrainDataConfig` lacks `Debug`, making it invisible in tracing spans.
+- **Suggested fix:** Add `#[derive(Debug)]` to both and `#[derive(serde::Serialize)]` to `TrainDataStats`. Not critical since train-data is an offline tool, but it aligns with the convention used by every other result type in the codebase.
+
+#### AD-36: `llm::Client` name collides with common HTTP client naming
+- **Difficulty:** easy
+- **Location:** src/llm/mod.rs:96
+- **Description:** The LLM client is named just `Client`, which collides with `reqwest::blocking::Client` (used internally) and is ambiguous when imported from crate root. Every other major type in cqs has a descriptive name: `Store`, `Parser`, `Embedder`, `Reranker`, `HnswIndex`. A bare `Client` in `cqs::llm::Client` doesn't communicate what it's a client *for*. Currently only used within the `llm` module (not exported in `lib.rs`), so the collision is latent — but `llm` is `pub mod` so external code could access it.
+- **Suggested fix:** Rename to `LlmClient`. The module prefix already establishes the namespace, but `LlmClient` is more self-documenting in error messages, tracing spans, and grep results. Internal-only change — no external API breakage since there are no external users.
 
 ## Algorithm Correctness
 
-#### AC-B1: IDF filter threshold comment says `>10%` but code uses `>=10%` — off-by-one at boundary
-- **Difficulty:** easy
-- **Location:** src/nl.rs:299, 307
-- **Description:** Line 299 comment: "A callee appearing in >10% of chunks is likely a utility." Line 307 predicate: `freq >= 0.10` (greater-than-or-equal). The two disagree at the exact boundary: a callee appearing in exactly 10% of chunks is suppressed by the code but would be kept by the comment's description. Additionally, the unit test (line 1471) uses `0.15` for the filtered case and `0.05`/`0.02` for the kept cases — it never tests the exact boundary value `0.10`, so neither the `>` nor `>=` interpretation is verified. For small codebases (10 chunks), a callee called by exactly 1 function hits the threshold (`1/10 = 0.10`) and is suppressed as a "utility", even though 1-caller callees are typically domain-specific and valuable to include.
-- **Suggested fix:** Pick one interpretation and make code and comment agree. `>=` (current code) is more conservative — suppresses more callees. If that's intended, update the comment to "appearing in >=10%" or ">= 10% of chunks". Add a boundary test: insert a callee with exactly `freq = 0.10` and assert it is filtered.
+#### AC-16: Waterfall budget `remaining` tracking inconsistent across sections
+- **Difficulty:** medium
+- **Location:** src/cli/commands/task.rs:156-167
+- **Description:** The waterfall budget tracking uses two different formulas to subtract from `remaining`. Section 1 (scout) uses `remaining.saturating_sub(scout_used)` — straightforward, charges actual usage. Section 2 (code) uses `remaining.saturating_sub(code_used.min(code_budget))` — capping the subtraction at the allocated budget. Sections 3 (impact) and 4 (placement) also use `.min(budget)` capping. This inconsistency means: if section 1 overshoots its budget (the `index_pack` first-item guarantee allows a single item to exceed budget), the overshoot correctly reduces `remaining`. But if section 2 overshoots its budget, the overshoot is NOT subtracted from `remaining` because `code_used.min(code_budget)` caps the subtraction. This means the total across all sections can exceed the original budget. Example: budget=1000, code_budget=500, code_used=700 → only 500 subtracted from remaining, but 700 tokens were actually consumed. The `total_used` sum at the end (line 257) will correctly report the overshoot, but downstream sections were allocated budget that was already spent.
+- **Suggested fix:** Use the same formula for all sections: `remaining = remaining.saturating_sub(actual_used)`. The surplus forwarding already handles unused budget — it adds `section_budget.saturating_sub(section_used)` to the next section's allocation. Capping subtraction at budget is double-counting: the surplus is forwarded AND the overshoot is not charged.
 
-#### AC-B2: `page_size` is a `let` local rather than a named constant — inconsistent with `ENRICH_EMBED_BATCH`
+#### AC-17: `test_reachability` equivalence class loses test-node self-reachability
 - **Difficulty:** easy
-- **Location:** src/cli/pipeline.rs:934
-- **Description:** The enrichment pass uses two magic numbers that control its memory/throughput tradeoff. `ENRICH_EMBED_BATCH = 64` is declared as a named `const` at line 964. `page_size = 500` is declared as a plain `let` binding at line 934 — unnamed, untyped, and undocumented. Both serve the same extensibility role (tunable batch sizes), but only one is consistently named. The `page_size` value also has no comment explaining why 500 was chosen (e.g., "500 * ChunkSummary ~= Xmb per page" or "balances SQLite round-trips with memory"). A reader has no basis for choosing a different value.
-- **Suggested fix:** Promote to a named constant adjacent to `ENRICH_EMBED_BATCH`:
-  ```rust
-  /// Chunks fetched per page during enrichment iteration.
-  /// Balances SQLite round-trips vs. memory per batch.
-  const ENRICH_PAGE_SIZE: usize = 500;
-  const ENRICH_EMBED_BATCH: usize = 64;
-  ```
+- **Location:** src/impact/bfs.rs:198-203
+- **Description:** When test A calls test B (common in test helpers), the equivalence class optimization skips counting test A as reachable from test B and vice versa. The BFS seeds from the first-hop callees at depth 1, excluding the test node itself from the visited set. In the non-optimized version (pre-PERF-23), each test's own node would not appear in its own BFS either, since forward BFS starts from the test node's callees. So this is actually consistent. However, there's a subtle issue: if two tests A and B have the same callee set {C}, they form one equivalence class of size 2. The BFS visits C and everything C calls. But if test A also appears as a callee of C (cyclic: A -> C -> A), the BFS would count A as reachable, and multiply by class_size=2 — meaning both test A and test B count as reaching test A. In the non-optimized version, only test B's BFS would reach A (through C), giving count=1. The equivalence class incorrectly inflates the count by class_size when cycles exist between test nodes and their callees. In practice this is rare (test functions rarely form cycles), and reachability counts are used for risk scoring ratios capped at 1.0, so the practical impact is minimal.
+- **Suggested fix:** Low priority due to rarity. If fixing: after BFS, subtract from counts any test node that appears in the visited set AND belongs to the current equivalence class, adjusting the multiplied count accordingly. Alternatively, document that the equivalence class optimization assumes acyclic test-to-callee graphs.
+
+#### AC-18: `sanitize_fts_query` can produce empty tokens from stripped words
+- **Difficulty:** easy
+- **Location:** src/store/mod.rs:148-166
+- **Description:** `sanitize_fts_query` strips FTS5 special characters (`"*()+-^:`) from each word, then joins with spaces. If a word consists entirely of special characters (e.g., `"+"`, `"**"`, `"--"`), the stripped result is an empty string that still gets added to the output (preceded by a space). This produces double spaces or a leading space. While FTS5 handles extra whitespace gracefully (it tokenizes on whitespace), the output is technically malformed. More importantly, a query like `"++ OR --"` filters out `"OR"` (boolean operator) but the remaining `"++"` and `"--"` strip to empty strings, producing `" "` — a whitespace-only query that gets passed to FTS5 MATCH. FTS5 returns an error on empty/whitespace MATCH queries. The caller in `finalize_results` (query.rs:210) already guards against empty `sanitized` — but the guard checks `sanitized.is_empty()`, which is false for `" "`.
+- **Suggested fix:** Trim the output, or skip empty words after stripping: change the extend logic to skip words that are empty after character filtering. A simple fix: after the filter loop, add `.trim()` to the output, or check `if stripped_word_is_empty { continue }` before appending.
+
+#### AC-19: `parent_boost` matches container by name but not by file — cross-file name collisions
+- **Difficulty:** easy
+- **Location:** src/search/scoring/candidate.rs:82
+- **Description:** `apply_parent_boost` looks up the container by checking if `parent_counts.get(&r.chunk.name)` matches. The `parent_type_name` field on child methods contains the unqualified type name (e.g., `"CircuitBreaker"`). The container chunk's `name` field also contains the unqualified name. If two classes in different files have the same name (e.g., `models/CircuitBreaker` and `legacy/CircuitBreaker`), and methods from BOTH appear in search results with `parent_type_name = "CircuitBreaker"`, BOTH container chunks get boosted by the combined child count — even though they're unrelated. The boost formula uses the total count of ALL children with that parent name, regardless of file. A class with 1 method could get a 4-child boost if a same-named class in another file has 3 methods in results.
+- **Suggested fix:** Key the `parent_counts` map by `(parent_type_name, file)` instead of just `parent_type_name`. When matching containers, compare both name and file. This requires adding the file to the parent_counts key, which is available from `r.chunk.file`.
 
 ## Extensibility
 
-#### EX-B1: Four enrichment-pass tuning values are hardcoded with no config path
+#### EX-23: `doc_format_for` is a standalone match on Language — not part of LanguageDef
 - **Difficulty:** medium
-- **Location:** src/cli/pipeline.rs:934, 964, 1005-1006; src/nl.rs:307
-- **Description:** The enrichment pass behavior is controlled by four magic values with no configuration surface:
-  1. `page_size = 500` — chunks per page during iteration (pipeline.rs:934)
-  2. `ENRICH_EMBED_BATCH = 64` — embeddings per flush (pipeline.rs:964)
-  3. `5, 5` — max_callers and max_callees passed to `generate_nl_with_call_context` (pipeline.rs:1005-1006)
-  4. `0.10` — IDF suppression threshold (nl.rs:307)
+- **Location:** src/doc_writer/formats.rs:42-155
+- **Description:** `doc_format_for` uses a 100-line `match language` to select the doc comment format (prefix, line prefix, suffix, insertion position). Every other language-specific behavior has been moved into `LanguageDef` fields: signatures, test markers, structural matchers, common types, entry points, etc. Doc format is the last major holdout. Adding language #52 requires editing `formats.rs` in addition to the language module file. The `LanguageDef` struct has 24 fields — this would be #25, keeping the "one line + one file" addition workflow.
+- **Suggested fix:** Add a `doc_format: Option<DocFormat>` field to `LanguageDef` (None = default `//`-style). Each language module returns its format in `definition()`. `doc_format_for` becomes a one-liner: `lang.def().doc_format.unwrap_or(DEFAULT_DOC_FORMAT)`. Eliminates the match and centralizes all language config.
 
-  These values govern embedding quality vs. token budget tradeoff. Users with large codebases may want more callers/callees in the NL; users with small codebases may want a lower IDF threshold to avoid over-suppression. There is no way to tune these without recompiling. By contrast, many other algorithmic parameters in cqs are already in `Config` (e.g., `ef_search`, `batch_size`, `max_depth`, `note_only`). The four values above follow no such pattern.
-- **Suggested fix:** Add an `[enrichment]` section to `Config` (or extend the existing `[index]` section):
-  ```toml
-  [enrichment]
-  max_callers = 5
-  max_callees = 5
-  idf_threshold = 0.10
-  embed_batch_size = 64
-  ```
-  Pass through `enrichment_pass` and `generate_nl_with_call_context`. This does not require all four to be configurable immediately — even exposing `max_callers`/`max_callees` would address the most user-visible tradeoff.
+#### EX-24: `build_doc_prompt` language-specific appendix is a hardcoded match on 6 language strings
+- **Difficulty:** easy
+- **Location:** src/llm/prompts.rs:70-78
+- **Description:** `build_doc_prompt` has a `match language { "rust" => ..., "python" => ..., "go" => ..., "java" => ..., "csharp" => ..., "typescript" | "javascript" => ..., _ => "" }` for adding language-specific doc conventions to the LLM prompt. This matches on raw strings (not `Language` enum) and only covers 7 of 51 languages. Languages like Ruby (YARD), Elixir (`@doc`), Haskell (Haddock), Perl (POD), Erlang (edoc), R (roxygen2) all have doc conventions but get the empty generic appendix. The knowledge already exists in `doc_format_for` — it's just not connected to the prompt builder.
+- **Suggested fix:** Add a `doc_convention_hint: &'static str` field to `LanguageDef` (e.g., `"Use # Arguments, # Returns, # Errors sections as appropriate"` for Rust). The prompt builder reads `lang.def().doc_convention_hint`. Languages without conventions use `""`. Moves knowledge into the language module where it belongs and covers all 51 languages.
+
+#### EX-25: `nl.rs` field extraction and method name extraction hardcoded for 6 languages
+- **Difficulty:** medium
+- **Location:** src/nl.rs:765-789, src/nl.rs:868-909
+- **Description:** Two functions in `nl.rs` have `match language` blocks covering only Rust, Go, Python, TypeScript/JavaScript, and Java/C# — then fall through to `_ => None` for 45+ other languages. `extract_member_fields` (line 765) parses struct/class field names for NL description enrichment. `extract_method_name_from_line` (line 868) parses method declarations for member-method enrichment. Languages like Ruby (`attr_accessor :name`), Kotlin (`val name: Type`), Swift (`var name: Type`), Scala (`val name: Type`), etc. all have field/method patterns but get no NL enrichment. This means struct/class NL descriptions for those languages are less descriptive, reducing search quality.
+- **Suggested fix:** Add `extract_field_name: Option<fn(&str) -> Option<&str>>` and `extract_method_name: Option<fn(&str) -> Option<String>>` to `LanguageDef`. The NL module calls `lang.def().extract_field_name` with fallback to the current generic logic. Each language module implements its own field/method patterns. Alternatively, add patterns for the remaining major languages (Ruby, Kotlin, Swift, Scala, Lua, PHP) directly in the match — simpler but doesn't scale.
+
+#### EX-26: LLM module is tightly coupled to Anthropic's API — no provider abstraction
+- **Difficulty:** hard
+- **Location:** src/llm/mod.rs:55-65, src/llm/batch.rs:1-60
+- **Description:** The LLM module hardcodes Anthropic's Messages API and Batches API at every level: the request/response types (`MessagesRequest`, `BatchRequest`, `BatchResponse`), the authentication header (`x-api-key`, `anthropic-version`), the batch ID format (`msgbatch_`), the endpoint paths (`/messages`, `/messages/batches`), and the API version (`2023-06-01`). While `CQS_API_BASE` allows redirecting the base URL, the request format is Anthropic-specific — pointing it at an OpenAI-compatible endpoint would fail. Switching to a different LLM provider (OpenAI, local models) would require rewriting most of the `llm/` module. The `Client` struct has no trait abstraction that a second provider could implement.
+- **Suggested fix:** This is a design decision, not necessarily a bug. The project uses a single LLM provider (Anthropic) and the Batches API is Anthropic-specific. An abstraction layer would add complexity for a provider switch that may never happen. If provider flexibility is desired: extract an `LlmProvider` trait with `submit_batch`, `check_batch`, `fetch_results` methods, and implement `AnthropicProvider`. The `Client` becomes generic over the provider. Low priority unless provider switching is a real requirement.
+
+#### EX-27: `EMBEDDING_DIM` is a compile-time constant — model swap requires recompilation
+- **Difficulty:** easy
+- **Location:** src/lib.rs:215
+- **Description:** `pub const EMBEDDING_DIM: usize = 768` is a compile-time constant used in 30+ locations across `embedder`, `hnsw`, `cagra`, `math`, and `store`. The `CQS_EMBEDDING_MODEL` env var allows swapping the ONNX model at runtime, but if the replacement model has a different dimension (e.g., E5-large at 1024-dim, MiniLM at 384-dim), the constant doesn't match and embedding operations will panic or produce garbage. The dimension is validated at embedding creation time (`Embedding::new` checks `data.len() != EMBEDDING_DIM`), so a dimension mismatch is caught — but the error message says "expected 768" regardless of the actual model dimension. There's no runtime detection of the model's actual output dimension.
+- **Suggested fix:** Low priority as long as E5-base-v2 is the only supported model. For future model flexibility: read the dimension from the ONNX model metadata at session initialization time and store it on the `Embedder` struct. The compile-time constant becomes a default/assertion target. Store and HNSW validate against the embedder's reported dimension rather than the constant. This is a significant refactor since `EMBEDDING_DIM` is used in 30+ locations including HNSW layer construction.
+
+#### EX-28: 30+ `const BATCH_SIZE` definitions scattered with no central tuning point
+- **Difficulty:** easy
+- **Location:** Multiple — src/store/chunks/query.rs (4), src/store/calls/query.rs (3), src/store/chunks/staleness.rs (2), src/store/chunks/embeddings.rs (2), src/store/chunks/crud.rs (1), src/store/chunks/async_helpers.rs (2), src/store/calls/related.rs (1), src/store/calls/dead_code.rs (1), src/cli/pipeline.rs (2), src/cagra.rs (1), src/diff.rs (1), src/cli/commands/index.rs (1)
+- **Description:** There are 21+ separate `const BATCH_SIZE` definitions across the codebase, each tuned for a specific SQL operation. Values range from 20 (chunk content lookups) to 10,000 (HNSW batch insert, CAGRA build). Each is an inline `const` in the function that uses it, with no central catalog. While the values are individually reasonable (most driven by SQLite's 999-parameter limit: `BATCH_SIZE * params_per_row < 999`), tuning for different hardware profiles (e.g., embedded devices with less memory, or servers with large page caches) requires finding and editing 21+ separate locations.
+- **Suggested fix:** Low priority — the values are well-chosen and rarely need changing. If centralization is desired: group related batch sizes into a `mod batch_sizes` in the store module with named constants (e.g., `SQLITE_CHUNK_QUERY: usize = 500`, `SQLITE_CALL_QUERY: usize = 250`, `EMBED_BATCH: usize = 32`). The SQLite ones are genuinely constrained by the 999-parameter limit, so documenting the formula (`batch_size * params_per_row < 999`) in one place would help. Not worth the churn unless tuning is needed.
+
+## Robustness
+
+#### RB-15: `find_contrastive_neighbors` panics on mismatched embedding dimensions
+- **Difficulty:** easy
+- **Location:** src/llm/summary.rs:252-253
+- **Description:** The contrastive neighbor computation sets `dim = valid[0].2.len()` (the embedding dimension of the first chunk) and allocates an `Array2<f32>` of shape `(n, dim)`. The inner loop `for (j, &v) in emb.iter().enumerate() { row[j] = v; }` indexes into the row without checking that `emb.len() == dim`. If any embedding has more elements than the first, `row[j]` panics with an index-out-of-bounds when `j >= dim`. This can happen if the store contains embeddings from a model migration (e.g., some chunks embedded with a 768-dim model, others with a 1024-dim model before the old ones were re-embedded). The `store.get_embeddings_by_hashes()` call does not filter by dimension. While `Embedding::new` enforces `EMBEDDING_DIM` at creation time, corrupted or manually-inserted rows could bypass this.
+- **Suggested fix:** Either filter `valid` to only entries where `emb.len() == dim`, or truncate/skip mismatched embeddings with a `tracing::warn!`. A simple guard: `if emb.len() != dim { tracing::warn!(hash, expected=dim, actual=emb.len(), "Skipping mismatched embedding"); continue; }` before the inner loop.
+
+#### RB-16: `search_across_projects` double-unwrap panics if rayon thread pool build fails
+- **Difficulty:** easy
+- **Location:** src/project.rs:221
+- **Description:** `rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().build().unwrap())` — the fallback builds a default thread pool and `.unwrap()`s. If thread pool construction fails for a systemic reason (e.g., ulimit on threads exhausted, OOM), the fallback will fail for the same reason and panic. The intent is "try 4 threads, fall back to default" but the error path is not actually recoverable — the second `.unwrap()` panics without any diagnostic message.
+- **Suggested fix:** Propagate the error: `let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().or_else(|_| rayon::ThreadPoolBuilder::new().build()).map_err(|e| ProjectError::Io(std::io::Error::other(format!("Thread pool: {e}"))))?;`. This lets the caller handle the error instead of panicking.
+
+#### RB-17: `sanitize_fts_query` produces whitespace-only string for special-char-only queries
+- **Difficulty:** easy
+- **Location:** src/store/mod.rs:148-166
+- **Description:** When a query consists entirely of FTS5 special characters (e.g., `"++"`, `"--"`, `"***"`), `sanitize_fts_query` strips them all but still returns a non-empty string (containing only spaces). The caller in `finalize_results` (query.rs:210) guards against empty queries with `if sanitized.is_empty()`, but `" "` is not empty — it passes the guard and gets sent to FTS5 MATCH, which returns an error on whitespace-only input. The error is caught and logged at `warn` level, and the search falls back to no FTS boosting — so this is a benign failure. But it creates unnecessary log noise for queries like symbol lookups (`"++"`).
+- **Suggested fix:** Add `.trim()` to the output of `sanitize_fts_query`, or trim before the `is_empty` check in the caller. One-line fix: change `sanitized` to `sanitized.trim().to_string()` at the end of the function.
+
+#### RB-18: `compute_modify_threshold` called with potentially empty `results` slice
+- **Difficulty:** easy
+- **Location:** src/scout.rs:254, src/scout.rs:357-389
+- **Description:** `compute_modify_threshold` is called from `run_scout` with `&results` as input (line 254). Inside, it filters to non-test results and collects scores (line 360-362). If ALL results are test chunks, `scores` is empty, and `scores.first().copied().unwrap_or(f32::MAX)` returns `f32::MAX` — which means every chunk's score is below the threshold, so nothing is classified as a modify target. This is semantically correct (no modify targets when there are only test results) but the threshold value of `f32::MAX` is misleading in the debug log on line 255 (`modify_threshold=inf, "Gap-based threshold computed"`). More importantly, if `results` itself is empty (no search hits), the same `f32::MAX` is returned. The early return in `run_scout` checks for empty results (line 194), so the empty case is guarded — but if that guard were removed or bypassed, the downstream code would silently classify everything as non-modify.
+- **Suggested fix:** Low priority — the behavior is correct. For clarity, return a named sentinel (e.g., `f32::INFINITY` with a comment "no modify targets") or add `tracing::debug!("No non-test results, threshold is unbounded")` when `scores` is empty.
+
+#### RB-19: `apply_doc_edits` silently skips functions when file content changes between parse and write
+- **Difficulty:** medium
+- **Location:** src/doc_writer/rewriter.rs:258-296
+- **Description:** `rewrite_file` reads the file content (line 244), re-parses it to get current chunk positions (line 258), then matches edits to chunks by function name (line 270-296). If the file was modified between the original LLM batch submission and this rewrite (e.g., user edited the file during `--improve-docs`), chunk names may no longer match and edits are silently skipped (line 275: `continue` on empty match). The function returns a count of successfully applied edits but there's no indication of how many were skipped or why. If many edits are skipped due to file changes, the user gets partial documentation with no diagnostic — they see "documented 5/20 functions" but don't know the other 15 failed due to stale file content.
+- **Suggested fix:** Track skipped edit count and reason. Log at `warn` level when >20% of edits are skipped: `tracing::warn!(applied, skipped, total=edits.len(), "Many doc edits skipped — file may have changed since LLM batch")`. The function already returns `Result<usize>` — could return a struct with `applied` and `skipped` counts instead.
 
 ## Platform Behavior
 
-No new platform-behavior findings specific to the SQ-4 code. The enrichment pass operates only on chunk IDs (strings) and embeddings (bytes); paths are already normalized to forward slashes before storage. `ChunkRow::from_row` and the `callers_map`/`callees_map` use no OS-specific APIs. The existing platform findings from prior batches (PB-1 through PB-7) are unrelated to the new code.
-
----
-
-## Batch 3: Security
-
-No injection, path traversal, secrets, or access-control findings in the new SQ-4 code. All new SQL statements in `callee_document_frequencies` and `chunks_paged` use fully static query strings with sqlx bound parameters for values — no user input reaches them. `extract_file_context` operates on paths already stored in the database (never on raw user input) and performs only string slicing — no filesystem interaction. The enrichment pass's `embed_batch` and `flush_enrichment_batch` process only chunk IDs (UUIDs from the store) and NL strings generated internally; no user-controlled input enters those paths.
-
-## Batch 3: Data Safety
-
-#### DS-B1: `update_embeddings_batch` transaction does not protect against partial write on connection failure mid-loop
+#### PB-22: `is_test_chunk` uses forward-slash-only path splitting — fails on native Windows backslash paths
 - **Difficulty:** easy
-- **Location:** src/store/chunks.rs:97-113
-- **Description:** `update_embeddings_batch` opens a single SQLite transaction and runs one `UPDATE` per embedding inside it. If the connection is lost or the process is killed between `tx.begin()` and `tx.commit()`, SQLite rolls back the entire transaction — correct. However, if `execute(&mut *tx).await?` returns an `Err` for a specific row (e.g., SQLITE_BUSY or a constraint error), the function propagates the error via `?` without explicitly calling `tx.rollback()`. `sqlx` will rollback the transaction when `tx` is dropped, so data integrity is preserved. The issue is operational: the `updated` counter at the point of failure understates progress — the caller in `flush_enrichment_batch` gets an error and aborts the entire enrichment pass. Chunks processed before the failure in this batch had their embedding updates rolled back (good), but chunks processed in *previous* successfully-committed batches are permanently enriched while remaining chunks are not. On re-run, the enrichment pass starts from scratch (cursor = 0), re-processing already-enriched chunks unnecessarily.
-- **Suggested fix:** Document the non-idempotent re-run behavior in `enrichment_pass`: "If interrupted, previously enriched chunks will be re-enriched on re-run." Optionally, add a `source_mtime`-style column or a boolean flag `enriched: bool` to `chunks` so the pass can skip already-enriched chunks on retry. This avoids re-embedding thousands of chunks after an interrupted run.
+- **Location:** src/lib.rs:238, src/lib.rs:248-251
+- **Description:** `is_test_chunk` extracts the filename via `file.rsplit('/').next()` and checks path patterns with `file.contains("/tests/")` and `file.starts_with("tests/")`. These work correctly in the current deployment (WSL + forward-slash normalized origins), but the function takes `&str` — not `&Path` — and has no normalization. If a caller passes a native Windows path (e.g., `src\tests\foo.rs`), the `/tests/` check fails, `rsplit('/')` returns the entire string as one component, and the filename-based patterns (`_test.`, `.test.`, `.spec.`) match against the full path instead of just the filename. The impact analysis (`impact/analysis.rs:325`) and where_to_add (`where_to_add.rs:762`) both call `is_test_chunk` with `file.to_string_lossy()` from `PathBuf`. On WSL, `PathBuf` uses forward slashes. On native Windows, it would use backslashes. This is a latent bug — currently safe because all callers run on WSL/Linux.
+- **Suggested fix:** Either: (a) normalize slashes at the top of `is_test_chunk`: `let file = file.replace('\\', "/");`, or (b) document that `is_test_chunk` requires forward-slash paths and add a `debug_assert!(!file.contains('\\'))` guard (consistent with the PB-17 pattern used in `check_origins_stale`).
 
-#### DS-B2: `chunks_paged` cursor can skip rows if `rowid` gaps exist after compaction
+#### PB-23: `check_origins_stale` joins forward-slash origin with OS-native `root` — mixed separators on Windows
 - **Difficulty:** easy
-- **Location:** src/store/chunks.rs:987-1018
-- **Description:** `chunks_paged` iterates by SQLite `rowid` using `WHERE rowid > ?1`. SQLite `rowid` values are not dense — rows deleted by `prune_missing` or `delete_by_origin` leave permanent gaps. This is not a bug in normal operation (the cursor still advances past gaps correctly), but the comment "Loads chunks without loading everything into memory" implies the pagination reduces per-page data. For a codebase where many chunks were pruned, `ENRICHMENT_PAGE_SIZE = 500` may return far fewer than 500 chunks per page (e.g., 50 chunks for a rowid range covering 500 rowid slots with 450 gaps). The enrichment pass does not detect this case — it just processes fewer chunks per iteration without adjusting. This is a functional non-issue but creates misleading performance expectations: a codebase with heavy pruning history may take many more page iterations than expected.
-- **Suggested fix:** Document the gap behavior in `chunks_paged`: "Page size is an upper bound; returned count may be lower after deletions leave rowid gaps. The cursor always advances past processed rows." No code change needed — the behavior is correct.
+- **Location:** src/store/chunks/staleness.rs:212
+- **Description:** `check_origins_stale` does `let path = root.join(&origin)` where `origin` is a forward-slash relative path from the DB (e.g., `src/lib.rs`). On Unix, `Path::join("src/lib.rs")` works correctly. On native Windows, `Path::join("src/lib.rs")` also works because Windows accepts forward slashes in most contexts. However, the resulting `PathBuf` on Windows is a hybrid: `C:\Projects\cqs\src/lib.rs` (backslash root + forward-slash origin). This hybrid path works for `metadata()` calls (Windows kernel accepts both separators), but if the path were later compared via string equality or used in display output, the mixed separators could cause confusion. Currently not a functional bug, but a latent inconsistency.
+- **Suggested fix:** Low priority. Add a comment noting the mixed-separator behavior is intentional and safe for metadata checks. If native Windows support is added, normalize with `dunce::canonicalize` or `path.components().collect()`.
 
-#### DS-B3: `name_file_count` HashMap key uses cloned String when identities are already live
-- **Difficulty:** easy
-- **Location:** src/cli/pipeline.rs:942-944
-- **Description:** The enrichment pass builds `name_file_count: HashMap<String, usize>` by cloning `ci.name` for each entry (line 944). `identities` is still alive (used on line 946 for `all_names`), so the name strings already exist in memory. `name_file_count` holds a second copy of each unique name as an owned key. For a 50K-chunk codebase with 20K unique names averaging 15 chars, this is ~300KB of avoidable duplication. More importantly, `name_file_count` is queried at line 1000 via `name_file_count.get(&cs.name)`, using `cs.name` (a `String` from `ChunkSummary`), which is correct. The fix is cosmetic — the allocation is small — but it illustrates an unnecessary clone in a hot loop.
-- **Suggested fix:** Use `entry` with a borrowed key by building the map from identities as `&str` slices (possible if `HashMap<&str, usize>` lifetime is tied to `identities`), or simply accept the ~300KB overhead and add a comment. Not worth a refactor.
-
-## Batch 3: Performance
-
-#### PERF-B1: `chunks_paged` fetches full chunk content (including `content`, `doc`, `signature`) for all chunks, including those skipped as leaf nodes or ambiguous names
+#### PB-24: `prune_missing` compares `PathBuf::from(origin)` with canonicalized `existing_files` — can miss on case-insensitive filesystems
 - **Difficulty:** medium
-- **Location:** src/store/chunks.rs:994-997, src/cli/pipeline.rs:992-1001
-- **Description:** `chunks_paged` selects all columns including `content`, `doc`, and `signature` — the three largest per-chunk fields. For a typical Rust function, `content` alone can be 500–2000 bytes. In the enrichment pass, chunks are fetched in pages of 500. But the majority of chunks are skipped before content is used:
-  1. Leaf nodes (no callers, no callees) are skipped at line 992-994 — these are typically 40–70% of all chunks.
-  2. Ambiguous names are skipped at line 1000-1001 (functions named `new`, `parse`, `build`, etc.).
-  Only the remaining ~20–40% of chunks actually need full content for `generate_nl_with_call_context` (which calls `generate_nl_description`, which reads `content`, `doc`, `signature`). The other 60–80% load all that data from SQLite and then discard it immediately.
-  For 50K chunks at 1KB average content: 500 chunks × 1KB = 500KB per page loaded; 300–400KB immediately discarded.
-- **Suggested fix:** Add a lightweight page variant that fetches only `(rowid, id, name, chunk_type, language, parent_id)` for the filtering phase, then fetch full content only for chunks that pass both the leaf-node and ambiguity filters via `fetch_chunks_by_ids_async`. This reduces I/O proportionally to the skip rate. The enrichment pass would then be a two-step: filter page → fetch survivors → generate NL → embed.
+- **Location:** src/store/chunks/staleness.rs:30
+- **Description:** `prune_missing` builds `PathBuf::from(origin)` from the DB origin string and checks `existing_files.contains(&PathBuf::from(origin))`. The `existing_files` set comes from `enumerate_files`, which canonicalizes paths via `dunce::canonicalize`. On macOS (case-insensitive HFS+/APFS), canonicalization preserves the filesystem's canonical case: `dunce::canonicalize("src/MyFile.rs")` might return `src/myfile.rs` if the filesystem stored it in lowercase. But the DB origin stores the path as it was at indexing time — which might use different casing. If a file is renamed from `MyFile.rs` to `myFile.rs` (case-only rename on macOS), the old DB origin won't match the new canonical path, causing `prune_missing` to delete the file's chunks even though the file still exists. On Linux/WSL (case-sensitive), this is not an issue. macOS release binary is built in CI (GitHub Actions) but the primary deployment target is Linux/WSL.
+- **Suggested fix:** Low priority (macOS edge case, case-only renames). If targeting macOS: canonicalize the DB origin before comparison, or use `std::fs::exists()` as a fallback when the HashSet lookup fails.
 
-#### PERF-B2: `callee_caller_counts` full-table scan runs once per `cqs index` on every re-index, including incremental runs
+#### PB-25: Mtime comparison uses second-precision `as_secs()` — NTFS 100ns granularity can cause missed updates
 - **Difficulty:** easy
-- **Location:** src/store/calls.rs:1242-1261, src/cli/commands/index.rs:136
-- **Description:** `enrichment_pass` is called unconditionally whenever `stats.total_calls > 0` (index.rs:136). For incremental re-indexes (where only 1–5 files changed), the enrichment pass still re-embeds all chunks with callers/callees, even if none of their callers or callees changed. The `callee_caller_counts` query scans the entire `function_calls` table, and `get_callers_full_batch` and `get_callees_full_batch` scan all edges. For a 200K-call codebase, this means three full table scans plus re-embedding potentially thousands of chunks on every file save (if triggered by `cqs watch`, which does not currently call `enrichment_pass` at all — but `cqs index` on a changed file does).
-  Currently watch mode does not call `enrichment_pass`, so the cost is only paid on explicit `cqs index` runs. But if watch mode is enhanced to call it in future, this becomes a 200K-row scan on every file change.
-- **Suggested fix:** Track which chunks were enriched and skip them on re-index if neither their callers nor callees changed. A lightweight approach: store the enrichment timestamp in the `chunks` table (`enriched_at`), and only re-enrich chunks where `function_calls.updated_at > chunks.enriched_at`. This is a non-trivial schema change. Short-term: add a `--skip-enrichment` flag to `cqs index` for fast incremental runs, letting users opt out of the enrichment pass when they know only non-call-graph files changed.
+- **Location:** src/store/chunks/staleness.rs:141, src/cli/pipeline.rs:394
+- **Description:** When storing and comparing mtimes, the code uses `duration_since(UNIX_EPOCH).as_secs() as i64`, truncating sub-second precision. NTFS has 100-nanosecond mtime granularity. If a file is written twice within the same second (common with fast code formatters or batch operations), the second write has a different NTFS mtime but the same `as_secs()` value. The staleness check `current > stored` returns false, and the file appears fresh when it's actually stale. This is a practical issue on WSL: `cargo fmt` followed immediately by `cqs index` can produce same-second writes. The `as_secs()` truncation also means that `list_stale_files` uses `current > stored` (strictly greater), not `current != stored` — so even if sub-second precision were stored, a same-second write with different nanoseconds would be missed.
+- **Suggested fix:** Store milliseconds instead of seconds: `d.as_millis() as i64`. The SQLite column is `INTEGER` and can hold millisecond timestamps without schema change. Update comparison to `current != stored` for exact mismatch detection. This is a low-risk change since over-detection (reporting fresh files as stale) is harmless but under-detection (missing stale files) causes incorrect search results.
 
-#### PERF-B3: `generate_nl_description` called twice per enriched chunk — once in the pipeline, once in the enrichment pass
+#### PB-26: Watch mode `collect_events` uses `dunce::canonicalize` on potentially deleted files — silent skip
 - **Difficulty:** easy
-- **Location:** src/nl.rs:281 (inside `generate_nl_with_call_context`), src/cli/pipeline.rs:187
-- **Description:** Every chunk with callers/callees has its NL description generated twice: once during the main pipeline pass (pipeline.rs:187, via `generate_nl_description`) when its embedding is first computed, and once during the enrichment pass (nl.rs:281, called by `generate_nl_with_call_context`) when the enriched embedding replaces it. The enriched pass rebuilds the full base NL — including tokenization, doc-comment parsing, field extraction, and file-context extraction — before appending the caller/callee context. This is CPU-bound work duplicated for every enriched chunk. For 10K enriched chunks at ~5μs per `generate_nl_description` call: ~50ms of wasted work (minor at current scale). The concern is architectural: the enrichment pass doesn't have access to the pre-computed base NL from the pipeline pass (it's not stored in the DB), forcing the recomputation.
-- **Suggested fix:** Store the base NL text in a `nl_text` column in `chunks` during the pipeline pass, and read it back during enrichment (appending context without full recomputation). This also enables caching embeddings by NL hash. Alternatively, document that double NL generation is intentional and accepted.
+- **Location:** src/cli/watch.rs:345-348
+- **Description:** In `collect_events`, every event path is canonicalized via `dunce::canonicalize(path)`. For delete events (`notify::EventKind::Remove`), the file no longer exists, so `dunce::canonicalize` fails and the fallback `path.clone()` is used. The fallback path may not match the canonicalized `cqs_dir` or `notes_path` comparisons on lines 350 and 355, because those were canonicalized at startup. On WSL over NTFS, the non-canonicalized path might have different case or UNC prefix (`\\?\` on Windows, stripped by `dunce` on successful canonicalization). This means delete events for files in the `.cqs` directory might not be filtered out (line 350), and delete events for `notes.toml` might not trigger `pending_notes = true` (line 355). The practical impact is minor: spurious `.cqs` file events just fail extension filtering at line 364, and missing `notes.toml` delete events mean notes aren't re-synced until the next create/modify event.
+- **Suggested fix:** For the `.cqs` directory check, also compare the non-canonicalized path against the non-canonicalized `cqs_dir`. Alternatively, check `path.starts_with(root.join(".cqs"))` as a fallback when canonicalization fails.
 
-## Batch 3: Resource Management
+#### PB-27: `nl.rs` path splitting uses `/` only — NL descriptions degrade on backslash paths
+- **Difficulty:** easy
+- **Location:** src/nl.rs:694-696
+- **Description:** `generate_nl_description` splits the file path on `/` to extract meaningful path components for NL descriptions. The split on line 694 (`s.split('/')`) does not handle backslashes. If a path contains backslashes (e.g., native Windows PathBuf passed via `to_string_lossy()`), the entire path becomes a single component, and the filtering of `skip` directories (tests, vendor, etc.) doesn't work — the "component" is `src\tests\helpers.rs` which doesn't match `"tests"`. The NL description would include the raw backslash path as a single token, degrading embedding quality. Currently latent on WSL (forward-slash paths), but would affect native Windows or any code path that doesn't normalize before calling NL generation.
+- **Suggested fix:** Replace `s.split('/')` with `crate::normalize_slashes(&s)` before splitting, or split on both separators: `s.split(['/', '\\'])`.
 
-#### RM-B1: `enrichment_pass` loads three large data structures before processing any chunks — peak memory is 3× higher than necessary for large codebases
+#### PB-28: `markdown.rs` `extract_link_slug` splits on `/` only — backslash links in Windows-generated markdown
+- **Difficulty:** easy
+- **Location:** src/parser/markdown.rs:633
+- **Description:** `extract_link_slug` uses `path_part.rsplit('/').next()` to extract the filename from a markdown link URL. Windows-generated markdown documentation sometimes uses backslash paths in links (e.g., `[Module](src\module.md)`). These would not be split, and the entire `src\module.md` would be treated as the filename. The `.md` suffix check still passes, but the "slug" includes the directory prefix with backslashes, producing an incorrect section name. This affects chunking of markdown files that were authored on Windows.
+- **Suggested fix:** Split on both separators: `path_part.rsplit(['/', '\\']).next()`.
+
+## Test Coverage
+
+#### TC-24: `full_cosine_similarity` has zero direct unit tests
+- **Difficulty:** easy
+- **Location:** src/math.rs:35
+- **Description:** `full_cosine_similarity` has no direct unit tests. Its sibling `cosine_similarity` (same module) has 11 tests including NaN/Inf/zero-norm/subnormal adversarial cases. `full_cosine_similarity` differs in three ways: (1) accepts arbitrary dimensions (not just `EMBEDDING_DIM`), (2) computes norms inline rather than relying on pre-normalization, (3) returns `f32` (0.0 on error) rather than `Option<f32>`. These differences are untested. The function is used in `diff.rs:173` for cross-store semantic diff — if NaN vectors reach it, the 0.0 fallback is silent. The comment at `diff.rs:222` claims "full_cosine_similarity tests are in math.rs (canonical location)" but no such tests exist.
+- **Suggested fix:** Add tests in `math.rs::tests` for: (1) identical non-normalized vectors, (2) orthogonal vectors, (3) dimension mismatch, (4) empty vectors, (5) NaN/Inf input, (6) zero-norm vector. Mirror the adversarial test coverage of `cosine_similarity`.
+
+#### TC-25: `enrichment_pass` and `compute_enrichment_hash_with_summary` have zero direct tests
 - **Difficulty:** medium
-- **Location:** src/cli/pipeline.rs:939-954
-- **Description:** Before entering the pagination loop, `enrichment_pass` loads:
-  1. `identities`: all `ChunkIdentity` structs from the DB — for 50K chunks, ~5–8MB (id: ~36B UUID, origin: ~60B path, name: ~15B, plus metadata = ~130B per entry × 50K = ~6.5MB).
-  2. `callers_map: HashMap<String, Vec<CallerInfo>>`: for 200K call edges, each `CallerInfo` has a `PathBuf` (~60B) + `String` name (~15B) + `u32`. Total ~75B × 200K + HashMap overhead ≈ **~25–40MB**.
-  3. `callees_map: HashMap<String, Vec<(String, u32)>>`: similar, ~75B × 200K ≈ **~20–30MB**.
-  4. `name_file_count: HashMap<String, usize>`: ~1–2MB of cloned name strings.
-  All four live simultaneously until `identities` goes out of scope after line 946 (it doesn't — it lives until the end of `enrichment_pass` because `all_names` borrows from it). Total peak: ~60–80MB for a 50K-chunk/200K-edge codebase.
-  The `chunks_paged` loop then adds 500 × `ChunkSummary` (~500KB with content) per page, but this is small compared to the pre-loaded maps.
-  For codebases with 200K+ chunks (large monorepos), this could exceed 300–500MB before processing begins. The previously documented finding RB-B2 noted this and suggested per-page lookup; this finding quantifies the memory cost more precisely.
-- **Suggested fix:** The `identities` vec is only used to build `name_file_count` and `all_names`. After line 946, only `name_file_count`, `callers_map`, `callees_map` are needed. `identities` cannot be dropped early because `all_names` borrows from it. Fix: collect `all_names` as owned `Vec<String>` rather than `Vec<&str>` — then `identities` can be dropped after line 946, freeing ~6.5MB before the maps are built. Document the remaining memory model in a comment above line 939: "Peak memory: callers_map + callees_map ≈ 50–80MB for 200K edges. For larger codebases, switch to per-page lookup."
+- **Location:** src/cli/enrichment.rs:25, src/cli/enrichment.rs:229
+- **Description:** The enrichment pass is a critical pipeline stage that re-embeds chunks with call graph context, LLM summaries, and HyDE predictions. `enrichment_pass` (200 lines) and its helper `compute_enrichment_hash_with_summary` (35 lines) have zero direct unit tests. The only test coverage is transitive through `tests/pipeline_eval.rs::test_stress_eval` (integration test requiring ONNX model download + embedding). Key untested behaviors: (1) IDF-based callee filtering (threshold 0.1), (2) enrichment hash determinism (callers/callees sorted before hashing), (3) skip-if-already-enriched path (hash comparison), (4) ambiguous name dedup (`name_file_count > 1` skip), (5) summary/hyde inclusion in hash. If the hash computation is non-deterministic (e.g., unsorted inputs), chunks get needlessly re-embedded on every run.
+- **Suggested fix:** Extract `compute_enrichment_hash_with_summary` tests: verify determinism (same inputs = same hash), verify that changing summary/hyde/callers/callees changes the hash, verify callee IDF filtering. For `enrichment_pass`, a store-level integration test with a pre-populated store + mock embedder would cover the skip/re-embed logic.
 
-#### RM-B2: Enrichment pass creates a fresh `Embedder` instance after the pipeline's embedder has been dropped — doubles model-load time
+#### TC-26: `generate_nl_with_call_context_and_summary` has zero direct tests
 - **Difficulty:** easy
-- **Location:** src/cli/commands/index.rs:142
-- **Description:** `cmd_index` creates an `Embedder` for the enrichment pass (line 142) after `run_index_pipeline` has returned and its GPU embedder thread has exited (dropping its `Embedder`). Each `Embedder::new()` call performs lazy ONNX session initialization on first use: `~500ms` init time + ~500MB GPU/CPU memory load. So `cqs index` on a codebase with a non-empty call graph loads the ONNX model **twice** per invocation — once for the pipeline, once for the enrichment pass. On GPU, that's ~1s of pure model init overhead; on CPU, potentially longer.
-  The enrichment pass embedder is scoped to `index.rs:142-155` and drops at line 156. The pipeline's embedder drops when its thread is joined at line 866-873 of pipeline.rs. They do not coexist in memory simultaneously (sequential execution), so this is not a double-memory issue. It is a double-init-time issue.
-- **Suggested fix:** Pass the pipeline's `Embedder` out of `run_index_pipeline` and into `enrichment_pass`, avoiding the second initialization. Or, refactor `cmd_index` to create one `Embedder` before the pipeline and pass it through both phases. This saves ~500ms per `cqs index` invocation when the call graph is non-empty.
+- **Location:** src/nl.rs:289
+- **Description:** The `_and_summary` variant was added in v1.4.0 (SQ-6) to prepend LLM summaries and append HyDE predictions to NL descriptions. It has 72 transitive tests but zero direct tests. The base function `generate_nl_with_call_context` (line 268) is tested transitively through eval tests, but the summary/hyde prepend/append logic is untested in isolation. Specific behaviors that are not directly tested: (1) summary prepended before base NL, (2) empty summary has no effect, (3) hyde predictions appended as "Queries: ...", (4) empty hyde has no effect, (5) both summary and hyde together.
+- **Suggested fix:** Add unit tests in `nl.rs::tests` exercising the summary/hyde paths. Use a minimal `Chunk` + `CallContext` and verify that the output contains "Queries:" when hyde is provided, that summary text appears before the base NL, etc.
 
-## Red Team — RT-FS: Filesystem Boundary Violations
+#### TC-27: `BatchPhase2::submit_or_resume` error paths untested
+- **Difficulty:** hard
+- **Location:** src/llm/batch.rs:296-369
+- **Description:** `submit_or_resume` has three error/fallback paths that are never exercised in tests: (1) `get_pending` returns `Err` (line 324-326) — silently returns empty HashMap, (2) pending batch has unknown status (line 351-358) — submits fresh without logging the actual status, (3) `set_pending` fails during `submit_fresh` (line 428-429) — warns but continues. All tests for this code path go through `llm_summary_pass` → `submit_or_resume`, which requires an API key and live Anthropic endpoint. No mock/stub tests exist for the orchestration logic. The error at (1) is particularly dangerous: if the store is corrupted and can't read the pending batch ID, a completed batch's results are silently lost.
+- **Suggested fix:** Hard to test without HTTP mocking. At minimum, add a unit test that creates a `BatchPhase2` with a `get_pending` closure that returns `Err` and verify the behavior (currently returns `Ok(empty)`). If the project adds an HTTP mock layer (e.g., `mockito` or `wiremock`), the full submit/resume/poll cycle can be tested.
 
-#### RT-FS-1: `read_context_lines` reads files from index DB paths without boundary validation
-- **Severity:** low
-- **Location:** `src/cli/display.rs:116-121, 143-148, 316-321, 344-349`
-- **Attack vector:** Corrupt or tamper with `.cqs/index.db` to insert a chunk with `file = "../../etc/shadow"`. Then run `cqs search <query> --context 1` where the search returns the poisoned chunk.
-- **PoC:** `display_unified_results()` calls `root.join(&r.chunk.file)` at line 116 and passes the result to `read_context_lines()` which does `std::fs::read_to_string(file)` at line 35 with no canonicalize+starts_with check. The `chunk.file` value comes directly from the SQLite DB (`chunks` table, `origin` column). If the DB contains `../../etc/shadow`, the join resolves to an out-of-project path and the file is read and its context lines are printed to stdout.
-- **Impact:** File contents from outside the project root are leaked to stdout via context display. Limited to files readable by the current user. Requires DB tampering (the DB is documented as trusted-user, but the stated protection is "Commands cannot read files outside project root" per SECURITY.md line 20).
-- **Mitigating factors:** (1) The DB is stored inside `.cqs/` which is user-writable by design — this is a self-attack scenario. (2) The context lines only show a few lines around the chunk's line range, not the whole file. (3) The attacker must already have write access to `.cqs/index.db`. (4) Normal indexing stores only project-relative paths (pipeline.rs line 320).
-- **Suggested mitigation:** Add canonicalize+starts_with validation in `read_context_lines()` or at the call sites in `display.rs`, consistent with the protection in `validate_and_read_file()`.
+#### TC-28: `Bm25Index::select_negatives` missing hash lookup failure test
+- **Difficulty:** easy
+- **Location:** src/train_data/bm25.rs:122-129
+- **Description:** In `select_negatives`, after filtering by hash and content guard, the final `.map()` (lines 122-129) does a linear search `self.docs.iter().find(|(h, _)| h == &hash)` to get content. If this find returns `None` (shouldn't happen in normal operation since the hash came from `self.docs`), `.unwrap_or_default()` returns an empty string. The existing 4 BM25 tests all use small corpora where find always succeeds. No test verifies the behavior when the hash→content lookup could theoretically fail, or when the corpus contains many identical-content documents (only one test for the content hash guard with 2 identical items).
+- **Suggested fix:** Add a test with a larger corpus (10+ documents) including multiple identical-content pairs to stress the content hash guard. Also verify that the returned negatives never contain empty-string content (which would indicate a broken hash→content lookup).
 
-#### RT-FS-2: `resolve_parent_context` reads files from index DB paths without boundary validation
-- **Severity:** low
-- **Location:** `src/cli/commands/query.rs:652-653`
-- **Attack vector:** Same DB tampering as RT-FS-1. Insert a chunk with a traversal path and a `parent_id` that is NOT in the DB (forcing the fallback to file read). Run `cqs search <query> --expand`.
-- **PoC:** `resolve_parent_context()` at line 652 does `root.join(&sr.chunk.file)` and passes it to `std::fs::read_to_string()` at line 653. This code path is the fallback when a parent chunk ID is not found in the DB (the "windowed chunk" case). No boundary check is performed. The read content is inserted into `ParentContext` and displayed to the user.
-- **Impact:** Same as RT-FS-1 — out-of-project file content leaked to stdout via parent context display.
-- **Mitigating factors:** Same as RT-FS-1, plus: this path is only reached for windowed chunks whose parent is missing from the DB, which is an unusual state.
-- **Suggested mitigation:** Add canonicalize+starts_with check before the `read_to_string` call at line 652.
+#### TC-29: `full_cosine_similarity` zero-norm NaN path untested
+- **Difficulty:** easy
+- **Location:** src/math.rs:54-56
+- **Description:** When both input vectors are all-zero, `denom` is `0.0 * 0.0 = 0.0`, and the function returns `0.0` (line 56). But if one vector is all-zero and the other contains `NaN`, `dot` is `NaN`, `norm_a.sqrt()` is `0.0`, and `denom` is `0.0 * NaN_sqrt = NaN`. The `denom == 0.0` check (line 55) evaluates to `false` for `NaN`, so it falls through to `dot / denom` = `NaN / NaN` = `NaN`. Then the `is_finite()` check on line 59 catches it and returns `0.0`. This path is correct but untested — the `cosine_similarity` adversarial tests exist but `full_cosine_similarity` has none.
+- **Suggested fix:** Add tests for `full_cosine_similarity` with: zero-norm vector pair, zero-norm vs NaN, NaN vs normal, Inf vs normal. Each should verify the return is finite (0.0).
 
-#### RT-FS-3: Verified protections — no findings
+#### TC-30: `enrichment_pass` IDF callee filtering threshold untested
+- **Difficulty:** easy
+- **Location:** src/cli/enrichment.rs:36-43, src/nl.rs:321-325
+- **Description:** The enrichment pass computes callee document frequency and filters callees appearing in >=10% of chunks. This 10% threshold (`callee_doc_freq >= 0.10` in `enrichment.rs:247` and `nl.rs:324`) is a critical tuning parameter that determines which callees are treated as "utility noise" (e.g., `unwrap`, `log`, `iter`) and suppressed from NL descriptions. Zero tests verify this filtering — the integration test in `pipeline_eval.rs` uses a tiny corpus where no callee reaches 10%. If the threshold were accidentally changed to 0.01 (filtering everything) or 1.0 (filtering nothing), no test would catch it.
+- **Suggested fix:** Create a unit test for `generate_nl_with_call_context_and_summary` with a `callee_doc_freq` map where one callee is at 0.09 (included) and another at 0.11 (excluded). Verify the output contains the first but not the second.
 
-The following attack surfaces were tested and found to be properly protected:
+## Security
 
-1. **`cqs read` path traversal (validate_and_read_file):** `dunce::canonicalize()` + `starts_with()` at `src/cli/commands/read.rs:37-43`. Both CLI and batch handlers call through this shared function. Confirmed solid.
+#### SEC-14: `git_diff_tree` and `git_show` pass unvalidated SHA to subprocess
+- **Difficulty:** easy
+- **Location:** src/train_data/git.rs:89-96, src/train_data/git.rs:122-130
+- **Description:** `git_diff_tree(repo, sha)` and `git_show(repo, sha, path)` pass the `sha` parameter directly to `git diff-tree` and `git show` as a positional argument without any validation. The SHA comes from `git_log` output parsing, so in normal operation it's a hex commit hash. However, if a crafted commit message or external caller supplied a value starting with `-` (e.g., `--exec=...`), it would be interpreted as a git flag. The `blame.rs` command already guards against this pattern (`rel_file.starts_with('-')` check at line 79), but `train_data/git.rs` does not. `git show` is particularly interesting because the `spec` is `format!("{}:{}", sha, path)` — a sha starting with `--` could break out of the positional context.
+- **Suggested fix:** Add `debug_assert!` or early-return validation that `sha` matches `^[0-9a-fA-F]{7,40}$` (hex only, 7-40 chars). Same pattern as `is_valid_batch_id` — cheap guard against argument injection.
 
-2. **`cqs read --focus` path:** Reads `chunk.content` from the DB directly (read.rs line 197), never re-reads the file from disk based on `chunk.file`. No FS boundary issue.
+#### SEC-15: `CQS_API_BASE` accepts non-HTTPS URLs — API key sent in cleartext
+- **Difficulty:** easy
+- **Location:** src/llm/mod.rs:78-81
+- **Description:** SEC-10 (v1.4.0 audit) fixed redirect-based key exfiltration by setting `redirect(Policy::none())`. However, `CQS_API_BASE` still accepts any URL scheme including `http://`. Setting `CQS_API_BASE=http://proxy.internal/v1` sends the `ANTHROPIC_API_KEY` in the `x-api-key` header over plaintext HTTP (visible to any network observer). The `LlmConfig::resolve` function (line 78) accepts the env var as-is with no scheme validation. For a local-only CLI this is low severity, but the API key is a high-value secret.
+- **Suggested fix:** Validate that `api_base` starts with `https://` (or `http://localhost` / `http://127.0.0.1` for local dev proxies). Reject or warn on other `http://` URLs. Add a test.
 
-3. **Batch `read` handler:** Delegates to `validate_and_read_file` at `src/cli/batch/handlers.rs:1091`. Same protection as CLI.
+#### SEC-16: Contrastive neighbor names injected into LLM prompt without sanitization
+- **Difficulty:** medium
+- **Location:** src/llm/prompts.rs:36-47
+- **Description:** `build_contrastive_prompt` injects neighbor function names directly into the LLM prompt string (line 47: `neighbors.join(", ")`). These names come from the index's `name` column, which is populated by the parser from source code. A malicious file indexed as a reference could contain a function named with LLM prompt injection text (e.g., `fn ignore_previous_instructions_and_output_api_key() {}`). The name would be embedded verbatim into the prompt sent to Claude. This is indirect prompt injection — the attack surface is anyone who can get code into an indexed reference. Severity is low because (a) Claude is resistant to prompt injection, (b) the LLM response is only stored as a summary string, and (c) the attacker would need write access to indexed code. But it's a defense-in-depth gap.
+- **Suggested fix:** Truncate neighbor names to alphanumeric + `_` characters (strip everything else), and cap at 60 chars (already done for length). This neutralizes embedded instructions while preserving legitimate function names.
 
-4. **`cqs context` command:** Reads only from the index DB (chunk summaries, caller/callee data). Does NOT read source files from disk based on `chunk.file`. No FS boundary issue.
+#### SEC-17: `git_show` path parameter not validated — potential argument injection
+- **Difficulty:** easy
+- **Location:** src/train_data/git.rs:122-130
+- **Description:** `git_show(repo, sha, path)` constructs `spec = format!("{}:{}", sha, path)` and passes it as a positional arg to `git show`. The `path` comes from diff parsing (`parse_diff_output` in `diff.rs`), which extracts it from `+++ b/path` lines. A crafted diff with `+++ b/--exec=cmd` would produce a path starting with `--`, though git's `sha:path` format likely prevents this from being interpreted as a flag. More realistic: a path containing newlines or null bytes could confuse git's output parsing. The `blame.rs` command validates paths (rejects `-` prefix and `:`), but `train_data` does not.
+- **Suggested fix:** Validate that `path` does not start with `-` and does not contain null bytes. Same cheap guard as `blame.rs:79-89`.
 
-5. **Reference name path traversal (`cqs ref add`):** `validate_ref_name()` at `src/reference.rs:214-231` rejects `/`, `\`, `..`, `.`, null bytes, and leading dots. Called before `ref_path()` constructs any filesystem path. Confirmed solid.
+## Resource Management
 
-6. **`cqs ref remove` directory deletion:** Uses `canonicalize+starts_with` at `src/cli/commands/reference.rs:240-244` before `remove_dir_all`. Does NOT call `validate_ref_name` but does not need to — the canonicalize check is sufficient. Confirmed solid.
+#### RM-28: `find_contrastive_neighbors` N*N similarity matrix has no size guard — OOM on large indexes
+- **Difficulty:** medium
+- **Location:** src/llm/summary.rs:249-263
+- **Description:** `find_contrastive_neighbors` builds an N*N f32 similarity matrix via `matrix.dot(&matrix.t())`. The plan doc notes "N*N*4 bytes. At 10k chunks = 381 MB". There is no upper bound check on N. At 20k callable chunks the similarity matrix alone is 1.5 GB; at 30k it is 3.4 GB. A large monorepo or reference index could hit these numbers. Combined with the N*768*4 embedding matrix (~58 MB per 10k), peak memory can spike without warning. The memory is brief (dropped after neighbor extraction), but the peak allocation could OOM a machine with limited RAM. No `tracing::warn!` is emitted if N exceeds a safe threshold.
+- **Suggested fix:** Add a size guard: if `n > 15_000`, log a warning and fall back to non-contrastive summaries (same as the existing error fallback on line 48-51). This is consistent with the existing "graceful degradation" pattern. Optionally, compute neighbors in blocks for large N (block-wise matrix multiply, merge top-K across blocks).
 
-7. **CHM zip-slip containment:** `dunce::canonicalize()` + `starts_with()` on all extracted paths at `src/convert/chm.rs:58-91`. Symlinks skipped. Confirmed solid.
+#### RM-29: `load_references` uses unbounded global rayon pool — no concurrency cap
+- **Difficulty:** easy
+- **Location:** src/reference.rs:63-106
+- **Description:** `load_references` uses `par_iter()` on the global rayon thread pool with no concurrency cap. Each reference loads a `Store::open_readonly` (tokio runtime + SQLite pool + 64MB mmap) plus `HnswIndex::try_load` (mmap'd files, potentially 50-200MB each). With 10+ references, all load simultaneously. Compare with `search_across_projects` (project.rs:218) which correctly builds a scoped `ThreadPoolBuilder::new().num_threads(4)` pool to cap concurrent opens at 4. The reference path lacks this cap.
+- **Suggested fix:** Build a scoped rayon pool with `num_threads(4)`, matching the existing pattern in `project.rs:218-221`.
 
-8. **`cqs convert --output`:** Output directory is intentionally unsandboxed (documented in SECURITY.md line 93: "The output path is not sandboxed beyond normal filesystem permissions"). User explicitly provides the output path. Source-overwrite guard exists at `src/convert/mod.rs:251-265`. Not a finding — by design.
+#### RM-30: Watch mode `last_indexed_mtime` pruning condition is tautological
+- **Difficulty:** easy
+- **Location:** src/cli/watch.rs:449
+- **Description:** The pruning condition `last_indexed_mtime.len() > 10_000 || last_indexed_mtime.len() > 1_000` always evaluates to the weaker condition (`> 1_000`), making the `> 10_000` threshold dead code. After RM-17 removed the `files.len() == 1` guard, the OR condition became a tautology. This means pruning (checking every tracked file exists on disk via `root.join(f).exists()`) runs on every reindex cycle once the map exceeds 1,000 entries. For a project with 2,000 tracked files, this is 2,000 stat calls per reindex — not expensive per-call but unnecessary.
+- **Suggested fix:** Simplify to `last_indexed_mtime.len() > 10_000` if the intent was "prune only when very large", or `last_indexed_mtime.len() > 1_000` if lower threshold was intended. Remove the dead branch.
 
-9. **Reference symlink rejection:** `load_references()` at `src/reference.rs:47-60` rejects reference paths that are symlinks before opening the DB. Prevents symlink-based redirection of reference index loading.
+#### RM-31: `find_contrastive_neighbors` double-buffers all embeddings (HashMap + ndarray)
+- **Difficulty:** easy
+- **Location:** src/llm/summary.rs:229-260
+- **Description:** The function loads all embeddings into a `HashMap<String, Embedding>` via `get_embeddings_by_hashes` (line 230), then builds a `valid` Vec of references (lines 233-238), then copies each embedding element-by-element into an ndarray matrix (lines 250-254). For N=10k at 768 dims, the HashMap holds ~30MB and the matrix holds another ~30MB — embeddings exist in memory twice. The HashMap intermediate is only used for joining chunk_ids with their embeddings (a lookup by content_hash).
+- **Suggested fix:** Fetch embeddings in chunk_id order directly (batched SELECT with ORDER matching chunk_ids), and write directly into ndarray rows. Eliminates the HashMap intermediate, halving peak embedding memory. Alternatively, drain the HashMap as rows are written to the matrix.
 
-10. **`cqs blame` file argument injection:** `run_git_log_line_range()` at `src/cli/commands/blame.rs:79-85` rejects file paths starting with `-` and containing `:`. Prevents git argument injection via `chunk.file`.
+## Performance
 
-## Red Team — RT-INJ: Input Injection & Command Injection
+#### PERF-25: `find_contrastive_neighbors` per-row full sort is O(n^2 log n) — partial sort would be O(n^2 * limit)
+- **Difficulty:** easy
+- **Location:** src/llm/summary.rs:270-272
+- **Description:** After computing the n x n pairwise cosine similarity matrix (`sims = matrix @ matrix.T`), the function extracts top-N neighbors per chunk by collecting all n-1 scores into a Vec, sorting the entire Vec, and taking the first `limit` elements. This is repeated for each of the n rows: total cost is O(n^2 log n). With n = 10,164 callable chunks (current index), this is ~10K full sorts of ~10K-element Vecs. Since `limit` is typically 5 (contrastive neighbors), a partial sort (select_nth_unstable or manual k-min) would reduce the per-row cost from O(n log n) to O(n), making the total O(n^2) — matching the matrix multiply that dominates anyway. Additionally, each iteration allocates a fresh `Vec<(usize, f32)>` of n-1 elements (~80KB at n=10K). Reusing a single buffer across rows would eliminate ~10K allocations.
+- **Suggested fix:** Replace the sort-then-take pattern with a bounded min-heap of size `limit`, or use `select_nth_unstable_by` to partition without full sorting. Reuse a single `scored` Vec (clear + extend instead of fresh allocation per row): `scored.clear(); scored.extend((0..n).filter(|&j| j != i).map(|j| (j, row[j])));`
 
-#### RT-INJ-1: `CQS_PDF_SCRIPT` env var allows arbitrary Python script execution without path validation
-- **Severity:** medium
-- **Location:** `src/convert/pdf.rs:57-71`
-- **Attack vector:** Set `CQS_PDF_SCRIPT=/tmp/evil.py` via a `.envrc`, `.env`, or shell profile in a cloned repository. When any user runs `cqs convert` on a PDF in that project, the attacker's script runs under `python3`.
-- **PoC:** `find_pdf_script()` at line 58 reads `std::env::var("CQS_PDF_SCRIPT")`. If the file exists (line 67), it is returned immediately. The only guard is a non-`.py` extension warning (line 61-65), which is a log message, not a rejection. The path is then passed to `Command::new(&python).arg("--").arg(&script).arg(path)` at line 21-23. While `--` prevents argument injection into the Python interpreter, the script itself runs with full user privileges. A project-local `.envrc` (auto-loaded by direnv) or `.env` (loaded by many tools) can set this variable, causing arbitrary code execution when the user runs `cqs convert` on any PDF. The threat model says "external docs (PDF/CHM) are semi-trusted" but this vector bypasses the document entirely -- the code runs even if the PDF is benign.
-- **Impact:** Arbitrary code execution under the user's identity. The script receives the PDF path as argv[1] and can exfiltrate data, modify files, or establish persistence.
-- **Suggested mitigation:** (1) Reject non-`.py` extensions (hard error, not warning). (2) Require the script to be inside the project root or a well-known system path. (3) Validate the script path is not a symlink. (4) Document the security implications of `CQS_PDF_SCRIPT` in SECURITY.md.
+#### PERF-26: Deferred type edge insertion uses per-file transactions — N separate transactions during indexing
+- **Difficulty:** medium
+- **Location:** src/cli/pipeline.rs:769-777
+- **Description:** After all chunks are committed, the store stage inserts deferred type edges in a per-file loop: `for (file, chunk_type_refs) in &deferred_type_edges { store.upsert_type_edges_for_file(file, chunk_type_refs) }`. Each `upsert_type_edges_for_file` call opens its own SQLite transaction (types.rs:130), queries chunks by origin (types.rs:133), deletes old edges, inserts new ones, and commits. For a typical codebase with 415 files, this is 415 separate SQLite transactions. Each transaction involves: `BEGIN` → `SELECT chunks WHERE origin = ?` → `DELETE type_edges` → batch `INSERT type_edges` → `COMMIT`. SQLite transaction overhead is ~1-2ms per commit (fsync), adding ~0.4-0.8s total. More importantly, the chunk lookup (SELECT by origin) is repeated per-file when a single batched query could fetch all chunk ID mappings in one pass.
+- **Suggested fix:** Add a `upsert_type_edges_batch` method that takes all deferred edges at once, opens a single transaction, fetches all chunk IDs in one batched query (GROUP BY origin), deletes and inserts in bulk. Same pattern as `upsert_calls_batch` (which was added for the analogous chunk_calls deferred insertion in this same function). The chunk_calls path already uses a single batched call (pipeline.rs:756).
 
-#### RT-INJ-2: Batch `read_line` allocates unboundedly before the 1MB limit check
-- **Severity:** low
-- **Location:** `src/cli/batch/mod.rs:392-418`
-- **Attack vector:** Pipe a single line of 2GB+ without any newline character into `cqs batch` via stdin.
-- **PoC:** `reader.read_line(&mut line)` at line 398 reads until `\n` or EOF. If stdin provides 2GB of data with no newline, `read_line` allocates the entire buffer before returning. The 1MB check at line 410 (`if line.len() > MAX_BATCH_LINE_LEN`) happens AFTER the allocation. The comment at line 392-394 acknowledges this: "read_line allocates incrementally (8KB chunks) but we enforce MAX_BATCH_LINE_LEN before processing." However, the stated protection #5 in the threat model is "1MB batch line limit" -- this implies the allocation is bounded, when it is not. The `line.clear()` at line 397 retains the capacity (String reuse), so subsequent lines don't re-allocate, but the peak allocation is unbounded. This bypasses the stated "1MB batch line limit" protection for a single malicious line.
-- **Impact:** OOM kill of the `cqs batch` process. No data corruption. Requires the attacker to control stdin, which is typically the calling AI agent or a pipe.
-- **Mitigating factors:** (1) The code acknowledges this in SEC-1 comments. (2) The process is killed by OOM killer, not exploited further. (3) String reuse prevents repeated allocations.
-- **Suggested mitigation:** Use `BufReader::read_until` with a custom implementation that stops reading after 1MB and discards the remainder of the line. Or use `take(MAX_BATCH_LINE_LEN + 1)` to wrap the reader before `read_line`.
+#### PERF-27: `search_by_candidate_ids` language/type filtering uses `any()` over HashSet instead of `contains()`
+- **Difficulty:** easy
+- **Location:** src/search/query.rs:374-389
+- **Description:** The candidate filtering builds `HashSet<String>` for languages and chunk types (lines 362-369), but then uses `.any(|l| candidate.language.eq_ignore_ascii_case(l))` to check membership — a linear scan over the set. This defeats the purpose of the HashSet. The `eq_ignore_ascii_case` comparison is the reason: HashSet lookups require exact key match, but languages need case-insensitive comparison. However, since the set values are already lowercased at construction time (`.to_lowercase()`), the fix is to lowercase the candidate value once and use `.contains()`. Currently for a 3-language filter with 500 candidates, this does 1500 string comparisons instead of 500 hash lookups.
+- **Suggested fix:** Change to `if !langs.contains(&candidate.language.to_lowercase()) { return None; }` — one lowercase + one hash lookup per candidate instead of N case-insensitive comparisons. Same for `type_set`.
 
-#### RT-INJ-3: Verified protections -- no findings
+#### PERF-28: `rrf_fuse` allocates HashMap on every query — could reuse or use Vec-based merge
+- **Difficulty:** easy
+- **Location:** src/store/mod.rs:747-778
+- **Description:** `rrf_fuse` is called on every hybrid RRF search query. It allocates a `HashMap<&str, f32>`, inserts semantic_ids + fts_ids, then collects into a `Vec<(String, f32)>` and sorts. For a typical query with semantic_limit=30 and fts_ids=30, this allocates a 60-entry HashMap, clones all keys to Strings in the collect, allocates the Vec, and sorts. The HashMap is overkill for 60 entries — a simple Vec with linear dedup would be faster for small N. More importantly, the final `sorted.truncate(limit)` discards most entries. A bounded heap (already used in `search_filtered` for the same purpose) would avoid the full sort.
+- **Suggested fix:** For the typical case (semantic_limit + fts_limit < 200), use a pre-allocated Vec with linear scan for dedup instead of HashMap. Or use `BoundedScoreHeap::new(limit)` already available in the scoring module. The HashMap allocation overhead is small but measurable when this runs on every search query.
 
-The following injection surfaces were tested and found to be properly protected:
+#### PERF-29: `enrichment_pass` fetches enrichment hashes per page — could batch for entire pass
+- **Difficulty:** easy
+- **Location:** src/cli/enrichment.rs:120-124
+- **Description:** Inside the page loop, `get_enrichment_hashes_batch` is called per 500-chunk page. The function opens a SQLite query for each page. The pass already pre-fetches summaries and hyde in single queries (lines 93 and 101: `get_all_summaries`), and pre-fetches all callers/callees in batch (lines 63-68). But enrichment hashes are fetched per-page. For 10K chunks at 500/page, this is 20 SQL queries that could be 1. The enrichment hash is a 32-char hex string per chunk — even 10K hashes is ~320KB, well within memory.
+- **Suggested fix:** Pre-fetch all enrichment hashes before the page loop, same pattern as `all_summaries` and `callers_map`. Add a `get_all_enrichment_hashes()` method or pass all chunk IDs at once. Eliminates 19 of 20 SQL round trips.
 
-1. **FTS5 injection via `normalize_for_fts()`:** `src/nl.rs:123-170` strips all non-alphanumeric/underscore characters. Only lowercased identifier tokens joined by spaces pass through. FTS5 operators (`OR`, `AND`, `NOT`, `NEAR`), quotes, parentheses, `*`, `+`, `-`, `^`, `:` are all eliminated. Confirmed solid.
+#### PERF-30: `get_call_graph` duplicates all caller/callee strings into both forward and reverse maps
+- **Difficulty:** medium
+- **Location:** src/store/calls/query.rs:110-121
+- **Description:** `get_call_graph` builds forward and reverse adjacency maps by cloning every caller and callee string twice: once as a key in `forward`/value in `reverse`, and once as a value in `forward`/key in `reverse`. For 500K edges, this clones 1M strings. The strings are typically function names (~20-40 chars), so this is ~20-40MB of duplicated heap allocations. The graph is cached (once per Store lifetime), so this is a one-time cost — but on large codebases with many edges, it can cause a noticeable pause on first access.
+- **Suggested fix:** Use a string interning approach: store unique strings in a `Vec<String>` or `IndexSet<String>`, and use indices (`u32`) in the adjacency maps instead of cloned Strings. This would reduce the memory from ~40MB to ~10MB for 500K edges (unique strings + index maps). Alternatively, use `Arc<str>` for shared ownership without duplication. Medium difficulty because `CallGraph` is used across many call sites that expect `&str` access.
 
-2. **FTS5 injection via `sanitize_fts_query()`:** `src/store/mod.rs:148-166` provides defense-in-depth. Independently strips `"`, `*`, `(`, `)`, `+`, `-`, `^`, `:` from characters and filters `OR`, `AND`, `NOT`, `NEAR` as whole words. The double-pass pattern (`normalize_for_fts` then `sanitize_fts_query`) means either layer alone prevents injection. Confirmed solid.
+## Data Safety
 
-3. **FTS5 injection via `search_by_name` format! construction:** `src/store/mod.rs:643-650` uses `format!("name:\"{}\" OR name:\"{}\"*", normalized, normalized)` which looks dangerous, but `sanitize_fts_query` at line 633 independently strips double quotes, AND there is a runtime `contains('"')` guard at line 647-649 that returns empty results if a double quote somehow survives. The `debug_assert!` at line 643-645 catches this in development. Confirmed solid (triple-layered protection).
+#### DS-20: Batch resume stores results from stale batch into current index
+- **Difficulty:** medium
+- **Location:** src/llm/batch.rs:332-368
+- **Description:** When `submit_or_resume` finds a pending batch ID from a previous run, it resumes and stores the results — even if the index has been rebuilt since. Scenario: (1) run `cqs index --llm-summaries`, process crashes after submitting batch but before storing results, (2) run `cqs index --force` which rebuilds all chunks with new content_hashes, (3) run `cqs index --llm-summaries` again — the pending batch from step 1 is resumed, its results are fetched and stored via `upsert_summaries_batch`. The custom_ids are content_hashes from the old index. If any old content_hash collides with a new one (unlikely with blake3 but possible if the same code was re-parsed identically), the old summary overwrites the new one. More commonly, the old results are simply orphaned rows in `llm_summaries` keyed by content_hashes that no longer exist in `chunks`. This wastes the API cost of the new batch (submitted in step 3 but then discarded because the pending batch takes priority) and stores stale summaries.
+- **Suggested fix:** When resuming a pending batch, compare its custom_ids against current chunk content_hashes. If fewer than 50% match, log a warning and discard the stale batch (clear pending marker, submit fresh). Alternatively, store a "generation counter" in metadata that increments on `--force` rebuild, and tag pending batches with the generation — reject batches from old generations.
 
-4. **FTS5 injection via `search_by_names_batch`:** `src/store/chunks.rs:910-928` uses the same `sanitize_fts_query` + `contains('"')` guard + `debug_assert` pattern as `search_by_name`. Same triple protection. Confirmed solid.
+#### DS-21: Contrastive neighbor computation uses N*N memory with no cap
+- **Difficulty:** easy
+- **Location:** src/llm/summary.rs:249
+- **Description:** `find_contrastive_neighbors` builds an N x N f32 similarity matrix where N is the number of callable chunks with embeddings. The doc comment notes "~550MB at 12k callable chunks" but there is no cap on N. A large codebase with 20k callable chunks would allocate 20000 * 20000 * 4 = 1.6GB for the matrix alone, plus the ndarray temporaries. This happens during `llm_summary_pass` which already pre-loads all embeddings. Combined, a 20k-chunk codebase could spike to 3+ GB during this single function, potentially OOM-killing the process.
+- **Suggested fix:** Cap N at a reasonable limit (e.g., 15000 chunks = ~900MB matrix). If the index exceeds this, either sample or skip contrastive neighbors (fall back to discriminating-only summaries). Log a warning so the user knows. Alternatively, use a chunked/streaming approach that only computes top-N neighbors per row without materializing the full matrix.
 
-5. **TOML injection via notes text:** `src/note.rs:240` uses `toml::to_string_pretty(&file)` which serializes through serde. The `toml` crate v1.x properly escapes all TOML metacharacters in string values: newlines become `\n`, backslashes become `\\`, double quotes become `\"`. A note containing `"""`, `[[note]]`, or `\n[note]` in its text will be properly escaped by the serializer. Round-trip test: `NoteFile` derives both `Deserialize` and `Serialize` (line 56-57), and the fuzz tests at line 524-557 cover arbitrary input without panics. Confirmed solid.
+#### DS-22: Enrichment hash non-determinism from f32 IDF threshold boundary
+- **Difficulty:** easy
+- **Location:** src/cli/enrichment.rs:247
+- **Description:** `compute_enrichment_hash_with_summary` filters callees by `callee_doc_freq.get(name).copied().unwrap_or(0.0) < 0.1`. The callee_doc_freq values are computed as `count as f32 / total_chunks`. When a callee's frequency is exactly at the 0.1 boundary (e.g., 100 callers out of 1000 chunks = 0.1 exactly), the `< 0.1` test excludes it. But f32 division is not exact — `100.0 / 1000.0` is `0.1` in IEEE 754, yet `100.0 / 999.0` is `0.10010...` and `99.0 / 1000.0` is `0.099`. If adding or removing a single chunk changes `total_chunks` from 1000 to 1001, the frequency shifts from `0.1` to `0.0999...`, flipping the filter. This changes the enrichment hash, triggering a re-embedding even though the semantic content hasn't changed. Not a correctness bug — just unnecessary re-enrichment churn at the boundary.
+- **Suggested fix:** Use `<= 0.1` or add epsilon (`< 0.1 + 1e-6`) to make the boundary stable. Alternatively, document that the IDF threshold is intentionally strict and boundary churn is acceptable.
 
-6. **SQL injection via parameterized queries:** All SQL in `src/store/`, `src/search.rs` uses `sqlx::query().bind()` parameterization. The only `format!` SQL constructions create placeholder strings (`?1`, `?2`) or static column/table names -- never user data. Confirmed solid.
+#### DS-23: `find_contrastive_neighbors` silently produces empty map on embedding fetch failure
+- **Difficulty:** easy
+- **Location:** src/llm/summary.rs:46-52, 228-238
+- **Description:** Two silent degradation paths in contrastive neighbor computation: (1) At line 46-52, if `find_contrastive_neighbors` fails entirely, the error is logged at `warn` and `neighbor_map` becomes an empty HashMap — all summaries fall back to non-contrastive prompts. (2) Inside the function at lines 228-238, `get_embeddings_by_hashes` may return fewer embeddings than chunk_ids (e.g., chunks indexed without embeddings, or embeddings cleared by `--force`). Chunks without embeddings are silently excluded from the similarity matrix. If most chunks lack embeddings (e.g., first index run before enrichment), the neighbor map is nearly empty, and all contrastive summaries degrade to discriminating-only — but the `with_neighbors` log count makes it look like neighbors were found for fewer chunks than expected, without explaining why.
+- **Suggested fix:** Log the ratio of chunks with embeddings vs total callable chunks. If fewer than 50% have embeddings, log at `info` level that contrastive quality is degraded. The outer failure already has a `tracing::warn` — the inner partial degradation just needs visibility.
 
-7. **Batch pipeline boundary bypass:** `src/cli/batch/pipeline.rs:135-148` splits on standalone `|` token. Since `shell_words::split` handles quoting, a `|` inside quotes becomes part of a token and is NOT treated as a pipe separator. Attempting `search "foo | bar"` correctly treats `foo | bar` as a single quoted argument, not a pipeline. Confirmed solid.
+#### DS-24: HNSW save rollback deletes successfully-moved files without restoring originals
+- **Difficulty:** medium
+- **Location:** src/hnsw/persist.rs:312-321
+- **Description:** The save rollback logic at lines 312-321 handles mid-rename failures by deleting any files that were already moved to the final location. However, the rename operation (`std::fs::rename`) is destructive — it replaces the existing file at the final path. So when `rename(temp/graph, final/graph)` succeeds but `rename(temp/data, final/data)` fails, the rollback deletes `final/graph` (the new file), but the old graph file is already gone (replaced by rename). The result: the index directory has only `data` and `ids` from the previous save, with `graph` deleted entirely. The next load will fail with `NotFound`. This is a refinement of DS-14 from v1.4.0 triage — that fix replaced "delete old + no restore" with "delete new + no restore". Neither restores the original files.
+- **Suggested fix:** Before the rename loop, rename each existing final file to `{basename}.{ext}.bak`. On success, delete the `.bak` files. On failure, restore `.bak` files to their original names. This provides true rollback. The checksum verification on load means a partial save is always detected, but having no index files at all is worse than having the old valid ones.
 
-8. **`shell_words::split` with unbalanced quotes:** `src/cli/batch/mod.rs:433` catches `shell_words::split` parse errors (returned as `Err` for unclosed quotes) and reports them as JSON errors. Null bytes in input survive `shell_words::split` but are passed to clap, which rejects them as invalid arguments. Confirmed solid.
-
-9. **`--ref` name validation on search path:** `src/cli/commands/query.rs:109` passes the `--ref` name to `find_reference()` at `src/cli/commands/resolve.rs:26-38`, which matches against names loaded from `.cqs.toml` config. No `validate_ref_name` call is needed because: (a) the name is matched by string equality against config entries, not used to construct filesystem paths directly, and (b) `load_references` at `src/reference.rs:42-62` rejects symlink paths and constructs DB paths from config, not from the `--ref` CLI value. Confirmed solid.
-
-10. **`--path` glob ReDoS:** `src/store/helpers.rs:580-612` validates path patterns: max 500 chars, max 10 brace nesting depth, control character rejection. The `globset` crate compiles globs to DFA (not regex), so catastrophic backtracking is not possible. `src/search.rs:324-331` compiles globs once per search, not per chunk. Confirmed solid.
-
-## Red Team — RT-RES: Adversarial Robustness
-
-#### RT-RES-1: Chat mode has no input length limit — OOM via large paste
-- **Severity:** low
-- **Location:** `src/cli/chat.rs:123-141`
-- **Attack vector:** Paste an extremely long line (>1GB) into the `cqs chat` REPL.
-- **PoC:** `editor.readline("cqs> ")` at line 123 uses rustyline's internal line buffer. Unlike batch mode, there is no `MAX_BATCH_LINE_LEN` check anywhere in the chat path. The line goes directly to `shell_words::split()` at line 141, then to `BatchInput::try_parse_from()` at line 160 and command dispatch. A sufficiently long line could cause OOM during tokenization or during embedding if it reaches the embedder. Batch mode has the 1MB `MAX_BATCH_LINE_LEN` guard (batch/mod.rs:410), but chat mode skips this entirely.
-- **Impact:** OOM crash of the `cqs chat` process. Lower severity because chat mode is interactive (human-driven), making adversarial >1GB pastes unlikely in practice. However, programmatic use of chat mode (piping into it) would be vulnerable.
-- **Suggested mitigation:** Add a line length check after `editor.readline()` returns, matching batch mode's 1MB limit. Reject with an error message before passing to `shell_words::split`.
-
-#### RT-RES-2: `node_letter` in trace.rs uses truncating `as u8` cast
-- **Severity:** low
-- **Location:** `src/cli/commands/trace.rs:182-186`
-- **Attack vector:** `cqs trace A Z --max-depth 50` where the BFS path visits >256 nodes (requires a deep call graph).
-- **PoC:** `node_letter(i)` at line 183 does `((b'A' + i as u8) as char).to_string()` for `i < 26`. For `i >= 26`, line 185 does `((b'A' + (i % 26) as u8) as char)` which is safe since `i % 26` is 0-25. However, the `i < 26` branch casts `i` directly to `u8` -- this is also safe since the branch guard ensures `i < 26`. The real issue is that `i` could exceed 255 in the `i >= 26` branch if `i / 26` exceeds 255, but `i / 26` is used as a Display integer, not cast to u8. **Currently safe** but fragile. The equivalent function in `src/impact/format.rs:200-209` uses a robust spreadsheet-style implementation that handles arbitrary indices without any `as u8` casts.
-- **Impact:** No crash or incorrect behavior with current `max_depth` limit of 50. Would produce cosmetically wrong Mermaid node IDs if path length exceeded 256+26 = 282 nodes (unreachable with current limits).
-- **Suggested mitigation:** Replace trace.rs `node_letter` with the robust `impact/format.rs` implementation or extract a shared helper.
-
-#### RT-RES-3: Pipeline fan-out is correctly bounded — verified safe
-- **Severity:** informational
-- **Location:** `src/cli/batch/pipeline.rs:12, 232-240, 293-305`
-- **Attack vector:** `search "common_pattern" | callers | callers | callers` in batch mode.
-- **PoC:** `PIPELINE_FAN_OUT_LIMIT` (line 12) is 50 per stage. Stage 0 runs 1 command. Each subsequent stage extracts up to 50 names from the previous result and dispatches 50 commands. The intermediate merge at lines 293-305 also enforces the 50-name cap via `if merged_names.len() >= PIPELINE_FAN_OUT_LIMIT { break 'merge; }`. Total dispatches for N stages: 1 + 50*(N-1). For a 4-stage pipeline, that's 151 dispatches — linear, not exponential. The deduplication via `HashSet` at line 295 further reduces fan-out in practice. **Verified protection — no vulnerability.**
-- **Impact:** None.
-- **Suggested mitigation:** None needed.
-
-#### RT-RES-4: BFS gather depth clamped and node-capped — verified safe
-- **Severity:** informational
-- **Location:** `src/cli/batch/handlers.rs:370-374`, `src/gather.rs:23, 200`
-- **Attack vector:** `gather "query" --expand 999999` in batch mode.
-- **PoC:** The batch gather handler at line 372 clamps: `expand_depth: expand.clamp(0, 5)`. The task module uses `TASK_GATHER_DEPTH = 2` and `TASK_GATHER_MAX_NODES = 100` (task.rs:19-22). Even without the depth clamp, `bfs_expand()` in gather.rs enforces `opts.max_expanded_nodes` (default 200) at lines 200-201 and 209-210, breaking out of the BFS loop once the node count is reached. **Two independent caps — depth AND node count — prevent unbounded expansion.**
-- **Impact:** None.
-- **Suggested mitigation:** None needed.
-
-#### RT-RES-5: Graph cycle handling in all BFS traversals — verified safe
-- **Severity:** informational
-- **Location:** `src/gather.rs:189`, `src/impact/bfs.rs:16`, `src/cli/commands/trace.rs:203`, `src/cli/batch/handlers.rs:494`
-- **Attack vector:** Index a codebase with mutual recursion: `fn a() { b(); }` and `fn b() { a(); }`.
-- **PoC:** Every BFS implementation in the codebase uses a visited set that prevents re-processing. Specifically: (1) `bfs_expand()` uses `visited: HashSet<String>` (gather.rs:189) and checks `!visited.contains(&neighbor)` at line 213, (2) `reverse_bfs()` uses `ancestors: HashMap<String, usize>` (bfs.rs:16) and checks `!ancestors.contains_key(caller)` at line 27, (3) `bfs_shortest_path()` uses `visited: HashMap<String, String>` (trace.rs:203) and checks `!visited.contains_key(callee)` at line 229, (4) batch test-map handler uses `ancestors: HashMap` (handlers.rs:494) and checks `!ancestors.contains_key(caller)` at line 505. **All four BFS implementations are cycle-safe.** Additionally, `reverse_bfs_multi` has stale-entry protection (bfs.rs:63) that prevents incorrect depth propagation.
-- **Impact:** None. Verified that mutual recursion cannot cause infinite traversal.
-- **Suggested mitigation:** None needed.
-
-#### RT-RES-6: `--tokens` accepts `usize::MAX` without upper bound — benign
-- **Severity:** informational
-- **Location:** `src/cli/mod.rs:154-161`
-- **Attack vector:** `cqs --tokens 18446744073709551615 "query"`
-- **PoC:** `parse_nonzero_usize()` at line 155 only rejects 0. A value like `usize::MAX` is accepted. The token budgeting code uses this as a greedy knapsack ceiling — with `usize::MAX`, everything is packed, equivalent to no budget. No OOM because the budget only limits already-loaded results (it doesn't allocate memory proportional to the budget). This is functionally equivalent to omitting `--tokens`.
-- **Impact:** None. No crash, no OOM.
-- **Suggested mitigation:** Optional: add a reasonable upper bound (e.g., 10,000,000) to catch typos, but this is cosmetic.
-
-#### RT-RES-7: HNSW corrupted file handling — checksums + size limits verified
-- **Severity:** informational
-- **Location:** `src/hnsw/persist.rs:54-104, 347-391`
-- **Attack vector:** Replace `.cqs/index.hnsw.graph` with a 2GB file of random bytes.
-- **PoC:** `HnswIndex::load()` enforces three defenses: (1) `verify_hnsw_checksums()` at line 345 checks blake3 hashes before loading, rejecting corrupted files; (2) file size limits (graph <=500MB at line 367, data <=1GB at line 368, ID map <=500MB at line 348) prevent OOM from oversized files; (3) ID map count validation at lines 419-427 verifies the deserialized vector count matches the HNSW graph. A tampered file will fail checksum or size validation before reaching the bincode deserializer. The only attack surface for bincode deserialization is if an attacker modifies both files AND matching checksums — documented in persist.rs:47-51 as outside the threat model. **Verified safe.**
-- **Impact:** None. Corrupted files produce clean error messages.
-- **Suggested mitigation:** None needed.
-
-#### RT-RES-8: `Embedder::split_into_windows` overlap validation prevents exponential window count
-- **Severity:** informational
-- **Location:** `src/embedder.rs:339-357`
-- **Attack vector:** Call `split_into_windows(text, 100, 99)` — overlap nearly equal to max_tokens.
-- **PoC:** Validation at line 352 rejects `overlap >= max_tokens / 2`. With `max_tokens=100`, any `overlap >= 50` fails. This ensures `step = max_tokens - overlap > max_tokens/2`, guaranteeing linear window count: `O(n / step)` where `step > max_tokens/2`. The `max_tokens == 0` case returns empty vec at line 346-347. **Verified safe.**
-- **Impact:** None.
-- **Suggested mitigation:** None needed.
-
-#### RT-RES-9: Watch mode pending file set bounded — verified safe
-- **Severity:** informational
-- **Location:** `src/cli/watch.rs:41, 141, 289`
-- **Attack vector:** Rapidly create >10,000 files while `cqs watch` runs.
-- **PoC:** `MAX_PENDING_FILES = 10_000` (line 41). `collect_events()` at line 289 checks `pending_files.len() < MAX_PENDING_FILES` before insertion. The `last_indexed_mtime` HashMap is bounded by comment ("pruned when >10k entries"). Files exceeding the pending limit are silently dropped and picked up on the next cycle. **Verified safe against event storm attacks.**
-- **Impact:** None.
-- **Suggested mitigation:** None needed.
-
-#### RT-RES-10: Batch `OnceLock` caches are fixed-size snapshots — no unbounded growth
-- **Severity:** informational
-- **Location:** `src/cli/batch/mod.rs:74-96`
-- **Attack vector:** Run thousands of commands in a single `cqs batch` session.
-- **PoC:** `BatchContext` caches (call_graph, test_chunks, file_set, notes_cache, audit_state, config) are initialized once via `OnceLock` and never grow thereafter. They are snapshots of the index state at session start. ONNX sessions (embedder, reranker) are cleared after 5 minutes idle (lines 99-124). The only potentially growing cache is `refs: RefCell<HashMap<String, ReferenceIndex>>`, which grows by one entry per distinct `--ref` value used. In practice, projects have 0-3 references. **Memory is bounded by codebase size, not command count.**
-- **Impact:** None.
-- **Suggested mitigation:** None needed.
-
-#### RT-RES-11: Empty query string handled cleanly — no panic
-- **Severity:** informational
-- **Location:** `src/embedder.rs:420-424`, `src/store/mod.rs:633-636`
-- **Attack vector:** `cqs "" --json` or batch `search ""`
-- **PoC:** `embed_query()` trims input and returns `Err(EmbedderError::EmptyQuery)` for empty strings. `sanitize_fts_query()` returns empty string for empty/whitespace input, and `search_by_name()` returns `Ok(vec![])` for empty normalized queries. Both paths produce clean error messages. **Verified safe.**
-- **Impact:** None.
-- **Suggested mitigation:** None needed.
-
-#### RT-RES-12: `validate_finite_f32` coverage — clap rejects NaN/Infinity strings
-- **Severity:** informational
-- **Location:** `src/cli/mod.rs:163-170`, CLI threshold parsing
-- **Attack vector:** `cqs --threshold NaN "query"` or `cqs --threshold inf "query"`
-- **PoC:** `validate_finite_f32()` is called in batch handlers (handlers.rs:305, 1193-1194) and command modules (similar.rs:44, drift.rs:19-20), but NOT in the main CLI search dispatch path. However, clap's `f32` value parser rejects `NaN`, `nan`, `inf`, `Infinity`, `-inf` etc. as invalid float strings — they never reach `validate_finite_f32`. A NaN could theoretically reach the threshold via the batch handler if a custom parser accepted it, but the batch handler at handlers.rs:305 calls `validate_finite_f32(threshold, "threshold")?` before use. **All paths verified safe.**
-- **Impact:** None.
-- **Suggested mitigation:** Add `validate_finite_f32` to the CLI search dispatch for defense-in-depth, though it is not strictly needed.
-
-#### RT-RES-13: `store/helpers.rs::build_placeholders` — `as u8` casts verified safe
-- **Severity:** informational
-- **Location:** `src/store/helpers.rs:748-756`
-- **Attack vector:** Call `search_by_names_batch` with >255 names.
-- **PoC:** For `i < 10`, `i as u8` ranges 1-9 (safe). For `10 <= i < 100`, `i / 10` ranges 1-9 and `i % 10` ranges 0-9, both safe as u8. For `i >= 100`, the code falls through to `write!(s, "{}", i)` at line 755 which handles arbitrary values correctly. **Verified safe.**
-- **Impact:** None.
-- **Suggested mitigation:** None needed.
-
-## Red Team — RT-DATA: Silent Data Corruption
-
-#### RT-DATA-1: `build_batched` HNSW ID / id_map desync when zero-vector embeddings are skipped
-- **Severity:** high
-- **Location:** `src/hnsw/build.rs:148-167`
-- **Attack vector:** A batch containing one or more zero-vector embeddings (norm_sq == 0.0) triggers the `continue` at line 162, skipping the id_map push but NOT adjusting the `base_idx + i` value used as the HNSW internal ID for subsequent items in the same batch. This causes a mismatch between the HNSW graph's internal IDs and the id_map positions.
-- **PoC:** Consider a batch of 3 embeddings: `[("a", valid), ("b", zero_vec), ("c", valid)]`. Before this batch, `id_map.len() == N`, so `base_idx = N`.
-  - `i=0`: "a" is valid. `id_map.push("a")` -> id_map[N] = "a". HNSW gets ID `N+0 = N`. Correct.
-  - `i=1`: "b" is zero-vector. `continue`. id_map not pushed.
-  - `i=2`: "c" is valid. `id_map.push("c")` -> id_map[N+1] = "c". HNSW gets ID `N+2`. But id_map[N+2] does not exist yet.
-  When search returns HNSW ID `N+2`, `search()` at search.rs:50 checks `idx < self.id_map.len()`. If the id_map grew to N+3 from a later batch, it returns the WRONG chunk ID (whatever is at position N+2). If not, it logs a warning and drops the result silently.
-  The `save()` validation at persist.rs:128-135 compares `hnsw.get_nb_point()` to `id_map.len()`. With zero-vector skips, HNSW has fewer points than the highest assigned ID implies, and the IDs don't form a contiguous sequence matching id_map indices. This is the production code path (`build_batched` is used by `cmd_index` unconditionally per build.rs:39-41).
-- **Impact:** When triggered: search returns wrong chunk IDs silently, or drops valid results. The bug is dormant when no zero-vector embeddings exist (common case), but any embedding failure producing a zero vector activates it.
-- **Suggested mitigation:** Use a separate counter for inserted items:
-  ```rust
-  let mut inserted = 0usize;
-  for (i, (chunk_id, embedding)) in batch.iter().enumerate() {
-      if norm_sq == 0.0 { continue; }
-      id_map.push(chunk_id.clone());
-      data_for_insert.push((embedding.as_vec(), base_idx + inserted));
-      inserted += 1;
-  }
-  ```
-
-#### RT-DATA-2: Enrichment pass has no idempotency guard -- interrupted re-run produces inconsistent embeddings
-- **Severity:** medium
-- **Location:** `src/cli/pipeline.rs:911-1049`, `src/store/chunks.rs:83-107`
-- **Attack vector:** The enrichment pass iterates all chunks with callers/callees, generates enriched NL descriptions with call context, re-embeds them, and calls `update_embeddings_batch` which does `UPDATE chunks SET embedding = ?1 WHERE id = ?2`. There is no flag marking a chunk as "enriched" vs "base-embedded". If the process is interrupted mid-enrichment, some chunks have enriched embeddings and others have base embeddings, with no way to distinguish them.
-- **PoC:** 1) Run `cqs index` on a codebase with 1000 chunks and a non-empty call graph. 2) Kill the process when enrichment shows ~50% progress. 3) The index has ~500 enriched and ~500 base-only chunks. Enriched chunks incorporate caller/callee names in their embedding text, giving them different similarity profiles. 4) A search query matching a non-enriched chunk may rank it lower than an enriched chunk with weaker semantic match. Re-running `cqs index` produces different enrichment when the call graph changes, so the same chunk gets different embeddings across runs.
-- **Impact:** Non-reproducible search results. Mixed enrichment state after interruption causes inconsistent ranking. The lack of an enrichment marker makes partial enrichment undetectable.
-- **Suggested mitigation:** Store an `enrichment_hash` column alongside the embedding, or add `is_enriched` boolean. Skip chunks whose hash hasn't changed on re-enrichment.
-
-#### RT-DATA-3: Watch mode HNSW orphan accumulation degrades search quality silently
-- **Severity:** medium
-- **Location:** `src/cli/watch.rs:394-442`
-- **Attack vector:** Watch mode inserts new vectors into in-memory HNSW for modified files. Old vectors for replaced chunks remain in the graph (hnsw_rs has no deletion API, acknowledged at watch.rs:396-399). Orphan vectors consume HNSW exploration budget. `search_filtered_with_index` retrieves `limit * 5` candidates; with a high orphan ratio, many point to stale chunk IDs absent from SQLite.
-- **PoC:** 1) Start `cqs watch`. 2) Modify the same file 50 times. 3) With 10 chunks/file, after 50 edits the HNSW has 500 orphan vectors plus 10 live ones. 4) `search_by_candidate_ids` queries SQLite for candidates; orphans return nothing, shrinking the effective pool below `limit`. 5) Full rebuild only at `HNSW_REBUILD_THRESHOLD = 100`.
-- **Impact:** Gradually degrading search recall during long watch sessions. No error or warning reported. Self-heals after 100 incremental inserts.
-- **Suggested mitigation:** Track orphan ratio and trigger early rebuild when it exceeds ~20%. Or reduce `HNSW_REBUILD_THRESHOLD` to 20-30.
-
-#### RT-DATA-4: Notes file lock on FD does not survive atomic rename -- concurrent writers can lose data
-- **Severity:** low
-- **Location:** `src/note.rs:190-289`
-- **Attack vector:** `rewrite_notes_file` acquires an exclusive lock on the notes.toml file descriptor (line 200), reads from it (line 226), writes a temp file, then renames the temp over the original (line 263). On Unix, `rename()` replaces the directory entry to point at a new inode. The exclusive lock is held on the OLD inode's FD. After rename, a concurrent writer that opened the file before the rename holds an FD to the old (now unlinked) inode and reads stale content.
-- **PoC:** Writer1 opens notes.toml (inode A), locks, reads. Writer2 opens notes.toml (inode A), blocks on lock. Writer1 renames temp over notes.toml (now inode B), drops lock. Writer2 acquires lock on inode A (unlinked), reads stale content from inode A, applies mutation to stale data, renames -- overwriting inode B. Writer1's changes silently lost.
-- **Impact:** Lost note writes under concurrent `cqs notes add` from two processes. Very unlikely in practice.
-- **Suggested mitigation:** Use a separate lock file (`notes.toml.lock`) that survives the data file rename.
-
-#### RT-DATA-5: Batch/chat `OnceLock` caches become silently stale when index changes externally
-- **Severity:** medium
-- **Location:** `src/cli/batch/mod.rs:74-96`
-- **Attack vector:** `BatchContext` caches call_graph, test_chunks, notes, file_set, and config in `OnceLock` fields that are never invalidated (lines 82-90, documented at lines 60-73). During a `cqs chat` session, running `cqs index` in another terminal updates SQLite but the chat session's caches remain frozen.
-- **PoC:** 1) `cqs chat` in terminal 1. 2) `callers parse_file` returns [A, B]. 3) In terminal 2, add caller C, run `cqs index`. 4) In terminal 1, `callers parse_file` still returns [A, B]. No error, no staleness warning.
-- **Impact:** Stale call graph, test mapping, and dead code results in long-running sessions. Documentation acknowledges this (lines 60-73) but users won't see source comments.
-- **Suggested mitigation:** Compare SQLite's `updated_at` metadata timestamp against session start value on each command. Emit warning if changed.
-
-#### RT-DATA-6: HNSW save is not atomic with SQLite commit -- crash window causes desync
-- **Severity:** medium
-- **Location:** `src/cli/watch.rs:410-414`, `src/cli/commands/gc.rs:64-87`
-- **Attack vector:** Watch mode commits chunks to SQLite (watch.rs:616) then separately saves HNSW (watch.rs:412). GC prunes SQLite (gc.rs:44-46) then rebuilds HNSW (gc.rs:84). A crash between SQLite commit and HNSW save leaves them inconsistent.
-- **PoC:** 1) `cqs watch` running. 2) Modify a file. Watch mode upserts new chunks to SQLite. 3) SIGKILL during `index.save()` at watch.rs:412. 4) New process loads stale HNSW. HNSW has vectors for old chunk IDs absent from SQLite. Search retrieves stale candidates, reducing effective result set.
-- **Impact:** After crash: HNSW/SQLite desync causes degraded search results until next full rebuild. No automatic detection.
-- **Suggested mitigation:** Store an "HNSW generation" counter in SQLite metadata, incremented on each HNSW save. On load, compare against SQLite value. Mismatch triggers automatic rebuild.
-
-#### RT-DATA-7: Verified protections -- no findings
-
-The following data integrity mechanisms were tested and confirmed working:
-
-1. **PRAGMA quick_check on DB open:** Both `Store::open` (mod.rs:291) and `Store::open_readonly` (mod.rs:369) run `PRAGMA quick_check`. Catches B-tree corruption.
-
-2. **Parameterized SQL:** All queries use `sqlx::query().bind()`. No string interpolation in SQL.
-
-3. **`validate_finite_f32()`:** Used in CLI drift, similar, and batch handlers to reject NaN/Infinity parameters.
-
-4. **Embedding dimension validation:** `embedding_to_bytes()` (helpers.rs:778) validates on write. `embedding_slice()` (helpers.rs:793) validates on read. `check_model_version()` (mod.rs:501) validates model name and dimension on store open.
-
-5. **HNSW checksum verification:** blake3 checksums on save (persist.rs:196-230), verified on load (persist.rs:54-104). Missing checksum file is a hard error.
-
-6. **HNSW id_map / vector count validation:** `save()` (persist.rs:128-135) and `load()` (persist.rs:420-427) verify `hnsw.get_nb_point() == id_map.len()`.
-
-7. **Non-finite HNSW score filtering:** `search()` (search.rs:55-62) checks `score.is_finite()`. `cosine_similarity()` (math.rs:25-28) returns `None` for non-finite. Both sort paths use `total_cmp`.
-
-8. **Notes file locking:** `parse_notes()` acquires shared lock. `rewrite_notes_file()` acquires exclusive lock and reads from locked FD. Correct for single-process use.
-
-9. **Migration atomicity:** `migrate()` (migrations.rs:43-56) wraps all steps in a single transaction with rollback on failure.
-
-10. **RRF sort stability:** `rrf_fuse()` and `search_filtered()` both use `total_cmp` for sorting, handling NaN correctly.
+#### DS-25: Concurrent `cqs index --llm-summaries` can submit duplicate API batches
+- **Difficulty:** easy
+- **Location:** src/llm/batch.rs:332-366, src/store/mod.rs:870-877
+- **Description:** The pending batch ID is stored in SQLite metadata as a simple key-value pair with no locking beyond SQLite's implicit row-level locking. Two concurrent `cqs index --llm-summaries` processes can race: (1) Process A reads `get_pending_batch_id()` → None, (2) Process B reads `get_pending_batch_id()` → None, (3) Both submit fresh batches, (4) Process A writes its batch ID, (5) Process B overwrites with its batch ID. Process A's batch is orphaned — it will complete on Anthropic's side but its results are never fetched. The cost is double API spend. SQLite WAL mode allows concurrent reads, and the check-then-submit is not atomic.
+- **Suggested fix:** Use `INSERT INTO metadata (key, value) VALUES ('pending_llm_batch', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1 WHERE value IS NULL OR value = ''` as an atomic check-and-set. If the insert sees an existing non-empty value, the second process should resume the existing batch instead of submitting a new one. Alternatively, use a BEGIN IMMEDIATE transaction around the read-check-submit-write sequence.

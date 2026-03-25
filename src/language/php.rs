@@ -223,6 +223,8 @@ static DEFINITION: LanguageDef = LanguageDef {
             content_scoped_lines: true,
         },
     ],
+    doc_format: "javadoc",
+    doc_convention: "Use PHPDoc format: @param, @return, @throws tags.",
 };
 
 pub fn definition() -> &'static LanguageDef {

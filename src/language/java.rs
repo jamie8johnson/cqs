@@ -185,6 +185,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "iterator", "run", "call", "close", "accept", "apply", "get",
     ],
     injections: &[],
+    doc_format: "javadoc",
+    doc_convention: "Use Javadoc format: @param, @return, @throws tags.",
 };
 
 pub fn definition() -> &'static LanguageDef {

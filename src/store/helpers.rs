@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use thiserror::Error;
 
 use crate::embedder::Embedding;
@@ -125,7 +126,10 @@ impl ChunkRow {
             doc: row.get("doc"),
             line_start: clamp_line_number(row.get::<i64, _>("line_start")),
             line_end: clamp_line_number(row.get::<i64, _>("line_end")),
-            content_hash: row.try_get("content_hash").unwrap_or_default(),
+            content_hash: row.try_get("content_hash").unwrap_or_else(|_| {
+                tracing::warn!("content_hash column missing from row, defaulting to empty");
+                String::new()
+            }),
             window_idx: row.try_get("window_idx").unwrap_or(None),
             parent_id: row.get("parent_id"),
             parent_type_name: row.get("parent_type_name"),
@@ -396,9 +400,34 @@ pub struct CallerWithContext {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CallGraph {
     /// Forward edges: caller_name -> Vec<callee_name>
-    pub forward: HashMap<String, Vec<String>>,
+    pub forward: HashMap<Arc<str>, Vec<Arc<str>>>,
     /// Reverse edges: callee_name -> Vec<caller_name>
-    pub reverse: HashMap<String, Vec<String>>,
+    pub reverse: HashMap<Arc<str>, Vec<Arc<str>>>,
+}
+
+impl CallGraph {
+    /// Construct from owned `String` maps, interning all strings into `Arc<str>`.
+    ///
+    /// Convenience for tests and ad-hoc graph construction. Production code uses
+    /// the interner in `get_call_graph()` for shared allocation across maps.
+    pub fn from_string_maps(
+        forward: HashMap<String, Vec<String>>,
+        reverse: HashMap<String, Vec<String>>,
+    ) -> Self {
+        let convert = |m: HashMap<String, Vec<String>>| -> HashMap<Arc<str>, Vec<Arc<str>>> {
+            m.into_iter()
+                .map(|(k, vs)| {
+                    let k: Arc<str> = Arc::from(k.as_str());
+                    let vs: Vec<Arc<str>> = vs.into_iter().map(|v| Arc::from(v.as_str())).collect();
+                    (k, vs)
+                })
+                .collect()
+        };
+        Self {
+            forward: convert(forward),
+            reverse: convert(reverse),
+        }
+    }
 }
 
 /// Chunk identity for diff comparison

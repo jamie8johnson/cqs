@@ -111,6 +111,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     entry_point_names: &[],
     trait_method_names: &[],
     injections: &[],
+    doc_format: "default",
+    doc_convention: "Use comment-based help: .SYNOPSIS, .PARAMETER, .OUTPUTS sections.",
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -108,6 +108,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     entry_point_names: &[],
     trait_method_names: &[],
     injections: &[],
+    doc_format: "default",
+    doc_convention: "",
 };
 
 /// Returns a reference to the static language definition.

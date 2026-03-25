@@ -235,7 +235,11 @@ pub fn is_test_chunk(name: &str, file: &str) -> bool {
         return true;
     }
     // File-based patterns (by filename, not full path)
-    let filename = file.rsplit('/').next().unwrap_or(file);
+    // Split on both `/` and `\` for cross-platform paths
+    let filename = file
+        .rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(file);
     if filename.contains("_test.")
         || filename.contains(".test.")
         || filename.contains(".spec.")
@@ -245,8 +249,11 @@ pub fn is_test_chunk(name: &str, file: &str) -> bool {
         return true;
     }
     // Path-based patterns (mirrors TEST_PATH_PATTERNS in store/calls.rs)
+    // Check both separator styles for cross-platform support
     file.contains("/tests/")
+        || file.contains("\\tests\\")
         || file.starts_with("tests/")
+        || file.starts_with("tests\\")
         || file.ends_with("_test.go")
         || file.ends_with("_test.py")
 }
@@ -340,7 +347,7 @@ pub fn index_notes(
                 })
                 .ok()
         })
-        .map(|d| d.as_secs() as i64)
+        .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
 
     // Atomically replace notes (delete old + insert new in single transaction)

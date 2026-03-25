@@ -1,11 +1,12 @@
 //! LLM summary pass orchestration — collects chunks, submits batches, stores results.
 
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 
 use ndarray::Array2;
 
 use super::batch::BatchPhase2;
-use super::{Client, LlmConfig, LlmError, MAX_BATCH_SIZE, MIN_CONTENT_CHARS};
+use super::{collect_eligible_chunks, LlmClient, LlmConfig, LlmError, MAX_BATCH_SIZE};
 use crate::Store;
 
 /// Run the LLM summary pass using the Batches API.
@@ -19,6 +20,7 @@ pub fn llm_summary_pass(
     store: &Store,
     quiet: bool,
     config: &crate::config::Config,
+    lock_dir: Option<&std::path::Path>,
 ) -> Result<usize, LlmError> {
     let _span = tracing::info_span!("llm_summary_pass").entered();
 
@@ -35,12 +37,7 @@ pub fn llm_summary_pass(
             "--llm-summaries requires ANTHROPIC_API_KEY environment variable".to_string(),
         )
     })?;
-    let client = Client::new(&api_key, llm_config)?;
-
-    let mut cached = 0usize;
-    let mut skipped = 0usize;
-    let mut cursor = 0i64;
-    const PAGE_SIZE: usize = 500;
+    let client = LlmClient::new(&api_key, llm_config)?;
 
     // Phase 0: Precompute contrastive neighbors from embedding similarity
     let neighbor_map = match find_contrastive_neighbors(store, 3) {
@@ -51,91 +48,46 @@ pub fn llm_summary_pass(
         }
     };
 
-    // Phase 1: Collect chunks needing summaries
-    // (custom_id=content_hash, prompt, chunk_type, language) for batch API
-    let mut batch_items: Vec<(String, String, String, String)> = Vec::new();
-    // Track content_hashes already queued to avoid duplicate custom_ids in batch
-    let mut queued_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Phase 1: Collect chunks needing summaries via shared filter
+    let (eligible, cached, skipped) = collect_eligible_chunks(store, "summary", MAX_BATCH_SIZE)?;
 
-    let stats = store.stats()?;
-    tracing::info!(chunks = stats.total_chunks, "Scanning for LLM summaries");
+    // EH-23: Warn when contrastive neighbors are empty but eligible chunks exist
+    if neighbor_map.is_empty() && !eligible.is_empty() {
+        tracing::warn!(
+            eligible_count = eligible.len(),
+            "Contrastive neighbor map is empty despite eligible callable chunks — summaries will lack contrastive context"
+        );
+    }
 
-    let mut batch_full = false;
-    loop {
-        let (chunks, next) = store.chunks_paged(cursor, PAGE_SIZE)?;
-        if chunks.is_empty() {
-            break;
-        }
-        cursor = next;
-
-        let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
-        let existing = store.get_summaries_by_hashes(&hashes, "summary")?;
-
-        for cs in &chunks {
-            if existing.contains_key(&cs.content_hash) {
-                cached += 1;
-                continue;
-            }
-
-            if !cs.chunk_type.is_callable() {
-                skipped += 1;
-                continue;
-            }
-
-            if cs.content.len() < MIN_CONTENT_CHARS {
-                skipped += 1;
-                continue;
-            }
-
-            if cs.window_idx.is_some_and(|idx| idx > 0) {
-                skipped += 1;
-                continue;
-            }
-
-            // All chunks go through the contrastive API path (option 2).
-            // Doc-comment shortcut removed — contrastive summaries are more
-            // discriminating for retrieval than raw first-sentence extraction.
-
-            // Queue for batch API (deduplicate by content_hash)
-            if queued_hashes.insert(cs.content_hash.clone()) {
-                // Pre-build prompt with contrastive neighbor context if available
-                let neighbors = neighbor_map
-                    .get(&cs.content_hash)
-                    .cloned()
-                    .unwrap_or_default();
-                let prompt = if neighbors.is_empty() {
-                    Client::build_prompt(
-                        &cs.content,
-                        &cs.chunk_type.to_string(),
-                        &cs.language.to_string(),
-                    )
-                } else {
-                    Client::build_contrastive_prompt(
-                        &cs.content,
-                        &cs.chunk_type.to_string(),
-                        &cs.language.to_string(),
-                        &neighbors,
-                    )
-                };
-                batch_items.push((
-                    cs.content_hash.clone(),
-                    prompt,
-                    cs.chunk_type.to_string(),
-                    cs.language.to_string(),
-                ));
-                if batch_items.len() >= MAX_BATCH_SIZE {
-                    batch_full = true;
-                    break;
-                }
-            }
-        }
-        if batch_full {
-            tracing::info!(
-                max = MAX_BATCH_SIZE,
-                "Batch size limit reached, submitting partial batch"
-            );
-            break;
-        }
+    // Build batch items with contrastive neighbor prompts
+    let mut batch_items: Vec<(String, String, String, String)> = Vec::with_capacity(eligible.len());
+    for ec in &eligible {
+        let neighbors = neighbor_map
+            .get(&ec.content_hash)
+            .cloned()
+            .unwrap_or_default();
+        let prompt = if neighbors.is_empty() {
+            LlmClient::build_prompt(&ec.content, &ec.chunk_type, &ec.language)
+        } else {
+            LlmClient::build_contrastive_prompt(
+                &ec.content,
+                &ec.chunk_type,
+                &ec.language,
+                &neighbors,
+            )
+        };
+        batch_items.push((
+            ec.content_hash.clone(),
+            prompt,
+            ec.chunk_type.clone(),
+            ec.language.clone(),
+        ));
+    }
+    if batch_items.len() >= MAX_BATCH_SIZE {
+        tracing::info!(
+            max = MAX_BATCH_SIZE,
+            "Batch size limit reached, submitting partial batch"
+        );
     }
 
     // Count how many batch items got contrastive neighbors
@@ -161,6 +113,7 @@ pub fn llm_summary_pass(
         purpose: "summary",
         max_tokens: client.llm_config.max_tokens,
         quiet,
+        lock_dir,
     };
     let api_results = phase2.submit_or_resume(
         &client,
@@ -194,27 +147,25 @@ fn find_contrastive_neighbors(
 ) -> Result<HashMap<String, Vec<String>>, LlmError> {
     let _span = tracing::info_span!("find_contrastive_neighbors", limit).entered();
 
-    // Collect callable chunk identities (content_hash, name)
-    let mut chunk_ids: Vec<(String, String)> = Vec::new(); // (content_hash, name)
-    let mut cursor = 0i64;
-    loop {
-        let (page, next) = store.chunks_paged(cursor, 500)?;
-        if page.is_empty() {
-            break;
-        }
-        cursor = next;
-        for cs in &page {
-            if !cs.chunk_type.is_callable() {
-                continue;
-            }
-            if cs.content.len() < MIN_CONTENT_CHARS {
-                continue;
-            }
-            if cs.window_idx.is_some_and(|idx| idx > 0) {
-                continue;
-            }
-            chunk_ids.push((cs.content_hash.clone(), cs.name.clone()));
-        }
+    // Collect callable chunk identities (content_hash, name) via shared filter.
+    // Pass purpose="" to skip the cache check — contrastive neighbors need all eligible chunks.
+    let (eligible, _, _) = collect_eligible_chunks(store, "", 0)?;
+    let chunk_ids: Vec<(String, String)> = eligible
+        .into_iter()
+        .map(|ec| (ec.content_hash, ec.name))
+        .collect();
+
+    // DS-21: Cap N×N matrix size to avoid OOM on very large codebases.
+    // Memory is N×N×4 bytes (~3.4GB at 15k). Caller handles empty map gracefully
+    // by falling back to non-contrastive summaries.
+    const MAX_CONTRASTIVE_CHUNKS: usize = 15_000;
+    if chunk_ids.len() > MAX_CONTRASTIVE_CHUNKS {
+        tracing::warn!(
+            chunks = chunk_ids.len(),
+            max = MAX_CONTRASTIVE_CHUNKS,
+            "Too many callable chunks for contrastive neighbor matrix, skipping"
+        );
+        return Ok(HashMap::new());
     }
 
     if chunk_ids.len() < 2 {
@@ -229,10 +180,39 @@ fn find_contrastive_neighbors(
     let hashes: Vec<&str> = chunk_ids.iter().map(|(h, _)| h.as_str()).collect();
     let embeddings = store.get_embeddings_by_hashes(&hashes)?;
 
+    // DS-23: Warn when embedding fetch returns empty or significantly fewer than expected
+    if embeddings.is_empty() && !chunk_ids.is_empty() {
+        tracing::warn!(
+            requested = chunk_ids.len(),
+            "Embedding fetch returned empty — contrastive neighbor map will be empty"
+        );
+        return Ok(HashMap::new());
+    } else if embeddings.len() < chunk_ids.len() / 2 {
+        tracing::warn!(
+            requested = chunk_ids.len(),
+            returned = embeddings.len(),
+            "Embedding fetch returned significantly fewer results than expected"
+        );
+    }
+
     // Filter to chunks with embeddings, build matrix
     let mut valid: Vec<(&str, &str, &[f32])> = Vec::new(); // (hash, name, embedding)
+    let expected_dim = embeddings.values().next().map(|e| e.len());
     for (hash, name) in &chunk_ids {
         if let Some(emb) = embeddings.get(hash.as_str()) {
+            // RB-15: Filter out embeddings with mismatched dimensions to prevent
+            // ndarray panics when building the similarity matrix.
+            if let Some(dim) = expected_dim {
+                if emb.len() != dim {
+                    tracing::warn!(
+                        hash,
+                        expected = dim,
+                        actual = emb.len(),
+                        "Skipping embedding with mismatched dimension"
+                    );
+                    continue;
+                }
+            }
             valid.push((hash, name, emb.as_slice()));
         }
     }
@@ -262,18 +242,35 @@ fn find_contrastive_neighbors(
     // Pairwise cosine = normalized @ normalized.T
     let sims = matrix.dot(&matrix.t());
 
-    // Extract top-N neighbors per chunk (excluding self)
+    // Extract top-N neighbors per chunk (excluding self) using a min-heap.
+    // Only maintains `limit` elements instead of sorting all N-1 candidates.
     let mut result: HashMap<String, Vec<String>> = HashMap::with_capacity(n);
     for i in 0..n {
         let row = sims.row(i);
-        // Partial sort: collect (index, score) pairs, sort desc, take top-N
-        let mut scored: Vec<(usize, f32)> =
-            (0..n).filter(|&j| j != i).map(|j| (j, row[j])).collect();
-        scored.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-        let neighbors: Vec<String> = scored
+        // Min-heap: keeps the top-`limit` highest scores. We push MinScored
+        // (inverted ordering) so BinaryHeap's max-heap acts as a min-heap,
+        // letting us cheaply evict the smallest when the heap exceeds `limit`.
+        let mut heap: BinaryHeap<MinScored> = BinaryHeap::with_capacity(limit + 1);
+        for j in 0..n {
+            if j == i {
+                continue;
+            }
+            let score = row[j];
+            if heap.len() < limit {
+                heap.push(MinScored { index: j, score });
+            } else if let Some(top) = heap.peek() {
+                if score > top.score {
+                    heap.pop();
+                    heap.push(MinScored { index: j, score });
+                }
+            }
+        }
+        // Drain heap into sorted-desc order
+        let mut neighbors_scored: Vec<MinScored> = heap.into_vec();
+        neighbors_scored.sort_unstable_by(|a, b| b.score.total_cmp(&a.score));
+        let neighbors: Vec<String> = neighbors_scored
             .iter()
-            .take(limit)
-            .map(|(j, _)| valid[*j].1.to_string())
+            .map(|ms| valid[ms.index].1.to_string())
             .collect();
         if !neighbors.is_empty() {
             result.insert(valid[i].0.to_string(), neighbors);
@@ -284,6 +281,36 @@ fn find_contrastive_neighbors(
     tracing::info!(total = n, with_neighbors, "Contrastive neighbors computed");
 
     Ok(result)
+}
+
+/// Min-heap entry for top-K neighbor extraction.
+///
+/// Implements reverse ordering so `BinaryHeap` (a max-heap) acts as a min-heap,
+/// keeping the K highest-scored entries by evicting the minimum.
+struct MinScored {
+    index: usize,
+    score: f32,
+}
+
+impl PartialEq for MinScored {
+    fn eq(&self, other: &Self) -> bool {
+        self.score == other.score && self.index == other.index
+    }
+}
+
+impl Eq for MinScored {}
+
+impl PartialOrd for MinScored {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for MinScored {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reverse: smallest score = highest priority in max-heap
+        other.score.total_cmp(&self.score)
+    }
 }
 
 #[cfg(test)]
@@ -297,6 +324,7 @@ mod tests {
     // independently using the same types and constants.
 
     use crate::language::ChunkType;
+    use crate::llm::MIN_CONTENT_CHARS;
     use std::path::PathBuf;
 
     fn make_test_chunk_summary(

@@ -57,7 +57,7 @@ pub(crate) enum BatchCmd {
         /// Function name or file:function
         name: String,
         /// Max commits to show
-        #[arg(short = 'n', long, default_value = "10")]
+        #[arg(short = 'd', long, default_value = "10")]
         depth: usize,
         /// Also show callers of the function
         #[arg(long)]
@@ -730,7 +730,7 @@ mod tests {
     #[test]
     fn test_parse_blame_with_flags() {
         let input =
-            BatchInput::try_parse_from(["blame", "my_func", "-n", "5", "--callers"]).unwrap();
+            BatchInput::try_parse_from(["blame", "my_func", "-d", "5", "--callers"]).unwrap();
         match input.cmd {
             BatchCmd::Blame {
                 ref name,

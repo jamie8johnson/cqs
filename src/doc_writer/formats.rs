@@ -37,119 +37,86 @@ pub enum InsertionPosition {
 
 /// Returns the doc comment format for a given language.
 ///
-/// Covers all major language families. Languages without a specific entry
-/// fall through to the default `//`-style line comments.
+/// Delegates to the `doc_format` field on `LanguageDef`, which each language
+/// definition populates. The string tag is mapped to a `DocFormat` struct here.
 pub fn doc_format_for(language: Language) -> DocFormat {
-    match language {
-        // Triple-slash: Rust, F#
-        Language::Rust | Language::FSharp => DocFormat {
+    let tag = language
+        .try_def()
+        .map(|d| d.doc_format)
+        .unwrap_or("default");
+    doc_format_from_tag(tag)
+}
+
+/// Map a doc format tag string to its concrete `DocFormat`.
+fn doc_format_from_tag(tag: &str) -> DocFormat {
+    match tag {
+        "triple_slash" => DocFormat {
             prefix: "",
             line_prefix: "/// ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
         },
-
-        // Python docstrings (inside body)
-        Language::Python => DocFormat {
+        "python_docstring" => DocFormat {
             prefix: "\"\"\"",
             line_prefix: "",
             suffix: "\"\"\"",
             position: InsertionPosition::InsideBody,
         },
-
-        // Go: plain // comments, but convention prepends FuncName
-        Language::Go => DocFormat {
+        "go_comment" => DocFormat {
             prefix: "",
             line_prefix: "// ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
         },
-
-        // Javadoc-family: /** ... */
-        Language::Java
-        | Language::C
-        | Language::Cpp
-        | Language::Scala
-        | Language::Kotlin
-        | Language::Swift
-        | Language::Php
-        | Language::TypeScript
-        | Language::JavaScript
-        | Language::CSharp
-        | Language::Solidity
-        | Language::Cuda
-        | Language::Glsl => DocFormat {
+        "javadoc" => DocFormat {
             prefix: "/**",
             line_prefix: " * ",
             suffix: " */",
             position: InsertionPosition::BeforeFunction,
         },
-
-        // Ruby: # comments
-        Language::Ruby => DocFormat {
+        "hash_comment" => DocFormat {
             prefix: "",
             line_prefix: "# ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
         },
-
-        // Elixir: @doc """..."""
-        Language::Elixir => DocFormat {
+        "elixir_doc" => DocFormat {
             prefix: "@doc \"\"\"",
             line_prefix: "",
             suffix: "\"\"\"",
             position: InsertionPosition::BeforeFunction,
         },
-
-        // Lua: --- comments (LDoc)
-        Language::Lua => DocFormat {
+        "lua_ldoc" => DocFormat {
             prefix: "",
             line_prefix: "--- ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
         },
-
-        // Haskell: -- | Haddock
-        Language::Haskell => DocFormat {
+        "haskell_haddock" => DocFormat {
             prefix: "",
             line_prefix: "-- | ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
         },
-
-        // OCaml: (** ... *)
-        Language::OCaml => DocFormat {
+        "ocaml_doc" => DocFormat {
             prefix: "(** ",
             line_prefix: "",
             suffix: " *)",
             position: InsertionPosition::BeforeFunction,
         },
-
-        // Perl: # comments (POD is block-level, but inline # is simpler for function docs)
-        Language::Perl => DocFormat {
-            prefix: "",
-            line_prefix: "# ",
-            suffix: "",
-            position: InsertionPosition::BeforeFunction,
-        },
-
-        // Erlang: %% comments (edoc convention)
-        Language::Erlang => DocFormat {
+        "erlang_edoc" => DocFormat {
             prefix: "",
             line_prefix: "%% ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
         },
-
-        // R: #' roxygen2
-        Language::R => DocFormat {
+        "r_roxygen" => DocFormat {
             prefix: "",
             line_prefix: "#' ",
             suffix: "",
             position: InsertionPosition::BeforeFunction,
         },
-
-        // Default: // line comments for everything else
+        // "default" and any unknown tag
         _ => DocFormat {
             prefix: "",
             line_prefix: "// ",

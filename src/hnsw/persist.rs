@@ -273,6 +273,15 @@ impl HnswIndex {
         let mut moved_exts: Vec<&str> = Vec::new();
 
         let rename_result: Result<(), HnswError> = (|| {
+            // Back up existing files before overwriting so rollback can restore them
+            for ext in &all_exts {
+                let final_path = dir.join(format!("{}.{}", basename, ext));
+                let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
+                if final_path.exists() {
+                    let _ = std::fs::rename(&final_path, &bak_path);
+                }
+            }
+
             for ext in &all_exts {
                 let temp_path = temp_dir.join(format!("{}.{}", basename, ext));
                 let final_path = dir.join(format!("{}.{}", basename, ext));
@@ -310,18 +319,29 @@ impl HnswIndex {
         })();
 
         if let Err(e) = rename_result {
-            // Roll back: remove any files already moved to final location
+            // Roll back: remove new files and restore originals from .bak
             for ext in &moved_exts {
                 let final_path = dir.join(format!("{}.{}", basename, ext));
                 let _ = std::fs::remove_file(&final_path);
             }
-            tracing::warn!(error = %e, "HNSW save failed mid-rename, rolled back partial files");
+            for ext in &all_exts {
+                let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
+                let final_path = dir.join(format!("{}.{}", basename, ext));
+                if bak_path.exists() {
+                    let _ = std::fs::rename(&bak_path, &final_path);
+                }
+            }
+            tracing::warn!(error = %e, "HNSW save failed mid-rename, rolled back to original files");
             let _ = std::fs::remove_dir_all(&temp_dir);
             return Err(e);
         }
 
-        // Clean up temp directory
+        // Clean up temp directory and .bak files from successful save
         let _ = std::fs::remove_dir_all(&temp_dir);
+        for ext in &all_exts {
+            let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
+            let _ = std::fs::remove_file(&bak_path);
+        }
 
         tracing::info!(
             "HNSW index saved: {} vectors (with checksums)",

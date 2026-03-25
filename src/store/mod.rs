@@ -162,7 +162,11 @@ pub(crate) fn sanitize_fts_query(s: &str) -> String {
                 .filter(|c| !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':')),
         );
     }
-    out
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    trimmed.to_string()
 }
 
 /// Thread-safe SQLite store for chunks and embeddings
@@ -740,10 +744,8 @@ impl Store {
 
     /// Compute RRF (Reciprocal Rank Fusion) scores for combining two ranked lists.
     ///
-    /// Allocates a new HashMap per search. Pre-allocated buffer was considered but:
-    /// - Input size varies (limit*3 semantic + limit*3 FTS = up to 6*limit entries)
-    /// - HashMap with ~30-100 entries costs ~1KB, negligible vs embedding costs (~3KB)
-    /// - Thread-local buffer would add complexity for ~0.1ms savings on typical searches
+    /// Pre-allocates the HashMap with capacity for both input lists (PERF-28).
+    /// Input size varies (limit*3 semantic + limit*3 FTS) but is always known upfront.
     pub(crate) fn rrf_fuse(
         semantic_ids: &[&str],
         fts_ids: &[String],
@@ -753,7 +755,8 @@ impl Store {
         // Higher K reduces the impact of rank differences (smoother fusion).
         const K: f32 = 60.0;
 
-        let mut scores: HashMap<&str, f32> = HashMap::new();
+        let mut scores: HashMap<&str, f32> =
+            HashMap::with_capacity(semantic_ids.len() + fts_ids.len());
 
         for (rank, id) in semantic_ids.iter().enumerate() {
             // RRF formula: 1 / (K + rank). The + 1.0 converts 0-indexed enumerate()

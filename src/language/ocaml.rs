@@ -138,6 +138,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "compare", "equal", "hash", "pp", "show", "to_string", "of_string",
     ],
     injections: &[],
+    doc_format: "ocaml_doc",
+    doc_convention: "Use OCamldoc format with (** *) comments.",
 };
 
 pub fn definition() -> &'static LanguageDef {

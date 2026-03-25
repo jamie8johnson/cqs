@@ -287,6 +287,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     entry_point_names: &[],
     trait_method_names: &[],
     injections: &[],
+    doc_format: "r_roxygen",
+    doc_convention: "Use roxygen2 format: @param, @return, @export tags.",
 };
 
 pub fn definition() -> &'static LanguageDef {

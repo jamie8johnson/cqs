@@ -170,7 +170,8 @@ pub fn semantic_diff(
 
             match (source_emb, target_emb) {
                 (Some(s_emb), Some(t_emb)) => {
-                    let sim = full_cosine_similarity(s_emb.as_slice(), t_emb.as_slice());
+                    let sim =
+                        full_cosine_similarity(s_emb.as_slice(), t_emb.as_slice()).unwrap_or(0.0);
                     if sim < threshold {
                         modified.push(DiffEntry {
                             name: target_chunk.name.clone(),

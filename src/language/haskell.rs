@@ -161,6 +161,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "fromInteger",
     ],
     injections: &[],
+    doc_format: "haskell_haddock",
+    doc_convention: "Use Haddock format with -- | comments.",
 };
 
 pub fn definition() -> &'static LanguageDef {

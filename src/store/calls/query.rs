@@ -107,12 +107,29 @@ impl Store {
                 tracing::info!(edges = edge_count, "Call graph loaded");
             }
 
-            let mut forward: std::collections::HashMap<String, Vec<String>> =
+            let mut forward: std::collections::HashMap<
+                std::sync::Arc<str>,
+                Vec<std::sync::Arc<str>>,
+            > = std::collections::HashMap::new();
+            let mut reverse: std::collections::HashMap<
+                std::sync::Arc<str>,
+                Vec<std::sync::Arc<str>>,
+            > = std::collections::HashMap::new();
+
+            // String interner: each unique name is allocated once as Arc<str>,
+            // then shared across forward and reverse maps (PERF-30).
+            let mut interner: std::collections::HashMap<String, std::sync::Arc<str>> =
                 std::collections::HashMap::new();
-            let mut reverse: std::collections::HashMap<String, Vec<String>> =
-                std::collections::HashMap::new();
+            let mut intern = |s: String| -> std::sync::Arc<str> {
+                interner
+                    .entry(s)
+                    .or_insert_with_key(|k| std::sync::Arc::from(k.as_str()))
+                    .clone()
+            };
 
             for (caller, callee) in rows {
+                let caller = intern(caller);
+                let callee = intern(callee);
                 reverse
                     .entry(callee.clone())
                     .or_default()

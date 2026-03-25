@@ -136,6 +136,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     entry_point_names: &["handler", "middleware", "beforeEach", "afterEach", "beforeAll", "afterAll"],
     trait_method_names: &["toString", "valueOf", "toJSON"],
     injections: &[],
+    doc_format: "javadoc",
+    doc_convention: "Use JSDoc format: @param {type} name, @returns {type}, @throws {type}.",
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -111,6 +111,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "new", "AUTOLOAD", "DESTROY", "import", "BEGIN", "END",
     ],
     injections: &[],
+    doc_format: "hash_comment",
+    doc_convention: "Use POD format for documentation sections.",
 };
 
 pub fn definition() -> &'static LanguageDef {

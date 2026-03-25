@@ -215,7 +215,7 @@ fn mermaid_escape(s: &str) -> String {
 
 /// BFS shortest path through forward adjacency list
 fn bfs_shortest_path(
-    forward: &HashMap<String, Vec<String>>,
+    forward: &HashMap<std::sync::Arc<str>, Vec<std::sync::Arc<str>>>,
     source: &str,
     target: &str,
     max_depth: usize,
@@ -244,11 +244,11 @@ fn bfs_shortest_path(
             continue;
         }
 
-        if let Some(callees) = forward.get(&current) {
+        if let Some(callees) = forward.get(current.as_str()) {
             for callee in callees {
-                if !visited.contains_key(callee) {
-                    visited.insert(callee.clone(), current.clone());
-                    queue.push_back((callee.clone(), depth + 1));
+                if !visited.contains_key(callee.as_ref()) {
+                    visited.insert(callee.to_string(), current.clone());
+                    queue.push_back((callee.to_string(), depth + 1));
                 }
             }
         }
@@ -259,6 +259,18 @@ fn bfs_shortest_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    /// Convert a `HashMap<String, Vec<String>>` to `HashMap<Arc<str>, Vec<Arc<str>>>` for tests.
+    fn arc_map(m: HashMap<String, Vec<String>>) -> HashMap<Arc<str>, Vec<Arc<str>>> {
+        m.into_iter()
+            .map(|(k, vs)| {
+                let k: Arc<str> = Arc::from(k.as_str());
+                let vs: Vec<Arc<str>> = vs.into_iter().map(|v| Arc::from(v.as_str())).collect();
+                (k, vs)
+            })
+            .collect()
+    }
 
     // ===== node_letter tests (P3-17) =====
 
@@ -301,6 +313,7 @@ mod tests {
     fn test_bfs_direct_path() {
         let mut forward = HashMap::new();
         forward.insert("A".to_string(), vec!["B".to_string()]);
+        let forward = arc_map(forward);
         let result = bfs_shortest_path(&forward, "A", "B", 10);
         assert!(result.is_some());
         let path = result.unwrap();
@@ -311,6 +324,7 @@ mod tests {
     fn test_bfs_no_path() {
         let mut forward = HashMap::new();
         forward.insert("A".to_string(), vec!["B".to_string()]);
+        let forward = arc_map(forward);
         let result = bfs_shortest_path(&forward, "A", "C", 10);
         assert!(result.is_none(), "No path from A to C");
     }
@@ -321,6 +335,7 @@ mod tests {
         forward.insert("A".to_string(), vec!["B".to_string()]);
         forward.insert("B".to_string(), vec!["C".to_string()]);
         forward.insert("C".to_string(), vec!["D".to_string()]);
+        let forward = arc_map(forward);
         // Path A->B->C->D exists but depth=2 should not reach D
         let result = bfs_shortest_path(&forward, "A", "D", 2);
         assert!(result.is_none(), "Should not find path beyond max_depth=2");
@@ -331,6 +346,7 @@ mod tests {
         let mut forward = HashMap::new();
         forward.insert("A".to_string(), vec!["B".to_string()]);
         forward.insert("B".to_string(), vec!["C".to_string()]);
+        let forward = arc_map(forward);
         let result = bfs_shortest_path(&forward, "A", "C", 10);
         assert!(result.is_some());
         let path = result.unwrap();

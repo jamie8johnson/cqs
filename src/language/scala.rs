@@ -168,6 +168,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "equals", "hashCode", "toString", "compare", "apply", "unapply",
     ],
     injections: &[],
+    doc_format: "javadoc",
+    doc_convention: "Use Scaladoc format: @param, @return, @throws tags.",
 };
 
 pub fn definition() -> &'static LanguageDef {

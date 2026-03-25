@@ -1,8 +1,8 @@
 //! Prompt construction for LLM summary, doc comment, and HyDE passes.
 
-use super::{Client, MAX_CONTENT_CHARS};
+use super::{LlmClient, MAX_CONTENT_CHARS};
 
-impl Client {
+impl LlmClient {
     /// Build the discriminating prompt for a code chunk (no neighbor context).
     pub(super) fn build_prompt(content: &str, chunk_type: &str, language: &str) -> String {
         let truncated = if content.len() > MAX_CONTENT_CHARS {
@@ -66,16 +66,23 @@ impl Client {
             content
         };
 
-        // EX-15: Language-specific doc comment conventions
-        let appendix = match language {
-            "rust" => "\n\nUse `# Arguments`, `# Returns`, `# Errors`, `# Panics` sections as appropriate.",
-            "python" => "\n\nFormat as a Google-style docstring (Args/Returns/Raises sections).",
-            "go" => "\n\nStart with the function name per Go conventions.",
-            "java" => "\n\nUse Javadoc format: @param, @return, @throws tags.",
-            "csharp" => "\n\nUse XML doc comments: <summary>, <param>, <returns>, <exception> tags.",
-            "typescript" | "javascript" => "\n\nUse JSDoc format: @param {type} name, @returns {type}, @throws {type}.",
-            _ => "",
-        };
+        // EX-24: Language-specific doc comment conventions from LanguageDef.doc_convention
+        let appendix = language
+            .parse::<crate::parser::Language>()
+            .ok()
+            .and_then(|lang| {
+                if lang.is_enabled() {
+                    let conv = lang.def().doc_convention;
+                    if conv.is_empty() {
+                        None
+                    } else {
+                        Some(format!("\n\n{}", conv))
+                    }
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
 
         format!(
             "Write a concise doc comment for this {}. \
@@ -113,7 +120,7 @@ mod tests {
 
     #[test]
     fn test_build_prompt() {
-        let prompt = Client::build_prompt("fn foo() {}", "function", "rust");
+        let prompt = LlmClient::build_prompt("fn foo() {}", "function", "rust");
         assert!(prompt.contains("unique and distinguishable"));
         assert!(prompt.contains("```rust"));
         assert!(prompt.contains("fn foo()"));
@@ -121,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_build_contrastive_prompt() {
-        let prompt = Client::build_contrastive_prompt(
+        let prompt = LlmClient::build_contrastive_prompt(
             "fn merge_sort() {}",
             "function",
             "rust",
@@ -136,14 +143,14 @@ mod tests {
     #[test]
     fn test_build_prompt_truncation() {
         let long = "x".repeat(10000);
-        let prompt = Client::build_prompt(&long, "function", "rust");
+        let prompt = LlmClient::build_prompt(&long, "function", "rust");
         assert!(prompt.len() < 10000 + 200);
     }
 
     #[test]
     fn build_prompt_multibyte_no_panic() {
         let content: String = std::iter::repeat('あ').take(2667).collect();
-        let prompt = Client::build_prompt(&content, "function", "rust");
+        let prompt = LlmClient::build_prompt(&content, "function", "rust");
         assert!(prompt.len() <= 8300);
     }
 
@@ -152,7 +159,7 @@ mod tests {
     #[test]
     fn test_build_doc_prompt_rust() {
         let prompt =
-            Client::build_doc_prompt("fn foo() -> Result<(), Error> {}", "function", "rust");
+            LlmClient::build_doc_prompt("fn foo() -> Result<(), Error> {}", "function", "rust");
         assert!(prompt.contains("doc comment"));
         assert!(prompt.contains("```rust"));
         assert!(prompt.contains("# Arguments"));
@@ -163,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_build_doc_prompt_python() {
-        let prompt = Client::build_doc_prompt("def foo(x: int) -> str:", "function", "python");
+        let prompt = LlmClient::build_doc_prompt("def foo(x: int) -> str:", "function", "python");
         assert!(prompt.contains("doc comment"));
         assert!(prompt.contains("```python"));
         assert!(prompt.contains("Google-style docstring"));
@@ -172,7 +179,7 @@ mod tests {
 
     #[test]
     fn test_build_doc_prompt_go() {
-        let prompt = Client::build_doc_prompt("func Foo() error {}", "function", "go");
+        let prompt = LlmClient::build_doc_prompt("func Foo() error {}", "function", "go");
         assert!(prompt.contains("doc comment"));
         assert!(prompt.contains("```go"));
         assert!(prompt.contains("function name per Go conventions"));
@@ -181,7 +188,7 @@ mod tests {
     #[test]
     fn test_build_doc_prompt_default() {
         // Use a language with no specific appendix
-        let prompt = Client::build_doc_prompt("defmodule Foo do end", "module", "elixir");
+        let prompt = LlmClient::build_doc_prompt("defmodule Foo do end", "module", "elixir");
         assert!(prompt.contains("doc comment"));
         assert!(prompt.contains("```elixir"));
         // No language-specific appendix for elixir
@@ -195,21 +202,21 @@ mod tests {
     #[test]
     fn test_build_doc_prompt_truncation() {
         let long = "x".repeat(10000);
-        let prompt = Client::build_doc_prompt(&long, "function", "rust");
+        let prompt = LlmClient::build_doc_prompt(&long, "function", "rust");
         assert!(prompt.len() < 10000 + 300);
     }
 
     // EX-15: Language-specific appendices for Java, C#, TypeScript, JavaScript
     #[test]
     fn test_build_doc_prompt_java() {
-        let prompt = Client::build_doc_prompt("public void foo() {}", "method", "java");
+        let prompt = LlmClient::build_doc_prompt("public void foo() {}", "method", "java");
         assert!(prompt.contains("Javadoc"));
         assert!(prompt.contains("@param"));
     }
 
     #[test]
     fn test_build_doc_prompt_csharp() {
-        let prompt = Client::build_doc_prompt("public void Foo() {}", "method", "csharp");
+        let prompt = LlmClient::build_doc_prompt("public void Foo() {}", "method", "csharp");
         assert!(prompt.contains("XML doc"));
         assert!(prompt.contains("<summary>"));
     }
@@ -217,14 +224,14 @@ mod tests {
     #[test]
     fn test_build_doc_prompt_typescript() {
         let prompt =
-            Client::build_doc_prompt("function foo(): string {}", "function", "typescript");
+            LlmClient::build_doc_prompt("function foo(): string {}", "function", "typescript");
         assert!(prompt.contains("JSDoc"));
         assert!(prompt.contains("@param"));
     }
 
     #[test]
     fn test_build_doc_prompt_javascript() {
-        let prompt = Client::build_doc_prompt("function foo() {}", "function", "javascript");
+        let prompt = LlmClient::build_doc_prompt("function foo() {}", "function", "javascript");
         assert!(prompt.contains("JSDoc"));
         assert!(prompt.contains("@param"));
     }
@@ -232,7 +239,7 @@ mod tests {
     // TC-2: build_hyde_prompt
     #[test]
     fn test_build_hyde_prompt_basic() {
-        let prompt = Client::build_hyde_prompt(
+        let prompt = LlmClient::build_hyde_prompt(
             "fn search(query: &str) -> Vec<Result> { ... }",
             "fn search(query: &str) -> Vec<Result>",
             "rust",
@@ -246,7 +253,7 @@ mod tests {
     #[test]
     fn test_build_hyde_prompt_truncation() {
         let long_content = "x".repeat(10000);
-        let prompt = Client::build_hyde_prompt(&long_content, "fn big()", "rust");
+        let prompt = LlmClient::build_hyde_prompt(&long_content, "fn big()", "rust");
         assert!(prompt.len() < 10000 + 300, "Should truncate long content");
     }
 }

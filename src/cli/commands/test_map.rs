@@ -44,11 +44,11 @@ pub(crate) fn cmd_test_map(name: &str, max_depth: usize, json: bool) -> Result<(
         if depth >= max_depth {
             continue;
         }
-        if let Some(callers) = graph.reverse.get(&current) {
+        if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
-                if !ancestors.contains_key(caller) {
-                    ancestors.insert(caller.clone(), (depth + 1, current.clone()));
-                    queue.push_back((caller.clone(), depth + 1));
+                if !ancestors.contains_key(caller.as_ref()) {
+                    ancestors.insert(caller.to_string(), (depth + 1, current.clone()));
+                    queue.push_back((caller.to_string(), depth + 1));
                 }
             }
         }

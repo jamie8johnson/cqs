@@ -147,7 +147,7 @@ fn test_task_to_json_integration() {
     assert!(json["scout"]["file_groups"].is_array());
     assert_eq!(json["risk"].as_array().unwrap().len(), 1);
     assert_eq!(json["risk"][0]["name"], "search_filtered");
-    assert_eq!(json["risk"][0]["risk_level"], "medium");
+    assert_eq!(json["risk"][0]["risk"]["risk_level"], "medium");
     assert_eq!(json["tests"].as_array().unwrap().len(), 1);
     assert_eq!(json["tests"][0]["name"], "test_search_basic");
     assert_eq!(json["tests"][0]["call_depth"], 1);
@@ -233,7 +233,7 @@ fn test_compute_risk_and_tests_integration() {
         vec!["search_filtered".to_string()],
     );
 
-    let graph = CallGraph { forward, reverse };
+    let graph = CallGraph::from_string_maps(forward, reverse);
 
     let test_chunks = vec![ChunkSummary {
         id: "test_id".to_string(),

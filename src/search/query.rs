@@ -21,6 +21,7 @@ use crate::store::{Store, StoreError};
 use super::scoring::{
     apply_parent_boost, build_filter_sql, compile_glob_filter, extract_file_from_chunk_id,
     is_name_like_query, score_candidate, BoundedScoreHeap, NameMatcher, NoteBoostIndex,
+    ScoringContext,
 };
 
 impl Store {
@@ -96,6 +97,16 @@ impl Store {
             // Pre-compute note boost lookup for O(1) name matching in scoring loop
             let note_index = NoteBoostIndex::new(&notes);
 
+            // Build loop-invariant scoring context once
+            let scoring_ctx = ScoringContext {
+                query: query.as_slice(),
+                filter,
+                name_matcher: name_matcher.as_ref(),
+                glob_matcher: glob_matcher.as_ref(),
+                note_index: &note_index,
+                threshold,
+            };
+
             // Use bounded heap to maintain only top-N results during iteration.
             // This bounds memory to O(semantic_limit) instead of O(total_chunks).
             let mut score_heap = BoundedScoreHeap::new(semantic_limit);
@@ -153,17 +164,9 @@ impl Store {
                     };
                     let file_part = extract_file_from_chunk_id(&id);
 
-                    if let Some(score) = score_candidate(
-                        embedding,
-                        query.as_slice(),
-                        name.as_deref(),
-                        file_part,
-                        filter,
-                        name_matcher.as_ref(),
-                        glob_matcher.as_ref(),
-                        &note_index,
-                        threshold,
-                    ) {
+                    if let Some(score) =
+                        score_candidate(embedding, name.as_deref(), file_part, &scoring_ctx)
+                    {
                         score_heap.push(id, score);
                     }
                 }
@@ -358,6 +361,16 @@ impl Store {
             // Pre-compute note boost lookup for O(1) name matching in scoring loop
             let note_index = NoteBoostIndex::new(&notes);
 
+            // Build loop-invariant scoring context once
+            let scoring_ctx = ScoringContext {
+                query: query.as_slice(),
+                filter,
+                name_matcher: name_matcher.as_ref(),
+                glob_matcher: glob_matcher.as_ref(),
+                note_index: &note_index,
+                threshold,
+            };
+
             // Pre-build filter sets once — avoids per-candidate string parsing (PF-1)
             let lang_set: Option<HashSet<String>> = filter
                 .languages
@@ -371,20 +384,17 @@ impl Store {
             let mut scored: Vec<(CandidateRow, f32)> = candidates
                 .into_iter()
                 .filter_map(|(candidate, embedding_bytes)| {
+                    // PERF-27: Use HashSet::contains with lowercased value instead of
+                    // linear scan with eq_ignore_ascii_case. Values in the sets are
+                    // already lowercased at construction above.
                     if let Some(ref langs) = lang_set {
-                        if !langs
-                            .iter()
-                            .any(|l| candidate.language.eq_ignore_ascii_case(l))
-                        {
+                        if !langs.contains(&candidate.language.to_lowercase()) {
                             return None;
                         }
                     }
 
                     if let Some(ref types) = type_set {
-                        if !types
-                            .iter()
-                            .any(|t| candidate.chunk_type.eq_ignore_ascii_case(t))
-                        {
+                        if !types.contains(&candidate.chunk_type.to_lowercase()) {
                             return None;
                         }
                     }
@@ -393,14 +403,9 @@ impl Store {
 
                     let score = score_candidate(
                         embedding,
-                        query.as_slice(),
                         Some(&candidate.name),
                         &candidate.origin,
-                        filter,
-                        name_matcher.as_ref(),
-                        glob_matcher.as_ref(),
-                        &note_index,
-                        threshold,
+                        &scoring_ctx,
                     )?;
 
                     Some((candidate, score))

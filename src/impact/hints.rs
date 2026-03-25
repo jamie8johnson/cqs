@@ -83,6 +83,7 @@ pub fn compute_hints_batch(
     names: &[&str],
     caller_counts: &std::collections::HashMap<String, u64>,
 ) -> Vec<FunctionHints> {
+    let _span = tracing::info_span!("compute_hints_batch", count = names.len()).entered();
     let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
     let reachability = test_reachability(graph, &test_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
 
@@ -257,7 +258,7 @@ pub fn find_hotspots(graph: &CallGraph, top_n: usize) -> Vec<crate::health::Hots
         .reverse
         .iter()
         .map(|(name, callers)| crate::health::Hotspot {
-            name: name.clone(),
+            name: name.to_string(),
             caller_count: callers.len(),
         })
         .collect();
@@ -281,10 +282,7 @@ mod tests {
             "target".to_string(),
             vec!["ghost_caller".to_string(), "another_ghost".to_string()],
         );
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let hints = compute_hints_with_graph(&graph, &test_chunks, "target", None);
         assert_eq!(hints.caller_count, 2, "Should count callers from graph");
@@ -295,10 +293,7 @@ mod tests {
     fn test_compute_hints_with_graph_stale_test_ancestor() {
         let mut reverse = HashMap::new();
         reverse.insert("target".to_string(), vec!["middle".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
         let test_chunks = vec![crate::store::ChunkSummary {
             id: "test.rs:1:abcd1234".to_string(),
             file: PathBuf::from("test.rs"),
@@ -322,10 +317,7 @@ mod tests {
 
     #[test]
     fn test_compute_hints_with_graph_prefetched_caller_count() {
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse: HashMap::new(),
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let hints = compute_hints_with_graph(&graph, &test_chunks, "target", Some(99));
         assert_eq!(hints.caller_count, 99, "Should use prefetched value");
@@ -343,10 +335,7 @@ mod tests {
                 .map(String::from)
                 .collect(),
         );
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
         assert_eq!(scores.len(), 1);
@@ -366,7 +355,7 @@ mod tests {
         let mut forward = HashMap::new();
         forward.insert("test_target".to_string(), vec!["target".to_string()]);
         forward.insert("a".to_string(), vec!["target".to_string()]);
-        let graph = CallGraph { forward, reverse };
+        let graph = CallGraph::from_string_maps(forward, reverse);
         let test_chunks = vec![crate::store::ChunkSummary {
             id: "test_id".to_string(),
             file: PathBuf::from("tests/test.rs"),
@@ -391,10 +380,7 @@ mod tests {
 
     #[test]
     fn test_risk_entry_point_no_callers_no_tests() {
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse: HashMap::new(),
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let scores = compute_risk_batch(&["main"], &graph, &test_chunks);
         assert_eq!(scores[0].risk_level, RiskLevel::Medium);
@@ -418,7 +404,7 @@ mod tests {
         forward.insert("test_a".to_string(), vec!["target".to_string()]);
         forward.insert("test_b".to_string(), vec!["target".to_string()]);
         forward.insert("test_c".to_string(), vec!["target".to_string()]);
-        let graph = CallGraph { forward, reverse };
+        let graph = CallGraph::from_string_maps(forward, reverse);
         let test_chunks = vec![
             crate::store::ChunkSummary {
                 id: "t1".to_string(),
@@ -480,10 +466,7 @@ mod tests {
 
     #[test]
     fn test_risk_batch_empty_input() {
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse: HashMap::new(),
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let scores = compute_risk_batch(&[], &graph, &test_chunks);
         assert!(scores.is_empty());
@@ -507,10 +490,7 @@ mod tests {
             "high_blast".to_string(),
             (0..11).map(|i| format!("c{i}")).collect(),
         );
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let scores = compute_risk_batch(
             &["low_blast", "med_blast", "high_blast"],
@@ -534,7 +514,7 @@ mod tests {
 
         let mut forward = HashMap::new();
         forward.insert("test_target".to_string(), vec!["target".to_string()]);
-        let graph = CallGraph { forward, reverse };
+        let graph = CallGraph::from_string_maps(forward, reverse);
 
         let test_chunks = vec![crate::store::ChunkSummary {
             id: "t1".to_string(),
@@ -573,10 +553,7 @@ mod tests {
             "ten_callers".to_string(),
             (0..10).map(|i| format!("c{i}")).collect(),
         );
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let scores = compute_risk_batch(&["ten_callers"], &graph, &test_chunks);
         assert_eq!(
@@ -595,10 +572,7 @@ mod tests {
             "target".to_string(),
             (0..6).map(|i| format!("c{i}")).collect(),
         );
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
         assert_eq!(scores[0].risk_level, RiskLevel::High);
@@ -615,10 +589,7 @@ mod tests {
             "target".to_string(),
             vec!["a", "b", "c"].into_iter().map(String::from).collect(),
         );
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
         assert_eq!(scores[0].risk_level, RiskLevel::Medium);
@@ -630,10 +601,7 @@ mod tests {
         // 1 caller, 0 tests: score = 1.0 < 2.0 → Low
         let mut reverse = HashMap::new();
         reverse.insert("target".to_string(), vec!["a".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
         assert_eq!(scores[0].risk_level, RiskLevel::Low);
@@ -645,10 +613,7 @@ mod tests {
         // 0 callers, 1 test reachable: test_ratio = 1.0, score = 0.0 → Low
         let mut forward = HashMap::new();
         forward.insert("test_fn".to_string(), vec!["target".to_string()]);
-        let graph = CallGraph {
-            forward,
-            reverse: HashMap::new(),
-        };
+        let graph = CallGraph::from_string_maps(forward, HashMap::new());
         let test_chunks = vec![crate::store::ChunkSummary {
             id: "t1".to_string(),
             file: PathBuf::from("tests/t.rs"),
@@ -676,10 +641,7 @@ mod tests {
 
     #[test]
     fn test_blast_radius_boundary_0_callers() {
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse: HashMap::new(),
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let scores = compute_risk_batch(&["orphan"], &graph, &test_chunks);
         assert_eq!(
@@ -701,10 +663,7 @@ mod tests {
             vec!["a", "b"].into_iter().map(String::from).collect(),
         );
         reverse.insert("cold".to_string(), vec!["a".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
         let hotspots = find_hotspots(&graph, 2);
         assert_eq!(hotspots.len(), 2);
         assert_eq!(hotspots[0].name, "hot");

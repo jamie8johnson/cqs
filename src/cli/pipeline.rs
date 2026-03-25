@@ -391,7 +391,7 @@ fn parser_stage(
                         .and_then(|m| m.modified())
                         .ok()
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs() as i64)
+                        .map(|d| d.as_millis() as i64)
                         .unwrap_or(0);
                     file_mtimes.insert(c.file.clone(), mtime);
                 }
@@ -766,12 +766,13 @@ fn store_stage(
     // Insert deferred type edges now that all chunks are in the DB.
     // Type edges reference source_chunk_id with a FK constraint, so they
     // must be inserted after all chunks across all batches are committed.
-    for (file, chunk_type_refs) in &deferred_type_edges {
-        if let Err(e) = store.upsert_type_edges_for_file(file, chunk_type_refs) {
+    // PERF-26: Single transaction for all files instead of per-file transactions.
+    if !deferred_type_edges.is_empty() {
+        if let Err(e) = store.upsert_type_edges_for_files(&deferred_type_edges) {
             tracing::warn!(
-                file = %file.display(),
+                files = deferred_type_edges.len(),
                 error = %e,
-                "Failed to store type edges"
+                "Failed to store deferred type edges"
             );
         }
     }

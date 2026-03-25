@@ -225,6 +225,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "Equals", "GetHashCode", "ToString", "CompareTo", "Dispose",
     ],
     injections: &[],
+    doc_format: "triple_slash",
+    doc_convention: "Use XML doc comments: <summary>, <param>, <returns> tags.",
 };
 
 pub fn definition() -> &'static LanguageDef {

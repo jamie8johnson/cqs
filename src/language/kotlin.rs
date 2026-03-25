@@ -222,6 +222,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "equals", "hashCode", "toString", "compareTo", "iterator",
     ],
     injections: &[],
+    doc_format: "javadoc",
+    doc_convention: "Use KDoc format: @param, @return, @throws tags.",
 };
 
 pub fn definition() -> &'static LanguageDef {

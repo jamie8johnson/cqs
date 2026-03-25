@@ -2,8 +2,8 @@
 
 use super::batch::BatchPhase2;
 use super::{
-    Client, LlmConfig, LlmError, HYDE_MAX_TOKENS, MAX_BATCH_SIZE, MAX_CONTENT_CHARS,
-    MIN_CONTENT_CHARS,
+    collect_eligible_chunks, LlmClient, LlmConfig, LlmError, HYDE_MAX_TOKENS, MAX_BATCH_SIZE,
+    MAX_CONTENT_CHARS,
 };
 use crate::Store;
 
@@ -18,6 +18,7 @@ pub fn hyde_query_pass(
     quiet: bool,
     config: &crate::config::Config,
     max_hyde: usize,
+    lock_dir: Option<&std::path::Path>,
 ) -> Result<usize, LlmError> {
     let _span = tracing::info_span!("hyde_query_pass").entered();
 
@@ -33,7 +34,7 @@ pub fn hyde_query_pass(
             "HyDE query pass requires ANTHROPIC_API_KEY environment variable".to_string(),
         )
     })?;
-    let client = Client::new(&api_key, llm_config)?;
+    let client = LlmClient::new(&api_key, llm_config)?;
 
     let effective_batch_size = if max_hyde > 0 {
         max_hyde.min(MAX_BATCH_SIZE)
@@ -41,76 +42,26 @@ pub fn hyde_query_pass(
         MAX_BATCH_SIZE
     };
 
-    let mut cached = 0usize;
-    let mut skipped = 0usize;
-    let mut cursor = 0i64;
-    const PAGE_SIZE: usize = 500;
+    // Phase 1: Collect callable chunks needing HyDE predictions via shared filter
+    let (eligible, cached, skipped) = collect_eligible_chunks(store, "hyde", effective_batch_size)?;
 
-    // Phase 1: Collect callable chunks needing HyDE predictions
-    // (custom_id=content_hash, content, signature, language) for batch API
-    let mut batch_items: Vec<(String, String, String, String)> = Vec::new();
-    let mut queued_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    let stats = store.stats()?;
-    tracing::info!(chunks = stats.total_chunks, "Scanning for HyDE predictions");
-
-    let mut batch_full = false;
-    loop {
-        let (chunks, next) = store.chunks_paged(cursor, PAGE_SIZE)?;
-        if chunks.is_empty() {
-            break;
-        }
-        cursor = next;
-
-        let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
-        let existing = store.get_summaries_by_hashes(&hashes, "hyde")?;
-
-        for cs in &chunks {
-            if existing.contains_key(&cs.content_hash) {
-                cached += 1;
-                continue;
-            }
-
-            if !cs.chunk_type.is_callable() {
-                skipped += 1;
-                continue;
-            }
-
-            if cs.content.len() < MIN_CONTENT_CHARS {
-                skipped += 1;
-                continue;
-            }
-
-            if cs.window_idx.is_some_and(|idx| idx > 0) {
-                skipped += 1;
-                continue;
-            }
-
-            // Queue for batch API (deduplicate by content_hash)
-            if queued_hashes.insert(cs.content_hash.clone()) {
-                batch_items.push((
-                    cs.content_hash.clone(),
-                    if cs.content.len() > MAX_CONTENT_CHARS {
-                        cs.content[..cs.content.floor_char_boundary(MAX_CONTENT_CHARS)].to_string()
-                    } else {
-                        cs.content.clone()
-                    },
-                    cs.signature.clone(),
-                    cs.language.to_string(),
-                ));
-                if batch_items.len() >= effective_batch_size {
-                    batch_full = true;
-                    break;
-                }
-            }
-        }
-        if batch_full {
-            tracing::info!(
-                max = effective_batch_size,
-                "HyDE batch size limit reached, submitting partial batch"
-            );
-            break;
-        }
+    // Build batch items: (content_hash, truncated_content, signature, language)
+    let batch_items: Vec<(String, String, String, String)> = eligible
+        .into_iter()
+        .map(|ec| {
+            let content = if ec.content.len() > MAX_CONTENT_CHARS {
+                ec.content[..ec.content.floor_char_boundary(MAX_CONTENT_CHARS)].to_string()
+            } else {
+                ec.content
+            };
+            (ec.content_hash, content, ec.signature, ec.language)
+        })
+        .collect();
+    if batch_items.len() >= effective_batch_size {
+        tracing::info!(
+            max = effective_batch_size,
+            "HyDE batch size limit reached, submitting partial batch"
+        );
     }
 
     tracing::info!(
@@ -125,6 +76,7 @@ pub fn hyde_query_pass(
         purpose: "hyde",
         max_tokens: HYDE_MAX_TOKENS,
         quiet,
+        lock_dir,
     };
     let api_results = phase2.submit_or_resume(
         &client,

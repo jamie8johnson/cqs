@@ -94,8 +94,14 @@ impl Store {
 
             let metadata: HashMap<String, String> = metadata_rows.into_iter().collect();
 
-            let model_name = metadata.get("model_name").cloned().unwrap_or_default();
-            let created_at = metadata.get("created_at").cloned().unwrap_or_default();
+            let model_name = metadata.get("model_name").cloned().unwrap_or_else(|| {
+                tracing::debug!("metadata key 'model_name' missing, defaulting to empty");
+                String::new()
+            });
+            let created_at = metadata.get("created_at").cloned().unwrap_or_else(|| {
+                tracing::debug!("metadata key 'created_at' missing, defaulting to empty");
+                String::new()
+            });
             let updated_at = metadata
                 .get("updated_at")
                 .cloned()

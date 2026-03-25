@@ -70,6 +70,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "hash", "eql?", "==", "<=>", "each", "initialize",
     ],
     injections: &[],
+    doc_format: "hash_comment",
+    doc_convention: "Use YARD format: @param, @return, @raise tags.",
 };
 
 pub fn definition() -> &'static LanguageDef {

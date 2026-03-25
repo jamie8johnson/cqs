@@ -164,6 +164,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "__del__", "__new__", "__init_subclass__", "__class_getitem__",
     ],
     injections: &[],
+    doc_format: "python_docstring",
+    doc_convention: "Format as a Google-style docstring (Args/Returns/Raises sections).",
 };
 
 pub fn definition() -> &'static LanguageDef {

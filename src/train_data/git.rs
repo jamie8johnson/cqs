@@ -89,6 +89,13 @@ pub fn git_log(repo: &Path, max_commits: usize) -> Result<Vec<CommitInfo>, Train
 pub fn git_diff_tree(repo: &Path, sha: &str) -> Result<String, TrainDataError> {
     let _span = tracing::info_span!("git_diff_tree", repo = %repo.display(), sha).entered();
 
+    if sha.starts_with('-') || sha.contains('\0') {
+        return Err(TrainDataError::Git(format!(
+            "Invalid SHA '{}': must not start with '-' or contain null bytes",
+            sha
+        )));
+    }
+
     let output = Command::new("git")
         .args(["-C"])
         .arg(repo)
@@ -121,6 +128,19 @@ const MAX_SHOW_SIZE: usize = 50 * 1024 * 1024;
 /// exist at that commit).
 pub fn git_show(repo: &Path, sha: &str, path: &str) -> Result<Option<String>, TrainDataError> {
     let _span = tracing::info_span!("git_show", repo = %repo.display(), sha, path).entered();
+
+    if sha.starts_with('-') || sha.contains('\0') {
+        return Err(TrainDataError::Git(format!(
+            "Invalid SHA '{}': must not start with '-' or contain null bytes",
+            sha
+        )));
+    }
+    if path.starts_with('-') || path.contains('\0') {
+        return Err(TrainDataError::Git(format!(
+            "Invalid path '{}': must not start with '-' or contain null bytes",
+            path
+        )));
+    }
 
     let spec = format!("{}:{}", sha, path);
     let output = Command::new("git")

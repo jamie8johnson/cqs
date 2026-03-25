@@ -198,7 +198,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
             println!("Generating LLM summaries...");
         }
         let config = cqs::config::Config::load(&root);
-        let count = cqs::llm::llm_summary_pass(&store, cli.quiet, &config)
+        let count = cqs::llm::llm_summary_pass(&store, cli.quiet, &config, Some(&cqs_dir))
             .context("LLM summary pass failed")?;
         if !cli.quiet && count > 0 {
             println!("  LLM summaries: {} new", count);
@@ -212,9 +212,14 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
             println!("Generating doc comments...");
         }
         let config = cqs::config::Config::load(&root);
-        let doc_results =
-            cqs::llm::doc_comment_pass(&store, &config, max_docs.unwrap_or(0), improve_all)
-                .context("Doc comment generation failed")?;
+        let doc_results = cqs::llm::doc_comment_pass(
+            &store,
+            &config,
+            max_docs.unwrap_or(0),
+            improve_all,
+            Some(&cqs_dir),
+        )
+        .context("Doc comment generation failed")?;
 
         if !doc_results.is_empty() {
             // Group by file and write back
@@ -254,8 +259,14 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
             println!("Generating hyde query predictions...");
         }
         let config = cqs::config::Config::load(&root);
-        let count = cqs::llm::hyde_query_pass(&store, cli.quiet, &config, max_hyde.unwrap_or(0))
-            .context("Hyde query prediction pass failed")?;
+        let count = cqs::llm::hyde_query_pass(
+            &store,
+            cli.quiet,
+            &config,
+            max_hyde.unwrap_or(0),
+            Some(&cqs_dir),
+        )
+        .context("Hyde query prediction pass failed")?;
         if !cli.quiet && count > 0 {
             println!("  Hyde predictions: {} new", count);
         }

@@ -50,23 +50,6 @@ pub struct FileSuggestion {
     pub patterns: LocalPatterns,
 }
 
-impl FileSuggestion {
-    /// Serialize to JSON. Uses `normalize_path` for forward-slash normalization.
-    ///
-    /// If paths should be relative to the project root, callers must ensure
-    /// `self.file` was relativized before calling (e.g., via `strip_prefix`).
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "file": crate::normalize_path(&self.file),
-            "score": self.score,
-            "insertion_line": self.insertion_line,
-            "near_function": self.near_function,
-            "reason": self.reason,
-            "patterns": self.patterns,
-        })
-    }
-}
-
 /// Result from placement analysis
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PlacementResult {

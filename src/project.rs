@@ -215,73 +215,39 @@ pub fn search_across_projects(
     }
 
     // RM-25: Cap concurrency to 4 threads — each project opens Store + HNSW (~200MB).
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().build().unwrap());
+    // RB-16: Fall back to sequential execution if thread pool creation fails,
+    // rather than panicking on a double-unwrap.
+    let pool = match rayon::ThreadPoolBuilder::new().num_threads(4).build() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to build rayon thread pool, falling back to sequential");
+            // Execute sequentially without a custom pool
+            let project_results: Vec<Vec<CrossProjectResult>> = registry
+                .project
+                .iter()
+                .filter_map(|entry| {
+                    search_single_project(entry, query_embedding, query_text, limit, threshold)
+                })
+                .collect();
+            let mut all_results: Vec<CrossProjectResult> =
+                project_results.into_iter().flatten().collect();
+            all_results.sort_by(|a, b| b.score.total_cmp(&a.score));
+            all_results.truncate(limit);
+            tracing::info!(
+                result_count = all_results.len(),
+                "Cross-project search complete (sequential fallback)"
+            );
+            return Ok(all_results);
+        }
+    };
     let project_results: Vec<Vec<CrossProjectResult>> = pool.install(|| {
-        registry.project.par_iter().filter_map(|entry| {
-            // Prefer .cqs, fall back to legacy .cq
-            let index_path = {
-                let new_path = entry.path.join(".cqs/index.db");
-                if new_path.exists() {
-                    new_path
-                } else {
-                    entry.path.join(".cq/index.db")
-                }
-            };
-            if !index_path.exists() {
-                tracing::warn!(
-                    "Skipping project '{}' — index not found at {}",
-                    entry.name,
-                    index_path.display()
-                );
-                return None;
-            }
-
-            match crate::Store::open_readonly(&index_path) {
-                Ok(store) => {
-                    let cqs_dir = index_path.parent().unwrap_or(entry.path.as_path());
-                    let index = crate::hnsw::HnswIndex::try_load(cqs_dir);
-                    let filter = crate::store::helpers::SearchFilter {
-                        query_text: query_text.to_string(),
-                        enable_rrf: true,
-                        ..Default::default()
-                    };
-                    match store.search_filtered_with_index(
-                        query_embedding,
-                        &filter,
-                        limit,
-                        threshold,
-                        index.as_deref(),
-                    ) {
-                        Ok(results) => {
-                            let mapped: Vec<CrossProjectResult> = results
-                                .into_iter()
-                                .map(|r| CrossProjectResult {
-                                    project_name: entry.name.clone(),
-                                    name: r.chunk.name.clone(),
-                                    file: make_project_relative(&entry.path, &r.chunk.file),
-                                    line_start: r.chunk.line_start,
-                                    signature: Some(r.chunk.signature.clone()),
-                                    score: r.score,
-                                })
-                                .collect();
-                            Some(mapped)
-                        }
-                        Err(e) => {
-                            tracing::warn!(project = %entry.name, error = %e, "Search failed for project");
-                            None
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(project = %entry.name, error = %e, "Failed to open project");
-                    None
-                }
-            }
-        })
-        .collect()
+        registry
+            .project
+            .par_iter()
+            .filter_map(|entry| {
+                search_single_project(entry, query_embedding, query_text, limit, threshold)
+            })
+            .collect()
     });
 
     let mut all_results: Vec<CrossProjectResult> = project_results.into_iter().flatten().collect();
@@ -296,6 +262,77 @@ pub fn search_across_projects(
     );
 
     Ok(all_results)
+}
+
+/// Search a single project entry, returning results or None on failure.
+///
+/// Extracted to share between the parallel (rayon) and sequential (fallback) paths.
+fn search_single_project(
+    entry: &ProjectEntry,
+    query_embedding: &crate::Embedding,
+    query_text: &str,
+    limit: usize,
+    threshold: f32,
+) -> Option<Vec<CrossProjectResult>> {
+    // Prefer .cqs, fall back to legacy .cq
+    let index_path = {
+        let new_path = entry.path.join(".cqs/index.db");
+        if new_path.exists() {
+            new_path
+        } else {
+            entry.path.join(".cq/index.db")
+        }
+    };
+    if !index_path.exists() {
+        tracing::warn!(
+            "Skipping project '{}' — index not found at {}",
+            entry.name,
+            index_path.display()
+        );
+        return None;
+    }
+
+    match crate::Store::open_readonly(&index_path) {
+        Ok(store) => {
+            let cqs_dir = index_path.parent().unwrap_or(entry.path.as_path());
+            let index = crate::hnsw::HnswIndex::try_load(cqs_dir);
+            let filter = crate::store::helpers::SearchFilter {
+                query_text: query_text.to_string(),
+                enable_rrf: true,
+                ..Default::default()
+            };
+            match store.search_filtered_with_index(
+                query_embedding,
+                &filter,
+                limit,
+                threshold,
+                index.as_deref(),
+            ) {
+                Ok(results) => {
+                    let mapped: Vec<CrossProjectResult> = results
+                        .into_iter()
+                        .map(|r| CrossProjectResult {
+                            project_name: entry.name.clone(),
+                            name: r.chunk.name.clone(),
+                            file: make_project_relative(&entry.path, &r.chunk.file),
+                            line_start: r.chunk.line_start,
+                            signature: Some(r.chunk.signature.clone()),
+                            score: r.score,
+                        })
+                        .collect();
+                    Some(mapped)
+                }
+                Err(e) => {
+                    tracing::warn!(project = %entry.name, error = %e, "Search failed for project");
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(project = %entry.name, error = %e, "Failed to open project");
+            None
+        }
+    }
 }
 
 /// Make a file path relative to the project root for display

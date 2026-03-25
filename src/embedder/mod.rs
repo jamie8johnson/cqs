@@ -431,6 +431,7 @@ impl Embedder {
     /// is preferable to serializing all queries through a single lock. The duplicate work is rare
     /// and the cache update is idempotent.
     pub fn embed_query(&self, text: &str) -> Result<Embedding, EmbedderError> {
+        let _span = tracing::info_span!("embed_query").entered();
         let text = text.trim();
         if text.is_empty() {
             return Err(EmbedderError::EmptyQuery);

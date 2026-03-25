@@ -22,7 +22,11 @@ pub fn impact_to_json(result: &ImpactResult) -> serde_json::Value {
         })
         .collect();
 
-    let tests_json: Vec<_> = result.tests.iter().map(|t| t.to_json()).collect();
+    let tests_json: Vec<_> = result
+        .tests
+        .iter()
+        .filter_map(|t| serde_json::to_value(t).ok())
+        .collect();
 
     let mut output = serde_json::json!({
         "function": result.function_name,

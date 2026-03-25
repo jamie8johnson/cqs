@@ -374,6 +374,18 @@ pub fn rewrite_file(
         });
     }
 
+    // RB-19: Log when edits are skipped (not found, adequate doc, empty format, etc.)
+    let skipped = edits.len() - resolved.len();
+    if skipped > 0 {
+        tracing::info!(
+            file = %path.display(),
+            total = edits.len(),
+            skipped,
+            resolved = resolved.len(),
+            "Skipped doc edits (not found, adequate doc, or empty)"
+        );
+    }
+
     if resolved.is_empty() {
         return Ok(0);
     }

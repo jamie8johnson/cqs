@@ -217,11 +217,11 @@ pub(in crate::cli::batch) fn dispatch_test_map(
         if depth >= max_depth {
             continue;
         }
-        if let Some(callers) = graph.reverse.get(&current) {
+        if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
-                if !ancestors.contains_key(caller) {
-                    ancestors.insert(caller.clone(), (depth + 1, current.clone()));
-                    queue.push_back((caller.clone(), depth + 1));
+                if !ancestors.contains_key(caller.as_ref()) {
+                    ancestors.insert(caller.to_string(), (depth + 1, current.clone()));
+                    queue.push_back((caller.to_string(), depth + 1));
                 }
             }
         }
@@ -360,11 +360,11 @@ pub(in crate::cli::batch) fn dispatch_trace(
         if depth >= max_depth {
             continue;
         }
-        if let Some(callees) = graph.forward.get(&current) {
+        if let Some(callees) = graph.forward.get(current.as_str()) {
             for callee in callees {
-                if !visited.contains_key(callee) {
-                    visited.insert(callee.clone(), current.clone());
-                    queue.push_back((callee.clone(), depth + 1));
+                if !visited.contains_key(callee.as_ref()) {
+                    visited.insert(callee.to_string(), current.clone());
+                    queue.push_back((callee.to_string(), depth + 1));
                 }
             }
         }

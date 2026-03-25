@@ -139,6 +139,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "copyWithZone", "encodeWithCoder", "initWithCoder",
     ],
     injections: &[],
+    doc_format: "javadoc",
+    doc_convention: "Use Doxygen format: @param, @return, @throws tags.",
 };
 
 pub fn definition() -> &'static LanguageDef {

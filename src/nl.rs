@@ -314,6 +314,7 @@ pub fn generate_nl_with_call_context_and_summary(
 
     // Callees: filter high-frequency utilities (IDF threshold).
     // A callee appearing in >10% of chunks is likely a utility (log, unwrap, etc.).
+    // DS-22: Cast to f64 for boundary comparison to avoid f32 non-determinism.
     if !ctx.callees.is_empty() {
         let callee_words: Vec<String> = ctx
             .callees
@@ -321,7 +322,7 @@ pub fn generate_nl_with_call_context_and_summary(
             .filter(|c| {
                 !callee_doc_freq
                     .get(c.as_str())
-                    .is_some_and(|&freq| freq >= 0.10)
+                    .is_some_and(|&freq| (freq as f64) >= 0.10_f64)
             })
             .take(max_callees)
             .map(|c| tokenize_identifier(c).join(" "))
@@ -662,12 +663,8 @@ pub fn strip_markdown_noise(content: &str) -> String {
 /// remaining path components. Generic stems (mod, index, lib, utils, helpers)
 /// are filtered. E.g., `src/store/calls.rs` → `"store calls"`.
 fn extract_file_context(path: &std::path::Path) -> String {
-    let s = path.to_string_lossy();
-    // Normalize separators
-    let s = s.replace('\\', "/");
-    // Strip leading ./ or common root dirs
-    let s = s.strip_prefix("./").unwrap_or(&s);
-    // Split into components, skip common non-informative segments
+    // PB-27: Use Path::components() for cross-platform path splitting
+    use std::path::Component;
     let skip = [
         "src",
         "lib",
@@ -691,8 +688,12 @@ fn extract_file_context(path: &std::path::Path) -> String {
         "vendor",
         "third_party",
     ];
-    let components: Vec<&str> = s
-        .split('/')
+    let components: Vec<&str> = path
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
         .filter(|c| !c.is_empty() && !skip.contains(c))
         .collect();
     // Include filename stem for module-level discrimination (SQ-5).
@@ -1558,5 +1559,73 @@ mod tests {
         let base = generate_nl_description(&chunk);
         let enriched = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
         assert_eq!(base, enriched);
+    }
+
+    // TC-26: generate_nl_with_call_context_and_summary
+    #[test]
+    fn test_call_context_and_summary_prepends_summary_appends_hyde() {
+        let chunk = test_chunk("process_data");
+        let ctx = CallContext {
+            callers: vec!["main".to_string()],
+            callees: vec!["validate".to_string()],
+        };
+        let freq = std::collections::HashMap::new();
+        let summary = "Processes raw data into structured output";
+        let hyde = "how to process data\ntransform raw input";
+
+        let nl = generate_nl_with_call_context_and_summary(
+            &chunk,
+            &ctx,
+            &freq,
+            5,
+            5,
+            Some(summary),
+            Some(hyde),
+        );
+
+        // Summary should be prepended (appears before the base NL)
+        assert!(
+            nl.starts_with(summary),
+            "Summary should be prepended, got: {}",
+            nl
+        );
+        // HyDE queries should be appended
+        assert!(
+            nl.contains("Queries: how to process data, transform raw input"),
+            "HyDE queries should be appended, got: {}",
+            nl
+        );
+        // Callers and callees still present
+        assert!(nl.contains("Called by: main"), "got: {}", nl);
+        assert!(nl.contains("Calls: validate"), "got: {}", nl);
+    }
+
+    // TC-30: IDF callee filtering threshold
+    #[test]
+    fn test_callee_idf_filtering_above_threshold() {
+        let chunk = test_chunk("my_func");
+        let ctx = CallContext {
+            callers: vec![],
+            callees: vec!["log".to_string(), "rare_fn".to_string()],
+        };
+        // "log" appears in 15% of chunks (above 10% threshold), "rare_fn" in 2%
+        let mut freq = std::collections::HashMap::new();
+        freq.insert("log".to_string(), 0.15);
+        freq.insert("rare_fn".to_string(), 0.02);
+
+        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+
+        // "log" should be filtered out (>= 0.10 threshold)
+        assert!(
+            !nl.contains("Calls: log"),
+            "High-frequency callee 'log' should be filtered, got: {}",
+            nl
+        );
+        // "rare_fn" should be present
+        assert!(
+            nl.contains("rare fn"),
+            "Low-frequency callee 'rare_fn' should be kept, got: {}",
+            nl
+        );
     }
 }

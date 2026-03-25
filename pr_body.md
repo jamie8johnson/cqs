@@ -1,9 +1,6 @@
-## Summary
+From v1.5.0 audit:
 
-- v8-keydac eval results: 92.7% R@1 hard eval (matches base, zero non-determinism), 96.3% full-pipeline with HyDE
-- Authoritative A6000 matrix replacing all prior hard eval numbers
-- v9 synthetic training plan (Qodo method + curriculum scheduling)
-- Literature sweep 2 (7 new strategies + HF Papers API)
-- Full matrix eval script + stress eval script
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+- CQ-25: ~2000 lines of LLM-generated `# Arguments`/`# Returns` doc comments on trivial functions (builder methods, thin dispatch wrappers). Not a bug — note for improving doc generation heuristics to skip trivial functions.
+- PB-24: `prune_missing` compares `PathBuf::from(origin)` with canonicalized `existing_files` — can miss on case-insensitive filesystems (macOS HFS+/APFS). Linux/WSL unaffected.
+- EH-29: `read_context_lines` errors silently dropped — correct behavior for display fallback, no diagnostic needed.
+- EH-30: Bm25 `top_k_negatives` can return empty docs as hard negatives — training data only, low impact.

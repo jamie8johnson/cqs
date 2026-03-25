@@ -185,6 +185,24 @@ impl Store {
         })
     }
 
+    /// Fetch all enrichment hashes in a single query.
+    ///
+    /// Returns a map from chunk_id to enrichment_hash for all chunks that have one.
+    /// Used by the enrichment pass to avoid per-page hash fetches (PERF-29).
+    pub fn get_all_enrichment_hashes(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        let _span = tracing::debug_span!("get_all_enrichment_hashes").entered();
+        self.rt.block_on(async {
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT id, enrichment_hash FROM chunks WHERE enrichment_hash IS NOT NULL",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            Ok(rows.into_iter().collect())
+        })
+    }
+
     /// Get LLM summaries for a batch of content hashes.
     ///
     /// Returns a map from content_hash to summary text. Only includes hashes
@@ -289,6 +307,18 @@ impl Store {
         })
     }
 
+    /// Get all distinct content hashes currently in the chunks table.
+    /// Used to validate batch results against the current index (DS-20).
+    pub fn get_all_content_hashes(&self) -> Result<Vec<String>, StoreError> {
+        let _span = tracing::debug_span!("get_all_content_hashes").entered();
+        self.rt.block_on(async {
+            let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT content_hash FROM chunks")
+                .fetch_all(&self.pool)
+                .await?;
+            Ok(rows.into_iter().map(|(h,)| h).collect())
+        })
+    }
+
     /// Delete orphan LLM summaries whose content_hash doesn't exist in any chunk.
     pub fn prune_orphan_summaries(&self) -> Result<usize, StoreError> {
         let _span = tracing::debug_span!("prune_orphan_summaries").entered();
@@ -314,7 +344,7 @@ impl Store {
             .modified()?
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| StoreError::SystemTime)?
-            .as_secs() as i64;
+            .as_millis() as i64;
 
         self.rt.block_on(async {
             let row: Option<(Option<i64>,)> =

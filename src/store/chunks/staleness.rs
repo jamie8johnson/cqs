@@ -138,7 +138,7 @@ impl Store {
                     .and_then(|m| m.modified())
                     .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64);
+                    .map(|d| d.as_millis() as i64);
 
                 if let Some(current) = current_mtime {
                     if current > stored {
@@ -209,13 +209,15 @@ impl Store {
                         !origin.contains('\\'),
                         "DB origin contains backslash: {origin}"
                     );
-                    let path = root.join(&origin);
+                    // PB-23: Normalize the joined path to handle OS-native root
+                    // with forward-slash origin (e.g., `C:\proj` + `src/lib.rs`).
+                    let path = PathBuf::from(crate::normalize_path(&root.join(&origin)));
                     let current_mtime = path
                         .metadata()
                         .and_then(|m| m.modified())
                         .ok()
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs() as i64);
+                        .map(|d| d.as_millis() as i64);
 
                     if let Some(current) = current_mtime {
                         if current > stored {
@@ -288,7 +290,7 @@ mod tests {
             .unwrap()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() as i64;
+            .as_millis() as i64;
 
         store
             .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(mtime))
@@ -445,7 +447,7 @@ mod tests {
             .unwrap()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() as i64;
+            .as_millis() as i64;
 
         store
             .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(mtime))
@@ -489,7 +491,7 @@ mod tests {
             .unwrap()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() as i64;
+            .as_millis() as i64;
 
         store
             .upsert_chunks_batch(&[(c_fresh, mock_embedding(1.0))], Some(fresh_mtime))

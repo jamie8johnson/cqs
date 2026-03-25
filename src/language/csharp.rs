@@ -197,6 +197,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "GetEnumerator", "MoveNext",
     ],
     injections: &[],
+    doc_format: "javadoc",
+    doc_convention: "Use XML doc comments: <summary>, <param>, <returns>, <exception> tags.",
 };
 
 pub fn definition() -> &'static LanguageDef {

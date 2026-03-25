@@ -32,7 +32,10 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
 /// Full cosine similarity with norm computation.
 /// Used for cross-store comparison where vectors may not share normalization
 /// and may have arbitrary dimensions (not necessarily EMBEDDING_DIM).
-pub fn full_cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+///
+/// Returns `None` on dimension mismatch, empty vectors, or zero-norm denominator.
+/// This matches the `Option<f32>` convention used by [`cosine_similarity`].
+pub fn full_cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
     if a.len() != b.len() || a.is_empty() {
         if a.len() != b.len() {
             tracing::warn!(
@@ -41,7 +44,7 @@ pub fn full_cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
                 "full_cosine_similarity: dimension mismatch"
             );
         }
-        return 0.0;
+        return None;
     }
     let mut dot = 0.0f32;
     let mut norm_a = 0.0f32;
@@ -53,13 +56,13 @@ pub fn full_cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }
     let denom = norm_a.sqrt() * norm_b.sqrt();
     if denom == 0.0 {
-        0.0
+        None
     } else {
         let result = dot / denom;
         if result.is_finite() {
-            result
+            Some(result)
         } else {
-            0.0
+            None
         }
     }
 }
@@ -208,5 +211,87 @@ mod tests {
             None => {} // acceptable — product of subnormals can underflow to 0
             Some(v) => assert!(v.is_finite(), "Subnormal result must be finite, got {v}"),
         }
+    }
+
+    // ===== full_cosine_similarity tests (TC-24, TC-29) =====
+
+    #[test]
+    fn full_cosine_normal_vectors() {
+        let a = vec![1.0, 2.0, 3.0];
+        let b = vec![4.0, 5.0, 6.0];
+        let sim = full_cosine_similarity(&a, &b).unwrap();
+        // Expected: (4+10+18) / (sqrt(14) * sqrt(77)) ≈ 0.9746
+        assert!(
+            (sim - 0.9746).abs() < 0.001,
+            "Expected ~0.9746, got {}",
+            sim
+        );
+    }
+
+    #[test]
+    fn full_cosine_orthogonal_vectors() {
+        let a = vec![1.0, 0.0, 0.0];
+        let b = vec![0.0, 1.0, 0.0];
+        let sim = full_cosine_similarity(&a, &b).unwrap();
+        assert!(
+            sim.abs() < 1e-6,
+            "Orthogonal vectors should have ~0 similarity, got {}",
+            sim
+        );
+    }
+
+    #[test]
+    fn full_cosine_identical_vectors() {
+        let a = vec![3.0, 4.0, 5.0];
+        let sim = full_cosine_similarity(&a, &a).unwrap();
+        assert!(
+            (sim - 1.0).abs() < 1e-6,
+            "Identical vectors should have similarity ~1.0, got {}",
+            sim
+        );
+    }
+
+    #[test]
+    fn full_cosine_zero_norm_vector() {
+        // TC-29: zero-norm vector should return None
+        let zero = vec![0.0, 0.0, 0.0];
+        let normal = vec![1.0, 2.0, 3.0];
+        assert_eq!(
+            full_cosine_similarity(&zero, &normal),
+            None,
+            "Zero-norm vector should return None"
+        );
+        assert_eq!(
+            full_cosine_similarity(&normal, &zero),
+            None,
+            "Normal vs zero-norm should return None"
+        );
+        assert_eq!(
+            full_cosine_similarity(&zero, &zero),
+            None,
+            "Both zero-norm should return None"
+        );
+    }
+
+    #[test]
+    fn full_cosine_nan_input() {
+        let nan_vec = vec![f32::NAN, 1.0, 2.0];
+        let normal = vec![1.0, 2.0, 3.0];
+        assert_eq!(
+            full_cosine_similarity(&nan_vec, &normal),
+            None,
+            "NaN input should return None"
+        );
+    }
+
+    #[test]
+    fn full_cosine_mismatched_dimensions() {
+        let a = vec![1.0, 2.0, 3.0];
+        let b = vec![1.0, 2.0];
+        assert_eq!(
+            full_cosine_similarity(&a, &b),
+            None,
+            "Mismatched dimensions should return None"
+        );
     }
 }

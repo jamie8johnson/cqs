@@ -587,6 +587,7 @@ pub fn gather_cross_index_with_index(
 
     let _bridge_span = tracing::info_span!("bridge_search", seed_count = ref_seeds.len()).entered();
 
+    let bridge_error_count = std::sync::atomic::AtomicUsize::new(0);
     let bridge_results: Vec<(f32, Vec<SearchResult>)> = ref_seeds
         .par_iter()
         .filter_map(|seed| {
@@ -608,11 +609,22 @@ pub fn gather_cross_index_with_index(
                         ref_seed = %seed.chunk.name,
                         "Bridge search failed for ref seed"
                     );
+                    bridge_error_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     None
                 }
             }
         })
         .collect();
+
+    // EH-31: Surface total bridge search failures that silently degrade quality
+    let total_bridge_errors = bridge_error_count.load(std::sync::atomic::Ordering::Relaxed);
+    if total_bridge_errors > 0 {
+        tracing::warn!(
+            failed = total_bridge_errors,
+            total = ref_seeds.len(),
+            "Bridge searches failed — cross-index gather quality may be reduced"
+        );
+    }
 
     drop(_bridge_span);
 
@@ -699,7 +711,7 @@ fn get_neighbors(graph: &CallGraph, name: &str, direction: GatherDirection) -> V
     match direction {
         GatherDirection::Callees | GatherDirection::Both => {
             if let Some(callees) = graph.forward.get(name) {
-                neighbors.extend(callees.iter().cloned());
+                neighbors.extend(callees.iter().map(|s| s.to_string()));
             }
         }
         _ => {}
@@ -707,7 +719,7 @@ fn get_neighbors(graph: &CallGraph, name: &str, direction: GatherDirection) -> V
     match direction {
         GatherDirection::Callers | GatherDirection::Both => {
             if let Some(callers) = graph.reverse.get(name) {
-                neighbors.extend(callers.iter().cloned());
+                neighbors.extend(callers.iter().map(|s| s.to_string()));
             }
         }
         _ => {}
@@ -746,7 +758,7 @@ mod tests {
         // D is called by B
         reverse.insert("D".to_string(), vec!["B".to_string()]);
 
-        CallGraph { forward, reverse }
+        CallGraph::from_string_maps(forward, reverse)
     }
 
     #[test]
@@ -855,7 +867,7 @@ mod tests {
         reverse.insert("C".to_string(), vec!["A".to_string()]);
         reverse.insert("D".to_string(), vec!["B".to_string(), "C".to_string()]);
 
-        let graph = CallGraph { forward, reverse };
+        let graph = CallGraph::from_string_maps(forward, reverse);
 
         let mut name_scores = HashMap::new();
         name_scores.insert("A".to_string(), (1.0, 0));

@@ -300,6 +300,16 @@ pub struct LanguageDef {
     /// Empty by default. Only languages with embedded content (e.g., HTML with
     /// `<script>` and `<style>`) define injection rules.
     pub injections: &'static [InjectionRule],
+    /// Doc comment format identifier for this language.
+    /// Used by `doc_format_for()` in `src/doc_writer/formats.rs` to select the
+    /// correct comment syntax. Valid values: "triple_slash", "python_docstring",
+    /// "go_comment", "javadoc", "hash_comment", "elixir_doc", "lua_ldoc",
+    /// "haskell_haddock", "ocaml_doc", "erlang_edoc", "r_roxygen", "default".
+    pub doc_format: &'static str,
+    /// Language-specific doc comment convention instructions for LLM prompt appendix.
+    /// Used by `build_doc_prompt` in `src/llm/prompts.rs` to generate
+    /// language-appropriate documentation. Empty string means no convention.
+    pub doc_convention: &'static str,
 }
 
 /// Helper: PascalCase test name from a base function name with a given prefix.

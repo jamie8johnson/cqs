@@ -144,7 +144,7 @@ impl Store {
             .modified()?
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| StoreError::SystemTime)?
-            .as_secs() as i64;
+            .as_millis() as i64;
 
         self.rt.block_on(async {
             let row: Option<(i64,)> =
@@ -362,7 +362,7 @@ mod tests {
             .unwrap()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() as i64;
+            .as_millis() as i64;
 
         // Insert with the current mtime
         let notes = vec![make_note("n1", "current note", 0.0)];

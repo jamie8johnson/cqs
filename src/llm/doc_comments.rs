@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use super::batch::BatchPhase2;
-use super::{Client, LlmConfig, LlmError, MAX_BATCH_SIZE, MAX_CONTENT_CHARS};
+use super::{LlmClient, LlmConfig, LlmError, MAX_BATCH_SIZE, MAX_CONTENT_CHARS};
 use crate::store::ChunkSummary;
 use crate::Store;
 
@@ -149,6 +149,7 @@ pub fn doc_comment_pass(
     config: &crate::config::Config,
     max_docs: usize,
     improve_all: bool,
+    lock_dir: Option<&std::path::Path>,
 ) -> Result<Vec<crate::doc_writer::DocCommentResult>, LlmError> {
     let _span = tracing::info_span!("doc_comment_pass").entered();
 
@@ -164,7 +165,7 @@ pub fn doc_comment_pass(
             "--improve-docs requires ANTHROPIC_API_KEY environment variable".to_string(),
         )
     })?;
-    let client = Client::new(&api_key, llm_config)?;
+    let client = LlmClient::new(&api_key, llm_config)?;
 
     // Phase 1: Collect candidates
     let mut candidates: Vec<ChunkSummary> = Vec::new();
@@ -283,6 +284,7 @@ pub fn doc_comment_pass(
         purpose: "doc-comment",
         max_tokens: 800,
         quiet: false,
+        lock_dir,
     };
     let api_results: HashMap<String, String> = phase2.submit_or_resume(
         &client,

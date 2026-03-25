@@ -55,6 +55,7 @@ pub struct Triplet {
 }
 
 /// Configuration for training data generation.
+#[derive(Debug, serde::Serialize)]
 pub struct TrainDataConfig {
     pub repos: Vec<PathBuf>,
     pub output: PathBuf,
@@ -67,6 +68,7 @@ pub struct TrainDataConfig {
 }
 
 /// Statistics from a training data generation run.
+#[derive(Debug, serde::Serialize)]
 pub struct TrainDataStats {
     pub total_triplets: usize,
     pub repos_processed: usize,

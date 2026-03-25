@@ -106,6 +106,16 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
         }
     };
 
+    // PERF-29: Pre-fetch all enrichment hashes once instead of per-page queries.
+    // Same trade-off as summaries above: ~32 bytes per hash × N chunks is small.
+    let all_enrichment_hashes = match store.get_all_enrichment_hashes() {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to pre-fetch enrichment hashes");
+            HashMap::new()
+        }
+    };
+
     // Wrap loop in closure so progress bar is always cleaned up on error
     let result: Result<usize> = (|| {
         loop {
@@ -116,12 +126,6 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                 break;
             }
             cursor = next_cursor;
-
-            // Pre-fetch enrichment hashes for this page (RT-DATA-2)
-            let page_ids: Vec<&str> = chunks.iter().map(|c| c.id.as_str()).collect();
-            let stored_hashes = store
-                .get_enrichment_hashes_batch(&page_ids)
-                .context("Failed to fetch enrichment hashes")?;
 
             for cs in &chunks {
                 progress.inc(1);
@@ -168,7 +172,7 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                     compute_enrichment_hash_with_summary(&ctx, &callee_doc_freq, summary, hyde);
 
                 // Skip if already enriched with the same call context + summary
-                if let Some(stored) = stored_hashes.get(&cs.id) {
+                if let Some(stored) = all_enrichment_hashes.get(&cs.id) {
                     if *stored == enrichment_hash {
                         skipped_count += 1;
                         continue;
@@ -244,7 +248,10 @@ fn compute_enrichment_hash_with_summary(
     let mut callees: Vec<&str> = ctx
         .callees
         .iter()
-        .filter(|name| callee_doc_freq.get(name.as_str()).copied().unwrap_or(0.0) < 0.1)
+        // DS-22: Cast to f64 for boundary comparison to avoid f32 non-determinism.
+        .filter(|name| {
+            (callee_doc_freq.get(name.as_str()).copied().unwrap_or(0.0) as f64) < 0.1_f64
+        })
         .map(|s| s.as_str())
         .collect();
     callees.sort_unstable();
@@ -270,6 +277,7 @@ fn flush_enrichment_batch(
     embedder: &Embedder,
     batch: &mut Vec<(String, String, String)>,
 ) -> Result<usize> {
+    let _span = tracing::info_span!("flush_enrichment_batch", count = batch.len()).entered();
     let texts: Vec<&str> = batch.iter().map(|(_, nl, _)| nl.as_str()).collect();
     let expected = texts.len();
     let embeddings = embedder

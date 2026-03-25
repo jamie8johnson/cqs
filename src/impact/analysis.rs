@@ -530,7 +530,7 @@ mod tests {
         reverse.insert("target".to_string(), vec!["bar".to_string()]);
         reverse.insert("bar".to_string(), vec!["test_foo".to_string()]);
         reverse.insert("baz".to_string(), vec!["unrelated_test".to_string()]);
-        let graph = CallGraph { forward, reverse };
+        let graph = CallGraph::from_string_maps(forward, reverse);
 
         let test_chunks = vec![
             ChunkSummary {

@@ -207,6 +207,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "code_change",
     ],
     injections: &[],
+    doc_format: "elixir_doc",
+    doc_convention: "Use @doc with ## Examples section per Elixir conventions.",
 };
 
 pub fn definition() -> &'static LanguageDef {

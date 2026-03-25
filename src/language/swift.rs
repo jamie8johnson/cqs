@@ -237,6 +237,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "hash", "encode", "init", "deinit", "description",
     ],
     injections: &[],
+    doc_format: "javadoc",
+    doc_convention: "Use Swift doc comments: - Parameters:, - Returns:, - Throws: sections.",
 };
 
 pub fn definition() -> &'static LanguageDef {

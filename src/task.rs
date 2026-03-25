@@ -288,11 +288,18 @@ pub fn task_to_json(result: &TaskResult) -> serde_json::Value {
     let risk_json: Vec<serde_json::Value> = result
         .risk
         .iter()
-        .map(|fr| fr.risk.to_json(&fr.name))
+        .filter_map(|fr| serde_json::to_value(fr).ok())
         .collect();
-    let tests_json: Vec<serde_json::Value> = result.tests.iter().map(|t| t.to_json()).collect();
-    let placement_json: Vec<serde_json::Value> =
-        result.placement.iter().map(|s| s.to_json()).collect();
+    let tests_json: Vec<serde_json::Value> = result
+        .tests
+        .iter()
+        .filter_map(|t| serde_json::to_value(t).ok())
+        .collect();
+    let placement_json: Vec<serde_json::Value> = result
+        .placement
+        .iter()
+        .filter_map(|s| serde_json::to_value(s).ok())
+        .collect();
 
     serde_json::json!({
         "description": result.description,
@@ -619,12 +626,12 @@ mod tests {
         assert_eq!(code[0]["name"], "fn_a");
         assert_eq!(code[0]["signature"], "fn fn_a()");
 
-        // Verify risk section values
+        // Verify risk section values (FunctionRisk has nested RiskScore)
         let risk = json["risk"].as_array().unwrap();
         assert_eq!(risk.len(), 1);
         assert_eq!(risk[0]["name"], "fn_a");
-        assert_eq!(risk[0]["risk_level"], "high");
-        assert_eq!(risk[0]["caller_count"], 5);
+        assert_eq!(risk[0]["risk"]["risk_level"], "high");
+        assert_eq!(risk[0]["risk"]["caller_count"], 5);
 
         // Verify tests section values
         let tests = json["tests"].as_array().unwrap();

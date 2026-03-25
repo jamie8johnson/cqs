@@ -38,6 +38,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     entry_point_names: &["Page_Load", "Page_Init", "Page_PreRender"],
     trait_method_names: &[],
     injections: &[],
+    doc_format: "default",
+    doc_convention: "",
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -342,10 +342,13 @@ fn collect_events(
     last_indexed_mtime: &HashMap<PathBuf, SystemTime>,
 ) {
     for path in &event.paths {
-        let path = dunce::canonicalize(path).unwrap_or_else(|e| {
-            tracing::debug!(path = %path.display(), error = %e, "canonicalize failed, using original");
+        // PB-26: Skip canonicalize for deleted files — dunce::canonicalize
+        // requires the file to exist (calls std::fs::canonicalize internally).
+        let path = if path.exists() {
+            dunce::canonicalize(path).unwrap_or_else(|_| path.clone())
+        } else {
             path.clone()
-        });
+        };
         // Skip .cqs directory
         if path.starts_with(cqs_dir) {
             continue;
@@ -446,7 +449,7 @@ fn process_file_changes(
             }
             // RM-17: Prune entries for deleted files when >1,000 entries regardless
             // of batch size. The files.len() == 1 guard was overly conservative.
-            if last_indexed_mtime.len() > 10_000 || last_indexed_mtime.len() > 1_000 {
+            if last_indexed_mtime.len() > 10_000 {
                 last_indexed_mtime.retain(|f, _| root.join(f).exists());
             }
             if !quiet {
@@ -694,7 +697,7 @@ fn reindex_files(
                 .and_then(|m| m.modified())
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
+                .map(|d| d.as_millis() as i64)
         });
         // `all_calls` is scoped to the changed files in this reindex batch, not the full
         // index, so this filter is O(changed_chunks) rather than O(all_chunks).

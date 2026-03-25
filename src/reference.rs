@@ -62,48 +62,55 @@ pub struct TaggedResult {
 /// HnswIndex are Send + Sync.
 pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
     let _span = tracing::debug_span!("load_references", count = configs.len()).entered();
-    let refs: Vec<ReferenceIndex> = configs
-        .par_iter()
-        .filter_map(|cfg| {
-            // Reject symlink reference paths (trust boundary — could redirect to arbitrary locations)
-            if cfg
-                .path
-                .symlink_metadata()
-                .map(|m| m.is_symlink())
-                .unwrap_or(false)
-            {
-                tracing::warn!(
-                    name = cfg.name,
-                    path = %cfg.path.display(),
-                    "Skipping reference: path is a symlink (use the real path instead)"
-                );
-                return None;
-            }
-
-            let db_path = cfg.path.join("index.db");
-            let store = match Store::open_readonly(&db_path) {
-                Ok(s) => s,
-                Err(e) => {
+    // RM-29: Cap concurrency — each ref loads Store (~64MB) + HNSW (~50-200MB)
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().build().unwrap());
+    let refs: Vec<ReferenceIndex> = pool.install(|| {
+        configs
+            .par_iter()
+            .filter_map(|cfg| {
+                // Reject symlink reference paths (trust boundary — could redirect to arbitrary locations)
+                if cfg
+                    .path
+                    .symlink_metadata()
+                    .map(|m| m.is_symlink())
+                    .unwrap_or(false)
+                {
                     tracing::warn!(
-                        "Skipping reference '{}': failed to open {}: {}",
-                        cfg.name,
-                        db_path.display(),
-                        e
+                        name = cfg.name,
+                        path = %cfg.path.display(),
+                        "Skipping reference: path is a symlink (use the real path instead)"
                     );
                     return None;
                 }
-            };
 
-            let index = HnswIndex::try_load(&cfg.path);
+                let db_path = cfg.path.join("index.db");
+                let store = match Store::open_readonly(&db_path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Skipping reference '{}': failed to open {}: {}",
+                            cfg.name,
+                            db_path.display(),
+                            e
+                        );
+                        return None;
+                    }
+                };
 
-            Some(ReferenceIndex {
-                name: cfg.name.clone(),
-                store,
-                index,
-                weight: cfg.weight,
+                let index = HnswIndex::try_load(&cfg.path);
+
+                Some(ReferenceIndex {
+                    name: cfg.name.clone(),
+                    store,
+                    index,
+                    weight: cfg.weight,
+                })
             })
-        })
-        .collect();
+            .collect()
+    });
 
     if !refs.is_empty() {
         tracing::info!("Loaded {} reference indexes", refs.len());

@@ -3,12 +3,12 @@
 use std::collections::HashMap;
 
 use super::{
-    ApiError, BatchItem, BatchRequest, BatchResponse, BatchResult, ChatMessage, Client, LlmError,
-    MessagesRequest, API_VERSION, BATCH_POLL_INTERVAL,
+    ApiError, BatchItem, BatchRequest, BatchResponse, BatchResult, ChatMessage, LlmClient,
+    LlmError, MessagesRequest, API_VERSION, BATCH_POLL_INTERVAL,
 };
 use crate::Store;
 
-impl Client {
+impl LlmClient {
     /// Core batch submission: builds requests using the given prompt builder, posts to the API.
     ///
     /// `items` is a list of (custom_id, content, field3, language) — field3 is chunk_type or signature
@@ -271,20 +271,65 @@ impl Client {
 type PendingFn = dyn Fn(&Store, Option<&str>) -> Result<(), crate::store::StoreError>;
 /// Type alias for batch submit closures (clippy::type_complexity).
 type SubmitFn =
-    dyn Fn(&Client, &[(String, String, String, String)], u32) -> Result<String, LlmError>;
+    dyn Fn(&LlmClient, &[(String, String, String, String)], u32) -> Result<String, LlmError>;
 
 /// Captures the per-purpose differences (pending metadata key, submit function, purpose string)
 /// so the orchestration logic (`submit_or_resume`) can be shared across summary, doc, and HyDE passes.
-pub(super) struct BatchPhase2 {
+pub(super) struct BatchPhase2<'a> {
     /// Purpose label for log messages and storage (e.g. "summary", "hyde", "doc-comment").
     pub purpose: &'static str,
     /// Max tokens for the batch API request.
     pub max_tokens: u32,
     /// Whether to suppress progress output.
     pub quiet: bool,
+    /// DS-25: Directory for `batch.lock` file to prevent concurrent batch submission.
+    /// When set, a file lock is acquired before the check-then-set on pending batch ID.
+    /// Typically the `.cqs` directory. `None` disables locking (e.g. in tests).
+    pub lock_dir: Option<&'a std::path::Path>,
 }
 
-impl BatchPhase2 {
+impl BatchPhase2<'_> {
+    /// Acquire the batch lock file if `lock_dir` is set, preventing concurrent
+    /// batch submission races (DS-25). Returns the held file (lock released on drop).
+    fn acquire_batch_lock(&self) -> Result<Option<std::fs::File>, LlmError> {
+        let Some(dir) = self.lock_dir else {
+            return Ok(None);
+        };
+        let lock_path = dir.join("batch.lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| {
+                LlmError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to open batch lock at {}: {}",
+                        lock_path.display(),
+                        e
+                    ),
+                ))
+            })?;
+        lock_file.lock().map_err(|e| {
+            LlmError::Io(std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to acquire batch lock at {}: {}",
+                    lock_path.display(),
+                    e
+                ),
+            ))
+        })?;
+        tracing::debug!(
+            lock_path = %lock_path.display(),
+            purpose = self.purpose,
+            "Acquired batch lock"
+        );
+        Ok(Some(lock_file))
+    }
+
     /// Run the Phase 2 orchestration: check for pending batch, submit or resume, fetch results.
     ///
     /// `batch_items`: items to submit (empty = only check for pending).
@@ -295,7 +340,7 @@ impl BatchPhase2 {
     /// Returns the raw results map. Results are stored in the DB with `self.purpose`.
     pub fn submit_or_resume(
         &self,
-        client: &Client,
+        client: &LlmClient,
         store: &Store,
         batch_items: &[(String, String, String, String)],
         get_pending: &dyn Fn(&Store) -> Result<Option<String>, crate::store::StoreError>,
@@ -308,6 +353,13 @@ impl BatchPhase2 {
             count = batch_items.len()
         )
         .entered();
+
+        // DS-25: Acquire file lock before the check-then-set on pending batch ID.
+        // This prevents two concurrent `cqs index --llm-summaries` from both seeing
+        // "no pending batch" and both submitting fresh batches.
+        // Lock is held through get_pending -> submit -> set_pending, released on drop.
+        let _batch_lock = self.acquire_batch_lock()?;
+
         if batch_items.is_empty() {
             // No new items needed, but check if a previous batch is still pending
             return match get_pending(store) {
@@ -322,8 +374,14 @@ impl BatchPhase2 {
                     Ok(results)
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, purpose = self.purpose, "Failed to read pending batch ID");
-                    Ok(HashMap::new())
+                    // EH-24: don't swallow store errors — they could mean lost batch results
+                    tracing::error!(
+                        error = %e,
+                        purpose = self.purpose,
+                        "Failed to read pending batch ID — if a batch was in progress, results may be lost. \
+                         Check store health and re-run with --llm-summaries to recover."
+                    );
+                    Err(LlmError::Store(e))
                 }
                 _ => Ok(HashMap::new()),
             };
@@ -348,12 +406,32 @@ impl BatchPhase2 {
                         );
                         pending
                     }
-                    _ => {
+                    Ok(status) => {
+                        // EH-25: log the actual status so we can diagnose
                         tracing::warn!(
                             old_batch = %pending,
+                            status = %status,
                             purpose = self.purpose,
-                            "Pending batch status unknown, submitting fresh"
+                            "Pending batch has unexpected status '{}', abandoning and submitting fresh. \
+                             If the batch was valid, its results are lost.",
+                            status
                         );
+                        // Clear the stale pending marker before submitting fresh
+                        if let Err(e) = set_pending(store, None) {
+                            tracing::warn!(error = %e, "Failed to clear stale pending batch ID");
+                        }
+                        self.submit_fresh(client, store, batch_items, set_pending, submit)?
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            old_batch = %pending,
+                            error = %e,
+                            purpose = self.purpose,
+                            "Failed to check pending batch status, submitting fresh"
+                        );
+                        if let Err(e) = set_pending(store, None) {
+                            tracing::warn!(error = %e, "Failed to clear stale pending batch ID");
+                        }
                         self.submit_fresh(client, store, batch_items, set_pending, submit)?
                     }
                 }
@@ -371,7 +449,7 @@ impl BatchPhase2 {
     /// Wait for batch, fetch results, store with purpose, clear pending marker.
     fn resume(
         &self,
-        client: &Client,
+        client: &LlmClient,
         store: &Store,
         batch_id: &str,
         clear_pending: &PendingFn,
@@ -385,9 +463,45 @@ impl BatchPhase2 {
 
         let results = client.fetch_batch_results(batch_id)?;
 
+        // DS-20: Validate results against current index — skip stale content_hashes
+        // (e.g., after --force rebuild, the batch results reference chunks that no longer exist)
+        let valid_hashes: std::collections::HashSet<String> = match store.get_all_content_hashes() {
+            Ok(hashes) => hashes.into_iter().collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "Could not validate content hashes, storing all results");
+                std::collections::HashSet::new()
+            }
+        };
+
+        let (valid_results, stale_count) = if valid_hashes.is_empty() {
+            // Couldn't fetch hashes — store everything (backwards-compatible)
+            (results.clone(), 0usize)
+        } else {
+            let mut valid = HashMap::new();
+            let mut stale = 0usize;
+            for (hash, text) in &results {
+                if valid_hashes.contains(hash) {
+                    valid.insert(hash.clone(), text.clone());
+                } else {
+                    stale += 1;
+                }
+            }
+            (valid, stale)
+        };
+
+        if stale_count > 0 {
+            tracing::warn!(
+                stale = stale_count,
+                valid = valid_results.len(),
+                purpose = self.purpose,
+                "Skipped {} stale batch results (content_hash not in current index — likely from a previous build)",
+                stale_count
+            );
+        }
+
         // Store results with the given purpose
         let model = client.llm_config.model.clone();
-        let to_store: Vec<(String, String, String, String)> = results
+        let to_store: Vec<(String, String, String, String)> = valid_results
             .iter()
             .map(|(hash, text)| {
                 (
@@ -413,7 +527,7 @@ impl BatchPhase2 {
     /// Submit a fresh batch and store its pending ID.
     fn submit_fresh(
         &self,
-        client: &Client,
+        client: &LlmClient,
         store: &Store,
         batch_items: &[(String, String, String, String)],
         set_pending: &PendingFn,

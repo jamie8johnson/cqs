@@ -320,10 +320,7 @@ mod tests {
     ///
     /// A new `CallGraph` instance with empty forward and reverse adjacency maps, ready to have nodes and edges added to it.
     fn make_empty_graph() -> CallGraph {
-        CallGraph {
-            forward: HashMap::new(),
-            reverse: HashMap::new(),
-        }
+        CallGraph::from_string_maps(HashMap::new(), HashMap::new())
     }
 
     /// Depth-0 exclusion: if a test chunk has the same name as a changed function,
@@ -365,10 +362,7 @@ mod tests {
         // Reverse: changed_fn <- test_fn
         let mut reverse = HashMap::new();
         reverse.insert("changed_fn".to_string(), vec!["test_fn".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let changed = vec![make_changed("changed_fn", "src/lib.rs", 10)];
 
@@ -465,10 +459,7 @@ mod tests {
         let mut reverse = HashMap::new();
         reverse.insert("func_a".to_string(), vec!["test_t".to_string()]);
         reverse.insert("func_b".to_string(), vec!["test_t".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let changed = vec![
             make_changed("func_a", "src/a.rs", 1),
@@ -510,10 +501,7 @@ mod tests {
             vec!["mid".to_string(), "near_test".to_string()],
         );
         reverse.insert("mid".to_string(), vec!["deep_test".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let changed = vec![make_changed("changed_fn", "src/lib.rs", 1)];
         let test_chunks = vec![
@@ -560,10 +548,7 @@ mod tests {
         reverse.insert("func_a".to_string(), vec!["test_t".to_string()]);
         reverse.insert("func_b".to_string(), vec!["mid".to_string()]);
         reverse.insert("mid".to_string(), vec!["test_t".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let changed = vec![
             make_changed("func_a", "src/a.rs", 1),

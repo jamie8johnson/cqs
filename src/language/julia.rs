@@ -135,6 +135,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "show", "convert", "promote_rule", "iterate", "length", "getindex", "setindex!",
     ],
     injections: &[],
+    doc_format: "default",
+    doc_convention: "Use triple-quoted docstrings with # Arguments, # Returns sections.",
 };
 
 pub fn definition() -> &'static LanguageDef {

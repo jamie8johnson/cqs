@@ -36,9 +36,9 @@ cqs runs locally by default. No telemetry. The optional `--llm-summaries` flag s
 
 The only network activity is:
 
-- **Model download** (`cqs init`): Downloads ~547MB model from HuggingFace Hub
-  - Default: `huggingface.co/jamie8johnson/e5-base-v2-code-search` (LoRA fine-tune)
-  - Fallback: `huggingface.co/intfloat/e5-base-v2` (via `CQS_EMBEDDING_MODEL` env var)
+- **Model download** (`cqs init`): Downloads ~438MB model from HuggingFace Hub
+  - Default: `huggingface.co/intfloat/e5-base-v2` (base E5)
+  - Override: via `CQS_EMBEDDING_MODEL` env var
   - One-time download, cached in `~/.cache/huggingface/`
 
 - **Reranker model download** (first `--rerank` use): Downloads cross-encoder model from HuggingFace Hub

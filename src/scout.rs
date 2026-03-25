@@ -355,6 +355,11 @@ pub(crate) fn scout_core(
 /// If no clear gap exists (all gaps < 10%), only the top result qualifies.
 /// Tied scores at the threshold are included as ModifyTargets.
 fn compute_modify_threshold(results: &[crate::store::SearchResult], min_gap_ratio: f32) -> f32 {
+    // RB-18: Early return for empty results — no modify targets possible
+    if results.is_empty() {
+        return f32::MAX;
+    }
+
     let mut scores: Vec<f32> = results
         .iter()
         .filter(|r| !crate::is_test_chunk(&r.chunk.name, &r.chunk.file.to_string_lossy()))

@@ -201,35 +201,42 @@ impl BoundedScoreHeap {
     }
 }
 
+/// Loop-invariant scoring context.
+///
+/// Groups the arguments to `score_candidate` that don't change between iterations
+/// in the scoring loop (query vector, filter, matchers, note index, threshold).
+pub(crate) struct ScoringContext<'a> {
+    pub query: &'a [f32],
+    pub filter: &'a SearchFilter,
+    pub name_matcher: Option<&'a NameMatcher>,
+    pub glob_matcher: Option<&'a globset::GlobMatcher>,
+    pub note_index: &'a NoteBoostIndex<'a>,
+    pub threshold: f32,
+}
+
 /// Score a single candidate chunk against the query.
 ///
 /// Pure function — no database access. Combines embedding similarity, optional
 /// name boosting, glob filtering, note boosting, and test-function demotion.
 ///
 /// Returns `None` if the candidate is filtered out (glob mismatch or below threshold).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn score_candidate(
     embedding: &[f32],
-    query: &[f32],
     name: Option<&str>,
     file_part: &str,
-    filter: &SearchFilter,
-    name_matcher: Option<&NameMatcher>,
-    glob_matcher: Option<&globset::GlobMatcher>,
-    note_index: &NoteBoostIndex<'_>,
-    threshold: f32,
+    ctx: &ScoringContext<'_>,
 ) -> Option<f32> {
-    let embedding_score = cosine_similarity(query, embedding)?;
+    let embedding_score = cosine_similarity(ctx.query, embedding)?;
 
-    let base_score = if let Some(matcher) = name_matcher {
+    let base_score = if let Some(matcher) = ctx.name_matcher {
         let n = name.unwrap_or("");
         let name_score = matcher.score(n);
-        (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
+        (1.0 - ctx.filter.name_boost) * embedding_score + ctx.filter.name_boost * name_score
     } else {
         embedding_score
     };
 
-    if let Some(matcher) = glob_matcher {
+    if let Some(matcher) = ctx.glob_matcher {
         if !matcher.is_match(file_part) {
             return None;
         }
@@ -238,14 +245,14 @@ pub(crate) fn score_candidate(
     // Apply note-based boost: notes mentioning this chunk's file or name
     // adjust its score by up to ±15%
     let chunk_name = name.unwrap_or("");
-    let mut score = base_score * note_index.boost(file_part, chunk_name);
+    let mut score = base_score * ctx.note_index.boost(file_part, chunk_name);
 
     // Apply demotion for test functions and underscore-prefixed names
-    if filter.enable_demotion {
+    if ctx.filter.enable_demotion {
         score *= chunk_importance(chunk_name, file_part);
     }
 
-    if score >= threshold {
+    if score >= ctx.threshold {
         Some(score)
     } else {
         None
@@ -524,18 +531,16 @@ mod tests {
         let query = test_embedding(1.0);
         let filter = SearchFilter::default();
         let note_index = NoteBoostIndex::new(&[]);
+        let ctx = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.0,
+        };
 
-        let score = score_candidate(
-            &emb,
-            &query,
-            None,
-            "src/lib.rs",
-            &filter,
-            None,
-            None,
-            &note_index,
-            0.0,
-        );
+        let score = score_candidate(&emb, None, "src/lib.rs", &ctx);
         assert!(score.is_some());
         assert!(
             score.unwrap() > 0.9,
@@ -546,23 +551,20 @@ mod tests {
 
     #[test]
     fn test_score_candidate_below_threshold() {
-        // Near-orthogonal vectors → low cosine similarity
         let emb = test_embedding(1.0);
         let query = test_embedding(-1.0);
         let filter = SearchFilter::default();
         let note_index = NoteBoostIndex::new(&[]);
+        let ctx = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.5,
+        };
 
-        let score = score_candidate(
-            &emb,
-            &query,
-            None,
-            "src/lib.rs",
-            &filter,
-            None,
-            None,
-            &note_index,
-            0.5,
-        );
+        let score = score_candidate(&emb, None, "src/lib.rs", &ctx);
         assert!(
             score.is_none(),
             "Opposite vectors should be below 0.5 threshold"
@@ -577,32 +579,18 @@ mod tests {
         let note_index = NoteBoostIndex::new(&[]);
         let glob = globset::Glob::new("src/**/*.rs").unwrap().compile_matcher();
 
-        // Matching path
-        let score = score_candidate(
-            &emb,
-            &query,
-            None,
-            "src/lib.rs",
-            &filter,
-            None,
-            Some(&glob),
-            &note_index,
-            0.0,
-        );
+        let ctx = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: Some(&glob),
+            note_index: &note_index,
+            threshold: 0.0,
+        };
+        let score = score_candidate(&emb, None, "src/lib.rs", &ctx);
         assert!(score.is_some());
 
-        // Non-matching path
-        let score = score_candidate(
-            &emb,
-            &query,
-            None,
-            "tests/foo.py",
-            &filter,
-            None,
-            Some(&glob),
-            &note_index,
-            0.0,
-        );
+        let score = score_candidate(&emb, None, "tests/foo.py", &ctx);
         assert!(score.is_none());
     }
 
@@ -619,30 +607,25 @@ mod tests {
         let note_index = NoteBoostIndex::new(&[]);
         let matcher = NameMatcher::new("parseConfig");
 
-        let score_no = score_candidate(
-            &emb,
-            &query,
-            Some("parseConfig"),
-            "src/a.rs",
-            &filter_no_boost,
-            None,
-            None,
-            &note_index,
-            0.0,
-        )
-        .unwrap();
-        let score_yes = score_candidate(
-            &emb,
-            &query,
-            Some("parseConfig"),
-            "src/a.rs",
-            &filter_with_boost,
-            Some(&matcher),
-            None,
-            &note_index,
-            0.0,
-        )
-        .unwrap();
+        let ctx_no = ScoringContext {
+            query: &query,
+            filter: &filter_no_boost,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.0,
+        };
+        let score_no = score_candidate(&emb, Some("parseConfig"), "src/a.rs", &ctx_no).unwrap();
+
+        let ctx_yes = ScoringContext {
+            query: &query,
+            filter: &filter_with_boost,
+            name_matcher: Some(&matcher),
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.0,
+        };
+        let score_yes = score_candidate(&emb, Some("parseConfig"), "src/a.rs", &ctx_yes).unwrap();
 
         assert!(score_yes > 0.0);
         assert!(score_no > 0.0);
@@ -663,46 +646,31 @@ mod tests {
             ..Default::default()
         };
 
-        let score_normal = score_candidate(
-            &emb,
-            &query,
-            Some("real_fn"),
-            "src/lib.rs",
-            &filter_demote,
-            None,
-            None,
-            &note_index,
-            0.0,
-        )
-        .unwrap();
-        let score_test = score_candidate(
-            &emb,
-            &query,
-            Some("test_foo"),
-            "src/lib.rs",
-            &filter_demote,
-            None,
-            None,
-            &note_index,
-            0.0,
-        )
-        .unwrap();
-        let score_no_demote = score_candidate(
-            &emb,
-            &query,
-            Some("test_foo"),
-            "src/lib.rs",
-            &filter_no_demote,
-            None,
-            None,
-            &note_index,
-            0.0,
-        )
-        .unwrap();
+        let ctx_demote = ScoringContext {
+            query: &query,
+            filter: &filter_demote,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.0,
+        };
+        let score_normal =
+            score_candidate(&emb, Some("real_fn"), "src/lib.rs", &ctx_demote).unwrap();
+        let score_test =
+            score_candidate(&emb, Some("test_foo"), "src/lib.rs", &ctx_demote).unwrap();
 
-        // With demotion, test_ function should score lower than normal
+        let ctx_no_demote = ScoringContext {
+            query: &query,
+            filter: &filter_no_demote,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.0,
+        };
+        let score_no_demote =
+            score_candidate(&emb, Some("test_foo"), "src/lib.rs", &ctx_no_demote).unwrap();
+
         assert!(score_test < score_normal, "test_ should be demoted");
-        // Without demotion flag, test_ function scores the same as normal
         assert!(
             (score_no_demote - score_normal).abs() < 0.001,
             "No demotion without flag"
@@ -719,30 +687,26 @@ mod tests {
         let note_index_boosted = NoteBoostIndex::new(&notes);
         let note_index_empty = NoteBoostIndex::new(&[]);
 
-        let score_boosted = score_candidate(
-            &emb,
-            &query,
-            Some("my_fn"),
-            "src/lib.rs",
-            &filter,
-            None,
-            None,
-            &note_index_boosted,
-            0.0,
-        )
-        .unwrap();
-        let score_plain = score_candidate(
-            &emb,
-            &query,
-            Some("my_fn"),
-            "src/lib.rs",
-            &filter,
-            None,
-            None,
-            &note_index_empty,
-            0.0,
-        )
-        .unwrap();
+        let ctx_boosted = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index_boosted,
+            threshold: 0.0,
+        };
+        let score_boosted =
+            score_candidate(&emb, Some("my_fn"), "src/lib.rs", &ctx_boosted).unwrap();
+
+        let ctx_plain = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index_empty,
+            threshold: 0.0,
+        };
+        let score_plain = score_candidate(&emb, Some("my_fn"), "src/lib.rs", &ctx_plain).unwrap();
 
         assert!(
             score_boosted > score_plain,
@@ -821,9 +785,6 @@ mod tests {
 
     #[test]
     fn score_candidate_zero_embedding() {
-        // Zero vector query — cosine_similarity returns 0.0 (finite) for a zero vs normal dot,
-        // so score_candidate may return Some(0.0) if threshold is 0.0.
-        // The important constraint: must not panic and must not return a non-finite score.
         let zero_query = vec![0.0f32; 768];
         let normal_emb = test_embedding(1.0);
         let filter = SearchFilter {
@@ -832,20 +793,18 @@ mod tests {
         };
         let notes: Vec<NoteSummary> = vec![];
         let note_index = NoteBoostIndex::new(&notes);
+        let ctx = ScoringContext {
+            query: &zero_query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.0,
+        };
 
-        let result = score_candidate(
-            &normal_emb,
-            &zero_query,
-            None,
-            "src/lib.rs",
-            &filter,
-            None,
-            None,
-            &note_index,
-            0.0,
-        );
+        let result = score_candidate(&normal_emb, None, "src/lib.rs", &ctx);
         match result {
-            None => {} // acceptable — cosine returned None or score below threshold
+            None => {}
             Some(v) => assert!(
                 v.is_finite(),
                 "score_candidate with zero query must return finite score, got {v}"

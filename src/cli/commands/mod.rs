@@ -161,6 +161,39 @@ pub(crate) fn token_pack<T>(
     (packed, used)
 }
 
+/// Greedy index-based packing: sort items by score descending, pack until budget.
+///
+/// Unlike [`token_pack`] which takes and returns owned items, this returns
+/// kept indices (in original order) so callers can selectively extract from
+/// multiple parallel collections. Used by waterfall budgeting in `task`.
+///
+/// Returns `(kept_indices_in_original_order, tokens_used)`.
+pub(crate) fn index_pack(
+    token_counts: &[usize],
+    budget: usize,
+    overhead_per_item: usize,
+    score_fn: impl Fn(usize) -> f32,
+) -> (Vec<usize>, usize) {
+    if token_counts.is_empty() || budget == 0 {
+        return (Vec::new(), 0);
+    }
+    let mut order: Vec<usize> = (0..token_counts.len()).collect();
+    order.sort_by(|&a, &b| score_fn(b).total_cmp(&score_fn(a)));
+
+    let mut used = 0;
+    let mut kept = Vec::new();
+    for idx in order {
+        let cost = token_counts[idx] + overhead_per_item;
+        if used + cost > budget && !kept.is_empty() {
+            break;
+        }
+        used += cost;
+        kept.push(idx);
+    }
+    kept.sort(); // preserve original order
+    (kept, used)
+}
+
 /// Read diff text from stdin, capped at 50 MB.
 pub(crate) fn read_stdin() -> anyhow::Result<String> {
     use std::io::Read;

@@ -145,6 +145,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     entry_point_names: &["constructor", "receive", "fallback"],
     trait_method_names: &[],
     injections: &[],
+    doc_format: "javadoc",
+    doc_convention: "Use NatSpec format: @param, @return, @dev tags.",
 };
 
 pub fn definition() -> &'static LanguageDef {

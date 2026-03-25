@@ -147,6 +147,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     entry_point_names: &["main"],
     trait_method_names: &[],
     injections: &[],
+    doc_format: "javadoc",
+    doc_convention: "Use Doxygen format: @param, @return, @throws tags.",
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -242,6 +242,8 @@ static DEFINITION: LanguageDef = LanguageDef {
         "Len", "Less", "Swap", "MarshalJSON", "UnmarshalJSON",
     ],
     injections: &[],
+    doc_format: "go_comment",
+    doc_convention: "Start with the function name per Go conventions.",
 };
 
 pub fn definition() -> &'static LanguageDef {

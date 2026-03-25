@@ -23,9 +23,9 @@ This data never leaves your machine.
 
 The embedding model is downloaded once from HuggingFace:
 
-- Default: `jamie8johnson/e5-base-v2-code-search` (LoRA fine-tune)
-- Fallback: `intfloat/e5-base-v2` (via `CQS_EMBEDDING_MODEL` env var)
-- Size: ~547MB
+- Default: `intfloat/e5-base-v2` (base E5)
+- Override: via `CQS_EMBEDDING_MODEL` env var
+- Size: ~438MB
 - Cached in: `~/.cache/huggingface/`
 
 HuggingFace may log download requests per their privacy policy. After download, the model runs offline.

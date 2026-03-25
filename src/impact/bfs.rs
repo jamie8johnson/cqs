@@ -22,11 +22,11 @@ pub(super) fn reverse_bfs(
         if d >= max_depth {
             continue;
         }
-        if let Some(callers) = graph.reverse.get(&current) {
+        if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
-                if !ancestors.contains_key(caller) {
-                    ancestors.insert(caller.clone(), d + 1);
-                    queue.push_back((caller.clone(), d + 1));
+                if !ancestors.contains_key(caller.as_ref()) {
+                    ancestors.insert(caller.to_string(), d + 1);
+                    queue.push_back((caller.to_string(), d + 1));
                 }
             }
         }
@@ -67,18 +67,18 @@ pub(super) fn reverse_bfs_multi(
         if ancestors.get(&current).is_some_and(|&stored| d > stored) {
             continue;
         }
-        if let Some(callers) = graph.reverse.get(&current) {
+        if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
-                match ancestors.entry(caller.clone()) {
+                match ancestors.entry(caller.to_string()) {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert(d + 1);
-                        queue.push_back((caller.clone(), d + 1));
+                        queue.push_back((caller.to_string(), d + 1));
                     }
                     std::collections::hash_map::Entry::Occupied(mut e) => {
                         // Update if we found a shorter path
                         if d + 1 < *e.get() {
                             *e.get_mut() = d + 1;
-                            queue.push_back((caller.clone(), d + 1));
+                            queue.push_back((caller.to_string(), d + 1));
                         }
                     }
                 }
@@ -130,17 +130,17 @@ pub(super) fn reverse_bfs_multi_attributed(
         {
             continue;
         }
-        if let Some(callers) = graph.reverse.get(&current) {
+        if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
-                match ancestors.entry(caller.clone()) {
+                match ancestors.entry(caller.to_string()) {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert((d + 1, src));
-                        queue.push_back((caller.clone(), d + 1, src));
+                        queue.push_back((caller.to_string(), d + 1, src));
                     }
                     std::collections::hash_map::Entry::Occupied(mut e) => {
                         if d + 1 < e.get().0 {
                             *e.get_mut() = (d + 1, src);
-                            queue.push_back((caller.clone(), d + 1, src));
+                            queue.push_back((caller.to_string(), d + 1, src));
                         }
                     }
                 }
@@ -166,6 +166,7 @@ pub(crate) fn test_reachability(
     test_names: &[&str],
     max_depth: usize,
 ) -> HashMap<String, usize> {
+    let _span = tracing::info_span!("test_reachability", tests = test_names.len()).entered();
     let mut counts: HashMap<String, usize> = HashMap::new();
 
     // Step 1: Group tests by their first-hop callee set.
@@ -176,7 +177,7 @@ pub(crate) fn test_reachability(
         let callees: BTreeSet<&str> = graph
             .forward
             .get(test_name)
-            .map(|v| v.iter().map(String::as_str).collect())
+            .map(|v| v.iter().map(|s| s.as_ref()).collect())
             .unwrap_or_default();
         *equivalence_classes.entry(callees).or_default() += 1;
     }
@@ -206,11 +207,11 @@ pub(crate) fn test_reachability(
             if d >= max_depth {
                 continue;
             }
-            if let Some(callees) = graph.forward.get(&current) {
+            if let Some(callees) = graph.forward.get(current.as_str()) {
                 for callee in callees {
-                    if !visited.contains_key(callee) {
-                        visited.insert(callee.clone(), d + 1);
-                        queue.push_back((callee.clone(), d + 1));
+                    if !visited.contains_key(callee.as_ref()) {
+                        visited.insert(callee.to_string(), d + 1);
+                        queue.push_back((callee.to_string(), d + 1));
                     }
                 }
             }
@@ -232,10 +233,7 @@ mod tests {
 
     #[test]
     fn test_reverse_bfs_empty_graph() {
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse: HashMap::new(),
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
         let result = reverse_bfs(&graph, "target", 5);
         assert_eq!(result.len(), 1); // Just the target itself at depth 0
         assert_eq!(result["target"], 0);
@@ -246,10 +244,7 @@ mod tests {
         let mut reverse = HashMap::new();
         reverse.insert("C".to_string(), vec!["B".to_string()]);
         reverse.insert("B".to_string(), vec!["A".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
         let result = reverse_bfs(&graph, "C", 5);
         assert_eq!(result["C"], 0);
         assert_eq!(result["B"], 1);
@@ -261,10 +256,7 @@ mod tests {
         let mut reverse = HashMap::new();
         reverse.insert("C".to_string(), vec!["B".to_string()]);
         reverse.insert("B".to_string(), vec!["A".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
         let result = reverse_bfs(&graph, "C", 1);
         assert_eq!(result.len(), 2); // C at 0, B at 1
         assert!(!result.contains_key("A")); // Beyond depth limit
@@ -274,10 +266,7 @@ mod tests {
 
     #[test]
     fn test_reverse_bfs_multi_empty_targets() {
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse: HashMap::new(),
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
         let result = reverse_bfs_multi(&graph, &[], 5);
         assert!(
             result.is_empty(),
@@ -295,10 +284,7 @@ mod tests {
         reverse.insert("B".to_string(), vec!["A".to_string()]);
         reverse.insert("target2".to_string(), vec!["D".to_string()]);
         reverse.insert("D".to_string(), vec!["C".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let result = reverse_bfs_multi(&graph, &["target1", "target2"], 5);
 
@@ -322,10 +308,7 @@ mod tests {
         reverse.insert("target1".to_string(), vec!["mid".to_string()]);
         reverse.insert("mid".to_string(), vec!["shared".to_string()]);
         reverse.insert("target2".to_string(), vec!["shared".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let result = reverse_bfs_multi(&graph, &["target1", "target2"], 5);
 
@@ -349,10 +332,7 @@ mod tests {
         reverse.insert("C".to_string(), vec!["B".to_string()]);
         reverse.insert("B".to_string(), vec!["A".to_string()]);
         reverse.insert("target2".to_string(), vec!["D".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let result = reverse_bfs_multi(&graph, &["target1", "target2"], 1);
 
@@ -376,10 +356,7 @@ mod tests {
         let mut reverse = HashMap::new();
         reverse.insert("C".to_string(), vec!["B".to_string()]);
         reverse.insert("B".to_string(), vec!["A".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let single = reverse_bfs(&graph, "C", 5);
         let multi = reverse_bfs_multi(&graph, &["C"], 5);
@@ -399,10 +376,7 @@ mod tests {
         reverse.insert("D".to_string(), vec!["B".to_string(), "C".to_string()]);
         reverse.insert("B".to_string(), vec!["A".to_string()]);
         reverse.insert("C".to_string(), vec!["A".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let result = reverse_bfs_multi(&graph, &["D", "B"], 5);
 
@@ -433,10 +407,7 @@ mod tests {
         reverse.insert("mid".to_string(), vec!["deep".to_string()]);
         reverse.insert("target2".to_string(), vec!["deep".to_string()]);
         reverse.insert("deep".to_string(), vec!["root".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let result = reverse_bfs_multi(&graph, &["target1", "target2"], 5);
 
@@ -457,10 +428,7 @@ mod tests {
 
     #[test]
     fn test_attributed_empty_targets() {
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse: HashMap::new(),
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
         let result = reverse_bfs_multi_attributed(&graph, &[], 5);
         assert!(result.is_empty());
     }
@@ -471,10 +439,7 @@ mod tests {
         let mut reverse = HashMap::new();
         reverse.insert("target".to_string(), vec!["B".to_string()]);
         reverse.insert("B".to_string(), vec!["A".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let result = reverse_bfs_multi_attributed(&graph, &["target"], 5);
 
@@ -489,10 +454,7 @@ mod tests {
         let mut reverse = HashMap::new();
         reverse.insert("target0".to_string(), vec!["A".to_string()]);
         reverse.insert("target1".to_string(), vec!["B".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let result = reverse_bfs_multi_attributed(&graph, &["target0", "target1"], 5);
 
@@ -511,10 +473,7 @@ mod tests {
         reverse.insert("target0".to_string(), vec!["mid".to_string()]);
         reverse.insert("mid".to_string(), vec!["shared".to_string()]);
         reverse.insert("target1".to_string(), vec!["shared".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let result = reverse_bfs_multi_attributed(&graph, &["target0", "target1"], 5);
 
@@ -530,10 +489,7 @@ mod tests {
         reverse.insert("mid".to_string(), vec!["shared".to_string()]);
         reverse.insert("target1".to_string(), vec!["shared".to_string()]);
         reverse.insert("shared".to_string(), vec!["root".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
         let targets = &["target0", "target1"];
 
         let multi = reverse_bfs_multi(&graph, targets, 5);
@@ -558,10 +514,7 @@ mod tests {
         reverse.insert("mid".to_string(), vec!["deep".to_string()]);
         reverse.insert("target2".to_string(), vec!["deep".to_string()]);
         reverse.insert("deep".to_string(), vec!["root".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let result = reverse_bfs_multi_attributed(&graph, &["target1", "target2"], 5);
 
@@ -579,10 +532,7 @@ mod tests {
         reverse.insert("C".to_string(), vec!["B".to_string()]);
         reverse.insert("B".to_string(), vec!["A".to_string()]);
         reverse.insert("target1".to_string(), vec!["D".to_string()]);
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), reverse);
 
         let result = reverse_bfs_multi_attributed(&graph, &["target0", "target1"], 1);
 
@@ -596,10 +546,7 @@ mod tests {
 
     #[test]
     fn test_reachability_empty_graph() {
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse: HashMap::new(),
-        };
+        let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
         let result = test_reachability(&graph, &["test_a"], 5);
         assert!(
             result.is_empty(),
@@ -613,10 +560,7 @@ mod tests {
         let mut forward = HashMap::new();
         forward.insert("test_a".to_string(), vec!["B".to_string()]);
         forward.insert("B".to_string(), vec!["C".to_string()]);
-        let graph = CallGraph {
-            forward,
-            reverse: HashMap::new(),
-        };
+        let graph = CallGraph::from_string_maps(forward, HashMap::new());
         let result = test_reachability(&graph, &["test_a"], 5);
         assert_eq!(result.get("B"), Some(&1), "B reachable from test_a");
         assert_eq!(result.get("C"), Some(&1), "C reachable from test_a");
@@ -632,10 +576,7 @@ mod tests {
         let mut forward = HashMap::new();
         forward.insert("test_a".to_string(), vec!["target".to_string()]);
         forward.insert("test_b".to_string(), vec!["target".to_string()]);
-        let graph = CallGraph {
-            forward,
-            reverse: HashMap::new(),
-        };
+        let graph = CallGraph::from_string_maps(forward, HashMap::new());
         let result = test_reachability(&graph, &["test_a", "test_b"], 5);
         assert_eq!(
             result.get("target"),
@@ -651,10 +592,7 @@ mod tests {
         forward.insert("test_a".to_string(), vec!["B".to_string()]);
         forward.insert("B".to_string(), vec!["C".to_string()]);
         forward.insert("C".to_string(), vec!["D".to_string()]);
-        let graph = CallGraph {
-            forward,
-            reverse: HashMap::new(),
-        };
+        let graph = CallGraph::from_string_maps(forward, HashMap::new());
         let result = test_reachability(&graph, &["test_a"], 2);
         assert_eq!(result.get("B"), Some(&1), "B at depth 1");
         assert_eq!(result.get("C"), Some(&1), "C at depth 2");

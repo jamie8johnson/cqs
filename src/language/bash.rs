@@ -57,6 +57,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     entry_point_names: &["main"],
     trait_method_names: &[],
     injections: &[],
+    doc_format: "default",
+    doc_convention: "",
 };
 
 pub fn definition() -> &'static LanguageDef {

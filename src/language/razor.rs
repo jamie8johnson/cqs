@@ -374,6 +374,8 @@ static DEFINITION: LanguageDef = LanguageDef {
             content_scoped_lines: false,
         },
     ],
+    doc_format: "default",
+    doc_convention: "",
 };
 
 pub fn definition() -> &'static LanguageDef {
