@@ -14,10 +14,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use thiserror::Error;
 
-// Model configuration - LoRA v7 fine-tuned E5-base-v2 for code search (SQ-7).
+// Model configuration - base E5-base-v2 (110M params, opset 11 ONNX).
+// The enrichment stack (contrastive summaries, HyDE, call graph) matters more than
+// the embedding model — base E5 matches fine-tuned LoRA variants on hard eval (92.7%)
+// and achieves 96.3% R@1 through the full pipeline.
 // Override with CQS_EMBEDDING_MODEL env var to use a different model.
-const DEFAULT_MODEL_REPO: &str = "jamie8johnson/e5-base-v2-code-search";
-const MODEL_FILE: &str = "model.onnx";
+const DEFAULT_MODEL_REPO: &str = "intfloat/e5-base-v2";
+const MODEL_FILE: &str = "onnx/model.onnx";
 const TOKENIZER_FILE: &str = "tokenizer.json";
 
 /// Retrieves the embedding model repository URL from the environment or returns a default value.
