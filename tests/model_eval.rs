@@ -148,6 +148,23 @@ fn local_lora_models() -> Vec<ModelConfig> {
         });
     }
 
+    let v7b_dir = format!("{}/training-data/e5-code-search-lora-v7b/onnx", home);
+    if std::path::Path::new(&v7b_dir).join("model.onnx").exists() {
+        models.push(ModelConfig {
+            name: "E5-LoRA-v7b",
+            repo: Box::leak(v7b_dir.into_boxed_str()),
+            model_file: "model.onnx",
+            tokenizer_file: "tokenizer.json",
+            doc_prefix: Some("passage: "),
+            query_prefix: Some("query: "),
+            output_dim: 768,
+            max_length: 512,
+            needs_token_type_ids: true,
+            pooling: Pooling::MeanPooling,
+            output_tensor: "last_hidden_state",
+        });
+    }
+
     let v8_dir = format!("{}/training-data/e5-code-search-lora-v8-keydac/onnx", home);
     if std::path::Path::new(&v8_dir).join("model.onnx").exists() {
         models.push(ModelConfig {

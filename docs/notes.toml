@@ -758,3 +758,12 @@ mentions = [
     "tests/model_eval.rs",
     "CUDA",
 ]
+
+[[note]]
+sentiment = -1.0
+text = "CRITICAL: Hard eval results differ dramatically between GPUs. A6000 showed base/v5/v7 all at 89.1% R@1. RTX 4000 shows base 90.9%, v5 85.5%, v7 83.6% (median of 3). LoRA models are WORSE than base on hard eval. Different CUDA architectures (Ampere vs Turing) produce different float rounding in ORT. All prior hard eval comparisons on A6000 were unreliable — models looked equivalent when they weren't."
+mentions = [
+    "tests/model_eval.rs",
+    "src/embedder/mod.rs",
+    "CUDA",
+]

@@ -691,3 +691,29 @@ Tested on 19 hard eval Rust functions. Both Haiku and Sonnet summaries **hurt** 
 **Note:** Previous 65.4% R@1 baseline was measured with the FTS path filter bug — `HARD_EVAL_CASES` contaminated results. The 92.7% is the first clean full-pipeline measurement. Cannot directly compare to the buggy baseline.
 
 **Cost:** ~$0.38 one-time (2635 Haiku API calls × ~300 input tokens × ~50 output tokens). Incremental: $0.01-0.05 per session (only new/changed functions).
+
+### Exp 16: Cross-GPU Evaluation Discovery — 2026-03-25
+
+**Finding:** Hard eval results differ dramatically between GPU architectures.
+
+RTX 4000 (Turing, median of 3):
+
+| Model | R@1 | R@5 | NDCG@10 |
+|-------|-----|-----|---------|
+| Base E5 | **90.9%** | 98.2% | 0.958 |
+| LoRA v5 | 85.5% | 98.2% | 0.930 |
+| LoRA v7 | 83.6% | 98.2% | 0.915 |
+| LoRA v7b | 81.8% | 98.2% | 0.905 |
+
+A6000 (Ampere, earlier sessions): all models showed 89.1% R@1 — suspect, needs re-verification.
+
+**Key insight:** LoRA fine-tuning consistently *degrades* hard eval R@1 (more data → worse: v5 -5.4pp, v7 -7.3pp, v7b -9.1pp). This was invisible on A6000 where all models appeared equivalent. The RTX 4000's Turing architecture produces different float rounding in ORT CUDA that surfaces the real precision differences.
+
+**Implications:**
+1. All prior "89.1% for all models" claims were potentially an A6000 artifact
+2. The specialization trade-off (Section 5.1 in paper) is stronger than reported
+3. Contrastive summaries (+9.1pp) more than recover LoRA's precision loss
+4. R@5 is stable across all models (98.2%) — LoRA shifts rank position, not retrieval set
+5. Must re-run full matrix on A6000 after v8 training to confirm/deny
+
+**v8-keydac training:** in progress (80%, ~2h remaining). Will be the first model with cross-GPU comparison from day 1.

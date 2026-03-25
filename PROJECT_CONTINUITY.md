@@ -2,59 +2,48 @@
 
 ## Right Now
 
-**v8-keydac training ~77% complete (2026-03-25). ETA ~9:20 AM CDT. All PRs merged.**
+**v8-keydac training ~80% (2026-03-25). Major eval finding: LoRA degrades hard eval R@1.**
 
 ### Active
-- **v8-keydac training** on A6000 (~10200/13170 steps, ~3h remaining)
-  - Data: `augmented_200k_keydac.jsonl` (443k pairs = 200k original + 243k KeyDAC augmented)
-  - Config: 1 epoch, batch 32, GIST + Matryoshka, LoRA r=16
-  - Log: `~/training-data/train_v8_keydac.log`
-- **RTX 4000** (8GB) available for inference/eval (CUDA_VISIBLE_DEVICES=1)
+- **v8-keydac training** on A6000 (~10500/13170 steps, ~2h remaining)
+- **Cross-GPU eval finding** (Exp 16): LoRA models score WORSE than base on hard eval (RTX 4000 median-of-3). Base 90.9%, v5 85.5%, v7 83.6%, v7b 81.8%. Prior A6000 "all at 89.1%" is suspect.
 
 ### After training completes
-1. Export ONNX (opset-11 template) — automatic via `--export-onnx`
-2. Run hard eval 3x median on RTX 4000 — compare v8 vs v7 vs base
-3. Run enriched hard eval (with contrastive summaries)
-4. Run CoIR (9 tasks) — compare CSN, CosQA transfer
-5. If improved: publish model to HF, bump cqs default, release v1.4.3
-6. Update research log with Exp 16 results, update paper draft v0.3
+1. Export ONNX — automatic via `--export-onnx`
+2. Run v8 hard eval on RTX 4000 (3x median)
+3. Run v8 enriched hard eval (with contrastive summaries)
+4. **Re-run full model matrix on A6000** — verify if "all 89.1%" was artifact
+5. Run CoIR (9 tasks) on v8
+6. Update paper v0.4 with complete cross-GPU comparison
+7. If v8 improved on CSN/CosQA: publish model, release v1.4.3
 
-### Session accomplishments (2026-03-24)
-1. v1.4.0 audit: 74 findings, 70 fixed (PR #667)
-2. v1.4.1 released: audit fixes (PR #668)
-3. Contrastive summaries: 92.7% R@1 full-pipeline (PR #669)
-4. v1.4.2 released: contrastive + adversarial tests (PRs #670, #671)
-5. Enriched hard eval: 92.7% R@1, 100% R@5 (PR #672)
-6. KeyDAC augmentation script + 443k training data (PR #672)
-7. Housekeeping: CI Node.js 24, groomed notes 145→90, architecture docs (PRs #673, #674)
-8. Paper draft v0.2 revised (~/training-data/paper/draft.md)
-9. v8 training kicked off on A6000
-10. RTX 4000 verified for parallel eval (CUDA_VISIBLE_DEVICES=1)
-11. ORT CUDA non-determinism discovered (2-4pp R@1 variance per run)
+### Session accomplishments (2026-03-25)
+1. Cross-GPU eval: discovered LoRA degrades hard eval R@1 (Exp 16)
+2. Paper revised to v0.3 (cross-GPU methodology, corrected specialization trade-off)
+3. v7b added to eval harness + measured
+4. Verified RTX 4000 uses CUDA for eval (CUDA_VISIBLE_DEVICES=1)
 
-### Next experiments
-1. **KD-LoRA distillation** — CodeSage-large → E5-base. ~12h on A6000. After v8 eval.
-2. **Paper submission** — with v8 results
+### Previous session (2026-03-24)
+1-11: See git log for PRs #667-#674
 
 ## Parked
-- Verified HF eval results — needs CoIR benchmark registration
-- A6000 → Blackwell upgrade — when RTX PRO 6000 available (~$3500 net after A6000 eBay)
+- A6000 → Blackwell upgrade consideration
+- KD-LoRA distillation — after v8 eval
+- Paper submission — after v8 results + A6000 re-verification
 
 ## Open Issues
-- #665: RM-23 enrichment_pass ~105MB memory (deferred)
-- #666: DS-17/DS-18 GC transaction windows (informational)
-- #389: CAGRA memory retention (blocked on upstream cuVS)
-- #255: Pre-built reference packages (enhancement)
+- #665: RM-23 enrichment_pass ~105MB memory
+- #666: DS-17/DS-18 GC transaction windows
+- #389: CAGRA memory retention (upstream cuVS)
+- #255: Pre-built reference packages
 - #106: ort pre-release RC
-- #63: paste crate warning (monitoring)
+- #63: paste crate warning
 
 ## Architecture
-- Version: 1.4.2 (released, tagged, published to crates.io)
-- Current model: LoRA v7 (200k 9-lang, GIST+Matryoshka, 0.707 CSN, 49.19 CoIR)
-- Training: v8-keydac in progress (443k KeyDAC-augmented pairs)
-- Full-pipeline: 92.7% R@1, 0.9478 NDCG@10 (contrastive summaries)
-- Enriched hard eval: 92.7% R@1, 100% R@5, 0.9624 NDCG@10
+- Version: 1.4.2 (released)
+- Current model: LoRA v7 (0.707 CSN, 49.19 CoIR, 83.6% hard eval R@1 on RTX 4000)
+- Training: v8-keydac in progress (443k KeyDAC-augmented)
+- Enriched pipeline: 92.7% R@1, 100% R@5 (contrastive summaries compensate for LoRA degradation)
 - Tests: 1395 lib + 34 adversarial
-- GPUs: A6000 48GB (training, device 0), RTX 4000 8GB (eval, device 1)
-- Paper: ~/training-data/paper/draft.md (v0.2)
-- Training repo: github.com/jamie8johnson/cqs-training (private)
+- GPUs: A6000 (device 0, training), RTX 4000 (device 1, eval)
+- Paper: ~/training-data/paper/draft.md (v0.3)
