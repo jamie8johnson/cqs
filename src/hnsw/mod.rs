@@ -40,7 +40,6 @@ use thiserror::Error;
 
 use crate::embedder::Embedding;
 use crate::index::{IndexResult, VectorIndex};
-use crate::EMBEDDING_DIM;
 
 // HNSW tuning parameters
 //
@@ -204,9 +203,9 @@ impl HnswIndex {
 
         // Validate dimensions
         for (id, emb) in items {
-            if emb.len() != EMBEDDING_DIM {
+            if emb.len() != self.dim {
                 return Err(HnswError::DimensionMismatch {
-                    expected: EMBEDDING_DIM,
+                    expected: self.dim,
                     actual: emb.len(),
                 });
             }
@@ -241,10 +240,11 @@ impl HnswIndex {
 
 /// Prepare embeddings for vector index construction.
 ///
-/// Validates all dimensions match `EMBEDDING_DIM`, flattens into contiguous f32 buffer,
+/// Validates all dimensions match `expected_dim`, flattens into contiguous f32 buffer,
 /// and returns the ID map for index<->chunk_id mapping.
 pub(crate) fn prepare_index_data(
     embeddings: Vec<(String, crate::Embedding)>,
+    expected_dim: usize,
 ) -> Result<(Vec<String>, Vec<f32>, usize), HnswError> {
     let n = embeddings.len();
     if n == 0 {
@@ -253,19 +253,19 @@ pub(crate) fn prepare_index_data(
 
     // Validate dimensions
     for (id, emb) in &embeddings {
-        if emb.len() != crate::EMBEDDING_DIM {
+        if emb.len() != expected_dim {
             return Err(HnswError::Build(format!(
                 "Embedding dimension mismatch for {}: got {}, expected {}",
                 id,
                 emb.len(),
-                crate::EMBEDDING_DIM
+                expected_dim
             )));
         }
     }
 
     // Build ID map and flat data vector
     let mut id_map = Vec::with_capacity(n);
-    let mut data = Vec::with_capacity(n * crate::EMBEDDING_DIM);
+    let mut data = Vec::with_capacity(n * expected_dim);
     for (chunk_id, embedding) in embeddings {
         id_map.push(chunk_id);
         data.extend(embedding.into_inner());
@@ -381,6 +381,7 @@ mod insert_batch_tests {
     use super::*;
 
     use crate::hnsw::make_test_embedding;
+    use crate::EMBEDDING_DIM;
 
     #[test]
     fn test_insert_batch_on_owned() {

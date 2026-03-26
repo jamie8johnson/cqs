@@ -5,7 +5,6 @@ use hnsw_rs::api::AnnT;
 use hnsw_rs::hnsw::Hnsw;
 
 use crate::embedder::Embedding;
-use crate::EMBEDDING_DIM;
 
 use super::{
     HnswError, HnswIndex, HnswInner, EF_CONSTRUCTION, EF_SEARCH, MAX_LAYER, MAX_NB_CONNECTION,
@@ -42,7 +41,11 @@ impl HnswIndex {
     ///
     /// # Arguments
     /// * `embeddings` - Vector of (chunk_id, embedding) pairs
-    pub fn build(embeddings: Vec<(String, Embedding)>) -> Result<Self, HnswError> {
+    /// * `dim` - Expected embedding dimension
+    pub fn build_with_dim(
+        embeddings: Vec<(String, Embedding)>,
+        dim: usize,
+    ) -> Result<Self, HnswError> {
         let _span = tracing::debug_span!("hnsw_build").entered();
         if embeddings.is_empty() {
             // Create empty index
@@ -51,11 +54,11 @@ impl HnswIndex {
                 inner: HnswInner::Owned(hnsw),
                 id_map: Vec::new(),
                 ef_search: EF_SEARCH,
-                dim: EMBEDDING_DIM,
+                dim,
             });
         }
 
-        let (id_map, data, nb_elem) = super::prepare_index_data(embeddings)?;
+        let (id_map, data, nb_elem) = super::prepare_index_data(embeddings, dim)?;
 
         tracing::info!("Building HNSW index with {} vectors", nb_elem);
 
@@ -73,8 +76,8 @@ impl HnswIndex {
         // Reconstruct Vec<f32> chunks from flat buffer for hnsw_rs API
         let chunks: Vec<Vec<f32>> = (0..nb_elem)
             .map(|i| {
-                let start = i * EMBEDDING_DIM;
-                let end = start + EMBEDDING_DIM;
+                let start = i * dim;
+                let end = start + dim;
                 data[start..end].to_vec()
             })
             .collect();
@@ -90,8 +93,13 @@ impl HnswIndex {
             inner: HnswInner::Owned(hnsw),
             id_map,
             ef_search: EF_SEARCH,
-            dim: EMBEDDING_DIM,
+            dim,
         })
+    }
+
+    /// Convenience wrapper: build with the default EMBEDDING_DIM.
+    pub fn build(embeddings: Vec<(String, Embedding)>) -> Result<Self, HnswError> {
+        Self::build_with_dim(embeddings, crate::EMBEDDING_DIM)
     }
 
     /// Build HNSW index incrementally from batches (memory-efficient).
@@ -106,15 +114,21 @@ impl HnswIndex {
     /// # Arguments
     /// * `batches` - Iterator yielding `Result<Vec<(id, embedding)>>` batches
     /// * `estimated_total` - Hint for HNSW capacity (can be approximate)
+    /// * `dim` - Expected embedding dimension
     ///
     /// # Example
     /// ```ignore
-    /// let index = HnswIndex::build_batched(
+    /// let index = HnswIndex::build_batched_with_dim(
     ///     store.embedding_batches(10_000),
     ///     store.chunk_count()?,
+    ///     768,
     /// )?;
     /// ```
-    pub fn build_batched<I, E>(batches: I, estimated_total: usize) -> Result<Self, HnswError>
+    pub fn build_batched_with_dim<I, E>(
+        batches: I,
+        estimated_total: usize,
+        dim: usize,
+    ) -> Result<Self, HnswError>
     where
         I: Iterator<Item = Result<Vec<(String, Embedding)>, E>>,
         E: std::fmt::Display,
@@ -152,9 +166,9 @@ impl HnswIndex {
             let mut data_for_insert: Vec<(&Vec<f32>, usize)> = Vec::with_capacity(batch.len());
 
             for (chunk_id, embedding) in batch.iter() {
-                if embedding.len() != EMBEDDING_DIM {
+                if embedding.len() != dim {
                     return Err(HnswError::DimensionMismatch {
-                        expected: EMBEDDING_DIM,
+                        expected: dim,
                         actual: embedding.len(),
                     });
                 }
@@ -205,7 +219,7 @@ impl HnswIndex {
                 )),
                 id_map: Vec::new(),
                 ef_search: EF_SEARCH,
-                dim: EMBEDDING_DIM,
+                dim,
             });
         }
 
@@ -215,8 +229,17 @@ impl HnswIndex {
             inner: HnswInner::Owned(hnsw),
             id_map,
             ef_search: EF_SEARCH,
-            dim: EMBEDDING_DIM,
+            dim,
         })
+    }
+
+    /// Convenience wrapper: build batched with the default EMBEDDING_DIM.
+    pub fn build_batched<I, E>(batches: I, estimated_total: usize) -> Result<Self, HnswError>
+    where
+        I: Iterator<Item = Result<Vec<(String, Embedding)>, E>>,
+        E: std::fmt::Display,
+    {
+        Self::build_batched_with_dim(batches, estimated_total, crate::EMBEDDING_DIM)
     }
 }
 

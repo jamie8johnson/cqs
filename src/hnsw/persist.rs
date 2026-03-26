@@ -9,7 +9,6 @@ use hnsw_rs::api::AnnT;
 use hnsw_rs::hnswio::HnswIo;
 
 use crate::index::VectorIndex;
-use crate::EMBEDDING_DIM;
 
 use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw, EF_SEARCH};
 
@@ -356,7 +355,7 @@ impl HnswIndex {
     ///
     /// Verifies blake3 checksums before loading to mitigate bincode deserialization risks.
     /// Memory is properly freed when the HnswIndex is dropped.
-    pub fn load(dir: &Path, basename: &str) -> Result<Self, HnswError> {
+    pub fn load_with_dim(dir: &Path, basename: &str, dim: usize) -> Result<Self, HnswError> {
         let _span = tracing::debug_span!("hnsw_load", dir = %dir.display(), basename).entered();
         // Clean up stale temp dirs from interrupted saves (before anything else).
         // PB-20: temp dirs now have unpredictable suffixes, so match by prefix+suffix pattern.
@@ -469,11 +468,10 @@ impl HnswIndex {
 
         // SEC-7: Validate data file size against id_map before bincode deserialization.
         // A crafted file could claim more vectors than the id_map supports, causing
-        // unbounded allocation during deserialization. Each vector is EMBEDDING_DIM f32s,
+        // unbounded allocation during deserialization. Each vector is `dim` f32s,
         // with 2x headroom for HNSW graph overhead (neighbor lists, metadata).
         if !id_map.is_empty() {
-            let expected_max_data =
-                id_map.len() * crate::EMBEDDING_DIM * std::mem::size_of::<f32>() * 2;
+            let expected_max_data = id_map.len() * dim * std::mem::size_of::<f32>() * 2;
             let data_meta = std::fs::metadata(&data_path).map_err(|e| {
                 HnswError::Internal(format!(
                     "Failed to stat data file {}: {}",
@@ -521,8 +519,13 @@ impl HnswIndex {
             inner: HnswInner::Loaded(loaded),
             id_map,
             ef_search: EF_SEARCH,
-            dim: EMBEDDING_DIM,
+            dim,
         })
+    }
+
+    /// Convenience wrapper: load with the default EMBEDDING_DIM.
+    pub fn load(dir: &Path, basename: &str) -> Result<Self, HnswError> {
+        Self::load_with_dim(dir, basename, crate::EMBEDDING_DIM)
     }
 
     /// Check if an HNSW index exists at the given path
