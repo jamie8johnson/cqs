@@ -219,30 +219,39 @@ Most pass `ModelConfig::resolve(None, config.embedding.as_ref())`. The index com
 
 - [ ] **Step 3: Fix `insert_batch()` — use `self.dim` instead of `EMBEDDING_DIM`**
 
-- [ ] **Step 4: Fix `hnsw/persist.rs` `load()`**
+- [ ] **Step 4: Fix `hnsw/persist.rs` `load()` — accept `dim: usize` parameter**
 
-The data file doesn't store dimension explicitly. Infer it:
+The data file is bincode-serialized HNSW graph (NOT flat vectors) — cannot infer dim from file size. Instead, pass dim from the Store's metadata:
 ```rust
-let inferred_dim = data_file_size / (id_map.len() * std::mem::size_of::<f32>());
+pub fn load(dir: &Path, basename: &str, dim: usize) -> Result<Self, HnswError>
 ```
-Use inferred dim for the security check AND set `dim: inferred_dim` on the loaded index.
+Use the passed `dim` for the SEC-7 security check AND set `dim` on the loaded index. All `load()` callers have access to Store metadata (the Store is always opened before HNSW load).
 
 - [ ] **Step 5: Fix `cagra.rs` — thread dim through all 12 production sites**
 
 Functions: `build()`, `search()`, `build_from_store()`, `build_from_flat()`.
 Note: `build_incremental()` does NOT exist in this file. Add `dim: usize` field to the CAGRA struct or accept as parameter.
 
-- [ ] **Step 6: Fix `store/helpers.rs` — the structural chain**
+- [ ] **Step 6: Add `dim: usize` field to Store struct**
+
+The Store needs runtime dim for embedding serialization/deserialization. Add:
+```rust
+pub(crate) dim: usize,
+```
+Set from metadata `dimensions` key during `Store::open()`. Default to `EMBEDDING_DIM` if not set (backward compat). This enables all downstream embedding byte functions to use runtime dim.
+
+- [ ] **Step 7: Fix `store/helpers.rs` — the structural chain**
 
 This is the critical structural fix:
 
 1. **Remove `MODEL_NAME` constant** — replace with `ModelInfo::new(config: &ModelConfig)` constructor
 2. **Remove `EXPECTED_DIMENSIONS` constant** — `ModelInfo` gets dim from ModelConfig
 3. **Fix `ModelInfo::default()`** — should use `EMBEDDING_DIM` (E5-base default), document that this is for tests only
-4. **Fix `embedding_to_bytes()`** — accept `expected_dim: usize` parameter
-5. **Fix `EXPECTED_BYTES` calculations** — use runtime dim
+4. **Fix `embedding_to_bytes(dim)` / `embedding_slice(dim)` / `bytes_to_embedding(dim)`** — all three accept `expected_dim: usize`. Replace `const EXPECTED_BYTES` with `expected_dim * 4`.
+5. **Update all 7 callers of these functions** (in `src/store/chunks/embeddings.rs`, `src/store/chunks/query.rs`, `src/store/chunks/async_helpers.rs`, `src/search/query.rs`, `src/store/chunks/crud.rs`). Pass `self.dim` from Store or the caller's known dim.
+6. **Add test: `embedding_slice` with 1024-dim bytes succeeds**
 
-- [ ] **Step 7: Fix `Store::init()` → `check_model_version()` chain**
+- [ ] **Step 8: Fix `Store::init()` → `check_model_version()` chain**
 
 The structural threading problem:
 - `Store::init(&ModelInfo)` — already accepts model info, writes to metadata. Pass `ModelInfo::new(&model_config)` instead of `ModelInfo::default()`.
@@ -253,7 +262,16 @@ The structural threading problem:
 
   **Recommend (b):** Add `pub fn stored_model_name(&self) -> Option<String>` method. Callers check after open. This avoids changing the Store::open() signature for all 20+ callers.
 
-- [ ] **Step 8: Verify — grep for remaining EMBEDDING_DIM in production code**
+- [ ] **Step 9: Update `Embedder::embedding_dim()` fallback**
+
+Currently falls back to `EMBEDDING_DIM` constant. Change to `self.model_config.dim`:
+```rust
+pub fn embedding_dim(&self) -> usize {
+    *self.detected_dim.get().unwrap_or(&self.model_config.dim)
+}
+```
+
+- [ ] **Step 10: Verify — grep for remaining EMBEDDING_DIM in production code**
 
 ```bash
 grep -rn "EMBEDDING_DIM" src/ | grep -v "test\|Test\|#\[cfg(test)\]" | grep -v "// "
@@ -261,7 +279,9 @@ grep -rn "EMBEDDING_DIM" src/ | grep -v "test\|Test\|#\[cfg(test)\]" | grep -v "
 
 After fixes, only `src/lib.rs` (constant definition) and test code should reference `EMBEDDING_DIM`.
 
-- [ ] **Step 9: Run full test suite, commit**
+- [ ] **Step 11: Run full test suite, commit**
+
+**Note:** Task 5 Step 3 (check_model_version) depends on this task's Step 7 (MODEL_NAME removal). Execute Task 4 fully before Task 5.
 
 ---
 
