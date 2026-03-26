@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-pub fn run(repo: &str, output: &Path) -> anyhow::Result<()> {
+pub(crate) fn cmd_export_model(repo: &str, output: &Path) -> anyhow::Result<()> {
     let _span = tracing::info_span!("export_model", repo).entered();
 
     println!("Exporting {} to ONNX...", repo);

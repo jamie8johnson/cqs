@@ -174,6 +174,10 @@ pub struct Cli {
     #[arg(long)]
     pub no_demote: bool,
 
+    /// Embedding model: e5-base (default), bge-large, or custom
+    #[arg(long)]
+    pub model: Option<String>,
+
     /// Show debug info (sets RUST_LOG=debug)
     #[arg(short, long)]
     pub verbose: bool,
@@ -597,6 +601,15 @@ pub(super) enum Commands {
         /// Cleaning rule tags (comma-separated, e.g. "aveva,generic") [default: all]
         #[arg(long)]
         clean_tags: Option<String>,
+    },
+    /// Export a HuggingFace model to ONNX format for use with cqs
+    ExportModel {
+        /// HuggingFace model repo ID
+        #[arg(long)]
+        repo: String,
+        /// Output directory
+        #[arg(long, default_value = ".")]
+        output: std::path::PathBuf,
     },
     /// Generate training data for LoRA fine-tuning from git history
     TrainData {

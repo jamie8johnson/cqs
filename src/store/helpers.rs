@@ -51,7 +51,7 @@ pub enum StoreError {
     #[error("No migration path from schema v{0} to v{1}. Run 'cqs index --force' to rebuild.")]
     MigrationNotSupported(i32, i32),
     #[error(
-        "Model mismatch: index uses '{0}', current is '{1}'. Run 'cqs index --force' to re-embed."
+        "Model mismatch: index uses \"{0}\" but configured model is \"{1}\".\nRun `cqs index --force` to reindex with the new model."
     )]
     ModelMismatch(String, String),
     #[error(
