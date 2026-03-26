@@ -205,7 +205,7 @@ pub struct Store {
     pub(crate) pool: SqlitePool,
     pub(crate) rt: Runtime,
     /// Embedding dimension for this store (read from metadata on open, default `EMBEDDING_DIM`).
-    pub(crate) dim: usize,
+    pub dim: usize,
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
     notes_summaries_cache: RwLock<Option<Vec<NoteSummary>>>,
