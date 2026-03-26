@@ -1753,6 +1753,126 @@ mod tests {
         assert_eq!(result, Vec::<String>::new());
     }
 
+    // ===== extract_field_names: TypeFirst languages =====
+
+    #[test]
+    fn test_extract_field_names_c() {
+        let content =
+            "struct Config {\n    const char *name;\n    int max_size;\n    bool enabled;\n};";
+        let result = extract_field_names(content, Language::C);
+        // TypeFirst: strips "const", takes last token before ;, strips pointer marker *
+        assert_eq!(result, vec!["name", "max size", "enabled"]);
+    }
+
+    #[test]
+    fn test_extract_field_names_cpp() {
+        let content =
+            "class Widget {\n    std::string title;\n    int width;\n    bool visible;\n};";
+        let result = extract_field_names(content, Language::Cpp);
+        assert_eq!(result, vec!["title", "width", "visible"]);
+    }
+
+    #[test]
+    fn test_extract_field_names_csharp() {
+        let content = "class Config {\n    public string Name;\n    private int MaxSize;\n    protected bool Enabled;\n}";
+        let result = extract_field_names(content, Language::CSharp);
+        // TypeFirst: strips access modifiers, takes last token before ;
+        assert_eq!(result, vec!["name", "max size", "enabled"]);
+    }
+
+    // ===== extract_field_names: NameFirst languages with keyword prefixes =====
+
+    #[test]
+    fn test_extract_field_names_kotlin() {
+        let content = "data class Config(\n    val name: String,\n    var maxSize: Int,\n    private val enabled: Boolean\n)";
+        let result = extract_field_names(content, Language::Kotlin);
+        // NameFirst: strips val/var/private, splits on :, tokenizes camelCase
+        assert_eq!(result, vec!["name", "max size", "enabled"]);
+    }
+
+    #[test]
+    fn test_extract_field_names_swift() {
+        let content = "struct Config {\n    let name: String\n    var maxSize: Int\n    weak var delegate: Delegate?\n}";
+        let result = extract_field_names(content, Language::Swift);
+        // NameFirst: strips let/var/weak, splits on :
+        assert_eq!(result, vec!["name", "max size", "delegate"]);
+    }
+
+    #[test]
+    fn test_extract_field_names_scala() {
+        let content = "case class Config(\n    val name: String,\n    var maxSize: Int\n)";
+        let result = extract_field_names(content, Language::Scala);
+        // NameFirst: strips val/var, splits on :
+        assert_eq!(result, vec!["name", "max size"]);
+    }
+
+    #[test]
+    fn test_extract_field_names_php() {
+        // PHP fields use $ prefix which fails validate_field_name (not alphabetic start).
+        // This is a known limitation: NameFirst extraction keeps "$name" intact,
+        // and validate_field_name rejects it because '$' is not alphabetic or '_'.
+        let content =
+            "class Config {\n    public $name = 'default';\n    private $maxSize = 100;\n}";
+        let result = extract_field_names(content, Language::Php);
+        assert_eq!(
+            result,
+            Vec::<String>::new(),
+            "PHP $ fields rejected by validator: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_extract_field_names_ruby() {
+        // Ruby attr_accessor lines yield ":name" after stripping the prefix.
+        // The colon prefix fails validate_field_name (not alphabetic start).
+        // However, "end" passes validation (alphabetic, len > 1).
+        // Known limitation: actual field names are not extracted, only the "end" keyword leaks through.
+        let content = "class Config\n  attr_accessor :name\n  attr_reader :max_size\nend";
+        let result = extract_field_names(content, Language::Ruby);
+        assert!(
+            !result
+                .iter()
+                .any(|f| f.contains("name") || f.contains("max")),
+            "Ruby : fields should not extract actual field names: {result:?}"
+        );
+    }
+
+    // ===== extract_field_names: NameFirst assignment languages =====
+
+    #[test]
+    fn test_extract_field_names_lua() {
+        // Lua table assignment: "Config.name = ..." extracts "Config.name" as a single token
+        // because dot is not a tokenizer delimiter. The table name prefix is included.
+        let content = "local Config = {}\nConfig.name = 'default'\nConfig.max_size = 100";
+        let result = extract_field_names(content, Language::Lua);
+        // First line: strip "local" -> "Config = {}" -> split on = -> "Config" -> "config"
+        // Second: "Config.name" -> tokenize -> "config.name" (dot not a delimiter)
+        // Third: "Config.max_size" -> tokenize -> "config.max" + "size" (underscore splits)
+        assert_eq!(result, vec!["config", "config.name", "config.max size"]);
+    }
+
+    #[test]
+    fn test_extract_field_names_protobuf() {
+        // Protobuf uses "type name = N;" syntax but NameFirst with space separator
+        // extracts the first space-delimited token, which is the type name.
+        // This is a known limitation: protobuf gets type names instead of field names.
+        let content = "message Config {\n    string name = 1;\n    int32 max_size = 2;\n    bool enabled = 3;\n}";
+        let result = extract_field_names(content, Language::Protobuf);
+        // "message" line not skipped (no skip rule for it), extracts "message"
+        // Subsequent lines extract type names: "string", "int32", "bool"
+        assert!(
+            !result.is_empty(),
+            "protobuf should extract something (even if type names): {result:?}"
+        );
+        // Verify it extracts the type tokens (not field names — known limitation)
+        assert!(
+            result
+                .iter()
+                .any(|f| f == "message" || f == "string" || f == "bool"),
+            "protobuf extracts type tokens with space separator: {result:?}"
+        );
+    }
+
     // TC-30: IDF callee filtering threshold
     #[test]
     fn test_callee_idf_filtering_above_threshold() {
