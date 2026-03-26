@@ -3,7 +3,7 @@
 //! Converts code metadata into natural language descriptions for embedding.
 //! Based on Greptile's finding that code->NL->embed improves semantic search.
 
-use crate::parser::{Chunk, ChunkType, Language};
+use crate::parser::{Chunk, ChunkType, FieldStyle, Language};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -735,80 +735,140 @@ fn extract_file_context(path: &std::path::Path) -> String {
     result.join(" ")
 }
 
+/// Returns true if a trimmed line should be skipped during field extraction.
+///
+/// Matches comments, braces, struct/class/enum headers, decorators, and
+/// other non-field-declaration lines across all supported languages.
+fn should_skip_line(trimmed: &str) -> bool {
+    trimmed.is_empty()
+        || trimmed.starts_with("//")
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with('*')
+        || trimmed == "{"
+        || trimmed == "}"
+        || trimmed.starts_with("pub struct")
+        || trimmed.starts_with("struct")
+        || trimmed.starts_with("pub enum")
+        || trimmed.starts_with("enum")
+        || trimmed.starts_with("class")
+        || trimmed.starts_with("type ")
+        || trimmed.starts_with("export")
+        || trimmed.starts_with("data class")
+        || trimmed.starts_with("sealed class")
+        || trimmed.starts_with("case class")
+        || trimmed.starts_with("interface")
+        || trimmed.starts_with("@property")
+        || trimmed.starts_with("defstruct")
+}
+
+/// Validates and returns a field name, or `None` if it looks like a keyword,
+/// variant with data, or is too short.
+fn validate_field_name(name: Option<&str>) -> Option<&str> {
+    let name = name?.trim();
+    if name.is_empty()
+        || name.len() <= 1
+        || name.contains('(')
+        || name.contains('{')
+        || !name.starts_with(|c: char| c.is_alphabetic() || c == '_')
+    {
+        return None;
+    }
+    Some(name)
+}
+
+/// Strip space-separated prefixes from a line.
+///
+/// Each prefix in `prefixes` (split on whitespace) is tried with a trailing
+/// space. Longer prefixes are tried first to avoid partial matches (e.g.,
+/// "pub" matching inside "pub(crate)").
+fn strip_prefixes<'a>(line: &'a str, prefixes: &str) -> &'a str {
+    let mut result = line;
+    // Sort prefixes longest-first so "pub(crate)" is tried before "pub"
+    let mut plist: Vec<&str> = prefixes.split_whitespace().collect();
+    plist.sort_by(|a, b| b.len().cmp(&a.len()));
+    // Apply repeatedly — a line like "public static final int x" needs multiple passes
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for prefix in &plist {
+            let with_space = format!("{} ", prefix);
+            if let Some(rest) = result.strip_prefix(with_space.as_str()) {
+                result = rest;
+                changed = true;
+                break; // restart from longest prefix
+            }
+        }
+    }
+    result
+}
+
 /// Extract field/variant names from struct, enum, or class content.
 ///
-/// Parses field declarations from the chunk's source code.
-/// Returns field names (without types) for embedding.
+/// Uses `FieldStyle` from the language definition to determine extraction
+/// strategy. Supports `NameFirst` (name before separator) and `TypeFirst`
+/// (type before name) patterns across all 51 languages.
 fn extract_field_names(content: &str, language: Language) -> Vec<String> {
+    let _span = tracing::debug_span!("extract_field_names", %language).entered();
+
+    let field_style = language.def().field_style;
+    if field_style == FieldStyle::None {
+        return Vec::new();
+    }
+
     let mut fields = Vec::new();
     for line in content.lines() {
         let trimmed = line.trim();
-        // Skip empty lines, comments, braces, decorators
-        if trimmed.is_empty()
-            || trimmed.starts_with("//")
-            || trimmed.starts_with('#')
-            || trimmed.starts_with("/*")
-            || trimmed.starts_with('*')
-            || trimmed == "{"
-            || trimmed == "}"
-            || trimmed.starts_with("pub struct")
-            || trimmed.starts_with("struct")
-            || trimmed.starts_with("pub enum")
-            || trimmed.starts_with("enum")
-            || trimmed.starts_with("class")
-            || trimmed.starts_with("type ")
-            || trimmed.starts_with("export")
-        {
+        if should_skip_line(trimmed) {
             continue;
         }
 
-        // Extract field name based on language
-        let field = match language {
-            Language::Rust | Language::Go => {
-                // `pub name: Type,` or `name Type` (Go)
-                trimmed
-                    .trim_start_matches("pub ")
-                    .trim_start_matches("pub(crate) ")
-                    .split([':', ' '])
+        let field = match field_style {
+            FieldStyle::NameFirst {
+                separators,
+                strip_prefixes: prefixes,
+            } => {
+                let clean = strip_prefixes(trimmed, prefixes);
+                let sep_chars: Vec<char> = separators.chars().collect();
+                clean
+                    .split(sep_chars.as_slice())
                     .next()
-                    .map(|s| s.trim_end_matches(','))
+                    .map(|s| s.trim().trim_end_matches(','))
             }
-            Language::Python => {
-                // `name: type` or `name = value`
-                trimmed.split([':', '=']).next().map(|s| s.trim())
+            FieldStyle::TypeFirst {
+                strip_prefixes: prefixes,
+            } => {
+                let clean = strip_prefixes(trimmed, prefixes);
+                // Split on terminators, take first segment: "int maxSize" from "int maxSize;"
+                let before_term = clean
+                    .split([';', ',', '=', '{'])
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                // Last whitespace-delimited token is the field name
+                let name = before_term.rsplit_once(char::is_whitespace).map(|(_, n)| n);
+                // Strip pointer/reference markers (C/C++)
+                name.map(|n| n.trim_start_matches(['*', '&']))
             }
-            Language::TypeScript | Language::JavaScript | Language::Java => {
-                // `name: type;` or `private name: type;`
-                let clean = trimmed
-                    .trim_start_matches("public ")
-                    .trim_start_matches("private ")
-                    .trim_start_matches("protected ")
-                    .trim_start_matches("readonly ");
-                clean.split([':', '=', ';']).next().map(|s| s.trim())
-            }
-            _ => None,
+            FieldStyle::None => unreachable!(),
         };
 
-        if let Some(name) = field {
-            let name = name.trim();
-            // Skip if it looks like a variant with data, keyword, or too short
-            if !name.is_empty()
-                && name.len() > 1
-                && !name.contains('(')
-                && !name.contains('{')
-                && name.starts_with(|c: char| c.is_alphabetic() || c == '_')
-            {
-                let tokenized = tokenize_identifier(name).join(" ");
-                if !tokenized.is_empty() {
-                    fields.push(tokenized);
-                }
+        if let Some(name) = validate_field_name(field) {
+            let tokenized = tokenize_identifier(name).join(" ");
+            if !tokenized.is_empty() {
+                fields.push(tokenized);
             }
         }
 
         if fields.len() >= 15 {
-            break; // Cap at 15 fields
+            break;
         }
     }
+
+    if fields.is_empty() && !content.is_empty() {
+        tracing::trace!(%language, "No fields extracted from content");
+    }
+
     fields
 }
 
@@ -1639,14 +1699,11 @@ mod tests {
 
     #[test]
     fn test_extract_field_names_java() {
-        // Note: Java fields are `type name;` — after stripping access modifiers,
-        // split on [:=;] yields "Type name" which tokenizes to include the type.
+        // Java fields are `type name;` — TypeFirst extraction strips access modifiers,
+        // splits on terminators, and takes the last whitespace token (the field name).
         let content = "class Config {\n    private String name;\n    protected int maxSize;\n    public boolean enabled;\n}";
         let result = extract_field_names(content, Language::Java);
-        assert_eq!(
-            result,
-            vec!["string name", "int max size", "boolean enabled"]
-        );
+        assert_eq!(result, vec!["name", "max size", "enabled"]);
     }
 
     #[test]

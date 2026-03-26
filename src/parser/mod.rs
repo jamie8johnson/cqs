@@ -16,7 +16,7 @@ pub mod markdown;
 pub mod types;
 
 pub use types::{
-    CallSite, Chunk, ChunkType, ChunkTypeRefs, FunctionCalls, Language, ParserError,
+    CallSite, Chunk, ChunkType, ChunkTypeRefs, FieldStyle, FunctionCalls, Language, ParserError,
     SignatureStyle, TypeEdgeKind, TypeRef,
 };
 
