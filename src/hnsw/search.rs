@@ -28,11 +28,14 @@ impl HnswIndex {
         let _span =
             tracing::debug_span!("hnsw_search", k, index_size = self.id_map.len()).entered();
 
-        // No hardcoded dimension check — the embedding dimension is detected at
-        // runtime from the model (Embedder::embedding_dim()). The HNSW library
-        // will error on genuine mismatches during search_neighbours().
-        if query.is_empty() {
-            tracing::warn!("Empty query embedding");
+        if query.is_empty() || query.len() != self.dim {
+            if !query.is_empty() {
+                tracing::warn!(
+                    expected = self.dim,
+                    actual = query.len(),
+                    "Query embedding dimension mismatch"
+                );
+            }
             return Vec::new();
         }
 

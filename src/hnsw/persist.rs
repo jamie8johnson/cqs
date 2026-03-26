@@ -9,6 +9,7 @@ use hnsw_rs::api::AnnT;
 use hnsw_rs::hnswio::HnswIo;
 
 use crate::index::VectorIndex;
+use crate::EMBEDDING_DIM;
 
 use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw, EF_SEARCH};
 
@@ -520,6 +521,7 @@ impl HnswIndex {
             inner: HnswInner::Loaded(loaded),
             id_map,
             ef_search: EF_SEARCH,
+            dim: EMBEDDING_DIM,
         })
     }
 

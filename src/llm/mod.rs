@@ -17,6 +17,7 @@ mod batch;
 mod doc_comments;
 mod hyde;
 mod prompts;
+pub mod provider;
 mod summary;
 
 use std::time::Duration;
@@ -26,6 +27,7 @@ use serde::{Deserialize, Serialize};
 // Re-export public API
 pub use doc_comments::needs_doc_comment;
 pub use hyde::hyde_query_pass;
+pub use provider::BatchProvider;
 pub use summary::llm_summary_pass;
 
 use crate::Store;
