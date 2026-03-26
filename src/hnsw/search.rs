@@ -4,7 +4,6 @@ use hnsw_rs::api::AnnT;
 
 use crate::embedder::Embedding;
 use crate::index::IndexResult;
-use crate::EMBEDDING_DIM;
 
 use super::HnswIndex;
 
@@ -16,7 +15,7 @@ impl HnswIndex {
     /// and behavior - use whichever is more convenient at the call site.
     ///
     /// # Arguments
-    /// * `query` - Query embedding (768-dim E5-base-v2)
+    /// * `query` - Query embedding vector (dimension detected at runtime from model)
     /// * `k` - Maximum number of results to return
     ///
     /// # Returns
@@ -29,12 +28,11 @@ impl HnswIndex {
         let _span =
             tracing::debug_span!("hnsw_search", k, index_size = self.id_map.len()).entered();
 
-        if query.len() != EMBEDDING_DIM {
-            tracing::warn!(
-                expected = EMBEDDING_DIM,
-                actual = query.len(),
-                "Query dimension mismatch"
-            );
+        // No hardcoded dimension check — the embedding dimension is detected at
+        // runtime from the model (Embedder::embedding_dim()). The HNSW library
+        // will error on genuine mismatches during search_neighbours().
+        if query.is_empty() {
+            tracing::warn!("Empty query embedding");
             return Vec::new();
         }
 

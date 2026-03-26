@@ -2,16 +2,14 @@
 //!
 //! Shared math functions used across modules (search, notes, etc.).
 
-use crate::EMBEDDING_DIM;
-
 /// Dot product of two embeddings (= cosine similarity for L2-normalized vectors).
 /// E5-base-v2 outputs normalized embeddings, so dot product suffices.
 /// Uses SIMD acceleration when available (2-4x faster on AVX2/NEON)
 ///
-/// Returns `None` if vectors have different lengths or unexpected dimensions.
+/// Returns `None` if vectors have different lengths or are empty.
 /// This allows callers to gracefully handle dimension mismatches rather than panicking.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
-    if a.len() != b.len() || a.len() != EMBEDDING_DIM {
+    if a.len() != b.len() || a.is_empty() {
         return None;
     }
     use simsimd::SpatialSimilarity;
@@ -139,15 +137,16 @@ mod tests {
 
     #[test]
     fn test_cosine_similarity_dimension_mismatch() {
-        let a: Vec<f32> = vec![0.5; 100]; // Wrong dimension
+        let a: Vec<f32> = vec![0.5; 100];
         let b: Vec<f32> = vec![0.5; 768];
         assert!(
             cosine_similarity(&a, &b).is_none(),
             "Should fail for mismatched dimensions"
         );
+        // Same-length non-768 vectors should succeed (dimension-agnostic)
         assert!(
-            cosine_similarity(&a, &a).is_none(),
-            "Should fail for wrong dimension"
+            cosine_similarity(&a, &a).is_some(),
+            "Same-length vectors should succeed regardless of dimension"
         );
     }
 

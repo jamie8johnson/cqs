@@ -210,8 +210,9 @@ pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
     }
 }
 
-/// Embedding dimension: 768 from E5-base-v2 model.
-/// Single source of truth — all modules import this constant.
+/// Default embedding dimension for E5-base-v2 (768).
+/// The actual dimension is detected at runtime from the model output.
+/// Use `Embedder::embedding_dim()` for the runtime value.
 pub const EMBEDDING_DIM: usize = 768;
 
 /// Unified test-chunk detection heuristic.
