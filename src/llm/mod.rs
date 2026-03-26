@@ -330,6 +330,32 @@ pub struct SummaryEntry {
 mod tests {
     use super::*;
 
+    type SavedEnv = [Option<String>; 4];
+
+    fn save_llm_env_vars() -> SavedEnv {
+        [
+            std::env::var("CQS_LLM_MODEL").ok(),
+            std::env::var("CQS_API_BASE").ok(),
+            std::env::var("CQS_LLM_API_BASE").ok(),
+            std::env::var("CQS_LLM_MAX_TOKENS").ok(),
+        ]
+    }
+
+    fn restore_llm_env_vars(saved: SavedEnv) {
+        let names = [
+            "CQS_LLM_MODEL",
+            "CQS_API_BASE",
+            "CQS_LLM_API_BASE",
+            "CQS_LLM_MAX_TOKENS",
+        ];
+        for (name, val) in names.iter().zip(saved.into_iter()) {
+            match val {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+
     #[test]
     fn is_valid_batch_id_accepts_real_ids() {
         assert!(is_valid_batch_id("msgbatch_abc123"));
@@ -349,11 +375,7 @@ mod tests {
 
     #[test]
     fn llm_config_defaults_from_empty_config() {
-        // Save and clear env vars that LlmConfig::resolve reads
-        let saved_model = std::env::var("CQS_LLM_MODEL").ok();
-        let saved_base = std::env::var("CQS_API_BASE").ok();
-        let saved_llm_base = std::env::var("CQS_LLM_API_BASE").ok();
-        let saved_tokens = std::env::var("CQS_LLM_MAX_TOKENS").ok();
+        let saved = save_llm_env_vars();
         std::env::remove_var("CQS_LLM_MODEL");
         std::env::remove_var("CQS_API_BASE");
         std::env::remove_var("CQS_LLM_API_BASE");
@@ -361,23 +383,12 @@ mod tests {
 
         let config = crate::config::Config::default();
         let llm = LlmConfig::resolve(&config);
+
+        restore_llm_env_vars(saved);
+
         assert_eq!(llm.api_base, API_BASE);
         assert_eq!(llm.model, MODEL);
         assert_eq!(llm.max_tokens, MAX_TOKENS);
-
-        // Restore env vars
-        if let Some(v) = saved_model {
-            std::env::set_var("CQS_LLM_MODEL", v);
-        }
-        if let Some(v) = saved_base {
-            std::env::set_var("CQS_API_BASE", v);
-        }
-        if let Some(v) = saved_llm_base {
-            std::env::set_var("CQS_LLM_API_BASE", v);
-        }
-        if let Some(v) = saved_tokens {
-            std::env::set_var("CQS_LLM_MAX_TOKENS", v);
-        }
     }
 
     #[test]
@@ -424,16 +435,18 @@ mod tests {
     // AD-32: CQS_LLM_API_BASE takes priority over CQS_API_BASE
     #[test]
     fn llm_config_llm_api_base_takes_precedence() {
-        let config = crate::config::Config::default();
+        // Save all env vars that LlmConfig::resolve reads
+        let saved = save_llm_env_vars();
 
-        // Both set — CQS_LLM_API_BASE should win
         std::env::set_var("CQS_LLM_API_BASE", "https://primary/v1");
         std::env::set_var("CQS_API_BASE", "https://fallback/v1");
+        std::env::remove_var("CQS_LLM_MODEL");
+        std::env::remove_var("CQS_LLM_MAX_TOKENS");
 
+        let config = crate::config::Config::default();
         let llm = LlmConfig::resolve(&config);
 
-        std::env::remove_var("CQS_LLM_API_BASE");
-        std::env::remove_var("CQS_API_BASE");
+        restore_llm_env_vars(saved);
 
         assert_eq!(
             llm.api_base, "https://primary/v1",
@@ -444,14 +457,17 @@ mod tests {
     // AD-32: CQS_API_BASE still works as fallback
     #[test]
     fn llm_config_api_base_fallback_still_works() {
-        let config = crate::config::Config::default();
+        let saved = save_llm_env_vars();
 
         std::env::remove_var("CQS_LLM_API_BASE");
         std::env::set_var("CQS_API_BASE", "https://legacy/v1");
+        std::env::remove_var("CQS_LLM_MODEL");
+        std::env::remove_var("CQS_LLM_MAX_TOKENS");
 
+        let config = crate::config::Config::default();
         let llm = LlmConfig::resolve(&config);
 
-        std::env::remove_var("CQS_API_BASE");
+        restore_llm_env_vars(saved);
 
         assert_eq!(
             llm.api_base, "https://legacy/v1",
