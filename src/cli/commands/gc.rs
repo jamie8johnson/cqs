@@ -37,32 +37,22 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
         }
     };
 
-    // Prune in order: chunks first, then orphan references.
-    // Each operation is individually transactional. If a crash interrupts between
-    // operations, orphan call/type edges remain harmless and are cleaned on next GC.
-    // prune_stale_calls/prune_stale_type_edges are idempotent (DELETE WHERE NOT IN chunks).
-    let pruned_chunks = store
-        .prune_missing(&file_set)
-        .context("Failed to prune deleted files from index")?;
-    tracing::debug!(pruned_chunks, "Chunks pruned");
-
-    // Prune orphan call graph entries (references chunks that no longer exist)
-    let pruned_calls = store
-        .prune_stale_calls()
-        .context("Failed to prune orphan call graph entries")?;
-    tracing::debug!(pruned_calls, "Calls pruned");
-
-    // Prune orphan type edges (references chunks that no longer exist)
-    let pruned_type_edges = store
-        .prune_stale_type_edges()
-        .context("Failed to prune orphan type edges")?;
-    tracing::debug!(pruned_type_edges, "Type edges pruned");
-
-    // Prune orphan LLM summaries (content_hash no longer in any chunk)
-    let pruned_summaries = store
-        .prune_orphan_summaries()
-        .context("Failed to prune orphan LLM summaries")?;
-    tracing::debug!(pruned_summaries, "LLM summaries pruned");
+    // All prune operations in a single transaction so concurrent readers
+    // never see chunks deleted but orphan call/type/summary entries remaining.
+    let prune = store
+        .prune_all(&file_set)
+        .context("Failed to prune stale entries from index")?;
+    let pruned_chunks = prune.pruned_chunks;
+    let pruned_calls = prune.pruned_calls;
+    let pruned_type_edges = prune.pruned_type_edges;
+    let pruned_summaries = prune.pruned_summaries;
+    tracing::debug!(
+        pruned_chunks,
+        pruned_calls,
+        pruned_type_edges,
+        pruned_summaries,
+        "GC prune complete"
+    );
 
     // Rebuild HNSW if we pruned chunks. Delete the stale HNSW first so
     // concurrent searches fall back to brute-force during the rebuild window
@@ -108,12 +98,17 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
             "pruned_chunks": pruned_chunks,
             "pruned_calls": pruned_calls,
             "pruned_type_edges": pruned_type_edges,
+            "pruned_summaries": pruned_summaries,
             "hnsw_rebuilt": pruned_chunks > 0,
             "hnsw_vectors": hnsw_vectors,
         });
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        if pruned_chunks == 0 && pruned_calls == 0 && pruned_type_edges == 0 {
+        if pruned_chunks == 0
+            && pruned_calls == 0
+            && pruned_type_edges == 0
+            && pruned_summaries == 0
+        {
             println!("Index is clean. Nothing to do.");
         } else {
             if pruned_chunks > 0 {
@@ -137,6 +132,13 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
                     "Removed {} orphan type edge{}",
                     pruned_type_edges,
                     if pruned_type_edges == 1 { "" } else { "s" },
+                );
+            }
+            if pruned_summaries > 0 {
+                println!(
+                    "Removed {} orphan LLM summar{}",
+                    pruned_summaries,
+                    if pruned_summaries == 1 { "y" } else { "ies" },
                 );
             }
             if let Some(vectors) = hnsw_vectors {

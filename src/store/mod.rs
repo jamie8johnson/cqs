@@ -104,6 +104,9 @@ pub use helpers::score_name_match;
 /// Score a pre-lowercased chunk name against a pre-lowercased query (loop-optimized variant).
 pub use helpers::score_name_match_pre_lower;
 
+/// Result of atomic GC prune (all 4 operations in one transaction).
+pub use chunks::PruneAllResult;
+
 /// Statistics about call graph entries (chunk-level calls table).
 pub use calls::CallStats;
 
