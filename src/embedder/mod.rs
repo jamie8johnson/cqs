@@ -50,9 +50,9 @@ pub enum EmbedderError {
 
 // `ort_err` is defined in `provider.rs` (pub(super)) and imported above.
 
-/// A 768-dimensional L2-normalized embedding vector
+/// An L2-normalized embedding vector.
 ///
-/// Embeddings are produced by E5-base-v2 (768-dim).
+/// Dimension depends on the configured model (e.g., 768 for E5-base-v2).
 /// Can be compared using cosine similarity (dot product for normalized vectors).
 #[derive(Debug, Clone)]
 pub struct Embedding(Vec<f32>);
@@ -60,12 +60,12 @@ pub struct Embedding(Vec<f32>);
 /// Full embedding dimension -- re-exported from crate root
 pub use crate::EMBEDDING_DIM;
 
-/// Error returned when creating an embedding with invalid dimensions
+/// Error returned when creating an embedding with invalid data (empty or non-finite)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddingDimensionError {
     /// The actual dimension provided
     pub actual: usize,
-    /// The expected dimension (768)
+    /// The expected minimum dimension
     pub expected: usize,
 }
 
@@ -95,23 +95,16 @@ impl std::error::Error for EmbeddingDimensionError {}
 impl Embedding {
     /// Create a new embedding from raw vector data.
     ///
-    /// Logs a warning if the dimension doesn't match the expected 768.
-    /// For strict validation, use `try_new()` which returns an error.
+    /// Accepts any dimension — the Embedder validates consistency via `detected_dim`.
+    /// For validation that the vector is non-empty and finite, use `try_new()`.
     pub fn new(data: Vec<f32>) -> Self {
-        if data.len() != crate::EMBEDDING_DIM {
-            tracing::warn!(
-                expected = crate::EMBEDDING_DIM,
-                actual = data.len(),
-                "Embedding dimension mismatch -- may cause incorrect similarity scores"
-            );
-        }
         Self(data)
     }
 
-    /// Create a new embedding with dimension validation.
+    /// Create a new embedding with validation.
     ///
-    /// Returns `Err` if the vector is not exactly 768 dimensions.
-    /// Use this when constructing embeddings from untrusted sources.
+    /// Returns `Err` if the vector is empty or contains non-finite values.
+    /// Dimension is no longer validated here — the Embedder enforces consistency.
     ///
     /// # Example
     /// ```
@@ -120,14 +113,23 @@ impl Embedding {
     /// let valid = Embedding::try_new(vec![0.5; 768]);
     /// assert!(valid.is_ok());
     ///
-    /// let invalid = Embedding::try_new(vec![0.5; 100]);
-    /// assert!(invalid.is_err());
+    /// let also_valid = Embedding::try_new(vec![0.5; 384]);
+    /// assert!(also_valid.is_ok());
+    ///
+    /// let empty = Embedding::try_new(vec![]);
+    /// assert!(empty.is_err());
     /// ```
     pub fn try_new(data: Vec<f32>) -> Result<Self, EmbeddingDimensionError> {
-        if data.len() != EMBEDDING_DIM {
+        if data.is_empty() {
+            return Err(EmbeddingDimensionError {
+                actual: 0,
+                expected: 1, // at least 1 dimension required
+            });
+        }
+        if !data.iter().all(|v| v.is_finite()) {
             return Err(EmbeddingDimensionError {
                 actual: data.len(),
-                expected: EMBEDDING_DIM,
+                expected: data.len(),
             });
         }
         Ok(Self(data))
@@ -511,9 +513,9 @@ impl Embedder {
     }
 
     /// Returns the embedding dimension detected from the model.
-    /// Falls back to EMBEDDING_DIM (768) if no inference has been run yet.
+    /// Falls back to the model config's declared dimension if no inference has been run yet.
     pub fn embedding_dim(&self) -> usize {
-        *self.detected_dim.get().unwrap_or(&EMBEDDING_DIM)
+        *self.detected_dim.get().unwrap_or(&self.model_config.dim)
     }
 
     /// Generates embeddings for a batch of text inputs.
