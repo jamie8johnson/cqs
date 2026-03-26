@@ -159,7 +159,7 @@ impl Store {
                     let embedding_bytes: Vec<u8> = row.get("embedding");
                     let name: Option<String> = if need_name { row.get("name") } else { None };
 
-                    let Some(embedding) = embedding_slice(&embedding_bytes) else {
+                    let Some(embedding) = embedding_slice(&embedding_bytes, self.dim) else {
                         continue;
                     };
                     let file_part = extract_file_from_chunk_id(&id);
@@ -399,7 +399,7 @@ impl Store {
                         }
                     }
 
-                    let embedding = embedding_slice(&embedding_bytes)?;
+                    let embedding = embedding_slice(&embedding_bytes, self.dim)?;
 
                     let score = score_candidate(
                         embedding,

@@ -22,11 +22,9 @@ use crate::parser::{Chunk, ChunkType, Language};
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
 pub const CURRENT_SCHEMA_VERSION: i32 = 16;
-pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
-/// Expected embedding dimensions — derived from crate::EMBEDDING_DIM (default for E5-base-v2).
-/// The actual dimension is detected at runtime by the Embedder; this constant is used
-/// for validation when the embedder is not in scope.
-pub const EXPECTED_DIMENSIONS: u32 = crate::EMBEDDING_DIM as u32;
+/// Default model name for backward compatibility and tests.
+/// Production code should use `Store::stored_model_name()` or `ModelInfo::new()`.
+pub(crate) const DEFAULT_MODEL_NAME: &str = "intfloat/e5-base-v2";
 
 #[derive(Error, Debug)]
 pub enum StoreError {
@@ -710,8 +708,8 @@ impl SearchFilter {
 
 /// Model metadata for index initialization.
 ///
-/// `Default` uses `EXPECTED_DIMENSIONS` (768 for E5-base-v2).
-/// Use `with_dim()` to override with the embedder's runtime-detected dimension.
+/// Construct via `ModelInfo::new()` with explicit name + dim, or
+/// `ModelInfo::default()` for tests only (E5-base-v2, 768-dim).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ModelInfo {
     pub name: String,
@@ -720,29 +718,35 @@ pub struct ModelInfo {
 }
 
 impl ModelInfo {
-    /// Create ModelInfo with a specific embedding dimension (from `Embedder::embedding_dim()`).
-    pub fn with_dim(dim: u32) -> Self {
+    /// Create ModelInfo with explicit model name and dimension.
+    ///
+    /// This is the preferred constructor for production code. The name and dim
+    /// come from the Embedder at runtime.
+    pub fn new(name: impl Into<String>, dim: u32) -> Self {
         ModelInfo {
+            name: name.into(),
             dimensions: dim,
-            ..Self::default()
+            version: "2".to_string(),
         }
+    }
+
+    /// Create ModelInfo with default model name and a specific dimension.
+    ///
+    /// Convenience for callers that only vary dimension (e.g., `Embedder::embedding_dim()`).
+    pub fn with_dim(dim: u32) -> Self {
+        Self::new(DEFAULT_MODEL_NAME, dim)
     }
 }
 
 impl Default for ModelInfo {
-    /// Creates a default ModelInfo instance with predefined values for E5-base-v2.
+    /// Test-only default: E5-base-v2 with `EMBEDDING_DIM` (768).
     ///
-    /// # Returns
-    ///
-    /// A new `ModelInfo` struct initialized with:
-    /// - `name`: The default model name constant
-    /// - `dimensions`: EXPECTED_DIMENSIONS (default 768 for E5-base-v2)
-    /// - `version`: "2" (E5-base-v2 version)
+    /// Production code should use `ModelInfo::new()` or `ModelInfo::with_dim()`.
     fn default() -> Self {
         ModelInfo {
-            name: MODEL_NAME.to_string(),
-            dimensions: EXPECTED_DIMENSIONS, // Default for E5-base-v2; override via Embedder::embedding_dim()
-            version: "2".to_string(),        // E5-base-v2
+            name: DEFAULT_MODEL_NAME.to_string(),
+            dimensions: crate::EMBEDDING_DIM as u32,
+            version: "2".to_string(),
         }
     }
 }
@@ -887,13 +891,16 @@ pub(crate) fn make_placeholders(n: usize) -> String {
 
 /// Convert embedding to bytes for storage.
 ///
-/// Returns an error if embedding is not exactly 768 dimensions.
+/// Returns an error if embedding doesn't match `expected_dim` dimensions.
 /// Storing wrong-sized embeddings would corrupt the index.
-pub fn embedding_to_bytes(embedding: &Embedding) -> Result<Vec<u8>, StoreError> {
-    if embedding.len() != EXPECTED_DIMENSIONS as usize {
+pub fn embedding_to_bytes(
+    embedding: &Embedding,
+    expected_dim: usize,
+) -> Result<Vec<u8>, StoreError> {
+    if embedding.len() != expected_dim {
         return Err(StoreError::Runtime(format!(
             "Embedding dimension mismatch: expected {}, got {}. This indicates a bug in the embedder.",
-            EXPECTED_DIMENSIONS,
+            expected_dim,
             embedding.len()
         )));
     }
@@ -902,13 +909,13 @@ pub fn embedding_to_bytes(embedding: &Embedding) -> Result<Vec<u8>, StoreError> 
 
 /// Zero-copy view of embedding bytes as f32 slice (for hot paths)
 ///
-/// Returns None if byte length doesn't match expected embedding size.
+/// Returns None if byte length doesn't match `expected_dim * 4`.
 /// Uses trace level logging to avoid impacting search performance.
-pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
-    const EXPECTED_BYTES: usize = crate::EMBEDDING_DIM * 4;
-    if bytes.len() != EXPECTED_BYTES {
+pub fn embedding_slice(bytes: &[u8], expected_dim: usize) -> Option<&[f32]> {
+    let expected_bytes = expected_dim * 4;
+    if bytes.len() != expected_bytes {
         tracing::trace!(
-            expected = EXPECTED_BYTES,
+            expected = expected_bytes,
             actual = bytes.len(),
             "Embedding byte length mismatch, skipping"
         );
@@ -919,14 +926,14 @@ pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
 
 /// Convert embedding bytes to owned Vec (when ownership needed)
 ///
-/// Returns None if byte length doesn't match expected embedding size (768 * 4 bytes).
+/// Returns None if byte length doesn't match `expected_dim * 4` bytes.
 /// This prevents silently using corrupted/truncated embeddings.
 /// Uses trace level logging consistent with embedding_slice() since both are called on hot paths.
-pub fn bytes_to_embedding(bytes: &[u8]) -> Option<Vec<f32>> {
-    const EXPECTED_BYTES: usize = crate::EMBEDDING_DIM * 4;
-    if bytes.len() != EXPECTED_BYTES {
+pub fn bytes_to_embedding(bytes: &[u8], expected_dim: usize) -> Option<Vec<f32>> {
+    let expected_bytes = expected_dim * 4;
+    if bytes.len() != expected_bytes {
         tracing::warn!(
-            expected = EXPECTED_BYTES,
+            expected = expected_bytes,
             actual = bytes.len(),
             "Embedding byte length mismatch — possible corruption, skipping"
         );
@@ -1162,5 +1169,50 @@ mod tests {
     #[test]
     fn test_score_name_match_case_insensitive() {
         assert_eq!(score_name_match("FooBar", "foobar"), 1.0);
+    }
+
+    // ===== embedding_slice dimension tests =====
+
+    #[test]
+    fn test_embedding_slice_768_dim() {
+        let data = vec![0.0f32; 768];
+        let bytes = bytemuck::cast_slice::<f32, u8>(&data);
+        let result = embedding_slice(bytes, 768);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 768);
+    }
+
+    #[test]
+    fn test_embedding_slice_1024_dim() {
+        let data = vec![1.0f32; 1024];
+        let bytes = bytemuck::cast_slice::<f32, u8>(&data);
+        let result = embedding_slice(bytes, 1024);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 1024);
+    }
+
+    #[test]
+    fn test_embedding_slice_wrong_dim_returns_none() {
+        let data = vec![0.0f32; 768];
+        let bytes = bytemuck::cast_slice::<f32, u8>(&data);
+        // Ask for 1024-dim but bytes are 768-dim
+        let result = embedding_slice(bytes, 1024);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_embedding_to_bytes_validates_dim() {
+        let emb = Embedding::new(vec![0.0f32; 768]);
+        assert!(embedding_to_bytes(&emb, 768).is_ok());
+        assert!(embedding_to_bytes(&emb, 1024).is_err());
+    }
+
+    #[test]
+    fn test_bytes_to_embedding_1024_dim() {
+        let data = vec![0.5f32; 1024];
+        let bytes: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&data).to_vec();
+        let result = bytes_to_embedding(&bytes, 1024);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 1024);
     }
 }

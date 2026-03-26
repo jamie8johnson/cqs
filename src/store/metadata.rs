@@ -2,10 +2,9 @@
 
 use std::path::Path;
 
+use super::helpers::DEFAULT_MODEL_NAME;
 use super::migrations;
-use super::{
-    NoteSummary, Store, StoreError, CURRENT_SCHEMA_VERSION, EXPECTED_DIMENSIONS, MODEL_NAME,
-};
+use super::{NoteSummary, Store, StoreError, CURRENT_SCHEMA_VERSION};
 
 impl Store {
     /// Validates and optionally migrates the database schema version to match the current expected version.
@@ -78,24 +77,29 @@ impl Store {
         })
     }
 
-    /// Validates that the stored model name and embedding dimensions match the expected values.
+    /// Validates that the stored model name matches the expected default.
     ///
-    /// This method checks the metadata table in the database to ensure compatibility between the current application and previously stored data. It verifies both the model name and the embedding vector dimensions.
+    /// Checks model_name metadata against `DEFAULT_MODEL_NAME`. Does NOT check
+    /// dimensions here -- dimension is read into `Store::dim` during construction
+    /// and validated by the embedder at index time.
     ///
     /// # Returns
     ///
-    /// Returns `Ok(())` if validation passes or if the metadata table doesn't exist yet. Returns `Err(StoreError)` if the stored model name or dimensions don't match the expected values, or if a database error occurs.
+    /// Returns `Ok(())` if validation passes or if the metadata table doesn't exist yet.
     ///
     /// # Errors
     ///
-    /// Returns `StoreError::ModelMismatch` if the stored model name differs from the expected `MODEL_NAME`.
-    ///
-    /// Returns `StoreError::DimensionMismatch` if the stored embedding dimensions differ from `EXPECTED_DIMENSIONS`.
-    ///
-    /// Returns other `StoreError` variants if database access fails.
+    /// Returns `StoreError::ModelMismatch` if the stored model name differs from `DEFAULT_MODEL_NAME`.
     pub(crate) fn check_model_version(&self) -> Result<(), StoreError> {
+        self.check_model_version_with(DEFAULT_MODEL_NAME)
+    }
+
+    /// Validates that the stored model name matches `expected_model`.
+    ///
+    /// Separated from `check_model_version()` so callers can supply a runtime
+    /// model name without changing the open() signature.
+    pub(crate) fn check_model_version_with(&self, expected_model: &str) -> Result<(), StoreError> {
         self.rt.block_on(async {
-            // Check model name
             let row: Option<(String,)> =
                 match sqlx::query_as("SELECT value FROM metadata WHERE key = 'model_name'")
                     .fetch_optional(&self.pool)
@@ -110,37 +114,25 @@ impl Store {
 
             let stored_model = row.map(|(s,)| s).unwrap_or_default();
 
-            if !stored_model.is_empty() && stored_model != MODEL_NAME {
+            if !stored_model.is_empty() && stored_model != expected_model {
                 return Err(StoreError::ModelMismatch(
                     stored_model,
-                    MODEL_NAME.to_string(),
+                    expected_model.to_string(),
                 ));
-            }
-
-            // Check embedding dimensions
-            let dim_row: Option<(String,)> =
-                sqlx::query_as("SELECT value FROM metadata WHERE key = 'dimensions'")
-                    .fetch_optional(&self.pool)
-                    .await?;
-
-            if let Some((dim_str,)) = dim_row {
-                if let Ok(stored_dim) = dim_str.parse::<u32>() {
-                    if stored_dim != EXPECTED_DIMENSIONS {
-                        return Err(StoreError::DimensionMismatch(
-                            stored_dim,
-                            EXPECTED_DIMENSIONS,
-                        ));
-                    }
-                } else {
-                    return Err(StoreError::Corruption(format!(
-                        "dimensions metadata '{}' is not a valid integer",
-                        dim_str
-                    )));
-                }
             }
 
             Ok(())
         })
+    }
+
+    /// Read the stored model name from metadata, if set.
+    ///
+    /// Returns `None` for fresh databases or pre-model indexes.
+    pub fn stored_model_name(&self) -> Option<String> {
+        self.get_metadata_opt("model_name")
+            .ok()
+            .flatten()
+            .filter(|s| !s.is_empty())
     }
 
     /// Checks if the stored CQL version in the metadata table matches the current application version.
@@ -479,29 +471,30 @@ mod tests {
     }
 
     #[test]
-    fn tc17_dimension_mismatch_returns_error() {
+    fn tc17_dimension_read_into_store_dim() {
+        // Dimensions are no longer checked by check_model_version().
+        // Instead, Store::dim is populated from metadata at open time.
         let (store, _dir) = make_test_store_initialized();
-        store.set_metadata_opt("dimensions", Some("999")).unwrap();
-        let err = store.check_model_version().unwrap_err();
-        assert!(
-            matches!(err, StoreError::DimensionMismatch(999, _)),
-            "Expected DimensionMismatch, got: {:?}",
-            err
-        );
+        // Default ModelInfo::default() stores EMBEDDING_DIM
+        assert_eq!(store.dim, crate::EMBEDDING_DIM);
     }
 
     #[test]
-    fn tc17_corrupt_dimension_returns_corruption() {
-        let (store, _dir) = make_test_store_initialized();
-        store
-            .set_metadata_opt("dimensions", Some("not_a_number"))
-            .unwrap();
-        let err = store.check_model_version().unwrap_err();
-        assert!(
-            matches!(err, StoreError::Corruption(..)),
-            "Expected Corruption, got: {:?}",
-            err
-        );
+    fn tc17_corrupt_dimension_defaults_to_embedding_dim() {
+        // Corrupt dimension string is silently ignored (defaults to EMBEDDING_DIM).
+        // This matches open_with_config behavior: parse failure -> default.
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        {
+            let store = Store::open(&db_path).unwrap();
+            store.init(&ModelInfo::default()).unwrap();
+            store
+                .set_metadata_opt("dimensions", Some("not_a_number"))
+                .unwrap();
+        }
+        // Re-open: corrupt dimension should default to EMBEDDING_DIM
+        let store = Store::open(&db_path).unwrap();
+        assert_eq!(store.dim, crate::EMBEDDING_DIM);
     }
 
     #[test]
@@ -566,5 +559,49 @@ mod tests {
         assert!(store
             .check_schema_version(std::path::Path::new("/test"))
             .is_ok());
+    }
+
+    // ===== stored_model_name tests =====
+
+    #[test]
+    fn test_stored_model_name_returns_value() {
+        let (store, _dir) = make_test_store_initialized();
+        let name = store.stored_model_name();
+        assert_eq!(name.as_deref(), Some(DEFAULT_MODEL_NAME));
+    }
+
+    #[test]
+    fn test_stored_model_name_returns_none_when_empty() {
+        let (store, _dir) = make_test_store_initialized();
+        store.set_metadata_opt("model_name", Some("")).unwrap();
+        assert_eq!(store.stored_model_name(), None);
+    }
+
+    #[test]
+    fn test_stored_model_name_returns_none_when_missing() {
+        let (store, _dir) = make_test_store_initialized();
+        store.set_metadata_opt("model_name", None).unwrap();
+        assert_eq!(store.stored_model_name(), None);
+    }
+
+    #[test]
+    fn test_check_model_version_with_custom() {
+        let (store, _dir) = make_test_store_initialized();
+        // Default model matches DEFAULT_MODEL_NAME
+        assert!(store.check_model_version_with(DEFAULT_MODEL_NAME).is_ok());
+        // Asking for a different model should fail
+        let err = store
+            .check_model_version_with("custom/model-v3")
+            .unwrap_err();
+        assert!(matches!(err, StoreError::ModelMismatch(..)));
+    }
+
+    // ===== Store::dim tests =====
+
+    #[test]
+    fn test_store_dim_reads_from_metadata() {
+        let (store, _dir) = make_test_store_initialized();
+        // Default init stores EMBEDDING_DIM (768)
+        assert_eq!(store.dim, crate::EMBEDDING_DIM);
     }
 }

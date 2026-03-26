@@ -42,9 +42,10 @@ impl Store {
     ) -> Result<usize, StoreError> {
         let _span = tracing::info_span!("upsert_chunks_batch", count = chunks.len()).entered();
 
+        let dim = self.dim;
         let embedding_bytes: Vec<Vec<u8>> = chunks
             .iter()
-            .map(|(_, emb)| embedding_to_bytes(emb))
+            .map(|(_, emb)| embedding_to_bytes(emb, dim))
             .collect::<Result<Vec<_>, _>>()?;
 
         self.rt.block_on(async {
@@ -108,9 +109,10 @@ impl Store {
             return Ok(0);
         }
 
+        let dim = self.dim;
         let embedding_bytes: Vec<Vec<u8>> = updates
             .iter()
-            .map(|(_, emb, _)| embedding_to_bytes(emb))
+            .map(|(_, emb, _)| embedding_to_bytes(emb, dim))
             .collect::<Result<Vec<_>, _>>()?;
 
         self.rt.block_on(async {
@@ -402,9 +404,10 @@ impl Store {
             calls = calls.len()
         )
         .entered();
+        let dim = self.dim;
         let embedding_bytes: Vec<Vec<u8>> = chunks
             .iter()
-            .map(|(_, emb)| embedding_to_bytes(emb))
+            .map(|(_, emb)| embedding_to_bytes(emb, dim))
             .collect::<Result<Vec<_>, _>>()?;
 
         self.rt.block_on(async {

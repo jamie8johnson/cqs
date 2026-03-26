@@ -257,12 +257,13 @@ impl Store {
         id: &str,
     ) -> Result<Option<(ChunkSummary, Embedding)>, StoreError> {
         let _span = tracing::debug_span!("get_chunk_with_embedding", id = %id).entered();
+        let dim = self.dim;
         self.rt.block_on(async {
             let results = self
                 .fetch_chunks_with_embeddings_by_ids_async(&[id])
                 .await?;
             Ok(results.into_iter().next().and_then(|(row, bytes)| {
-                match bytes_to_embedding(&bytes) {
+                match bytes_to_embedding(&bytes, dim) {
                     Some(emb) => Some((ChunkSummary::from(row), Embedding::new(emb))),
                     None => {
                         tracing::warn!(chunk_id = %row.id, "Corrupt embedding for chunk, skipping");
@@ -308,6 +309,7 @@ impl Store {
         }
 
         const BATCH_SIZE: usize = 500;
+        let dim = self.dim;
         let mut result = HashMap::new();
 
         self.rt.block_on(async {
@@ -329,7 +331,7 @@ impl Store {
                 for row in rows {
                     let id: String = row.get(0);
                     let bytes: Vec<u8> = row.get(1);
-                    if let Some(emb) = bytes_to_embedding(&bytes) {
+                    if let Some(emb) = bytes_to_embedding(&bytes, dim) {
                         result.insert(id, Embedding::new(emb));
                     }
                 }

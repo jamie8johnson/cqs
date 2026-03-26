@@ -92,11 +92,17 @@ pub use helpers::UnifiedResult;
 /// Current database schema version.
 pub use helpers::CURRENT_SCHEMA_VERSION;
 
-/// Expected embedding dimensions (768 model + 1 sentiment).
-pub use helpers::EXPECTED_DIMENSIONS;
+/// Name of the embedding model (compile-time default for E5-base-v2).
+///
+/// Runtime code should use `Store::stored_model_name()` or `ModelInfo::new()`.
+/// This constant exists for callers outside the store (e.g. `doctor.rs`).
+pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
 
-/// Name of the embedding model used.
-pub use helpers::MODEL_NAME;
+/// Expected embedding dimensions (compile-time default for E5-base-v2).
+///
+/// Runtime code should use `Store::dim` instead. This constant exists for
+/// callers outside the store that need a compile-time value.
+pub const EXPECTED_DIMENSIONS: u32 = crate::EMBEDDING_DIM as u32;
 
 /// Default name_boost weight for CLI search commands.
 pub use helpers::DEFAULT_NAME_BOOST;
@@ -198,6 +204,8 @@ pub(crate) fn sanitize_fts_query(s: &str) -> String {
 pub struct Store {
     pub(crate) pool: SqlitePool,
     pub(crate) rt: Runtime,
+    /// Embedding dimension for this store (read from metadata on open, default `EMBEDDING_DIM`).
+    pub(crate) dim: usize,
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
     notes_summaries_cache: RwLock<Option<Vec<NoteSummary>>>,
@@ -343,15 +351,6 @@ impl Store {
                 .await
         })?;
 
-        let store = Self {
-            pool,
-            rt,
-            closed: AtomicBool::new(false),
-            notes_summaries_cache: RwLock::new(None),
-            call_graph_cache: std::sync::OnceLock::new(),
-            test_chunks_cache: std::sync::OnceLock::new(),
-        };
-
         // Set restrictive permissions on database files (Unix only, write mode only)
         #[cfg(unix)]
         if !config.read_only {
@@ -377,15 +376,46 @@ impl Store {
         );
 
         // Quick integrity check — catches B-tree corruption early
-        store.rt.block_on(async {
+        rt.block_on(async {
             let result: (String,) = sqlx::query_as("PRAGMA integrity_check(1)")
-                .fetch_one(&store.pool)
+                .fetch_one(&pool)
                 .await?;
             if result.0 != "ok" {
                 return Err(StoreError::Corruption(result.0));
             }
             Ok::<_, StoreError>(())
         })?;
+
+        // Read dim from metadata before constructing Store (avoid unsafe mutation).
+        // Defaults to EMBEDDING_DIM for fresh/pre-v15 databases without dimensions key.
+        let dim = rt
+            .block_on(async {
+                let row: Option<(String,)> =
+                    match sqlx::query_as("SELECT value FROM metadata WHERE key = 'dimensions'")
+                        .fetch_optional(&pool)
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => {
+                            return Ok::<_, StoreError>(None);
+                        }
+                        Err(e) => return Err(e.into()),
+                    };
+                Ok(row
+                    .and_then(|(s,)| s.parse::<u32>().ok())
+                    .map(|d| d as usize))
+            })?
+            .unwrap_or(crate::EMBEDDING_DIM);
+
+        let store = Self {
+            pool,
+            rt,
+            dim,
+            closed: AtomicBool::new(false),
+            notes_summaries_cache: RwLock::new(None),
+            call_graph_cache: std::sync::OnceLock::new(),
+            test_chunks_cache: std::sync::OnceLock::new(),
+        };
 
         // Check model version BEFORE schema migration — if model mismatches,
         // we don't want to commit a schema upgrade on a DB we'll reject anyway
