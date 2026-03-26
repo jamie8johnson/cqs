@@ -4,358 +4,192 @@
 
 **Goal:** Let users configure which ONNX embedding model cqs uses, with E5-base-v2 as default and BGE-large-en-v1.5 as a built-in alternative.
 
-**Architecture:** `ModelConfig` struct holds per-model settings (repo, paths, dim, prefixes). Resolution: CLI flag > env var > config file > default (extends spec which only lists env > config > default — CLI flag added for ergonomics). The `Embedder`, HNSW, CAGRA, Store, and Embedding layers all accept dim as a runtime parameter, replacing the compile-time `EMBEDDING_DIM` constant in production code.
+**Architecture:** `ModelConfig` struct holds per-model settings (repo, paths, dim, prefixes). Resolution: CLI flag > env var > config file > default. The `Embedder`, HNSW, CAGRA, Store, and Embedding layers all accept dim as a runtime parameter.
 
 **Tech Stack:** Rust, ONNX Runtime, hf-hub, toml config
 
-**Critical note:** `EMBEDDING_DIM` (768) is used in 30+ production code sites. ALL must be threaded to use runtime dim. See Task 4 for the complete list.
+## Execution Strategy
+
+```
+Phase 1 (parallel):
+  Agent A: Task 1 (models.rs) + Task 3 (embedder wiring)
+  Agent B: Task 2 (config.rs) — no file overlap
+
+Phase 2 (parallel, after Phase 1 merges):
+  Agent C: Task 4a (Embedding::new + Embedder dim fallback) — src/embedder/mod.rs
+  Agent D: Task 4b (HNSW dim threading) — src/hnsw/*.rs
+  Agent E: Task 4c (CAGRA dim threading) — src/cagra.rs
+  Agent F: Task 4d (Store dim + helpers + metadata chain) — src/store/**
+
+Phase 3 (parallel, after Phase 2 merges):
+  Agent G: Task 5 (CLI flag + doctor) — src/cli/definitions.rs, dispatch.rs, doctor.rs
+  Agent H: Task 6 (export command) — src/cli/commands/export_model.rs ONLY
+           (definitions.rs + dispatch.rs routing added by Agent G)
+
+Phase 4 (sequential):
+  Task 7: Documentation
+  Task 8: Eval
+```
+
+**File ownership per phase:**
+
+| Phase | Agent | Files (EXCLUSIVE) |
+|-------|-------|-------------------|
+| 1 | A | `src/embedder/models.rs` (create), `src/embedder/mod.rs`, 25+ call sites |
+| 1 | B | `src/config.rs` |
+| 2 | C | `src/embedder/mod.rs` (Embedding::new only) |
+| 2 | D | `src/hnsw/mod.rs`, `src/hnsw/build.rs`, `src/hnsw/persist.rs` |
+| 2 | E | `src/cagra.rs` |
+| 2 | F | `src/store/helpers.rs`, `src/store/metadata.rs`, `src/store/chunks/*`, `src/search/query.rs` |
+| 3 | G | `src/cli/definitions.rs`, `src/cli/dispatch.rs`, `src/cli/commands/doctor.rs`, `src/store/metadata.rs` |
+| 3 | H | `src/cli/commands/export_model.rs` (create only) |
 
 ---
 
 ### Task 1: ModelConfig Struct + Presets
 
-**Files:**
-- Create: `src/embedder/models.rs`
-- Modify: `src/embedder/mod.rs` (add `mod models; pub use models::{ModelConfig, EmbeddingConfig};`)
+**Files:** Create `src/embedder/models.rs`, modify `src/embedder/mod.rs`
+**Phase:** 1 (Agent A)
 
 - [ ] **Step 1: Write tests for ModelConfig resolution**
 
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
+Tests: default → e5-base, env var by name, env var by repo ID (backward compat), CLI overrides env, unknown preset warns and defaults, empty [embedding] section uses default, sad paths (dim=0, empty custom repo).
 
-    fn with_clean_env<F: FnOnce() -> R, R>(f: F) -> R {
-        let saved = std::env::var("CQS_EMBEDDING_MODEL").ok();
-        std::env::remove_var("CQS_EMBEDDING_MODEL");
-        let result = f();
-        match saved {
-            Some(v) => std::env::set_var("CQS_EMBEDDING_MODEL", v),
-            None => std::env::remove_var("CQS_EMBEDDING_MODEL"),
-        }
-        result
-    }
-
-    #[test]
-    fn default_is_e5_base() {
-        with_clean_env(|| {
-            let config = ModelConfig::resolve(None, None);
-            assert_eq!(config.name, "e5-base");
-            assert_eq!(config.dim, 768);
-            assert_eq!(config.query_prefix, "query: ");
-        });
-    }
-
-    #[test]
-    fn env_var_selects_preset_by_name() {
-        std::env::set_var("CQS_EMBEDDING_MODEL", "bge-large");
-        let config = ModelConfig::resolve(None, None);
-        assert_eq!(config.name, "bge-large");
-        assert_eq!(config.dim, 1024);
-        std::env::remove_var("CQS_EMBEDDING_MODEL");
-    }
-
-    #[test]
-    fn env_var_selects_preset_by_repo_id() {
-        // Backward compat: existing users may set full repo ID
-        std::env::set_var("CQS_EMBEDDING_MODEL", "BAAI/bge-large-en-v1.5");
-        let config = ModelConfig::resolve(None, None);
-        assert_eq!(config.name, "bge-large");
-        assert_eq!(config.dim, 1024);
-        std::env::remove_var("CQS_EMBEDDING_MODEL");
-    }
-
-    #[test]
-    fn cli_flag_overrides_env_var() {
-        std::env::set_var("CQS_EMBEDDING_MODEL", "e5-base");
-        let config = ModelConfig::resolve(Some("bge-large"), None);
-        assert_eq!(config.name, "bge-large");
-        std::env::remove_var("CQS_EMBEDDING_MODEL");
-    }
-
-    #[test]
-    fn unknown_preset_warns_and_defaults() {
-        with_clean_env(|| {
-            std::env::set_var("CQS_EMBEDDING_MODEL", "nonexistent");
-            let config = ModelConfig::resolve(None, None);
-            assert_eq!(config.name, "e5-base");
-            std::env::remove_var("CQS_EMBEDDING_MODEL");
-        });
-    }
-}
-```
+Use `with_clean_env` helper to save/restore CQS_EMBEDDING_MODEL.
 
 - [ ] **Step 2: Implement ModelConfig**
 
-Key points:
-- `resolve()` signature: `pub fn resolve(cli_model: Option<&str>, config_embedding: Option<&EmbeddingConfig>) -> Self`
-- Priority: CLI flag > env var > config file > default
-- `from_preset()` matches BOTH short names ("bge-large") AND repo IDs ("BAAI/bge-large-en-v1.5") for backward compat
-- **Env var with unknown value:** If CQS_EMBEDDING_MODEL is set to a value that matches neither a preset name nor a preset repo ID, log `tracing::warn!` and fall back to default. This is a behavioral change from the current code (which passes it as a raw repo ID). Document in CHANGELOG.
-- `from_embedding_config()` logs `tracing::warn!` when custom model missing required fields (repo, dim)
-- `resolve()` uses `tracing::info_span!` (not debug_span) per project convention
-- `EmbeddingConfig.model` field has `#[serde(default = "default_model_name")]` where default returns `"e5-base"`
-- Add sad-path tests: `dim = 0`, `dim = -1` (serde type error), empty repo string for custom model
+`resolve(cli_model: Option<&str>, config_embedding: Option<&EmbeddingConfig>) -> Self`
 
-- [ ] **Step 3: Run tests, verify pass**
+Priority: CLI > env > config > default. `from_preset()` matches both short names AND repo IDs. `tracing::info_span!` on resolve, `tracing::warn!` on unknown preset and invalid custom config. `EmbeddingConfig.model` has `#[serde(default = "default_model_name")]`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ---
 
 ### Task 2: Config File Parsing
 
-**Files:**
-- Modify: `src/config.rs`
+**Files:** `src/config.rs`
+**Phase:** 1 (Agent B — parallel with Task 1, no file overlap)
 
-- [ ] **Step 1: Add EmbeddingConfig to Config struct**
-
-```rust
-/// Embedding model configuration
-#[serde(default)]
-pub embedding: Option<EmbeddingConfig>,
-```
-
-- [ ] **Step 2: Write config parsing tests (including empty [embedding] section)**
-
-```rust
-#[test]
-fn test_empty_embedding_section_uses_default() {
-    let toml = "[embedding]\n";
-    let config: Config = toml::from_str(toml).unwrap();
-    let emb = config.embedding.unwrap();
-    assert_eq!(emb.model, "e5-base"); // serde default
-}
-```
-
+- [ ] **Step 1: Add `embedding: Option<EmbeddingConfig>` to Config struct**
+- [ ] **Step 2: Write tests (preset, custom, empty section)**
 - [ ] **Step 3: Commit**
 
 ---
 
 ### Task 3: Wire ModelConfig Into Embedder
 
-**Files:**
-- Modify: `src/embedder/mod.rs`
+**Files:** `src/embedder/mod.rs`, 25+ call sites across `src/cli/**`, `src/gather.rs`, etc.
+**Phase:** 1 (Agent A — sequential after Task 1, same agent)
 
-- [ ] **Step 1: Add `model_config` field to Embedder, update `new()` signature**
-
-`pub fn new(model_config: ModelConfig) -> Result<Self, EmbedderError>`
-
-Also update `new_cpu()`.
-
-- [ ] **Step 2: Replace hardcoded prefixes in `embed_query()` and `embed_documents()`**
-
-`format!("query: {}", text)` → `format!("{}{}", self.model_config.query_prefix, text)`
-`format!("passage: {}", t)` → `format!("{}{}", self.model_config.doc_prefix, t)`
-
-- [ ] **Step 3: Replace hardcoded paths in `ensure_model()`**
-
-Accept `&ModelConfig`. Use `config.repo`, `config.onnx_path`, `config.tokenizer_path`.
-
-- [ ] **Step 4: Update `model_repo()` for backward compat**
-
-```rust
-pub fn model_repo() -> String {
-    ModelConfig::resolve(None, None).repo
-}
-```
-
-- [ ] **Step 5: Update ALL Embedder::new() and new_cpu() call sites (25+ files)**
-
-Run `grep -rn "Embedder::new\b" src/` to get the complete list. Known sites:
-- `src/cli/pipeline.rs` (new + new_cpu)
-- `src/cli/commands/index.rs`
-- `src/cli/commands/query.rs` (3 instances)
-- `src/cli/commands/resolve.rs`
-- `src/cli/commands/context.rs`
-- `src/cli/commands/explain.rs`
-- `src/cli/commands/onboard.rs`
-- `src/cli/commands/project.rs`
-- `src/cli/commands/init.rs`
-- `src/cli/batch/mod.rs`
-- `src/cli/watch.rs`
-- `src/gather.rs`, `src/scout.rs`, `src/task.rs`, `src/plan.rs`
-- `src/project.rs`
-- Tests: `src/embedder/mod.rs`, `tests/*.rs`
-
-Most pass `ModelConfig::resolve(None, config.embedding.as_ref())`. The index command passes CLI flag as first arg.
-
+- [ ] **Step 1: Add `model_config: ModelConfig` to Embedder, update `new()` and `new_cpu()` signatures**
+- [ ] **Step 2: Replace hardcoded prefixes** (`"query: "` → `self.model_config.query_prefix`)
+- [ ] **Step 3: Replace hardcoded paths in `ensure_model()`** (use `config.repo`, `config.onnx_path`)
+- [ ] **Step 4: Update `model_repo()` to delegate to ModelConfig**
+- [ ] **Step 5: Update ALL 25+ Embedder::new() call sites** (grep for complete list)
 - [ ] **Step 6: Run full test suite, commit**
 
 ---
 
-### Task 4: Thread Dimension Through ALL EMBEDDING_DIM Sites
+### Task 4a: Embedding Type + Embedder Dim Fallback
 
-**This is the critical task.** Every production-code use of `EMBEDDING_DIM` must accept runtime dim.
+**Files:** `src/embedder/mod.rs` (Embedding::new, try_new, embedding_dim only)
+**Phase:** 2 (Agent C)
 
-**Complete EMBEDDING_DIM site inventory (verified by grep):**
+- [ ] **Step 1: Fix `Embedding::new()`** — remove warn on non-768 (any dim is valid)
+- [ ] **Step 2: Fix `Embedding::try_new()`** — accept any dim > 0 instead of rejecting non-768
+- [ ] **Step 3: Fix `Embedder::embedding_dim()` fallback** — use `self.model_config.dim` instead of `EMBEDDING_DIM`
+- [ ] **Step 4: Run tests, commit**
 
-| File | Line(s) | Usage | Fix |
-|------|---------|-------|-----|
-| `src/embedder/mod.rs` | ~107 | `Embedding::new()` warns on non-768 | Remove warn (Embedder validates via detected_dim) |
-| `src/embedder/mod.rs` | ~133 | `Embedding::try_new()` rejects non-768 | Change to accept any dim > 0 |
-| `src/hnsw/mod.rs` | ~207 | `insert_batch()` validates `emb.len() != EMBEDDING_DIM` | Use `self.dim` |
-| `src/hnsw/mod.rs` | ~256,268 | `prepare_index_data()` validates + allocates buffer | Accept `expected_dim` param |
-| `src/hnsw/build.rs` | 8 sites | `build()`/`build_batched()` set `dim: EMBEDDING_DIM` | Accept `dim` param, pass through |
-| `src/hnsw/persist.rs` | ~472 | `load()` security validation: file size check | Infer dim from `data_size / (id_count * 4)` |
-| `src/hnsw/persist.rs` | ~524 | `load()` sets `dim: EMBEDDING_DIM` | Set from inferred dim |
-| `src/cagra.rs` | ~12 sites | `build()`, `search()`, `build_from_store()`, `build_from_flat()` | Store dim on struct, thread through |
-| `src/store/helpers.rs` | ~25 | `MODEL_NAME` constant | Remove constant, use runtime ModelConfig |
-| `src/store/helpers.rs` | ~29 | `EXPECTED_DIMENSIONS = EMBEDDING_DIM as u32` | Remove, pass dim to `ModelInfo` |
-| `src/store/helpers.rs` | ~892 | `embedding_to_bytes()` validates `len != EXPECTED_DIMENSIONS` | Accept expected dim param |
-| `src/store/helpers.rs` | ~908,926 | `EXPECTED_BYTES` calculations | Use runtime dim |
-| `src/store/helpers.rs` | `ModelInfo::default()` | Returns hardcoded MODEL_NAME + 768 | Accept ModelConfig param |
-| `src/hnsw/safety.rs` | tests only | `EMBEDDING_DIM` in test assertions | Leave as-is (tests use default model) |
-| `src/store/types.rs` | ~625 | test helper `vec![0.0; EMBEDDING_DIM]` | Leave as-is |
+---
 
-**NOT in scope:** ~30 test files with hardcoded `vec![0.0; 768]` — these test the default model and should continue using `EMBEDDING_DIM`. No change needed.
+### Task 4b: HNSW Dim Threading
 
-- [ ] **Step 1: Fix `Embedding::new()` and `try_new()`**
+**Files:** `src/hnsw/mod.rs`, `src/hnsw/build.rs`, `src/hnsw/persist.rs`
+**Phase:** 2 (Agent D — parallel with 4a/4c/4d, exclusive HNSW files)
 
-`new()` currently logs `tracing::warn!` on non-768 but accepts. Remove the warn (any dim is valid).
-`try_new()` currently rejects non-768. Change to accept any dim > 0 (non-empty, finite values).
+- [ ] **Step 1: `prepare_index_data()` — accept `expected_dim: usize` param**
+- [ ] **Step 2: `insert_batch()` — use `self.dim` instead of `EMBEDDING_DIM`**
+- [ ] **Step 3: `build()` and `build_batched()` — accept `dim: usize`, pass through, set on struct**
+- [ ] **Step 4: `load()` — accept `dim: usize` parameter from caller** (data file is bincode graph, not flat vectors — cannot infer dim). Update all `load()` callers to pass dim from Store metadata.
+- [ ] **Step 5: Run HNSW tests, commit**
 
-- [ ] **Step 2: Fix `prepare_index_data()` — accept `expected_dim: usize`**
+---
 
-- [ ] **Step 3: Fix `insert_batch()` — use `self.dim` instead of `EMBEDDING_DIM`**
+### Task 4c: CAGRA Dim Threading
 
-- [ ] **Step 4: Fix `hnsw/persist.rs` `load()` — accept `dim: usize` parameter**
+**Files:** `src/cagra.rs`
+**Phase:** 2 (Agent E — parallel with 4a/4b/4d, exclusive file)
 
-The data file is bincode-serialized HNSW graph (NOT flat vectors) — cannot infer dim from file size. Instead, pass dim from the Store's metadata:
-```rust
-pub fn load(dir: &Path, basename: &str, dim: usize) -> Result<Self, HnswError>
-```
-Use the passed `dim` for the SEC-7 security check AND set `dim` on the loaded index. All `load()` callers have access to Store metadata (the Store is always opened before HNSW load).
+- [ ] **Step 1: Add `dim: usize` field to CagraIndex struct (or accept as param)**
+- [ ] **Step 2: Thread dim through `build()`, `search()`, `build_from_store()`, `build_from_flat()`** (10 production EMBEDDING_DIM sites)
+- [ ] **Step 3: Update Array2/buffer allocations to use runtime dim**
+- [ ] **Step 4: Run CAGRA tests, commit**
 
-- [ ] **Step 5: Fix `cagra.rs` — thread dim through all 12 production sites**
+---
 
-Functions: `build()`, `search()`, `build_from_store()`, `build_from_flat()`.
-Note: `build_incremental()` does NOT exist in this file. Add `dim: usize` field to the CAGRA struct or accept as parameter.
+### Task 4d: Store Dim + Helpers + Metadata Chain
 
-- [ ] **Step 6: Add `dim: usize` field to Store struct**
+**Files:** `src/store/helpers.rs`, `src/store/metadata.rs`, `src/store/mod.rs`, `src/store/chunks/embeddings.rs`, `src/store/chunks/query.rs`, `src/store/chunks/async_helpers.rs`, `src/store/chunks/crud.rs`, `src/search/query.rs`
+**Phase:** 2 (Agent F — parallel with 4a/4b/4c, exclusive Store files)
 
-The Store needs runtime dim for embedding serialization/deserialization. Add:
-```rust
-pub(crate) dim: usize,
-```
-Set from metadata `dimensions` key during `Store::open()`. Default to `EMBEDDING_DIM` if not set (backward compat). This enables all downstream embedding byte functions to use runtime dim.
-
-- [ ] **Step 7: Fix `store/helpers.rs` — the structural chain**
-
-This is the critical structural fix:
-
-1. **Remove `MODEL_NAME` constant** — replace with `ModelInfo::new(config: &ModelConfig)` constructor
-2. **Remove `EXPECTED_DIMENSIONS` constant** — `ModelInfo` gets dim from ModelConfig
-3. **Fix `ModelInfo::default()`** — should use `EMBEDDING_DIM` (E5-base default), document that this is for tests only
-4. **Fix `embedding_to_bytes(dim)` / `embedding_slice(dim)` / `bytes_to_embedding(dim)`** — all three accept `expected_dim: usize`. Replace `const EXPECTED_BYTES` with `expected_dim * 4`.
-5. **Update all 7 callers of these functions** (in `src/store/chunks/embeddings.rs`, `src/store/chunks/query.rs`, `src/store/chunks/async_helpers.rs`, `src/search/query.rs`, `src/store/chunks/crud.rs`). Pass `self.dim` from Store or the caller's known dim.
-6. **Add test: `embedding_slice` with 1024-dim bytes succeeds**
-
-- [ ] **Step 8: Fix `Store::init()` → `check_model_version()` chain**
-
-The structural threading problem:
-- `Store::init(&ModelInfo)` — already accepts model info, writes to metadata. Pass `ModelInfo::new(&model_config)` instead of `ModelInfo::default()`.
-- `check_model_version()` at `src/store/metadata.rs:113` — currently compares stored model vs `MODEL_NAME` constant. Change signature to `check_model_version(&self, expected_model: &str) -> Result<(), StoreError>`. Callers pass `model_config.repo`.
-- `Store::open()` takes only `Path` — does NOT have ModelConfig. Two options:
-  (a) Add `expected_model: Option<&str>` param to `open()`, or
-  (b) Defer check to caller (Store returns stored model name, caller compares)
-
-  **Recommend (b):** Add `pub fn stored_model_name(&self) -> Option<String>` method. Callers check after open. This avoids changing the Store::open() signature for all 20+ callers.
-
-- [ ] **Step 9: Update `Embedder::embedding_dim()` fallback**
-
-Currently falls back to `EMBEDDING_DIM` constant. Change to `self.model_config.dim`:
-```rust
-pub fn embedding_dim(&self) -> usize {
-    *self.detected_dim.get().unwrap_or(&self.model_config.dim)
-}
-```
-
-- [ ] **Step 10: Verify — grep for remaining EMBEDDING_DIM in production code**
-
-```bash
-grep -rn "EMBEDDING_DIM" src/ | grep -v "test\|Test\|#\[cfg(test)\]" | grep -v "// "
-```
-
-After fixes, only `src/lib.rs` (constant definition) and test code should reference `EMBEDDING_DIM`.
-
-- [ ] **Step 11: Run full test suite, commit**
-
-**Note:** Task 5 Step 3 (check_model_version) depends on this task's Step 7 (MODEL_NAME removal). Execute Task 4 fully before Task 5.
+- [ ] **Step 1: Add `dim: usize` field to Store struct** — set from metadata `dimensions` key during open, default to EMBEDDING_DIM
+- [ ] **Step 2: Remove `MODEL_NAME` and `EXPECTED_DIMENSIONS` constants** — replace with `ModelInfo::new(&ModelConfig)` constructor
+- [ ] **Step 3: Fix `ModelInfo::default()`** — use EMBEDDING_DIM, document as test-only
+- [ ] **Step 4: Fix `embedding_to_bytes(dim)` / `embedding_slice(dim)` / `bytes_to_embedding(dim)`** — accept `expected_dim: usize`, replace `EXPECTED_BYTES` with `dim * 4`
+- [ ] **Step 5: Update all 7+ callers** of embedding byte functions — pass `self.dim` from Store
+- [ ] **Step 6: Fix `Store::init()` → `check_model_version()` chain:**
+  - `init()` passes `ModelInfo::new(&model_config)` instead of default
+  - `check_model_version()` accepts `expected_model: &str` param
+  - Add `stored_model_name(&self) -> Option<String>` method (callers check after open, avoids changing Store::open signature)
+- [ ] **Step 7: Add test: `embedding_slice` with 1024-dim bytes**
+- [ ] **Step 8: Grep for remaining EMBEDDING_DIM in store/search production code**
+- [ ] **Step 9: Run store tests, commit**
 
 ---
 
 ### Task 5: CLI Flag + Model Mismatch + Doctor
 
-**Files:**
-- Modify: `src/cli/definitions.rs` — `--model` flag on top-level `Cli` struct
-- Modify: `src/cli/dispatch.rs` — pass to ModelConfig resolution
-- Modify: `src/store/metadata.rs` — improve mismatch message
-- Modify: `src/cli/commands/doctor.rs` — validate model consistency
+**Files:** `src/cli/definitions.rs`, `src/cli/dispatch.rs`, `src/cli/commands/doctor.rs`
+**Phase:** 3 (Agent G — after Phase 2 merges)
 
-- [ ] **Step 1: Add `--model` to Cli struct**
-
-This codebase does NOT use clap `global = true` anywhere. Instead, add `--model` as a top-level field on `Cli`:
-```rust
-/// Embedding model: e5-base (default), bge-large
-#[arg(long)]
-pub model: Option<String>,
-```
-
-In `dispatch.rs`, extract `cli.model.as_deref()` early and thread it into `ModelConfig::resolve()`. Since `dispatch.rs` already has access to the full `Cli` struct, this doesn't require global propagation — just pass it to the pipeline functions that create Embedders.
-
-- [ ] **Step 2: Wire CLI flag into ModelConfig::resolve()**
-
-In `run_with()` in `dispatch.rs`:
-```rust
-let model_config = ModelConfig::resolve(cli.model.as_deref(), config.embedding.as_ref());
-```
-Pass `model_config` (or `cli.model`) to functions that create Embedders. Most commands create Embedders via helper functions — update those to accept `Option<&str>` for the model override.
-
-- [ ] **Step 3: Update `check_model_version()` to use runtime MODEL_NAME**
-
-Replace `const MODEL_NAME` comparison with the active ModelConfig's repo. Error message:
-```
-Model mismatch: index uses "{stored}" but configured model is "{configured}".
-Run `cqs index --force` to reindex with the new model.
-```
-
-- [ ] **Step 4: Update `cqs doctor` to check model consistency**
-
-In `src/cli/commands/doctor.rs`, add a check that the configured model matches the indexed model. Report as a warning, not an error.
-
-- [ ] **Step 5: Write model mismatch integration test**
-
-- [ ] **Step 6: Run tests, commit**
+- [ ] **Step 1: Add `--model` to Cli struct** (top-level field, not global=true)
+- [ ] **Step 2: Wire into ModelConfig::resolve()** in dispatch.rs `run_with()`
+- [ ] **Step 3: Update model mismatch warning message**
+- [ ] **Step 4: Update `cqs doctor`** to check model consistency
+- [ ] **Step 5: Write mismatch integration test**
+- [ ] **Step 6: Add ExportModel variant to Commands enum + dispatch routing** (for Task 6's file)
+- [ ] **Step 7: Commit**
 
 ---
 
 ### Task 6: Export Helper Command
 
-**Files:**
-- Create: `src/cli/commands/export_model.rs`
-- Modify: `src/cli/definitions.rs`, `src/cli/dispatch.rs`
+**Files:** Create `src/cli/commands/export_model.rs` ONLY
+**Phase:** 3 (Agent H — parallel with Task 5. Agent G adds the enum variant + routing, Agent H writes the implementation file)
 
-- [ ] **Step 1: Implement `cqs export-model`**
-
-Shells out to `python3 -m optimum.exporters.onnx --model <repo> --task feature-extraction --opset 11 <output>`. Captures stderr on failure for diagnostic output. Writes `model.toml` template.
-
-- [ ] **Step 2: Route command, commit**
+- [ ] **Step 1: Implement `run_export_model()`** — shell out to optimum, --opset 11, capture stderr, write model.toml template
+- [ ] **Step 2: Commit**
 
 ---
 
 ### Task 7: Documentation + Changelog
 
-- [ ] **Step 1: README model selection section**
-- [ ] **Step 2: CONTRIBUTING.md architecture update (models.rs)**
-- [ ] **Step 3: CHANGELOG entry**
-- [ ] **Step 4: Commit**
+**Phase:** 4 (after all code tasks)
+
+- [ ] README model selection section
+- [ ] CONTRIBUTING.md architecture update
+- [ ] CHANGELOG entry
+- [ ] Commit
 
 ---
 
 ### Task 8: Eval — BGE-large with Enrichment
 
-- [ ] **Step 1: Set `CQS_EMBEDDING_MODEL=bge-large`, `cqs index --force`**
-- [ ] **Step 2: Run Rust hard eval: `cargo test --features gpu-index test_hard -- --nocapture`**
-- [ ] **Step 3: Record results, compare to E5-base 92.7%**
-- [ ] **Step 4: Switch back to default, reindex**
+**Phase:** 4 (after Task 7)
+
+- [ ] Set `CQS_EMBEDDING_MODEL=bge-large`, `cqs index --force`
+- [ ] Run enriched hard eval
+- [ ] Record results, compare to base E5
+- [ ] Switch back to default, reindex
