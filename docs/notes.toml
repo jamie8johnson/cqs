@@ -767,3 +767,21 @@ mentions = [
     "src/embedder/mod.rs",
     "CUDA",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "TypeFirst vs NameFirst field extraction: C/C++/Java/C# put type before name (Type name;) while Rust/TS/Python put name first (name: Type). The original plan assumed all languages use separator-first extraction — fresh-eyes review caught this fundamental design flaw before implementation."
+mentions = [
+    "nl.rs",
+    "language",
+]
+
+[[note]]
+sentiment = -0.5
+text = "HNSW library (anndists) panics on dimension mismatch instead of returning an error. Removing the hardcoded dimension check in search caused CI test failure. Must keep a guard — but now checks against index-stored dim instead of compile-time constant."
+mentions = ["hnsw"]
+
+[[note]]
+sentiment = 0.5
+text = "Stack repo indexing: top-by-stars repos are mostly mega-frameworks (kubernetes, moby) that timeout. Medium repos (1-30MB, 500-5000 stars) are 10x faster to index and produce more diverse training data. Filter by size, not just popularity."
+mentions = ["training-data"]
