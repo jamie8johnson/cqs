@@ -44,63 +44,82 @@ Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
 - `/migrate` -- handle schema version upgrades
 - `/troubleshoot` -- diagnose common cqs issues
 
-## Code Search
+## Code Intelligence — When to Use What
 
-**Use `cqs search` instead of grep/glob.** It finds code by what it does, not text matching. All commands invoked via Bash.
+**You wrote cqs.** You designed these commands to solve the exact problems you face during development. `cqs impact` replaces 5 separate grep+read cycles. `cqs scout` replaces the manual search→callers→tests→staleness chain. Use your own tools.
 
+**MANDATORY: Use these cqs commands at the right moments.** They replace multiple manual searches with a single call. Workflow skills are even easier — they run the right commands and present checklists:
+- `/before-edit <function>` — impact + tests + callers → modification checklist
+- `/investigate <task>` — scout + gather → implementation brief
+- `/check-my-work` — review current diff → risk assessment
+
+### Before modifying a function:
 ```bash
-cqs "search query" --json              # semantic search (default: hybrid RRF)
-cqs "function_name" --name-only --json # definition lookup (fast, no embedding)
-cqs "query" --semantic-only --json     # pure vector similarity, no keyword RRF
-cqs "query" --rerank --json            # cross-encoder re-ranking (slower, more accurate)
-cqs "query" --lang rust --path "src/cli/**" --json  # scoped search
-cqs "query" --ref aveva --json         # search only a named reference (skip project)
+cqs impact <function_name> --json    # WHO calls this? What tests cover it? What breaks?
 ```
 
-Use it for:
-- Exploring unfamiliar code
-- Finding implementations by behavior
-- When you don't know exact names
+### Before writing tests:
+```bash
+cqs test-map <function_name> --json  # What tests already exercise this function?
+```
 
-Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
+### Before starting any implementation task:
+```bash
+cqs scout "task description" --json  # Search + callers + tests + staleness + notes in one call
+```
 
-**Key commands** (`--json` works on all commands; `--format mermaid` also accepted on impact/trace). Search is project-only by default — use `--include-refs` for cross-index, or `--ref <name>` for a specific reference:
-- `cqs read <path>` — file contents with notes injected as comments. Use instead of raw `Read` for indexed source files.
-- `cqs read --focus <function>` — focused read: function + type dependencies only. Saves tokens.
-- `cqs similar <function>` — find code similar to a given function. Refactoring discovery, duplicates.
-- `cqs explain <function>` — function card: signature, callers, callees, similar. Collapses 4+ lookups into 1.
-- `cqs diff <ref>` — semantic diff between indexed snapshots. Requires references (`cqs ref add`).
-- `cqs drift <ref>` — semantic drift detection: functions that changed most between reference and project. `--min-drift 0.1` to filter noise.
-- `cqs gather "query"` — smart context assembly: seed search + BFS call graph expansion. `--ref name` for cross-index: seeds from reference, bridges into project code.
-- `cqs dead` — find dead code: functions/methods with no callers in the index. `--include-pub` for public API, `--min-confidence high|medium|low`.
-- `cqs stale` — check index freshness: files modified since last index.
-- `cqs related <function>` — co-occurrence: shared callers, callees, types. What else to review.
-- `cqs where "description"` — placement suggestion: where to add new code, with local patterns.
-- `cqs scout "task"` — pre-investigation dashboard: search + callers/tests + staleness + notes in one call.
-- `cqs plan "description"` — task planning: classify into 11 task-type templates (language, bug fix, CLI flag, etc.) + scout + checklist. `--json` for structured output.
-- `cqs task "description"` — single-call implementation brief: scout + gather + impact + placement + notes. Loads shared resources once. Waterfall token budgeting.
-- `cqs onboard "concept"` — guided tour: entry point → call chain → callers → types → tests. One-call orientation.
-- `cqs callers <function>` / `cqs callees <function>` — call graph navigation.
-- `cqs deps <type>` — type dependencies: who uses this type? `--reverse` for what types a function uses.
-- `cqs impact <function>` — what breaks if you change it. Callers + affected tests.
-- `cqs impact-diff [--base REF]` — diff-aware impact: changed functions, callers, tests to re-run.
-- `cqs batch` — batch mode: reads commands from stdin, outputs JSONL. Persistent Store + lazy Embedder. Supports pipeline syntax: `search "error" | callers | test-map` chains commands via fan-out.
-- `cqs review` — comprehensive diff review: impact-diff + notes + risk scoring. `--base`, `--json`.
-- `cqs ci [--base REF] [--gate high|medium|off]` — CI pipeline: review + dead code + gate. Exit 3 on gate fail. `--json` for structured output.
-- `cqs test-map <function>` — map function to tests that exercise it.
-- `cqs trace <source> <target>` — shortest call path between two functions.
-- `cqs context <file>` — module-level overview: chunks, callers, callees, notes.
-- `cqs stats` — index statistics.
-- `cqs health` — codebase quality snapshot: dead code, staleness, hotspots, untested hotspots, notes.
-- `cqs suggest` — auto-suggest notes from patterns (dead clusters, untested hotspots, high-risk, stale mentions). `--apply` to add.
-- `cqs notes list --check` — verify note mentions still exist (files on disk, symbols in index).
-- `cqs gc` — report/clean stale index entries.
-- `cqs notes add/update/remove` — manage project notes.
-- `cqs blame <function>` — semantic git blame: who changed a function, when, and why. `--callers` for affected callers.
-- `cqs chat` — interactive REPL with readline, history, tab completion. Same commands and pipelines as batch.
-- `cqs audit-mode on/off` — toggle audit mode.
-- `cqs convert <path> [--output dir]` — convert PDF/HTML/CHM/MD to cleaned Markdown with sensible filenames.
-- `cqs train-data` — generate fine-tuning training data from git history.
+### Exploring unfamiliar code:
+```bash
+cqs onboard "concept" --json         # Guided tour: entry point → call chain → types → tests
+cqs gather "query" --json            # Smart context: seed search + BFS call graph expansion
+```
+
+### Planning where to add new code:
+```bash
+cqs task "description" --json        # Full implementation brief: scout + gather + impact + placement
+```
+
+### Checking code health:
+```bash
+cqs health --json                    # Dead code, staleness, hotspots, untested functions
+cqs dead --json                      # Find dead code (zero callers)
+```
+
+### Searching (use instead of grep/glob):
+```bash
+cqs "search query" --json            # Semantic search (hybrid RRF)
+cqs "function_name" --name-only --json  # Definition lookup (fast)
+cqs read <path>                      # File with notes injected
+cqs read --focus <function>          # Function + type dependencies only
+```
+
+### Full command reference
+
+`--json` works on all commands. `--format mermaid` on impact/trace. `--ref <name>` for cross-index search.
+
+- `cqs explain <fn>` — function card: signature, callers, callees, similar
+- `cqs callers <fn>` / `cqs callees <fn>` — call graph navigation
+- `cqs deps <type>` — type dependencies
+- `cqs similar <fn>` — find duplicate/similar code
+- `cqs related <fn>` — co-occurrence: shared callers, callees, types
+- `cqs where "description"` — placement suggestion with local patterns
+- `cqs trace <source> <target>` — shortest call path
+- `cqs context <file>` — module overview
+- `cqs impact-diff [--base REF]` — diff-aware impact analysis
+- `cqs review` — diff review with risk scoring
+- `cqs ci [--base REF] [--gate high|medium|off]` — CI gate
+- `cqs blame <fn>` — semantic git blame
+- `cqs stale` — check index freshness
+- `cqs diff <ref>` / `cqs drift <ref>` — semantic diff/drift between snapshots
+- `cqs suggest` — auto-suggest notes from patterns
+- `cqs notes add/update/remove/list` — manage project notes
+- `cqs gc` — clean stale index entries
+- `cqs batch` — batch mode with pipeline syntax
+- `cqs chat` — interactive REPL
+- `cqs audit-mode on/off` — toggle audit mode
+- `cqs convert <path>` — convert PDF/HTML/CHM/MD to Markdown
+- `cqs train-data` — generate training data from git history
+- `cqs stats` — index statistics
 
 **Token budgeting** — `--tokens N` on `query`, `gather`, `context`, `explain`, `scout`, `onboard`, and `task` packs results into a token budget (greedy knapsack by score). Commands that don't normally output content (`context`, `explain`, `scout`) include source code within the budget. `task` uses waterfall budgeting across sections (scout 15%, code 50%, impact 15%, placement 10%, notes 10%). JSON output adds `token_count` and `token_budget` fields.
 

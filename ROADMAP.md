@@ -1,8 +1,29 @@
 # Roadmap
 
-## Current: v1.5.0
+## Current: v1.6.0
 
-v1.4.2: Contrastive LLM summaries, FTS path filter fix, 34 adversarial tests, enriched hard eval, CI Node.js 24. v8-keydac: 92.7% R@1 hard eval (zero non-determinism), 96.3% full-pipeline, CSN 0.652 (language-specific regression). v7 remains best CSN (0.707). Next: v9 (~300k, balanced oversampling + synthetic queries + curriculum scheduling). Strategy: more diversity not volume. Target: CSN ≥ 0.70 AND hard eval ≥ 90%.
+v1.6.0: 6th full audit (82/82 fixed), FieldStyle field extraction (28 languages), BatchProvider trait, runtime embedding dim, CallGraph Arc<str>, CLI/store splits, lazy enrichment, GC single transaction. 1993 tests.
+
+### Key Finding (2026-03-26)
+Enrichment stack contributes 43.6pp to hard eval (49.1% raw → 92.7% enriched). Model size is NOT the bottleneck — E5-large (3x params) scores the same as E5-base. Instruction models (GTE-Qwen2 1.5B, E5-mistral 7B) score WORSE. BGE-large best raw embedder at 61.8%.
+
+### Next — Embedding Model Options
+- [ ] BGE-large-en-v1.5 as configurable alternative (plan: `docs/superpowers/plans/2026-03-26-bge-large-model-option.md`)
+- [ ] ModelConfig registry with per-model prefix/dim/repo
+- [ ] Eval: BGE-large + enrichment vs E5-base + enrichment
+
+### Next — Training (Exp 18: v9-mini)
+- [ ] v9-mini training (in progress) — Stack data + call-graph false-negative filter + synthetic queries
+- [ ] Eval against base E5 (success bar: R@1 ≥ 92.7% AND CSN ≥ 0.627)
+- [ ] If successful: v9-full with curriculum scheduling + test-derived queries
+
+### Next — Agent Adoption (cqs telemetry shows 87% search, 0% advanced commands)
+Current: CLAUDE.md restructured with task-triggered commands (2026-03-26). Check telemetry next session.
+If adoption doesn't improve, try these alternatives in order:
+- [ ] **Pre-hook injection** — Claude Code hook runs `cqs impact` before Edit/Write, injects into context automatically
+- [ ] **Fewer commands in prompts** — only mention `scout` and `task` (highest value, fewest choices)
+- [ ] **Richer default output** — non-JSON default output formatted for direct agent consumption (like `cqs read`)
+- [ ] **Telemetry dashboard** — `cqs telemetry` command showing usage patterns, adoption gaps
 
 ### 1.0.x Highlights
 

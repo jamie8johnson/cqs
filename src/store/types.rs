@@ -623,7 +623,9 @@ mod tests {
     fn insert_test_chunk(store: &Store, id: &str, name: &str, file: &str) {
         store.rt.block_on(async {
             let embedding = crate::embedder::Embedding::new(vec![0.0f32; crate::EMBEDDING_DIM]);
-            let embedding_bytes = crate::store::helpers::embedding_to_bytes(&embedding).unwrap();
+            let embedding_bytes =
+                crate::store::helpers::embedding_to_bytes(&embedding, crate::EMBEDDING_DIM)
+                    .unwrap();
             let now = chrono::Utc::now().to_rfc3339();
             sqlx::query(
                 "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name,

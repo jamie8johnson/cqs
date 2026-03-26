@@ -279,7 +279,8 @@ fn test_compute_risk_and_tests_integration() {
 #[ignore] // Requires embedder model download
 fn test_task_end_to_end() {
     let store = setup_task_store();
-    let embedder = cqs::Embedder::new().expect("Failed to create embedder");
+    let embedder = cqs::Embedder::new(cqs::embedder::ModelConfig::resolve(None, None))
+        .expect("Failed to create embedder");
     let root = PathBuf::from("/tmp/test_project");
 
     let result = cqs::task(&store.store, &embedder, "search for code", &root, 3);
@@ -297,7 +298,8 @@ fn test_task_end_to_end() {
 #[ignore] // Requires embedder model download
 fn test_task_with_resources_end_to_end() {
     let store = setup_task_store();
-    let embedder = cqs::Embedder::new().expect("Failed to create embedder");
+    let embedder = cqs::Embedder::new(cqs::embedder::ModelConfig::resolve(None, None))
+        .expect("Failed to create embedder");
     let root = PathBuf::from("/tmp/test_project");
 
     let graph = store.store.get_call_graph().unwrap();

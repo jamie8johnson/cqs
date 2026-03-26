@@ -1,6 +1,9 @@
 //! Embedding generation with ort + tokenizers
 
+mod models;
 mod provider;
+
+pub use models::{EmbeddingConfig, ModelConfig};
 
 use provider::ort_err;
 pub(crate) use provider::{create_session, select_provider};
@@ -14,20 +17,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use thiserror::Error;
 
-// Model configuration - base E5-base-v2 (110M params, opset 11 ONNX).
-// The enrichment stack (contrastive summaries, HyDE, call graph) matters more than
-// the embedding model — base E5 matches fine-tuned LoRA variants on hard eval (92.7%)
-// and achieves 96.3% R@1 through the full pipeline.
-// Override with CQS_EMBEDDING_MODEL env var to use a different model.
-const DEFAULT_MODEL_REPO: &str = "intfloat/e5-base-v2";
-const MODEL_FILE: &str = "onnx/model.onnx";
-const TOKENIZER_FILE: &str = "tokenizer.json";
-
-/// Retrieves the embedding model repository URL from the environment or returns a default value.
+/// Retrieves the embedding model repository from the resolved ModelConfig.
 ///
-/// Returns the value of `CQS_EMBEDDING_MODEL` env var if set, otherwise the default model repo.
+/// Delegates to `ModelConfig::resolve(None, None)` which checks env var / defaults.
 pub fn model_repo() -> String {
-    std::env::var("CQS_EMBEDDING_MODEL").unwrap_or_else(|_| DEFAULT_MODEL_REPO.to_string())
+    ModelConfig::resolve(None, None).repo
 }
 
 // blake3 checksums — empty to skip validation (model changes with LoRA updates)
@@ -56,9 +50,9 @@ pub enum EmbedderError {
 
 // `ort_err` is defined in `provider.rs` (pub(super)) and imported above.
 
-/// A 768-dimensional L2-normalized embedding vector
+/// An L2-normalized embedding vector.
 ///
-/// Embeddings are produced by E5-base-v2 (768-dim).
+/// Dimension depends on the configured model (e.g., 768 for E5-base-v2).
 /// Can be compared using cosine similarity (dot product for normalized vectors).
 #[derive(Debug, Clone)]
 pub struct Embedding(Vec<f32>);
@@ -66,12 +60,12 @@ pub struct Embedding(Vec<f32>);
 /// Full embedding dimension -- re-exported from crate root
 pub use crate::EMBEDDING_DIM;
 
-/// Error returned when creating an embedding with invalid dimensions
+/// Error returned when creating an embedding with invalid data (empty or non-finite)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddingDimensionError {
     /// The actual dimension provided
     pub actual: usize,
-    /// The expected dimension (768)
+    /// The expected minimum dimension
     pub expected: usize,
 }
 
@@ -101,23 +95,16 @@ impl std::error::Error for EmbeddingDimensionError {}
 impl Embedding {
     /// Create a new embedding from raw vector data.
     ///
-    /// Logs a warning if the dimension doesn't match the expected 768.
-    /// For strict validation, use `try_new()` which returns an error.
+    /// Accepts any dimension — the Embedder validates consistency via `detected_dim`.
+    /// For validation that the vector is non-empty and finite, use `try_new()`.
     pub fn new(data: Vec<f32>) -> Self {
-        if data.len() != crate::EMBEDDING_DIM {
-            tracing::warn!(
-                expected = crate::EMBEDDING_DIM,
-                actual = data.len(),
-                "Embedding dimension mismatch -- may cause incorrect similarity scores"
-            );
-        }
         Self(data)
     }
 
-    /// Create a new embedding with dimension validation.
+    /// Create a new embedding with validation.
     ///
-    /// Returns `Err` if the vector is not exactly 768 dimensions.
-    /// Use this when constructing embeddings from untrusted sources.
+    /// Returns `Err` if the vector is empty or contains non-finite values.
+    /// Dimension is no longer validated here — the Embedder enforces consistency.
     ///
     /// # Example
     /// ```
@@ -126,14 +113,23 @@ impl Embedding {
     /// let valid = Embedding::try_new(vec![0.5; 768]);
     /// assert!(valid.is_ok());
     ///
-    /// let invalid = Embedding::try_new(vec![0.5; 100]);
-    /// assert!(invalid.is_err());
+    /// let also_valid = Embedding::try_new(vec![0.5; 384]);
+    /// assert!(also_valid.is_ok());
+    ///
+    /// let empty = Embedding::try_new(vec![]);
+    /// assert!(empty.is_err());
     /// ```
     pub fn try_new(data: Vec<f32>) -> Result<Self, EmbeddingDimensionError> {
-        if data.len() != EMBEDDING_DIM {
+        if data.is_empty() {
+            return Err(EmbeddingDimensionError {
+                actual: 0,
+                expected: 1, // at least 1 dimension required
+            });
+        }
+        if !data.iter().all(|v| v.is_finite()) {
             return Err(EmbeddingDimensionError {
                 actual: data.len(),
-                expected: EMBEDDING_DIM,
+                expected: data.len(),
             });
         }
         Ok(Self(data))
@@ -197,7 +193,7 @@ impl std::fmt::Display for ExecutionProvider {
     }
 }
 
-/// Text embedding generator using E5-base-v2
+/// Text embedding generator using a configurable model (default: E5-base-v2)
 ///
 /// Automatically downloads the model from HuggingFace Hub on first use.
 /// Detects GPU availability and uses CUDA/TensorRT when available.
@@ -206,8 +202,9 @@ impl std::fmt::Display for ExecutionProvider {
 ///
 /// ```no_run
 /// use cqs::Embedder;
+/// use cqs::embedder::ModelConfig;
 ///
-/// let embedder = Embedder::new()?;
+/// let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
 /// let embedding = embedder.embed_query("parse configuration file")?;
 /// println!("Embedding dimension: {}", embedding.len()); // 768
 /// # Ok::<(), anyhow::Error>(())
@@ -229,6 +226,8 @@ pub struct Embedder {
     query_cache: Mutex<LruCache<String, Embedding>>,
     /// Detected embedding dimension from the model. Set on first inference.
     detected_dim: std::sync::OnceLock<usize>,
+    /// Model configuration (repo, paths, prefixes, dimensions)
+    model_config: ModelConfig,
 }
 
 /// Default query cache size (entries). Each entry is ~3KB (768 floats + key).
@@ -243,8 +242,9 @@ impl Embedder {
     /// Note: Model download and ONNX session are lazy-loaded on first
     /// embedding request. This avoids HuggingFace API calls for commands
     /// that don't need embeddings.
-    pub fn new() -> Result<Self, EmbedderError> {
+    pub fn new(model_config: ModelConfig) -> Result<Self, EmbedderError> {
         let provider = select_provider();
+        let max_length = model_config.max_seq_length;
 
         let query_cache = Mutex::new(LruCache::new(
             NonZeroUsize::new(DEFAULT_QUERY_CACHE_SIZE)
@@ -256,9 +256,10 @@ impl Embedder {
             tokenizer: OnceCell::new(),
             model_paths: OnceCell::new(),
             provider,
-            max_length: 512,
+            max_length,
             query_cache,
             detected_dim: std::sync::OnceLock::new(),
+            model_config,
         })
     }
 
@@ -266,7 +267,9 @@ impl Embedder {
     ///
     /// Use this for single-query embedding where CPU is faster than GPU
     /// due to CUDA context setup overhead. GPU only helps for batch embedding.
-    pub fn new_cpu() -> Result<Self, EmbedderError> {
+    pub fn new_cpu(model_config: ModelConfig) -> Result<Self, EmbedderError> {
+        let max_length = model_config.max_seq_length;
+
         let query_cache = Mutex::new(LruCache::new(
             NonZeroUsize::new(DEFAULT_QUERY_CACHE_SIZE)
                 .expect("DEFAULT_QUERY_CACHE_SIZE is non-zero"),
@@ -277,15 +280,22 @@ impl Embedder {
             tokenizer: OnceCell::new(),
             model_paths: OnceCell::new(),
             provider: ExecutionProvider::CPU,
-            max_length: 512,
+            max_length,
             query_cache,
             detected_dim: std::sync::OnceLock::new(),
+            model_config,
         })
+    }
+
+    /// Get the model configuration
+    pub fn model_config(&self) -> &ModelConfig {
+        &self.model_config
     }
 
     /// Get or initialize model paths (lazy download)
     fn model_paths(&self) -> Result<&(PathBuf, PathBuf), EmbedderError> {
-        self.model_paths.get_or_try_init(ensure_model)
+        self.model_paths
+            .get_or_try_init(|| ensure_model(&self.model_config))
     }
 
     /// Get or initialize the ONNX session
@@ -409,19 +419,20 @@ impl Embedder {
         Ok(windows)
     }
 
-    /// Embed documents (code chunks). Adds "passage: " prefix for E5.
+    /// Embed documents (code chunks). Adds model-specific document prefix.
     ///
     /// Large inputs are processed in batches of 64 to cap GPU memory usage.
     pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbedderError> {
         let _span = tracing::info_span!("embed_documents", count = texts.len()).entered();
+        let prefix = &self.model_config.doc_prefix;
         const MAX_BATCH: usize = 64;
         if texts.len() <= MAX_BATCH {
-            let prefixed: Vec<String> = texts.iter().map(|t| format!("passage: {}", t)).collect();
+            let prefixed: Vec<String> = texts.iter().map(|t| format!("{}{}", prefix, t)).collect();
             return self.embed_batch(&prefixed);
         }
         let mut all = Vec::with_capacity(texts.len());
         for chunk in texts.chunks(MAX_BATCH) {
-            let prefixed: Vec<String> = chunk.iter().map(|t| format!("passage: {}", t)).collect();
+            let prefixed: Vec<String> = chunk.iter().map(|t| format!("{}{}", prefix, t)).collect();
             all.extend(self.embed_batch(&prefixed)?);
         }
         Ok(all)
@@ -455,7 +466,7 @@ impl Embedder {
         }
 
         // Compute embedding (outside lock - allows parallel queries)
-        let prefixed = format!("query: {}", text);
+        let prefixed = format!("{}{}", self.model_config.query_prefix, text);
         let results = self.embed_batch(&[prefixed])?;
         let base_embedding = results.into_iter().next().ok_or_else(|| {
             EmbedderError::InferenceFailed("embed_batch returned empty result".to_string())
@@ -502,9 +513,9 @@ impl Embedder {
     }
 
     /// Returns the embedding dimension detected from the model.
-    /// Falls back to EMBEDDING_DIM (768) if no inference has been run yet.
+    /// Falls back to the model config's declared dimension if no inference has been run yet.
     pub fn embedding_dim(&self) -> usize {
-        *self.detected_dim.get().unwrap_or(&EMBEDDING_DIM)
+        *self.detected_dim.get().unwrap_or(&self.model_config.dim)
     }
 
     /// Generates embeddings for a batch of text inputs.
@@ -656,17 +667,17 @@ impl Embedder {
 }
 
 /// Download model and tokenizer from HuggingFace Hub
-fn ensure_model() -> Result<(PathBuf, PathBuf), EmbedderError> {
+fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderError> {
     use hf_hub::api::sync::Api;
 
     let api = Api::new().map_err(|e| EmbedderError::HfHub(e.to_string()))?;
-    let repo = api.model(model_repo());
+    let repo = api.model(config.repo.clone());
 
     let model_path = repo
-        .get(MODEL_FILE)
+        .get(&config.onnx_path)
         .map_err(|e| EmbedderError::HfHub(e.to_string()))?;
     let tokenizer_path = repo
-        .get(TOKENIZER_FILE)
+        .get(&config.tokenizer_path)
         .map_err(|e| EmbedderError::HfHub(e.to_string()))?;
 
     // Verify checksums (skip if already verified via marker file)
@@ -964,7 +975,7 @@ mod tests {
     #[test]
     #[ignore] // Requires model
     fn test_clear_session_and_reinit() {
-        let embedder = Embedder::new().unwrap();
+        let embedder = Embedder::new(ModelConfig::e5_base()).unwrap();
         // Force session init by embedding something
         let _ = embedder.embed_query("test");
         // Clear and re-embed
@@ -975,7 +986,7 @@ mod tests {
 
     #[test]
     fn test_clear_session_idempotent() {
-        let embedder = Embedder::new_cpu().unwrap();
+        let embedder = Embedder::new_cpu(ModelConfig::e5_base()).unwrap();
         embedder.clear_session(); // clear before init -- should not panic
         embedder.clear_session(); // clear again -- should not panic
     }
@@ -988,7 +999,8 @@ mod tests {
         #[test]
         #[ignore] // Requires model - run with: cargo test --lib integration -- --ignored
         fn test_token_count_empty() {
-            let embedder = Embedder::new().expect("Failed to create embedder");
+            let embedder =
+                Embedder::new(ModelConfig::e5_base()).expect("Failed to create embedder");
             let count = embedder.token_count("").expect("token_count failed");
             assert_eq!(count, 0);
         }
@@ -996,7 +1008,8 @@ mod tests {
         #[test]
         #[ignore]
         fn test_token_count_simple() {
-            let embedder = Embedder::new().expect("Failed to create embedder");
+            let embedder =
+                Embedder::new(ModelConfig::e5_base()).expect("Failed to create embedder");
             let count = embedder
                 .token_count("hello world")
                 .expect("token_count failed");
@@ -1011,7 +1024,8 @@ mod tests {
         #[test]
         #[ignore]
         fn test_token_count_code() {
-            let embedder = Embedder::new().expect("Failed to create embedder");
+            let embedder =
+                Embedder::new(ModelConfig::e5_base()).expect("Failed to create embedder");
             let code = "fn main() { println!(\"Hello\"); }";
             let count = embedder.token_count(code).expect("token_count failed");
             // Code typically tokenizes to more tokens than words
@@ -1021,7 +1035,8 @@ mod tests {
         #[test]
         #[ignore]
         fn test_token_count_unicode() {
-            let embedder = Embedder::new().expect("Failed to create embedder");
+            let embedder =
+                Embedder::new(ModelConfig::e5_base()).expect("Failed to create embedder");
             let text = "\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}\u{4e16}\u{754c}"; // "Hello world" in Japanese
             let count = embedder.token_count(text).expect("token_count failed");
             // Unicode text may tokenize differently

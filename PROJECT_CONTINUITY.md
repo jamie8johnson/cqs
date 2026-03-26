@@ -2,58 +2,40 @@
 
 ## Right Now
 
-**6th full audit complete. All 82 findings fixed. v9-mini pipeline indexing. (2026-03-26)**
+**v9-mini results in. Assembling balanced v9-200k dataset. BGE-large plan ready. (2026-03-26)**
 
-### Active Work
-- **Branch**: `feat/runtime-embedding-dim` — PR #687 (CI pending)
-  - #681 BatchProvider trait, #682 runtime embedding dim, #683 batch size docs, #684 P4 remainders
-  - Two agents running: #665 (lazy enrichment) and #666 (GC transaction)
-- **Gap indexing**: 293/554 repos for underrepresented languages (PHP/Ruby/Rust/Python/C++)
-  - Output: `~/training-data/stack_indexed_pairs_gaps.jsonl`
-  - Already have 1.25M pairs from first 265 repos; filling per-language gaps to 15K each
+### v9-mini Results (Exp 18)
+- Raw R@1: **65.5%** (best ever, +16.4pp over base 49.1%)
+- Enriched R@1: **89.1%** (matches base — both 89.1% on this GPU, 92.7% was within noise)
+- CSN: **0.638** (PASS, +0.011 over base 0.627)
+- **Call-graph filter + Stack data worked** — first LoRA that improves raw embedding without degrading enriched eval
+- The 92.7% figure was GPU non-determinism — base E5 also shows 89.1% on re-run
 
-### v9-mini Pipeline (Exp 18)
-- **Pivot**: training data from CSN → The Stack (full repos with call graphs)
-- **Novel signals**: call-graph false-negative filtering + synthetic multi-style queries
-- **Status**: 1,900 repos selected (1,350 original + 554 gap), 1,904 cloned, ~560 indexed
-- **Scripts**: `select_and_clone_repos.py`, `index_stack_repos.py`, `gen_synthetic_queries.py`, `assemble_v9_mini.py`
-- **Next steps after indexing**: mine hard negs (with --call-graph), gen synthetic queries (~$2), assemble 100K balanced set, train
-- **Success bar**: hard eval ≥ 92.7% AND CSN ≥ 0.627
+### Active
+- **v9-200k dataset assembly**: Cloning 1,500 repos for C++/TS/Ruby balance gaps. Need ~52K more pairs to reach 22K/lang for all 9 languages.
+- **BGE-large configurable models plan**: 4 revisions, 3 reviews, ready to execute after v9-200k.
 
-### Session Accomplishments (2026-03-26)
-1. v1.5.0 released (PR #678 — base E5 default, CI env var fix)
-2. 6th full audit: 82 findings across 14 categories, ALL fixed
-   - PR #685: 74 findings (P1-P3) — merged
-   - PR #686: #680 FieldStyle field extraction for 28 languages — merged
-   - PR #687: #681-684 — pending CI
-3. v9-mini pipeline: 5 scripts written, 1,900 repos cloned, indexing in progress
-4. Exp 18 research log updated (Stack + call-graph filter + synthetic queries)
-5. #680 plan written, fresh-eyes reviewed, executed (FieldStyle enum)
-6. 133GB debug build artifacts cleaned
-7. Tests: 1395 → 1434+ (39+ new tests)
+### Pending
+1. Clone + index C++/TS/Ruby gap repos
+2. Merge new pairs into v9_merged_pairs.jsonl
+3. Re-mine hard negatives on 200K set
+4. Assemble balanced 200K (22K/lang × 9)
+5. Train v9-200k
+6. Execute BGE-large plan (8 tasks)
+7. v1.7.0 release
 
-### Parked
-- v9 training (waiting on indexing to complete)
-- Paper v0.5 (waiting on v9 results)
+## Parked
+- Paper v0.6 (needs v9-200k + BGE-large results)
+- Curriculum scheduling (v9-full, if v9-200k shows scale helps)
 
 ## Open Issues
-- #389 (CAGRA memory — blocked on upstream cuVS)
-- #255 (pre-built reference packages — feature request)
-- #106 (ort pre-release RC — waiting on stable)
-- #63 (paste unmaintained — waiting on upstream)
-- #665, #666 (being fixed now in PR #687)
-- #680-684 (fixed, close after PR #687 merge)
+- #389, #255, #106, #63 (all blocked on upstream)
 
 ## Architecture
-- Version: 1.5.0
-- Schema: v16 (llm_summaries table)
-- Current shipping model: base E5 (intfloat/e5-base-v2, 92.7% hard eval, 0.627 CSN)
-- Full-pipeline: 96.3% R@1 (HyDE + contrastive summaries)
-- Languages: 51 (28 with field extraction via FieldStyle)
-- Tests: ~1434 (with gpu-index)
-- CLI split: definitions.rs + dispatch.rs + mod.rs
-- LLM: BatchProvider trait (Anthropic impl)
-- Embedding: runtime dimension detection via OnceLock
-- CallGraph: Arc<str> interning
-- Paper: ~/training-data/paper/draft.md (v0.4)
-- Training repo: github.com/jamie8johnson/cqs-training
+- Version: 1.6.0
+- Model: E5-base-v2 (768-dim). v9-mini LoRA trained (65.5% raw, 89.1% enriched, 0.638 CSN).
+- Enrichment: contributes ~40pp (raw ~49-65% → enriched ~89%)
+- Languages: 51 (28 with FieldStyle)
+- Tests: ~1993
+- Training: ~/training-data (github.com/jamie8johnson/cqs-training)
+- Conda: transformers 5.3.0, torch 2.11.0, faiss-gpu 1.13.2

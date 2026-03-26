@@ -1,4 +1,4 @@
-use cqs::embedder::Embedder;
+use cqs::embedder::{Embedder, ModelConfig};
 use std::time::Instant;
 
 /// Entry point that benchmarks an embedder's initialization, warmup, and embedding performance.
@@ -19,7 +19,7 @@ use std::time::Instant;
 fn main() {
     println!("Initializing embedder...");
     let start = Instant::now();
-    let embedder = Embedder::new().unwrap();
+    let embedder = Embedder::new(ModelConfig::resolve(None, None)).unwrap();
     println!("Init: {:?}", start.elapsed());
     println!("Provider: {}", embedder.provider());
 

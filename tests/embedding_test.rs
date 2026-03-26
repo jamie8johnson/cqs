@@ -3,12 +3,12 @@
 //! Tests for `embed_documents` and `embed_query` that require the ONNX model.
 //! Run with: cargo test --features gpu-index --test embedding_test -- --ignored
 
-use cqs::embedder::{Embedder, EmbedderError};
+use cqs::embedder::{Embedder, EmbedderError, ModelConfig};
 use cqs::EMBEDDING_DIM;
 
 /// Create a CPU embedder (avoids GPU context overhead for these tests)
 fn cpu_embedder() -> Embedder {
-    Embedder::new_cpu().expect("Failed to create CPU embedder")
+    Embedder::new_cpu(ModelConfig::resolve(None, None)).expect("Failed to create CPU embedder")
 }
 
 #[test]

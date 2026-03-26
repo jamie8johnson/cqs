@@ -326,7 +326,8 @@ impl<'a> Iterator for EmbeddingBatchIterator<'a> {
                         if rowid > max_rowid {
                             max_rowid = rowid;
                         }
-                        bytes_to_embedding(&bytes).map(|emb| (id, Embedding::new(emb)))
+                        bytes_to_embedding(&bytes, self.store.dim)
+                            .map(|emb| (id, Embedding::new(emb)))
                     })
                     .collect();
 

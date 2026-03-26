@@ -51,6 +51,25 @@ cqs "validate email with regex"
 cqs "database connection pool"
 ```
 
+### Embedding Model
+
+cqs ships with E5-base-v2 (768-dim) as the default. Alternative models can be configured:
+
+```bash
+# Built-in preset
+export CQS_EMBEDDING_MODEL=bge-large
+cqs index --force  # reindex required after model change
+
+# Or via CLI flag
+cqs index --force --model bge-large
+
+# Or in cqs.toml
+[embedding]
+model = "bge-large"
+```
+
+For custom ONNX models, see `cqs export-model --help`.
+
 ## Filters
 
 ```

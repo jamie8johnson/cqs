@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use colored::Colorize;
 
+use cqs::embedder::ModelConfig;
 use cqs::normalize_path;
 use cqs::Embedder;
 use cqs::{search_across_projects, ProjectRegistry};
@@ -93,7 +94,7 @@ pub(crate) fn cmd_project(subcmd: &ProjectCommand) -> Result<()> {
             threshold,
             json,
         } => {
-            let embedder = Embedder::new()?;
+            let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
             let query_embedding = embedder.embed_query(query)?;
 
             let results = search_across_projects(&query_embedding, query, *limit, *threshold)?;

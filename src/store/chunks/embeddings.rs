@@ -23,6 +23,7 @@ impl Store {
         }
 
         const BATCH_SIZE: usize = 500;
+        let dim = self.dim;
         let mut result = HashMap::new();
 
         self.rt.block_on(async {
@@ -44,7 +45,7 @@ impl Store {
                 for row in rows {
                     let hash: String = row.get(0);
                     let bytes: Vec<u8> = row.get(1);
-                    if let Some(embedding) = bytes_to_embedding(&bytes) {
+                    if let Some(embedding) = bytes_to_embedding(&bytes, dim) {
                         result.insert(hash, Embedding::new(embedding));
                     }
                 }
@@ -73,6 +74,7 @@ impl Store {
         }
 
         const BATCH_SIZE: usize = 500;
+        let dim = self.dim;
         let mut result = Vec::new();
 
         self.rt.block_on(async {
@@ -94,7 +96,7 @@ impl Store {
                 for row in rows {
                     let id: String = row.get(0);
                     let bytes: Vec<u8> = row.get(1);
-                    if let Some(embedding) = bytes_to_embedding(&bytes) {
+                    if let Some(embedding) = bytes_to_embedding(&bytes, dim) {
                         result.push((id, Embedding::new(embedding)));
                     }
                 }

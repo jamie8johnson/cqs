@@ -5,6 +5,7 @@
 use anyhow::Result;
 use colored::Colorize;
 
+use cqs::embedder::ModelConfig;
 use cqs::{Embedder, Parser as CqParser, Store};
 
 use crate::cli::find_project_root;
@@ -12,7 +13,7 @@ use crate::cli::find_project_root;
 /// Run diagnostic checks on cqs installation and index
 ///
 /// Reports runtime info, embedding provider, model status, and index statistics.
-pub(crate) fn cmd_doctor() -> Result<()> {
+pub(crate) fn cmd_doctor(model_override: Option<&str>) -> Result<()> {
     let _span = tracing::info_span!("cmd_doctor").entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
@@ -22,7 +23,8 @@ pub(crate) fn cmd_doctor() -> Result<()> {
     println!("Runtime:");
 
     // Check model
-    match Embedder::new() {
+    let model_config = ModelConfig::resolve(model_override, None);
+    match Embedder::new(model_config.clone()) {
         Ok(embedder) => {
             println!(
                 "  {} Model: {} (metadata: {})",
@@ -82,6 +84,22 @@ pub(crate) fn cmd_doctor() -> Result<()> {
                         .map(|(l, c)| format!("{} {}", c, l))
                         .collect();
                     println!("      ({})", lang_summary.join(", "));
+                }
+
+                // Check model mismatch between index and configured model
+                let stored = store.stored_model_name();
+                let configured = &model_config.name;
+                match stored {
+                    Some(ref stored_name) if stored_name != configured => {
+                        println!(
+                            "  {} Model mismatch: index uses \"{}\", configured is \"{}\"",
+                            "[!]".yellow(),
+                            stored_name,
+                            configured
+                        );
+                        println!("      Run `cqs index --force` to reindex with the new model.");
+                    }
+                    _ => {}
                 }
             }
             Err(e) => {

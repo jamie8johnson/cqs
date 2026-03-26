@@ -25,12 +25,13 @@
 //!
 //! ```no_run
 //! use cqs::{Embedder, Parser, Store};
+//! use cqs::embedder::ModelConfig;
 //! use cqs::store::SearchFilter;
 //!
 //! # fn main() -> anyhow::Result<()> {
 //! // Initialize components
 //! let parser = Parser::new()?;
-//! let embedder = Embedder::new()?;
+//! let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
 //! let store = Store::open(std::path::Path::new(".cqs/index.db"))?;
 //!
 //! // Parse and embed a file

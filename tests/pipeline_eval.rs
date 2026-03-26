@@ -10,7 +10,7 @@
 
 mod eval_common;
 
-use cqs::embedder::{Embedder, Embedding};
+use cqs::embedder::{Embedder, Embedding, ModelConfig};
 use cqs::hnsw::HnswIndex;
 use cqs::parser::{Language, Parser};
 use cqs::store::{ModelInfo, SearchFilter, Store};
@@ -215,7 +215,8 @@ fn compute_metrics(
 fn test_pipeline_scoring() {
     // === Setup ===
     eprintln!("Initializing embedder...");
-    let embedder = Embedder::new().expect("Failed to initialize embedder");
+    let embedder =
+        Embedder::new(ModelConfig::resolve(None, None)).expect("Failed to initialize embedder");
     let parser = Parser::new().expect("Failed to initialize parser");
 
     let dir = TempDir::new().unwrap();
@@ -690,7 +691,7 @@ fn test_pipeline_scoring() {
 #[test]
 #[ignore]
 fn test_holdout_eval() {
-    let embedder = Embedder::new().expect("Embedder init failed");
+    let embedder = Embedder::new(ModelConfig::resolve(None, None)).expect("Embedder init failed");
     let parser = Parser::new().expect("Parser init failed");
 
     let dir = TempDir::new().unwrap();
@@ -823,7 +824,7 @@ fn test_stress_eval() {
     use std::path::Path;
     use walkdir::WalkDir;
 
-    let embedder = Embedder::new().expect("Embedder init failed");
+    let embedder = Embedder::new(ModelConfig::resolve(None, None)).expect("Embedder init failed");
     let parser = Parser::new().expect("Parser init failed");
 
     let dir = TempDir::new().unwrap();

@@ -320,7 +320,7 @@ fn build_token_pack(
     let Some(budget) = max_tokens else {
         return Ok((None, None));
     };
-    let embedder = cqs::Embedder::new()?;
+    let embedder = cqs::Embedder::new(cqs::embedder::ModelConfig::resolve(None, None))?;
     let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
     let caller_counts = store.get_caller_counts_batch(&names).unwrap_or_else(|e| {
         tracing::warn!(error = %e, "Failed to fetch caller counts for token packing");

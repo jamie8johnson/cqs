@@ -785,3 +785,38 @@ mentions = ["hnsw"]
 sentiment = 0.5
 text = "Stack repo indexing: top-by-stars repos are mostly mega-frameworks (kubernetes, moby) that timeout. Medium repos (1-30MB, 500-5000 stars) are 10x faster to index and produce more diverse training data. Filter by size, not just popularity."
 mentions = ["training-data"]
+
+[[note]]
+sentiment = 1.0
+text = "Enrichment stack contributes 43.6pp to hard eval (raw 49.1% to enriched 92.7%). This is more than any LoRA training (max 8pp) or model scaling (0pp). Tested 8 models from 110M to 7B — none beat E5-base with enrichment. The model is a commodity; the enrichment pipeline is the moat."
+mentions = [
+    "embedder",
+    "enrichment",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Instruction-based embedding models (GTE-Qwen2, E5-mistral) perform WORSE than simple prefix models for confusable code search. More specific adversarial instructions degrade results further (47% to 18%). The prefix system (query:/passage:) is the right abstraction for code search."
+mentions = ["embedder"]
+
+[[note]]
+sentiment = -0.5
+text = "BGE-large plan review found 10 issues including 5 critical EMBEDDING_DIM threading sites missed in initial plan. prepare_index_data, Embedding::new/try_new, hnsw persist load, insert_batch, cagra (15 refs), EXPECTED_BYTES validation all hardcode 768. Fresh-eyes plan review essential for any EMBEDDING_DIM-touching change."
+mentions = [
+    "hnsw",
+    "embedder",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Fresh-eyes plan review is essential for any cross-cutting change. The BGE-large configurable models plan needed 3 rounds of review (10→15→3 issues). The most dangerous gaps were structural threading problems — Store::open has no ModelConfig, embedding serialization uses hardcoded dim, HNSW persist load can't infer dim from file. Each round caught issues the previous missed."
+mentions = [
+    "embedder",
+    "hnsw",
+    "store",
+]
+
+[[note]]
+sentiment = 0.0
+text = "CLAUDE.md restructured from 35-command reference list to task-triggered format: 'Before modifying a function → cqs impact'. Added ownership framing: 'You wrote cqs. Use your own tools.' Telemetry baseline: 87% search, 0% advanced commands. Check next session."
+mentions = ["CLAUDE.md"]

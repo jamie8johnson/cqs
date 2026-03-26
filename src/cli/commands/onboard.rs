@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
+use cqs::embedder::ModelConfig;
 use cqs::{onboard, onboard_to_json, Embedder};
 
 pub(crate) fn cmd_onboard(
@@ -14,7 +15,7 @@ pub(crate) fn cmd_onboard(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_onboard", concept, depth, ?max_tokens).entered();
     let (store, root, _) = crate::cli::open_project_store_readonly()?;
-    let embedder = Embedder::new()?;
+    let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
     let depth = depth.clamp(1, 5);
 
     let result = onboard(&store, &embedder, concept, &root, depth)?;

@@ -7,6 +7,7 @@
 mod common;
 
 use common::TestStore;
+use cqs::embedder::ModelConfig;
 use cqs::parser::{Chunk, ChunkType, Language};
 use cqs::suggest_placement;
 use cqs::Embedder;
@@ -36,7 +37,7 @@ fn placement_chunk(name: &str, file: &str, content: &str, line_start: u32) -> Ch
 #[test]
 fn test_suggest_placement_returns_results_for_similar_code() {
     let store = TestStore::new();
-    let embedder = Embedder::new().unwrap();
+    let embedder = Embedder::new(ModelConfig::resolve(None, None)).unwrap();
 
     // Seed store with chunks from multiple files that have known themes
     let chunks = vec![

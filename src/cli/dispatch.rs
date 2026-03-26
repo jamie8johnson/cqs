@@ -11,10 +11,11 @@ use super::{batch, chat, watch};
 use super::commands::cmd_convert;
 use super::commands::{
     cmd_audit_mode, cmd_blame, cmd_callees, cmd_callers, cmd_ci, cmd_context, cmd_dead, cmd_deps,
-    cmd_diff, cmd_doctor, cmd_drift, cmd_explain, cmd_gather, cmd_gc, cmd_health, cmd_impact,
-    cmd_impact_diff, cmd_index, cmd_init, cmd_notes, cmd_onboard, cmd_plan, cmd_project, cmd_query,
-    cmd_read, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats,
-    cmd_suggest, cmd_task, cmd_test_map, cmd_trace, cmd_train_data, cmd_where,
+    cmd_diff, cmd_doctor, cmd_drift, cmd_explain, cmd_export_model, cmd_gather, cmd_gc, cmd_health,
+    cmd_impact, cmd_impact_diff, cmd_index, cmd_init, cmd_notes, cmd_onboard, cmd_plan,
+    cmd_project, cmd_query, cmd_read, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar,
+    cmd_stale, cmd_stats, cmd_suggest, cmd_task, cmd_test_map, cmd_trace, cmd_train_data,
+    cmd_where,
 };
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -42,7 +43,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }) => cmd_blame(name, json, depth, callers),
         Some(Commands::Chat) => chat::cmd_chat(),
         Some(Commands::Init) => cmd_init(&cli),
-        Some(Commands::Doctor) => cmd_doctor(),
+        Some(Commands::Doctor) => cmd_doctor(cli.model.as_deref()),
         Some(Commands::Index { ref args }) => cmd_index(&cli, args),
         Some(Commands::Stats { json }) => cmd_stats(&cli, json),
         Some(Commands::Watch {
@@ -251,6 +252,10 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             resume,
             verbose,
         }),
+        Some(Commands::ExportModel {
+            ref repo,
+            ref output,
+        }) => cmd_export_model(repo, output),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {

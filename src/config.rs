@@ -118,6 +118,9 @@ pub struct Config {
     pub llm_api_base: Option<String>,
     /// LLM max tokens for summary generation (overridden by CQS_LLM_MAX_TOKENS env var)
     pub llm_max_tokens: Option<u32>,
+    /// Embedding model configuration
+    #[serde(default)]
+    pub embedding: Option<crate::embedder::EmbeddingConfig>,
     /// Reference indexes for multi-index search
     #[serde(default, rename = "reference")]
     pub references: Vec<ReferenceConfig>,
@@ -313,6 +316,7 @@ impl Config {
             llm_model: other.llm_model.or(self.llm_model),
             llm_api_base: other.llm_api_base.or(self.llm_api_base),
             llm_max_tokens: other.llm_max_tokens.or(self.llm_max_tokens),
+            embedding: other.embedding.or(self.embedding),
             references: refs,
         }
     }
@@ -975,5 +979,36 @@ llm_max_tokens = 200
         assert_eq!(merged.llm_model.as_deref(), Some("override-model"));
         assert_eq!(merged.llm_api_base.as_deref(), Some("https://override/v1"));
         assert_eq!(merged.llm_max_tokens, Some(100)); // from base, not overridden
+    }
+
+    #[test]
+    fn test_embedding_config_preset() {
+        let toml = r#"
+        [embedding]
+        model = "bge-large"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.embedding.as_ref().unwrap().model, "bge-large");
+    }
+
+    #[test]
+    fn test_embedding_config_custom() {
+        let toml = r#"
+        [embedding]
+        model = "custom"
+        repo = "my-org/my-model"
+        dim = 384
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let emb = config.embedding.as_ref().unwrap();
+        assert_eq!(emb.model, "custom");
+        assert_eq!(emb.dim, Some(384));
+    }
+
+    #[test]
+    fn test_no_embedding_section() {
+        let toml = "limit = 10\n";
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.embedding.is_none());
     }
 }
