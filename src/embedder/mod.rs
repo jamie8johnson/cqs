@@ -1,6 +1,9 @@
 //! Embedding generation with ort + tokenizers
 
+mod models;
 mod provider;
+
+pub use models::{EmbeddingConfig, ModelConfig};
 
 use provider::ort_err;
 pub(crate) use provider::{create_session, select_provider};
