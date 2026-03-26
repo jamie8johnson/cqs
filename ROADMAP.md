@@ -69,7 +69,7 @@ If adoption doesn't improve, try these alternatives in order:
 - [x] **GLSL** — Reuses C queries. Shader-specific stopwords.
 - [x] **Svelte** — `tree-sitter-svelte-next`. Injection: `script_element/raw_text→JS`, `style_element/raw_text→CSS`. Reuses HTML helpers.
 - [ ] **Clojure** — Blocked: `tree-sitter-clojure` 0.1.0 requires tree-sitter ^0.25, incompatible with 0.26.
-- [ ] **Dart** — Blocked: old tree-sitter API (pre-0.24). Property covers properties, mixin → Trait.
+- [ ] **Dart** — `tree-sitter-dart` on crates.io. Highest-impact next language (Flutter ecosystem). Template in CONTRIBUTING.md "Adding a New Language" guide.
 - [x] **Razor/CSHTML** — `tris203/tree-sitter-razor` (git dep, forked). Monolithic grammar: C# + HTML + Razor directives. JS/CSS injection via `_inner` content mode.
 - [x] **VB.NET** — `CodeAnt-AI/tree-sitter-vb-dotnet` (git dep, forked). Classes, modules, structures, interfaces, enums, methods, properties, events, delegates.
 - [ ] **ArchestrA QuickScript** — No tree-sitter grammar exists. Needs custom grammar from scratch (VB-like syntax).
