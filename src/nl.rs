@@ -964,6 +964,22 @@ fn extract_method_name_from_line(line: &str, language: Language) -> Option<Strin
             if let Some(rest) = work.strip_prefix("func ") {
                 return rest.split('(').next().map(|s| s.trim().to_string());
             }
+            if let Some(rest) = work.strip_prefix("fun ") {
+                // Kotlin
+                return rest.split('(').next().map(|s| s.trim().to_string());
+            }
+            if let Some(rest) = work.strip_prefix("sub ") {
+                // Perl, VB.NET
+                return rest.split(['(', ' ']).next().map(|s| s.trim().to_string());
+            }
+            if let Some(rest) = work.strip_prefix("proc ") {
+                // Elixir (defp), Nim, Tcl
+                return rest.split('(').next().map(|s| s.trim().to_string());
+            }
+            if let Some(rest) = work.strip_prefix("method ") {
+                // Raku, some OOP
+                return rest.split('(').next().map(|s| s.trim().to_string());
+            }
             // JS/TS/Java/C#: word( pattern after stripping modifiers
             // But need to distinguish from field declarations, so require (
             if let Some(paren_pos) = work.find('(') {
@@ -1900,5 +1916,20 @@ mod tests {
             "Low-frequency callee 'rare_fn' should be kept, got: {}",
             nl
         );
+    }
+
+    #[test]
+    fn extract_method_name_kotlin_fun() {
+        let name = extract_method_name_from_line(
+            "fun processData(input: String): Result",
+            Language::Kotlin,
+        );
+        assert_eq!(name.as_deref(), Some("processData"));
+    }
+
+    #[test]
+    fn extract_method_name_perl_sub() {
+        let name = extract_method_name_from_line("sub calculate_total {", Language::Perl);
+        assert_eq!(name.as_deref(), Some("calculate_total"));
     }
 }
