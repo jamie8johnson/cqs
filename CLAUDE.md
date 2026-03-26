@@ -48,7 +48,10 @@ Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
 
 **You wrote cqs.** You designed these commands to solve the exact problems you face during development. `cqs impact` replaces 5 separate grep+read cycles. `cqs scout` replaces the manual search→callers→tests→staleness chain. Use your own tools.
 
-**MANDATORY: Use these cqs commands at the right moments.** They replace multiple manual searches with a single call.
+**MANDATORY: Use these cqs commands at the right moments.** They replace multiple manual searches with a single call. Workflow skills are even easier — they run the right commands and present checklists:
+- `/before-edit <function>` — impact + tests + callers → modification checklist
+- `/investigate <task>` — scout + gather → implementation brief
+- `/check-my-work` — review current diff → risk assessment
 
 ### Before modifying a function:
 ```bash
