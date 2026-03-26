@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Configurable embedding models** — `CQS_EMBEDDING_MODEL` env var, `--model` CLI flag, or `[embedding]` config section. Ships with E5-base-v2 (default) and BGE-large-en-v1.5. Custom ONNX models supported via `cqs export-model`.
+- **`cqs export-model`** command — exports HuggingFace models to ONNX format for use with cqs.
+- **`cqs doctor`** model consistency check — warns when configured model doesn't match indexed model.
+
+### Changed
+- **Runtime embedding dimension** — HNSW, CAGRA, and Store layers accept dynamic dimensions instead of hardcoded 768. Enables non-E5 models with different embedding sizes.
+- **`Embedding::try_new()`** — now accepts any dimension > 0 (was hardcoded to 768).
+
 ## [1.6.0] - 2026-03-26
 
 ### Added

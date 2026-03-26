@@ -145,6 +145,7 @@ src/
     markdown.rs - Heading-based markdown parser, cross-reference extraction
   embedder/      - ONNX embedding model (E5-base-v2), 768-dim embeddings
     mod.rs      - Embedder struct, embed(), batch embedding
+    models.rs   - ModelConfig struct, built-in presets, resolution logic
     provider.rs - ORT execution provider selection (CUDA/TensorRT/CPU)
   reranker.rs   - Cross-encoder re-ranking (ms-marco-MiniLM-L-6-v2)
   search/       - Search algorithms, name matching, HNSW-guided search
