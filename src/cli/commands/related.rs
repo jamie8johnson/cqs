@@ -2,16 +2,6 @@
 
 use anyhow::Result;
 
-/// Converts a slice of related functions into JSON values for serialization.
-///
-/// # Arguments
-///
-/// * `items` - A slice of `RelatedFunction` objects to convert
-/// * `root` - The root path used to compute relative file paths
-///
-/// # Returns
-///
-/// A vector of JSON objects, each containing the function name, relative file path, line number, and overlap count.
 fn related_to_json(
     items: &[cqs::RelatedFunction],
     root: &std::path::Path,
@@ -30,22 +20,6 @@ fn related_to_json(
         .collect()
 }
 
-/// Finds and displays functions or types related to a given symbol by shared callers, callees, and type usage.
-///
-/// # Arguments
-///
-/// * `_cli` - CLI context (unused)
-/// * `name` - The name of the symbol to find related items for
-/// * `limit` - Maximum number of results to return for each category
-/// * `json` - If true, output results as formatted JSON; otherwise use colored text format
-///
-/// # Returns
-///
-/// Returns `Ok(())` on success, or an error if the project store cannot be opened or the query fails.
-///
-/// # Errors
-///
-/// Returns an error if the project store cannot be opened or if the relation query fails.
 pub(crate) fn cmd_related(
     _cli: &crate::cli::Cli,
     name: &str,

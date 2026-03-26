@@ -249,29 +249,6 @@ pub(crate) fn pack_by_relevance(
 
 // ─── CLI command ────────────────────────────────────────────────────────────
 
-/// Displays context information for a given code path, including callers, callees, and related metrics.
-///
-/// # Arguments
-///
-/// * `cli` - Command-line interface configuration
-/// * `path` - The code path to analyze
-/// * `json` - If true, output results in JSON format; otherwise use terminal formatting
-/// * `summary` - If true, display summary mode (minimal output); otherwise display full context
-/// * `compact` - If true, display compact mode (signatures only with counts); takes precedence over summary
-/// * `max_tokens` - Optional maximum token limit for output
-///
-/// # Returns
-///
-/// Returns `Ok(())` on success.
-///
-/// # Errors
-///
-/// Returns an error if:
-/// * The project store cannot be opened
-/// * The specified path cannot be found or analyzed
-/// * `--tokens` is used with `--compact` or `--summary` flags (incompatible options)
-/// * JSON serialization fails
-/// * Staleness check fails
 pub(crate) fn cmd_context(
     cli: &crate::cli::Cli,
     path: &str,
@@ -359,22 +336,6 @@ fn build_token_pack(
     Ok((Some(included), Some((used, budget))))
 }
 
-/// Converts file analysis data into a JSON representation containing metadata and summary information.
-///
-/// # Arguments
-///
-/// * `data` - A reference to `FullData` containing chunk, caller, callee, and dependency information
-/// * `path` - A string slice representing the file path to include in the JSON output
-///
-/// # Returns
-///
-/// A `serde_json::Value` object with the following structure:
-/// - `file`: the input file path
-/// - `chunk_count`: total number of code chunks
-/// - `chunks`: array of chunk summaries (name, type, line range)
-/// - `external_caller_count`: number of external callers
-/// - `external_callee_count`: number of external callees
-/// - `dependent_files`: sorted list of dependent file paths
 fn summary_to_json(data: &FullData, path: &str) -> serde_json::Value {
     let chunks_summary: Vec<_> = data
         .chunks
@@ -395,18 +356,6 @@ fn summary_to_json(data: &FullData, path: &str) -> serde_json::Value {
     })
 }
 
-/// Prints a compact terminal representation of call graph data with colored formatting.
-///
-/// Displays the file path and total number of chunks in bold, followed by each chunk's signature (dimmed) with counts of callers and callees. Chunk names are resolved to their signatures when available.
-///
-/// # Arguments
-///
-/// * `data` - The compact call graph data containing chunks and caller/callee relationship counts
-/// * `path` - The file path or identifier to display as the header
-///
-/// # Returns
-///
-/// None. Output is printed directly to stdout.
 fn print_compact_terminal(data: &CompactData, path: &str) {
     use colored::Colorize;
     println!("{} ({} chunks)", path.bold(), data.chunks.len());
@@ -431,18 +380,6 @@ fn print_compact_terminal(data: &CompactData, path: &str) {
     }
 }
 
-/// Prints a formatted summary of code context data to the terminal with colored output.
-///
-/// Displays information about chunks (code sections with their types, names, and line ranges), external callers and callees, and dependent files. Output uses colored text for emphasis.
-///
-/// # Arguments
-///
-/// * `data` - A reference to `FullData` containing chunks, external callers/callees, and dependent files to summarize
-/// * `path` - The file path or identifier to display in the summary header
-///
-/// # Returns
-///
-/// None (output printed to stdout)
 fn print_summary_terminal(data: &FullData, path: &str) {
     use colored::Colorize;
     println!("{} {}", "Context summary:".cyan(), path.bold());
@@ -465,18 +402,6 @@ fn print_summary_terminal(data: &FullData, path: &str) {
     }
 }
 
-/// Displays formatted terminal output of code context data with optional token usage information and content filtering.
-///
-/// # Arguments
-///
-/// * `data` - The full data structure containing chunks and caller/callee information to display
-/// * `path` - The file path to display as context header
-/// * `content_set` - Optional set of chunk names whose content should be printed; if None, no content is displayed
-/// * `token_info` - Optional tuple of (tokens_used, token_budget) to display usage metrics
-///
-/// # Panics
-///
-/// None explicit, though println! could panic in extreme I/O error scenarios.
 fn print_full_terminal(
     data: &FullData,
     path: &str,

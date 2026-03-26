@@ -5,27 +5,6 @@ use anyhow::{Context, Result};
 use cqs::plan::{plan, plan_to_json};
 use cqs::Embedder;
 
-/// Generates a plan based on a given description and outputs it in either JSON or text format.
-///
-/// # Arguments
-///
-/// * `_cli` - CLI context (unused)
-/// * `description` - The plan description to process
-/// * `limit` - Maximum number of items to include in the plan
-/// * `json` - If true, output as JSON; otherwise output as formatted text
-/// * `tokens` - Optional token budget to include in the output
-///
-/// # Returns
-///
-/// Returns `Ok(())` on success, or an error if project store initialization, embedder creation, plan generation, or output formatting fails.
-///
-/// # Errors
-///
-/// Returns an error if:
-/// * Opening the project store fails
-/// * Creating the embedder fails
-/// * Plan generation fails
-/// * JSON serialization fails (when `json` is true)
 pub(crate) fn cmd_plan(
     _cli: &crate::cli::Cli,
     description: &str,
@@ -56,17 +35,6 @@ pub(crate) fn cmd_plan(
 
 /// Displays a formatted text representation of a code query plan result to stdout.
 ///
-/// Outputs the plan template name and description, followed by scout file results (grouped files with relevance scores), a numbered checklist of items, and any identified patterns. File paths are displayed relative to the provided root directory.
-///
-/// # Arguments
-///
-/// * `result` - The plan result containing template info, scout findings, checklist items, and patterns
-/// * `root` - Root path used to compute relative file paths for display
-/// * `_tokens` - Unused parameter
-///
-/// # Returns
-///
-/// Returns nothing; output is printed to stdout.
 fn display_plan_text(
     result: &cqs::plan::PlanResult,
     root: &std::path::Path,

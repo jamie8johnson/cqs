@@ -21,22 +21,6 @@ fn empty_impact_json() -> serde_json::Value {
     })
 }
 
-/// Analyzes the impact of code changes by comparing a diff against indexed functions in the project.
-///
-/// # Arguments
-///
-/// * `_cli` - CLI context (currently unused)
-/// * `base` - Optional git base ref for computing the diff; if not provided, uses unstaged changes
-/// * `from_stdin` - If true, reads diff from stdin; otherwise runs `git diff` against base
-/// * `json` - If true, outputs results in JSON format; otherwise outputs human-readable text
-///
-/// # Returns
-///
-/// Returns `Ok(())` on successful completion, or an error if project loading, diff parsing, or impact analysis fails.
-///
-/// # Panics
-///
-/// Does not explicitly panic; all error conditions are propagated as `Result` values.
 pub(crate) fn cmd_impact_diff(
     _cli: &crate::cli::Cli,
     base: Option<&str>,
@@ -90,18 +74,6 @@ pub(crate) fn cmd_impact_diff(
     Ok(())
 }
 
-/// Displays a formatted text summary of code change impact analysis results to stdout.
-///
-/// Prints colored output organized into three sections: changed functions, affected callers, and tests that need re-running. Each section includes counts and detailed information (names, file paths, line numbers) for relevant items. The root path is used to compute relative file paths for display.
-///
-/// # Arguments
-///
-/// * `result` - The diff impact analysis result containing changed functions, affected callers, and affected tests.
-/// * `root` - The root path used to compute relative file paths for display purposes.
-///
-/// # Returns
-///
-/// Returns nothing; output is written directly to stdout.
 fn display_diff_impact_text(result: &cqs::DiffImpactResult, root: &std::path::Path) {
     use colored::Colorize;
 

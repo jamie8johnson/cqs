@@ -47,20 +47,6 @@ pub(crate) enum RefCommand {
     },
 }
 
-/// Dispatches reference subcommands to their respective handlers.
-///
-/// # Arguments
-///
-/// * `cli` - The CLI context containing configuration and state
-/// * `subcmd` - The reference subcommand to execute (Add, List, Remove, or Update)
-///
-/// # Returns
-///
-/// Returns `Ok(())` on successful execution, or an error if the subcommand fails.
-///
-/// # Errors
-///
-/// Propagates errors from the executed subcommand handler.
 pub(crate) fn cmd_ref(cli: &Cli, subcmd: &RefCommand) -> Result<()> {
     let _span = tracing::info_span!("cmd_ref").entered();
     match subcmd {
@@ -75,24 +61,7 @@ pub(crate) fn cmd_ref(cli: &Cli, subcmd: &RefCommand) -> Result<()> {
     }
 }
 
-/// Adds a new reference source to the project configuration.
-///
-/// # Arguments
-///
-/// * `cli` - CLI context
-/// * `name` - Name of the reference (must be valid per reference naming rules)
-/// * `source` - File system path to the reference source
-/// * `weight` - Weighting factor for the reference, must be between 0.0 and 1.0 (inclusive)
-///
-/// # Returns
-///
-/// Returns `Ok(())` on successful addition, or an error if validation or I/O operations fail.
-///
-/// # Errors
-///
-/// * If the reference name is invalid
-/// * If weight is outside the range [0.0, 1.0]
-/// * If a reference with the same name already exists
+/// Add a reference: validate name/weight, index source, update config.
 /// * If the source path does not exist or cannot be resolved
 /// * If the reference storage directory cannot be created
 fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> Result<()> {
@@ -184,22 +153,6 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
     Ok(())
 }
 
-/// Lists all configured references with their metadata.
-///
-/// Displays reference information in either JSON or human-readable table format. For each reference, attempts to retrieve the chunk count from its index database.
-///
-/// # Arguments
-///
-/// * `cli` - Command line interface configuration
-/// * `json` - Whether to output in JSON format (can also be overridden by `cli.json`)
-///
-/// # Returns
-///
-/// Returns `Ok(())` if the listing completes successfully, or an error if JSON serialization fails.
-///
-/// # Errors
-///
-/// Returns an error if JSON output formatting fails. Individual reference store access failures are logged as warnings but do not cause the function to fail.
 fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
     let root = find_project_root();
     let config = cqs::config::Config::load(&root);
@@ -271,21 +224,7 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Removes a reference from the project configuration and deletes its associated directory.
-///
-/// This function removes a named reference from the `.cqs.toml` configuration file in the project root and deletes the corresponding reference directory. It includes safety checks to ensure only directories within the designated references root are deleted, preventing accidental deletion of arbitrary filesystem locations.
-///
-/// # Arguments
-///
-/// `name` - The name of the reference to remove.
-///
-/// # Returns
-///
-/// Returns `Ok(())` on successful removal, or an error if the reference is not found in the config or if directory deletion fails.
-///
-/// # Errors
-///
-/// Returns an error if the reference name is not found in the configuration, if the config file cannot be read or modified, or if the reference directory cannot be deleted.
+/// Remove a reference: delete from config and remove its directory.
 fn cmd_ref_remove(name: &str) -> Result<()> {
     let root = find_project_root();
     let config_path = root.join(".cqs.toml");
@@ -322,25 +261,7 @@ fn cmd_ref_remove(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Updates a code search reference by re-indexing files from its source directory.
-///
-/// # Arguments
-///
-/// * `cli` - The CLI context
-/// * `name` - The name of the reference to update
-///
-/// # Returns
-///
-/// Returns `Ok(())` on successful update, or an error if:
-/// - The reference name is not found in the config
-/// - The reference has no source path configured
-/// - The source path does not exist
-/// - No supported files are found but the index contains chunks (indicating binary language support mismatch)
-/// - File enumeration or indexing operations fail
-///
-/// # Errors
-///
-/// Returns an error if the reference configuration is invalid, source is inaccessible, or indexing fails.
+/// Re-index a reference from its source directory.
 fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
     let root = find_project_root();
     let config = cqs::config::Config::load(&root);

@@ -25,9 +25,26 @@ impl Store {
             .await?;
 
             // Collect missing origins
+            //
+            // PB-24: On macOS (HFS+/APFS case-insensitive), PathBuf comparison
+            // is case-sensitive but the filesystem is not. Normalize both sides
+            // to lowercase so we don't falsely mark files as missing.
             let missing: Vec<String> = rows
                 .into_iter()
-                .filter(|(origin,)| !existing_files.contains(&PathBuf::from(origin)))
+                .filter(|(origin,)| {
+                    let origin_path = PathBuf::from(origin);
+                    #[cfg(target_os = "macos")]
+                    {
+                        let origin_lower = origin.to_lowercase();
+                        !existing_files
+                            .iter()
+                            .any(|p| p.to_string_lossy().to_lowercase() == origin_lower)
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        !existing_files.contains(&origin_path)
+                    }
+                })
                 .map(|(origin,)| origin)
                 .collect();
 

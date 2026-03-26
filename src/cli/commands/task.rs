@@ -15,19 +15,6 @@ const WATERFALL_IMPACT: f64 = 0.15;
 const WATERFALL_PLACEMENT: f64 = 0.10;
 // Notes section takes whatever budget remains (no explicit constant needed).
 
-/// Executes a task command that searches for and displays relevant tasks based on a description.
-///
-/// # Arguments
-///
-/// * `_cli` - CLI context (unused)
-/// * `description` - The task description to search for
-/// * `limit` - Maximum number of results to return (clamped between 1 and 10)
-/// * `json` - Whether to output results in JSON format
-/// * `max_tokens` - Optional token budget for output; if provided, output is constrained to this limit
-///
-/// # Returns
-///
-/// Returns `Ok(())` on successful execution, or an `Err` if project store initialization, embedder creation, task search, or output formatting fails.
 pub(crate) fn cmd_task(
     _cli: &crate::cli::Cli,
     description: &str,
@@ -280,19 +267,7 @@ pub(crate) fn task_to_budgeted_json(
     budgeted_json(result, &packed)
 }
 
-/// Constructs a JSON representation of a code analysis result with budget information.
-///
-/// Builds a comprehensive JSON object containing analysis data from a task result, including scout metrics, code analysis, risk assessment, tests, placement information, and notes. Aggregates summary statistics and token budget details into a single structured output.
-///
-/// # Arguments
-///
-/// * `result` - The task result containing analysis data, description, and summary metrics
-/// * `root` - The root file system path used for resolving relative paths in the analysis
-/// * `packed` - Packed sections containing analyzed data (scout, code, risk, tests, placement, notes) and token budget information
-///
-/// # Returns
-///
-/// A `serde_json::Value` containing the complete budgeted analysis as a JSON object with fields for description, scout, code, risk, tests, placement, summary, token_count, and token_budget.
+/// Build budgeted JSON combining all packed sections into a single output.
 fn budgeted_json(result: &cqs::TaskResult, packed: &PackedSections) -> serde_json::Value {
     let mut scout_json = build_scout_json(result, &packed.scout);
     let code_json = build_code_json(result, &packed.code);
@@ -322,38 +297,12 @@ fn budgeted_json(result: &cqs::TaskResult, packed: &PackedSections) -> serde_jso
     })
 }
 
-/// Outputs a budgeted JSON representation of task results to stdout in pretty-printed format.
-///
-/// # Arguments
-///
-/// * `result` - The task result containing data to be converted to JSON
-/// * `root` - The root path used as context for constructing the JSON output
-/// * `packed` - Packed sections data used to build the budgeted JSON structure
-///
-/// # Returns
-///
-/// Returns `Ok(())` on successful output, or an error if JSON serialization fails.
-///
-/// # Errors
-///
-/// Returns an error if `serde_json::to_string_pretty()` fails during JSON serialization.
 fn output_json_budgeted(result: &cqs::TaskResult, packed: &PackedSections) -> Result<()> {
     let output = budgeted_json(result, packed);
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
-/// Builds a JSON representation of Scout analysis results for specified file groups.
-///
-/// # Arguments
-///
-/// * `result` - The task result containing Scout analysis data
-/// * `root` - The root path used to compute relative file paths for display
-/// * `indices` - Indices specifying which file groups from the Scout result to include in the output
-///
-/// # Returns
-///
-/// A `serde_json::Value` containing a JSON object with selected file groups and their chunks, along with a summary of total files, functions, untested items, and stale items.
 fn build_scout_json(result: &cqs::TaskResult, indices: &[usize]) -> serde_json::Value {
     let groups: Vec<serde_json::Value> = indices
         .iter()
@@ -394,17 +343,6 @@ fn build_scout_json(result: &cqs::TaskResult, indices: &[usize]) -> serde_json::
     })
 }
 
-/// Converts selected code chunks from a task result into JSON values.
-///
-/// # Arguments
-///
-/// * `result` - The task result containing code chunks to serialize
-/// * `_root` - Root path (unused)
-/// * `indices` - Indices of code chunks to include in the output
-///
-/// # Returns
-///
-/// A vector of JSON values representing the serialized code chunks. Chunks that fail to serialize are logged as warnings and excluded from the result.
 fn build_code_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_json::Value> {
     indices
         .iter()
@@ -418,18 +356,6 @@ fn build_code_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_jso
         .collect()
 }
 
-/// Constructs a JSON representation of risk data from a task result.
-///
-/// Transforms a subset of risk entries from a task result into JSON values. For each index provided, extracts the corresponding risk entry and converts it to JSON format using the risk's name as a key.
-///
-/// # Arguments
-///
-/// * `result` - The task result containing risk data to be processed
-/// * `indices` - Indices specifying which risk entries to extract and convert
-///
-/// # Returns
-///
-/// A vector of JSON values, each representing a risk entry in JSON format, ordered by the provided indices.
 fn build_risk_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_json::Value> {
     indices
         .iter()
@@ -457,16 +383,6 @@ fn build_placement_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serd
         .collect()
 }
 
-/// Converts a subset of relevant notes from a task result into JSON values.
-///
-/// # Arguments
-///
-/// * `result` - The task result containing scout data with relevant notes
-/// * `indices` - A slice of indices specifying which notes to include in the output
-///
-/// # Returns
-///
-/// A vector of JSON objects, each containing a note's text, sentiment, and mentions fields.
 fn build_notes_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_json::Value> {
     indices
         .iter()
@@ -481,17 +397,6 @@ fn build_notes_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_js
         .collect()
 }
 
-/// Outputs a formatted text report of a task analysis result with budget-aware section formatting.
-///
-/// # Arguments
-///
-/// * `result` - The task analysis result containing descriptions, code, risk, placement, and note data
-/// * `root` - The root file path used for resolving relative paths in the output
-/// * `packed` - Pre-calculated section data including token budget consumption and packed indices for each section
-///
-/// # Returns
-///
-/// None. Outputs formatted text to stdout via various print functions.
 fn output_text_budgeted(result: &cqs::TaskResult, root: &std::path::Path, packed: &PackedSections) {
     print_header(
         &result.description,
@@ -515,18 +420,6 @@ fn output_text_budgeted(result: &cqs::TaskResult, root: &std::path::Path, packed
     );
 }
 
-/// Outputs a complete text report of a task analysis result to stdout.
-///
-/// Prints all sections of the analysis including header, scout findings, code changes, risk and test impact, placement suggestions, and relevant notes. Each section displays all available items.
-///
-/// # Arguments
-///
-/// * `result` - The task analysis result containing all data to be displayed
-/// * `root` - The root path used for displaying relative file paths in the output
-///
-/// # Returns
-///
-/// None. Output is written directly to stdout.
 fn output_text(result: &cqs::TaskResult, root: &std::path::Path) {
     let all_scout: Vec<usize> = (0..result.scout.file_groups.len()).collect();
     print_header(&result.description, &result.summary, 0, 0);
@@ -555,18 +448,6 @@ fn output_text(result: &cqs::TaskResult, root: &std::path::Path) {
     );
 }
 
-/// Prints a formatted header displaying task information and token usage statistics.
-///
-/// # Arguments
-///
-/// * `description` - The task description to display as the header title
-/// * `summary` - A TaskSummary containing statistics about targets, files, tests, and risk levels
-/// * `used` - The number of tokens currently used
-/// * `budget` - The total token budget available (if 0, token usage is omitted)
-///
-/// # Returns
-///
-/// None. This function prints directly to stdout.
 fn print_header(description: &str, summary: &cqs::TaskSummary, used: usize, budget: usize) {
     let token_label = if budget > 0 {
         format!(" ({} of {} tokens)", used, budget)
@@ -588,17 +469,6 @@ fn print_header(description: &str, summary: &cqs::TaskSummary, used: usize, budg
     );
 }
 
-/// Prints a formatted "Scout" section displaying relevant file groups and their code chunks from a task result.
-///
-/// # Arguments
-///
-/// * `result` - The task result containing scout analysis data with file groups and chunks
-/// * `root` - The root path used to compute relative file paths for display
-/// * `indices` - Slice of indices into `result.scout.file_groups` to display; if empty, function returns early
-///
-/// # Returns
-///
-/// None. This function prints directly to stdout with colored formatting.
 fn print_scout_section(result: &cqs::TaskResult, root: &std::path::Path, indices: &[usize]) {
     if indices.is_empty() {
         return;
@@ -641,18 +511,6 @@ fn print_scout_section(result: &cqs::TaskResult, root: &std::path::Path, indices
     }
 }
 
-/// Prints a formatted code section displaying gathered code chunks with syntax highlighting and truncation.
-///
-/// # Arguments
-///
-/// * `code` - Slice of gathered code chunks to potentially display
-/// * `root` - Root path used to compute relative file paths for display
-/// * `indices` - Indices of code chunks to print from the `code` slice
-/// * `total` - Total number of code chunks available (used to show truncation count)
-///
-/// # Returns
-///
-/// Nothing. Outputs formatted code information to stdout.
 fn print_code_section_idx(
     code: &[cqs::GatheredChunk],
     root: &std::path::Path,
@@ -688,18 +546,6 @@ fn print_code_section_idx(
     }
 }
 
-/// Prints a formatted impact section displaying function risks and test information with color-coded risk levels and metrics.
-///
-/// # Arguments
-///
-/// * `risk` - Slice of function risk data to display
-/// * `tests` - Slice of test information (currently unused)
-/// * `risk_idx` - Indices of risk entries to display
-/// * `test_idx` - Indices of test entries to display
-///
-/// # Returns
-///
-/// None. Outputs formatted text to stdout with colored risk levels, scores, caller counts, and coverage percentages.
 fn print_impact_section_idx(
     risk: &[cqs::FunctionRisk],
     tests: &[cqs::TestInfo],
@@ -769,20 +615,6 @@ fn print_impact_section_idx(
     }
 }
 
-/// Prints a formatted section of file placement suggestions to stdout.
-///
-/// Displays a header followed by a list of file placement recommendations with their file paths and reasons. If the number of suggestions exceeds those being displayed, shows a note indicating how many suggestions were truncated.
-///
-/// # Arguments
-///
-/// * `placement` - Slice of file placement suggestions to draw from
-/// * `root` - Root path used to compute relative display paths for files
-/// * `indices` - Indices into the `placement` slice indicating which suggestions to display
-/// * `total` - Total number of available suggestions (used to calculate truncation count)
-///
-/// # Returns
-///
-/// This function returns nothing and only produces side effects via printing to stdout.
 fn print_placement_section_idx(
     placement: &[cqs::FileSuggestion],
     root: &std::path::Path,
@@ -807,17 +639,6 @@ fn print_placement_section_idx(
     }
 }
 
-/// Prints a formatted section of note summaries with sentiment indicators and text preview.
-///
-/// # Arguments
-///
-/// * `notes` - Slice of note summaries to display from
-/// * `indices` - Indices into the notes slice specifying which notes to print
-/// * `total` - Total number of notes available (used to display truncation count)
-///
-/// # Returns
-///
-/// None. Output is printed to stdout.
 fn print_notes_section_idx(notes: &[cqs::store::NoteSummary], indices: &[usize], total: usize) {
     if indices.is_empty() {
         return;

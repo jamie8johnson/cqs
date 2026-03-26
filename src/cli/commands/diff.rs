@@ -8,25 +8,6 @@ use cqs::{semantic_diff, DiffResult};
 
 use crate::cli::find_project_root;
 
-/// Compares semantic differences between two code stores and displays the results.
-///
-/// Loads a source code store from a reference and compares it against a target store (either the current project index or another reference). Computes semantic similarity differences using the specified threshold and optional language filter, then outputs the results in either JSON or human-readable format.
-///
-/// # Arguments
-///
-/// * `source` - Reference identifier for the source store to compare from
-/// * `target` - Optional reference identifier for the target store; defaults to "project" (the current project index)
-/// * `threshold` - Similarity threshold (0.0-1.0) for filtering semantic differences
-/// * `lang` - Optional programming language filter to restrict the comparison scope
-/// * `json` - If true, output results as JSON; otherwise use human-readable format
-///
-/// # Returns
-///
-/// Returns `Ok(())` on successful comparison and display, or an error if store resolution, semantic diff computation, or output rendering fails.
-///
-/// # Errors
-///
-/// Returns an error if the source or target store cannot be resolved, if the project index does not exist when comparing against "project", if the project store cannot be opened, or if semantic diff computation fails.
 pub(crate) fn cmd_diff(
     source: &str,
     target: Option<&str>,
@@ -74,15 +55,6 @@ pub(crate) fn cmd_diff(
 
 /// Displays a formatted diff report showing changes between two versions.
 ///
-/// Prints a structured summary of all additions, removals, and modifications with color-coded output, including entry types, names, file paths, and similarity scores for modified items. Concludes with a summary line of totals.
-///
-/// # Arguments
-///
-/// * `result` - A reference to the DiffResult containing the source and target versions and their differences
-///
-/// # Returns
-///
-/// Returns `Ok(())` on successful output, or an error if printing fails.
 fn display_diff(result: &DiffResult) -> Result<()> {
     println!("Diff: {} → {}", result.source.bold(), result.target.bold());
     println!();
@@ -148,15 +120,6 @@ fn display_diff(result: &DiffResult) -> Result<()> {
 
 /// Formats and outputs a diff result as a formatted JSON document to stdout.
 ///
-/// Converts the added, removed, and modified entries from a DiffResult into JSON objects containing their name, file path, and type. Includes a summary section with counts of all changes. Outputs the complete result as pretty-printed JSON.
-///
-/// # Arguments
-///
-/// * `result` - A reference to the DiffResult containing the differences to display.
-///
-/// # Returns
-///
-/// Returns `Ok(())` on successful output, or an error if JSON serialization or printing fails.
 fn display_diff_json(result: &DiffResult) -> Result<()> {
     let added: Vec<_> = result
         .added
