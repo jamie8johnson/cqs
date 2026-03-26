@@ -1600,6 +1600,102 @@ mod tests {
         assert!(nl.contains("Calls: validate"), "got: {}", nl);
     }
 
+    // ===== extract_field_names regression tests =====
+
+    #[test]
+    fn test_extract_field_names_rust() {
+        let content = "pub struct Config {\n    pub name: String,\n    pub(crate) max_size: usize,\n    enabled: bool,\n}";
+        let result = extract_field_names(content, Language::Rust);
+        assert_eq!(result, vec!["name", "max size", "enabled"]);
+    }
+
+    #[test]
+    fn test_extract_field_names_go() {
+        let content = "type Config struct {\n    Name string\n    MaxSize int\n    Enabled bool\n}";
+        let result = extract_field_names(content, Language::Go);
+        assert_eq!(result, vec!["name", "max size", "enabled"]);
+    }
+
+    #[test]
+    fn test_extract_field_names_python() {
+        let content = "class Config:\n    name: str\n    max_size: int = 100\n    enabled = True";
+        let result = extract_field_names(content, Language::Python);
+        assert_eq!(result, vec!["name", "max size", "enabled"]);
+    }
+
+    #[test]
+    fn test_extract_field_names_typescript() {
+        let content = "class Config {\n    public name: string;\n    private maxSize: number;\n    readonly enabled: boolean;\n}";
+        let result = extract_field_names(content, Language::TypeScript);
+        assert_eq!(result, vec!["name", "max size", "enabled"]);
+    }
+
+    #[test]
+    fn test_extract_field_names_javascript() {
+        let content = "class Config {\n    name = 'default';\n    maxSize = 100;\n}";
+        let result = extract_field_names(content, Language::JavaScript);
+        assert_eq!(result, vec!["name", "max size"]);
+    }
+
+    #[test]
+    fn test_extract_field_names_java() {
+        // Note: Java fields are `type name;` — after stripping access modifiers,
+        // split on [:=;] yields "Type name" which tokenizes to include the type.
+        let content = "class Config {\n    private String name;\n    protected int maxSize;\n    public boolean enabled;\n}";
+        let result = extract_field_names(content, Language::Java);
+        assert_eq!(
+            result,
+            vec!["string name", "int max size", "boolean enabled"]
+        );
+    }
+
+    #[test]
+    fn test_extract_field_names_empty_content() {
+        let result = extract_field_names("", Language::Rust);
+        assert_eq!(result, Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_extract_field_names_only_comments() {
+        let content = "// this is a comment\n// another comment\n/* block comment */";
+        let result = extract_field_names(content, Language::Rust);
+        assert_eq!(result, Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_extract_field_names_header_and_brace_only() {
+        let content = "pub struct Empty {\n}";
+        let result = extract_field_names(content, Language::Rust);
+        assert_eq!(result, Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_extract_field_names_unicode_no_panic() {
+        let content = "class Config {\n    café: string;\n}";
+        let result = extract_field_names(content, Language::TypeScript);
+        // Just verify no panic; check actual output
+        assert_eq!(result, vec!["café"]);
+    }
+
+    #[test]
+    fn test_extract_field_names_capped_at_15() {
+        let mut lines = vec!["pub struct Big {".to_string()];
+        for i in 0..20 {
+            lines.push(format!("    pub field_{}: i32,", i));
+        }
+        lines.push("}".to_string());
+        let content = lines.join("\n");
+        let result = extract_field_names(&content, Language::Rust);
+        assert_eq!(result.len(), 15);
+    }
+
+    #[test]
+    fn test_extract_field_names_unsupported_language() {
+        let content = "NAME=\"default\"\nMAX_SIZE=100";
+        let result = extract_field_names(content, Language::Bash);
+        assert_eq!(result, Vec::<String>::new());
+    }
+
     // TC-30: IDF callee filtering threshold
     #[test]
     fn test_callee_idf_filtering_above_threshold() {
