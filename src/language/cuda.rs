@@ -3,7 +3,7 @@
 //! CUDA extends C++ grammar with kernel launch syntax and device qualifiers.
 //! Reuses C++ chunk and call queries — all C++ node types are present.
 
-use super::{LanguageDef, SignatureStyle};
+use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting CUDA code chunks (reuses C++ patterns)
 const CHUNK_QUERY: &str = r#"
@@ -237,6 +237,9 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "javadoc",
     doc_convention: "Use Doxygen format: @param, @return, @throws tags.",
+    field_style: FieldStyle::TypeFirst {
+        strip_prefixes: "static const volatile mutable virtual inline",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

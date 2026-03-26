@@ -1,6 +1,6 @@
 //! Ruby language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Ruby code chunks
 const CHUNK_QUERY: &str = r#"
@@ -72,6 +72,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "hash_comment",
     doc_convention: "Use YARD format: @param, @return, @raise tags.",
+    field_style: FieldStyle::NameFirst {
+        separators: "=",
+        strip_prefixes: "attr_accessor attr_reader attr_writer",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

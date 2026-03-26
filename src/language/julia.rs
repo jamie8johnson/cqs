@@ -1,6 +1,6 @@
 //! Julia language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Julia code chunks.
 ///
@@ -137,6 +137,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "Use triple-quoted docstrings with # Arguments, # Returns sections.",
+    field_style: FieldStyle::NameFirst {
+        separators: ":",
+        strip_prefixes: "",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -1,6 +1,6 @@
 //! Java language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Java code chunks
 const CHUNK_QUERY: &str = r#"
@@ -187,6 +187,9 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "javadoc",
     doc_convention: "Use Javadoc format: @param, @return, @throws tags.",
+    field_style: FieldStyle::TypeFirst {
+        strip_prefixes: "private protected public static final volatile transient",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

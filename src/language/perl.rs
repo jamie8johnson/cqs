@@ -1,6 +1,6 @@
 //! Perl language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Perl code chunks.
 ///
@@ -113,6 +113,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "hash_comment",
     doc_convention: "Use POD format for documentation sections.",
+    field_style: FieldStyle::NameFirst {
+        separators: "=",
+        strip_prefixes: "my our local",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

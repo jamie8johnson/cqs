@@ -3,7 +3,7 @@
 //! JSON is a data interchange format. Chunks are top-level key-value pairs.
 //! No function calls or type references.
 
-use super::{ChunkType, LanguageDef, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting JSON top-level pairs.
 const CHUNK_QUERY: &str = r#"
@@ -79,6 +79,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -5,7 +5,7 @@
 //! Vue-specific additions (template_element, interpolation, directive_attribute).
 //! Script/style injection is identical to HTML's pattern.
 
-use super::{ChunkType, InjectionRule, LanguageDef, SignatureStyle};
+use super::{ChunkType, FieldStyle, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Vue SFC chunks.
 ///
@@ -193,6 +193,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     ],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

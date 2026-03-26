@@ -1,6 +1,6 @@
 //! Swift language definition
 
-use super::{ChunkType, LanguageDef, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Swift code chunks.
 ///
@@ -239,6 +239,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "javadoc",
     doc_convention: "Use Swift doc comments: - Parameters:, - Returns:, - Throws: sections.",
+    field_style: FieldStyle::NameFirst {
+        separators: ":",
+        strip_prefixes: "let var private public internal fileprivate open static weak lazy",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

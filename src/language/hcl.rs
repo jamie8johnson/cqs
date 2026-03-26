@@ -1,6 +1,6 @@
 //! HCL/Terraform language definition
 
-use super::{ChunkType, InjectionRule, LanguageDef, SignatureStyle};
+use super::{ChunkType, FieldStyle, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting HCL blocks.
 ///
@@ -233,6 +233,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     ],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

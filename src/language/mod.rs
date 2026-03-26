@@ -213,6 +213,27 @@ pub struct InjectionRule {
     pub content_scoped_lines: bool,
 }
 
+/// How to extract field names from struct/class/record bodies.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FieldStyle {
+    /// No field extraction (markup, config, shell languages).
+    None,
+    /// Name appears before separator: `name: Type`, `name = value`.
+    NameFirst {
+        /// Characters to split on (e.g., ":=")
+        separators: &'static str,
+        /// Space-separated prefixes to strip before extraction.
+        /// Includes both visibility and value keywords.
+        strip_prefixes: &'static str,
+    },
+    /// Type appears before name: `Type name;` (C, C++, Java, C#).
+    /// Takes last whitespace-delimited token before `;`, `=`, or `,`.
+    TypeFirst {
+        /// Space-separated prefixes to strip.
+        strip_prefixes: &'static str,
+    },
+}
+
 /// A language definition with all parsing configuration
 #[non_exhaustive]
 pub struct LanguageDef {
@@ -310,6 +331,9 @@ pub struct LanguageDef {
     /// Used by `build_doc_prompt` in `src/llm/prompts.rs` to generate
     /// language-appropriate documentation. Empty string means no convention.
     pub doc_convention: &'static str,
+    /// Field extraction style for struct/class/record body parsing.
+    /// Used by `extract_field_names` in `src/nl.rs`.
+    pub field_style: FieldStyle,
 }
 
 /// Helper: PascalCase test name from a base function name with a given prefix.

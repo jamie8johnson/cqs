@@ -1,6 +1,6 @@
 //! Objective-C language definition
 
-use super::{ChunkType, LanguageDef, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Objective-C code chunks
 const CHUNK_QUERY: &str = r#"
@@ -141,6 +141,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "javadoc",
     doc_convention: "Use Doxygen format: @param, @return, @throws tags.",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

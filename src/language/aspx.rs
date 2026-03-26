@@ -4,7 +4,7 @@
 //! C# or VB.NET server-side code. No tree-sitter grammar — uses a custom parser
 //! that delegates to C#/VB.NET grammars via `set_included_ranges()`.
 
-use super::{LanguageDef, SignatureStyle};
+use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 const STOPWORDS: &[&str] = &[
     "page", "control", "master", "runat", "server", "autopostback", "viewstate",
@@ -40,6 +40,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -1,6 +1,6 @@
 //! PHP language definition
 
-use super::{ChunkType, InjectionRule, LanguageDef, SignatureStyle};
+use super::{ChunkType, FieldStyle, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting PHP code chunks.
 ///
@@ -225,6 +225,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     ],
     doc_format: "javadoc",
     doc_convention: "Use PHPDoc format: @param, @return, @throws tags.",
+    field_style: FieldStyle::NameFirst {
+        separators: "=;",
+        strip_prefixes: "public private protected static var",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

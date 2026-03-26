@@ -1,6 +1,6 @@
 //! Erlang language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Erlang code chunks.
 ///
@@ -154,6 +154,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "erlang_edoc",
     doc_convention: "Use EDoc format: @param, @returns, @throws tags.",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

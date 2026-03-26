@@ -1,6 +1,6 @@
 //! OCaml language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting OCaml code chunks.
 ///
@@ -140,6 +140,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "ocaml_doc",
     doc_convention: "Use OCamldoc format with (** *) comments.",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -1,6 +1,6 @@
 //! Go language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Go code chunks
 const CHUNK_QUERY: &str = r#"
@@ -244,6 +244,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "go_comment",
     doc_convention: "Start with the function name per Go conventions.",
+    field_style: FieldStyle::NameFirst {
+        separators: " ",
+        strip_prefixes: "",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

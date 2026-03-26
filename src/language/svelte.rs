@@ -5,7 +5,7 @@
 //! reuse HTML's `detect_script_language`, `find_child_by_kind`, and
 //! `find_attribute_value` helpers.
 
-use super::{ChunkType, InjectionRule, LanguageDef, SignatureStyle};
+use super::{ChunkType, FieldStyle, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Svelte component chunks.
 ///
@@ -185,6 +185,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     ],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {
