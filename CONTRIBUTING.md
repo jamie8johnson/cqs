@@ -278,6 +278,183 @@ Files like HTML contain embedded languages (`<script>` → JS, `<style>` → CSS
 
 **Key files:** `src/language/mod.rs` (InjectionRule struct), `src/parser/injection.rs` (parsing logic), `src/language/html.rs` (reference implementation).
 
+## Adding a New Language
+
+Adding a language is a data-entry task, not a coding task. The `LanguageDef` system handles everything — you fill in fields.
+
+### Prerequisites
+
+- A tree-sitter grammar published on crates.io (search `tree-sitter-<lang>`)
+- A sample source file to test with
+- `tree-sitter parse sample.ext` to see node types (install: `cargo install tree-sitter-cli`)
+
+### Steps
+
+**1. Add the dependency to `Cargo.toml`:**
+
+```toml
+tree-sitter-dart = { version = "0.X", optional = true }
+```
+
+And the feature flag:
+```toml
+lang-dart = ["dep:tree-sitter-dart"]
+```
+
+Add `"lang-dart"` to the `default` and `lang-all` feature lists.
+
+**2. Create `src/language/dart.rs`:**
+
+Copy `src/language/bash.rs` as your starting template — it's the simplest language file (~65 lines). Then fill in:
+
+```rust
+//! Dart language definition
+
+use super::{FieldStyle, LanguageDef, SignatureStyle};
+
+// === STEP A: Write the chunk query ===
+// Run `tree-sitter parse sample.dart` and look for function-like nodes.
+// Common patterns: function_declaration, method_declaration, class_declaration
+const CHUNK_QUERY: &str = r#"
+(function_declaration
+  name: (identifier) @name) @function
+
+(method_declaration
+  name: (identifier) @name) @function
+
+(class_declaration
+  name: (identifier) @name) @class
+"#;
+
+// === STEP B: Write the call query ===
+// Look for call-like nodes in the AST dump.
+const CALL_QUERY: &str = r#"
+(call_expression
+  function: (identifier) @callee)
+
+(call_expression
+  function: (selector) @callee)
+"#;
+
+// === STEP C: Fill in the rest (data entry) ===
+const DOC_NODES: &[&str] = &["comment", "documentation_comment"];
+
+const STOPWORDS: &[&str] = &[
+    "if", "else", "for", "while", "do", "return", "class", "extends",
+    "implements", "import", "void", "var", "final", "const", "static",
+    "this", "super", "new", "null", "true", "false", "async", "await",
+];
+
+const COMMON_TYPES: &[&str] = &[
+    "String", "int", "double", "bool", "List", "Map", "Set", "Future",
+    "Stream", "void", "dynamic", "Object", "Iterable", "Function",
+];
+
+static DEFINITION: LanguageDef = LanguageDef {
+    name: "dart",
+    grammar: Some(|| tree_sitter_dart::LANGUAGE.into()),
+    extensions: &["dart"],
+    chunk_query: CHUNK_QUERY,
+    call_query: Some(CALL_QUERY),
+    signature_style: SignatureStyle::UntilBrace,
+    doc_nodes: DOC_NODES,
+    method_node_kinds: &["method_declaration"],
+    method_containers: &["class_body"],
+    stopwords: STOPWORDS,
+    extract_return_nl: |sig| {
+        // Dart: ReturnType functionName(params) { ... }
+        // Type is before the function name
+        None // Start simple, add later
+    },
+    test_file_suggestion: None,
+    test_name_suggestion: None,
+    type_query: None,       // Add later for type edges
+    common_types: COMMON_TYPES,
+    container_body_kinds: &["class_body"],
+    extract_container_name: None,
+    extract_qualified_method: None,
+    post_process_chunk: None,
+    test_markers: &["@test", "test("],
+    test_path_patterns: &["%_test.dart", "%/test/%"],
+    structural_matchers: None,
+    entry_point_names: &["main"],
+    trait_method_names: &[],
+    injections: &[],
+    doc_format: "default",
+    doc_convention: "Use /// for documentation comments. Follow Effective Dart documentation guidelines.",
+    field_style: FieldStyle::NameFirst {
+        separators: ":",
+        strip_prefixes: "final late var static const",
+    },
+};
+
+pub fn definition() -> &'static LanguageDef {
+    &DEFINITION
+}
+```
+
+**3. Register in `src/language/mod.rs`:**
+
+Add one line to `define_languages!`:
+```rust
+Dart => "dart", feature = "lang-dart", module = dart;
+```
+
+**4. Write tests:**
+
+Add a `#[cfg(test)] mod tests` section in your file. Minimum 3 tests:
+- Parse a function → verify name and ChunkType::Function
+- Parse a class → verify name and ChunkType::Class
+- Parse function calls → verify callee names extracted
+
+See `src/language/bash.rs` tests for the pattern.
+
+**5. Build and test:**
+
+```bash
+cargo test --features gpu-index,lang-dart -- dart
+```
+
+### How to discover node types
+
+Run `tree-sitter parse` on a sample file:
+
+```bash
+tree-sitter parse sample.dart 2>/dev/null | head -50
+```
+
+Output shows the AST. Look for:
+- **Function nodes**: usually `function_declaration`, `method_declaration`, `function_expression`
+- **Class nodes**: `class_declaration`, `interface_declaration`, `enum_declaration`
+- **Call nodes**: `call_expression`, `method_invocation`
+- **Name fields**: `name:` or `(identifier)`
+
+The chunk query captures `@name` (the function/class name) and `@function` / `@class` / `@property` etc. (the full node for content extraction).
+
+### Fields Reference
+
+Most fields have sensible defaults (`None`, `&[]`, empty string). The important ones:
+
+| Field | Required? | How to fill |
+|-------|-----------|-------------|
+| `grammar` | Yes | `Some(\|\| tree_sitter_<lang>::LANGUAGE.into())` |
+| `extensions` | Yes | File extensions without dot |
+| `chunk_query` | Yes | Tree-sitter S-expression query |
+| `call_query` | Recommended | Tree-sitter query for function calls |
+| `signature_style` | Yes | `UntilBrace` for C-like, `UntilNewline` for Python-like |
+| `doc_nodes` | Recommended | Node kinds that contain doc comments |
+| `stopwords` | Recommended | Language keywords to filter from NL |
+| `common_types` | Recommended | Stdlib types to exclude from type edges |
+| `field_style` | Recommended | `NameFirst`/`TypeFirst`/`None` for struct field extraction |
+| Everything else | Optional | `None`, `&[]`, or `""` — add later as needed |
+
+### Ecosystem updates (after the language works)
+
+- Add `"lang-dart"` to the default features list in `Cargo.toml`
+- Add to `CLAUDE.md` agent instructions (key commands block in agent prompts)
+- Add to `README.md` language count
+- Update `CHANGELOG.md`
+
 ## Questions?
 
 Open an issue for questions or discussions.
