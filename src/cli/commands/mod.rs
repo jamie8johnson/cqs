@@ -14,6 +14,7 @@ mod diff;
 mod doctor;
 mod drift;
 pub(crate) mod explain;
+pub mod export_model;
 mod gather;
 mod gc;
 mod graph;
