@@ -215,6 +215,29 @@ pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
 /// Use `Embedder::embedding_dim()` for the runtime value.
 pub const EMBEDDING_DIM: usize = 768;
 
+// # Batch Size Constants (#683)
+//
+// ~25 `const BATCH_SIZE` definitions across store/pipeline/search modules.
+// Intentionally local — each is tuned for its SQL query shape:
+//
+// SQLite limit: max 999 bind parameters per statement. A query with N columns
+// per row can batch `floor(999 / N)` rows.
+//
+// Common sizes:
+//   500   — 1-2 param queries (chunks, embeddings, calls)
+//   200   — 4-5 params per row (type edges, call graph)
+//   132   — upsert_chunk (5 params, 132 × 5 = 660)
+//   100   — staleness checks with path matching
+//   20    — enrichment hash (many columns)
+//
+// Non-SQL:
+//   EMBED_BATCH_SIZE = 32    — ONNX inference (GPU memory)
+//   FILE_BATCH_SIZE = 5000   — pipeline file processing
+//   HNSW_BATCH_SIZE = 10000  — HNSW insert
+//   MAX_BATCH_SIZE = 10000   — Claude Batches API limit
+//
+// Do not centralize. If adding a batched SQL query: floor(999 / params_per_row).
+
 /// Unified test-chunk detection heuristic.
 ///
 /// Returns `true` if a chunk looks like a test based on its name or file path.
