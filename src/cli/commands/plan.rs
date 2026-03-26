@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 
+use cqs::embedder::ModelConfig;
 use cqs::plan::{plan, plan_to_json};
 use cqs::Embedder;
 
@@ -15,7 +16,8 @@ pub(crate) fn cmd_plan(
     let _span = tracing::info_span!("cmd_plan", description).entered();
 
     let (store, root, _) = crate::cli::open_project_store_readonly()?;
-    let embedder = Embedder::new().context("Failed to create embedder")?;
+    let embedder =
+        Embedder::new(ModelConfig::resolve(None, None)).context("Failed to create embedder")?;
 
     let result =
         plan(&store, &embedder, description, &root, limit).context("Plan generation failed")?;

@@ -16,6 +16,7 @@ use crossbeam_channel::{bounded, select, Receiver, Sender};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
+use cqs::embedder::ModelConfig;
 use cqs::parser::{CallSite, ChunkTypeRefs, FunctionCalls};
 use cqs::{normalize_path, Chunk, Embedder, Embedding, Parser as CqParser, Store};
 
@@ -496,7 +497,8 @@ fn gpu_embed_stage(
     gpu_failures: Arc<AtomicUsize>,
 ) -> Result<()> {
     let _span = tracing::info_span!("embed_thread", mode = "gpu").entered();
-    let embedder = Embedder::new().context("Failed to initialize GPU embedder")?;
+    let embedder = Embedder::new(ModelConfig::resolve(None, None))
+        .context("Failed to initialize GPU embedder")?;
     embedder.warm().context("Failed to warm GPU embedder")?;
 
     for batch in parse_rx {
@@ -626,7 +628,8 @@ fn cpu_embed_stage(
         let emb = match &embedder {
             Some(e) => e,
             None => {
-                let e = Embedder::new_cpu().context("Failed to initialize CPU embedder")?;
+                let e = Embedder::new_cpu(ModelConfig::resolve(None, None))
+                    .context("Failed to initialize CPU embedder")?;
                 embedder.insert(e)
             }
         };
@@ -1077,7 +1080,7 @@ mod tests {
     #[test]
     #[ignore] // Requires model
     fn test_apply_windowing_empty() {
-        let embedder = Embedder::new_cpu().unwrap();
+        let embedder = Embedder::new_cpu(ModelConfig::resolve(None, None)).unwrap();
         let result = apply_windowing(vec![], &embedder);
         assert!(result.is_empty());
     }
@@ -1085,7 +1088,7 @@ mod tests {
     #[test]
     #[ignore] // Requires model
     fn test_apply_windowing_short_chunk() {
-        let embedder = Embedder::new_cpu().unwrap();
+        let embedder = Embedder::new_cpu(ModelConfig::resolve(None, None)).unwrap();
         let mut chunk = make_test_chunk("short1", "fn foo() {}");
         chunk.doc = Some("A short function".to_string());
 
@@ -1107,7 +1110,7 @@ mod tests {
     #[test]
     #[ignore] // Requires model
     fn test_apply_windowing_long_chunk() {
-        let embedder = Embedder::new_cpu().unwrap();
+        let embedder = Embedder::new_cpu(ModelConfig::resolve(None, None)).unwrap();
 
         // Build content that exceeds 480 tokens. Each line is a unique function body.
         // ~500 lines of "let varN = N;\n" should comfortably exceed the token limit.

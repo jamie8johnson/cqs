@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 
 use std::sync::Arc;
 
+use cqs::embedder::ModelConfig;
 use cqs::{parse_notes, Embedder, HnswIndex, ModelInfo, Parser as CqParser, Store};
 
 use crate::cli::{
@@ -279,7 +280,8 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         if !cli.quiet {
             println!("Enriching embeddings with call graph context...");
         }
-        let embedder = Embedder::new().context("Failed to create embedder for enrichment pass")?;
+        let embedder = Embedder::new(ModelConfig::resolve(None, None))
+            .context("Failed to create embedder for enrichment pass")?;
         match enrichment_pass(&store, &embedder, cli.quiet) {
             Ok(count) => {
                 if !cli.quiet && count > 0 {

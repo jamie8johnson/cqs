@@ -970,6 +970,7 @@ mod tests {
             llm_model: None,
             llm_api_base: None,
             llm_max_tokens: None,
+            embedding: None,
         };
         config::apply_config_defaults(&mut cli, &config);
 
@@ -995,6 +996,7 @@ mod tests {
             llm_model: None,
             llm_api_base: None,
             llm_max_tokens: None,
+            embedding: None,
         };
         config::apply_config_defaults(&mut cli, &config);
 

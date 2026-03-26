@@ -25,7 +25,7 @@ use anyhow::{bail, Context, Result};
 use notify::{Config, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{info, info_span, warn};
 
-use cqs::embedder::{Embedder, Embedding};
+use cqs::embedder::{Embedder, Embedding, ModelConfig};
 use cqs::generate_nl_description;
 use cqs::hnsw::HnswIndex;
 use cqs::note::parse_notes;
@@ -96,7 +96,7 @@ fn try_init_embedder<'a>(
             if !backoff.should_retry() {
                 return None;
             }
-            match Embedder::new() {
+            match Embedder::new(ModelConfig::resolve(None, None)) {
                 Ok(e) => {
                     backoff.reset();
                     Some(embedder.get_or_init(|| e))

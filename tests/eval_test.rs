@@ -5,7 +5,7 @@
 
 mod eval_common;
 
-use cqs::embedder::Embedder;
+use cqs::embedder::{Embedder, ModelConfig};
 use cqs::generate_nl_description;
 use cqs::parser::Language;
 use cqs::store::{ModelInfo, SearchFilter, Store};
@@ -18,7 +18,8 @@ use tempfile::TempDir;
 fn test_recall_at_5() {
     // Initialize embedder
     eprintln!("Initializing embedder...");
-    let embedder = Embedder::new().expect("Failed to initialize embedder");
+    let embedder =
+        Embedder::new(ModelConfig::resolve(None, None)).expect("Failed to initialize embedder");
 
     // Initialize parser
     let parser = cqs::parser::Parser::new().expect("Failed to initialize parser");

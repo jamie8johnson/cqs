@@ -26,6 +26,7 @@ use std::time::{Instant, SystemTime};
 use anyhow::Result;
 use clap::Parser;
 
+use cqs::embedder::ModelConfig;
 use cqs::index::VectorIndex;
 use cqs::reference::ReferenceIndex;
 use cqs::store::Store;
@@ -195,7 +196,7 @@ impl BatchContext {
             return Ok(e);
         }
         let _span = tracing::info_span!("batch_embedder_init").entered();
-        let e = Embedder::new()?;
+        let e = Embedder::new(ModelConfig::resolve(None, None))?;
         // Race is fine — OnceLock ensures only one value is stored
         let _ = self.embedder.set(e);
         Ok(self

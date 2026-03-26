@@ -118,7 +118,8 @@ pub(crate) fn build_explain_data(
         let emb = match embedder {
             Some(e) => e,
             None => {
-                owned_embedder = cqs::Embedder::new()?;
+                owned_embedder =
+                    cqs::Embedder::new(cqs::embedder::ModelConfig::resolve(None, None))?;
                 &owned_embedder
             }
         };

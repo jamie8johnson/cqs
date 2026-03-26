@@ -2,12 +2,13 @@
 
 use anyhow::Result;
 
+use cqs::embedder::ModelConfig;
 use cqs::{suggest_placement, Embedder};
 
 pub(crate) fn cmd_where(description: &str, limit: usize, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_where", description).entered();
     let (store, root, _) = crate::cli::open_project_store_readonly()?;
-    let embedder = Embedder::new()?;
+    let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
     let limit = limit.clamp(1, 10);
 
     let result = suggest_placement(&store, &embedder, description, limit)?;

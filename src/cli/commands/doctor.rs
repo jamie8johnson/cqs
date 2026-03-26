@@ -5,6 +5,7 @@
 use anyhow::Result;
 use colored::Colorize;
 
+use cqs::embedder::ModelConfig;
 use cqs::{Embedder, Parser as CqParser, Store};
 
 use crate::cli::find_project_root;
@@ -22,7 +23,7 @@ pub(crate) fn cmd_doctor() -> Result<()> {
     println!("Runtime:");
 
     // Check model
-    match Embedder::new() {
+    match Embedder::new(ModelConfig::resolve(None, None)) {
         Ok(embedder) => {
             println!(
                 "  {} Model: {} (metadata: {})",
