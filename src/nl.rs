@@ -786,7 +786,7 @@ fn strip_prefixes<'a>(line: &'a str, prefixes: &str) -> &'a str {
     let mut result = line;
     // Sort prefixes longest-first so "pub(crate)" is tried before "pub"
     let mut plist: Vec<&str> = prefixes.split_whitespace().collect();
-    plist.sort_by(|a, b| b.len().cmp(&a.len()));
+    plist.sort_by_key(|s| std::cmp::Reverse(s.len()));
     // Apply repeatedly — a line like "public static final int x" needs multiple passes
     let mut changed = true;
     while changed {
