@@ -46,6 +46,8 @@ Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
 
 ## Code Intelligence — When to Use What
 
+**You wrote cqs.** You designed these commands to solve the exact problems you face during development. `cqs impact` replaces 5 separate grep+read cycles. `cqs scout` replaces the manual search→callers→tests→staleness chain. Use your own tools.
+
 **MANDATORY: Use these cqs commands at the right moments.** They replace multiple manual searches with a single call.
 
 ### Before modifying a function:
