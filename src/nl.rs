@@ -1932,4 +1932,124 @@ mod tests {
         let name = extract_method_name_from_line("sub calculate_total {", Language::Perl);
         assert_eq!(name.as_deref(), Some("calculate_total"));
     }
+
+    // ===== enrichment NL output with call context (#665) =====
+
+    #[test]
+    fn enrichment_nl_includes_callers_and_callees() {
+        let chunk = test_chunk("process_data");
+        let ctx = CallContext {
+            callers: vec!["handle_request".to_string(), "run_pipeline".to_string()],
+            callees: vec!["validate_input".to_string(), "transform_record".to_string()],
+        };
+        let freq = std::collections::HashMap::new();
+
+        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
+
+        // Callers appear (tokenized: snake_case split into words)
+        assert!(
+            nl.contains("Called by:"),
+            "NL must contain 'Called by:' section, got: {nl}"
+        );
+        assert!(
+            nl.contains("handle request"),
+            "Caller 'handle_request' should appear tokenized, got: {nl}"
+        );
+        assert!(
+            nl.contains("run pipeline"),
+            "Caller 'run_pipeline' should appear tokenized, got: {nl}"
+        );
+
+        // Callees appear
+        assert!(
+            nl.contains("Calls:"),
+            "NL must contain 'Calls:' section, got: {nl}"
+        );
+        assert!(
+            nl.contains("validate input"),
+            "Callee 'validate_input' should appear tokenized, got: {nl}"
+        );
+        assert!(
+            nl.contains("transform record"),
+            "Callee 'transform_record' should appear tokenized, got: {nl}"
+        );
+    }
+
+    #[test]
+    fn enrichment_nl_filters_high_freq_callees() {
+        let chunk = test_chunk("my_func");
+        let ctx = CallContext {
+            callers: vec!["caller_a".to_string()],
+            callees: vec![
+                "log".to_string(),
+                "rare_fn".to_string(),
+                "unwrap".to_string(),
+            ],
+        };
+        // "log" at 15%, "unwrap" at 12% — both above 10% threshold
+        let mut freq = std::collections::HashMap::new();
+        freq.insert("log".to_string(), 0.15);
+        freq.insert("unwrap".to_string(), 0.12);
+        freq.insert("rare_fn".to_string(), 0.02);
+
+        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
+
+        // High-frequency callees should be filtered
+        assert!(
+            !nl.contains("log"),
+            "High-freq callee 'log' (15%) must be filtered, got: {nl}"
+        );
+        assert!(
+            !nl.contains("unwrap"),
+            "High-freq callee 'unwrap' (12%) must be filtered, got: {nl}"
+        );
+        // Low-frequency callee should be kept
+        assert!(
+            nl.contains("rare fn"),
+            "Low-freq callee 'rare_fn' (2%) should be kept, got: {nl}"
+        );
+    }
+
+    #[test]
+    fn enrichment_nl_with_summary_and_call_context() {
+        // Verifies the full enrichment pipeline: summary + callers + callees + hyde
+        let chunk = test_chunk("search_index");
+        let ctx = CallContext {
+            callers: vec!["query_handler".to_string()],
+            callees: vec!["embed_text".to_string()],
+        };
+        let freq = std::collections::HashMap::new();
+        let summary = "Searches the HNSW index for nearest neighbors";
+        let hyde = "find similar code\nsemantic search";
+
+        let nl = generate_nl_with_call_context_and_summary(
+            &chunk,
+            &ctx,
+            &freq,
+            5,
+            5,
+            Some(summary),
+            Some(hyde),
+        );
+
+        // Summary prepended
+        assert!(
+            nl.starts_with(summary),
+            "Summary must be prepended, got: {nl}"
+        );
+        // Call context present
+        assert!(
+            nl.contains("Called by: query handler"),
+            "Caller must appear, got: {nl}"
+        );
+        assert!(
+            nl.contains("Calls: embed text"),
+            "Callee must appear, got: {nl}"
+        );
+        // HyDE appended
+        assert!(
+            nl.contains("Queries: find similar code, semantic search"),
+            "HyDE queries must be appended, got: {nl}"
+        );
+    }
 }
