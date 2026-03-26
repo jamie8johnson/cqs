@@ -16,7 +16,7 @@ A struct capturing everything cqs needs to use an embedding model:
 ```rust
 pub struct ModelConfig {
     /// Short name for display/config (e.g., "e5-base", "bge-large")
-    pub name: &'static str,
+    pub name: String,
     /// HuggingFace repo ID
     pub repo: String,
     /// ONNX model file path within the repo
@@ -104,11 +104,30 @@ The enrichment pipeline (NL generation, contrastive summaries, HyDE, call graph 
 - No model fine-tuning integration — LoRA stays in research repo
 - No model benchmarking in cqs — eval scripts stay in training repo
 
+### EMBEDDING_DIM Threading
+
+`EMBEDDING_DIM` (768) is a compile-time constant used in 30+ locations across HNSW, CAGRA, store, and embedder. For non-768 models (BGE-large = 1024), `dim` must become a runtime parameter:
+
+- `Embedder` already has `detected_dim: OnceLock<usize>` (#682) — wire to `ModelConfig.dim`
+- `HnswIndex` already has `dim: usize` field (audit fix) — set from `ModelConfig.dim` at construction
+- `prepare_index_data()` validates `emb.len() != EMBEDDING_DIM` — change to accept `expected_dim: usize`
+- `ModelInfo.dimensions` in store — already exists, set from `ModelConfig.dim`
+- `EMBEDDING_DIM` constant remains as the default fallback for E5-base, not removed
+- CAGRA index: pass dim at construction (currently uses `EMBEDDING_DIM`)
+
+### Migration
+
+No schema version bump required. The metadata table already stores `model_name` and `dimensions` as strings. Changing models just writes different values. Users run `cqs index --force` after changing config.
+
+### Export Opset
+
+The `export-model` helper must use `--opset 11` (cqs uses opset 11 for ORT CUDA EP compatibility). Document this in the command help.
+
 ## File Changes
 
 | File | Change |
 |------|--------|
-| New: `src/embedder/models.rs` | `ModelConfig` struct, built-in presets, resolution logic |
+| New: `src/embedder/models.rs` | `ModelConfig` struct (all `String` fields), built-in presets, resolution logic |
 | `src/embedder/mod.rs` | Accept `ModelConfig`, use for prefix/dim/repo/paths |
 | `src/config.rs` | Parse `[embedding]` section |
 | `src/store/metadata.rs` | Store/validate model ID |
