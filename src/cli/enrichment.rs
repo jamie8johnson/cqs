@@ -312,3 +312,105 @@ fn flush_enrichment_batch(
     batch.clear(); // clear only after successful write
     Ok(count)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to build a CallContext with given callers and callees.
+    fn make_ctx(callers: &[&str], callees: &[&str]) -> cqs::CallContext {
+        cqs::CallContext {
+            callers: callers.iter().map(|s| s.to_string()).collect(),
+            callees: callees.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    // ---------- enrichment hash determinism (#665) ----------
+
+    #[test]
+    fn enrichment_hash_deterministic_same_inputs() {
+        let ctx = make_ctx(&["caller_a", "caller_b"], &["callee_x", "callee_y"]);
+        let freq: HashMap<String, f32> = HashMap::new();
+        let summary = Some("Processes raw data");
+
+        let h1 = compute_enrichment_hash_with_summary(&ctx, &freq, summary, None);
+        let h2 = compute_enrichment_hash_with_summary(&ctx, &freq, summary, None);
+        assert_eq!(h1, h2, "Same inputs must produce identical hashes");
+    }
+
+    #[test]
+    fn enrichment_hash_deterministic_regardless_of_caller_order() {
+        // Callers are sorted internally, so insertion order shouldn't matter.
+        let ctx_ab = make_ctx(&["caller_a", "caller_b"], &["callee_x"]);
+        let ctx_ba = make_ctx(&["caller_b", "caller_a"], &["callee_x"]);
+        let freq: HashMap<String, f32> = HashMap::new();
+
+        let h1 = compute_enrichment_hash_with_summary(&ctx_ab, &freq, None, None);
+        let h2 = compute_enrichment_hash_with_summary(&ctx_ba, &freq, None, None);
+        assert_eq!(h1, h2, "Caller order must not affect hash");
+    }
+
+    #[test]
+    fn enrichment_hash_deterministic_regardless_of_callee_order() {
+        let ctx_xy = make_ctx(&[], &["callee_x", "callee_y"]);
+        let ctx_yx = make_ctx(&[], &["callee_y", "callee_x"]);
+        let freq: HashMap<String, f32> = HashMap::new();
+
+        let h1 = compute_enrichment_hash_with_summary(&ctx_xy, &freq, None, None);
+        let h2 = compute_enrichment_hash_with_summary(&ctx_yx, &freq, None, None);
+        assert_eq!(h1, h2, "Callee order must not affect hash");
+    }
+
+    #[test]
+    fn enrichment_hash_changes_with_different_callers() {
+        let ctx1 = make_ctx(&["caller_a"], &["callee_x"]);
+        let ctx2 = make_ctx(&["caller_b"], &["callee_x"]);
+        let freq: HashMap<String, f32> = HashMap::new();
+
+        let h1 = compute_enrichment_hash_with_summary(&ctx1, &freq, None, None);
+        let h2 = compute_enrichment_hash_with_summary(&ctx2, &freq, None, None);
+        assert_ne!(h1, h2, "Different callers must produce different hashes");
+    }
+
+    #[test]
+    fn enrichment_hash_changes_with_summary() {
+        let ctx = make_ctx(&["caller_a"], &["callee_x"]);
+        let freq: HashMap<String, f32> = HashMap::new();
+
+        let h_none = compute_enrichment_hash_with_summary(&ctx, &freq, None, None);
+        let h_some = compute_enrichment_hash_with_summary(&ctx, &freq, Some("a summary"), None);
+        assert_ne!(h_none, h_some, "Adding a summary must change the hash");
+    }
+
+    #[test]
+    fn enrichment_hash_filters_high_freq_callees() {
+        // "log" is at 15% frequency (above 10% threshold), should be excluded from hash.
+        let ctx = make_ctx(&[], &["log", "rare_fn"]);
+        let mut freq: HashMap<String, f32> = HashMap::new();
+        freq.insert("log".to_string(), 0.15);
+        freq.insert("rare_fn".to_string(), 0.02);
+
+        // Compare against a context that only has "rare_fn" — should match
+        // because "log" is filtered out of the hash.
+        let ctx_without_log = make_ctx(&[], &["rare_fn"]);
+        let empty_freq: HashMap<String, f32> = HashMap::new();
+
+        let h_with = compute_enrichment_hash_with_summary(&ctx, &freq, None, None);
+        let h_without =
+            compute_enrichment_hash_with_summary(&ctx_without_log, &empty_freq, None, None);
+        assert_eq!(
+            h_with, h_without,
+            "High-frequency callees (>=10% IDF) must be excluded from hash"
+        );
+    }
+
+    #[test]
+    fn enrichment_hash_changes_with_hyde() {
+        let ctx = make_ctx(&["caller_a"], &[]);
+        let freq: HashMap<String, f32> = HashMap::new();
+
+        let h_none = compute_enrichment_hash_with_summary(&ctx, &freq, None, None);
+        let h_hyde = compute_enrichment_hash_with_summary(&ctx, &freq, None, Some("how to search"));
+        assert_ne!(h_none, h_hyde, "Adding hyde must change the hash");
+    }
+}
