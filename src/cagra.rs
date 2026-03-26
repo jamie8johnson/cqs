@@ -29,9 +29,6 @@ use crate::embedder::Embedding;
 use crate::index::{IndexResult, VectorIndex};
 
 #[cfg(feature = "gpu-index")]
-use crate::EMBEDDING_DIM;
-
-#[cfg(feature = "gpu-index")]
 #[derive(Error, Debug)]
 pub enum CagraError {
     #[error("cuVS error: {0}")]
@@ -58,6 +55,8 @@ pub enum CagraError {
 /// serialize all GPU operations.
 #[cfg(feature = "gpu-index")]
 pub struct CagraIndex {
+    /// Embedding dimensionality (runtime, from model config)
+    dim: usize,
     /// cuVS resources (CUDA context, streams, etc.) - protected by Mutex for thread safety
     resources: Mutex<cuvs::Resources>,
     /// Cached embedding data as ndarray for rebuilding index after search
@@ -76,9 +75,9 @@ impl CagraIndex {
     }
 
     /// Build a CAGRA index from embeddings
-    pub fn build(embeddings: Vec<(String, Embedding)>) -> Result<Self, CagraError> {
+    pub fn build(embeddings: Vec<(String, Embedding)>, dim: usize) -> Result<Self, CagraError> {
         let _span = tracing::debug_span!("cagra_build").entered();
-        let (id_map, flat_data, n_vectors) = crate::hnsw::prepare_index_data(embeddings)
+        let (id_map, flat_data, n_vectors) = crate::hnsw::prepare_index_data(embeddings, dim)
             .map_err(|e| CagraError::Build(e.to_string()))?;
 
         tracing::info!("Building CAGRA index with {} vectors", n_vectors);
@@ -86,7 +85,7 @@ impl CagraIndex {
         // Create cuVS resources
         let resources = cuvs::Resources::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
 
-        let dataset = Array2::from_shape_vec((n_vectors, EMBEDDING_DIM), flat_data)
+        let dataset = Array2::from_shape_vec((n_vectors, dim), flat_data)
             .map_err(|e| CagraError::Cuvs(format!("Failed to create array: {}", e)))?;
 
         // Build index parameters
@@ -100,6 +99,7 @@ impl CagraIndex {
         tracing::info!("CAGRA index built successfully");
 
         Ok(Self {
+            dim,
             resources: Mutex::new(resources),
             dataset,
             id_map,
@@ -164,10 +164,10 @@ impl CagraIndex {
             return Vec::new();
         }
 
-        if query.len() != EMBEDDING_DIM {
+        if query.len() != self.dim {
             tracing::warn!(
                 "Query dimension mismatch: expected {}, got {}",
-                EMBEDDING_DIM,
+                self.dim,
                 query.len()
             );
             return Vec::new();
@@ -223,16 +223,11 @@ impl CagraIndex {
             }
         };
 
-        // Prepare query as 2D array (1 query x EMBEDDING_DIM)
-        let query_host = match Array2::from_shape_vec((1, EMBEDDING_DIM), query.as_slice().to_vec())
-        {
+        // Prepare query as 2D array (1 query x dim)
+        let query_host = match Array2::from_shape_vec((1, self.dim), query.as_slice().to_vec()) {
             Ok(arr) => arr,
             Err(e) => {
-                tracing::error!(
-                    "Invalid query shape (expected {} dims): {}",
-                    EMBEDDING_DIM,
-                    e
-                );
+                tracing::error!("Invalid query shape (expected {} dims): {}", self.dim, e);
                 let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
                     tracing::debug!("CAGRA index mutex poisoned, recovering");
                     poisoned.into_inner()
@@ -435,7 +430,7 @@ impl CagraIndex {
     ///
     /// Notes are excluded — they use brute-force search from SQLite so that
     /// notes are immediately searchable without rebuild.
-    pub fn build_from_store(store: &crate::Store) -> Result<Self, CagraError> {
+    pub fn build_from_store(store: &crate::Store, dim: usize) -> Result<Self, CagraError> {
         let _span = tracing::debug_span!("cagra_build_from_store").entered();
         let chunk_count = store
             .chunk_count()
@@ -450,7 +445,7 @@ impl CagraIndex {
 
         // Guard against OOM: estimate CPU memory needed for flat data + id map
         const MAX_CAGRA_CPU_BYTES: usize = 2 * 1024 * 1024 * 1024; // 2GB
-        let estimated_bytes = chunk_count.saturating_mul(EMBEDDING_DIM).saturating_mul(4); // f32 = 4 bytes
+        let estimated_bytes = chunk_count.saturating_mul(dim).saturating_mul(4); // f32 = 4 bytes
         if estimated_bytes > MAX_CAGRA_CPU_BYTES {
             return Err(CagraError::Cuvs(format!(
                 "Dataset too large for GPU indexing: {}MB estimated (limit {}MB)",
@@ -460,7 +455,7 @@ impl CagraIndex {
         }
 
         let mut id_map = Vec::with_capacity(chunk_count);
-        let mut flat_data = Vec::with_capacity(chunk_count * EMBEDDING_DIM);
+        let mut flat_data = Vec::with_capacity(chunk_count * dim);
 
         // Stream chunk embeddings in batches
         const BATCH_SIZE: usize = 10_000;
@@ -471,9 +466,9 @@ impl CagraIndex {
 
             let batch_len = batch.len();
             for (chunk_id, embedding) in batch {
-                if embedding.len() != EMBEDDING_DIM {
+                if embedding.len() != dim {
                     return Err(CagraError::DimensionMismatch {
-                        expected: EMBEDDING_DIM,
+                        expected: dim,
                         actual: embedding.len(),
                     });
                 }
@@ -496,13 +491,14 @@ impl CagraIndex {
         }
 
         // Build from pre-collected data
-        Self::build_from_flat(id_map, flat_data)
+        Self::build_from_flat(id_map, flat_data, dim)
     }
 
     /// Build CAGRA index from pre-collected flat data (also used by tests)
     pub(crate) fn build_from_flat(
         id_map: Vec<String>,
         flat_data: Vec<f32>,
+        dim: usize,
     ) -> Result<Self, CagraError> {
         let n_vectors = id_map.len();
         if n_vectors == 0 {
@@ -513,7 +509,7 @@ impl CagraIndex {
 
         let resources = cuvs::Resources::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
 
-        let dataset = Array2::from_shape_vec((n_vectors, EMBEDDING_DIM), flat_data)
+        let dataset = Array2::from_shape_vec((n_vectors, dim), flat_data)
             .map_err(|e| CagraError::Cuvs(format!("Failed to create array: {}", e)))?;
 
         let build_params =
@@ -525,6 +521,7 @@ impl CagraIndex {
         tracing::info!("CAGRA index built successfully");
 
         Ok(Self {
+            dim,
             resources: Mutex::new(resources),
             dataset,
             id_map,
@@ -537,6 +534,7 @@ impl CagraIndex {
 mod tests {
     use super::*;
     use crate::index::VectorIndex;
+    use crate::EMBEDDING_DIM;
     use std::sync::Mutex;
 
     /// Serialize GPU tests — concurrent CUDA contexts cause SIGSEGV
@@ -595,7 +593,7 @@ mod tests {
         let embeddings: Vec<(String, Embedding)> = (0..n)
             .map(|i| (format!("chunk_{}", i), make_embedding(i)))
             .collect();
-        CagraIndex::build(embeddings).expect("Failed to build test index")
+        CagraIndex::build(embeddings, EMBEDDING_DIM).expect("Failed to build test index")
     }
 
     #[test]
@@ -621,7 +619,7 @@ mod tests {
         if !require_gpu() {
             return;
         }
-        let result = CagraIndex::build(vec![]);
+        let result = CagraIndex::build(vec![], EMBEDDING_DIM);
         assert!(result.is_err());
     }
 
@@ -632,7 +630,7 @@ mod tests {
             return;
         }
         let bad_embedding = Embedding::new(vec![1.0; 100]); // wrong dims
-        let result = CagraIndex::build(vec![("bad".into(), bad_embedding)]);
+        let result = CagraIndex::build(vec![("bad".into(), bad_embedding)], EMBEDDING_DIM);
         match result {
             Err(CagraError::Build(_)) => {} // Now returns Build error via prepare_index_data
             Err(e) => panic!("Expected Build error, got: {:?}", e),
