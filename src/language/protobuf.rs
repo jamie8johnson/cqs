@@ -1,6 +1,6 @@
 //! Protobuf language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Protobuf code chunks.
 ///
@@ -88,6 +88,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::NameFirst {
+        separators: " ",
+        strip_prefixes: "optional repeated required",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

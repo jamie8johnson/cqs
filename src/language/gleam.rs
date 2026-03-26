@@ -1,6 +1,6 @@
 //! Gleam language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Gleam code chunks.
 ///
@@ -129,6 +129,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "Use /// doc comments describing parameters and return values.",
+    field_style: FieldStyle::NameFirst {
+        separators: ":",
+        strip_prefixes: "pub",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

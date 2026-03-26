@@ -1,6 +1,6 @@
 //! Elixir language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Elixir code chunks.
 ///
@@ -209,6 +209,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "elixir_doc",
     doc_convention: "Use @doc with ## Examples section per Elixir conventions.",
+    field_style: FieldStyle::NameFirst {
+        separators: ":",
+        strip_prefixes: "",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

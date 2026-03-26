@@ -3,7 +3,7 @@
 //! INI is a simple configuration format. Chunks are sections and settings.
 //! No function calls or type references.
 
-use super::{LanguageDef, SignatureStyle};
+use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting INI sections and settings.
 const CHUNK_QUERY: &str = r#"
@@ -64,6 +64,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

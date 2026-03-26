@@ -1,6 +1,6 @@
 //! Haskell language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Haskell code chunks.
 ///
@@ -163,6 +163,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "haskell_haddock",
     doc_convention: "Use Haddock format with -- | comments.",
+    field_style: FieldStyle::NameFirst {
+        separators: ":",
+        strip_prefixes: "",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

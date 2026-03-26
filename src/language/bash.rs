@@ -1,6 +1,6 @@
 //! Bash/Shell language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Bash function definitions
 const CHUNK_QUERY: &str = r#"
@@ -59,6 +59,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

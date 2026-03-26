@@ -3,7 +3,7 @@
 //! XML is a markup language for structured data. Chunks are top-level elements.
 //! Uses `LANGUAGE_XML` (non-standard export, like OCaml's `LANGUAGE_OCAML`).
 
-use super::{ChunkType, LanguageDef, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting XML elements.
 ///
@@ -106,6 +106,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

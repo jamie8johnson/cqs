@@ -5,7 +5,7 @@
 //! extract JS/TS functions and `<style>` blocks extract CSS rules via
 //! multi-grammar injection.
 
-use super::{ChunkType, InjectionRule, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, InjectionRule, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting HTML chunks.
 ///
@@ -301,6 +301,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     ],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

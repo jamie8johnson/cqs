@@ -3,7 +3,7 @@
 //! Nix is a functional package-management language. Chunks are attribute bindings
 //! (functions, attribute sets). Call graph via `apply_expression`.
 
-use super::{InjectionRule, LanguageDef, SignatureStyle};
+use super::{FieldStyle, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Nix definitions as chunks.
 ///
@@ -170,6 +170,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     ],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

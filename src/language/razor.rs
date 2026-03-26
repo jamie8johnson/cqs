@@ -8,7 +8,7 @@
 //! blocks. HTML headings/landmarks extracted via post-process on generic `element` nodes.
 //! JS/CSS injected from `<script>` and `<style>` elements via `_inner` content mode.
 
-use super::{ChunkType, InjectionRule, LanguageDef, SignatureStyle};
+use super::{ChunkType, FieldStyle, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Razor/C# chunks.
 ///
@@ -376,6 +376,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     ],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

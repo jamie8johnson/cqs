@@ -6,7 +6,7 @@
 //! VB.NET uses `Sub` (void return) and `Function` (typed return) for methods,
 //! `Module` instead of `static class`, and `Structure` instead of `struct`.
 
-use super::{ChunkType, LanguageDef, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting VB.NET code chunks.
 ///
@@ -223,6 +223,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "Use XML doc comments: <summary>, <param>, <returns> tags.",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

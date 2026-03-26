@@ -1,6 +1,6 @@
 //! Rust language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Rust code chunks
 const CHUNK_QUERY: &str = r#"
@@ -230,6 +230,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "triple_slash",
     doc_convention: "Use `# Arguments`, `# Returns`, `# Errors`, `# Panics` sections as appropriate.",
+    field_style: FieldStyle::NameFirst {
+        separators: ":",
+        strip_prefixes: "pub pub(crate) pub(super)",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

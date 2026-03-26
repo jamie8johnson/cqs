@@ -3,7 +3,7 @@
 //! YAML is a configuration/data language. Chunks are top-level mapping keys.
 //! No function calls or type references.
 
-use super::{ChunkType, LanguageDef, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting YAML top-level mapping keys as chunks.
 ///
@@ -87,6 +87,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

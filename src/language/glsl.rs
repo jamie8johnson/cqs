@@ -3,7 +3,7 @@
 //! GLSL extends C grammar. Reuses C chunk and call queries.
 //! Uses `LANGUAGE_GLSL` (non-standard export, like OCaml's `LANGUAGE_OCAML`).
 
-use super::{LanguageDef, SignatureStyle};
+use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting GLSL code chunks (reuses C patterns)
 const CHUNK_QUERY: &str = r#"
@@ -143,6 +143,9 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "javadoc",
     doc_convention: "Use Doxygen format: @param, @return tags.",
+    field_style: FieldStyle::TypeFirst {
+        strip_prefixes: "static const volatile extern unsigned signed",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

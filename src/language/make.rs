@@ -4,7 +4,7 @@
 //! assignments. No call graph — prerequisite references are structural, not
 //! function calls.
 
-use super::{InjectionRule, LanguageDef, SignatureStyle};
+use super::{FieldStyle, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Make definitions as chunks.
 ///
@@ -68,6 +68,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     ],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

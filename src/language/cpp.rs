@@ -1,6 +1,6 @@
 //! C++ language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting C++ code chunks
 const CHUNK_QUERY: &str = r#"
@@ -310,6 +310,9 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "javadoc",
     doc_convention: "Use Doxygen format: @param, @return, @throws tags.",
+    field_style: FieldStyle::TypeFirst {
+        strip_prefixes: "static const volatile mutable virtual inline",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

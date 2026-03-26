@@ -1,6 +1,6 @@
 //! TypeScript language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting TypeScript code chunks
 const CHUNK_QUERY: &str = r#"
@@ -196,6 +196,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "javadoc",
     doc_convention: "Use JSDoc format: @param {type} name, @returns {type}, @throws {type}.",
+    field_style: FieldStyle::NameFirst {
+        separators: ":=;",
+        strip_prefixes: "public private protected readonly static",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

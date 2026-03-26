@@ -3,7 +3,7 @@
 //! CSS is a styling language. Chunks are rule sets (selectors),
 //! keyframes, and media statements. No meaningful call graph.
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting CSS chunks.
 ///
@@ -110,6 +110,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 /// Returns a reference to the static language definition.

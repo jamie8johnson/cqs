@@ -1,6 +1,6 @@
 //! Kotlin language definition
 
-use super::{ChunkType, LanguageDef, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Kotlin code chunks.
 ///
@@ -224,6 +224,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "javadoc",
     doc_convention: "Use KDoc format: @param, @return, @throws tags.",
+    field_style: FieldStyle::NameFirst {
+        separators: ":",
+        strip_prefixes: "val var private protected public internal override lateinit",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

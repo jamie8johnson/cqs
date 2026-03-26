@@ -1,6 +1,6 @@
 //! F# language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting F# code chunks
 const CHUNK_QUERY: &str = r#"
@@ -227,6 +227,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "triple_slash",
     doc_convention: "Use XML doc comments: <summary>, <param>, <returns> tags.",
+    field_style: FieldStyle::NameFirst {
+        separators: ":",
+        strip_prefixes: "mutable",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

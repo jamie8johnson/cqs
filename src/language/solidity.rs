@@ -1,6 +1,6 @@
 //! Solidity language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Solidity code chunks
 const CHUNK_QUERY: &str = r#"
@@ -147,6 +147,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "javadoc",
     doc_convention: "Use NatSpec format: @param, @return, @dev tags.",
+    field_style: FieldStyle::NameFirst {
+        separators: ";",
+        strip_prefixes: "public private internal constant immutable",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

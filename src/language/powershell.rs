@@ -1,6 +1,6 @@
 //! PowerShell language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting PowerShell code chunks
 const CHUNK_QUERY: &str = r#"
@@ -113,6 +113,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "Use comment-based help: .SYNOPSIS, .PARAMETER, .OUTPUTS sections.",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

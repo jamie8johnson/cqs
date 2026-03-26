@@ -3,7 +3,7 @@
 //! LaTeX is a document preparation system. Chunks are sections (chapter, section,
 //! subsection), command definitions, and environments. No call graph.
 
-use super::{ChunkType, InjectionRule, LanguageDef, SignatureStyle};
+use super::{ChunkType, FieldStyle, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting LaTeX definitions as chunks.
 ///
@@ -226,6 +226,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     ],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

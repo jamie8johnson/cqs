@@ -1,6 +1,6 @@
 //! C# language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting C# code chunks
 const CHUNK_QUERY: &str = r#"
@@ -199,6 +199,9 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "javadoc",
     doc_convention: "Use XML doc comments: <summary>, <param>, <returns>, <exception> tags.",
+    field_style: FieldStyle::TypeFirst {
+        strip_prefixes: "private protected public internal static readonly virtual override abstract sealed new",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

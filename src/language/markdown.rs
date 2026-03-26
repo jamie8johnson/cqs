@@ -1,6 +1,6 @@
 //! Markdown language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 /// Prose stopwords for keyword extraction — more extensive than code language stopwords
 /// since markdown content is natural language.
@@ -42,6 +42,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::None,
 };
 
 pub fn definition() -> &'static LanguageDef {

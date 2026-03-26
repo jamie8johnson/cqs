@@ -1,6 +1,6 @@
 //! GraphQL language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting GraphQL definitions.
 ///
@@ -93,6 +93,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "default",
     doc_convention: "",
+    field_style: FieldStyle::NameFirst {
+        separators: ":",
+        strip_prefixes: "",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 // Re-export from language module (source of truth)
-pub use crate::language::{capture_name_to_chunk_type, ChunkType, Language, SignatureStyle};
+pub use crate::language::{
+    capture_name_to_chunk_type, ChunkType, FieldStyle, Language, SignatureStyle,
+};
 
 /// Errors that can occur during code parsing
 #[derive(Error, Debug)]

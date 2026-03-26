@@ -1,6 +1,6 @@
 //! R language definition
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Returns true if the name follows UPPER_CASE convention (all ASCII uppercase/digits/underscores,
 /// at least one letter, e.g. MAX_RETRIES, API_URL_V2).
@@ -289,6 +289,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
     doc_format: "r_roxygen",
     doc_convention: "Use roxygen2 format: @param, @return, @export tags.",
+    field_style: FieldStyle::NameFirst {
+        separators: "=<",
+        strip_prefixes: "",
+    },
 };
 
 pub fn definition() -> &'static LanguageDef {
