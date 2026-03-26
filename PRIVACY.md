@@ -13,7 +13,7 @@ cqs processes your code locally by default. With `--llm-summaries`, function cod
 When you run `cqs index`, the following is stored in `.cqs/index.db`:
 
 - Code chunks (functions, methods, documentation sections)
-- Embedding vectors (768-dimensional floats from E5-base-v2)
+- Embedding vectors (dimension depends on configured model; 768 for E5-base-v2 default, 1024 for BGE-large)
 - File paths and line numbers
 - File modification times
 
@@ -23,12 +23,13 @@ This data never leaves your machine.
 
 The embedding model is downloaded once from HuggingFace:
 
-- Default: `intfloat/e5-base-v2` (base E5)
-- Override: via `CQS_EMBEDDING_MODEL` env var
-- Size: ~438MB
+- Default: `intfloat/e5-base-v2` (~438MB)
+- Preset: `BAAI/bge-large-en-v1.5` (BGE-large)
+- Custom: any HuggingFace repo via `[embedding]` config section, `--model` CLI flag, or `CQS_EMBEDDING_MODEL` env var
+- Size varies by model
 - Cached in: `~/.cache/huggingface/`
 
-HuggingFace may log download requests per their privacy policy. After download, the model runs offline.
+HuggingFace may log download requests per their privacy policy. Custom model configurations cause downloads from the specified HuggingFace repository. After download, the model runs offline.
 
 ## CI/CD
 

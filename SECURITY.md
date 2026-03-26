@@ -30,16 +30,17 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 
 ## Architecture
 
-cqs runs locally by default. No telemetry. The optional `--llm-summaries` flag sends function code to the Anthropic API (see below).
+cqs runs locally by default. No network telemetry. Optional local command logging to `.cqs/telemetry.jsonl` when `CQS_TELEMETRY=1` (off by default, never transmitted). The optional `--llm-summaries` flag sends function code to the Anthropic API (see below).
 
 ## Network Requests
 
 The only network activity is:
 
-- **Model download** (`cqs init`): Downloads ~438MB model from HuggingFace Hub
-  - Default: `huggingface.co/intfloat/e5-base-v2` (base E5)
-  - Override: via `CQS_EMBEDDING_MODEL` env var
-  - One-time download, cached in `~/.cache/huggingface/`
+- **Model download** (`cqs init`): Downloads embedding model from HuggingFace Hub
+  - Default: `huggingface.co/intfloat/e5-base-v2` (~438MB)
+  - Preset: `bge-large` (`BAAI/bge-large-en-v1.5`)
+  - Custom: any HuggingFace repo via `[embedding]` config or `CQS_EMBEDDING_MODEL` env var. Custom model configs download ONNX files from the specified repo — only configure repos you trust.
+  - One-time download per model, cached in `~/.cache/huggingface/`
 
 - **Reranker model download** (first `--rerank` use): Downloads cross-encoder model from HuggingFace Hub
   - Model: `ms-marco-MiniLM-L-6-v2` (cross-encoder)

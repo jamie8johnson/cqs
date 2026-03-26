@@ -102,9 +102,11 @@ When reporting bugs, please include:
 ```
 src/
   cli/          - Command-line interface (clap)
-    mod.rs      - Argument parsing, command dispatch
+    mod.rs      - Top-level CLI module, re-exports
+    definitions.rs - Clap argument definitions and command enum
+    dispatch.rs - Command dispatch (match on command, call handlers)
     commands/   - Command implementations
-      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, drift.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs, where_cmd.rs, scout.rs, onboard.rs, convert.rs, review.rs, ci.rs, health.rs, suggest.rs, deps.rs, task.rs, blame.rs, plan.rs, train_data.rs
+      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, drift.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs, where_cmd.rs, scout.rs, onboard.rs, convert.rs, review.rs, ci.rs, health.rs, suggest.rs, deps.rs, task.rs, blame.rs, plan.rs, train_data.rs, export_model.rs
     chat.rs     - Interactive REPL (wraps batch mode with rustyline)
     batch/      - Batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
       mod.rs      - BatchContext, vector index builder, main loop
@@ -121,13 +123,16 @@ src/
     pipeline.rs - Multi-threaded indexing pipeline
     signal.rs   - Signal handling (Ctrl+C)
     staleness.rs - Proactive staleness warnings for search results
+    telemetry.rs - Optional command usage logging (CQS_TELEMETRY=1)
     watch.rs    - File watcher for incremental reindexing
   language/     - Tree-sitter language support
     mod.rs      - Language enum, LanguageRegistry, LanguageDef, ChunkType
     rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, cpp.rs, java.rs, csharp.rs, fsharp.rs, powershell.rs, scala.rs, ruby.rs, bash.rs, hcl.rs, kotlin.rs, swift.rs, objc.rs, sql.rs, protobuf.rs, graphql.rs, php.rs, lua.rs, zig.rs, r.rs, yaml.rs, toml_lang.rs, elixir.rs, erlang.rs, gleam.rs, haskell.rs, julia.rs, ocaml.rs, css.rs, perl.rs, html.rs, json.rs, xml.rs, ini.rs, nix.rs, make.rs, latex.rs, solidity.rs, cuda.rs, glsl.rs, svelte.rs, razor.rs, vbnet.rs, vue.rs, aspx.rs, markdown.rs
   test_helpers.rs - Shared test fixtures module
   store/        - SQLite storage layer (Schema v16, WAL mode)
-    mod.rs      - Store struct, open/init, FTS5, RRF fusion
+    mod.rs      - Store struct, open/init, FTS5
+    metadata.rs - Chunk metadata queries, file-level operations
+    search.rs   - RRF fusion, search_filtered, search_unified_with_index
     chunks/     - Chunk storage and retrieval
       mod.rs, crud.rs, staleness.rs, embeddings.rs, query.rs, async_helpers.rs
     notes.rs    - Note CRUD, note_embeddings(), brute-force search
@@ -143,9 +148,9 @@ src/
     calls.rs    - Call graph extraction, callee filtering
     injection.rs - Multi-grammar injection (HTML→JS/CSS via set_included_ranges)
     markdown.rs - Heading-based markdown parser, cross-reference extraction
-  embedder/      - ONNX embedding model (E5-base-v2), 768-dim embeddings
-    mod.rs      - Embedder struct, embed(), batch embedding
-    models.rs   - ModelConfig struct, built-in presets, resolution logic
+  embedder/      - ONNX embedding models (configurable: E5-base-v2 default, BGE-large preset, custom ONNX)
+    mod.rs      - Embedder struct, embed(), batch embedding, runtime dimension detection
+    models.rs   - ModelConfig struct, built-in presets (e5-base, bge-large), resolution logic, EmbeddingConfig
     provider.rs - ORT execution provider selection (CUDA/TensorRT/CPU)
   reranker.rs   - Cross-encoder re-ranking (ms-marco-MiniLM-L-6-v2)
   search/       - Search algorithms, name matching, HNSW-guided search
@@ -230,10 +235,13 @@ src/
     troubleshoot/ - Diagnose common cqs issues
     cqs-batch/    - Batch mode with pipeline syntax
     cqs-plan/     - Task planning with templates
+    before-edit/  - Pre-edit workflow: snapshot state before changes
+    investigate/  - Investigation workflow: structured code exploration
+    check-my-work/ - Post-implementation verification checklist
 ```
 
 **Key design notes:**
-- 768-dim embeddings (E5-base-v2)
+- Configurable embeddings (E5-base-v2 768-dim default, BGE-large 1024-dim, custom ONNX)
 - HNSW index is chunk-only; notes use brute-force SQLite search (always fresh)
 - Streaming HNSW build via `build_batched()` for memory efficiency
 - Large chunks split by windowing (480 tokens, 64 overlap); notes capped at 10k entries

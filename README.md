@@ -560,7 +560,7 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 51 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination (SQ-11). Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — E5-base-v2 generates 768-dimensional embeddings locally. 92.7% Recall@1 on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
+3. **Embed** — Configurable embedding model (E5-base-v2 default, BGE-large preset, or custom ONNX) generates embeddings locally. 92.7% Recall@1 on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
@@ -593,16 +593,15 @@ Evaluated on a hard eval suite of 55 queries across 5 languages (Rust, Python, T
 | Metric | E5-base-v2 (cqs) | jina-v2-base-code |
 |--------|-------------------|-------------------|
 | **Recall@1** | **92.7%** | 80.0% |
-| **Recall@5** | **98.2%** | 94.5% |
-| **Recall@10** | **98.2%** | 100.0% |
-| **MRR** | **0.941** | 0.863 |
-| **NDCG@10** | **0.965** | 0.896 |
+| **Recall@5** | **100%** | 94.5% |
+| **Recall@10** | **100%** | 100.0% |
+| **NDCG@10** | **0.9624** | 0.896 |
 
-Per-language MRR: Rust 1.0, Python 1.0, Go 1.0, JavaScript 0.95, TypeScript 0.75.
+E5 column includes the full cqs enrichment stack (contrastive summaries, type-aware embeddings, hybrid RRF). jina column is raw embeddings without enrichment.
 
 General-purpose E5 outperforms code-specific jina because cqs generates natural language descriptions of each code element — doc comments, parameter types, return types, parent type context — transforming the retrieval task from code→code to NL→NL, where general-purpose models excel.
 
-E5 reaches its ceiling at Recall@5 — every query that lands in the top 5 also lands at rank 1-5 even when searching 10 results. jina catches up at Recall@10 (100%) but ranks results lower, reflected in its lower MRR and NDCG@10.
+E5 reaches perfect recall at Recall@5 with the enrichment stack. jina catches up at Recall@10 (100%) but ranks results lower, reflected in its lower NDCG@10.
 
 ## RAG Efficiency
 
