@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-03-26
+
+### Added
+- **FieldStyle enum** — data-driven field extraction for 28 languages via `LanguageDef.field_style`. TypeFirst (C/C++/Java/C#/CUDA/GLSL) correctly extracts field names instead of types. NameFirst covers Rust/Go/Python/TS/JS/Kotlin/Swift/Scala/PHP/Ruby and 12 more. (#680)
+- **BatchProvider trait** — LLM batch lifecycle abstracted behind trait. Anthropic implementation unchanged. Enables future provider additions. (#681)
+- **Runtime embedding dimension** — `Embedder::embedding_dim()` detects dimension from ONNX model output via OnceLock. No longer hardcoded to 768. (#682)
+- **Method keywords** — generic method extraction now recognizes `fun` (Kotlin), `sub` (Perl/VB), `proc` (Nim/Tcl), `method` (Raku).
+- **Enrichment tests** — 12 new tests for NL caller/callee inclusion, IDF filtering, hash determinism.
+- **`doc_convention` field** — language-specific doc comment conventions on LanguageDef for 31 languages.
+
+### Changed
+- **CLI split** — `cli/mod.rs` (2043 lines) split into `definitions.rs` + `dispatch.rs` + `mod.rs`.
+- **Store split** — `store/mod.rs` (1573 lines) split into `metadata.rs` + `search.rs` + `mod.rs`.
+- **CallGraph Arc\<str\>** — string interning halves memory for large call graphs (~40MB savings at 500K edges).
+- **Lazy enrichment** — caller/callee maps loaded per page (~500 chunks) instead of pre-loading everything (~105MB). (#665)
+- **GC single transaction** — all prune operations run atomically via `Store::prune_all()`. (#666)
+- **Mtime millisecond precision** — staleness checks use milliseconds instead of seconds, preventing sub-second write misses on WSL/NTFS.
+- **Contrastive neighbors** — N×N matrix capped at 15K chunks (OOM guard), dimension mismatch filtered, per-row sort O(n² log n) → O(n² log k) via BinaryHeap.
+- **Batch size docs** — central documentation in `lib.rs` explaining the `floor(999/params)` formula. (#683)
+
+### Fixed
+- **82-finding audit** (6th full audit) — all P1-P4 findings fixed across 14 categories.
+- **Security**: git subprocess argument injection (SHA + path validation), HTTPS-only API base warning.
+- **Error handling**: LLM batch store errors no longer swallowed, stale batch results validated against current index, concurrent batch submission locked.
+- **Robustness**: contrastive neighbor dimension panic, rayon pool double-unwrap, FTS whitespace-only query.
+- **Platform**: cross-platform path separators (6 fixes), macOS case-insensitive prune guard.
+- **Observability**: 4 missing tracing spans added, 7 silent degradation paths now warn.
+- **API design**: `full_cosine_similarity` returns `Option<f32>`, `Client` → `LlmClient`, blame `-n` → `-d`, `CQS_LLM_API_BASE` primary env var, residual `to_json()` removed, `ScoringContext` struct.
+- **Documentation**: stale LoRA references updated to base E5, download size corrected, metrics updated.
+- **~1000 lines of noisy LLM-generated doc comments removed** from trivial functions. (#684)
+
 ## [1.5.0] - 2026-03-25
 
 ### Changed
