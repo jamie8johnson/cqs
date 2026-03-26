@@ -820,3 +820,16 @@ mentions = [
 sentiment = 0.0
 text = "CLAUDE.md restructured from 35-command reference list to task-triggered format: 'Before modifying a function → cqs impact'. Added ownership framing: 'You wrote cqs. Use your own tools.' Telemetry baseline: 87% search, 0% advanced commands. Check next session."
 mentions = ["CLAUDE.md"]
+
+[[note]]
+sentiment = 0.0
+text = "For balanced training datasets: Ruby gems and TS packages produce fewer callable functions per repo than Go/Java. Need 3-5x more repos to reach the same pair count. Min-stars threshold must be lowered (10 vs 100) to get enough repos."
+mentions = ["training-data"]
+
+[[note]]
+sentiment = 0.5
+text = "Adding a new language to cqs is now documented as a data-entry task in CONTRIBUTING.md. The only creative work is writing tree-sitter chunk/call queries. Everything else is filling LanguageDef fields from a template. bash.rs is the minimal template (65 lines definition). An agent can follow the guide without prior cqs context."
+mentions = [
+    "language",
+    "CONTRIBUTING.md",
+]
