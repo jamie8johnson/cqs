@@ -13,6 +13,8 @@ mod embeddings;
 mod query;
 mod staleness;
 
+pub use staleness::PruneAllResult;
+
 // Free async functions in async_helpers are pub(super) — accessible
 // to sibling modules (crud.rs) via `super::async_helpers::`.
 

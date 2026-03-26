@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use super::provider::BatchProvider;
 use super::{
     ApiError, BatchItem, BatchRequest, BatchResponse, BatchResult, ChatMessage, LlmClient,
     LlmError, MessagesRequest, API_VERSION, BATCH_POLL_INTERVAL,
@@ -265,13 +266,72 @@ impl LlmClient {
     }
 }
 
+impl BatchProvider for LlmClient {
+    fn submit_batch(
+        &self,
+        items: &[(String, String, String, String)],
+        max_tokens: u32,
+        purpose: &str,
+        prompt_builder: fn(&str, &str, &str) -> String,
+    ) -> Result<String, LlmError> {
+        self.submit_batch_inner(items, max_tokens, purpose, prompt_builder)
+    }
+
+    fn submit_batch_prebuilt(
+        &self,
+        items: &[(String, String, String, String)],
+        max_tokens: u32,
+    ) -> Result<String, LlmError> {
+        LlmClient::submit_batch_prebuilt(self, items, max_tokens)
+    }
+
+    fn submit_doc_batch(
+        &self,
+        items: &[(String, String, String, String)],
+        max_tokens: u32,
+    ) -> Result<String, LlmError> {
+        LlmClient::submit_doc_batch(self, items, max_tokens)
+    }
+
+    fn submit_hyde_batch(
+        &self,
+        items: &[(String, String, String, String)],
+        max_tokens: u32,
+    ) -> Result<String, LlmError> {
+        LlmClient::submit_hyde_batch(self, items, max_tokens)
+    }
+
+    fn check_batch_status(&self, batch_id: &str) -> Result<String, LlmError> {
+        LlmClient::check_batch_status(self, batch_id)
+    }
+
+    fn wait_for_batch(&self, batch_id: &str, quiet: bool) -> Result<(), LlmError> {
+        LlmClient::wait_for_batch(self, batch_id, quiet)
+    }
+
+    fn fetch_batch_results(&self, batch_id: &str) -> Result<HashMap<String, String>, LlmError> {
+        LlmClient::fetch_batch_results(self, batch_id)
+    }
+
+    fn is_valid_batch_id(&self, id: &str) -> bool {
+        super::is_valid_batch_id(id)
+    }
+
+    fn model_name(&self) -> &str {
+        &self.llm_config.model
+    }
+}
+
 /// Configuration for the Phase 2 batch orchestration pattern.
 ///
 /// Type alias for pending metadata get/set closures (clippy::type_complexity).
 type PendingFn = dyn Fn(&Store, Option<&str>) -> Result<(), crate::store::StoreError>;
 /// Type alias for batch submit closures (clippy::type_complexity).
-type SubmitFn =
-    dyn Fn(&LlmClient, &[(String, String, String, String)], u32) -> Result<String, LlmError>;
+type SubmitFn = dyn Fn(
+    &dyn BatchProvider,
+    &[(String, String, String, String)],
+    u32,
+) -> Result<String, LlmError>;
 
 /// Captures the per-purpose differences (pending metadata key, submit function, purpose string)
 /// so the orchestration logic (`submit_or_resume`) can be shared across summary, doc, and HyDE passes.
@@ -340,7 +400,7 @@ impl BatchPhase2<'_> {
     /// Returns the raw results map. Results are stored in the DB with `self.purpose`.
     pub fn submit_or_resume(
         &self,
-        client: &LlmClient,
+        client: &dyn BatchProvider,
         store: &Store,
         batch_items: &[(String, String, String, String)],
         get_pending: &dyn Fn(&Store) -> Result<Option<String>, crate::store::StoreError>,
@@ -449,7 +509,7 @@ impl BatchPhase2<'_> {
     /// Wait for batch, fetch results, store with purpose, clear pending marker.
     fn resume(
         &self,
-        client: &LlmClient,
+        client: &dyn BatchProvider,
         store: &Store,
         batch_id: &str,
         clear_pending: &PendingFn,
@@ -500,7 +560,7 @@ impl BatchPhase2<'_> {
         }
 
         // Store results with the given purpose
-        let model = client.llm_config.model.clone();
+        let model = client.model_name().to_string();
         let to_store: Vec<(String, String, String, String)> = valid_results
             .iter()
             .map(|(hash, text)| {
@@ -527,7 +587,7 @@ impl BatchPhase2<'_> {
     /// Submit a fresh batch and store its pending ID.
     fn submit_fresh(
         &self,
-        client: &LlmClient,
+        client: &dyn BatchProvider,
         store: &Store,
         batch_items: &[(String, String, String, String)],
         set_pending: &PendingFn,

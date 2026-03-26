@@ -1,6 +1,17 @@
-From v1.5.0 audit:
+## Summary
 
-- CQ-25: ~2000 lines of LLM-generated `# Arguments`/`# Returns` doc comments on trivial functions (builder methods, thin dispatch wrappers). Not a bug — note for improving doc generation heuristics to skip trivial functions.
-- PB-24: `prune_missing` compares `PathBuf::from(origin)` with canonicalized `existing_files` — can miss on case-insensitive filesystems (macOS HFS+/APFS). Linux/WSL unaffected.
-- EH-29: `read_context_lines` errors silently dropped — correct behavior for display fallback, no diagnostic needed.
-- EH-30: Bm25 `top_k_negatives` can return empty docs as hard negatives — training data only, low impact.
+- Embedder detects embedding dimension from ONNX model output at runtime via OnceLock
+- `cosine_similarity` validates dimension agreement instead of hardcoded 768
+- HNSW search removes hardcoded dimension check (library validates internally)
+- `EMBEDDING_DIM` constant remains as default for E5-base-v2
+- Batch size constants documented with SQLite 999-param formula (#683)
+
+Closes #682, closes #683
+
+## Test plan
+
+- [x] `cargo clippy --features gpu-index -- -D warnings` — zero warnings
+- [x] 67 embedding/cosine/hnsw/store tests pass
+- [ ] CI validation
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)

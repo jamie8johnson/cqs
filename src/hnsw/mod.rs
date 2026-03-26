@@ -138,6 +138,8 @@ pub struct HnswIndex {
     pub(crate) id_map: Vec<String>,
     /// Configurable search width (defaults to EF_SEARCH constant)
     pub(crate) ef_search: usize,
+    /// Embedding dimension of vectors in this index
+    pub(crate) dim: usize,
 }
 
 /// Internal HNSW state

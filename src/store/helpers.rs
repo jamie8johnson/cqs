@@ -23,7 +23,9 @@ use crate::parser::{Chunk, ChunkType, Language};
 /// - v10: sentiment in embeddings, call graph, notes
 pub const CURRENT_SCHEMA_VERSION: i32 = 16;
 pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
-/// Expected embedding dimensions — derived from crate::EMBEDDING_DIM
+/// Expected embedding dimensions — derived from crate::EMBEDDING_DIM (default for E5-base-v2).
+/// The actual dimension is detected at runtime by the Embedder; this constant is used
+/// for validation when the embedder is not in scope.
 pub const EXPECTED_DIMENSIONS: u32 = crate::EMBEDDING_DIM as u32;
 
 #[derive(Error, Debug)]
@@ -706,12 +708,25 @@ impl SearchFilter {
     }
 }
 
-/// Model metadata for index initialization
+/// Model metadata for index initialization.
+///
+/// `Default` uses `EXPECTED_DIMENSIONS` (768 for E5-base-v2).
+/// Use `with_dim()` to override with the embedder's runtime-detected dimension.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ModelInfo {
     pub name: String,
     pub dimensions: u32,
     pub version: String,
+}
+
+impl ModelInfo {
+    /// Create ModelInfo with a specific embedding dimension (from `Embedder::embedding_dim()`).
+    pub fn with_dim(dim: u32) -> Self {
+        ModelInfo {
+            dimensions: dim,
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for ModelInfo {
@@ -721,13 +736,13 @@ impl Default for ModelInfo {
     ///
     /// A new `ModelInfo` struct initialized with:
     /// - `name`: The default model name constant
-    /// - `dimensions`: 768 (embedding dimension for E5-base-v2)
+    /// - `dimensions`: EXPECTED_DIMENSIONS (default 768 for E5-base-v2)
     /// - `version`: "2" (E5-base-v2 version)
     fn default() -> Self {
         ModelInfo {
             name: MODEL_NAME.to_string(),
-            dimensions: 768,          // E5-base-v2
-            version: "2".to_string(), // E5-base-v2
+            dimensions: EXPECTED_DIMENSIONS, // Default for E5-base-v2; override via Embedder::embedding_dim()
+            version: "2".to_string(),        // E5-base-v2
         }
     }
 }

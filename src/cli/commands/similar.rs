@@ -34,25 +34,6 @@ fn resolve_target(store: &Store, target: &str) -> Result<(String, String)> {
     Ok((result.chunk.id.clone(), result.chunk.name.clone()))
 }
 
-/// Finds chunks similar to a target chunk based on embedding similarity.
-///
-/// Searches the codebase for chunks with embeddings similar to the specified target chunk, optionally filtering by programming language and file path patterns. Results are ranked by similarity score and can be output as JSON.
-///
-/// # Arguments
-///
-/// * `cli` - Command-line interface context containing optional language and path filters
-/// * `target` - Identifier or name of the chunk to find similar matches for
-/// * `limit` - Maximum number of results to return
-/// * `threshold` - Minimum similarity score (0.0-1.0) for results to include
-/// * `json` - If true, output results in JSON format; otherwise use human-readable format
-///
-/// # Returns
-///
-/// Returns `Ok(())` on successful completion, or an error if the target chunk cannot be resolved, its embedding cannot be loaded, the index is corrupt, or the search fails.
-///
-/// # Errors
-///
-/// Returns an error if the threshold is not a finite value, the target chunk cannot be found or resolved, the embedding for the target cannot be loaded, the language filter is invalid, or the vector index search fails.
 pub(crate) fn cmd_similar(
     cli: &Cli,
     target: &str,

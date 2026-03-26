@@ -44,20 +44,6 @@ fn confidence_label(c: DeadConfidence) -> &'static str {
     c.as_str()
 }
 
-/// Displays a formatted report of dead code findings to stdout.
-///
-/// Prints a summary of functions identified as dead code, organized into two categories: confidently dead functions and possibly dead public API functions. Each entry includes the function name, file location, line number, type, and confidence level. In quiet mode, signature details are omitted. If no dead code is found, prints a message indicating so.
-///
-/// # Arguments
-///
-/// * `confident` - Slice of functions confidently identified as dead code
-/// * `possibly_pub` - Slice of functions possibly dead but part of the public API
-/// * `root` - Root path used to compute relative file paths for display
-/// * `quiet` - If true, suppresses additional details like function signatures and helper text
-///
-/// # Returns
-///
-/// None. Output is printed directly to stdout.
 fn display_dead_text(
     confident: &[DeadFunction],
     possibly_pub: &[DeadFunction],
@@ -116,19 +102,6 @@ fn display_dead_text(
     }
 }
 
-/// Outputs a JSON representation of dead code analysis results to stdout.
-///
-/// Formats and displays two categories of dead functions: those with high confidence and those that are possibly dead public items. Each entry includes metadata such as name, file location, line numbers, code type, signature, language, and confidence level.
-///
-/// # Arguments
-///
-/// * `confident` - A slice of `DeadFunction` items identified with high confidence as dead code
-/// * `possibly_pub` - A slice of `DeadFunction` items that are possibly dead public functions
-/// * `root` - The root path used to compute relative file paths in the output
-///
-/// # Returns
-///
-/// `Result<()>` - Returns `Ok(())` on successful output, or an error if JSON serialization or writing fails
 fn display_dead_json(
     confident: &[DeadFunction],
     possibly_pub: &[DeadFunction],

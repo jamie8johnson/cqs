@@ -227,6 +227,8 @@ pub struct Embedder {
     max_length: usize,
     /// LRU cache for query embeddings (avoids re-computing same queries)
     query_cache: Mutex<LruCache<String, Embedding>>,
+    /// Detected embedding dimension from the model. Set on first inference.
+    detected_dim: std::sync::OnceLock<usize>,
 }
 
 /// Default query cache size (entries). Each entry is ~3KB (768 floats + key).
@@ -256,6 +258,7 @@ impl Embedder {
             provider,
             max_length: 512,
             query_cache,
+            detected_dim: std::sync::OnceLock::new(),
         })
     }
 
@@ -276,6 +279,7 @@ impl Embedder {
             provider: ExecutionProvider::CPU,
             max_length: 512,
             query_cache,
+            detected_dim: std::sync::OnceLock::new(),
         })
     }
 
@@ -497,6 +501,12 @@ impl Embedder {
         Ok(())
     }
 
+    /// Returns the embedding dimension detected from the model.
+    /// Falls back to EMBEDDING_DIM (768) if no inference has been run yet.
+    pub fn embedding_dim(&self) -> usize {
+        *self.detected_dim.get().unwrap_or(&EMBEDDING_DIM)
+    }
+
     /// Generates embeddings for a batch of text inputs.
     ///
     /// This method tokenizes the input texts, prepares them as padded tensors suitable for the ONNX model, and runs inference to produce embedding vectors. Texts are padded to the maximum length within the batch (up to the model's configured maximum length).
@@ -591,11 +601,21 @@ impl Embedder {
             )));
         }
         let embedding_dim = shape[2] as usize;
-        if embedding_dim != 768 {
-            return Err(EmbedderError::InferenceFailed(format!(
-                "Unexpected embedding dimension: expected 768, got {}",
-                embedding_dim
-            )));
+        // Set or validate embedding dimension from model output
+        match self.detected_dim.get() {
+            Some(&expected) if expected != embedding_dim => {
+                return Err(EmbedderError::InferenceFailed(format!(
+                    "Embedding dimension changed: expected {expected}, got {embedding_dim}"
+                )));
+            }
+            None => {
+                let _ = self.detected_dim.set(embedding_dim);
+                tracing::info!(
+                    dim = embedding_dim,
+                    "Detected embedding dimension from model"
+                );
+            }
+            _ => {} // matches expected — OK
         }
         if shape[0] as usize != batch_size {
             return Err(EmbedderError::InferenceFailed(format!(

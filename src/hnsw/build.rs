@@ -51,6 +51,7 @@ impl HnswIndex {
                 inner: HnswInner::Owned(hnsw),
                 id_map: Vec::new(),
                 ef_search: EF_SEARCH,
+                dim: EMBEDDING_DIM,
             });
         }
 
@@ -89,6 +90,7 @@ impl HnswIndex {
             inner: HnswInner::Owned(hnsw),
             id_map,
             ef_search: EF_SEARCH,
+            dim: EMBEDDING_DIM,
         })
     }
 
@@ -203,6 +205,7 @@ impl HnswIndex {
                 )),
                 id_map: Vec::new(),
                 ef_search: EF_SEARCH,
+                dim: EMBEDDING_DIM,
             });
         }
 
@@ -212,6 +215,7 @@ impl HnswIndex {
             inner: HnswInner::Owned(hnsw),
             id_map,
             ef_search: EF_SEARCH,
+            dim: EMBEDDING_DIM,
         })
     }
 }

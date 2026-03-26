@@ -581,33 +581,18 @@ pub(in crate::cli::batch) fn dispatch_gc(ctx: &BatchContext) -> Result<serde_jso
         }
     };
 
-    let pruned_chunks = ctx
+    let prune = ctx
         .store()
-        .prune_missing(&file_set)
-        .context("Failed to prune deleted files from index")?;
-
-    let pruned_calls = ctx
-        .store()
-        .prune_stale_calls()
-        .context("Failed to prune orphan call graph entries")?;
-
-    let pruned_type_edges = ctx
-        .store()
-        .prune_stale_type_edges()
-        .context("Failed to prune orphan type edges")?;
-
-    let pruned_summaries = ctx
-        .store()
-        .prune_orphan_summaries()
-        .context("Failed to prune orphan LLM summaries")?;
+        .prune_all(&file_set)
+        .context("Failed to prune stale entries from index")?;
 
     Ok(serde_json::json!({
         "stale_files": stale_count,
         "missing_files": missing_count,
-        "pruned_chunks": pruned_chunks,
-        "pruned_calls": pruned_calls,
-        "pruned_type_edges": pruned_type_edges,
-        "pruned_summaries": pruned_summaries,
+        "pruned_chunks": prune.pruned_chunks,
+        "pruned_calls": prune.pruned_calls,
+        "pruned_type_edges": prune.pruned_type_edges,
+        "pruned_summaries": prune.pruned_summaries,
         "hnsw_rebuilt": false,
     }))
 }

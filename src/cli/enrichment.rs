@@ -47,7 +47,6 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
     let mut cursor = 0i64;
     const ENRICHMENT_PAGE_SIZE: usize = 500;
 
-    // Collect all chunk names for batch caller/callee lookup.
     // Track name frequency — ambiguous names (appearing in multiple files)
     // are skipped to avoid merging callers from different functions. (RB-B1)
     let identities = store
@@ -57,15 +56,7 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
     for ci in &identities {
         *name_file_count.entry(ci.name.clone()).or_insert(0) += 1;
     }
-    let all_names: Vec<&str> = identities.iter().map(|ci| ci.name.as_str()).collect();
-
-    // Batch-fetch all callers and callees
-    let callers_map = store
-        .get_callers_full_batch(&all_names)
-        .context("Failed to batch-fetch callers")?;
-    let callees_map = store
-        .get_callees_full_batch(&all_names)
-        .context("Failed to batch-fetch callees")?;
+    drop(identities); // Free identity data — only name_file_count needed going forward
 
     let progress = if quiet {
         ProgressBar::hidden()
@@ -126,6 +117,21 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                 break;
             }
             cursor = next_cursor;
+
+            // Batch-fetch callers/callees for this page only (~500 names).
+            // Avoids pre-loading the full call graph (~105MB at 50k chunks).
+            let page_names: Vec<&str> = chunks.iter().map(|cs| cs.name.as_str()).collect();
+            tracing::debug!(
+                page = cursor,
+                names = page_names.len(),
+                "Loading callers/callees for enrichment page"
+            );
+            let callers_map = store
+                .get_callers_full_batch(&page_names)
+                .context("Failed to batch-fetch callers for page")?;
+            let callees_map = store
+                .get_callees_full_batch(&page_names)
+                .context("Failed to batch-fetch callees for page")?;
 
             for cs in &chunks {
                 progress.inc(1);

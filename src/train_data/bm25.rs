@@ -119,14 +119,21 @@ impl Bm25Index {
                 }
             })
             .take(k)
-            .map(|(hash, _score)| {
+            .filter_map(|(hash, _score)| {
                 let content = self
                     .docs
                     .iter()
                     .find(|(h, _)| h == &hash)
                     .map(|(_, c)| c.clone())
                     .unwrap_or_default();
-                (hash, content)
+                // EH-30: Skip negatives with empty content (from unwrap_or_default
+                // when hash lookup fails, or genuinely empty docs).
+                if content.is_empty() {
+                    tracing::trace!(hash = %hash, "Skipping empty negative");
+                    None
+                } else {
+                    Some((hash, content))
+                }
             })
             .collect()
     }
@@ -140,20 +147,6 @@ fn tokenize(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Builds a BM25 search index from a collection of documents and verifies that scoring correctly ranks documents by relevance based on query term matches.
-    ///
-    /// # Arguments
-    ///
-    /// This function takes no parameters. It uses hardcoded test documents consisting of tuples containing document hashes and their text content.
-    ///
-    /// # Returns
-    ///
-    /// Returns nothing. This is a test function that uses assertions to verify correct behavior.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the BM25 index scoring does not return "hash1" as the top result for the query "parse config", indicating that the BM25 scoring algorithm is not correctly ranking documents that contain both query terms.
-
     #[test]
     fn bm25_build_and_score() {
         let docs = vec![
@@ -165,22 +158,6 @@ mod tests {
         let results = index.score("parse config");
         assert_eq!(results[0].0, "hash1"); // both terms match
     }
-    /// Verifies that the BM25 scoring algorithm applies inverse document frequency (IDF) weighting to downweight common terms and prioritize rare discriminative terms.
-    ///
-    /// This test creates a search index with three documents where "fn" and "common" appear in all documents, while "rare_term" appears only in the first document. It then searches for "rare_term" and asserts that the first document ranks highest, confirming that the IDF component correctly reduces the contribution of frequently occurring terms and increases the weight of rare terms.
-    ///
-    /// # Arguments
-    ///
-    /// None. This is a test function with no parameters.
-    ///
-    /// # Returns
-    ///
-    /// None. This function performs assertions to verify expected behavior.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the assertion fails, indicating that the IDF weighting is not functioning correctly (e.g., if "rare_term" does not rank the first document as the top result).
-
     #[test]
     fn idf_downweights_common_terms() {
         let docs = vec![
@@ -192,20 +169,6 @@ mod tests {
         let results = index.score("rare_term");
         assert_eq!(results[0].0, "h1"); // "fn" and "common" downweighted, "rare_term" discriminates
     }
-    /// Tests that the `select_negatives` method excludes the positive document from the returned negative samples by comparing document hashes.
-    ///
-    /// # Arguments
-    ///
-    /// This is a test function with no parameters.
-    ///
-    /// # Returns
-    ///
-    /// This function returns nothing and performs assertions to validate behavior.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the assertion fails, indicating that a negative sample was incorrectly included with the same hash as the positive document.
-
     #[test]
     fn select_negatives_excludes_positive_by_hash() {
         let docs = vec![
@@ -217,20 +180,6 @@ mod tests {
         let negs = index.select_negatives("foo bar", "h1", "fn foo bar", 3);
         assert!(negs.iter().all(|(hash, _)| hash != "h1"));
     }
-    /// Tests that the content hash guard mechanism prevents selecting negative examples that have identical content to the positive example, even if they have different identifiers. Verifies that when searching for negative samples, items with the same content as the positive example are excluded from results, ensuring training data quality by avoiding duplicate content in positive/negative pairs.
-    ///
-    /// # Arguments
-    ///
-    /// None - this is a unit test with no parameters.
-    ///
-    /// # Returns
-    ///
-    /// None - test function that asserts correctness through panics on failure.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any negative example returned by `select_negatives` contains content identical to the positive example's content.
-
     #[test]
     fn content_hash_guard_excludes_identical_content() {
         // h1 and h2 have identical content but different hashes (simulating rename)
@@ -247,16 +196,6 @@ mod tests {
             .iter()
             .all(|(_, content)| content != "fn identical code here"));
     }
-    /// Tests that `select_negatives` returns an empty list when there are insufficient candidate documents to select negative examples from.
-    ///
-    /// # Arguments
-    ///
-    /// This is a test function with no parameters.
-    ///
-    /// # Returns
-    ///
-    /// Returns nothing. Asserts that the negative selection returns an empty vector when only one document exists in the index.
-
     #[test]
     fn fallback_to_random_when_few_candidates() {
         let docs = vec![("h1".into(), "fn only function".into())];

@@ -133,14 +133,23 @@ pub fn display_unified_results(
                     if let Some(n) = context {
                         if n > 0 {
                             let abs_path = root.join(&r.chunk.file);
-                            if let Ok((before, _)) = read_context_lines(
+                            match read_context_lines(
                                 &abs_path,
                                 r.chunk.line_start,
                                 r.chunk.line_end,
                                 n,
                             ) {
-                                for line in &before {
-                                    println!("{}", format!("  {}", line).dimmed());
+                                Ok((before, _)) => {
+                                    for line in &before {
+                                        println!("{}", format!("  {}", line).dimmed());
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::trace!(
+                                        error = %e,
+                                        file = %abs_path.display(),
+                                        "Failed to read context lines (before)"
+                                    );
                                 }
                             }
                         }
@@ -160,14 +169,23 @@ pub fn display_unified_results(
                     if let Some(n) = context {
                         if n > 0 {
                             let abs_path = root.join(&r.chunk.file);
-                            if let Ok((_, after)) = read_context_lines(
+                            match read_context_lines(
                                 &abs_path,
                                 r.chunk.line_start,
                                 r.chunk.line_end,
                                 n,
                             ) {
-                                for line in &after {
-                                    println!("{}", format!("  {}", line).dimmed());
+                                Ok((_, after)) => {
+                                    for line in &after {
+                                        println!("{}", format!("  {}", line).dimmed());
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::trace!(
+                                        error = %e,
+                                        file = %abs_path.display(),
+                                        "Failed to read context lines (after)"
+                                    );
                                 }
                             }
                         }
@@ -296,14 +314,23 @@ pub fn display_tagged_results(
                         if let Some(n) = context {
                             if n > 0 {
                                 let abs_path = root.join(&r.chunk.file);
-                                if let Ok((before, _)) = read_context_lines(
+                                match read_context_lines(
                                     &abs_path,
                                     r.chunk.line_start,
                                     r.chunk.line_end,
                                     n,
                                 ) {
-                                    for line in &before {
-                                        println!("{}", format!("  {}", line).dimmed());
+                                    Ok((before, _)) => {
+                                        for line in &before {
+                                            println!("{}", format!("  {}", line).dimmed());
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::trace!(
+                                            error = %e,
+                                            file = %abs_path.display(),
+                                            "Failed to read context lines (before)"
+                                        );
                                     }
                                 }
                             }
@@ -324,14 +351,23 @@ pub fn display_tagged_results(
                         if let Some(n) = context {
                             if n > 0 {
                                 let abs_path = root.join(&r.chunk.file);
-                                if let Ok((_, after)) = read_context_lines(
+                                match read_context_lines(
                                     &abs_path,
                                     r.chunk.line_start,
                                     r.chunk.line_end,
                                     n,
                                 ) {
-                                    for line in &after {
-                                        println!("{}", format!("  {}", line).dimmed());
+                                    Ok((_, after)) => {
+                                        for line in &after {
+                                            println!("{}", format!("  {}", line).dimmed());
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::trace!(
+                                            error = %e,
+                                            file = %abs_path.display(),
+                                            "Failed to read context lines (after)"
+                                        );
                                     }
                                 }
                             }
@@ -457,19 +493,6 @@ mod tests {
 
     // ===== read_context_lines tests (P3-14, P3-18) =====
 
-    /// Creates a temporary directory and file with the specified content for testing purposes.
-    ///
-    /// # Arguments
-    ///
-    /// * `lines` - A slice of string references to write as lines in the test file, joined by newlines.
-    ///
-    /// # Returns
-    ///
-    /// A tuple containing the temporary directory handle and the path to the created test file.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the temporary directory cannot be created or if writing to the file fails.
     /// Creates a temp test file and returns (TempDir, relative_path).
     ///
     /// Returns a relative path (just the filename) suitable for the SEC-12

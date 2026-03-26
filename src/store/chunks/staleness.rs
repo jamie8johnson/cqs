@@ -6,6 +6,19 @@ use std::path::PathBuf;
 use crate::store::helpers::{StaleFile, StaleReport, StoreError};
 use crate::store::Store;
 
+/// Result of running all GC prune operations atomically.
+#[derive(Debug, Clone)]
+pub struct PruneAllResult {
+    /// Chunks deleted for files no longer on disk.
+    pub pruned_chunks: u32,
+    /// Orphan `function_calls` rows removed.
+    pub pruned_calls: u64,
+    /// Orphan `type_edges` rows removed.
+    pub pruned_type_edges: u64,
+    /// Orphan `llm_summaries` rows removed.
+    pub pruned_summaries: usize,
+}
+
 impl Store {
     /// Delete chunks for files that no longer exist
     ///
@@ -25,9 +38,26 @@ impl Store {
             .await?;
 
             // Collect missing origins
+            //
+            // PB-24: On macOS (HFS+/APFS case-insensitive), PathBuf comparison
+            // is case-sensitive but the filesystem is not. Normalize both sides
+            // to lowercase so we don't falsely mark files as missing.
             let missing: Vec<String> = rows
                 .into_iter()
-                .filter(|(origin,)| !existing_files.contains(&PathBuf::from(origin)))
+                .filter(|(origin,)| {
+                    let origin_path = PathBuf::from(origin);
+                    #[cfg(target_os = "macos")]
+                    {
+                        let origin_lower = origin.to_lowercase();
+                        !existing_files
+                            .iter()
+                            .any(|p| p.to_string_lossy().to_lowercase() == origin_lower)
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        !existing_files.contains(&origin_path)
+                    }
+                })
                 .map(|(origin,)| origin)
                 .collect();
 
@@ -75,6 +105,125 @@ impl Store {
             }
 
             Ok(deleted)
+        })
+    }
+
+    /// Run all prune operations in a single SQLite transaction.
+    ///
+    /// Ensures concurrent readers never see an inconsistent state where chunks
+    /// are deleted but orphan call graph / type edge / summary entries remain.
+    /// Without this, the window between `prune_missing` and `prune_stale_calls`
+    /// exposes stale `function_calls` rows referencing deleted chunks.
+    pub fn prune_all(
+        &self,
+        existing_files: &HashSet<PathBuf>,
+    ) -> Result<PruneAllResult, StoreError> {
+        let _span = tracing::info_span!("prune_all", existing = existing_files.len()).entered();
+        self.rt.block_on(async {
+            // Phase 1: identify missing origins (Rust-side HashSet check, outside tx)
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+
+            let missing: Vec<String> = rows
+                .into_iter()
+                .filter(|(origin,)| {
+                    let origin_path = PathBuf::from(origin);
+                    #[cfg(target_os = "macos")]
+                    {
+                        let origin_lower = origin.to_lowercase();
+                        !existing_files
+                            .iter()
+                            .any(|p| p.to_string_lossy().to_lowercase() == origin_lower)
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        !existing_files.contains(&origin_path)
+                    }
+                })
+                .map(|(origin,)| origin)
+                .collect();
+
+            // Phase 2: single transaction for ALL mutations
+            let mut tx = self.pool.begin().await?;
+
+            // 2a. Delete chunks for missing files (batched for SQLite param limit)
+            const BATCH_SIZE: usize = 100;
+            let mut pruned_chunks = 0u32;
+
+            for batch in missing.chunks(BATCH_SIZE) {
+                let placeholder_str = crate::store::helpers::make_placeholders(batch.len());
+
+                // Delete from FTS first (referential)
+                let fts_query = format!(
+                    "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin IN ({}))",
+                    placeholder_str
+                );
+                let mut fts_stmt = sqlx::query(&fts_query);
+                for origin in batch {
+                    fts_stmt = fts_stmt.bind(origin);
+                }
+                fts_stmt.execute(&mut *tx).await?;
+
+                // Delete from chunks
+                let chunks_query =
+                    format!("DELETE FROM chunks WHERE origin IN ({})", placeholder_str);
+                let mut chunks_stmt = sqlx::query(&chunks_query);
+                for origin in batch {
+                    chunks_stmt = chunks_stmt.bind(origin);
+                }
+                let result = chunks_stmt.execute(&mut *tx).await?;
+                pruned_chunks += result.rows_affected() as u32;
+            }
+
+            // 2b. Delete orphan function_calls (file no longer in chunks)
+            let calls_result = sqlx::query(
+                "DELETE FROM function_calls WHERE file NOT IN (SELECT DISTINCT origin FROM chunks)",
+            )
+            .execute(&mut *tx)
+            .await?;
+            let pruned_calls = calls_result.rows_affected();
+
+            // 2c. Delete orphan type_edges (source_chunk_id no longer in chunks)
+            let types_result = sqlx::query(
+                "DELETE FROM type_edges WHERE source_chunk_id NOT IN (SELECT id FROM chunks)",
+            )
+            .execute(&mut *tx)
+            .await?;
+            let pruned_type_edges = types_result.rows_affected();
+
+            // 2d. Delete orphan LLM summaries (content_hash no longer in any chunk)
+            let summaries_result = sqlx::query(
+                "DELETE FROM llm_summaries WHERE content_hash NOT IN \
+                 (SELECT DISTINCT content_hash FROM chunks)",
+            )
+            .execute(&mut *tx)
+            .await?;
+            let pruned_summaries = summaries_result.rows_affected() as usize;
+
+            tx.commit().await?;
+
+            if pruned_chunks > 0 {
+                tracing::info!(pruned_chunks, files = missing.len(), "Pruned chunks for missing files");
+            }
+            if pruned_calls > 0 {
+                tracing::info!(pruned_calls, "Pruned stale call graph entries");
+            }
+            if pruned_type_edges > 0 {
+                tracing::info!(pruned_type_edges, "Pruned stale type edges");
+            }
+            if pruned_summaries > 0 {
+                tracing::info!(pruned_summaries, "Pruned orphan LLM summaries");
+            }
+
+            Ok(PruneAllResult {
+                pruned_chunks,
+                pruned_calls,
+                pruned_type_edges,
+                pruned_summaries,
+            })
         })
     }
 
