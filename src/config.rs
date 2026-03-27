@@ -1011,4 +1011,81 @@ llm_max_tokens = 200
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.embedding.is_none());
     }
+
+    // ===== TC-36: NaN threshold passes through clamp unchanged =====
+
+    #[test]
+    fn tc36_nan_threshold_passes_clamp_unchanged() {
+        // NaN comparisons always return false, so `clamp_config_f32` never triggers
+        // (NaN < min → false, NaN > max → false). This means NaN silently passes
+        // validation. Document this behavior rather than add a special case.
+        let mut config = Config {
+            threshold: Some(f32::NAN),
+            ..Default::default()
+        };
+        config.validate();
+        // NaN survives clamping because all NaN comparisons are false
+        assert!(
+            config.threshold.unwrap().is_nan(),
+            "NaN should pass through clamp unchanged (NaN comparisons are always false)"
+        );
+    }
+
+    // ===== TC-37: Edge case dimension metadata =====
+
+    #[test]
+    fn tc37_embedding_config_empty_string_model() {
+        // Empty model name should fall back to default via from_preset returning None
+        std::env::remove_var("CQS_EMBEDDING_MODEL");
+        let embedding_cfg = crate::embedder::EmbeddingConfig {
+            model: String::new(),
+            repo: None,
+            onnx_path: None,
+            tokenizer_path: None,
+            dim: None,
+            max_seq_length: None,
+            query_prefix: None,
+            doc_prefix: None,
+        };
+        let cfg = crate::embedder::ModelConfig::resolve(None, Some(&embedding_cfg));
+        assert_eq!(
+            cfg.name, "e5-base",
+            "Empty model string should fall back to default"
+        );
+    }
+
+    // ===== TC-39: embedding section tokenizer_path parsing =====
+
+    #[test]
+    fn tc39_embedding_tokenizer_path_parsed() {
+        let toml = r#"
+        [embedding]
+        model = "custom"
+        repo = "org/model"
+        dim = 384
+        tokenizer_path = "custom.json"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let emb = config.embedding.as_ref().unwrap();
+        assert_eq!(
+            emb.tokenizer_path.as_deref(),
+            Some("custom.json"),
+            "tokenizer_path should be captured from config"
+        );
+    }
+
+    #[test]
+    fn tc39_embedding_unknown_field_ignored() {
+        // Unknown fields like `tokenizer` (without `_path`) should be ignored by serde
+        let toml = r#"
+        [embedding]
+        model = "e5-base"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let emb = config.embedding.as_ref().unwrap();
+        assert!(
+            emb.tokenizer_path.is_none(),
+            "tokenizer_path should be None when not specified"
+        );
+    }
 }

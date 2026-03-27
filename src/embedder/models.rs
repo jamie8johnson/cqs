@@ -113,14 +113,14 @@ impl ModelConfig {
             let has_repo = embedding_cfg.repo.is_some();
             let has_dim = embedding_cfg.dim.is_some();
             if has_repo && has_dim {
-                let dim = embedding_cfg.dim.unwrap_or(768);
+                let dim = embedding_cfg.dim.expect("guarded by has_dim");
                 if dim == 0 {
                     tracing::warn!(model = %embedding_cfg.model, "Custom model has dim=0, falling back to default");
                     return Self::e5_base();
                 }
                 let cfg = Self {
                     name: embedding_cfg.model.clone(),
-                    repo: embedding_cfg.repo.clone().unwrap_or_default(),
+                    repo: embedding_cfg.repo.clone().expect("guarded by has_repo"),
                     onnx_path: embedding_cfg
                         .onnx_path
                         .clone()

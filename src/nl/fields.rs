@@ -53,14 +53,18 @@ fn validate_field_name(name: Option<&str>) -> Option<&str> {
 fn strip_prefixes<'a>(line: &'a str, prefixes: &str) -> &'a str {
     let mut result = line;
     // Sort prefixes longest-first so "pub(crate)" is tried before "pub"
-    let mut plist: Vec<&str> = prefixes.split_whitespace().collect();
+    let mut plist: Vec<String> = prefixes
+        .split_whitespace()
+        .map(|p| format!("{} ", p))
+        .collect();
     plist.sort_by_key(|s| std::cmp::Reverse(s.len()));
     // Apply repeatedly — a line like "public static final int x" needs multiple passes
     let mut changed = true;
-    while changed {
+    let mut iters = 0;
+    while changed && iters < 20 {
+        iters += 1;
         changed = false;
-        for prefix in &plist {
-            let with_space = format!("{} ", prefix);
+        for with_space in &plist {
             if let Some(rest) = result.strip_prefix(with_space.as_str()) {
                 result = rest;
                 changed = true;

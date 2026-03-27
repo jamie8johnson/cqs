@@ -204,7 +204,7 @@ async fn migrate_v14_to_v15(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 /// single BEGIN/COMMIT via `pool.begin()`.
 async fn migrate_v15_to_v16(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
     sqlx::query(
-        "CREATE TABLE llm_summaries_v2 (
+        "CREATE TABLE IF NOT EXISTS llm_summaries_v2 (
             content_hash TEXT NOT NULL,
             purpose TEXT NOT NULL DEFAULT 'summary',
             summary TEXT NOT NULL,
@@ -217,7 +217,7 @@ async fn migrate_v15_to_v16(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     .await?;
 
     sqlx::query(
-        "INSERT INTO llm_summaries_v2 (content_hash, purpose, summary, model, created_at) \
+        "INSERT OR IGNORE INTO llm_summaries_v2 (content_hash, purpose, summary, model, created_at) \
          SELECT content_hash, 'summary', summary, model, created_at FROM llm_summaries",
     )
     .execute(&mut *conn)

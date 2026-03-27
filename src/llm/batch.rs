@@ -23,6 +23,9 @@ impl LlmClient {
         purpose: &str,
         prompt_builder: fn(&str, &str, &str) -> String,
     ) -> Result<String, LlmError> {
+        if items.is_empty() {
+            return Err(LlmError::BatchFailed("Cannot submit empty batch".into()));
+        }
         let _span =
             tracing::info_span!("submit_batch_inner", purpose, count = items.len()).entered();
         let model = self.llm_config.model.clone();
@@ -517,7 +520,21 @@ impl BatchPhase2<'_> {
             _ => self.submit_fresh(client, store, batch_items, set_pending, submit)?,
         };
 
-        self.resume(client, store, &batch_id, set_pending)
+        let result = self.resume(client, store, &batch_id, set_pending);
+        // RM-34: Clean up lock file after batch operation completes
+        drop(_batch_lock);
+        self.cleanup_batch_lock();
+        result
+    }
+
+    /// Remove the batch lock file if it exists (RM-34).
+    ///
+    /// Called after the lock handle is dropped to avoid leaving stale lock files on disk.
+    fn cleanup_batch_lock(&self) {
+        if let Some(dir) = self.lock_dir {
+            let lock_path = dir.join("batch.lock");
+            let _ = std::fs::remove_file(&lock_path);
+        }
     }
 
     /// Wait for batch, fetch results, store with purpose, clear pending marker.
@@ -558,14 +575,14 @@ impl BatchPhase2<'_> {
             }
             return Ok(results);
         } else if valid_hashes.is_empty() {
-            // No hashes in DB (fresh/pre-v13 index) — store everything
-            (results.clone(), 0usize)
+            // No hashes in DB (fresh/pre-v13 index) — store everything (PERF-34: move, not clone)
+            (results, 0usize)
         } else {
             let mut valid = HashMap::new();
             let mut stale = 0usize;
-            for (hash, text) in &results {
-                if valid_hashes.contains(hash) {
-                    valid.insert(hash.clone(), text.clone());
+            for (hash, text) in results {
+                if valid_hashes.contains(&hash) {
+                    valid.insert(hash, text);
                 } else {
                     stale += 1;
                 }
@@ -584,17 +601,14 @@ impl BatchPhase2<'_> {
         }
 
         // Store results with the given purpose
+        // PERF-38: model/purpose are cloned per item because upsert_summaries_batch takes
+        // &[(String, String, String, String)]. Refactoring to separate params would change
+        // the Store API signature and all callers — not worth it for batch sizes < 10k.
         let model = client.model_name().to_string();
+        let purpose = self.purpose.to_string();
         let to_store: Vec<(String, String, String, String)> = valid_results
             .iter()
-            .map(|(hash, text)| {
-                (
-                    hash.clone(),
-                    text.clone(),
-                    model.clone(),
-                    self.purpose.to_string(),
-                )
-            })
+            .map(|(hash, text)| (hash.clone(), text.clone(), model.clone(), purpose.clone()))
             .collect();
         if !to_store.is_empty() {
             store.upsert_summaries_batch(&to_store)?;

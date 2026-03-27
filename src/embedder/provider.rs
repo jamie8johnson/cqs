@@ -99,11 +99,16 @@ fn find_ort_provider_dir() -> Option<PathBuf> {
     let ort_cache = cache_dir.join(format!("ort.pyke.io/dfbin/{triplet}"));
 
     match std::fs::read_dir(&ort_cache) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
-            .map(|e| e.path())
-            .next(),
+        Ok(entries) => {
+            // PB-31: Sort descending by name to pick the latest version deterministically
+            let mut dirs: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .map(|e| e.path())
+                .collect();
+            dirs.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+            dirs.into_iter().next()
+        }
         Err(e) => {
             tracing::debug!(path = %ort_cache.display(), error = %e, "ORT cache not found");
             None
@@ -220,16 +225,22 @@ fn detect_provider() -> ExecutionProvider {
     // Try CUDA first
     let cuda = CUDA::default();
     if cuda.is_available().unwrap_or(false) {
-        return ExecutionProvider::CUDA { device_id: 0 };
+        let provider = ExecutionProvider::CUDA { device_id: 0 };
+        tracing::info!(provider = ?provider, "Execution provider selected");
+        return provider;
     }
 
     // Try TensorRT
     let tensorrt = TensorRT::default();
     if tensorrt.is_available().unwrap_or(false) {
-        return ExecutionProvider::TensorRT { device_id: 0 };
+        let provider = ExecutionProvider::TensorRT { device_id: 0 };
+        tracing::info!(provider = ?provider, "Execution provider selected");
+        return provider;
     }
 
-    ExecutionProvider::CPU
+    let provider = ExecutionProvider::CPU;
+    tracing::info!(provider = ?provider, "Execution provider selected");
+    provider
 }
 
 /// Create an ort session with the specified provider
@@ -238,6 +249,8 @@ pub(crate) fn create_session(
     provider: ExecutionProvider,
 ) -> Result<Session, EmbedderError> {
     use ort::ep::{TensorRT, CUDA};
+
+    tracing::info!(provider = ?provider, model_path = %model_path.display(), "Creating ONNX session");
 
     let mut builder = Session::builder().map_err(ort_err)?;
 

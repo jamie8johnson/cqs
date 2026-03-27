@@ -154,9 +154,12 @@ pub fn doc_comment_pass(
     let _span = tracing::info_span!("doc_comment_pass").entered();
 
     let llm_config = LlmConfig::resolve(config);
+    tracing::debug!(
+        api_base = %llm_config.api_base,
+        "LLM API base"
+    );
     tracing::info!(
         model = %llm_config.model,
-        api_base = %llm_config.api_base,
         "Doc comment pass starting"
     );
 

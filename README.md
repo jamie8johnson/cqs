@@ -148,6 +148,17 @@ stale_check = true
 # Output modes
 quiet = false
 verbose = false
+
+# Embedding model (optional — defaults to e5-base)
+[embedding]
+model = "bge-large"              # built-in preset
+# model = "custom"               # for custom ONNX models:
+# repo = "org/model-name"
+# onnx_path = "model.onnx"
+# tokenizer_path = "tokenizer.json"
+# dim = 1024
+# query_prefix = "query: "
+# doc_prefix = "passage: "
 ```
 
 ## Watch Mode
@@ -321,7 +332,7 @@ cqs gather "config" --direction callers   # Only callers, not callees
 
 ## Training Data Generation
 
-Generate fine-tuning training data from git history (LoRA fine-tuning triplets):
+Generate fine-tuning training data from git history:
 
 ```bash
 cqs train-data --repos /path/to/repo --output triplets.jsonl
@@ -475,6 +486,8 @@ Key commands (`--json` works on all commands; `--format mermaid` also accepted o
 - `cqs train-data` - generate fine-tuning training data from git history
 - `cqs ref add/remove/list` - manage reference indexes for multi-index search
 - `cqs project register/remove/list/search` - cross-project search registry
+- `cqs export-model --repo <org/model>` - export a HuggingFace model to ONNX format for use with cqs
+- `cqs doctor` - check model, index, hardware (execution provider, CAGRA availability)
 - `cqs completions <shell>` - generate shell completions (bash, zsh, fish, powershell, elvish)
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.

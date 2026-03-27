@@ -880,6 +880,10 @@ fn build_placeholders(n: usize) -> String {
 ///
 /// Common batch sizes (1–999) are served from a static cache; larger values are built on demand.
 pub(crate) fn make_placeholders(n: usize) -> String {
+    assert!(
+        n <= 100_000,
+        "make_placeholders called with unreasonable n={n}"
+    );
     if n <= PLACEHOLDER_CACHE_MAX {
         PLACEHOLDER_CACHE[n].clone()
     } else {
@@ -893,6 +897,10 @@ pub(crate) fn make_placeholders(n: usize) -> String {
 ///
 /// Returns an error if embedding doesn't match `expected_dim` dimensions.
 /// Storing wrong-sized embeddings would corrupt the index.
+///
+/// NOTE: `embedding_slice` and `bytes_to_embedding` return `Option`, while this
+/// returns `Result`. Kept as `Result` because 3 callers use `.collect::<Result<Vec<_>, _>>()?`
+/// and changing would be invasive. (AD-40)
 pub fn embedding_to_bytes(
     embedding: &Embedding,
     expected_dim: usize,
@@ -932,10 +940,10 @@ pub fn embedding_slice(bytes: &[u8], expected_dim: usize) -> Option<&[f32]> {
 pub fn bytes_to_embedding(bytes: &[u8], expected_dim: usize) -> Option<Vec<f32>> {
     let expected_bytes = expected_dim * 4;
     if bytes.len() != expected_bytes {
-        tracing::warn!(
+        tracing::trace!(
             expected = expected_bytes,
             actual = bytes.len(),
-            "Embedding byte length mismatch — possible corruption, skipping"
+            "Embedding byte length mismatch, skipping"
         );
         return None;
     }

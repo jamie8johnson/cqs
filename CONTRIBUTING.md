@@ -206,7 +206,7 @@ src/
   config.rs     - Configuration file support
   index.rs      - VectorIndex trait (HNSW, CAGRA)
   llm/          - LLM summary generation, HyDE query predictions via Anthropic Batches API
-    mod.rs, batch.rs (BatchPhase2, submit_batch_prebuilt), doc_comments.rs, hyde.rs, prompts.rs (build_contrastive_prompt), summary.rs (find_contrastive_neighbors)
+    mod.rs, batch.rs (BatchPhase2, submit_batch_prebuilt), doc_comments.rs, hyde.rs, prompts.rs (build_contrastive_prompt), provider.rs (BatchProvider trait, BatchSubmitItem, LlmProvider), summary.rs (find_contrastive_neighbors)
   doc_writer/   - Doc comment generation and source file rewriting (SQ-8, optional "llm-summaries" feature)
     mod.rs      - DocCommentResult, module exports
     formats.rs  - Per-language doc comment formatting (prefix, position, wrapping)

@@ -242,6 +242,10 @@ impl HnswIndex {
 ///
 /// Validates all dimensions match `expected_dim`, flattens into contiguous f32 buffer,
 /// and returns the ID map for index<->chunk_id mapping.
+///
+/// PERF-39: This uses two passes (validate then build). Merging into one pass would
+/// require partial rollback on mid-iteration dimension errors, complicating the code
+/// for no real gain — this is only called from test/build paths with small N.
 pub(crate) fn prepare_index_data(
     embeddings: Vec<(String, crate::Embedding)>,
     expected_dim: usize,
@@ -265,7 +269,10 @@ pub(crate) fn prepare_index_data(
 
     // Build ID map and flat data vector
     let mut id_map = Vec::with_capacity(n);
-    let mut data = Vec::with_capacity(n * expected_dim);
+    let cap = n
+        .checked_mul(expected_dim)
+        .ok_or_else(|| HnswError::Build("embedding count * dimension would overflow".into()))?;
+    let mut data = Vec::with_capacity(cap);
     for (chunk_id, embedding) in embeddings {
         id_map.push(chunk_id);
         data.extend(embedding.into_inner());

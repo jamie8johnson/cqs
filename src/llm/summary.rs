@@ -25,9 +25,12 @@ pub fn llm_summary_pass(
     let _span = tracing::info_span!("llm_summary_pass").entered();
 
     let llm_config = LlmConfig::resolve(config);
+    tracing::debug!(
+        api_base = %llm_config.api_base,
+        "LLM API base"
+    );
     tracing::info!(
         model = %llm_config.model,
-        api_base = %llm_config.api_base,
         max_tokens = llm_config.max_tokens,
         "LLM config resolved"
     );

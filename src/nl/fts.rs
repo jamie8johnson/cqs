@@ -138,19 +138,20 @@ pub fn normalize_for_fts(text: &str) -> String {
     let mut result = String::new();
     let mut current_word = String::new();
 
+    let flush_word = |word: &str, result: &mut String| {
+        for token in tokenize_identifier_iter(word) {
+            if !result.is_empty() {
+                result.push(' ');
+            }
+            result.push_str(&token);
+        }
+    };
+
     for c in text.chars() {
         if c.is_alphanumeric() || c == '_' {
             current_word.push(c);
         } else if !current_word.is_empty() {
-            // Stream tokens directly to result instead of creating intermediate Vec<String>
-            let mut first_token = true;
-            for token in tokenize_identifier_iter(&current_word) {
-                if !result.is_empty() || !first_token {
-                    result.push(' ');
-                }
-                result.push_str(&token);
-                first_token = false;
-            }
+            flush_word(&current_word, &mut result);
             current_word.clear();
 
             // Cap output to prevent memory issues - truncate at last space boundary
@@ -163,15 +164,7 @@ pub fn normalize_for_fts(text: &str) -> String {
         }
     }
     if !current_word.is_empty() {
-        // Stream final word's tokens
-        let mut first_token = true;
-        for token in tokenize_identifier_iter(&current_word) {
-            if !result.is_empty() || !first_token {
-                result.push(' ');
-            }
-            result.push_str(&token);
-            first_token = false;
-        }
+        flush_word(&current_word, &mut result);
     }
 
     // Final cap check - truncate at last space to avoid splitting words

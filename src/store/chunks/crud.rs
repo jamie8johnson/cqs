@@ -227,12 +227,7 @@ impl Store {
             let mut result = std::collections::HashMap::new();
             // Reserve one param slot for purpose, so 499 per batch
             for batch in content_hashes.chunks(499) {
-                let placeholders: String = batch
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| format!("?{}", i + 1))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT content_hash, summary FROM llm_summaries WHERE content_hash IN ({}) AND purpose = ?{}",
                     placeholders,

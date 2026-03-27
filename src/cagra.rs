@@ -326,7 +326,7 @@ impl CagraIndex {
             let idx = neighbor_row[i] as usize;
             if idx < self.id_map.len() {
                 // CAGRA uses squared L2 distance. For unit-norm vectors: d = 2 - 2*cos_sim,
-                // so cos_sim = 1 - d/2. Vectors are 768-dim unit-norm E5-base-v2 embeddings,
+                // so cos_sim = 1 - d/2. Vectors are unit-norm embeddings,
                 // so all three backends (CAGRA, HNSW, brute-force) agree on scoring.
                 let dist = distance_row[i];
                 let score = 1.0 - dist / 2.0;

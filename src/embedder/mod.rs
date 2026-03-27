@@ -24,7 +24,7 @@ pub fn model_repo() -> String {
     ModelConfig::resolve(None, None).repo
 }
 
-// blake3 checksums — empty to skip validation (model changes with LoRA updates)
+// blake3 checksums — empty to skip validation (configurable models have different checksums)
 const MODEL_BLAKE3: &str = "";
 const TOKENIZER_BLAKE3: &str = "";
 
@@ -243,7 +243,22 @@ impl Embedder {
     /// embedding request. This avoids HuggingFace API calls for commands
     /// that don't need embeddings.
     pub fn new(model_config: ModelConfig) -> Result<Self, EmbedderError> {
-        let provider = select_provider();
+        Self::new_with_provider(model_config, select_provider())
+    }
+
+    /// Create a CPU-only embedder with lazy model loading
+    ///
+    /// Use this for single-query embedding where CPU is faster than GPU
+    /// due to CUDA context setup overhead. GPU only helps for batch embedding.
+    pub fn new_cpu(model_config: ModelConfig) -> Result<Self, EmbedderError> {
+        Self::new_with_provider(model_config, ExecutionProvider::CPU)
+    }
+
+    /// Shared constructor for both GPU-auto and CPU-only embedders.
+    fn new_with_provider(
+        model_config: ModelConfig,
+        provider: ExecutionProvider,
+    ) -> Result<Self, EmbedderError> {
         let max_length = model_config.max_seq_length;
 
         let query_cache = Mutex::new(LruCache::new(
@@ -256,30 +271,6 @@ impl Embedder {
             tokenizer: OnceCell::new(),
             model_paths: OnceCell::new(),
             provider,
-            max_length,
-            query_cache,
-            detected_dim: std::sync::OnceLock::new(),
-            model_config,
-        })
-    }
-
-    /// Create a CPU-only embedder with lazy model loading
-    ///
-    /// Use this for single-query embedding where CPU is faster than GPU
-    /// due to CUDA context setup overhead. GPU only helps for batch embedding.
-    pub fn new_cpu(model_config: ModelConfig) -> Result<Self, EmbedderError> {
-        let max_length = model_config.max_seq_length;
-
-        let query_cache = Mutex::new(LruCache::new(
-            NonZeroUsize::new(DEFAULT_QUERY_CACHE_SIZE)
-                .expect("DEFAULT_QUERY_CACHE_SIZE is non-zero"),
-        ));
-
-        Ok(Self {
-            session: Mutex::new(None),
-            tokenizer: OnceCell::new(),
-            model_paths: OnceCell::new(),
-            provider: ExecutionProvider::CPU,
             max_length,
             query_cache,
             detected_dim: std::sync::OnceLock::new(),
@@ -515,7 +506,12 @@ impl Embedder {
     /// Returns the embedding dimension detected from the model.
     /// Falls back to the model config's declared dimension if no inference has been run yet.
     pub fn embedding_dim(&self) -> usize {
-        *self.detected_dim.get().unwrap_or(&self.model_config.dim)
+        let dim = *self.detected_dim.get().unwrap_or(&self.model_config.dim);
+        if dim == 0 {
+            EMBEDDING_DIM
+        } else {
+            dim
+        }
     }
 
     /// Generates embeddings for a batch of text inputs.
@@ -543,6 +539,8 @@ impl Embedder {
         }
 
         // Tokenize (lazy init tokenizer)
+        // PERF-36: `encode_batch` requires `Vec<EncodeInput>` (owned), so `texts.to_vec()` is
+        // unavoidable — the tokenizer API does not accept `&[impl AsRef<str>]`.
         let encodings = {
             let _tokenize = tracing::debug_span!("tokenize").entered();
             self.tokenizer()?
@@ -787,6 +785,40 @@ mod tests {
         let data = vec![1.0; EMBEDDING_DIM];
         let emb = Embedding::new(data.clone());
         assert_eq!(emb.as_vec(), &data);
+    }
+
+    // ===== Embedding::try_new tests (TC-33) =====
+
+    #[test]
+    fn tc33_try_new_empty_vec_errors() {
+        let result = Embedding::try_new(vec![]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.actual, 0);
+        assert_eq!(err.expected, 1);
+    }
+
+    #[test]
+    fn tc33_try_new_nan_errors() {
+        let result = Embedding::try_new(vec![1.0, f32::NAN, 3.0]);
+        assert!(result.is_err(), "NaN should be rejected by try_new");
+    }
+
+    #[test]
+    fn tc33_try_new_inf_errors() {
+        let result = Embedding::try_new(vec![1.0, f32::INFINITY, 3.0]);
+        assert!(result.is_err(), "Infinity should be rejected by try_new");
+
+        let result = Embedding::try_new(vec![f32::NEG_INFINITY]);
+        assert!(result.is_err(), "Negative infinity should be rejected");
+    }
+
+    #[test]
+    fn tc33_try_new_valid_ok() {
+        let data = vec![0.1, 0.2, 0.3, 0.4, 0.5];
+        let result = Embedding::try_new(data.clone());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().as_slice(), &data);
     }
 
     // ===== normalize_l2 tests =====

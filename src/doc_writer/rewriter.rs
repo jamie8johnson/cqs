@@ -292,7 +292,7 @@ pub fn rewrite_file(
             matching_chunks
                 .iter()
                 .min_by_key(|c| (c.line_start as isize - edit.line_start as isize).unsigned_abs())
-                .unwrap()
+                .expect("matching_chunks guaranteed non-empty by else-if guard")
         };
 
         let line_start = chunk.line_start as usize;

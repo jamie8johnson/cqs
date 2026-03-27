@@ -131,10 +131,13 @@ impl Store {
     ///
     /// Returns `None` for fresh databases or pre-model indexes.
     pub fn stored_model_name(&self) -> Option<String> {
-        self.get_metadata_opt("model_name")
-            .ok()
-            .flatten()
-            .filter(|s| !s.is_empty())
+        match self.get_metadata_opt("model_name") {
+            Ok(val) => val.filter(|s| !s.is_empty()),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to read model_name from metadata");
+                None
+            }
+        }
     }
 
     /// Checks if the stored CQL version in the metadata table matches the current application version.

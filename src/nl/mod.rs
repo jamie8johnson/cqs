@@ -71,6 +71,13 @@ pub fn generate_nl_with_call_context_and_summary(
     summary: Option<&str>,
     hyde: Option<&str>,
 ) -> String {
+    tracing::trace!(
+        callers = ctx.callers.len(),
+        callees = ctx.callees.len(),
+        has_summary = summary.is_some(),
+        has_hyde = hyde.is_some(),
+        "generate_nl_with_call_context_and_summary"
+    );
     let base = generate_nl_description(chunk);
 
     let mut extras = Vec::new();

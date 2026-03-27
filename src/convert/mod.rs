@@ -209,7 +209,7 @@ fn convert_file(path: &Path, opts: &ConvertOptions) -> anyhow::Result<ConvertRes
     let entry = FORMAT_TABLE
         .iter()
         .find(|e| e.variant == format)
-        .unwrap_or_else(|| panic!("FORMAT_TABLE missing entry for {:?}", format));
+        .ok_or_else(|| anyhow::anyhow!("Unsupported format {:?}", format))?;
 
     let raw_markdown = match entry.converter {
         Some(convert_fn) => convert_fn(path)?,

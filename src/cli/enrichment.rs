@@ -52,11 +52,10 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
     let identities = store
         .all_chunk_identities()
         .context("Failed to load chunk identities")?;
-    let mut name_file_count: HashMap<String, usize> = HashMap::new();
+    let mut name_file_count: HashMap<&str, usize> = HashMap::new();
     for ci in &identities {
-        *name_file_count.entry(ci.name.clone()).or_insert(0) += 1;
+        *name_file_count.entry(ci.name.as_str()).or_insert(0) += 1;
     }
-    drop(identities); // Free identity data — only name_file_count needed going forward
 
     let progress = if quiet {
         ProgressBar::hidden()
@@ -153,7 +152,7 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                 // appear in multiple chunks and would get merged callers from
                 // unrelated functions. (RB-B1)
                 // But still process if they have a summary or hyde (neither depends on call graph)
-                if name_file_count.get(&cs.name).copied().unwrap_or(0) > 1
+                if name_file_count.get(cs.name.as_str()).copied().unwrap_or(0) > 1
                     && summary.is_none()
                     && hyde.is_none()
                 {

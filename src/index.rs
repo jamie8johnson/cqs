@@ -22,7 +22,7 @@ pub trait VectorIndex: Send + Sync {
     /// Search for nearest neighbors
     ///
     /// # Arguments
-    /// * `query` - Query embedding (768-dim E5-base-v2)
+    /// * `query` - Query embedding vector (dimension depends on configured model)
     /// * `k` - Maximum number of results to return
     ///
     /// # Returns

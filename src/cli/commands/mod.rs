@@ -217,8 +217,11 @@ pub(crate) fn run_git_diff(base: Option<&str>) -> anyhow::Result<String> {
     let mut cmd = std::process::Command::new("git");
     cmd.args(["--no-pager", "diff", "--no-color"]);
     if let Some(b) = base {
-        if b.starts_with('-') {
-            anyhow::bail!("Invalid base ref '{}': must not start with '-'", b);
+        if b.starts_with('-') || b.contains('\0') {
+            anyhow::bail!(
+                "Invalid base ref '{}': must not start with '-' or contain null bytes",
+                b
+            );
         }
         cmd.arg(b);
     }

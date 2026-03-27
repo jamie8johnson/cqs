@@ -52,7 +52,7 @@ const IDLE_TIMEOUT_MINUTES: u64 = 5;
 ///
 /// The CAGRA/HNSW index is held for the full session lifetime; this is
 /// intentional. Rebuilding between commands would add seconds of latency.
-/// VRAM cost: ~3 KB per vector (768-dim × 4 bytes), so 100k chunks ≈ 300 MB.
+/// VRAM cost: ~3-4 KB per vector (768-1024 dim × 4 bytes, depending on model), so 100k chunks ≈ 300 MB.
 ///
 /// # Cache invalidation
 ///

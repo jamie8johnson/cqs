@@ -624,7 +624,7 @@ pub(super) enum Commands {
         #[arg(long, default_value = ".")]
         output: std::path::PathBuf,
     },
-    /// Generate training data for LoRA fine-tuning from git history
+    /// Generate training data for fine-tuning from git history
     TrainData {
         /// Paths to git repositories to process
         #[arg(long, required = true, num_args = 1..)]
