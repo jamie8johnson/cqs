@@ -388,9 +388,13 @@ mod tests {
 
     #[test]
     fn tc31_build_batched_dim_mismatch_rejected() {
-        // TC-31.4b: Feeding 768-dim embeddings to a 1024-dim build should fail.
+        // TC-31.4b: Feeding 128-dim embeddings to a 1024-dim build should fail.
         let bad_embeddings: Vec<(String, Embedding)> = (1..=3)
-            .map(|i| (format!("chunk{}", i), make_embedding(i))) // 768-dim
+            .map(|i| {
+                let mut v = vec![0.0f32; 128]; // intentionally wrong dim
+                v[0] = i as f32;
+                (format!("chunk{}", i), Embedding::new(v))
+            })
             .collect();
 
         let batches: Vec<Result<Vec<(String, Embedding)>, std::convert::Infallible>> =
@@ -404,7 +408,7 @@ mod tests {
         match result {
             Err(HnswError::DimensionMismatch { expected, actual }) => {
                 assert_eq!(expected, 1024);
-                assert_eq!(actual, crate::EMBEDDING_DIM);
+                assert_eq!(actual, 128);
             }
             Err(other) => panic!("Expected DimensionMismatch, got: {:?}", other),
             Ok(_) => panic!("Expected error, got Ok"),

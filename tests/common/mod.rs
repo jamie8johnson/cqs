@@ -88,7 +88,7 @@ pub fn test_chunk(name: &str, content: &str) -> Chunk {
 /// Same seed = same direction = high similarity.
 /// Different seeds = different directions = lower similarity.
 pub fn mock_embedding(seed: f32) -> Embedding {
-    let mut v = vec![seed; 768];
+    let mut v = vec![seed; cqs::EMBEDDING_DIM];
     // Normalize to unit length
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {

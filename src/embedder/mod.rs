@@ -3,7 +3,7 @@
 mod models;
 mod provider;
 
-pub use models::{EmbeddingConfig, ModelConfig, DEFAULT_MODEL_REPO};
+pub use models::{EmbeddingConfig, ModelConfig, DEFAULT_DIM, DEFAULT_MODEL_REPO};
 
 use provider::ort_err;
 pub(crate) use provider::{create_session, select_provider};
@@ -895,7 +895,7 @@ mod tests {
 
     #[test]
     fn test_model_dimensions() {
-        assert_eq!(EMBEDDING_DIM, 768);
+        assert_eq!(EMBEDDING_DIM, 1024);
     }
 
     // ===== pad_2d_i64 tests =====

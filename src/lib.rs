@@ -214,7 +214,8 @@ pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
 /// Default embedding dimension for E5-base-v2 (768).
 /// The actual dimension is detected at runtime from the model output.
 /// Use `Embedder::embedding_dim()` for the runtime value.
-pub const EMBEDDING_DIM: usize = 768;
+/// Derived from `ModelConfig::default_model().dim` (currently BGE-large, 1024).
+pub const EMBEDDING_DIM: usize = embedder::DEFAULT_DIM;
 
 // # Batch Size Constants (#683)
 //

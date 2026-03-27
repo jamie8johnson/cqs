@@ -1619,7 +1619,7 @@ fn test_cuda_compatibility() {
         eprintln!("  Expected output dim: {}", model_config.output_dim);
         eprintln!(
             "  Architecture: {} ({})",
-            if model_config.output_dim <= 768 {
+            if model_config.output_dim <= cqs::EMBEDDING_DIM {
                 "base"
             } else {
                 "large"

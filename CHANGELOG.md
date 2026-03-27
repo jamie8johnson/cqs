@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-03-27
+
+### Changed
+- **Default model: BGE-large-en-v1.5** — 94.5% pipeline R@1 vs 83.6% for E5-base (+10.9pp). Larger download (~1.3GB vs ~547MB) but significantly better search quality. E5-base remains available as a preset via `CQS_EMBEDDING_MODEL=e5-base`.
+- **`EMBEDDING_DIM`: 768 → 1024** — matches BGE-large. Tests and helpers are now dim-agnostic.
+- **`ModelConfig::default_model()`** — single source of truth for the default. `DEFAULT_MODEL_REPO`, `DEFAULT_DIM`, `EMBEDDING_DIM`, `ModelInfo::default()`, and serde defaults all derive from it. Changing the default model is now a one-line change.
+
+### Added
+- **`CQS_ONNX_DIR` env var** — load local ONNX models without HuggingFace download. Point at a directory with `model.onnx` + `tokenizer.json`.
+- **`DEFAULT_DIM` constant** — exported from embedder, used by `EMBEDDING_DIM`.
+- **Consistency test** — verifies `DEFAULT_MODEL_REPO` and `DEFAULT_DIM` match `default_model()` at test time.
+
+### Fixed
+- **`Store::set_dim()`** — syncs in-memory dim after `init()` for non-default models.
+- **`init()` uses resolved model** — was using `ModelInfo::default()`, causing dim mismatch for BGE-large.
+- **All HNSW convenience wrappers deleted** — `build()`, `build_batched()`, `load()`, `try_load()` removed. Only `_with_dim` variants remain.
+- **Metric correction** — historical "92.7% R@1" was Relaxed R@1 (top-2). Strict R@1: 94.5% (BGE-large), 83.6% (E5-base).
+
 ## [1.8.0] - 2026-03-27
 
 ### Fixed
