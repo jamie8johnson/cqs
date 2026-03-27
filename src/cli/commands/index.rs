@@ -126,9 +126,13 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                 }
             }
         }
-        let store = Store::open(&index_path)
+        let mut store = Store::open(&index_path)
             .with_context(|| format!("Failed to create store at {}", index_path.display()))?;
-        store.init(&ModelInfo::default())?;
+        let mc = cli.model_config();
+        store.init(&ModelInfo::new(&mc.repo, mc.dim as u32))?;
+        // Update dim to match the model — open() defaulted to EMBEDDING_DIM
+        // because metadata didn't exist yet before init().
+        store.set_dim(mc.dim);
         store
     };
     let store = Arc::new(store);

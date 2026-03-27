@@ -33,17 +33,21 @@ Enrichment stack contributes 43.6pp to hard eval (49.1% raw → 92.7% enriched).
 - [ ] Train v9-1m → eval (if 200k shows improvement)
 - [ ] Paper v0.6
 
-### Future — Migrate HNSW to `hnswlib-rs`
-Same author as `hnsw_rs` (jean-pierreBoth), redesigned to fix the borrowing API. Eliminates all 5 `unsafe` blocks in `src/hnsw/`.
+### Future — Migrate HNSW to `hnswlib-rs` (wilsonzlin/corenn)
+**NOT the same author as hnsw_rs.** Different library: `hnswlib-rs` 0.10.0 by wilsonzlin (corenn project). Owned `Hnsw<K,M>`, `VectorStore` trait, zero unsafe, Apache-2.0.
 
-**Why:** Current `hnsw_rs` returns `Hnsw<'a>` borrowing from `&'a mut HnswIo`, forcing `UnsafeCell` + `unsafe impl Send/Sync` + `self_cell` for the self-referential pattern. `hnswlib-rs` uses a `VectorStore` trait — graph owns topology, you provide vectors on demand. Zero consumer unsafe.
+**Why:** Current `hnsw_rs` returns `Hnsw<'a>` borrowing from `&'a mut HnswIo`, forcing `UnsafeCell` + `unsafe impl Send/Sync` + `self_cell`. `hnswlib-rs` decouples graph topology from vector storage via `VectorStore` trait. Zero consumer unsafe.
 
-**What changes:** Delete `HnswIoCell`, `LoadedHnsw`, all `unsafe impl` blocks. Implement `VectorStore` trait backed by SQLite (vectors already stored there). Reindex required (format change). Build/search code adapts but structure is similar.
+**Audit (2026-03-27):** Algorithm correct (faithful hnswlib port, property-tested). Concurrency sound (two-phase insert, no deadlocks). VectorStore works for SQLite-backed vectors. String keys, cosine distance, parallel + incremental insert all supported.
 
-**Risk:** 3.2K crate downloads (new). Mitigated by same proven author + we can vendor if needed.
+**Blockers:** (1) `corenn-kernels` requires nightly Rust (`#![feature(f16)]`) — fork without it, use our simsimd distances. (2) No per-query ef_search — 1-line fix to add parameter.
 
-- [ ] Spike: implement `VectorStore` trait, benchmark build + search vs current
-- [ ] If comparable: full migration, delete `self_cell` dependency
+**Concerns:** `load_from` allows OOM via crafted max_nodes (cap it). Single squashed commit, no LICENSE file, 3.2K downloads.
+
+**Path:** Fork ~2,600 lines (hnsw.rs + vectors.rs), replace corenn-kernels with simsimd Metric impl, add ef_search param, cap max_nodes. ~1 day. Eliminates all 5 unsafe blocks + self_cell dep.
+
+- [ ] Spike: fork, implement simsimd Metric, benchmark vs current
+- [ ] If comparable: full migration, delete self_cell + UnsafeCell machinery
 
 ### Next — Agent Adoption (cqs telemetry shows 87% search, 0% advanced commands)
 Current: CLAUDE.md restructured with task-triggered commands (2026-03-26). Check telemetry next session.

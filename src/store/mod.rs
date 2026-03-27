@@ -245,6 +245,14 @@ impl Store {
         self.dim
     }
 
+    /// Update the embedding dimension after init (fresh DB only).
+    ///
+    /// `Store::open` defaults to `EMBEDDING_DIM` when the metadata table doesn't
+    /// exist yet. After `init()` writes the correct dim, call this to sync.
+    pub fn set_dim(&mut self, dim: usize) {
+        self.dim = dim;
+    }
+
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         Self::open_with_config(
