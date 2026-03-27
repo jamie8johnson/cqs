@@ -214,6 +214,11 @@ fn default_model_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Mutex to serialize tests that manipulate CQS_EMBEDDING_MODEL env var.
+    /// Env vars are process-global — concurrent test threads race on set/remove.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     // ===== Preset tests =====
 
@@ -271,6 +276,7 @@ mod tests {
 
     #[test]
     fn test_resolve_default() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         // Clear env to ensure we get default
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         let cfg = ModelConfig::resolve(None, None);
@@ -279,6 +285,7 @@ mod tests {
 
     #[test]
     fn test_resolve_env_by_name() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         std::env::set_var("CQS_EMBEDDING_MODEL", "bge-large");
         let cfg = ModelConfig::resolve(None, None);
         assert_eq!(cfg.name, "bge-large");
@@ -287,6 +294,7 @@ mod tests {
 
     #[test]
     fn test_resolve_env_by_repo_id() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         std::env::set_var("CQS_EMBEDDING_MODEL", "BAAI/bge-large-en-v1.5");
         let cfg = ModelConfig::resolve(None, None);
         assert_eq!(cfg.name, "bge-large");
@@ -295,6 +303,7 @@ mod tests {
 
     #[test]
     fn test_resolve_cli_overrides_env() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         std::env::set_var("CQS_EMBEDDING_MODEL", "bge-large");
         let cfg = ModelConfig::resolve(Some("e5-base"), None);
         assert_eq!(cfg.name, "e5-base");
@@ -303,6 +312,7 @@ mod tests {
 
     #[test]
     fn test_resolve_unknown_env_warns_and_defaults() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         std::env::set_var("CQS_EMBEDDING_MODEL", "nonexistent-model");
         let cfg = ModelConfig::resolve(None, None);
         assert_eq!(cfg.name, "bge-large"); // falls back to default
@@ -311,12 +321,14 @@ mod tests {
 
     #[test]
     fn test_resolve_unknown_cli_warns_and_defaults() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let cfg = ModelConfig::resolve(Some("nonexistent"), None);
         assert_eq!(cfg.name, "bge-large");
     }
 
     #[test]
     fn test_resolve_config_preset() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         let embedding_cfg = EmbeddingConfig {
             model: "bge-large".to_string(),
@@ -334,6 +346,7 @@ mod tests {
 
     #[test]
     fn test_resolve_config_custom_model() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         let embedding_cfg = EmbeddingConfig {
             model: "my-custom".to_string(),
@@ -358,6 +371,7 @@ mod tests {
 
     #[test]
     fn test_resolve_config_unknown_missing_fields_defaults() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         let embedding_cfg = EmbeddingConfig {
             model: "unknown".to_string(),
@@ -407,6 +421,7 @@ mod tests {
 
     #[test]
     fn test_resolve_empty_env_ignored() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         std::env::set_var("CQS_EMBEDDING_MODEL", "");
         let cfg = ModelConfig::resolve(None, None);
         assert_eq!(cfg.name, "bge-large");
@@ -415,6 +430,7 @@ mod tests {
 
     #[test]
     fn test_resolve_cli_overrides_config() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         let embedding_cfg = EmbeddingConfig {
             model: "bge-large".to_string(),
@@ -434,6 +450,7 @@ mod tests {
 
     #[test]
     fn tc31_resolve_config_dim_zero_falls_back_to_default() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         // TC-31.8: Custom config with dim=0 should be rejected and fall back to e5_base.
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         let embedding_cfg = EmbeddingConfig {
