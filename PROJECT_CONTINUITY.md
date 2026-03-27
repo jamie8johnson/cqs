@@ -2,50 +2,41 @@
 
 ## Right Now
 
-**7th audit complete. P1+P2 fixed (all 32 items). P3 next. (2026-03-27)**
+**7th audit: 85/95 fixed. PR pending. Gap-filling 90% complete. (2026-03-27)**
 
 ### Active
-- **Audit v1.7.0**: 95 findings, P1 (12) + P2 (18) + deferred P2 (4) = 34 fixed. P3 (48) + P4 (10) remain.
-  - `docs/audit-findings.md` — all findings
-  - `docs/audit-triage.md` — P1-P4 classification (needs status update)
-  - ~100 files modified, uncommitted on main
-- **Key fixes this session**:
-  - Multi-model support: `--model` flag threaded through all 20 commands, HNSW uses `store.dim()`, Store skips model validation on open
-  - dim=0 validation at ModelConfig, Store, HNSW
-  - Batch data safety: `resume()` returns `valid_results`, hash failure skips storage
-  - `nl.rs` split into `nl/{mod,fts,fields,markdown}.rs`
-  - `BatchSubmitItem` struct replaces opaque 4-tuple
-  - `create_client()` factory + `LlmProvider` enum
-  - `skip_line_prefixes` data-driven on all 51 languages
-  - 14 new tests (TC-31 dim threading, TC-32 batch mock)
-  - `Store::dim` → private field + getter
-  - `DEFAULT_MODEL_REPO` single source of truth
-- **Gap-filling pipeline**: Status unknown (was running 2026-03-26)
-  - Processing manifest added: `~/training-data/processing_manifest_retroactive.jsonl` (2,305 repos)
+- **Audit v1.7.0**: 85 of 95 findings fixed (P1-P4). 5 open issues, 2 wontfix closed.
+  - 3 commits on main awaiting branch + PR + merge
+  - Issues created: #694-#700, anthropics/claude-plugins-official#1071
+- **Gap-filling pipeline**: 1899/2119 repos (90%), actively indexing. 2.3M pairs extracted.
+  - Script: `~/training-data/fill_gaps.sh` step 4
+  - Processing manifest: `~/training-data/processing_manifest_retroactive.jsonl` (2,305 repos)
 
 ### Pending
-1. **Commit P1+P2 fixes** — ~100 files, needs branch + PR
-2. **Fix P3** (48 easy items) — docs, observability, robustness, performance, tests
-3. Check gap-filling pipeline → assemble 200K → publish HF
-4. Train v9-200k
-5. Paper v0.6
+1. Branch + PR + merge the 3 audit commits
+2. Gap-filling finishes → step 5 (merge) → step 6 (balance check) → step 7 (HF dataset)
+3. Delete cloned repos after verification (~39GB)
+4. Mine hard negatives on 200K
+5. Train v9-200k
+6. Paper v0.6
 
 ## Parked
 - Dart language support (guide written)
 - Curriculum scheduling (v9-full)
 - Ship v9-mini as default (matches base enriched, better raw+CSN)
-- BGE-large eval (multi-model P1 fixes make it possible now)
+- BGE-large eval (multi-model now functional)
 
 ## Open Issues
-- #389, #255, #106, #63 (all blocked on upstream)
+- #389, #255, #106, #63 (blocked on upstream)
+- #694 EX-30, #695 EX-32, #696 SEC-20, #697 SEC-22, #700 EX-33 (audit P4)
 
 ## Architecture
 - Version: 1.7.0
-- Models: E5-base default, BGE-large preset, custom ONNX (multi-model now functional)
+- Models: E5-base default, BGE-large preset, custom ONNX (multi-model functional)
 - ModelConfig: CLI > env > config > default, resolved once in dispatch
-- LlmProvider: Anthropic (extensible to OpenAI via CQS_LLM_PROVIDER)
-- EMBEDDING_DIM: runtime via `store.dim()` getter (private field)
-- DEFAULT_MODEL_REPO: single source of truth in `embedder/models.rs`
-- Languages: 51 (all with `skip_line_prefixes` for data-driven field extraction)
-- nl.rs → nl/{mod,fts,fields,markdown}.rs (4-file split)
-- Tests: 1480
+- LlmProvider: Anthropic (extensible via CQS_LLM_PROVIDER)
+- Store::dim(): private field + getter, validated at open (dim=0 rejected)
+- DEFAULT_MODEL_REPO: single source of truth in embedder/models.rs
+- Languages: 51 (all with skip_line_prefixes)
+- nl/ directory: mod.rs, fts.rs, fields.rs, markdown.rs
+- Tests: 1490

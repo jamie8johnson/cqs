@@ -2,7 +2,7 @@
 
 ## Current: v1.7.0
 
-v1.7.0: Configurable embedding models (E5-base + BGE-large + custom ONNX), ModelConfig resolution (CLI > env > config > default), `export-model` command, workflow skills (/before-edit, /investigate, /check-my-work). 2025 tests.
+v1.7.0: Configurable embedding models, 7th audit (85/95 fixed), nl.rs split, BatchSubmitItem, LlmProvider enum, skip_line_prefixes on 51 languages, 24 new tests. 1490 tests.
 
 v1.6.0: 6th full audit (82/82 fixed), FieldStyle field extraction (28 languages), BatchProvider trait, runtime embedding dim, CallGraph Arc<str>, CLI/store splits, lazy enrichment, GC single transaction.
 
@@ -14,10 +14,17 @@ Enrichment stack contributes 43.6pp to hard eval (49.1% raw → 92.7% enriched).
 - [x] ModelConfig registry with per-model prefix/dim/repo
 - [ ] Eval: BGE-large + enrichment vs E5-base + enrichment
 
-### Next — Training (Exp 18: v9-mini)
-- [ ] v9-mini training (in progress) — Stack data + call-graph false-negative filter + synthetic queries
-- [ ] Eval against base E5 (success bar: R@1 ≥ 92.7% AND CSN ≥ 0.627)
-- [ ] If successful: v9-full with curriculum scheduling + test-derived queries
+### Done — Training (Exp 18: v9-mini)
+- [x] v9-mini training — Stack data + call-graph false-negative filter + synthetic queries
+- [x] Eval: 65.5% raw R@1, 89.1% enriched, 0.638 CSN (matches base enriched, better raw+CSN)
+
+### Next — Training (Exp 19: v9-200k)
+- [ ] Gap-filling pipeline (1899/2119 repos, ~90% complete)
+- [ ] Assemble balanced 200K dataset (22,222 per language × 9)
+- [ ] Publish HuggingFace dataset (cqs-code-search-200k)
+- [ ] Mine hard negatives on 200K
+- [ ] Train v9-200k
+- [ ] Eval v9-200k
 
 ### Next — Agent Adoption (cqs telemetry shows 87% search, 0% advanced commands)
 Current: CLAUDE.md restructured with task-triggered commands (2026-03-26). Check telemetry next session.
