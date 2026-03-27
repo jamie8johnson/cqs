@@ -91,7 +91,7 @@ You have `cqs` on PATH. Use it for faster code exploration — still read source
 
 | Category | Covers (merged from) |
 |----------|---------------------|
-| Code Quality | Dead code, duplication, complexity, coupling, cohesion, module boundaries |
+| Code Quality | Dead code, duplication, complexity, coupling, cohesion, module boundaries, **convenience wrappers that hardcode defaults** |
 | Documentation | Accuracy, completeness, staleness of docs and comments |
 | API Design | Consistency, ergonomics, naming, type design |
 | Error Handling | Result chains, context, recovery, swallowed errors |
@@ -111,7 +111,7 @@ You have `cqs` on PATH. Use it for faster code exploration — still read source
 Run these cqs commands **before** manual exploration — they surface the highest-value data in a single call.
 
 **Batch 1:**
-- **Code Quality**: Run `cqs dead --json` + `cqs health --json` first.
+- **Code Quality**: Run `cqs dead --json` + `cqs health --json` first. Also grep for convenience wrappers that hardcode defaults (e.g., `fn foo()` that calls `foo_with_dim(HARDCODED)`) — these mask incorrect wiring when the default changes.
 - **Documentation**: Run `cqs health --json` for staleness counts.
 - **API Design**: No mandatory command.
 - **Error Handling**: No mandatory command — grep-driven.

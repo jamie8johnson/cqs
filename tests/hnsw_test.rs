@@ -30,7 +30,7 @@ fn test_truncated_data_file_detected() {
     let embeddings: Vec<_> = (1..=5)
         .map(|i| (format!("chunk{}", i), make_embedding(i)))
         .collect();
-    let index = HnswIndex::build(embeddings).unwrap();
+    let index = HnswIndex::build_with_dim(embeddings, cqs::EMBEDDING_DIM).unwrap();
     index.save(tmp.path(), "test").unwrap();
 
     // Truncate the data file (corrupt it)
@@ -40,7 +40,7 @@ fn test_truncated_data_file_detected() {
     std::fs::write(&data_path, &original[..original.len() / 2]).unwrap();
 
     // Loading should fail with checksum mismatch
-    let result = HnswIndex::load(tmp.path(), "test");
+    let result = HnswIndex::load_with_dim(tmp.path(), "test", cqs::EMBEDDING_DIM);
     match result {
         Ok(_) => panic!("Truncated file should cause load to fail"),
         Err(e) => {
@@ -63,7 +63,7 @@ fn test_checksum_mismatch_detected() {
         ("a".to_string(), make_embedding(1)),
         ("b".to_string(), make_embedding(2)),
     ];
-    let index = HnswIndex::build(embeddings).unwrap();
+    let index = HnswIndex::build_with_dim(embeddings, cqs::EMBEDDING_DIM).unwrap();
     index.save(tmp.path(), "test").unwrap();
 
     // Corrupt a single byte in the graph file
@@ -77,7 +77,7 @@ fn test_checksum_mismatch_detected() {
     }
 
     // Loading should fail with checksum mismatch
-    let result = HnswIndex::load(tmp.path(), "test");
+    let result = HnswIndex::load_with_dim(tmp.path(), "test", cqs::EMBEDDING_DIM);
     match result {
         Ok(_) => panic!("Corrupted file should cause load to fail"),
         Err(e) => {
@@ -97,14 +97,14 @@ fn test_missing_files_detected() {
 
     // Build and save a valid index
     let embeddings = vec![("x".to_string(), make_embedding(42))];
-    let index = HnswIndex::build(embeddings).unwrap();
+    let index = HnswIndex::build_with_dim(embeddings, cqs::EMBEDDING_DIM).unwrap();
     index.save(tmp.path(), "test").unwrap();
 
     // Delete one of the required files
     std::fs::remove_file(tmp.path().join("test.hnsw.ids")).unwrap();
 
     // Loading should fail with not found
-    let result = HnswIndex::load(tmp.path(), "test");
+    let result = HnswIndex::load_with_dim(tmp.path(), "test", cqs::EMBEDDING_DIM);
     match result {
         Ok(_) => panic!("Missing file should cause load to fail"),
         Err(e) => {
@@ -124,7 +124,7 @@ fn test_corrupted_id_map_json() {
 
     // Build and save a valid index
     let embeddings = vec![("y".to_string(), make_embedding(99))];
-    let index = HnswIndex::build(embeddings).unwrap();
+    let index = HnswIndex::build_with_dim(embeddings, cqs::EMBEDDING_DIM).unwrap();
     index.save(tmp.path(), "test").unwrap();
 
     // Corrupt the ID map JSON
@@ -132,7 +132,7 @@ fn test_corrupted_id_map_json() {
     std::fs::write(&id_map_path, "{ invalid json [[[").unwrap();
 
     // Loading should fail (either checksum or parse error)
-    let result = HnswIndex::load(tmp.path(), "test");
+    let result = HnswIndex::load_with_dim(tmp.path(), "test", cqs::EMBEDDING_DIM);
     assert!(result.is_err(), "Corrupted JSON should cause load to fail");
 }
 
@@ -144,7 +144,7 @@ fn test_id_map_size_mismatch_rejected() {
     let embeddings: Vec<_> = (1..=3)
         .map(|i| (format!("chunk{}", i), make_embedding(i)))
         .collect();
-    let index = HnswIndex::build(embeddings).unwrap();
+    let index = HnswIndex::build_with_dim(embeddings, cqs::EMBEDDING_DIM).unwrap();
     index.save(tmp.path(), "test").unwrap();
 
     // Modify id_map to have wrong count (2 instead of 3)
@@ -152,7 +152,7 @@ fn test_id_map_size_mismatch_rejected() {
     std::fs::write(&id_map_path, r#"["chunk1", "chunk2"]"#).unwrap();
 
     // Loading should fail due to size mismatch
-    let result = HnswIndex::load(tmp.path(), "test");
+    let result = HnswIndex::load_with_dim(tmp.path(), "test", cqs::EMBEDDING_DIM);
     // Note: checksum verification may catch this first, but if bypassed, size check will catch it
     assert!(
         result.is_err(),
@@ -166,7 +166,7 @@ fn test_dimension_mismatch_rejected() {
     let wrong_dim = Embedding::new(vec![1.0; 100]); // Should be 768
     let embeddings = vec![("wrong".to_string(), wrong_dim)];
 
-    let result = HnswIndex::build(embeddings);
+    let result = HnswIndex::build_with_dim(embeddings, cqs::EMBEDDING_DIM);
     match result {
         Ok(_) => panic!("Wrong dimension should fail"),
         Err(e) => {
@@ -183,7 +183,7 @@ fn test_dimension_mismatch_rejected() {
 #[test]
 fn test_query_dimension_mismatch_returns_empty() {
     let embeddings = vec![("good".to_string(), make_embedding(1))];
-    let index = HnswIndex::build(embeddings).unwrap();
+    let index = HnswIndex::build_with_dim(embeddings, cqs::EMBEDDING_DIM).unwrap();
 
     // Query with wrong dimension should return empty (graceful degradation)
     let wrong_query = Embedding::new(vec![1.0; 100]);
@@ -209,7 +209,7 @@ fn test_build_batched_dimension_mismatch() {
 
     let batches: Vec<Result<Vec<(String, Embedding)>, &str>> = vec![Ok(good_batch), Ok(bad_batch)];
 
-    let result = HnswIndex::build_batched(batches.into_iter(), 3);
+    let result = HnswIndex::build_batched_with_dim(batches.into_iter(), 3, cqs::EMBEDDING_DIM);
     match result {
         Ok(_) => panic!("Dimension mismatch in batch should fail"),
         Err(e) => {
@@ -229,7 +229,7 @@ fn test_build_batched_empty_batches() {
     let batches: Vec<Result<Vec<(String, Embedding)>, &str>> =
         vec![Ok(vec![]), Ok(vec![]), Ok(vec![])];
 
-    let result = HnswIndex::build_batched(batches.into_iter(), 0);
+    let result = HnswIndex::build_batched_with_dim(batches.into_iter(), 0, cqs::EMBEDDING_DIM);
 
     // Empty input should either succeed with empty index or fail gracefully
     // Current implementation should handle this - empty HNSW is valid
@@ -265,7 +265,8 @@ fn test_build_batched_handles_rebuild_after_initial_build() {
         ("chunk2".to_string(), make_embedding(2)),
     ])];
 
-    let index1 = HnswIndex::build_batched(batch1.into_iter(), 2).unwrap();
+    let index1 =
+        HnswIndex::build_batched_with_dim(batch1.into_iter(), 2, cqs::EMBEDDING_DIM).unwrap();
     assert_eq!(index1.len(), 2);
 
     // Second build with different data (simulates rebuild)
@@ -275,7 +276,8 @@ fn test_build_batched_handles_rebuild_after_initial_build() {
         ("chunk5".to_string(), make_embedding(5)),
     ])];
 
-    let index2 = HnswIndex::build_batched(batch2.into_iter(), 3).unwrap();
+    let index2 =
+        HnswIndex::build_batched_with_dim(batch2.into_iter(), 3, cqs::EMBEDDING_DIM).unwrap();
     assert_eq!(index2.len(), 3);
 
     // Verify search works on rebuilt index
@@ -296,7 +298,8 @@ fn test_build_batched_large_number_of_batches() {
         })
         .collect();
 
-    let index = HnswIndex::build_batched(batches.into_iter(), 100).unwrap();
+    let index =
+        HnswIndex::build_batched_with_dim(batches.into_iter(), 100, cqs::EMBEDDING_DIM).unwrap();
     assert_eq!(
         index.len(),
         100,
@@ -332,7 +335,8 @@ fn test_build_batched_uneven_batch_sizes() {
         ]),
     ];
 
-    let index = HnswIndex::build_batched(batches.into_iter(), 11).unwrap();
+    let index =
+        HnswIndex::build_batched_with_dim(batches.into_iter(), 11, cqs::EMBEDDING_DIM).unwrap();
     assert_eq!(index.len(), 11);
 
     // Verify IDs are correctly mapped
@@ -353,7 +357,7 @@ fn test_build_batched_with_batch_errors() {
         Ok(vec![("good3".to_string(), make_embedding(3))]),
     ];
 
-    let result = HnswIndex::build_batched(batches.into_iter(), 5);
+    let result = HnswIndex::build_batched_with_dim(batches.into_iter(), 5, cqs::EMBEDDING_DIM);
     assert!(result.is_err(), "Should propagate error from failed batch");
 
     match result {
@@ -381,7 +385,8 @@ fn test_build_batched_search_quality() {
         .map(|chunk| Ok(chunk.to_vec()))
         .collect();
 
-    let index = HnswIndex::build_batched(batches.into_iter(), 30).unwrap();
+    let index =
+        HnswIndex::build_batched_with_dim(batches.into_iter(), 30, cqs::EMBEDDING_DIM).unwrap();
 
     // Search for each item and verify it can be found.
     // Use top 15 (half the index) since HNSW is approximate — batched builds

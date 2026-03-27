@@ -85,7 +85,7 @@ fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
         }
     };
 
-    let index = HnswIndex::try_load(&cfg.path);
+    let index = HnswIndex::try_load_with_ef(&cfg.path, None, None);
 
     Some(ReferenceIndex {
         name: cfg.name.clone(),

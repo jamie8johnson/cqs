@@ -397,7 +397,7 @@ mod insert_batch_tests {
             .map(|i| (format!("chunk_{}", i), make_test_embedding(i)))
             .collect();
 
-        let mut index = HnswIndex::build(embeddings).unwrap();
+        let mut index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
         let initial_len = index.len();
         assert_eq!(initial_len, 5);
 
@@ -428,7 +428,7 @@ mod insert_batch_tests {
             .map(|i| (format!("chunk_{}", i), make_test_embedding(i)))
             .collect();
 
-        let mut index = HnswIndex::build(embeddings).unwrap();
+        let mut index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
         let initial_len = index.len();
 
         let inserted = index.insert_batch(&[]).unwrap();
@@ -443,14 +443,15 @@ mod insert_batch_tests {
             .map(|i| (format!("chunk_{}", i), make_test_embedding(i)))
             .collect();
 
-        let index = HnswIndex::build(embeddings).unwrap();
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
 
         // Save to temp dir
         let dir = tempfile::tempdir().unwrap();
         index.save(dir.path(), "test").unwrap();
 
         // Load back (creates a Loaded variant)
-        let mut loaded = HnswIndex::load(dir.path(), "test").unwrap();
+        let mut loaded =
+            HnswIndex::load_with_dim(dir.path(), "test", crate::EMBEDDING_DIM).unwrap();
 
         let new_emb = make_test_embedding(10);
         let items = vec![("new_chunk".to_string(), new_emb.as_slice())];
@@ -471,7 +472,7 @@ mod insert_batch_tests {
             .map(|i| (format!("chunk_{}", i), make_test_embedding(i)))
             .collect();
 
-        let mut index = HnswIndex::build(embeddings).unwrap();
+        let mut index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
 
         // Try to insert with wrong dimension
         let bad_vec = vec![1.0f32; 10]; // wrong dimension

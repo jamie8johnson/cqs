@@ -523,11 +523,6 @@ impl HnswIndex {
         })
     }
 
-    /// Convenience wrapper: load with the default EMBEDDING_DIM.
-    pub fn load(dir: &Path, basename: &str) -> Result<Self, HnswError> {
-        Self::load_with_dim(dir, basename, crate::EMBEDDING_DIM)
-    }
-
     /// Check if an HNSW index exists at the given path
     pub fn exists(dir: &Path, basename: &str) -> bool {
         let graph_path = dir.join(format!("{}.hnsw.graph", basename));
@@ -629,12 +624,6 @@ impl HnswIndex {
         }
     }
 
-    /// Load HNSW index if available, wrapped as VectorIndex trait object.
-    /// Shared helper for CLI commands.
-    pub fn try_load(cq_dir: &Path) -> Option<Box<dyn VectorIndex>> {
-        Self::try_load_with_ef(cq_dir, None, None)
-    }
-
     /// Load HNSW index with optional ef_search override and runtime dim.
     pub fn try_load_with_ef(
         cq_dir: &Path,
@@ -713,7 +702,7 @@ mod tests {
         std::fs::write(&ids_path, b"[]").unwrap();
         write_checksums(tmp.path(), "test");
 
-        match HnswIndex::load(tmp.path(), "test") {
+        match HnswIndex::load_with_dim(tmp.path(), "test", crate::EMBEDDING_DIM) {
             Err(e) => {
                 let msg = format!("{}", e);
                 assert!(
@@ -743,7 +732,7 @@ mod tests {
         std::fs::write(&ids_path, b"[]").unwrap();
         write_checksums(tmp.path(), "test");
 
-        match HnswIndex::load(tmp.path(), "test") {
+        match HnswIndex::load_with_dim(tmp.path(), "test", crate::EMBEDDING_DIM) {
             Err(e) => {
                 let msg = format!("{}", e);
                 assert!(
@@ -773,7 +762,7 @@ mod tests {
         f.set_len(1_000_000).unwrap(); // ~1MB >> 12KB limit
         write_checksums(tmp.path(), "test");
 
-        match HnswIndex::load(tmp.path(), "test") {
+        match HnswIndex::load_with_dim(tmp.path(), "test", crate::EMBEDDING_DIM) {
             Err(e) => {
                 let msg = format!("{}", e);
                 assert!(
@@ -795,7 +784,7 @@ mod tests {
         std::fs::write(tmp.path().join("test.hnsw.ids"), b"[]").unwrap();
         // No checksum file
 
-        match HnswIndex::load(tmp.path(), "test") {
+        match HnswIndex::load_with_dim(tmp.path(), "test", crate::EMBEDDING_DIM) {
             Err(e) => {
                 let msg = format!("{}", e);
                 assert!(
@@ -818,7 +807,7 @@ mod tests {
             ("chunk2".to_string(), make_embedding(2)),
         ];
 
-        let index = HnswIndex::build(embeddings).unwrap();
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
         index.save(tmp.path(), basename).unwrap();
 
         let lock_path = tmp.path().join(format!("{}.hnsw.lock", basename));
@@ -835,12 +824,12 @@ mod tests {
             ("chunk2".to_string(), make_embedding(2)),
         ];
 
-        let index = HnswIndex::build(embeddings).unwrap();
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
         index.save(tmp.path(), basename).unwrap();
 
         // Load twice — shared locks should not block each other
-        let loaded1 = HnswIndex::load(tmp.path(), basename).unwrap();
-        let loaded2 = HnswIndex::load(tmp.path(), basename).unwrap();
+        let loaded1 = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM).unwrap();
+        let loaded2 = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM).unwrap();
         assert_eq!(loaded1.len(), 2);
         assert_eq!(loaded2.len(), 2);
     }
@@ -853,7 +842,7 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         // Load should clean up the temp dir even though no index exists
-        let result = HnswIndex::load(dir.path(), basename);
+        let result = HnswIndex::load_with_dim(dir.path(), basename, crate::EMBEDDING_DIM);
         assert!(result.is_err()); // no index to load
         assert!(!temp_dir.exists()); // but temp dir should be cleaned
     }
@@ -867,12 +856,12 @@ mod tests {
             ("chunk2".to_string(), make_embedding(2)),
         ];
 
-        let index = HnswIndex::build(embeddings).unwrap();
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
         index.save(tmp.path(), "index").unwrap();
 
         assert!(HnswIndex::exists(tmp.path(), "index"));
 
-        let loaded = HnswIndex::load(tmp.path(), "index").unwrap();
+        let loaded = HnswIndex::load_with_dim(tmp.path(), "index", crate::EMBEDDING_DIM).unwrap();
         assert_eq!(loaded.len(), 2);
 
         // Verify search still works

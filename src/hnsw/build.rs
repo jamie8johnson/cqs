@@ -91,11 +91,6 @@ impl HnswIndex {
         })
     }
 
-    /// Convenience wrapper: build with the default EMBEDDING_DIM.
-    pub fn build(embeddings: Vec<(String, Embedding)>) -> Result<Self, HnswError> {
-        Self::build_with_dim(embeddings, crate::EMBEDDING_DIM)
-    }
-
     /// Build HNSW index incrementally from batches (memory-efficient).
     ///
     /// Processes embeddings in batches to avoid loading everything into RAM.
@@ -226,15 +221,6 @@ impl HnswIndex {
             dim,
         })
     }
-
-    /// Convenience wrapper: build batched with the default EMBEDDING_DIM.
-    pub fn build_batched<I, E>(batches: I, estimated_total: usize) -> Result<Self, HnswError>
-    where
-        I: Iterator<Item = Result<Vec<(String, Embedding)>, E>>,
-        E: std::fmt::Display,
-    {
-        Self::build_batched_with_dim(batches, estimated_total, crate::EMBEDDING_DIM)
-    }
 }
 
 #[cfg(test)]
@@ -251,7 +237,7 @@ mod tests {
             ("chunk3".to_string(), make_embedding(3)),
         ];
 
-        let index = HnswIndex::build(embeddings).unwrap();
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
         assert_eq!(index.len(), 3);
 
         // Search for something similar to chunk1
@@ -266,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_empty_index() {
-        let index = HnswIndex::build(vec![]).unwrap();
+        let index = HnswIndex::build_with_dim(vec![], crate::EMBEDDING_DIM).unwrap();
         assert!(index.is_empty());
 
         let query = make_embedding(1);
@@ -288,7 +274,9 @@ mod tests {
                 .map(|chunk| Ok(chunk.to_vec()))
                 .collect();
 
-        let index = HnswIndex::build_batched(batches.into_iter(), 25).unwrap();
+        let index =
+            HnswIndex::build_batched_with_dim(batches.into_iter(), 25, crate::EMBEDDING_DIM)
+                .unwrap();
         assert_eq!(index.len(), 25);
 
         // Search should work correctly
@@ -302,7 +290,8 @@ mod tests {
     #[test]
     fn test_build_batched_empty() {
         let batches: Vec<Result<Vec<(String, Embedding)>, std::convert::Infallible>> = vec![];
-        let index = HnswIndex::build_batched(batches.into_iter(), 0).unwrap();
+        let index = HnswIndex::build_batched_with_dim(batches.into_iter(), 0, crate::EMBEDDING_DIM)
+            .unwrap();
         assert!(index.is_empty());
     }
 
@@ -313,13 +302,15 @@ mod tests {
             .map(|i| (format!("item{}", i), make_embedding(i)))
             .collect();
 
-        let regular = HnswIndex::build(embeddings.clone()).unwrap();
+        let regular = HnswIndex::build_with_dim(embeddings.clone(), crate::EMBEDDING_DIM).unwrap();
 
         let batches: Vec<Result<Vec<(String, Embedding)>, std::convert::Infallible>> = embeddings
             .chunks(7) // Odd batch size to test edge cases
             .map(|chunk| Ok(chunk.to_vec()))
             .collect();
-        let batched = HnswIndex::build_batched(batches.into_iter(), 20).unwrap();
+        let batched =
+            HnswIndex::build_batched_with_dim(batches.into_iter(), 20, crate::EMBEDDING_DIM)
+                .unwrap();
 
         assert_eq!(regular.len(), batched.len());
 

@@ -49,11 +49,12 @@ mod tests {
         let embeddings: Vec<_> = (1..=20)
             .map(|i| (format!("chunk{}", i), make_embedding(i)))
             .collect();
-        let index = HnswIndex::build(embeddings).unwrap();
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
         index.save(tmp.path(), "safety_test").unwrap();
 
         // Load and perform many searches
-        let loaded = HnswIndex::load(tmp.path(), "safety_test").unwrap();
+        let loaded =
+            HnswIndex::load_with_dim(tmp.path(), "safety_test", crate::EMBEDDING_DIM).unwrap();
         assert_eq!(loaded.len(), 20);
 
         // Multiple searches should all succeed without memory corruption.
@@ -89,14 +90,15 @@ mod tests {
             ("b".to_string(), make_embedding(200)),
             ("c".to_string(), make_embedding(300)),
         ];
-        HnswIndex::build(embeddings)
+        HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM)
             .unwrap()
             .save(tmp.path(), "lifecycle")
             .unwrap();
 
         // Load-search-drop cycle multiple times
         for cycle in 0..5 {
-            let loaded = HnswIndex::load(tmp.path(), "lifecycle").unwrap();
+            let loaded =
+                HnswIndex::load_with_dim(tmp.path(), "lifecycle", crate::EMBEDDING_DIM).unwrap();
             let results = loaded.search(&make_embedding(100), 3);
             assert_eq!(results[0].id, "a", "Cycle {} failed", cycle);
             // Drop happens here
@@ -112,12 +114,14 @@ mod tests {
         let embeddings: Vec<_> = (1..=20)
             .map(|i| (format!("item{}", i), make_embedding(i)))
             .collect();
-        HnswIndex::build(embeddings)
+        HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM)
             .unwrap()
             .save(tmp.path(), "threaded")
             .unwrap();
 
-        let loaded = Arc::new(HnswIndex::load(tmp.path(), "threaded").unwrap());
+        let loaded = Arc::new(
+            HnswIndex::load_with_dim(tmp.path(), "threaded", crate::EMBEDDING_DIM).unwrap(),
+        );
 
         // Spawn multiple threads doing concurrent searches
         let handles: Vec<_> = (0..4)
@@ -164,10 +168,14 @@ mod tests {
     fn test_loaded_minimal_index() {
         let tmp = TempDir::new().unwrap();
 
-        let index = HnswIndex::build(vec![("only".to_string(), make_embedding(42))]).unwrap();
+        let index = HnswIndex::build_with_dim(
+            vec![("only".to_string(), make_embedding(42))],
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap();
         index.save(tmp.path(), "minimal").unwrap();
 
-        let loaded = HnswIndex::load(tmp.path(), "minimal").unwrap();
+        let loaded = HnswIndex::load_with_dim(tmp.path(), "minimal", crate::EMBEDDING_DIM).unwrap();
         assert_eq!(loaded.len(), 1);
 
         let results = loaded.search(&make_embedding(42), 5);
