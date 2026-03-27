@@ -105,7 +105,7 @@ Generate an implementation plan by combining `cqs scout` output with a task-type
 
 **Checklist:**
 1. `src/chunk.rs` — Add variant to `ChunkType` enum. Update `Display`, `FromStr`, `is_callable()`.
-2. `src/nl.rs` — Add natural language label for the variant (used in embedding text).
+2. `src/nl/mod.rs` — Add natural language label for the variant (used in embedding text).
 3. `src/language/<lang>.rs` — Add capture using the new variant name in chunk_query.
 4. `src/parser/extract_chunk.rs` — Add to `capture_types` map if using a new capture name.
 5. `src/cli/commands/stats.rs` — Variant appears automatically via `ChunkType` iteration.

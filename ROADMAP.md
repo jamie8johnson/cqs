@@ -1,6 +1,8 @@
 # Roadmap
 
-## Current: v1.7.0
+## Current: v1.8.0
+
+v1.8.0: Doc/roadmap fixes for release, hnswlib-rs migration path on roadmap.
 
 v1.7.0: Configurable embedding models, 7th audit (85/95 fixed), nl.rs split, BatchSubmitItem, LlmProvider enum, skip_line_prefixes on 51 languages, 24 new tests. 1490 tests.
 

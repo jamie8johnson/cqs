@@ -174,7 +174,11 @@ src/
     cleaning.rs - Extensible tag-based cleaning rules (7 rules)
     webhelp.rs  - Web help site detection and multi-page merge
   cagra.rs      - GPU-accelerated CAGRA index (optional)
-  nl.rs         - NL description generation, JSDoc parsing
+  nl/           - NL description generation, JSDoc parsing
+    mod.rs      - Core NL generation, type-aware embeddings, call context
+    fts.rs      - FTS5 normalization, tokenization
+    fields.rs   - Field/keyword extraction from code bodies
+    markdown.rs - Markdown-specific NL generation
   note.rs       - Developer notes with sentiment, rewrite_notes_file()
   diff.rs       - Semantic diff between indexed snapshots
   drift.rs      - Drift detection (semantic change magnitude between snapshots)

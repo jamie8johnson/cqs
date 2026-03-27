@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-03-27
+
+### Fixed
+- **Multi-model support functional end-to-end** — `--model` flag was parsed but ignored at all 20 call sites; Store rejected non-default models on open; HNSW hardcoded 768-dim. All fixed: ModelConfig resolved once in dispatch, threaded through all commands, HNSW uses `store.dim()`, Store skips model validation on open.
+- **dim=0 validation** — zero dimension accepted silently through ModelConfig → Store → HNSW, producing empty search results. Now rejected at all three layers with warnings.
+- **Batch data safety** — `resume()` returned unfiltered results (inflated counts); hash validation failure stored all results including stale data. Fixed: returns valid results only, hash failure skips storage.
+- **85 audit findings** — 7th full audit (v1.7.0), 85 of 95 findings fixed across 14 categories. 5 issues created, 2 closed as wontfix.
+
+### Changed
+- **`nl.rs` split** — 2051-line monolith split into `nl/{mod,fts,fields,markdown}.rs` (4 files by responsibility).
+- **`BatchSubmitItem` struct** — replaces opaque `(String, String, String, String)` tuple across all batch submission APIs.
+- **`Store::dim`** — changed from `pub` field to `pub(crate)` with `pub fn dim()` getter. Prevents accidental mutation.
+- **`DEFAULT_MODEL_REPO`** — single source of truth in `embedder/models.rs`, referenced by store and helpers.
+- **`should_skip_line`** — data-driven via `skip_line_prefixes` on all 51 `LanguageDef` definitions (was 12 hardcoded keywords).
+- **`upsert_type_edges`** — extracted shared SQL logic, eliminating 120-line duplication between single-file and batch variants.
+- **`create_client()` factory** — replaces 3 entry points each hardcoding `ANTHROPIC_API_KEY`.
+- **`LlmProvider` enum** — extensible provider selection via `CQS_LLM_PROVIDER` env var (default: Anthropic).
+- **`export-model`** — auto-detects dim from `config.json`, validates repo format (SEC-18), finds Python cross-platform (PB-29), canonicalizes paths (PB-30), sets file permissions (SEC-19).
+
+### Added
+- **24 new tests** — multi-model dim threading (TC-31), batch orchestration with MockBatchProvider (TC-32), `Embedding::try_new` edge cases, config NaN/dim=0, HNSW dim=0. Total: 1490.
+- **`MockBatchProvider`** — test double for batch orchestration without API credentials (TC-38).
+- **Wiring verification** — added to CLAUDE.md Completion Checklist as lesson from configurable models bug.
+
 ## [1.7.0] - 2026-03-26
 
 ### Added

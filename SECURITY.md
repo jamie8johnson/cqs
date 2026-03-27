@@ -55,7 +55,9 @@ The only network activity is:
 | `--hyde-queries` | api.anthropic.com | Function NL descriptions, signatures | Requires `--llm-summaries`. Generates synthetic search queries per function |
 | `--improve-docs` | api.anthropic.com | Function bodies (for doc generation) | Requires `--llm-summaries`. Writes doc comments back to source files |
 
-No other network requests are made. Without `--llm-summaries`, all operations are offline.
+- **Model export** (`cqs export-model`): Spawns Python `optimum.exporters.onnx` which downloads the specified HuggingFace model and converts to ONNX format
+
+No other network requests are made. Without `--llm-summaries` or `export-model`, all operations are offline.
 
 ## Filesystem Access
 
@@ -85,6 +87,7 @@ No other network requests are made. Without `--llm-summaries`, all operations ar
 | `~/.config/cqs/projects.toml` | Project registry | `cqs project register`, `cqs project remove` |
 | `~/.local/share/cqs/refs/*/` | Reference index creation and updates (write) | `cqs ref add`, `cqs ref update` |
 | Project source files | Doc comment insertion | `cqs index --llm-summaries --improve-docs` |
+| `<output>/` directory | ONNX model files + model.toml | `cqs export-model` |
 
 ### Process Operations
 
@@ -111,6 +114,26 @@ The convert module spawns external processes for format conversion:
 - Symlink filtering: Symlinks are skipped during directory walks and archive extraction
 - Zip-slip containment: Extracted paths are validated to stay within the output directory
 - Page count limits: PDF conversion enforces a maximum page count to bound processing time
+
+### Model Export (`cqs export-model`)
+
+The export-model command spawns Python to convert HuggingFace models to ONNX format:
+
+| Subprocess | Purpose | When |
+|------------|---------|------|
+| `python3` / `python` / `py` | ONNX export via `optimum.exporters.onnx` | `cqs export-model --repo org/model` |
+
+**Attack surface:**
+
+- **Repo ID**: Passed to `python -m optimum.exporters.onnx --model <repo>`. Validated to contain `/` and reject `"`, `\n`, `\` characters (SEC-18).
+- **Output directory**: Model files and `model.toml` written to `--output` path. Not sandboxed beyond filesystem permissions.
+- **Python execution**: Spawns Python with user permissions to run optimum library code.
+
+**Mitigations:**
+
+- Repo ID format validation prevents injection (SEC-18)
+- Output path canonicalized via `dunce::canonicalize` (PB-30)
+- `model.toml` restricted to 0o600 permissions on Unix (SEC-19)
 
 ### Path Traversal Protection
 
