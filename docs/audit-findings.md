@@ -605,3 +605,227 @@ Audit date: 2026-03-27
 - **Location:** `src/hnsw/mod.rs:255-272`
 - **Description:** `prepare_index_data` first iterates all embeddings to validate dimensions (lines 255-264), then iterates again to build `id_map` and flat data vector (lines 267-272). This is two full passes. The validation could be merged into the build loop for a single pass. However: this function is only used by the non-batched `build()` method, which is only used in tests. The production path uses `build_batched_with_dim` which already does single-pass validation. Low priority.
 - **Suggested fix:** Merge the validation and build loops into a single pass. Since this only affects test performance, consider leaving a comment explaining the intentional simplicity-over-performance choice for test code, or merge anyway since the fix is trivial.
+
+## Red Team (v1.9.0)
+
+Red team date: 2026-03-27
+Focus: RT-RES (Adversarial Robustness)
+
+#### RT-RES-1: `reverse_bfs` has no node cap — hub function can produce unbounded HashMap
+- **Severity:** medium
+- **Location:** `src/impact/bfs.rs:11-36`
+- **Attack vector:** `cqs impact "main" --depth 10` on a project where `main` transitively reaches most of the codebase (e.g., a CLI dispatcher that calls every module).
+- **PoC:** `reverse_bfs` walks every reachable ancestor up to `max_depth` without any node count limit. With depth=10 (the clamped maximum from batch/CLI), a hub function in a 50K-chunk codebase with 500K call edges can produce an `ancestors` HashMap with tens of thousands of entries. Each entry is `(String, usize)` — at ~50 bytes per entry, 30K ancestors = ~1.5MB for the HashMap alone. The subsequent `find_transitive_callers` then calls `search_by_names_batch` with all 30K names (batched in groups of 20, so 1500 SQL queries). This is not an OOM, but it's a significant CPU/time bomb: each batch query hits FTS5 with OR-joined terms, and 1500 round trips to SQLite takes seconds. Contrast with `bfs_expand` in `gather.rs` which caps at `max_expanded_nodes=200`.
+- **Impact:** `cqs impact` on a hub function with depth=10 takes 10-30 seconds instead of <1 second, effectively hanging interactive use. In batch mode, repeated calls create sustained CPU load.
+- **Suggested mitigation:** Add `MAX_BFS_ANCESTORS` cap (e.g., 1000) to `reverse_bfs` and `reverse_bfs_multi_attributed`, similar to gather's `max_expanded_nodes`. When cap is hit, stop expanding and set a `capped` flag on the result.
+
+#### RT-RES-2: `test_reachability` forward BFS has no node cap — dense graph + many tests = quadratic blowup
+- **Severity:** medium
+- **Location:** `src/impact/bfs.rs:164-227`
+- **Attack vector:** `cqs health --json` or any command calling `compute_hints_batch` on a codebase with 1000+ tests and a dense call graph.
+- **PoC:** `test_reachability` groups tests by equivalence class (same direct callees), but does a full forward BFS per unique class with no cap on visited nodes. With `DEFAULT_MAX_TEST_SEARCH_DEPTH=5` and a project with 500 unique equivalence classes, each BFS can visit thousands of nodes. The `visited` HashMap and `queue` VecDeque are cleared and reused (good), but the `counts` HashMap accumulates indefinitely — every function name reachable from any test is stored. In a 50K-function codebase with 1000 tests, `counts` can reach 40K entries. The BFS itself is O(V+E) per class, and with 500 classes this becomes O(500 * (V+E)). At 500K edges, this is ~250M edge traversals. Not an OOM, but a ~10-second CPU hang on large codebases.
+- **Impact:** `compute_hints_batch` is called by `scout`, `health`, `review`, and `ci`. On large projects, these commands stall.
+- **Suggested mitigation:** Add a per-class `max_visited_nodes` cap to forward BFS. When a class BFS exceeds the cap, stop expansion. The resulting counts will be slightly underestimated for that class, but the impact on accuracy is minimal since capped classes are the least specific (they test everything).
+
+#### RT-RES-3: Pipeline fan-out still O(N^2) across intermediate stages despite per-stage PIPELINE_FAN_OUT_LIMIT
+- **Severity:** low
+- **Location:** `src/cli/batch/pipeline.rs:229-318`
+- **Attack vector:** `search "error" | callers | callers | callers` in batch mode.
+- **PoC:** Each intermediate stage (lines 298-310) merges results from up to 50 names, extracting names from each dispatch result, capped at `PIPELINE_FAN_OUT_LIMIT=50`. This is correctly capped. However, each stage dispatches 50 individual `callers` commands (line 265-283), each of which queries the database. With 3 chained `callers` stages after a search, that's `1 + 50 + 50 + 50 = 151` dispatch calls. Each `callers` call does a DB query + name lookup. At ~5ms per call, the pipeline takes ~750ms. Adding more stages multiplies linearly (not exponentially, thanks to the per-stage cap). This is not a true O(N^2) — the fan-out cap works — but there is no limit on pipeline stage count. `search "x" | callers | callers | callers | callers | callers | callers | callers | callers | callers | callers` (10 stages) would execute ~500 dispatch calls.
+- **Impact:** Slow pipeline execution (~2.5 seconds for 10 stages). Not a crash or OOM, but degrades interactive responsiveness.
+- **Suggested mitigation:** Cap pipeline stages at 5 (or configurable). Reject with an error if more than N `|` tokens are present.
+
+#### RT-RES-4: `batch stdin` read_line allocates incrementally — no pre-allocation size bound
+- **Severity:** low
+- **Location:** `src/cli/batch/mod.rs:529-554`
+- **Attack vector:** Send a single line without a newline terminator, streaming slowly: `python3 -c "import sys; sys.stdout.write('A'*100_000_000)" | cqs batch`
+- **PoC:** The comment on line 529 acknowledges this: "A multi-GB line without newlines could OOM before the post-hoc check below." `read_line` reads in 8KB BufReader chunks, growing the `String` allocation until it hits a `\n` or EOF. The `MAX_BATCH_LINE_LEN` check on line 546 only fires after `read_line` returns, meaning the full line is already in memory. A 1GB line without newlines allocates ~1GB before being rejected. With a 100MB input (well below the system memory), this is a transient allocation spike that could disrupt other processes on memory-constrained systems.
+- **Impact:** Transient memory spike proportional to input line length. Acknowledged risk per the inline comment. The line is freed immediately after the length check on the next loop iteration.
+- **Suggested mitigation:** Use `BufRead::take(MAX_BATCH_LINE_LEN + 1).read_line()` to cap the read itself. Or read in chunks with `read_until` and check length incrementally. Low priority since batch input is from a controlling process, not untrusted network input.
+
+#### RT-RES-5: `embed_query` processes arbitrarily long query text — no input length cap
+- **Severity:** medium
+- **Location:** `src/embedder/mod.rs:439-478`
+- **Attack vector:** `cqs "$(python3 -c 'print("A"*1000000)')" --json`
+- **PoC:** `embed_query` trims the input and checks for empty, but has no length cap. The text is passed to `format!("{}{}", self.model_config.query_prefix, text)` (line 460) creating a 1MB+ string, then to `embed_batch` which calls `tokenizer.encode_batch` (line 547). The HuggingFace tokenizer will attempt to tokenize the entire 1MB string, producing a token sequence that is then truncated to `max_length` (512 tokens). The tokenization step itself is O(n) on input length. For a 1MB input, this takes ~200ms of pure CPU tokenization, only to produce the same 512-token truncation. With a 100MB query, tokenization could take 20+ seconds. The `MAX_BATCH_LINE_LEN` in batch mode caps at 1MB, but the CLI path has no equivalent cap — the shell itself is the limit.
+- **Impact:** CPU stall proportional to query text length. Not a crash (tokenizer handles it), but wastes computation. On batch mode, the 1MB line cap provides implicit protection. On CLI, extremely long queries from shell expansion could stall for seconds.
+- **Suggested mitigation:** Add a `MAX_QUERY_TEXT_LEN` constant (e.g., 32KB) in `embed_query` with an early return error. Any text beyond the tokenizer's max_length (512 tokens ~ 2KB of English) is wasted anyway.
+
+#### RT-RES-6: `normalize_for_fts` pathological expansion before cap check
+- **Severity:** low
+- **Location:** `src/nl/fts.rs:137-177`
+- **Attack vector:** A crafted chunk content of 16KB of alternating uppercase letters: `"ABABABABABAB..."` (16384 chars).
+- **PoC:** Each uppercase letter triggers a camelCase split in `tokenize_identifier_iter`, producing individual single-char tokens separated by spaces. Input "ABAB" (4 chars) becomes "a b a b" (7 chars) — nearly 2x expansion. For a 16KB input of uppercase alternating letters, the intermediate `result` string grows to ~32KB before the `MAX_FTS_OUTPUT_LEN` (16384) cap triggers truncation on line 158. The cap works, but the String is already allocated at ~32KB by the time truncation fires. This is because the cap check only happens at word boundaries (line 153: `current_word` must be flushed first), and with single-character "words" from the CamelCase split, each char is its own word. The intermediate allocation reaches 2x the cap before being truncated.
+- **Impact:** Transient 2x over-allocation for pathological inputs during FTS normalization. Not a security issue since the cap is 32KB maximum overshoot, well within process memory. The truncated output is correct.
+- **Suggested mitigation:** Check `result.len() >= MAX_FTS_OUTPUT_LEN` inside the `flush_word` closure before appending each token, not just after flushing the full word. This bounds the allocation at exactly `MAX_FTS_OUTPUT_LEN + one_token_length`.
+
+#### RT-RES-7: `with_decay_factor` silently preserves previous value on NaN input — does not reject
+- **Severity:** low
+- **Location:** `src/gather.rs:116-122`
+- **Attack vector:** Programmatic caller passes `GatherOptions::default().with_decay_factor(f32::NAN)` — decay_factor silently stays at 0.8 (default) without any warning.
+- **PoC:** Line 117 checks `factor.is_finite()` and returns the existing `self.decay_factor` on NaN/Infinity. This is defensive, but silent: the caller thinks they set a custom decay factor but it was ignored. The `with_seed_threshold` method (line 101) does NOT have this guard — it accepts NaN directly into `self.seed_threshold`, which then propagates to `search_filtered` as the threshold parameter. A NaN threshold in search means every result fails the `score >= threshold` check (NaN comparisons always return false), resulting in zero results — a silent data loss. Combined: `with_seed_threshold(f32::NAN)` produces a gather with zero seed results (silent failure).
+- **Impact:** `gather` with NaN seed_threshold silently returns empty results. The user gets `{"chunks":[],"expansion_capped":false}` with no indication that the parameters were invalid.
+- **Suggested mitigation:** Add the same `is_finite()` guard to `with_seed_threshold`. Or better: validate all float parameters in `gather_with_graph` entry point with early error return for NaN/Infinity, rather than scattered per-setter validation.
+
+#### RT-RES-8: `GatherOptions::with_max_expanded_nodes(0)` bypasses BFS expansion cap entirely
+- **Severity:** low
+- **Location:** `src/gather.rs:283-295`
+- **Attack vector:** Programmatic caller: `GatherOptions::default().with_max_expanded_nodes(0)`
+- **PoC:** When `max_expanded_nodes = 0`, the check on line 283 (`name_scores.len() >= opts.max_expanded_nodes`) is true immediately since `name_scores` is pre-populated with seed results (always >= 1 entry). BFS skips all expansion and returns `expansion_capped = true`. This is technically correct behavior (zero cap = no expansion), but counterintuitive: the user asked for zero max nodes but gets seed results back anyway. More importantly, `with_max_expanded_nodes` has no lower bound — `0` is accepted. The `with_expand_depth` has no lower bound either, but `0` depth is explicitly handled on line 265 with an early return. The `0` cap case works by accident rather than by design.
+- **Impact:** No crash. Misleading `expansion_capped: true` when max_expanded_nodes is 0. Functional but confusing.
+- **Suggested mitigation:** Add `.max(1)` or document that 0 means "seeds only, no expansion" in the doc comment. Or validate in the entry point.
+
+#### RT-RES-9: `diff_impact` has no cap on number of changed functions processed
+- **Severity:** medium
+- **Location:** `src/impact/diff.rs:102-220`
+- **Attack vector:** `cqs impact-diff --base HEAD~1000` when 1000 commits touch hundreds of functions. Or `cqs review` on a massive diff.
+- **PoC:** `map_hunks_to_functions` maps every hunk to every overlapping chunk with no cap on the output `functions` Vec. With a 1000-file diff where each file has 10 chunks, `changed` could have 10,000 entries. `analyze_diff_impact_with_graph` then: (1) calls `get_callers_with_context_batch` with 10,000 callee names — batched in groups of 200, so 50 SQL queries; (2) calls `search_by_names_batch` with all unique caller names — potentially thousands more queries; (3) calls `reverse_bfs_multi_attributed` with all 10,000 changed names as start nodes, traversing the full graph from each. The multi-BFS is efficient (single traversal), but the caller/test match loop iterates `test_chunks * attributed_nodes`. With 1000 tests and 30,000 attributed nodes, that's 30M HashMap lookups. Total: a 1000-file diff could take 30+ seconds.
+- **Impact:** `cqs review` and `cqs impact-diff` stall on large diffs. Not a crash, but makes the commands unusable for large rebases or branch comparisons.
+- **Suggested mitigation:** Cap `changed` at 200 functions in `analyze_diff_impact_with_graph` with a warning. Or add a `--max-functions` flag.
+
+#### RT-RES-10: `token_pack` always includes at least one item regardless of budget — budget=0 ignored
+- **Severity:** low
+- **Location:** `src/cli/commands/mod.rs:122-160`
+- **Attack vector:** `cqs "query" --tokens 1 --json` (budget of 1 token).
+- **PoC:** `index_pack` (line 173) correctly handles `budget == 0` with an early return of empty results. But `token_pack` (line 122) has no such check. Lines 144-153 always include at least the first item even when it exceeds the budget: `if !kept_any && tokens > budget` triggers a `tracing::debug` warning but still sets `keep[idx] = true` and `kept_any = true`. With `budget=1`, the first search result (which is always 50+ tokens) is included, massively exceeding the stated budget. The `--tokens` flag uses `parse_nonzero_usize` so `0` is rejected, but `1` is accepted.
+- **Impact:** `--tokens 1` returns a result claiming `token_count: 500, token_budget: 1`. The output exceeds the budget by orders of magnitude. Not a crash, but violates the documented contract ("packs results into a token budget").
+- **Suggested mitigation:** Add a minimum budget (e.g., 100 tokens) in the CLI `--tokens` parser, or document that the budget is a target, not a hard limit, and that at least one result is always returned.
+
+### RT-FS: Filesystem Boundary Violations
+
+#### RT-FS-1: `resolve_parent_context` reads files via DB-sourced path without boundary check
+- **Severity:** medium
+- **Location:** `src/cli/commands/query.rs:633`
+- **Attack vector:** Tamper with `index.db` to set `chunks.origin` to `../../etc/passwd` for a chunk with a `parent_id` pointing to a nonexistent parent. Run `cqs "anything" --expand`.
+- **PoC:** `resolve_parent_context` (query.rs:576) iterates search results. For windowed chunks where the parent is not stored in the DB, it falls back to reading the source file at line 633: `let abs_path = root.join(&sr.chunk.file);` then `std::fs::read_to_string(&abs_path)`. The `sr.chunk.file` is a `PathBuf` constructed directly from the `origin` column in SQLite (helpers.rs:292: `file: PathBuf::from(row.origin)`). There is no canonicalize+starts_with check on this path. The `display.rs:read_context_lines` function that handles context display DOES have a path traversal guard (lines 24-41), but `resolve_parent_context` bypasses it entirely by calling `std::fs::read_to_string` directly. An attacker who can modify `index.db` (user-writable) can set `origin = "../../etc/shadow"` on a chunk with `parent_id` pointing to a nonexistent parent, causing the fallback to read arbitrary files and expose their content in the `ParentContext.content` field, which is serialized to JSON output.
+- **Impact:** Arbitrary file read outside project root. Content is returned in search results via both `--json` and non-JSON display paths (display_unified_results).
+- **Suggested mitigation:** Add canonicalize+starts_with validation before the `std::fs::read_to_string` at line 633, matching the guard in `validate_and_read_file` (read.rs:37-43): canonicalize `abs_path`, verify it starts_with canonicalized `root`, skip on failure.
+
+#### RT-FS-2: `read_context_lines` guard blocks ALL legitimate callers (absolute path check overly broad)
+- **Severity:** low
+- **Location:** `src/cli/display.rs:29`
+- **Attack vector:** Run `cqs "anything" --context 3` — context lines are silently suppressed for every result.
+- **PoC:** All callers of `read_context_lines` construct the path as `root.join(&r.chunk.file)` (display.rs lines 135, 171, 316, 353). Since `root` is always an absolute path (the project root), the joined path is always absolute (e.g., `/home/user/project/src/main.rs`). The guard at line 29 checks `if path_str.starts_with('/')` and bails with "Absolute path blocked". This blocks ALL legitimate calls. The error is caught at the call site and logged at `tracing::trace!` level (invisible in normal operation), so `--context` appears to work but silently produces zero context lines. The guard was likely intended to catch raw DB-originated paths (which are relative), but the callers always prepend the project root before calling, making the path absolute.
+- **Impact:** `--context N` flag on search results is silently non-functional. No security impact (guard is overly restrictive, not permissive). However, this broken guard likely motivated the creation of the unguarded fallback code path in RT-FS-1.
+- **Suggested mitigation:** Change the guard to accept paths that resolve inside the project root via canonicalize+starts_with (matching read.rs), instead of rejecting all absolute paths. Requires passing `root` as a parameter to `read_context_lines` — callers already have it.
+
+#### RT-FS-3: `doc_comment_pass` reads and writes to DB-sourced file paths without boundary check
+- **Severity:** medium
+- **Location:** `src/cli/commands/index.rs:245` via `src/doc_writer/rewriter.rs:244`
+- **Attack vector:** Tamper with `index.db` to set `chunks.origin` to `../../.bashrc` for a callable chunk. Run `cqs index --improve-docs`.
+- **PoC:** `doc_comment_pass` (llm/doc_comments.rs:147) scans all callable chunks from the store via `chunks_paged`. For each candidate, it creates a `DocCommentResult` with `file: cs.file.clone()` — the `origin` from the DB with no validation. In `index.rs:238-245`, results are grouped by file path and passed to `rewrite_file(path, edits, &parser)`. `rewrite_file` (rewriter.rs:244) calls `std::fs::read_to_string(path)` on the DB-sourced path, then writes back modified content via atomic write. There is no canonicalize+starts_with check anywhere in this chain. An attacker who tampers with `index.db` to set a chunk's origin to a path outside the project root could cause `--improve-docs` to read AND modify that file. The modification inserts doc comments, so the target file would be changed. The attack is constrained: the target file must parse as valid source code in the chunk's declared language, and the injected function name must match a real function in the target file.
+- **Impact:** Arbitrary file read AND write outside project root. The write inserts doc comment syntax before matching function definitions — limited but real damage to files outside the project boundary.
+- **Suggested mitigation:** Add a boundary check in `rewrite_file` or in the `doc_comment_pass` candidate loop. The most defensive approach: `rewrite_file` canonicalizes its `path` argument and verifies it falls within the project root (passed as parameter). Alternatively, filter chunks with traversal-containing origins during candidate collection.
+
+#### RT-FS-4: Verified protections (no bypass found)
+- **Severity:** informational
+- **Location:** Multiple files
+- **Details:** The following protections were verified as effective:
+  - `validate_and_read_file` (read.rs:37-43): canonicalize+starts_with on `cqs read <path>` — no bypass.
+  - `validate_ref_name` (reference.rs:246-263): rejects `/`, `\`, `..`, `.`, null bytes in ref names — no bypass.
+  - `ref_path` (reference.rs:266-269): uses validated name only — no bypass via ref name.
+  - `ref remove` (reference.rs:251-255): canonicalize+starts_with on delete path — no bypass.
+  - SEC-20 custom model paths (models.rs:135-152): rejects `..` and absolute paths in `onnx_path`/`tokenizer_path` — no bypass.
+  - `CQS_ONNX_DIR` (embedder/mod.rs:671-687): env var provides a base directory, joined with validated relative paths — not exploitable since attacker-controlled env vars imply shell access.
+  - HNSW checksum file (persist.rs:68-72): only allows known extensions — no path traversal via checksum file.
+  - CHM zip-slip (chm.rs:57-89): canonicalize+starts_with on all extracted paths — no bypass.
+  - `enumerate_files` (lib.rs:460): canonicalize+starts_with on all walked files, `follow_links(false)` — no bypass.
+  - `load_single_reference` (reference.rs:60-72): rejects symlink paths for reference indexes — no bypass.
+  - `convert` self-overwrite guard (convert/mod.rs:262-276): canonicalize both source and dest — effective for its intended purpose. Output directory is intentionally unrestricted (convert is a document processing tool, not project-scoped).
+
+### Focus: RT-INJ (Input Injection & Command Injection)
+
+#### RT-INJ-1: Pipeline name-to-flag injection via clap argument parsing
+- **Severity:** medium
+- **Location:** `src/cli/batch/pipeline.rs:267`
+- **Attack vector:** `search "--depth" | impact` in batch mode
+- **PoC:** `execute_pipeline` calls `extract_names()` on stage 0 results, pulling `name` fields from JSON. If any indexed chunk has a name starting with `--` (e.g., from indexing a CLI test codebase where argument names like `--depth` appear as function names or constants), line 267 builds `cmd_tokens = vec!["impact", "--depth"]`. Clap interprets `"--depth"` as the `--depth` flag (default 5) rather than the positional `name` argument. More concretely: if extract_names yields `"--suggest-tests"`, building `["impact", "--suggest-tests"]` activates the suggest-tests flag on impact without the user requesting it. Names starting with `-n` could override the short `-n` limit flag on `similar`, `related`, and `where` commands. The pipeline builds tokens at line 267: `let mut cmd_tokens = vec![segment[0].clone(), name.clone()]; cmd_tokens.extend_from_slice(&segment[1..]);` — the extracted name goes directly into the clap argv with no escaping.
+- **Impact:** Pipeline stage 2+ commands receive unexpected flags from data-controlled names. Most dangerous when indexing adversarial reference codebases via `--ref`, where chunk names are not under the user's control. Flags like `--suggest-tests`, `--reverse`, `--callers`, `--compact`, `--summary` alter command behavior. Short flags like `-n 1` could truncate results.
+- **Suggested mitigation:** Insert `"--"` (end-of-options marker) between the command name and the extracted name: `let mut cmd_tokens = vec![segment[0].clone(), "--".to_string(), name.clone()];`. Clap treats everything after `--` as positional arguments. All pipeable commands accept a positional name as their first arg, so this is safe and backwards-compatible.
+
+#### RT-INJ-2: Null bytes in batch stdin pass through `shell_words::split` to dispatch
+- **Severity:** low
+- **Location:** `src/cli/batch/mod.rs:569`
+- **Attack vector:** An AI agent sends `callers "foo\x00bar"` via batch stdin.
+- **PoC:** `shell_words::split` parses the quoted string `"foo\0bar"` as a single token containing a literal null byte: `["callers", "foo\0bar"]`. This token passes through to `dispatch_callers(ctx, "foo\0bar")` which does a call graph lookup by exact string match. The null byte reaches the in-memory HashMap lookup (no match, empty result). For FTS paths (search, search_by_name), `normalize_for_fts` strips the null byte since `'\0'.is_alphanumeric()` is false, so it becomes a word boundary — effectively sanitized. For the `read` command, `validate_and_read_file` calls `dunce::canonicalize` which calls OS `realpath()`, and null bytes in paths cause `EINVAL` on Linux — the traversal `read "src/../../../etc/passwd\x00.rs"` correctly errors. However, the inconsistency with `reference.rs:250` (explicit null byte check in `validate_ref_name`) and `git.rs` SEC-23 validation means the batch pipeline is the only entry point without an explicit null byte guard.
+- **Impact:** No exploitable path — defense-in-depth catches null bytes at every downstream consumer. But the inconsistency means a future code path that doesn't sanitize could be vulnerable if it trusts batch input as pre-validated.
+- **Suggested mitigation:** Add a null byte check early in the batch loop after `shell_words::split`: `if tokens.iter().any(|t| t.contains('\0')) { emit error; continue; }`. Consistent with existing null byte checks elsewhere in the codebase.
+
+#### RT-INJ-3: `--ref` name bypasses `validate_ref_name` in batch and CLI search paths
+- **Severity:** low
+- **Location:** `src/cli/batch/mod.rs:235` (`get_ref`), `src/cli/commands/resolve.rs:27` (`find_reference`)
+- **Attack vector:** `gather "query" --ref "../../../etc"` in batch mode, or `cqs "query" --ref "../etc"` from CLI.
+- **PoC:** The `--ref` value flows to `BatchContext::get_ref(name)` (batch path) or `find_reference(root, name)` (CLI path). Neither calls `validate_ref_name()`. Instead, they look up `name` in `config.references` by exact string match. Since `cmd_ref_add` (reference.rs:69) validates names before inserting into config, traversal names like `"../etc"` will never match a config entry, and the lookup fails with "Reference not found". The config acts as an implicit allowlist. However, `validate_ref_name` was designed as a security boundary (it checks null bytes, `/`, `\`, `..`), and it's only called on the write path (`ref add`), never on read paths (`--ref`, `gather --ref`, `drift`, `diff`). If a config file were corrupted or hand-edited to include a traversal name, the read paths would accept it and pass it to `load_references` which constructs filesystem paths from `ReferenceConfig.path` (not from the name, so the name itself isn't used for path construction — the `path` field is). The name traversal is not directly exploitable even with a corrupted config.
+- **Impact:** No exploitable path given the threat model (config files are trusted). The config allowlist provides implicit protection. The validation asymmetry (strict on write, absent on read) is a code quality issue rather than a security issue.
+- **Suggested mitigation:** Call `validate_ref_name(name)?` at the top of `BatchContext::get_ref()` and `find_reference()`. Cost: one string scan per ref lookup. Makes the defense explicit and independent of config integrity.
+
+#### RT-INJ-4: `sanitize_fts_query` does not strip `{` `}` — latent gap in defense-in-depth
+- **Severity:** low
+- **Location:** `src/store/mod.rs:167-169`
+- **Attack vector:** Direct call to `sanitize_fts_query("{foo bar}")` without prior `normalize_for_fts`.
+- **PoC:** FTS5 uses `{` `}` for NEAR grouping syntax (e.g., `NEAR({foo bar}, 5)`). The `sanitize_fts_query` filter on line 169 strips `"`, `*`, `(`, `)`, `+`, `-`, `^`, `:` but not `{` or `}`. Currently, every code path that reaches FTS5 MATCH calls `normalize_for_fts` first, which strips all non-alphanumeric characters including braces. The four MATCH sites are: (1) `search_fts` (search.rs:32): `sanitize_fts_query(&normalize_for_fts(query))`, (2) `search_by_name` (search.rs:65): same chain, (3) `search_by_names_batch` (query.rs:368): same chain, (4) `finalize_results` RRF path (query.rs:210-211): same chain. All four paths call `normalize_for_fts` before `sanitize_fts_query`, so braces never reach MATCH.
+- **Impact:** None currently. `normalize_for_fts` provides the actual protection. But `sanitize_fts_query` is named and documented as the FTS5 injection defense, and it has a gap for `{` `}` that could matter if a future code path calls it without `normalize_for_fts` first.
+- **Suggested mitigation:** Add `'{' | '}'` to the `matches!` filter in `sanitize_fts_query` (line 169). Zero runtime cost (single char comparison added to existing match arm). Also consider adding `'[' | ']'` and `'~'` for completeness.
+
+#### RT-INJ-5: TOML serialization of notes is safe — verified, no injection
+- **Severity:** N/A (verification of existing protection)
+- **Location:** `src/note.rs:282`, `src/cli/commands/notes.rs:152-187`
+- **Details:** Investigated whether `cqs notes add 'text with """triple quotes""" and [[note]] injection'` could corrupt `docs/notes.toml`. The write path is: `NoteEntry` struct -> `rewrite_notes_file` -> `toml::to_string_pretty(&file)` -> atomic rename. The `toml` crate's serde serializer properly escapes all string metacharacters: double quotes become `\"`, newlines become `\n`, backslashes become `\\`. TOML array-of-tables syntax (`[[note]]`) inside a string value is serialized as literal text within quotes, not as TOML structure. Additional protections: note text capped at 2000 bytes (notes.rs:163), sentiment clamped to [-1.0, 1.0] (notes.rs:166), file permissions restricted to 0o600 (note.rs:302), and atomic write via temp+rename (note.rs:305). No injection vector found.
+
+#### RT-INJ-6: `shell_words::split` unbalanced quotes produce controlled error — verified, no injection
+- **Severity:** N/A (verification of existing protection)
+- **Location:** `src/cli/batch/mod.rs:569-594`
+- **Details:** Investigated `shell_words::split` with unbalanced quotes in batch mode: `search "unterminated`. The `shell_words` crate returns `Err(ParseError)` on unmatched quotes. The batch loop (mod.rs:570-594) catches this error and emits `{"error":"Parse error: ..."}` to stdout, then continues to the next line. No partial token leakage, no state corruption. The error message includes the `shell_words` error string ("missing closing quote"), not a reflection of the input. Verified safe.
+
+#### RT-INJ-7: SQL injection via parameterized queries — verified, no injection
+- **Severity:** N/A (verification of existing protection)
+- **Location:** `src/store/` (all query files)
+- **Details:** All SQL queries use sqlx bind parameters (`?1`, `?2`). The only `format!`-constructed SQL is for `IN (...)` clauses using `make_placeholders` (helpers.rs), which generates `?1,?2,...?N` from a count — no user input in the SQL string. The FTS5 MATCH queries use bind parameters for the query text. The `search_by_names_batch` (query.rs:389) constructs the MATCH value via `format!("name:\"{}\" OR name:\"{}\"*", norm, norm)` but `norm` has passed through both `normalize_for_fts` (alphanumeric-only output) and `sanitize_fts_query` (strips `"`), plus a `debug_assert` + runtime check `if norm.contains('"') { return None; }` as belt-and-suspenders. No SQL injection vector found.
+
+#### RT-INJ-8: `--path` glob pattern ReDoS — mitigated by `globset` + validation
+- **Severity:** N/A (verification of existing protection)
+- **Location:** `src/store/helpers.rs:672-703`, `src/search/scoring/filter.rs:50-57`
+- **Details:** Investigated whether pathological `--path` glob patterns could cause ReDoS via `globset::Glob::new`. The `SearchFilter::validate()` method (helpers.rs:672-703) caps pattern length at 500 chars, rejects control characters, limits brace nesting depth to 10 levels, and validates the glob parses. The `globset` crate compiles globs to regex internally, but uses finite automaton matching (not backtracking), so exponential blowup from patterns like `{a{b{c{...}}}}` is limited to compilation time (bounded by the 10-level brace depth cap) not match time. The `compile_glob_filter` (filter.rs:50-57) returns `None` on invalid patterns, logging a warning. No ReDoS vector found within the validation constraints.
+
+### Focus: RT-DATA (Silent Data Corruption) — v1.9.0
+
+#### RT-DATA-7: Watch mode never deletes chunks for deleted files — stale results persist silently
+- **Severity:** high
+- **Location:** `src/cli/watch.rs:596-598`
+- **Attack vector:** Delete a source file while `cqs watch` is running. The file change event fires, `process_file_changes` receives the path, but `reindex_files` at line 596 checks `!abs_path.exists()` and returns `vec![]` with a comment "File was deleted, we'll handle this by removing old chunks" -- but nothing handles it. The old chunks, call graph entries, type edges, and `function_calls` rows all remain in SQLite.
+- **PoC:** (1) `cqs watch` is running. (2) Delete `src/foo.rs` (contains function `bar`). (3) Watch mode fires, `reindex_files` returns 0 chunks for the deleted file. (4) `cqs "bar"` still returns `src/foo.rs:bar` as a search result. (5) `cqs callers bar` still shows the deleted function in the call graph. (6) The HNSW index still has the embedding. SQLite still has the chunk. No error is emitted. The only recovery is `cqs gc` or `cqs index --force`.
+- **Impact:** Search returns results pointing to deleted files. Call graph analysis includes phantom functions. `cqs dead` may miss dead code because the deleted function's callers still appear in `function_calls`. All silent -- no error, no warning. Persists until next `cqs gc` or `cqs index`.
+- **Suggested mitigation:** In `process_file_changes`, after `reindex_files` returns, check which files in the batch no longer exist and call a `store.delete_chunks_for_file(origin)` method (or inline the DELETE). Also delete from `function_calls`, `calls`, `type_edges`, and `chunks_fts` for those origins. This is the mirror of what `prune_missing` does during GC, but triggered immediately.
+
+#### RT-DATA-8: Watch mode discards `function_calls` data — call graph silently degrades over time
+- **Severity:** high
+- **Location:** `src/cli/watch.rs:600-601`
+- **Attack vector:** Edit any source file while `cqs watch` is running. The parser returns `(file_chunks, _calls, chunk_type_refs)` at line 601, but `_calls` (the `Vec<FunctionCalls>` for the `function_calls` table) is silently discarded. Watch mode only writes to the `calls` table (via `upsert_chunks_and_calls`), never to `function_calls`.
+- **PoC:** (1) Run `cqs index` -- both `calls` and `function_calls` tables are populated (pipeline.rs:725 calls `upsert_function_calls`). (2) Start `cqs watch`. (3) Add a new function `baz()` to `src/foo.rs` that calls `qux()`. (4) Watch mode re-parses `foo.rs`, gets `FunctionCalls` data showing `baz -> qux`, but discards it. (5) The `function_calls` table has stale data for `foo.rs` (from the last `cqs index` run). (6) `cqs callers qux` uses `function_calls` and misses the `baz -> qux` edge. (7) `cqs impact baz` misses callers because the call graph is stale.
+- **Impact:** The full call graph (`function_calls` table) progressively becomes stale as watch mode processes edits. Since `function_calls` has no foreign key cascade, the stale data persists. The `calls` table (used by chunk-level operations) IS updated, so basic callers/callees work -- but the full-file `function_calls` table used by `impact`, `trace`, `dead`, `health`, and `callers` commands returns increasingly wrong results. No error or warning. Only `cqs index` refreshes `function_calls`.
+- **Suggested mitigation:** After calling `parser.parse_file_all`, collect the `FunctionCalls` data (currently `_calls`) and call `store.upsert_function_calls(file, &function_calls)` for each file, matching what pipeline.rs does at line 725.
+
+#### RT-DATA-9: Watch mode `INSERT OR REPLACE` cascades + missing `function_calls` update creates `calls`/`function_calls` table disagreement
+- **Severity:** medium
+- **Location:** `src/store/chunks/crud.rs:416-424`, `src/schema.sql:59,66-73`
+- **Attack vector:** Rename a function in a file while `cqs watch` is running.
+- **PoC:** (1) `cqs index` populates both `calls` (chunk-level, cascade FK) and `function_calls` (file-level, no FK) with `foo -> bar` edges. (2) `cqs watch` detects edit to `foo.rs`: `bar()` renamed to `baz()`. (3) `upsert_chunks_and_calls` runs in a single tx: `INSERT OR REPLACE INTO chunks` triggers `ON DELETE CASCADE` on `calls`, deleting old `foo -> bar` edges, then inserts new `foo -> baz` edges. The `calls` table is correct. (4) `function_calls` table still has `foo -> bar` (stale) because watch never calls `upsert_function_calls`. (5) `cqs callers bar` finds phantom caller from `function_calls`. `cqs callers baz` misses the caller in `function_calls`. Both tables tell different stories.
+- **Impact:** After watch mode processes edits, `calls` and `function_calls` tables can disagree about the call graph. Commands using `function_calls` (impact, trace, dead, callers with full graph) see stale edges. Commands using `calls` (gather, explain, basic callers) see correct edges. The inconsistency is silent and grows over time.
+- **Suggested mitigation:** Same fix as RT-DATA-8: write to `function_calls` during watch mode reindex.
+
+#### RT-DATA-10: Watch mode never deletes chunks for removed functions within existing files — phantom chunks accumulate
+- **Severity:** medium
+- **Location:** `src/cli/watch.rs:686-714`
+- **Attack vector:** Edit a file to remove a function while `cqs watch` is running. The file still exists, but a function has been deleted from it.
+- **PoC:** (1) File `src/foo.rs` has functions `alpha` and `beta`. `cqs index` creates chunks for both. (2) Edit `src/foo.rs`: delete function `beta`. File now only has `alpha`. (3) `cqs watch` re-parses `foo.rs`, gets only chunk `alpha`. (4) `upsert_chunks_and_calls` (crud.rs:390) processes the batch `[(alpha_chunk, emb)]`. It does `INSERT OR REPLACE` for `alpha`'s chunk. (5) `beta`'s chunk is NOT in the batch, so it is NOT touched. `beta`'s row persists in `chunks` table with stale content. `beta`'s `calls` table edges persist (no cascade triggered because chunk was not deleted). (6) `cqs "beta"` still returns the deleted function. `cqs callers` still shows beta's call edges.
+- **Impact:** When functions are removed from a file (but the file itself remains), watch mode leaves phantom chunks in SQLite. These phantom chunks: appear in search results, pollute call graph analysis, inflate `cqs stats` counts, and cause `cqs dead` to report them incorrectly. Silent -- no error, no warning. Only `cqs index --force` removes them (because it rebuilds from scratch). `cqs gc` does NOT help because GC only prunes chunks for files no longer on disk, not for functions removed from existing files.
+- **Suggested mitigation:** After parsing a file and before upserting, query for existing chunk IDs with the same origin. Delete any existing chunks whose IDs are not in the new parse result: `DELETE FROM chunks WHERE origin = ? AND id NOT IN (new_chunk_ids)`. Also delete corresponding `chunks_fts` rows. The `ON DELETE CASCADE` on `calls` and `type_edges` will clean up automatically.
+
+#### RT-DATA-11: HNSW incremental insert never removes old vectors for modified chunks — stale embeddings affect candidate selection
+- **Severity:** medium
+- **Location:** `src/cli/watch.rs:498-548`, `src/hnsw/mod.rs:215-229`
+- **Attack vector:** Edit a file multiple times while `cqs watch` is running between full HNSW rebuilds (within 100 incremental inserts).
+- **PoC:** (1) `cqs watch` starts, first file change triggers full HNSW rebuild. Chunk `foo::bar` is at HNSW position 42 with embedding E1. (2) User edits `bar` (new content_hash). Watch re-embeds, gets E2. `insert_batch` pushes `foo::bar` at position N with E2. Position 42 still maps to `foo::bar` with E1. (3) HNSW search for a query: both positions 42 and N may be returned as candidates. `fetch_candidates_by_ids_async` deduplicates by chunk ID at the SQL level (returns one row), but HNSW's candidate ranking used the stale E1 for position 42. (4) If a chunk should NOT be a top candidate based on its new embedding E2, but E1 was a strong match, the chunk appears as a false positive in the candidate set. Conversely, if E2 is a better match than E1 but HNSW encounters position 42 first, the chunk may rank lower than it should.
+- **Impact:** During the window between incremental inserts and the next full rebuild (up to 100 edits, controlled by `HNSW_REBUILD_THRESHOLD`), HNSW candidate selection uses stale embeddings for modified chunks. SQLite-side rescoring uses the correct embedding, but the candidate SET is wrong: chunks may be wrongly included or excluded from the HNSW candidate shortlist. The comment at line 500-503 acknowledges orphans exist but claims they're "harmless" -- they are not harmless for ranking accuracy because they affect which chunks enter the candidate scoring pipeline.
+- **Suggested mitigation:** Track which chunk IDs are being inserted in `insert_batch` and set their old `id_map` entries to an empty string (tombstone). The `fetch_candidates_by_ids_async` SQL `WHERE id IN (...)` will not match empty strings, effectively excluding the stale positions. Alternatively, reduce `HNSW_REBUILD_THRESHOLD` from 100 to a smaller value to limit the staleness window.
+

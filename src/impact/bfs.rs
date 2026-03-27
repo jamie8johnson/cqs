@@ -4,10 +4,16 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use crate::store::CallGraph;
 
+/// Maximum nodes in any reverse BFS traversal (RT-RES-1).
+/// Prevents unbounded expansion on hub functions with thousands of transitive callers.
+pub(super) const DEFAULT_BFS_MAX_NODES: usize = 10_000;
+
 /// Reverse BFS from a target node, returning all ancestors with their depths.
 ///
 /// The target itself is always included at depth 0. Callers that need only
 /// actual ancestors should filter out depth-0 entries.
+///
+/// Expansion stops when either `max_depth` or `DEFAULT_BFS_MAX_NODES` is reached.
 pub(super) fn reverse_bfs(
     graph: &CallGraph,
     target: &str,
@@ -21,6 +27,14 @@ pub(super) fn reverse_bfs(
     while let Some((current, d)) = queue.pop_front() {
         if d >= max_depth {
             continue;
+        }
+        if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+            tracing::warn!(
+                target,
+                nodes = ancestors.len(),
+                "reverse_bfs hit node cap, returning partial results"
+            );
+            break;
         }
         if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
@@ -60,6 +74,13 @@ pub(super) fn reverse_bfs_multi(
     while let Some((current, d)) = queue.pop_front() {
         if d >= max_depth {
             continue;
+        }
+        if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+            tracing::warn!(
+                nodes = ancestors.len(),
+                "reverse_bfs_multi hit node cap, returning partial results"
+            );
+            break;
         }
         // Skip stale queue entries: if this node was later reached via a
         // shorter path, the HashMap already has a smaller depth. Processing
@@ -122,6 +143,13 @@ pub(super) fn reverse_bfs_multi_attributed(
     while let Some((current, d, src)) = queue.pop_front() {
         if d >= max_depth {
             continue;
+        }
+        if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+            tracing::warn!(
+                nodes = ancestors.len(),
+                "reverse_bfs_multi_attributed hit node cap, returning partial results"
+            );
+            break;
         }
         // Skip stale queue entries (same logic as reverse_bfs_multi)
         if ancestors
@@ -206,6 +234,13 @@ pub(crate) fn test_reachability(
         while let Some((current, d)) = queue.pop_front() {
             if d >= max_depth {
                 continue;
+            }
+            if visited.len() >= DEFAULT_BFS_MAX_NODES {
+                tracing::warn!(
+                    nodes = visited.len(),
+                    "test_reachability BFS hit node cap, returning partial results"
+                );
+                break;
             }
             if let Some(callees) = graph.forward.get(current.as_str()) {
                 for callee in callees {

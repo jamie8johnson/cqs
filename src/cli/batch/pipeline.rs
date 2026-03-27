@@ -263,8 +263,11 @@ pub(crate) fn execute_pipeline(
         let mut errors: Vec<(String, String)> = Vec::new();
 
         for name in &names {
-            // Build tokens: prepend name to downstream segment
-            let mut cmd_tokens = vec![segment[0].clone(), name.clone()];
+            // Build tokens: prepend name to downstream segment.
+            // RT-INJ-1: Insert "--" end-of-options marker before the extracted
+            // name to prevent names like "--help" or "--format" from being
+            // interpreted as clap flags.
+            let mut cmd_tokens = vec![segment[0].clone(), "--".to_string(), name.clone()];
             cmd_tokens.extend_from_slice(&segment[1..]);
 
             match BatchInput::try_parse_from(&cmd_tokens) {

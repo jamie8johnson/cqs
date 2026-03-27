@@ -436,12 +436,33 @@ impl Embedder {
     /// This means two simultaneous queries for the same text may both compute embeddings, but this
     /// is preferable to serializing all queries through a single lock. The duplicate work is rare
     /// and the cache update is idempotent.
+    /// Maximum input bytes before truncation (RT-RES-5).
+    /// The tokenizer will further truncate to max_seq_length tokens, but this
+    /// prevents O(n) tokenization work on megabyte-sized inputs.
+    const MAX_QUERY_BYTES: usize = 32 * 1024;
+
     pub fn embed_query(&self, text: &str) -> Result<Embedding, EmbedderError> {
         let _span = tracing::info_span!("embed_query").entered();
         let text = text.trim();
         if text.is_empty() {
             return Err(EmbedderError::EmptyQuery);
         }
+        // RT-RES-5: Truncate oversized input before tokenization to bound CPU work.
+        let text = if text.len() > Self::MAX_QUERY_BYTES {
+            tracing::warn!(
+                len = text.len(),
+                max = Self::MAX_QUERY_BYTES,
+                "Query text truncated before embedding"
+            );
+            // Truncate at a char boundary
+            let mut end = Self::MAX_QUERY_BYTES;
+            while !text.is_char_boundary(end) && end > 0 {
+                end -= 1;
+            }
+            &text[..end]
+        } else {
+            text
+        };
 
         // Check cache first (lock released after check to allow parallel computation)
         {

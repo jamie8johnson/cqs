@@ -20,11 +20,30 @@ Config F (HNSW + name_boost + demotion). 55 queries, fixtures only. A6000.
 
 BGE-large wins by +7.2pp over best LoRA (v9-mini). Enrichment is model-agnostic (+34pp E5, +33pp BGE). Raw vs pipeline ranking inverts (v7b best raw, worst pipeline). No 110M model reaches BGE-large.
 
-### Next — v1.9.0: BGE-large Default
-- [ ] Switch `DEFAULT_MODEL_REPO` to BGE-large
-- [ ] Update download size messaging (~1.3GB vs ~547MB)
-- [ ] E5-base as lightweight preset
-- [ ] Release v1.9.0
+### Done — v1.9.0: BGE-large Default
+- [x] Switch `DEFAULT_MODEL_REPO` to BGE-large
+- [x] `ModelConfig::default_model()` single source of truth + consistency test
+- [x] `EMBEDDING_DIM` = 1024, all tests dim-agnostic
+- [x] E5-base as lightweight preset (`CQS_EMBEDDING_MODEL=e5-base`)
+- [x] Released v1.9.0, published crates.io
+
+### Next — Training (Exp 19: 110M model improvement)
+
+**Goal**: Best possible 110M model for size-constrained deployments.
+
+v9-mini (87.3% pipeline) is the only LoRA that beats base E5 (83.6%). The differentiator: call-graph false-negative filtering. Nobody has combined that with FAISS hard negatives or multi-epoch training.
+
+| Experiment | Data | Hard Negs | Epochs | New variable |
+|-----------|------|-----------|--------|-------------|
+| v9-200k | 200K | Call-graph only | 1 | 3.3x more data |
+| v9-200k-hn | 200K | Call-graph + FAISS | 1 | Combined neg strategy |
+| v9-200k-3ep | 200K | Call-graph + FAISS | 3 | Multi-epoch |
+
+- [ ] Mine FAISS hard negatives on 200K dataset
+- [ ] Train v9-200k (baseline: more data, same recipe)
+- [ ] Train v9-200k-hn (combined negative strategy)
+- [ ] Train v9-200k-3ep (multi-epoch)
+- [ ] Pipeline eval all three + compare to v9-mini (87.3%) and BGE-large (94.5%)
 
 ### Done — Embedding Model Options
 - [x] BGE-large-en-v1.5 as configurable alternative
@@ -46,9 +65,20 @@ BGE-large wins by +7.2pp over best LoRA (v9-mini). Enrichment is model-agnostic 
   - `cqs-code-search-200k` — 22,222 × 9 balanced, call graph metadata
   - `cqs-code-search-500k` — 55,555 × 9 balanced
   - `cqs-code-search-1m` — 121,651 × 9 balanced (C++ bottleneck)
-- [ ] Mine hard negatives (call-graph false-negative filtering, zero API cost)
-- [ ] Train v9-200k → eval
-- [ ] Train v9-1m → eval (if 200k shows improvement)
+- [x] Mine hard negatives: 172,219 pairs with 6.8 avg negs, CG + FAISS, balanced
+- [ ] Train v9-200k (CG filter only, 1ep) — **running** (~7h)
+- [ ] Train v9-200k-hn (CG + FAISS negs, 1ep)
+- [ ] Train v9-200k-1.5ep (CG + FAISS, 1.5ep)
+- [ ] Train v9-200k-3ep (only if 1.5ep helps)
+
+### Red Team v1.9.0 — Watch Mode Gaps
+23 findings (0 critical, 2 high, 9 medium, 11 low). Watch mode is the theme.
+
+- [ ] #708 RT-DATA-7: Watch never deletes chunks for deleted files (**high**)
+- [ ] #709 RT-DATA-8: Watch discards function_calls data (**high**)
+- [ ] #710 RT-RES-1: Impact BFS no node cap (medium)
+- [ ] #711 RT-RES-9: Diff impact no cap on changed functions (medium)
+- Non-breaking fixes (INJ-1, INJ-2, INJ-4, RES-5, RES-7, FS-1, DATA-10) being applied
 - [ ] Paper v0.6
 
 ### Future — Migrate HNSW to `hnswlib-rs` (wilsonzlin/corenn)

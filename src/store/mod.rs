@@ -165,8 +165,9 @@ pub(crate) fn sanitize_fts_query(s: &str) -> String {
             out.push(' ');
         }
         out.extend(
-            word.chars()
-                .filter(|c| !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':')),
+            word.chars().filter(|c| {
+                !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':' | '{' | '}')
+            }),
         );
     }
     let trimmed = out.trim();

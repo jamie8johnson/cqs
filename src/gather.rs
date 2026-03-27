@@ -99,7 +99,16 @@ impl GatherOptions {
     ///
     /// Returns `Self` to allow for method chaining in builder pattern style construction.
     pub fn with_seed_threshold(mut self, threshold: f32) -> Self {
-        self.seed_threshold = threshold;
+        // RT-RES-7: Guard against NaN — use default (0.3) if threshold is not finite.
+        if threshold.is_finite() {
+            self.seed_threshold = threshold;
+        } else {
+            tracing::warn!(
+                threshold = %threshold,
+                "NaN/infinite seed threshold, using default 0.3"
+            );
+            self.seed_threshold = 0.3;
+        }
         self
     }
     /// Sets the decay factor for this builder, clamping the value to the range [0.0, 1.0].

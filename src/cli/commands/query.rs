@@ -630,8 +630,22 @@ fn resolve_parent_context(
             );
         } else {
             // Parent not in DB (windowed chunk → read source file)
+            // RT-FS-1: Validate the resolved path stays within project root
+            // to prevent path traversal via crafted chunk.file values.
             let abs_path = root.join(&sr.chunk.file);
-            match std::fs::read_to_string(&abs_path) {
+            let canonical = match dunce::canonicalize(&abs_path) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let canonical_root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+            if !canonical.starts_with(&canonical_root) {
+                tracing::warn!(
+                    path = %sr.chunk.file.display(),
+                    "Path escapes project root, skipping parent context"
+                );
+                continue;
+            }
+            match std::fs::read_to_string(&canonical) {
                 Ok(content) => {
                     let lines: Vec<&str> = content.lines().collect();
                     let start = sr.chunk.line_start.saturating_sub(1) as usize;

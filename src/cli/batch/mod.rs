@@ -597,6 +597,17 @@ pub(crate) fn cmd_batch() -> Result<()> {
             continue;
         }
 
+        // RT-INJ-2: Reject tokens containing null bytes — they can bypass
+        // string processing in downstream consumers.
+        if tokens.iter().any(|t| t.contains('\0')) {
+            ctx.error_count.fetch_add(1, Ordering::Relaxed);
+            let error_json = serde_json::json!({"error": "Input contains null bytes"});
+            if write_json_line(&mut stdout, &error_json).is_err() {
+                break;
+            }
+            continue;
+        }
+
         // Check idle timeout — clear ONNX sessions if idle too long
         ctx.check_idle_timeout();
 

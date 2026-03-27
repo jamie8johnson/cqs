@@ -443,6 +443,60 @@ impl Store {
             Ok(chunks.len())
         })
     }
+
+    /// Delete chunks for a file that are no longer in the current parse output (RT-DATA-10).
+    ///
+    /// After re-parsing a file, some functions may have been removed. Their old
+    /// chunks would linger as phantoms. This deletes chunks whose origin matches
+    /// `file` but whose ID is not in `live_ids`.
+    pub fn delete_phantom_chunks(
+        &self,
+        file: &std::path::Path,
+        live_ids: &[&str],
+    ) -> Result<u32, StoreError> {
+        let origin_str = crate::normalize_path(file);
+        if live_ids.is_empty() {
+            // No live chunks means the whole file was emptied/deleted —
+            // delete_by_origin handles that case.
+            return self.delete_by_origin(file);
+        }
+
+        self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
+
+            // Build IN-list for live IDs. Batch at 500 to stay well under SQLite limits.
+            // We need to find IDs to delete first, then clean FTS + chunks.
+            let placeholders: Vec<String> = live_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 2)).collect();
+            let in_list = placeholders.join(",");
+
+            let fts_query = format!(
+                "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin = ?1 AND id NOT IN ({}))",
+                in_list
+            );
+            let mut fts_stmt = sqlx::query(&fts_query).bind(&origin_str);
+            for id in live_ids {
+                fts_stmt = fts_stmt.bind(id);
+            }
+            fts_stmt.execute(&mut *tx).await?;
+
+            let chunks_query = format!(
+                "DELETE FROM chunks WHERE origin = ?1 AND id NOT IN ({})",
+                in_list
+            );
+            let mut chunks_stmt = sqlx::query(&chunks_query).bind(&origin_str);
+            for id in live_ids {
+                chunks_stmt = chunks_stmt.bind(id);
+            }
+            let result = chunks_stmt.execute(&mut *tx).await?;
+
+            tx.commit().await?;
+            let deleted = result.rows_affected() as u32;
+            if deleted > 0 {
+                tracing::info!(origin = %origin_str, deleted, "Removed phantom chunks");
+            }
+            Ok(deleted)
+        })
+    }
 }
 
 #[cfg(test)]

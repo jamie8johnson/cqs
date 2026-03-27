@@ -712,6 +712,14 @@ fn reindex_files(
             .cloned()
             .collect();
         store.upsert_chunks_and_calls(pairs, mtime, &file_calls)?;
+
+        // RT-DATA-10: Delete phantom chunks — functions removed from the file
+        // but still lingering in the index. The upsert above handles updates
+        // and inserts; this cleans up deletions.
+        let live_ids: Vec<&str> = chunk_ids.iter().copied().collect();
+        if let Err(e) = store.delete_phantom_chunks(file, &live_ids) {
+            tracing::warn!(file = %file.display(), error = %e, "Failed to clean phantom chunks");
+        }
     }
 
     // Upsert type edges from the earlier parse_file_all() results.
