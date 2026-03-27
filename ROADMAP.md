@@ -18,13 +18,18 @@ Enrichment stack contributes 43.6pp to hard eval (49.1% raw → 92.7% enriched).
 - [x] v9-mini training — Stack data + call-graph false-negative filter + synthetic queries
 - [x] Eval: 65.5% raw R@1, 89.1% enriched, 0.638 CSN (matches base enriched, better raw+CSN)
 
-### Next — Training (Exp 19: v9-200k)
-- [ ] Gap-filling pipeline (1899/2119 repos, ~90% complete)
-- [ ] Assemble balanced 200K dataset (22,222 per language × 9)
-- [ ] Publish HuggingFace dataset (cqs-code-search-200k)
-- [ ] Mine hard negatives on 200K
-- [ ] Train v9-200k
-- [ ] Eval v9-200k
+### Next — Dataset & Training
+**Raw pool**: 2.8M pairs across 9 languages from ~5,000 repos. Bottleneck: C++ at 115K.
+
+- [ ] Gap-filling completes (~90%, actively indexing)
+- [ ] Publish HuggingFace datasets:
+  - `cqs-code-search-200k` — 22,222 × 9 balanced, call graph metadata
+  - `cqs-code-search-500k` — 55,555 × 9 balanced (stretch)
+  - `cqs-code-search-1m` — 114,787 × 9 balanced (max, C++ bottleneck)
+- [ ] Mine hard negatives (call-graph false-negative filtering, zero API cost)
+- [ ] Train v9-200k → eval
+- [ ] Train v9-1m → eval (if 200k shows improvement)
+- [ ] Paper v0.6
 
 ### Next — Agent Adoption (cqs telemetry shows 87% search, 0% advanced commands)
 Current: CLAUDE.md restructured with task-triggered commands (2026-03-26). Check telemetry next session.
