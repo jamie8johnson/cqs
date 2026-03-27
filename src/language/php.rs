@@ -229,6 +229,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         separators: "=;",
         strip_prefixes: "public private protected static var",
     },
+    skip_line_prefixes: &["class ", "interface ", "trait ", "enum "],
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -4,7 +4,6 @@
 
 use anyhow::{Context, Result};
 
-use cqs::embedder::ModelConfig;
 use cqs::Embedder;
 
 use crate::cli::{find_project_root, Cli};
@@ -47,7 +46,7 @@ pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
     }
 
     let embedder =
-        Embedder::new(ModelConfig::resolve(None, None)).context("Failed to initialize embedder")?;
+        Embedder::new(cli.model_config().clone()).context("Failed to initialize embedder")?;
 
     if !cli.quiet {
         println!("Detecting hardware... {}", embedder.provider());

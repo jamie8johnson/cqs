@@ -332,8 +332,13 @@ pub struct LanguageDef {
     /// language-appropriate documentation. Empty string means no convention.
     pub doc_convention: &'static str,
     /// Field extraction style for struct/class/record body parsing.
-    /// Used by `extract_field_names` in `src/nl.rs`.
+    /// Used by `extract_field_names` in `src/nl/fields.rs`.
     pub field_style: FieldStyle,
+    /// Line prefixes that indicate non-field declaration lines (headers, decorators).
+    /// Used by `should_skip_line` in `src/nl/fields.rs` to skip struct/class/enum
+    /// headers during field extraction. Universal prefixes (empty, `//`, `/*`, `*`,
+    /// braces) are always skipped regardless of this list.
+    pub skip_line_prefixes: &'static [&'static str],
 }
 
 /// Helper: PascalCase test name from a base function name with a given prefix.

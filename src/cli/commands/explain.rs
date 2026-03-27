@@ -47,6 +47,7 @@ pub(crate) fn build_explain_data(
     max_tokens: Option<usize>,
     index: Option<Option<&dyn VectorIndex>>,
     embedder: Option<&cqs::Embedder>,
+    model_config: &cqs::embedder::ModelConfig,
 ) -> Result<ExplainData> {
     // Resolve target
     let resolved = cqs::resolve_target(store, target)?;
@@ -80,7 +81,7 @@ pub(crate) fn build_explain_data(
             let idx: Option<&dyn VectorIndex> = match index {
                 Some(idx) => idx,
                 None => {
-                    owned_index = HnswIndex::try_load(cqs_dir);
+                    owned_index = HnswIndex::try_load_with_ef(cqs_dir, None, Some(store.dim()));
                     owned_index.as_deref()
                 }
             };
@@ -118,8 +119,7 @@ pub(crate) fn build_explain_data(
         let emb = match embedder {
             Some(e) => e,
             None => {
-                owned_embedder =
-                    cqs::Embedder::new(cqs::embedder::ModelConfig::resolve(None, None))?;
+                owned_embedder = cqs::Embedder::new(model_config.clone())?;
                 &owned_embedder
             }
         };
@@ -265,7 +265,15 @@ pub(crate) fn cmd_explain(
     let _span = tracing::info_span!("cmd_explain", target).entered();
     let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
 
-    let data = build_explain_data(&store, &cqs_dir, target, max_tokens, None, None)?;
+    let data = build_explain_data(
+        &store,
+        &cqs_dir,
+        target,
+        max_tokens,
+        None,
+        None,
+        cli.model_config(),
+    )?;
 
     // Proactive staleness warning
     if !cli.quiet && !cli.no_stale_check {

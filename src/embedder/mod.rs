@@ -3,7 +3,7 @@
 mod models;
 mod provider;
 
-pub use models::{EmbeddingConfig, ModelConfig};
+pub use models::{EmbeddingConfig, ModelConfig, DEFAULT_MODEL_REPO};
 
 use provider::ort_err;
 pub(crate) use provider::{create_session, select_provider};

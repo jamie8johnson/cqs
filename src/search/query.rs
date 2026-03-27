@@ -20,8 +20,7 @@ use crate::store::{Store, StoreError};
 
 use super::scoring::{
     apply_parent_boost, build_filter_sql, compile_glob_filter, extract_file_from_chunk_id,
-    is_name_like_query, score_candidate, BoundedScoreHeap, NameMatcher, NoteBoostIndex,
-    ScoringContext,
+    score_candidate, BoundedScoreHeap, NameMatcher, NoteBoostIndex, ScoringContext,
 };
 
 impl Store {
@@ -329,10 +328,10 @@ impl Store {
             return Ok(vec![]);
         }
 
-        let use_hybrid = filter.name_boost > 0.0
-            && !filter.query_text.is_empty()
-            && is_name_like_query(&filter.query_text);
-        let use_rrf = filter.enable_rrf && !filter.query_text.is_empty();
+        // AC-24: Reuse flag computation from build_filter_sql to stay consistent
+        let flags = build_filter_sql(filter);
+        let use_hybrid = flags.use_hybrid;
+        let use_rrf = flags.use_rrf;
 
         // Load notes once for note-boosted ranking
         let notes = match self.cached_notes_summaries() {

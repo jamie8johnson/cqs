@@ -3,11 +3,10 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use cqs::embedder::ModelConfig;
 use cqs::{scout, scout_to_json, Embedder};
 
 pub(crate) fn cmd_scout(
-    _cli: &crate::cli::Cli,
+    cli: &crate::cli::Cli,
     task: &str,
     limit: usize,
     json: bool,
@@ -15,7 +14,7 @@ pub(crate) fn cmd_scout(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_scout", task, ?max_tokens).entered();
     let (store, root, _) = crate::cli::open_project_store_readonly()?;
-    let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
+    let embedder = Embedder::new(cli.model_config().clone())?;
     let limit = limit.clamp(1, 10);
 
     let result = scout(&store, &embedder, task, &root, limit)?;

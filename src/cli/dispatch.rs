@@ -30,6 +30,12 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     let config = cqs::config::Config::load(&find_project_root());
     apply_config_defaults(&mut cli, &config);
 
+    // Resolve embedding model config once (CLI > env > config > default)
+    cli.resolved_model = Some(cqs::embedder::ModelConfig::resolve(
+        cli.model.as_deref(),
+        config.embedding.as_ref(),
+    ));
+
     // Clamp limit to prevent usize::MAX wrapping to -1 in SQLite queries
     cli.limit = cli.limit.clamp(1, 100);
 
@@ -179,7 +185,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             args.ref_name.as_deref(),
             json,
         ),
-        Some(Commands::Project { ref subcmd }) => cmd_project(subcmd),
+        Some(Commands::Project { ref subcmd }) => cmd_project(subcmd, cli.model_config()),
         Some(Commands::Gc { json }) => cmd_gc(json),
         Some(Commands::Health { json }) => cmd_health(json),
         Some(Commands::AuditMode {
@@ -203,7 +209,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref description,
             limit,
             json,
-        }) => cmd_where(description, limit, json),
+        }) => cmd_where(description, limit, json, cli.model_config()),
         Some(Commands::Scout { ref args, json }) => {
             cmd_scout(&cli, &args.query, args.limit, json, args.tokens)
         }

@@ -24,7 +24,7 @@ use crate::parser::{Chunk, ChunkType, Language};
 pub const CURRENT_SCHEMA_VERSION: i32 = 16;
 /// Default model name for backward compatibility and tests.
 /// Production code should use `Store::stored_model_name()` or `ModelInfo::new()`.
-pub(crate) const DEFAULT_MODEL_NAME: &str = "intfloat/e5-base-v2";
+pub(crate) const DEFAULT_MODEL_NAME: &str = crate::embedder::DEFAULT_MODEL_REPO;
 
 #[derive(Error, Debug)]
 pub enum StoreError {

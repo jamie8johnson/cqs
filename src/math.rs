@@ -3,11 +3,13 @@
 //! Shared math functions used across modules (search, notes, etc.).
 
 /// Dot product of two embeddings (= cosine similarity for L2-normalized vectors).
-/// E5-base-v2 outputs normalized embeddings, so dot product suffices.
-/// Uses SIMD acceleration when available (2-4x faster on AVX2/NEON)
+/// Uses SIMD acceleration when available (2-4x faster on AVX2/NEON).
+///
+/// **Assumes L2-normalized inputs.** For zero-norm vectors, returns `Some(0.0)` (the
+/// dot product is technically correct, but undefined as cosine similarity). Use
+/// [`full_cosine_similarity`] when inputs may not be normalized.
 ///
 /// Returns `None` if vectors have different lengths or are empty.
-/// This allows callers to gracefully handle dimension mismatches rather than panicking.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
     if a.len() != b.len() || a.is_empty() {
         return None;

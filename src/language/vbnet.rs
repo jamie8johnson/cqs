@@ -224,6 +224,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     doc_format: "default",
     doc_convention: "Use XML doc comments: <summary>, <param>, <returns> tags.",
     field_style: FieldStyle::None,
+    skip_line_prefixes: &["Class ", "Structure ", "Interface ", "Enum "],
 };
 
 pub fn definition() -> &'static LanguageDef {

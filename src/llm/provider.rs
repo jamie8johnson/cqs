@@ -4,6 +4,21 @@ use std::collections::HashMap;
 
 use super::LlmError;
 
+/// A single item in a batch submission.
+///
+/// Named fields replace the opaque `(String, String, String, String)` tuple
+/// to prevent positional errors at call sites.
+pub struct BatchSubmitItem {
+    /// Unique identifier for correlating results (typically content_hash)
+    pub custom_id: String,
+    /// Source code content or pre-built prompt
+    pub content: String,
+    /// Context field: chunk_type (summaries), signature (doc comments), or unused (prebuilt/HyDE)
+    pub context: String,
+    /// Programming language name
+    pub language: String,
+}
+
 /// Trait for LLM batch API providers.
 ///
 /// Abstracts the batch submission, polling, and result fetching lifecycle.
@@ -11,12 +26,10 @@ use super::LlmError;
 pub trait BatchProvider {
     /// Submit a batch of prompt requests. Returns the batch ID.
     ///
-    /// `items` is a list of (custom_id, content, field3, language) -- field3 is chunk_type
-    /// or signature depending on the prompt builder.
-    /// `prompt_builder` constructs the user message from (content, field3, language).
+    /// `prompt_builder` constructs the user message from (content, context, language).
     fn submit_batch(
         &self,
-        items: &[(String, String, String, String)],
+        items: &[BatchSubmitItem],
         max_tokens: u32,
         purpose: &str,
         prompt_builder: fn(&str, &str, &str) -> String,
@@ -27,21 +40,21 @@ pub trait BatchProvider {
     /// Used by the contrastive summary path which pre-builds prompts with neighbor context.
     fn submit_batch_prebuilt(
         &self,
-        items: &[(String, String, String, String)],
+        items: &[BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError>;
 
     /// Submit a batch of doc-comment requests. Returns the batch ID.
     fn submit_doc_batch(
         &self,
-        items: &[(String, String, String, String)],
+        items: &[BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError>;
 
     /// Submit a batch of HyDE query prediction requests. Returns the batch ID.
     fn submit_hyde_batch(
         &self,
-        items: &[(String, String, String, String)],
+        items: &[BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError>;
 
@@ -60,4 +73,80 @@ pub trait BatchProvider {
 
     /// Get the model name for this provider.
     fn model_name(&self) -> &str;
+}
+
+/// Mock batch provider for testing batch orchestration without API calls.
+#[cfg(test)]
+pub(crate) struct MockBatchProvider {
+    pub batch_id: String,
+    pub results: HashMap<String, String>,
+    pub model: String,
+}
+
+#[cfg(test)]
+impl MockBatchProvider {
+    pub fn new(batch_id: &str, results: HashMap<String, String>) -> Self {
+        Self {
+            batch_id: batch_id.to_string(),
+            results,
+            model: "mock-model".to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl BatchProvider for MockBatchProvider {
+    fn submit_batch(
+        &self,
+        _items: &[BatchSubmitItem],
+        _max_tokens: u32,
+        _purpose: &str,
+        _prompt_builder: fn(&str, &str, &str) -> String,
+    ) -> Result<String, LlmError> {
+        Ok(self.batch_id.clone())
+    }
+
+    fn submit_batch_prebuilt(
+        &self,
+        _items: &[BatchSubmitItem],
+        _max_tokens: u32,
+    ) -> Result<String, LlmError> {
+        Ok(self.batch_id.clone())
+    }
+
+    fn submit_doc_batch(
+        &self,
+        _items: &[BatchSubmitItem],
+        _max_tokens: u32,
+    ) -> Result<String, LlmError> {
+        Ok(self.batch_id.clone())
+    }
+
+    fn submit_hyde_batch(
+        &self,
+        _items: &[BatchSubmitItem],
+        _max_tokens: u32,
+    ) -> Result<String, LlmError> {
+        Ok(self.batch_id.clone())
+    }
+
+    fn check_batch_status(&self, _batch_id: &str) -> Result<String, LlmError> {
+        Ok("ended".to_string())
+    }
+
+    fn wait_for_batch(&self, _batch_id: &str, _quiet: bool) -> Result<(), LlmError> {
+        Ok(())
+    }
+
+    fn fetch_batch_results(&self, _batch_id: &str) -> Result<HashMap<String, String>, LlmError> {
+        Ok(self.results.clone())
+    }
+
+    fn is_valid_batch_id(&self, id: &str) -> bool {
+        id.starts_with("msgbatch_")
+    }
+
+    fn model_name(&self) -> &str {
+        &self.model
+    }
 }

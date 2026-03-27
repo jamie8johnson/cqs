@@ -108,7 +108,7 @@ pub(crate) fn build_vector_index_with_config(
         const CAGRA_THRESHOLD: u64 = 5000;
         let chunk_count = store.chunk_count().unwrap_or(0);
         if chunk_count >= CAGRA_THRESHOLD && cqs::cagra::CagraIndex::gpu_available() {
-            match cqs::cagra::CagraIndex::build_from_store(store, store.dim) {
+            match cqs::cagra::CagraIndex::build_from_store(store, store.dim()) {
                 Ok(idx) => {
                     tracing::info!("Using CAGRA GPU index ({} vectors)", idx.len());
                     return Ok(Some(Box::new(idx) as Box<dyn cqs::index::VectorIndex>));
@@ -135,7 +135,11 @@ pub(crate) fn build_vector_index_with_config(
         );
         return Ok(None);
     }
-    Ok(cqs::HnswIndex::try_load_with_ef(cqs_dir, ef_search))
+    Ok(cqs::HnswIndex::try_load_with_ef(
+        cqs_dir,
+        ef_search,
+        Some(store.dim()),
+    ))
 }
 
 #[cfg(test)]

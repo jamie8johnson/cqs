@@ -174,6 +174,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         separators: ":",
         strip_prefixes: "val var private protected override lazy",
     },
+    skip_line_prefixes: &["class ", "case class", "sealed class", "trait ", "object "],
 };
 
 pub fn definition() -> &'static LanguageDef {

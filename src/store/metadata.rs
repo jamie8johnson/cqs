@@ -90,6 +90,7 @@ impl Store {
     /// # Errors
     ///
     /// Returns `StoreError::ModelMismatch` if the stored model name differs from `DEFAULT_MODEL_NAME`.
+    #[allow(dead_code)]
     pub(crate) fn check_model_version(&self) -> Result<(), StoreError> {
         self.check_model_version_with(DEFAULT_MODEL_NAME)
     }
@@ -98,6 +99,7 @@ impl Store {
     ///
     /// Separated from `check_model_version()` so callers can supply a runtime
     /// model name without changing the open() signature.
+    #[allow(dead_code)]
     pub(crate) fn check_model_version_with(&self, expected_model: &str) -> Result<(), StoreError> {
         self.rt.block_on(async {
             let row: Option<(String,)> =
@@ -603,5 +605,88 @@ mod tests {
         let (store, _dir) = make_test_store_initialized();
         // Default init stores EMBEDDING_DIM (768)
         assert_eq!(store.dim, crate::EMBEDDING_DIM);
+    }
+
+    // ===== TC-31: multi-model dim-threading =====
+
+    #[test]
+    fn tc31_store_with_non_default_dim() {
+        // TC-31.1: init writes dim to metadata, verifiable via get_metadata_opt.
+        // Note: store.dim() reflects the value read at open() time, not post-init.
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store
+            .init(&ModelInfo::new("test/model-1024", 1024))
+            .unwrap();
+        let stored = store.get_metadata_opt("dimensions").unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some("1024"),
+            "init should write dim=1024"
+        );
+    }
+
+    #[test]
+    fn tc31_init_writes_dim_to_metadata() {
+        // TC-31.2: Verify init() stores the dimension in metadata correctly.
+        // Note: Store::dim is set at open() time, not updated by init().
+        // The metadata write is what matters for future reopens.
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store
+            .init(&ModelInfo::new("test/model-1024", 1024))
+            .unwrap();
+        let stored = store.get_metadata_opt("dimensions").unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some("1024"),
+            "init should persist dim=1024 to metadata"
+        );
+    }
+
+    #[test]
+    fn tc31_store_reopen_non_default_model_no_mismatch() {
+        // TC-31.3: Create store with a non-default model name and dim=1024,
+        // close and reopen — should NOT return ModelMismatch error.
+        // (This was the AD-43/DS-30 bug: model validation on open rejected
+        // non-default models. Fixed by skipping model validation on open.)
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        {
+            let store = Store::open(&db_path).unwrap();
+            store
+                .init(&ModelInfo::new("BAAI/bge-large-en-v1.5", 1024))
+                .unwrap();
+        }
+        // Reopen should succeed without ModelMismatch
+        let store = Store::open(&db_path);
+        assert!(
+            store.is_ok(),
+            "Reopening store with non-default model should not fail: {:?}",
+            store.err()
+        );
+        assert_eq!(store.unwrap().dim(), 1024);
+    }
+
+    #[test]
+    fn tc31_store_dim_zero_defaults_to_embedding_dim() {
+        // TC-31.7: Set dimensions metadata to "0", reopen — should default to EMBEDDING_DIM.
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        {
+            let store = Store::open(&db_path).unwrap();
+            store.init(&ModelInfo::default()).unwrap();
+            store.set_metadata_opt("dimensions", Some("0")).unwrap();
+        }
+        // Reopen: dim=0 is invalid, should fall back to EMBEDDING_DIM
+        let store = Store::open(&db_path).unwrap();
+        assert_eq!(
+            store.dim(),
+            crate::EMBEDDING_DIM,
+            "dim=0 in metadata should fall back to EMBEDDING_DIM ({})",
+            crate::EMBEDDING_DIM
+        );
     }
 }

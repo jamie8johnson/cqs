@@ -5,6 +5,13 @@ use std::path::Path;
 pub(crate) fn cmd_export_model(repo: &str, output: &Path) -> anyhow::Result<()> {
     let _span = tracing::info_span!("export_model", repo).entered();
 
+    // SEC-18: Validate repo format to prevent TOML injection
+    if !repo.contains('/') || repo.contains('"') || repo.contains('\n') || repo.contains('\\') {
+        anyhow::bail!(
+            "Invalid repo ID format. Expected: org/model-name (e.g. intfloat/e5-base-v2)"
+        );
+    }
+
     println!("Exporting {} to ONNX...", repo);
 
     // Check Python deps
@@ -47,7 +54,7 @@ pub(crate) fn cmd_export_model(repo: &str, output: &Path) -> anyhow::Result<()> 
 model = "custom"
 repo = "{repo}"
 onnx_path = "model.onnx"
-tokenizer = "tokenizer.json"
+tokenizer_path = "tokenizer.json"
 # dim = ???  # Check {repo} config.json for hidden_size
 # query_prefix = ""
 # doc_prefix = ""

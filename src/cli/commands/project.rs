@@ -43,7 +43,7 @@ pub(crate) enum ProjectCommand {
     },
 }
 
-pub(crate) fn cmd_project(subcmd: &ProjectCommand) -> Result<()> {
+pub(crate) fn cmd_project(subcmd: &ProjectCommand, model_config: &ModelConfig) -> Result<()> {
     let _span = tracing::info_span!("cmd_project").entered();
     match subcmd {
         ProjectCommand::Register { name, path } => {
@@ -94,7 +94,7 @@ pub(crate) fn cmd_project(subcmd: &ProjectCommand) -> Result<()> {
             threshold,
             json,
         } => {
-            let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
+            let embedder = Embedder::new(model_config.clone())?;
             let query_embedding = embedder.embed_query(query)?;
 
             let results = search_across_projects(&query_embedding, query, *limit, *threshold)?;

@@ -243,6 +243,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         separators: ":",
         strip_prefixes: "let var private public internal fileprivate open static weak lazy",
     },
+    skip_line_prefixes: &["class ", "struct ", "enum ", "protocol "],
 };
 
 pub fn definition() -> &'static LanguageDef {

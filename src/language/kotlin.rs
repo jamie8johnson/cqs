@@ -228,6 +228,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         separators: ":",
         strip_prefixes: "val var private protected public internal override lateinit",
     },
+    skip_line_prefixes: &["class ", "data class", "sealed class", "enum class", "interface "],
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -87,6 +87,7 @@ pub(crate) struct BatchContext {
     refs: RefCell<lru::LruCache<String, ReferenceIndex>>,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
+    pub model_config: cqs::embedder::ModelConfig,
     /// Last-seen mtime of index.db, used to detect concurrent index updates.
     index_mtime: Cell<Option<SystemTime>>,
     error_count: AtomicU64,
@@ -196,7 +197,7 @@ impl BatchContext {
             return Ok(e);
         }
         let _span = tracing::info_span!("batch_embedder_init").entered();
-        let e = Embedder::new(ModelConfig::resolve(None, None))?;
+        let e = Embedder::new(self.model_config.clone())?;
         // Race is fine — OnceLock ensures only one value is stored
         let _ = self.embedder.set(e);
         Ok(self
@@ -476,6 +477,7 @@ pub(crate) fn create_context() -> Result<BatchContext> {
         refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(2).unwrap())),
         root,
         cqs_dir,
+        model_config: ModelConfig::resolve(None, None),
         index_mtime: Cell::new(index_mtime),
         error_count: AtomicU64::new(0),
         last_command_time: Cell::new(Instant::now()),
@@ -507,6 +509,7 @@ fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
         refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(2).unwrap())),
         root,
         cqs_dir: cqs_dir.to_path_buf(),
+        model_config: ModelConfig::resolve(None, None),
         index_mtime: Cell::new(index_mtime),
         error_count: AtomicU64::new(0),
         last_command_time: Cell::new(Instant::now()),

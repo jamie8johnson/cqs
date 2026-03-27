@@ -76,6 +76,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         separators: "=",
         strip_prefixes: "attr_accessor attr_reader attr_writer",
     },
+    skip_line_prefixes: &["class ", "module "],
 };
 
 pub fn definition() -> &'static LanguageDef {

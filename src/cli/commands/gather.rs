@@ -3,7 +3,6 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use cqs::embedder::ModelConfig;
 use cqs::Embedder;
 use cqs::{gather, gather_cross_index_with_index, normalize_path, GatherDirection, GatherOptions};
 
@@ -30,7 +29,7 @@ pub(crate) fn cmd_gather(
     .entered();
 
     let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
-    let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
+    let embedder = Embedder::new(cli.model_config().clone())?;
     let query_embedding = embedder.embed_query(query)?;
 
     // When token-budgeted, fetch more chunks than limit so we have candidates to pack

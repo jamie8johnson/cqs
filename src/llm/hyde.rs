@@ -2,7 +2,7 @@
 
 use super::batch::BatchPhase2;
 use super::{
-    collect_eligible_chunks, LlmClient, LlmConfig, LlmError, HYDE_MAX_TOKENS, MAX_BATCH_SIZE,
+    collect_eligible_chunks, LlmConfig, LlmError, HYDE_MAX_TOKENS, MAX_BATCH_SIZE,
     MAX_CONTENT_CHARS,
 };
 use crate::Store;
@@ -29,12 +29,7 @@ pub fn hyde_query_pass(
         "HyDE query pass starting"
     );
 
-    let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
-        LlmError::ApiKeyMissing(
-            "HyDE query pass requires ANTHROPIC_API_KEY environment variable".to_string(),
-        )
-    })?;
-    let client = LlmClient::new(&api_key, llm_config)?;
+    let client = super::create_client(llm_config)?;
 
     let effective_batch_size = if max_hyde > 0 {
         max_hyde.min(MAX_BATCH_SIZE)
@@ -46,7 +41,7 @@ pub fn hyde_query_pass(
     let (eligible, cached, skipped) = collect_eligible_chunks(store, "hyde", effective_batch_size)?;
 
     // Build batch items: (content_hash, truncated_content, signature, language)
-    let batch_items: Vec<(String, String, String, String)> = eligible
+    let batch_items: Vec<super::provider::BatchSubmitItem> = eligible
         .into_iter()
         .map(|ec| {
             let content = if ec.content.len() > MAX_CONTENT_CHARS {
@@ -54,7 +49,12 @@ pub fn hyde_query_pass(
             } else {
                 ec.content
             };
-            (ec.content_hash, content, ec.signature, ec.language)
+            super::provider::BatchSubmitItem {
+                custom_id: ec.content_hash,
+                content,
+                context: ec.signature,
+                language: ec.language,
+            }
         })
         .collect();
     if batch_items.len() >= effective_batch_size {

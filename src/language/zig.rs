@@ -167,6 +167,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         separators: ":",
         strip_prefixes: "pub",
     },
+    skip_line_prefixes: &["const ", "pub const"],
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -111,6 +111,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     doc_format: "default",
     doc_convention: "",
     field_style: FieldStyle::None,
+    skip_line_prefixes: &[],
 };
 
 /// Returns a reference to the static language definition.

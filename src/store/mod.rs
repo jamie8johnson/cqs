@@ -96,7 +96,7 @@ pub use helpers::CURRENT_SCHEMA_VERSION;
 ///
 /// Runtime code should use `Store::stored_model_name()` or `ModelInfo::new()`.
 /// This constant exists for callers outside the store (e.g. `doctor.rs`).
-pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
+pub const MODEL_NAME: &str = crate::embedder::DEFAULT_MODEL_REPO;
 
 /// Expected embedding dimensions (compile-time default for E5-base-v2).
 ///
@@ -205,7 +205,7 @@ pub struct Store {
     pub(crate) pool: SqlitePool,
     pub(crate) rt: Runtime,
     /// Embedding dimension for this store (read from metadata on open, default `EMBEDDING_DIM`).
-    pub dim: usize,
+    pub(crate) dim: usize,
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
     notes_summaries_cache: RwLock<Option<Vec<NoteSummary>>>,
@@ -240,6 +240,11 @@ struct StoreOpenConfig {
 }
 
 impl Store {
+    /// Embedding dimension for vectors in this store.
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         Self::open_with_config(
@@ -401,9 +406,20 @@ impl Store {
                         }
                         Err(e) => return Err(e.into()),
                     };
-                Ok(row
-                    .and_then(|(s,)| s.parse::<u32>().ok())
-                    .map(|d| d as usize))
+                Ok(match row {
+                    Some((s,)) => match s.parse::<u32>() {
+                        Ok(0) => {
+                            tracing::warn!(raw = %s, "dimensions metadata is 0 — invalid, using default");
+                            None
+                        }
+                        Ok(d) => Some(d as usize),
+                        Err(e) => {
+                            tracing::warn!(raw = %s, error = %e, "dimensions metadata is not a valid integer, using default");
+                            None
+                        }
+                    },
+                    None => None,
+                })
             })?
             .unwrap_or(crate::EMBEDDING_DIM);
 
@@ -417,9 +433,9 @@ impl Store {
             test_chunks_cache: std::sync::OnceLock::new(),
         };
 
-        // Check model version BEFORE schema migration — if model mismatches,
-        // we don't want to commit a schema upgrade on a DB we'll reject anyway
-        store.check_model_version()?;
+        // Skip model name validation on open — dimension is validated at embed time,
+        // and configurable models (v1.7.0) can legitimately use any model name.
+        // Model mismatch is checked at index time via check_model_version_with().
         store.check_schema_version(path)?;
         store.check_cq_version();
 

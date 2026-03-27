@@ -92,6 +92,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         separators: " ",
         strip_prefixes: "optional repeated required",
     },
+    skip_line_prefixes: &["message ", "enum ", "service "],
 };
 
 pub fn definition() -> &'static LanguageDef {

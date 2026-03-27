@@ -142,6 +142,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         separators: ":=;",
         strip_prefixes: "public private protected readonly static",
     },
+    skip_line_prefixes: &["class ", "export "],
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -202,6 +202,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     field_style: FieldStyle::TypeFirst {
         strip_prefixes: "private protected public internal static readonly virtual override abstract sealed new",
     },
+    skip_line_prefixes: &["class ", "struct ", "interface ", "enum ", "record "],
 };
 
 pub fn definition() -> &'static LanguageDef {

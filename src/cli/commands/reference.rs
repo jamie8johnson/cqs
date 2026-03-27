@@ -124,7 +124,14 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
             .with_context(|| format!("Failed to open reference store at {}", db_path.display()))?,
     );
     store.init(&ModelInfo::default())?;
-    let stats = run_index_pipeline(&source, files, Arc::clone(&store), false, cli.quiet)?;
+    let stats = run_index_pipeline(
+        &source,
+        files,
+        Arc::clone(&store),
+        false,
+        cli.quiet,
+        cli.model_config().clone(),
+    )?;
 
     if !cli.quiet {
         println!("  Embedded: {} chunks", stats.total_embedded);
@@ -323,7 +330,14 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
         Store::open(&db_path)
             .with_context(|| format!("Failed to open reference store at {}", db_path.display()))?,
     );
-    let stats = run_index_pipeline(source, files.clone(), Arc::clone(&store), false, cli.quiet)?;
+    let stats = run_index_pipeline(
+        source,
+        files.clone(),
+        Arc::clone(&store),
+        false,
+        cli.quiet,
+        cli.model_config().clone(),
+    )?;
 
     if !cli.quiet {
         let newly = stats.total_embedded - stats.total_cached;

@@ -181,6 +181,19 @@ pub struct Cli {
     /// Show debug info (sets RUST_LOG=debug)
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Resolved model config (set by dispatch, not CLI).
+    #[arg(skip)]
+    pub resolved_model: Option<cqs::embedder::ModelConfig>,
+}
+
+impl Cli {
+    /// Get the resolved model config. Panics if called before dispatch resolves it.
+    pub fn model_config(&self) -> &cqs::embedder::ModelConfig {
+        self.resolved_model
+            .as_ref()
+            .expect("ModelConfig not resolved — call resolve_model() first")
+    }
 }
 
 #[derive(Subcommand)]

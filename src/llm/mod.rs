@@ -161,8 +161,17 @@ const HYDE_MAX_TOKENS: u32 = 150;
 /// Poll interval for batch completion
 const BATCH_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
+/// LLM API provider type.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LlmProvider {
+    /// Anthropic Messages Batches API (default)
+    Anthropic,
+    // Future: OpenAI, Local, etc.
+}
+
 /// Resolved LLM configuration (env vars > config file > constants).
 pub struct LlmConfig {
+    pub provider: LlmProvider,
     pub api_base: String,
     pub model: String,
     pub max_tokens: u32,
@@ -184,7 +193,19 @@ impl LlmConfig {
             );
         }
 
+        let provider = match std::env::var("CQS_LLM_PROVIDER").ok().as_deref() {
+            Some("anthropic") | None => LlmProvider::Anthropic,
+            Some(other) => {
+                tracing::warn!(
+                    provider = other,
+                    "Unknown CQS_LLM_PROVIDER, defaulting to anthropic"
+                );
+                LlmProvider::Anthropic
+            }
+        };
+
         Self {
+            provider,
             api_base,
             model: std::env::var("CQS_LLM_MODEL")
                 .ok()
@@ -197,6 +218,23 @@ impl LlmConfig {
                 .unwrap_or(MAX_TOKENS),
         }
     }
+}
+
+/// Create a batch provider from the resolved config.
+///
+/// EX-31/EX-34: Single factory, provider-aware. Currently only Anthropic is supported.
+pub fn create_client(llm_config: LlmConfig) -> Result<LlmClient, LlmError> {
+    // EX-34: When adding providers, match on llm_config.provider here
+    // and return the appropriate Box<dyn BatchProvider>.
+    let env_var = match llm_config.provider {
+        LlmProvider::Anthropic => "ANTHROPIC_API_KEY",
+    };
+    let api_key = std::env::var(env_var).map_err(|_| {
+        LlmError::ApiKeyMissing(format!(
+            "{env_var} environment variable required for LLM features"
+        ))
+    })?;
+    LlmClient::new(&api_key, llm_config)
 }
 
 /// Claude API client for generating summaries.

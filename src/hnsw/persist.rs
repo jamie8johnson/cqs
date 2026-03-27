@@ -632,16 +632,18 @@ impl HnswIndex {
     /// Load HNSW index if available, wrapped as VectorIndex trait object.
     /// Shared helper for CLI commands.
     pub fn try_load(cq_dir: &Path) -> Option<Box<dyn VectorIndex>> {
-        Self::try_load_with_ef(cq_dir, None)
+        Self::try_load_with_ef(cq_dir, None, None)
     }
 
-    /// Load HNSW index with optional ef_search override from config.
+    /// Load HNSW index with optional ef_search override and runtime dim.
     pub fn try_load_with_ef(
         cq_dir: &Path,
         ef_search: Option<usize>,
+        dim: Option<usize>,
     ) -> Option<Box<dyn VectorIndex>> {
         if Self::exists(cq_dir, "index") {
-            match Self::load(cq_dir, "index") {
+            let load_dim = dim.unwrap_or(crate::EMBEDDING_DIM);
+            match Self::load_with_dim(cq_dir, "index", load_dim) {
                 Ok(mut index) => {
                     if let Some(ef) = ef_search {
                         index.set_ef_search(ef);
@@ -877,5 +879,86 @@ mod tests {
         let query = make_embedding(1);
         let results = loaded.search(&query, 2);
         assert_eq!(results[0].id, "chunk1");
+    }
+
+    // ===== TC-31: multi-model dim-threading (HNSW persist) =====
+
+    /// Create a deterministic normalized embedding of arbitrary dimension.
+    fn make_embedding_dim(seed: u32, dim: usize) -> crate::embedder::Embedding {
+        let mut v = vec![0.0f32; dim];
+        for (i, val) in v.iter_mut().enumerate() {
+            *val = ((seed as f32 * 0.1) + (i as f32 * 0.001)).sin();
+        }
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for val in &mut v {
+                *val /= norm;
+            }
+        }
+        crate::embedder::Embedding::new(v)
+    }
+
+    #[test]
+    fn tc31_save_and_load_with_dim_1024() {
+        // TC-31.5: Save a 1024-dim HNSW index, load with load_with_dim(1024),
+        // verify it loads and searches correctly.
+        let tmp = TempDir::new().unwrap();
+        let basename = "test_1024";
+
+        let embeddings: Vec<(String, crate::embedder::Embedding)> = (1..=5)
+            .map(|i| (format!("vec{}", i), make_embedding_dim(i, 1024)))
+            .collect();
+
+        let index = HnswIndex::build_with_dim(embeddings, 1024).unwrap();
+        assert_eq!(index.dim, 1024);
+        index.save(tmp.path(), basename).unwrap();
+
+        // Load with matching dim
+        let loaded = HnswIndex::load_with_dim(tmp.path(), basename, 1024).unwrap();
+        assert_eq!(loaded.len(), 5, "Loaded index should have 5 vectors");
+        assert_eq!(loaded.dim, 1024, "Loaded index dim should be 1024");
+
+        // Search should work correctly
+        let query = make_embedding_dim(1, 1024);
+        let results = loaded.search(&query, 3);
+        assert!(!results.is_empty(), "Search should return results");
+        assert_eq!(results[0].id, "vec1", "Nearest neighbor should be vec1");
+    }
+
+    #[test]
+    fn tc31_load_with_wrong_dim_data_size_rejected() {
+        // TC-31.6: Build with dim=1024, try to load with a much smaller dim.
+        // The SEC-7 check: expected_max_data = id_map.len() * dim * sizeof(f32) * 2
+        // We use dim=128 for the load so the expected_max is small enough that
+        // the actual data file (sized for 1024-dim vectors + HNSW overhead)
+        // exceeds it, triggering the "data file too large" error.
+        //
+        // Math: 20 vectors * 128 * 4 * 2 = 20,480 expected_max
+        //       Actual file: 20 * 1024 * 4 + HNSW overhead >> 20,480
+        let tmp = TempDir::new().unwrap();
+        let basename = "test_dim_mismatch";
+
+        let embeddings: Vec<(String, crate::embedder::Embedding)> = (1..=20)
+            .map(|i| (format!("vec{}", i), make_embedding_dim(i, 1024)))
+            .collect();
+
+        let index = HnswIndex::build_with_dim(embeddings, 1024).unwrap();
+        index.save(tmp.path(), basename).unwrap();
+
+        // Load with much smaller dim — expected_max_data will be far too small
+        let result = HnswIndex::load_with_dim(tmp.path(), basename, 128);
+        assert!(
+            result.is_err(),
+            "Loading 1024-dim index with dim=128 should fail due to data size mismatch"
+        );
+        let err_msg = match result {
+            Err(e) => format!("{}", e),
+            Ok(_) => panic!("Expected error, got Ok"),
+        };
+        assert!(
+            err_msg.contains("too large"),
+            "Error should mention data file size: {}",
+            err_msg
+        );
     }
 }

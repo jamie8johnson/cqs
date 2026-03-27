@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use super::batch::BatchPhase2;
-use super::{LlmClient, LlmConfig, LlmError, MAX_BATCH_SIZE, MAX_CONTENT_CHARS};
+use super::{LlmConfig, LlmError, MAX_BATCH_SIZE, MAX_CONTENT_CHARS};
 use crate::store::ChunkSummary;
 use crate::Store;
 
@@ -160,12 +160,7 @@ pub fn doc_comment_pass(
         "Doc comment pass starting"
     );
 
-    let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
-        LlmError::ApiKeyMissing(
-            "--improve-docs requires ANTHROPIC_API_KEY environment variable".to_string(),
-        )
-    })?;
-    let client = LlmClient::new(&api_key, llm_config)?;
+    let client = super::create_client(llm_config)?;
 
     // Phase 1: Collect candidates
     let mut candidates: Vec<ChunkSummary> = Vec::new();
@@ -256,7 +251,7 @@ pub fn doc_comment_pass(
     uncached.truncate(uncached_cap);
 
     // Phase 2: Submit batch for uncached candidates (or resume pending)
-    let batch_items: Vec<(String, String, String, String)> = {
+    let batch_items: Vec<super::provider::BatchSubmitItem> = {
         let mut items = Vec::new();
         let mut queued_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
         for cs in &uncached {
@@ -266,12 +261,12 @@ pub fn doc_comment_pass(
                 } else {
                     cs.content.clone()
                 };
-                items.push((
-                    cs.content_hash.clone(),
+                items.push(super::provider::BatchSubmitItem {
+                    custom_id: cs.content_hash.clone(),
                     content,
-                    cs.chunk_type.to_string(),
-                    cs.language.to_string(),
-                ));
+                    context: cs.chunk_type.to_string(),
+                    language: cs.language.to_string(),
+                });
                 if items.len() >= MAX_BATCH_SIZE {
                     break;
                 }

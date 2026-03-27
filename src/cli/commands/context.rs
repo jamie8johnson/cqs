@@ -299,11 +299,13 @@ pub(crate) fn cmd_context(
             print_summary_terminal(&data, path);
         }
     } else if json {
-        let (content_set, token_info) = build_token_pack(&store, &data.chunks, max_tokens)?;
+        let (content_set, token_info) =
+            build_token_pack(&store, &data.chunks, max_tokens, cli.model_config())?;
         let output = full_to_json(&data, path, content_set.as_ref(), token_info);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        let (content_set, token_info) = build_token_pack(&store, &data.chunks, max_tokens)?;
+        let (content_set, token_info) =
+            build_token_pack(&store, &data.chunks, max_tokens, cli.model_config())?;
         print_full_terminal(&data, path, content_set.as_ref(), token_info);
     }
 
@@ -316,11 +318,12 @@ fn build_token_pack(
     store: &Store,
     chunks: &[ChunkSummary],
     max_tokens: Option<usize>,
+    model_config: &cqs::embedder::ModelConfig,
 ) -> Result<(Option<HashSet<String>>, Option<(usize, usize)>)> {
     let Some(budget) = max_tokens else {
         return Ok((None, None));
     };
-    let embedder = cqs::Embedder::new(cqs::embedder::ModelConfig::resolve(None, None))?;
+    let embedder = cqs::Embedder::new(model_config.clone())?;
     let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
     let caller_counts = store.get_caller_counts_batch(&names).unwrap_or_else(|e| {
         tracing::warn!(error = %e, "Failed to fetch caller counts for token packing");

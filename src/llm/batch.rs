@@ -18,7 +18,7 @@ impl LlmClient {
     /// `purpose` is used in error/log messages (e.g. "Batch", "Doc batch", "Hyde batch").
     fn submit_batch_inner(
         &self,
-        items: &[(String, String, String, String)],
+        items: &[super::provider::BatchSubmitItem],
         max_tokens: u32,
         purpose: &str,
         prompt_builder: fn(&str, &str, &str) -> String,
@@ -28,14 +28,14 @@ impl LlmClient {
         let model = self.llm_config.model.clone();
         let requests: Vec<BatchItem> = items
             .iter()
-            .map(|(id, content, field3, language)| BatchItem {
-                custom_id: id.clone(),
+            .map(|item| BatchItem {
+                custom_id: item.custom_id.clone(),
                 params: MessagesRequest {
                     model: model.clone(),
                     max_tokens,
                     messages: vec![ChatMessage {
                         role: "user".to_string(),
-                        content: prompt_builder(content, field3, language),
+                        content: prompt_builder(&item.content, &item.context, &item.language),
                     }],
                 },
             })
@@ -82,7 +82,7 @@ impl LlmClient {
     /// Used by the contrastive summary path which pre-builds prompts with neighbor context.
     pub(super) fn submit_batch_prebuilt(
         &self,
-        items: &[(String, String, String, String)],
+        items: &[super::provider::BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError> {
         // Identity: content is already the full prompt, ignore field3/language
@@ -98,7 +98,7 @@ impl LlmClient {
     /// Returns the batch ID for polling.
     pub(super) fn submit_doc_batch(
         &self,
-        items: &[(String, String, String, String)],
+        items: &[super::provider::BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError> {
         self.submit_batch_inner(items, max_tokens, "Doc batch", Self::build_doc_prompt)
@@ -111,7 +111,7 @@ impl LlmClient {
     /// Returns the batch ID for polling.
     pub(super) fn submit_hyde_batch(
         &self,
-        items: &[(String, String, String, String)],
+        items: &[super::provider::BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError> {
         self.submit_batch_inner(items, max_tokens, "Hyde batch", Self::build_hyde_prompt)
@@ -222,6 +222,20 @@ impl LlmClient {
             });
         }
 
+        // RM-32: Check response size before buffering to prevent OOM
+        const MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024; // 100MB
+        if let Some(len) = response.content_length() {
+            if len > MAX_RESPONSE_BYTES {
+                return Err(LlmError::Api {
+                    status: 200,
+                    message: format!(
+                        "Batch response too large: {} bytes (max {})",
+                        len, MAX_RESPONSE_BYTES
+                    ),
+                });
+            }
+        }
+
         // Results are JSONL (one JSON object per line)
         let body = response.text()?;
         let mut results = HashMap::new();
@@ -269,7 +283,7 @@ impl LlmClient {
 impl BatchProvider for LlmClient {
     fn submit_batch(
         &self,
-        items: &[(String, String, String, String)],
+        items: &[super::provider::BatchSubmitItem],
         max_tokens: u32,
         purpose: &str,
         prompt_builder: fn(&str, &str, &str) -> String,
@@ -279,7 +293,7 @@ impl BatchProvider for LlmClient {
 
     fn submit_batch_prebuilt(
         &self,
-        items: &[(String, String, String, String)],
+        items: &[super::provider::BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError> {
         LlmClient::submit_batch_prebuilt(self, items, max_tokens)
@@ -287,7 +301,7 @@ impl BatchProvider for LlmClient {
 
     fn submit_doc_batch(
         &self,
-        items: &[(String, String, String, String)],
+        items: &[super::provider::BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError> {
         LlmClient::submit_doc_batch(self, items, max_tokens)
@@ -295,7 +309,7 @@ impl BatchProvider for LlmClient {
 
     fn submit_hyde_batch(
         &self,
-        items: &[(String, String, String, String)],
+        items: &[super::provider::BatchSubmitItem],
         max_tokens: u32,
     ) -> Result<String, LlmError> {
         LlmClient::submit_hyde_batch(self, items, max_tokens)
@@ -329,7 +343,7 @@ type PendingFn = dyn Fn(&Store, Option<&str>) -> Result<(), crate::store::StoreE
 /// Type alias for batch submit closures (clippy::type_complexity).
 type SubmitFn = dyn Fn(
     &dyn BatchProvider,
-    &[(String, String, String, String)],
+    &[super::provider::BatchSubmitItem],
     u32,
 ) -> Result<String, LlmError>;
 
@@ -402,7 +416,7 @@ impl BatchPhase2<'_> {
         &self,
         client: &dyn BatchProvider,
         store: &Store,
-        batch_items: &[(String, String, String, String)],
+        batch_items: &[super::provider::BatchSubmitItem],
         get_pending: &dyn Fn(&Store) -> Result<Option<String>, crate::store::StoreError>,
         set_pending: &PendingFn,
         submit: &SubmitFn,
@@ -533,8 +547,18 @@ impl BatchPhase2<'_> {
             }
         };
 
-        let (valid_results, stale_count) = if valid_hashes.is_empty() {
-            // Couldn't fetch hashes — store everything (backwards-compatible)
+        let (valid_results, stale_count) = if valid_hashes.is_empty()
+            && store.get_all_content_hashes().is_err()
+        {
+            // Hash fetch failed — skip storage entirely to avoid committing stale data (DS-29).
+            // Next run will retry the batch.
+            tracing::error!(purpose = self.purpose, "Cannot validate batch results — skipping storage to prevent stale data. Will retry on next run.");
+            if let Err(e) = clear_pending(store, None) {
+                tracing::warn!(error = %e, purpose = self.purpose, "Failed to clear pending batch ID");
+            }
+            return Ok(results);
+        } else if valid_hashes.is_empty() {
+            // No hashes in DB (fresh/pre-v13 index) — store everything
             (results.clone(), 0usize)
         } else {
             let mut valid = HashMap::new();
@@ -581,7 +605,7 @@ impl BatchPhase2<'_> {
             tracing::warn!(error = %e, purpose = self.purpose, "Failed to clear pending batch ID");
         }
 
-        Ok(results)
+        Ok(valid_results)
     }
 
     /// Submit a fresh batch and store its pending ID.
@@ -589,7 +613,7 @@ impl BatchPhase2<'_> {
         &self,
         client: &dyn BatchProvider,
         store: &Store,
-        batch_items: &[(String, String, String, String)],
+        batch_items: &[super::provider::BatchSubmitItem],
         set_pending: &PendingFn,
         submit: &SubmitFn,
     ) -> Result<String, LlmError> {
@@ -604,5 +628,178 @@ impl BatchPhase2<'_> {
         }
         tracing::info!(batch_id = %id, purpose = self.purpose, "Batch submitted, waiting for results");
         Ok(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::provider::{BatchSubmitItem, MockBatchProvider};
+    use crate::test_helpers::setup_store;
+    use std::collections::HashMap;
+
+    /// Insert a minimal chunk with a specific content_hash for batch validation tests.
+    fn insert_chunk_with_hash(store: &Store, content_hash: &str) {
+        let embedding = crate::embedder::Embedding::new(vec![0.0f32; crate::EMBEDDING_DIM]);
+        let embedding_bytes =
+            crate::store::helpers::embedding_to_bytes(&embedding, crate::EMBEDDING_DIM).unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        store.rt.block_on(async {
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name,
+                     signature, content, content_hash, doc, line_start, line_end, embedding,
+                     source_mtime, created_at, updated_at)
+                     VALUES (?1, ?2, 'file', 'rust', 'function', ?3,
+                     '', 'fn test() {}', ?4, NULL, 1, 10, ?5, 0, ?6, ?6)",
+            )
+            .bind(content_hash) // id = content_hash for simplicity
+            .bind("test.rs")
+            .bind(format!("test_{}", content_hash))
+            .bind(content_hash)
+            .bind(&embedding_bytes)
+            .bind(&now)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        });
+    }
+
+    /// DS-28 regression: resume should only return results whose content_hashes
+    /// exist in the current index, filtering out stale hashes from prior builds.
+    #[test]
+    fn test_resume_returns_valid_results_only() {
+        let (store, _dir) = setup_store();
+
+        // Insert two chunks with known hashes
+        insert_chunk_with_hash(&store, "hash_aaa");
+        insert_chunk_with_hash(&store, "hash_bbb");
+
+        // Mock provider returns results for valid hashes + one stale hash
+        let mut results = HashMap::new();
+        results.insert("hash_aaa".to_string(), "summary for aaa".to_string());
+        results.insert("hash_bbb".to_string(), "summary for bbb".to_string());
+        results.insert("hash_stale".to_string(), "summary for stale".to_string());
+
+        let mock = MockBatchProvider::new("msgbatch_test123", results);
+
+        let phase2 = BatchPhase2 {
+            purpose: "summary",
+            max_tokens: 1024,
+            quiet: true,
+            lock_dir: None,
+        };
+
+        // Submit with items so we go through the fresh-submit + resume path.
+        let items = vec![BatchSubmitItem {
+            custom_id: "hash_aaa".to_string(),
+            content: "fn aaa() {}".to_string(),
+            context: "function".to_string(),
+            language: "rust".to_string(),
+        }];
+
+        let result = phase2.submit_or_resume(
+            &mock,
+            &store,
+            &items,
+            &|s| s.get_pending_batch_id(),
+            &|s, id| s.set_pending_batch_id(id),
+            &|c, items, max_tok| c.submit_batch_prebuilt(items, max_tok),
+        );
+
+        let map = result.unwrap();
+        // Valid hashes should be present
+        assert!(
+            map.contains_key("hash_aaa"),
+            "hash_aaa should be in results"
+        );
+        assert!(
+            map.contains_key("hash_bbb"),
+            "hash_bbb should be in results"
+        );
+        // Stale hash should be filtered out
+        assert!(
+            !map.contains_key("hash_stale"),
+            "stale hash should be filtered out"
+        );
+        assert_eq!(map.len(), 2);
+    }
+
+    /// RB-22: empty batch_items with no pending batch should return Ok(empty).
+    #[test]
+    fn test_empty_batch_items() {
+        let (store, _dir) = setup_store();
+        let mock = MockBatchProvider::new("msgbatch_unused", HashMap::new());
+
+        let phase2 = BatchPhase2 {
+            purpose: "summary",
+            max_tokens: 1024,
+            quiet: true,
+            lock_dir: None,
+        };
+
+        let result = phase2.submit_or_resume(
+            &mock,
+            &store,
+            &[], // empty batch items
+            &|s| s.get_pending_batch_id(),
+            &|s, id| s.set_pending_batch_id(id),
+            &|c, items, max_tok| c.submit_batch_prebuilt(items, max_tok),
+        );
+
+        let map = result.unwrap();
+        assert!(
+            map.is_empty(),
+            "empty batch_items should return empty results"
+        );
+    }
+
+    #[test]
+    fn test_is_valid_batch_id() {
+        // Valid IDs
+        assert!(super::super::is_valid_batch_id("msgbatch_abc123"));
+        assert!(super::super::is_valid_batch_id("msgbatch_0123456789"));
+        assert!(super::super::is_valid_batch_id(
+            "msgbatch_ABCdef_underscore"
+        ));
+
+        // Invalid: empty
+        assert!(!super::super::is_valid_batch_id(""));
+        // Invalid: wrong prefix
+        assert!(!super::super::is_valid_batch_id("batch_123"));
+        // Invalid: no msgbatch_ prefix
+        assert!(!super::super::is_valid_batch_id("not_a_batch"));
+        // Invalid: contains spaces
+        assert!(
+            !super::super::is_valid_batch_id("msgbatch_has spaces"),
+            "spaces should be rejected"
+        );
+        // Invalid: contains path separator
+        assert!(
+            !super::super::is_valid_batch_id("msgbatch_has/slash"),
+            "slash should be rejected"
+        );
+        // Invalid: over-length (100+ chars)
+        assert!(
+            !super::super::is_valid_batch_id(&format!("msgbatch_{}", "a".repeat(100))),
+            "over-length should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_clear_pending() {
+        let (store, _dir) = setup_store();
+
+        // Set a pending batch ID
+        store
+            .set_pending_batch_id(Some("msgbatch_pending123"))
+            .unwrap();
+        assert_eq!(
+            store.get_pending_batch_id().unwrap(),
+            Some("msgbatch_pending123".to_string())
+        );
+
+        // Clear it via set_pending_batch_id(None) — same pattern used by BatchPhase2
+        store.set_pending_batch_id(None).unwrap();
+        assert_eq!(store.get_pending_batch_id().unwrap(), None);
     }
 }

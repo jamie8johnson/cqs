@@ -146,6 +146,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     field_style: FieldStyle::TypeFirst {
         strip_prefixes: "static const volatile extern unsigned signed",
     },
+    skip_line_prefixes: &["struct "],
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -1,15 +1,17 @@
 # Roadmap
 
-## Current: v1.6.0
+## Current: v1.7.0
 
-v1.6.0: 6th full audit (82/82 fixed), FieldStyle field extraction (28 languages), BatchProvider trait, runtime embedding dim, CallGraph Arc<str>, CLI/store splits, lazy enrichment, GC single transaction. 1993 tests.
+v1.7.0: Configurable embedding models (E5-base + BGE-large + custom ONNX), ModelConfig resolution (CLI > env > config > default), `export-model` command, workflow skills (/before-edit, /investigate, /check-my-work). 2025 tests.
+
+v1.6.0: 6th full audit (82/82 fixed), FieldStyle field extraction (28 languages), BatchProvider trait, runtime embedding dim, CallGraph Arc<str>, CLI/store splits, lazy enrichment, GC single transaction.
 
 ### Key Finding (2026-03-26)
 Enrichment stack contributes 43.6pp to hard eval (49.1% raw → 92.7% enriched). Model size is NOT the bottleneck — E5-large (3x params) scores the same as E5-base. Instruction models (GTE-Qwen2 1.5B, E5-mistral 7B) score WORSE. BGE-large best raw embedder at 61.8%.
 
-### Next — Embedding Model Options
-- [ ] BGE-large-en-v1.5 as configurable alternative (plan: `docs/superpowers/plans/2026-03-26-bge-large-model-option.md`)
-- [ ] ModelConfig registry with per-model prefix/dim/repo
+### Done — Embedding Model Options
+- [x] BGE-large-en-v1.5 as configurable alternative
+- [x] ModelConfig registry with per-model prefix/dim/repo
 - [ ] Eval: BGE-large + enrichment vs E5-base + enrichment
 
 ### Next — Training (Exp 18: v9-mini)

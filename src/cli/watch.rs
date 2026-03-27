@@ -89,6 +89,7 @@ impl EmbedderBackoff {
 fn try_init_embedder<'a>(
     embedder: &'a OnceCell<Embedder>,
     backoff: &mut EmbedderBackoff,
+    model_config: &ModelConfig,
 ) -> Option<&'a Embedder> {
     match embedder.get() {
         Some(e) => Some(e),
@@ -96,7 +97,7 @@ fn try_init_embedder<'a>(
             if !backoff.should_retry() {
                 return None;
             }
-            match Embedder::new(ModelConfig::resolve(None, None)) {
+            match Embedder::new(model_config.clone()) {
                 Ok(e) => {
                     backoff.reset();
                     Some(embedder.get_or_init(|| e))
@@ -279,6 +280,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
                             &mut hnsw_index,
                             &mut incremental_count,
                             cli.quiet,
+                            cli.model_config(),
                         );
                     }
 
@@ -404,6 +406,7 @@ fn process_file_changes(
     hnsw_index: &mut Option<HnswIndex>,
     incremental_count: &mut usize,
     quiet: bool,
+    model_config: &ModelConfig,
 ) {
     let files: Vec<PathBuf> = pending_files.drain().collect();
     let _span = info_span!("process_file_changes", file_count = files.len()).entered();
@@ -415,7 +418,7 @@ fn process_file_changes(
         }
     }
 
-    let emb = match try_init_embedder(embedder, embedder_backoff) {
+    let emb = match try_init_embedder(embedder, embedder_backoff, model_config) {
         Some(e) => e,
         None => return,
     };

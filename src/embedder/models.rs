@@ -26,12 +26,15 @@ pub struct ModelConfig {
     pub doc_prefix: String,
 }
 
+/// Default model repository ID. Single source of truth — used by ModelConfig, Store, and validation.
+pub const DEFAULT_MODEL_REPO: &str = "intfloat/e5-base-v2";
+
 impl ModelConfig {
     /// E5-base-v2: 768-dim, 512 tokens. The project default.
     pub fn e5_base() -> Self {
         Self {
             name: "e5-base".to_string(),
-            repo: "intfloat/e5-base-v2".to_string(),
+            repo: DEFAULT_MODEL_REPO.to_string(),
             onnx_path: "onnx/model.onnx".to_string(),
             tokenizer_path: "tokenizer.json".to_string(),
             dim: 768,
@@ -110,6 +113,11 @@ impl ModelConfig {
             let has_repo = embedding_cfg.repo.is_some();
             let has_dim = embedding_cfg.dim.is_some();
             if has_repo && has_dim {
+                let dim = embedding_cfg.dim.unwrap_or(768);
+                if dim == 0 {
+                    tracing::warn!(model = %embedding_cfg.model, "Custom model has dim=0, falling back to default");
+                    return Self::e5_base();
+                }
                 let cfg = Self {
                     name: embedding_cfg.model.clone(),
                     repo: embedding_cfg.repo.clone().unwrap_or_default(),
@@ -121,7 +129,7 @@ impl ModelConfig {
                         .tokenizer_path
                         .clone()
                         .unwrap_or_else(|| "tokenizer.json".to_string()),
-                    dim: embedding_cfg.dim.unwrap_or(768),
+                    dim,
                     max_seq_length: embedding_cfg.max_seq_length.unwrap_or(512),
                     query_prefix: embedding_cfg.query_prefix.clone().unwrap_or_default(),
                     doc_prefix: embedding_cfg.doc_prefix.clone().unwrap_or_default(),
@@ -393,5 +401,29 @@ mod tests {
         };
         let cfg = ModelConfig::resolve(Some("e5-base"), Some(&embedding_cfg));
         assert_eq!(cfg.name, "e5-base");
+    }
+
+    // ===== TC-31: multi-model dim-threading (ModelConfig) =====
+
+    #[test]
+    fn tc31_resolve_config_dim_zero_falls_back_to_default() {
+        // TC-31.8: Custom config with dim=0 should be rejected and fall back to e5_base.
+        std::env::remove_var("CQS_EMBEDDING_MODEL");
+        let embedding_cfg = EmbeddingConfig {
+            model: "zero-dim-model".to_string(),
+            repo: Some("org/zero-dim".to_string()),
+            onnx_path: None,
+            tokenizer_path: None,
+            dim: Some(0),
+            max_seq_length: None,
+            query_prefix: None,
+            doc_prefix: None,
+        };
+        let cfg = ModelConfig::resolve(None, Some(&embedding_cfg));
+        assert_eq!(
+            cfg.name, "e5-base",
+            "dim=0 should cause fallback to default e5-base"
+        );
+        assert_eq!(cfg.dim, 768, "Fallback should have dim=768");
     }
 }

@@ -44,6 +44,92 @@ pub struct TypeUsage {
     pub edge_kind: String,
 }
 
+/// Per-file type edge upsert: resolve chunk IDs, delete old edges, insert new ones.
+///
+/// Returns the number of edges inserted. Shared by both single-file and
+/// multi-file upsert methods so the SQL logic lives in one place.
+async fn upsert_type_edges_one_file(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    file_str: &str,
+    chunk_type_refs: &[crate::parser::ChunkTypeRefs],
+) -> Result<usize, StoreError> {
+    // DS-18: ORDER BY window_idx ASC NULLS LAST for deterministic window priority
+    let rows: Vec<(String, String, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT id, name, line_start, window_idx FROM chunks WHERE origin = ?1 ORDER BY window_idx ASC NULLS LAST",
+    )
+    .bind(file_str)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    // Build lookup: (name, line_start) -> chunk_id
+    // For windowed chunks, prefer non-windowed (window_idx IS NULL).
+    // Due to NULLS LAST ordering, non-windowed rows arrive last and
+    // overwrite any windowed entries, ensuring they always win.
+    let mut name_to_id: HashMap<(String, u32), String> = HashMap::new();
+    for (id, name, line_start, window_idx) in &rows {
+        let key = (name.clone(), clamp_line_number(*line_start));
+        let is_primary = window_idx.is_none();
+        if is_primary || !name_to_id.contains_key(&key) {
+            name_to_id.insert(key, id.clone());
+        }
+    }
+
+    // Collect (chunk_id, type_ref) pairs, skipping unresolved chunks
+    let mut edges: Vec<(&str, &crate::parser::TypeRef)> = Vec::new();
+    for ctr in chunk_type_refs {
+        let key = (ctr.name.clone(), ctr.line_start);
+        if let Some(chunk_id) = name_to_id.get(&key) {
+            for tr in &ctr.type_refs {
+                edges.push((chunk_id.as_str(), tr));
+            }
+        } else {
+            tracing::warn!(
+                name = %ctr.name,
+                line_start = ctr.line_start,
+                file = %file_str,
+                "Chunk not found for type edges, skipping"
+            );
+        }
+    }
+
+    if edges.is_empty() {
+        return Ok(0);
+    }
+
+    // Delete existing type edges for all resolved chunk IDs
+    let chunk_ids: Vec<&str> = name_to_id.values().map(|s| s.as_str()).collect();
+    for batch in chunk_ids.chunks(500) {
+        let placeholders = super::helpers::make_placeholders(batch.len());
+        let sql = format!(
+            "DELETE FROM type_edges WHERE source_chunk_id IN ({})",
+            placeholders
+        );
+        let mut q = sqlx::query(&sql);
+        for id in batch {
+            q = q.bind(id);
+        }
+        q.execute(&mut **tx).await?;
+    }
+
+    // Batch insert new edges (4 binds per row → 249 rows per batch)
+    const INSERT_BATCH: usize = 249;
+    for batch in edges.chunks(INSERT_BATCH) {
+        let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+            "INSERT INTO type_edges (source_chunk_id, target_type_name, edge_kind, line_number) ",
+        );
+        qb.push_values(batch.iter(), |mut b, (chunk_id, tr)| {
+            let kind_str = tr.kind.as_ref().map(|k| k.as_str()).unwrap_or("");
+            b.push_bind(*chunk_id)
+                .push_bind(&tr.type_name)
+                .push_bind(kind_str)
+                .push_bind(tr.line_number as i64);
+        });
+        qb.build().execute(&mut **tx).await?;
+    }
+
+    Ok(edges.len())
+}
+
 impl Store {
     // ============ Type Edge Upsert Methods ============
 
@@ -128,92 +214,16 @@ impl Store {
         self.rt.block_on(async {
             // DS-14: Begin transaction before reading chunk IDs to prevent TOCTOU
             let mut tx = self.pool.begin().await?;
+            let inserted = upsert_type_edges_one_file(&mut tx, &file_str, chunk_type_refs).await?;
 
-            // DS-18: ORDER BY window_idx ASC NULLS LAST for deterministic window priority
-            let rows: Vec<(String, String, i64, Option<i64>)> = sqlx::query_as(
-                "SELECT id, name, line_start, window_idx FROM chunks WHERE origin = ?1 ORDER BY window_idx ASC NULLS LAST",
-            )
-            .bind(&file_str)
-            .fetch_all(&mut *tx)
-            .await?;
-
-            // Build lookup: (name, line_start) -> chunk_id
-            // For windowed chunks, prefer non-windowed (window_idx IS NULL).
-            // Due to NULLS LAST ordering, non-windowed rows arrive last and
-            // overwrite any windowed entries, ensuring they always win.
-            let mut name_to_id: HashMap<(String, u32), String> = HashMap::new();
-            for (id, name, line_start, window_idx) in &rows {
-                let key = (name.clone(), clamp_line_number(*line_start));
-                let is_primary = window_idx.is_none();
-                if is_primary || !name_to_id.contains_key(&key) {
-                    name_to_id.insert(key, id.clone());
-                }
-            }
-
-            // Collect (chunk_id, type_ref) pairs, skipping unresolved chunks
-            let mut edges: Vec<(&str, &crate::parser::TypeRef)> = Vec::new();
-            for ctr in chunk_type_refs {
-                let key = (ctr.name.clone(), ctr.line_start);
-                if let Some(chunk_id) = name_to_id.get(&key) {
-                    for tr in &ctr.type_refs {
-                        edges.push((chunk_id.as_str(), tr));
-                    }
-                } else {
-                    tracing::warn!(
-                        name = %ctr.name,
-                        line_start = ctr.line_start,
-                        file = %file_str,
-                        "Chunk not found for type edges, skipping"
-                    );
-                }
-            }
-
-            if edges.is_empty() {
-                tx.commit().await?;
-                return Ok(());
-            }
-
-            // Delete existing type edges for all resolved chunk IDs
-            let chunk_ids: Vec<&str> = name_to_id.values().map(|s| s.as_str()).collect();
-            for batch in chunk_ids.chunks(500) {
-                let placeholders = super::helpers::make_placeholders(batch.len());
-                let sql = format!(
-                    "DELETE FROM type_edges WHERE source_chunk_id IN ({})",
-                    placeholders
+            if inserted > 0 {
+                tracing::info!(
+                    file = %file_str,
+                    chunks = chunk_type_refs.len(),
+                    edges = inserted,
+                    "Indexed type edges"
                 );
-                let mut q = sqlx::query(&sql);
-                for id in batch {
-                    q = q.bind(id);
-                }
-                q.execute(&mut *tx).await?;
             }
-
-            // Batch insert new edges
-            const INSERT_BATCH: usize = 249;
-            for batch in edges.chunks(INSERT_BATCH) {
-                let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-                    "INSERT INTO type_edges (source_chunk_id, target_type_name, edge_kind, line_number) ",
-                );
-                qb.push_values(batch.iter(), |mut b, (chunk_id, tr)| {
-                    let kind_str = tr
-                        .kind
-                        .as_ref()
-                        .map(|k| k.as_str())
-                        .unwrap_or("");
-                    b.push_bind(*chunk_id)
-                        .push_bind(&tr.type_name)
-                        .push_bind(kind_str)
-                        .push_bind(tr.line_number as i64);
-                });
-                qb.build().execute(&mut *tx).await?;
-            }
-
-            tracing::info!(
-                file = %file_str,
-                chunks = chunk_type_refs.len(),
-                edges = edges.len(),
-                "Indexed type edges"
-            );
             tx.commit().await?;
             Ok(())
         })
@@ -245,77 +255,8 @@ impl Store {
                 }
 
                 let file_str = crate::normalize_path(file);
-
-                // Resolve chunk names to IDs within the shared transaction
-                let rows: Vec<(String, String, i64, Option<i64>)> = sqlx::query_as(
-                    "SELECT id, name, line_start, window_idx FROM chunks WHERE origin = ?1 ORDER BY window_idx ASC NULLS LAST",
-                )
-                .bind(&file_str)
-                .fetch_all(&mut *tx)
-                .await?;
-
-                let mut name_to_id: HashMap<(String, u32), String> = HashMap::new();
-                for (id, name, line_start, window_idx) in &rows {
-                    let key = (name.clone(), clamp_line_number(*line_start));
-                    let is_primary = window_idx.is_none();
-                    if is_primary || !name_to_id.contains_key(&key) {
-                        name_to_id.insert(key, id.clone());
-                    }
-                }
-
-                let mut edges: Vec<(&str, &crate::parser::TypeRef)> = Vec::new();
-                for ctr in chunk_type_refs {
-                    let key = (ctr.name.clone(), ctr.line_start);
-                    if let Some(chunk_id) = name_to_id.get(&key) {
-                        for tr in &ctr.type_refs {
-                            edges.push((chunk_id.as_str(), tr));
-                        }
-                    } else {
-                        tracing::warn!(
-                            name = %ctr.name,
-                            line_start = ctr.line_start,
-                            file = %file_str,
-                            "Chunk not found for type edges, skipping"
-                        );
-                    }
-                }
-
-                if edges.is_empty() {
-                    continue;
-                }
-
-                // Delete existing type edges for resolved chunk IDs
-                let chunk_ids: Vec<&str> = name_to_id.values().map(|s| s.as_str()).collect();
-                for batch in chunk_ids.chunks(500) {
-                    let placeholders = super::helpers::make_placeholders(batch.len());
-                    let sql = format!(
-                        "DELETE FROM type_edges WHERE source_chunk_id IN ({})",
-                        placeholders
-                    );
-                    let mut q = sqlx::query(&sql);
-                    for id in batch {
-                        q = q.bind(id);
-                    }
-                    q.execute(&mut *tx).await?;
-                }
-
-                // Batch insert new edges
-                const INSERT_BATCH: usize = 249;
-                for batch in edges.chunks(INSERT_BATCH) {
-                    let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-                        "INSERT INTO type_edges (source_chunk_id, target_type_name, edge_kind, line_number) ",
-                    );
-                    qb.push_values(batch.iter(), |mut b, (chunk_id, tr)| {
-                        let kind_str = tr.kind.as_ref().map(|k| k.as_str()).unwrap_or("");
-                        b.push_bind(*chunk_id)
-                            .push_bind(&tr.type_name)
-                            .push_bind(kind_str)
-                            .push_bind(tr.line_number as i64);
-                    });
-                    qb.build().execute(&mut *tx).await?;
-                }
-
-                total_inserted += edges.len();
+                total_inserted +=
+                    upsert_type_edges_one_file(&mut tx, &file_str, chunk_type_refs).await?;
             }
 
             tracing::info!(

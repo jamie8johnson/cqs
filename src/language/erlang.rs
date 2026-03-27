@@ -155,6 +155,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     doc_format: "erlang_edoc",
     doc_convention: "Use EDoc format: @param, @returns, @throws tags.",
     field_style: FieldStyle::None,
+    skip_line_prefixes: &["-record"],
 };
 
 pub fn definition() -> &'static LanguageDef {

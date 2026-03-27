@@ -248,6 +248,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         separators: " ",
         strip_prefixes: "",
     },
+    skip_line_prefixes: &["type ", "func "],
 };
 
 pub fn definition() -> &'static LanguageDef {

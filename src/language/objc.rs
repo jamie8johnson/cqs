@@ -142,6 +142,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     doc_format: "javadoc",
     doc_convention: "Use Doxygen format: @param, @return, @throws tags.",
     field_style: FieldStyle::None,
+    skip_line_prefixes: &["@interface", "@implementation", "@protocol"],
 };
 
 pub fn definition() -> &'static LanguageDef {

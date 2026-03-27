@@ -234,6 +234,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         separators: ":",
         strip_prefixes: "pub pub(crate) pub(super)",
     },
+    skip_line_prefixes: &["pub struct", "pub enum", "pub union", "struct", "enum", "union"],
 };
 
 pub fn definition() -> &'static LanguageDef {

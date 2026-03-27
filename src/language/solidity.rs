@@ -151,6 +151,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         separators: ";",
         strip_prefixes: "public private internal constant immutable",
     },
+    skip_line_prefixes: &["contract ", "struct ", "enum ", "interface "],
 };
 
 pub fn definition() -> &'static LanguageDef {

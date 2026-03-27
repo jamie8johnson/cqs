@@ -6,7 +6,6 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
 
-use cqs::embedder::ModelConfig;
 use cqs::parser::ChunkType;
 use cqs::store::{ParentContext, UnifiedResult};
 use cqs::{reference, Embedder, Embedding, Pattern, SearchFilter, Store};
@@ -67,7 +66,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         cli.limit
     };
 
-    let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
+    let embedder = Embedder::new(cli.model_config().clone())?;
     let query_embedding = embedder.embed_query(query)?;
 
     let languages = match &cli.lang {
@@ -413,7 +412,7 @@ fn cmd_query_name_only(
     // Token-budget packing (lazy embedder — only created when --tokens is set)
     let json_overhead = json_overhead_for(cli);
     let (unified, token_info) = if let Some(budget) = cli.tokens {
-        let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
+        let embedder = Embedder::new(cli.model_config().clone())?;
         token_pack_results(
             unified,
             budget,
@@ -543,7 +542,7 @@ fn cmd_query_ref_name_only(
     // Token-budget packing (lazy embedder — only created when --tokens is set)
     let json_overhead = json_overhead_for(cli);
     let (tagged, token_info) = if let Some(budget) = cli.tokens {
-        let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
+        let embedder = Embedder::new(cli.model_config().clone())?;
         token_pack_results(
             tagged,
             budget,

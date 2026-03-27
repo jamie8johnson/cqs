@@ -833,3 +833,50 @@ mentions = [
     "language",
     "CONTRIBUTING.md",
 ]
+
+[[note]]
+sentiment = -1.0
+text = "7th audit (v1.7.0): 95 findings, 80 unique after dedup. Critical: multi-model support is non-functional end-to-end — --model flag ignored, Store rejects non-default models, HNSW hardcodes 768-dim. The _with_dim APIs work, production callers don't use them."
+mentions = [
+    "src/cli/dispatch.rs",
+    "src/store/metadata.rs",
+    "src/hnsw/build.rs",
+    "src/hnsw/persist.rs",
+    "src/embedder/models.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "dim=0 accepted through ModelConfig → Store → HNSW with no validation at any layer. Silently produces empty search results. Three-layer fix needed."
+mentions = [
+    "src/embedder/models.rs",
+    "src/store/mod.rs",
+    "src/hnsw/build.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Processing manifest added to training pipeline. index_stack_repos.py now records per-repo status, pair/edge counts, index time, cqs version. Retroactive manifest covers 2,305 repos."
+mentions = [
+    "index_stack_repos.py",
+    "build_manifest.py",
+]
+
+[[note]]
+sentiment = 1.0
+text = "P1+P2 audit fixes: 34 items fixed across 14 categories. Multi-model support now functional end-to-end. 14 new tests. nl.rs split into 4 submodules. BatchSubmitItem replaces opaque 4-tuple. LlmProvider enum for future provider extensibility."
+mentions = [
+    "src/cli/dispatch.rs",
+    "src/store/mod.rs",
+    "src/hnsw/build.rs",
+    "src/nl/mod.rs",
+    "src/llm/provider.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "WAL checkpoint timing: Store::close().unwrap() in tests doesn't guarantee dim metadata is visible to a new Store::open() in the same process. Tests that verify dim persistence should check metadata directly rather than reopening."
+mentions = [
+    "src/store/metadata.rs",
+    "src/store/mod.rs",
+]

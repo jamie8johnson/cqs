@@ -9,7 +9,6 @@ use anyhow::{Context, Result};
 
 use std::sync::Arc;
 
-use cqs::embedder::ModelConfig;
 use cqs::{parse_notes, Embedder, HnswIndex, ModelInfo, Parser as CqParser, Store};
 
 use crate::cli::{
@@ -147,7 +146,14 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
 
     // Run the 3-stage pipeline: parse → embed → write
     // Pipeline shares the same Store via Arc (no duplicate DB connections)
-    let stats = run_index_pipeline(&root, files.clone(), Arc::clone(&store), force, cli.quiet)?;
+    let stats = run_index_pipeline(
+        &root,
+        files.clone(),
+        Arc::clone(&store),
+        force,
+        cli.quiet,
+        cli.model_config().clone(),
+    )?;
     let total_embedded = stats.total_embedded;
     let total_cached = stats.total_cached;
     let gpu_failures = stats.gpu_failures;
@@ -280,7 +286,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         if !cli.quiet {
             println!("Enriching embeddings with call graph context...");
         }
-        let embedder = Embedder::new(ModelConfig::resolve(None, None))
+        let embedder = Embedder::new(cli.model_config().clone())
             .context("Failed to create embedder for enrichment pass")?;
         match enrichment_pass(&store, &embedder, cli.quiet) {
             Ok(count) => {
@@ -408,7 +414,7 @@ pub(crate) fn build_hnsw_index_owned(store: &Store, cqs_dir: &Path) -> Result<Op
 
     let chunk_batches = store.embedding_batches(HNSW_BATCH_SIZE);
 
-    let hnsw = HnswIndex::build_batched(chunk_batches, chunk_count)?;
+    let hnsw = HnswIndex::build_batched_with_dim(chunk_batches, chunk_count, store.dim())?;
     hnsw.save(cqs_dir, "index")?;
 
     Ok(Some(hnsw))

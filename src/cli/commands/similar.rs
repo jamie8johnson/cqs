@@ -75,7 +75,7 @@ pub(crate) fn cmd_similar(
     };
 
     // Load vector index
-    let index = HnswIndex::try_load(&cqs_dir);
+    let index = HnswIndex::try_load_with_ef(&cqs_dir, None, Some(store.dim()));
 
     // Search with the chunk's embedding as query (request one extra to exclude self)
     let results = store.search_filtered_with_index(

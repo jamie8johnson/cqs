@@ -32,12 +32,7 @@ pub fn llm_summary_pass(
         "LLM config resolved"
     );
 
-    let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
-        LlmError::ApiKeyMissing(
-            "--llm-summaries requires ANTHROPIC_API_KEY environment variable".to_string(),
-        )
-    })?;
-    let client = LlmClient::new(&api_key, llm_config)?;
+    let client = super::create_client(llm_config)?;
 
     // Phase 0: Precompute contrastive neighbors from embedding similarity
     let neighbor_map = match find_contrastive_neighbors(store, 3) {
@@ -60,7 +55,7 @@ pub fn llm_summary_pass(
     }
 
     // Build batch items with contrastive neighbor prompts
-    let mut batch_items: Vec<(String, String, String, String)> = Vec::with_capacity(eligible.len());
+    let mut batch_items: Vec<super::provider::BatchSubmitItem> = Vec::with_capacity(eligible.len());
     for ec in &eligible {
         let neighbors = neighbor_map
             .get(&ec.content_hash)
@@ -76,12 +71,12 @@ pub fn llm_summary_pass(
                 &neighbors,
             )
         };
-        batch_items.push((
-            ec.content_hash.clone(),
-            prompt,
-            ec.chunk_type.clone(),
-            ec.language.clone(),
-        ));
+        batch_items.push(super::provider::BatchSubmitItem {
+            custom_id: ec.content_hash.clone(),
+            content: prompt,
+            context: ec.chunk_type.clone(),
+            language: ec.language.clone(),
+        });
     }
     if batch_items.len() >= MAX_BATCH_SIZE {
         tracing::info!(
@@ -96,7 +91,7 @@ pub fn llm_summary_pass(
     } else {
         batch_items
             .iter()
-            .filter(|(hash, _, _, _)| neighbor_map.contains_key(hash))
+            .filter(|item| neighbor_map.contains_key(&item.custom_id))
             .count()
     };
 
@@ -225,19 +220,25 @@ fn find_contrastive_neighbors(
     let dim = valid[0].2.len();
     tracing::info!(chunks = n, dim, "Computing pairwise cosine similarity");
 
-    // Build L2-normalized ndarray matrix
+    // Copy valid entries into owned data so we can drop the HashMap (RM-33)
+    let valid_owned: Vec<(String, String)> = valid
+        .iter()
+        .map(|(h, name, _)| (h.to_string(), name.to_string()))
+        .collect();
+
+    // Build L2-normalized ndarray matrix directly from borrowed data, then drop borrows
     let mut matrix = Array2::<f32>::zeros((n, dim));
     for (i, (_, _, emb)) in valid.iter().enumerate() {
-        let mut row = matrix.row_mut(i);
-        for (j, &v) in emb.iter().enumerate() {
-            row[j] = v;
-        }
+        matrix.row_mut(i).assign(&ndarray::ArrayView1::from(*emb));
         // L2-normalize
         let norm = matrix.row(i).mapv(|x| x * x).sum().sqrt();
         if norm > 0.0 {
             matrix.row_mut(i).mapv_inplace(|x| x / norm);
         }
     }
+    // RM-33: Drop borrowed data — embeddings HashMap (~46MB) freed before N*N matrix
+    drop(valid);
+    drop(embeddings);
 
     // Pairwise cosine = normalized @ normalized.T
     let sims = matrix.dot(&matrix.t());
@@ -270,10 +271,10 @@ fn find_contrastive_neighbors(
         neighbors_scored.sort_unstable_by(|a, b| b.score.total_cmp(&a.score));
         let neighbors: Vec<String> = neighbors_scored
             .iter()
-            .map(|ms| valid[ms.index].1.to_string())
+            .map(|ms| valid_owned[ms.index].1.clone())
             .collect();
         if !neighbors.is_empty() {
-            result.insert(valid[i].0.to_string(), neighbors);
+            result.insert(valid_owned[i].0.clone(), neighbors);
         }
     }
 

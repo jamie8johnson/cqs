@@ -141,6 +141,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         separators: ":",
         strip_prefixes: "",
     },
+    skip_line_prefixes: &["struct ", "mutable struct"],
 };
 
 pub fn definition() -> &'static LanguageDef {

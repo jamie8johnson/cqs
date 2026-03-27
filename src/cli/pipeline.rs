@@ -495,10 +495,10 @@ fn gpu_embed_stage(
     store: Arc<Store>,
     embedded_count: Arc<AtomicUsize>,
     gpu_failures: Arc<AtomicUsize>,
+    model_config: ModelConfig,
 ) -> Result<()> {
     let _span = tracing::info_span!("embed_thread", mode = "gpu").entered();
-    let embedder = Embedder::new(ModelConfig::resolve(None, None))
-        .context("Failed to initialize GPU embedder")?;
+    let embedder = Embedder::new(model_config).context("Failed to initialize GPU embedder")?;
     embedder.warm().context("Failed to warm GPU embedder")?;
 
     for batch in parse_rx {
@@ -597,6 +597,7 @@ fn cpu_embed_stage(
     embed_tx: Sender<EmbeddedBatch>,
     store: Arc<Store>,
     embedded_count: Arc<AtomicUsize>,
+    model_config: ModelConfig,
 ) -> Result<()> {
     let _span = tracing::info_span!("embed_thread", mode = "cpu").entered();
     let mut embedder: Option<Embedder> = None;
@@ -628,7 +629,7 @@ fn cpu_embed_stage(
         let emb = match &embedder {
             Some(e) => e,
             None => {
-                let e = Embedder::new_cpu(ModelConfig::resolve(None, None))
+                let e = Embedder::new_cpu(model_config.clone())
                     .context("Failed to initialize CPU embedder")?;
                 embedder.insert(e)
             }
@@ -793,6 +794,7 @@ pub(crate) fn run_index_pipeline(
     store: Arc<Store>,
     force: bool,
     quiet: bool,
+    model_config: ModelConfig,
 ) -> Result<PipelineStats> {
     let _span = tracing::info_span!("run_index_pipeline", file_count = files.len()).entered();
     let total_files = files.len();
@@ -838,6 +840,7 @@ pub(crate) fn run_index_pipeline(
     };
 
     // Stage 2a: GPU embedder thread
+    let gpu_model = model_config.clone();
     let gpu_handle = {
         let store = Arc::clone(&store);
         let embedded_count = Arc::clone(&embedded_count);
@@ -850,16 +853,25 @@ pub(crate) fn run_index_pipeline(
                 store,
                 embedded_count,
                 gpu_failures,
+                gpu_model,
             )
         })
     };
 
     // Stage 2b: CPU embedder thread
+    let cpu_model = model_config;
     let cpu_handle = {
         let store = Arc::clone(&store);
         let embedded_count = Arc::clone(&embedded_count);
         thread::spawn(move || {
-            cpu_embed_stage(parse_rx_cpu, fail_rx, embed_tx_cpu, store, embedded_count)
+            cpu_embed_stage(
+                parse_rx_cpu,
+                fail_rx,
+                embed_tx_cpu,
+                store,
+                embedded_count,
+                cpu_model,
+            )
         })
     };
 

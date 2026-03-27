@@ -190,6 +190,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     field_style: FieldStyle::TypeFirst {
         strip_prefixes: "private protected public static final volatile transient",
     },
+    skip_line_prefixes: &["class ", "interface ", "enum ", "public class", "abstract class"],
 };
 
 pub fn definition() -> &'static LanguageDef {

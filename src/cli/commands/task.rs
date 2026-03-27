@@ -3,7 +3,6 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use cqs::embedder::ModelConfig;
 use cqs::{task, task_to_json, Embedder};
 
 /// Waterfall budget weight for the scout section (file groups, chunk roles).
@@ -17,7 +16,7 @@ const WATERFALL_PLACEMENT: f64 = 0.10;
 // Notes section takes whatever budget remains (no explicit constant needed).
 
 pub(crate) fn cmd_task(
-    _cli: &crate::cli::Cli,
+    cli: &crate::cli::Cli,
     description: &str,
     limit: usize,
     json: bool,
@@ -25,7 +24,7 @@ pub(crate) fn cmd_task(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_task", ?max_tokens).entered();
     let (store, root, _) = crate::cli::open_project_store_readonly()?;
-    let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
+    let embedder = Embedder::new(cli.model_config().clone())?;
     let limit = limit.clamp(1, 10);
 
     let result = task(&store, &embedder, description, &root, limit)?;

@@ -114,6 +114,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     doc_format: "default",
     doc_convention: "Use comment-based help: .SYNOPSIS, .PARAMETER, .OUTPUTS sections.",
     field_style: FieldStyle::None,
+    skip_line_prefixes: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

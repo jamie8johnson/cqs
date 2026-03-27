@@ -80,6 +80,7 @@ pub(in crate::cli::batch) fn dispatch_explain(
         tokens,
         Some(index),
         embedder,
+        &ctx.model_config,
     )?;
 
     Ok(crate::cli::commands::explain::explain_to_json(

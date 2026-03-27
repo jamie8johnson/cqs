@@ -240,6 +240,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     field_style: FieldStyle::TypeFirst {
         strip_prefixes: "static const volatile mutable virtual inline",
     },
+    skip_line_prefixes: &["class ", "struct ", "union ", "enum ", "template"],
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -141,6 +141,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     doc_format: "ocaml_doc",
     doc_convention: "Use OCamldoc format with (** *) comments.",
     field_style: FieldStyle::None,
+    skip_line_prefixes: &["type "],
 };
 
 pub fn definition() -> &'static LanguageDef {
