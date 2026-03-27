@@ -48,7 +48,7 @@ mentions = [
 sentiment = 0.5
 text = "Copilot+ PC is a hardware contract for AI workloads - guarantees NPU with 40+ TOPS, DirectML, Phi Silica. ort crate has DirectML execution provider. If we detect Copilot+ runtime, could use NPU path instead of CUDA/CPU. Third acceleration tier after GPU and CPU."
 mentions = [
-    "embedder.rs",
+    "src/embedder/mod.rs",
     "ort",
     "DirectML",
 ]
@@ -101,7 +101,7 @@ mentions = [
 sentiment = 1.0
 text = "Streaming HNSW build for large repos: Store::embedding_batches() yields chunks in 10k batches via cursor pagination (WHERE rowid > N), HnswIndex::build_batched() inserts incrementally. Memory drops from O(n) to O(batch_size). Fixes #107 OOM on huge repos."
 mentions = [
-    "src/store/chunks.rs",
+    "src/store/chunks/mod.rs",
     "src/hnsw/build.rs",
     "embedding_batches",
     "build_batched",
@@ -109,9 +109,9 @@ mentions = [
 
 [[note]]
 sentiment = 1.0
-text = "Embedding model: E5-base-v2 confirmed as best choice. Hard eval (55 confusable queries across 5 languages): E5 90.9% Recall@1, 0.941 MRR vs jina-v2-base-code 80.0% R@1, 0.863 MRR. General-purpose model beats code-specific because NL template transforms code into natural language. BERT-style required for CUDA (no rotary embeddings)."
+text = "BGE-large-en-v1.5 (335M) is the best model: 94.5% pipeline R@1, 0.966 MRR. Beats all 110M LoRAs (best: v9-mini at 87.3%). E5-base (83.6%) remains lightweight preset. General-purpose models beat code-specific because NL enrichment transforms code into natural language descriptions."
 mentions = [
-    "src/embedder.rs",
+    "src/embedder/mod.rs",
     "CUDA",
     "model selection",
     "E5",
@@ -121,7 +121,7 @@ mentions = [
 sentiment = -1.0
 text = "Glob filter BEFORE heap was the #1 correctness bug from the 20-category audit. Brute-force search applied glob AFTER selecting top-k from heap, meaning filtered results could miss relevant chunks that were displaced by non-matching ones. Always filter before ranking."
 mentions = [
-    "src/search.rs",
+    "src/search/query.rs",
     "glob",
     "brute-force",
     "algorithm correctness",
@@ -141,7 +141,7 @@ mentions = [
 sentiment = 1.0
 text = "Notes removed from HNSW/CAGRA index entirely. Always brute-force from SQLite (capped 1000). Fixes #230 staleness. HNSW is chunk-only now. CLI note commands use atomic TOML rewrite via rewrite_notes_file()."
 mentions = [
-    "src/search.rs",
+    "src/search/query.rs",
     "src/note.rs",
     "src/cli/commands/index.rs",
 ]
@@ -255,7 +255,7 @@ mentions = ["src/parser/markdown.rs"]
 sentiment = -0.5
 text = "FTS5 queries need sanitization — special chars (quotes, parens, +, -, ^, :) and reserved words (OR, AND, NOT, NEAR) cause MATCH failures. sanitize_fts_query() strips them before all FTS calls."
 mentions = [
-    "src/store/chunks.rs",
+    "src/store/chunks/mod.rs",
     "FTS5",
     "sanitize_fts_query",
 ]
@@ -264,7 +264,7 @@ mentions = [
 sentiment = 0.5
 text = "Embedder clear_session() releases ~500MB ONNX session memory for long-running processes. Session lazily re-initializes on next embed call. Use during idle periods in watch mode."
 mentions = [
-    "src/embedder.rs",
+    "src/embedder/mod.rs",
     "clear_session",
     "Mutex",
 ]
@@ -289,7 +289,7 @@ mentions = [
 sentiment = 0.5
 text = "Brute-force search uses cursor batching (5000 rows, WHERE rowid > N) not fetch_all(). Peak memory O(batch) not O(total). Same pattern as EmbeddingBatchIterator in store/chunks.rs. futures crate was removed so can't use sqlx streaming."
 mentions = [
-    "src/search.rs",
+    "src/search/query.rs",
     "brute-force",
 ]
 
@@ -343,7 +343,7 @@ mentions = [
 sentiment = 0.5
 text = "cqs dead --min-confidence with High/Medium/Low scoring cuts false positives. High = non-method with no callers in active file. Low = method (dynamic dispatch possible). Entry points (main, init, handler) and trait methods (new, build, default) excluded."
 mentions = [
-    "src/store/calls.rs",
+    "src/store/calls/mod.rs",
     "DeadConfidence",
 ]
 
@@ -361,7 +361,7 @@ text = "Token budgeting greedy knapsack pattern ships across 6 commands. Generic
 mentions = [
     "src/cli/commands/mod.rs",
     "token_pack",
-    "src/embedder.rs",
+    "src/embedder/mod.rs",
 ]
 
 [[note]]
@@ -441,7 +441,7 @@ sentiment = -0.5
 text = '''ort 2.0.0-rc.11: raw ndarray can't be passed to ort::inputs\![]. Must wrap with Tensor::from_array(). Easy to miss — compiler error is 'SessionInputValue trait not satisfied' which doesn't mention Tensor.'''
 mentions = [
     "reranker.rs",
-    "embedder.rs",
+    "src/embedder/mod.rs",
 ]
 
 [[note]]
@@ -490,7 +490,7 @@ mentions = [
 sentiment = -0.5
 text = "resolve_target picks test functions over production code for ambiguous names. search_filtered resolves to test_search_filtered_empty_store, not Store::search_filtered. Phase 1b trials all showed zero type_impacted until using unique names like open_project_store or cmd_impact_diff."
 mentions = [
-    "src/search.rs",
+    "src/search/query.rs",
     "resolve_target",
 ]
 
@@ -507,7 +507,7 @@ mentions = [
 sentiment = 0.5
 text = "Note-boosted search ranking: note_boost() in search.rs applies ±15% score adjustment when note mentions match a chunk's file or name. Strongest absolute sentiment wins across multiple matches. Wired into both brute-force and HNSW-guided paths. Loads notes once per search via list_notes_summaries()."
 mentions = [
-    "src/search.rs",
+    "src/search/query.rs",
     "note_boost",
 ]
 
@@ -524,7 +524,7 @@ sentiment = 1.0
 text = "Parent type context injection improves method search significantly. E5 Recall@1 went from 86% to 90.9%, MRR from 0.885 to 0.941 on hard eval (55 confusable queries). Methods like should_allow() now get 'circuit breaker method' in their NL description. Extraction covers 6 languages: Rust impl/trait, Python class, JS/TS/Java class, Go receiver."
 mentions = [
     "src/parser/chunk.rs",
-    "src/nl.rs",
+    "src/nl/mod.rs",
     "parent_type_name",
 ]
 
@@ -611,7 +611,7 @@ mentions = [
 sentiment = -0.5
 text = "ort-sys 2.0.0-rc.12 has no prebuilt binaries for x86_64-apple-darwin (Intel Mac) at all — not even CPU-only. Only aarch64-apple-darwin is supported. Had to drop Intel Mac from release targets."
 mentions = [
-    "embedder.rs",
+    "src/embedder/mod.rs",
     "release.yml",
 ]
 
@@ -624,7 +624,7 @@ mentions = ["release.yml"]
 sentiment = 0.5
 text = "NL enrichment: adding field names for structs/enums/classes to Compact template is a clean win — hard eval +3.7pp R@1. But adding file path + language/type prefix hurts holdout -5pp. Dir-only file context (no stem) is neutral."
 mentions = [
-    "nl.rs",
+    "src/nl/mod.rs",
     "search-quality",
 ]
 
@@ -633,7 +633,7 @@ sentiment = 0.5
 text = "SQ-4 enrichment pass: 63% of chunks have call graph context. IDF callee filtering at 10% threshold suppresses utilities. Test callers-only before adding callees."
 mentions = [
     "pipeline.rs",
-    "nl.rs",
+    "src/nl/mod.rs",
 ]
 
 [[note]]
@@ -648,7 +648,7 @@ mentions = [
 sentiment = 0.0
 text = "SQ-5 filename stems: including filename in NL helps real codebases but regresses fixture eval by ~3pp. Generic stems (mod, index, utils, helpers) must be filtered. Fixture eval overfits to test file naming conventions."
 mentions = [
-    "src/nl.rs",
+    "src/nl/mod.rs",
     "extract_file_context",
 ]
 
@@ -664,7 +664,7 @@ mentions = [
 sentiment = -0.5
 text = "ORT CUDA provider path resolution: dladdr returns argv[0] on glibc static linking. ORT computes absolute(argv0).remove_filename() = CWD, not binary dir. Fix: compute same path via /proc/self/cmdline, symlink providers there."
 mentions = [
-    "embedder.rs",
+    "src/embedder/mod.rs",
     "ort",
 ]
 
@@ -680,7 +680,7 @@ mentions = [
 sentiment = -1.0
 text = "ORT version mismatch between static .a (1.24.2) and provider .so (1.23.2) causes SIGSEGV in KernelDefBuilder::MayInplace. Always delete stale ORT cache dirs after ort crate updates."
 mentions = [
-    "embedder.rs",
+    "src/embedder/mod.rs",
     "ort",
 ]
 
@@ -695,11 +695,11 @@ mentions = [
 [[note]]
 sentiment = 1.0
 text = "SQ-11 type-aware embeddings: appending full signature to NL descriptions is the first positive result in 7 experiments. R@1 87.3%→90.9%, TS MRR 0.746→0.814. Prepending is worse — early tokens matter more for E5."
-mentions = ["nl.rs"]
+mentions = ["src/nl/mod.rs"]
 
 [[note]]
-sentiment = 1.0
-text = "Doc comment generation (--improve-all) improved Recall@1 from 90.9% to 92.7% and NDCG@10 from 0.951 to 0.965. 629 docs across 182 files via Haiku Batches API. DocFirst template now clearly best."
+sentiment = 0.5
+text = "Doc comment generation (--improve-all) improves enriched search quality. The cited 92.7% was Relaxed R@1 (top-2), not strict. Fresh pipeline eval: E5-base strict R@1 = 83.6%. Doc comments still help via NL enrichment. DocFirst template is best."
 mentions = [
     "llm.rs",
     "model_eval.rs",
@@ -751,15 +751,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "Hard eval R@1 varies 2-4pp between runs (observed: 90.9%, 94.5%, 94.5% on identical code). Source: ORT CUDA inference non-determinism in embedding, not HNSW. GPU thread scheduling produces slightly different float results. Run 3x median for reliable comparisons."
-mentions = [
-    "src/embedder/mod.rs",
-    "tests/model_eval.rs",
-    "CUDA",
-]
-
-[[note]]
 sentiment = -1.0
 text = "CRITICAL: Hard eval results differ dramatically between GPUs. A6000 showed base/v5/v7 all at 89.1% R@1. RTX 4000 shows base 90.9%, v5 85.5%, v7 83.6% (median of 3). LoRA models are WORSE than base on hard eval. Different CUDA architectures (Ampere vs Turing) produce different float rounding in ORT. All prior hard eval comparisons on A6000 were unreliable — models looked equivalent when they weren't."
 mentions = [
@@ -772,7 +763,7 @@ mentions = [
 sentiment = 0.5
 text = "TypeFirst vs NameFirst field extraction: C/C++/Java/C# put type before name (Type name;) while Rust/TS/Python put name first (name: Type). The original plan assumed all languages use separator-first extraction — fresh-eyes review caught this fundamental design flaw before implementation."
 mentions = [
-    "nl.rs",
+    "src/nl/mod.rs",
     "language",
 ]
 
@@ -788,7 +779,7 @@ mentions = ["training-data"]
 
 [[note]]
 sentiment = 1.0
-text = "Enrichment stack contributes 43.6pp to hard eval (raw 49.1% to enriched 92.7%). This is more than any LoRA training (max 8pp) or model scaling (0pp). Tested 8 models from 110M to 7B — none beat E5-base with enrichment. The model is a commodity; the enrichment pipeline is the moat."
+text = "Enrichment stack contributes +34pp (E5-base: 49.1% raw → 83.6% pipeline; BGE-large: 61.8% raw → 94.5% pipeline). Model-agnostic — both get ~34pp lift. But model is NOT a commodity: BGE-large's raw advantage carries through enrichment (+10.9pp pipeline over E5-base). Historical 92.7% was Relaxed R@1."
 mentions = [
     "embedder",
     "enrichment",
@@ -832,26 +823,6 @@ text = "Adding a new language to cqs is now documented as a data-entry task in C
 mentions = [
     "language",
     "CONTRIBUTING.md",
-]
-
-[[note]]
-sentiment = -1.0
-text = "7th audit (v1.7.0): 95 findings, 80 unique after dedup. Critical: multi-model support is non-functional end-to-end — --model flag ignored, Store rejects non-default models, HNSW hardcodes 768-dim. The _with_dim APIs work, production callers don't use them."
-mentions = [
-    "src/cli/dispatch.rs",
-    "src/store/metadata.rs",
-    "src/hnsw/build.rs",
-    "src/hnsw/persist.rs",
-    "src/embedder/models.rs",
-]
-
-[[note]]
-sentiment = -0.5
-text = "dim=0 accepted through ModelConfig → Store → HNSW with no validation at any layer. Silently produces empty search results. Three-layer fix needed."
-mentions = [
-    "src/embedder/models.rs",
-    "src/store/mod.rs",
-    "src/hnsw/build.rs",
 ]
 
 [[note]]
