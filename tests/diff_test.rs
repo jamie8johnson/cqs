@@ -17,11 +17,11 @@ fn test_semantic_diff_basic() {
     // all normalize to the same direction. Build a genuinely different direction instead:
     // first half positive, second half negative, so cosine similarity with emb_same ≈ 0.
     let emb_different = {
-        let mut v = vec![0.0f32; 768];
+        let mut v = vec![0.0f32; cqs::EMBEDDING_DIM];
         for i in 0..384 {
             v[i] = 1.0;
         }
-        for i in 384..768 {
+        for i in cqs::EMBEDDING_DIM / 2..cqs::EMBEDDING_DIM {
             v[i] = -1.0;
         }
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();

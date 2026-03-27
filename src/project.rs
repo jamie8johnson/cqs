@@ -500,7 +500,7 @@ mod tests {
         };
 
         // Create a simple embedding (768-dim E5-base-v2)
-        let embedding = crate::Embedding::new(vec![0.1; 768]);
+        let embedding = crate::Embedding::new(vec![0.1; crate::EMBEDDING_DIM]);
         store.upsert_chunk(&chunk, &embedding, None).unwrap();
         drop(store);
 

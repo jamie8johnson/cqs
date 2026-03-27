@@ -19,7 +19,7 @@ pub fn setup_store() -> (Store, TempDir) {
 /// Fills the vector with `seed` repeated, then normalizes. This makes embeddings
 /// distinguishable by seed while keeping consistent magnitude.
 pub fn mock_embedding(seed: f32) -> Embedding {
-    let mut v = vec![seed; 768];
+    let mut v = vec![seed; crate::EMBEDDING_DIM];
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
         for x in &mut v {

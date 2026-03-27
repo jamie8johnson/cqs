@@ -42,7 +42,12 @@ pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
 
     // Download model
     if !cli.quiet {
-        println!("Downloading model (~547MB)...");
+        let size = if cli.model_config().dim >= 1024 {
+            "~1.3GB"
+        } else {
+            "~547MB"
+        };
+        println!("Downloading model ({size})...");
     }
 
     let embedder =

@@ -152,7 +152,7 @@ mod tests {
                 score: 0.7,
             },
         ]);
-        let query = Embedding::new(vec![0.0; 768]);
+        let query = Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
         let results = index.search(&query, 2);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].id, "a");

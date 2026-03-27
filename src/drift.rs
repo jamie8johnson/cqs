@@ -255,8 +255,8 @@ mod tests {
     /// rest are 0.0, ensuring different seeds produce orthogonal vectors
     /// (cosine similarity ≈ 0). The seed is taken modulo 768.
     fn make_emb(seed: f32) -> Embedding {
-        let mut v = vec![0.0f32; 768];
-        let idx = (seed.abs() as usize) % 768;
+        let mut v = vec![0.0f32; crate::EMBEDDING_DIM];
+        let idx = (seed.abs() as usize) % crate::EMBEDDING_DIM;
         v[idx] = 1.0;
         Embedding::new(v)
     }
@@ -326,11 +326,11 @@ mod tests {
         // Ref: hot at index 0. Project: equal weight at indices 0 and 1.
         // Cosine similarity = 1 * (1/sqrt(2)) / (1 * 1) = 0.707...
         // Drift = 1 - 0.707 ≈ 0.293
-        let mut ref_v = vec![0.0f32; 768];
+        let mut ref_v = vec![0.0f32; crate::EMBEDDING_DIM];
         ref_v[0] = 1.0;
         let emb_ref = Embedding::new(ref_v);
 
-        let mut proj_v = vec![0.0f32; 768];
+        let mut proj_v = vec![0.0f32; crate::EMBEDDING_DIM];
         proj_v[0] = 1.0;
         proj_v[1] = 1.0;
         let norm = (2.0f32).sqrt();

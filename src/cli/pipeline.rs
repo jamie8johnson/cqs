@@ -994,7 +994,7 @@ mod tests {
     #[test]
     fn test_create_embedded_batch_all_cached() {
         let chunk = make_test_chunk("c1", "fn foo() {}");
-        let emb = Embedding::new(vec![0.0; 768]);
+        let emb = Embedding::new(vec![0.0; cqs::EMBEDDING_DIM]);
         let cached = vec![(chunk, emb)];
 
         let batch = create_embedded_batch(
@@ -1012,7 +1012,7 @@ mod tests {
     #[test]
     fn test_create_embedded_batch_all_new() {
         let chunk = make_test_chunk("c1", "fn foo() {}");
-        let emb = Embedding::new(vec![1.0; 768]);
+        let emb = Embedding::new(vec![1.0; cqs::EMBEDDING_DIM]);
 
         let batch = create_embedded_batch(
             vec![],
@@ -1029,9 +1029,9 @@ mod tests {
     #[test]
     fn test_create_embedded_batch_mixed() {
         let cached_chunk = make_test_chunk("c1", "fn foo() {}");
-        let cached_emb = Embedding::new(vec![0.0; 768]);
+        let cached_emb = Embedding::new(vec![0.0; cqs::EMBEDDING_DIM]);
         let new_chunk = make_test_chunk("c2", "fn bar() {}");
-        let new_emb = Embedding::new(vec![1.0; 768]);
+        let new_emb = Embedding::new(vec![1.0; cqs::EMBEDDING_DIM]);
 
         let batch = create_embedded_batch(
             vec![(cached_chunk, cached_emb)],
@@ -1060,11 +1060,11 @@ mod tests {
     #[test]
     fn test_create_embedded_batch_preserves_order() {
         let c1 = make_test_chunk("c1", "fn first() {}");
-        let e1 = Embedding::new(vec![1.0; 768]);
+        let e1 = Embedding::new(vec![1.0; cqs::EMBEDDING_DIM]);
         let c2 = make_test_chunk("c2", "fn second() {}");
-        let e2 = Embedding::new(vec![2.0; 768]);
+        let e2 = Embedding::new(vec![2.0; cqs::EMBEDDING_DIM]);
         let c3 = make_test_chunk("c3", "fn third() {}");
-        let e3 = Embedding::new(vec![3.0; 768]);
+        let e3 = Embedding::new(vec![3.0; cqs::EMBEDDING_DIM]);
 
         let batch = create_embedded_batch(
             vec![(c1, e1)],

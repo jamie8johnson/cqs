@@ -18,7 +18,7 @@ fn test_store_init() {
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
     assert_eq!(stats.schema_version, 16); // v15: 768-dim embeddings (SQ-9)
-    assert_eq!(stats.model_name, "intfloat/e5-base-v2");
+    assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 
 #[test]
@@ -1104,7 +1104,7 @@ fn test_open_readonly_on_initialized_store() {
     let stats = ro.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.schema_version, 16);
-    assert_eq!(stats.model_name, "intfloat/e5-base-v2");
+    assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 
 #[test]

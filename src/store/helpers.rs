@@ -739,7 +739,7 @@ impl ModelInfo {
 }
 
 impl Default for ModelInfo {
-    /// Test-only default: E5-base-v2 with `EMBEDDING_DIM` (768).
+    /// Test-only default: BGE-large with `EMBEDDING_DIM` (1024).
     ///
     /// Production code should use `ModelInfo::new()` or `ModelInfo::with_dim()`.
     fn default() -> Self {
@@ -1183,11 +1183,11 @@ mod tests {
 
     #[test]
     fn test_embedding_slice_768_dim() {
-        let data = vec![0.0f32; 768];
+        let data = vec![0.0f32; crate::EMBEDDING_DIM];
         let bytes = bytemuck::cast_slice::<f32, u8>(&data);
-        let result = embedding_slice(bytes, 768);
+        let result = embedding_slice(bytes, crate::EMBEDDING_DIM);
         assert!(result.is_some());
-        assert_eq!(result.unwrap().len(), 768);
+        assert_eq!(result.unwrap().len(), crate::EMBEDDING_DIM);
     }
 
     #[test]
@@ -1201,18 +1201,28 @@ mod tests {
 
     #[test]
     fn test_embedding_slice_wrong_dim_returns_none() {
-        let data = vec![0.0f32; 768];
+        let data = vec![0.0f32; crate::EMBEDDING_DIM];
         let bytes = bytemuck::cast_slice::<f32, u8>(&data);
-        // Ask for 1024-dim but bytes are 768-dim
-        let result = embedding_slice(bytes, 1024);
+        // Ask for a different dim than what was stored
+        let wrong_dim = if crate::EMBEDDING_DIM == 1024 {
+            768
+        } else {
+            1024
+        };
+        let result = embedding_slice(bytes, wrong_dim);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_embedding_to_bytes_validates_dim() {
-        let emb = Embedding::new(vec![0.0f32; 768]);
-        assert!(embedding_to_bytes(&emb, 768).is_ok());
-        assert!(embedding_to_bytes(&emb, 1024).is_err());
+        let emb = Embedding::new(vec![0.0f32; crate::EMBEDDING_DIM]);
+        assert!(embedding_to_bytes(&emb, crate::EMBEDDING_DIM).is_ok());
+        let wrong_dim = if crate::EMBEDDING_DIM == 1024 {
+            768
+        } else {
+            1024
+        };
+        assert!(embedding_to_bytes(&emb, wrong_dim).is_err());
     }
 
     #[test]

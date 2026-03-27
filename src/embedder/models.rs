@@ -26,15 +26,29 @@ pub struct ModelConfig {
     pub doc_prefix: String,
 }
 
-/// Default model repository ID. Single source of truth — used by ModelConfig, Store, and validation.
-pub const DEFAULT_MODEL_REPO: &str = "intfloat/e5-base-v2";
+/// Default model repo ID. Must match `ModelConfig::default_model().repo`.
+/// Kept as a const for use in store validation and metadata (which need compile-time strings).
+pub const DEFAULT_MODEL_REPO: &str = "BAAI/bge-large-en-v1.5";
+
+/// Default embedding dimension. Must match `ModelConfig::default_model().dim`.
+/// Kept as a const for use in test helpers and compile-time array sizing.
+pub const DEFAULT_DIM: usize = 1024;
 
 impl ModelConfig {
-    /// E5-base-v2: 768-dim, 512 tokens. The project default.
+    /// The project default model. Single source of truth for all fallback paths.
+    ///
+    /// Change this ONE function to switch the default model for the entire project.
+    /// Everything else (DEFAULT_MODEL_REPO, EMBEDDING_DIM, ModelInfo::default(),
+    /// serde defaults, resolve() fallbacks) derives from this.
+    pub fn default_model() -> Self {
+        Self::bge_large()
+    }
+
+    /// E5-base-v2: 768-dim, 512 tokens. Lightweight preset.
     pub fn e5_base() -> Self {
         Self {
             name: "e5-base".to_string(),
-            repo: DEFAULT_MODEL_REPO.to_string(),
+            repo: "intfloat/e5-base-v2".to_string(),
             onnx_path: "onnx/model.onnx".to_string(),
             tokenizer_path: "tokenizer.json".to_string(),
             dim: 768,
@@ -85,7 +99,7 @@ impl ModelConfig {
                 model = name,
                 "Unknown model from CLI flag, falling back to default"
             );
-            return Self::e5_base();
+            return Self::default_model();
         }
 
         // 2. Environment variable
@@ -99,7 +113,7 @@ impl ModelConfig {
                     model = %env_val,
                     "Unknown CQS_EMBEDDING_MODEL env var value, falling back to default"
                 );
-                return Self::e5_base();
+                return Self::default_model();
             }
         }
 
@@ -116,7 +130,7 @@ impl ModelConfig {
                 let dim = embedding_cfg.dim.expect("guarded by has_dim");
                 if dim == 0 {
                     tracing::warn!(model = %embedding_cfg.model, "Custom model has dim=0, falling back to default");
-                    return Self::e5_base();
+                    return Self::default_model();
                 }
                 // SEC-20: Validate custom paths don't contain traversal
                 let onnx_path = embedding_cfg
@@ -133,7 +147,7 @@ impl ModelConfig {
                 ] {
                     if path.contains("..") || std::path::Path::new(path).is_absolute() {
                         tracing::warn!(%label, %path, "Custom model path contains traversal or is absolute, falling back to default");
-                        return Self::e5_base();
+                        return Self::default_model();
                     }
                 }
 
@@ -158,13 +172,13 @@ impl ModelConfig {
             );
         }
 
-        // 4. Default
+        // 4. Default — BGE-large since v1.9.0 (94.5% pipeline R@1 vs 83.6% E5-base)
         tracing::info!(
-            model = "e5-base",
+            model = "bge-large",
             source = "default",
             "Resolved model config"
         );
-        Self::e5_base()
+        Self::default_model()
     }
 }
 
@@ -194,7 +208,7 @@ pub struct EmbeddingConfig {
 }
 
 fn default_model_name() -> String {
-    "e5-base".to_string()
+    ModelConfig::default_model().name
 }
 
 #[cfg(test)]
@@ -260,7 +274,7 @@ mod tests {
         // Clear env to ensure we get default
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         let cfg = ModelConfig::resolve(None, None);
-        assert_eq!(cfg.name, "e5-base");
+        assert_eq!(cfg.name, "bge-large");
     }
 
     #[test]
@@ -291,14 +305,14 @@ mod tests {
     fn test_resolve_unknown_env_warns_and_defaults() {
         std::env::set_var("CQS_EMBEDDING_MODEL", "nonexistent-model");
         let cfg = ModelConfig::resolve(None, None);
-        assert_eq!(cfg.name, "e5-base"); // falls back to default
+        assert_eq!(cfg.name, "bge-large"); // falls back to default
         std::env::remove_var("CQS_EMBEDDING_MODEL");
     }
 
     #[test]
     fn test_resolve_unknown_cli_warns_and_defaults() {
         let cfg = ModelConfig::resolve(Some("nonexistent"), None);
-        assert_eq!(cfg.name, "e5-base");
+        assert_eq!(cfg.name, "bge-large");
     }
 
     #[test]
@@ -356,7 +370,7 @@ mod tests {
             doc_prefix: None,
         };
         let cfg = ModelConfig::resolve(None, Some(&embedding_cfg));
-        assert_eq!(cfg.name, "e5-base"); // falls back
+        assert_eq!(cfg.name, "bge-large"); // falls back
     }
 
     // ===== EmbeddingConfig serde tests =====
@@ -365,7 +379,7 @@ mod tests {
     fn test_embedding_config_default_model() {
         let json = r#"{}"#;
         let cfg: EmbeddingConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(cfg.model, "e5-base");
+        assert_eq!(cfg.model, "bge-large");
     }
 
     #[test]
@@ -395,7 +409,7 @@ mod tests {
     fn test_resolve_empty_env_ignored() {
         std::env::set_var("CQS_EMBEDDING_MODEL", "");
         let cfg = ModelConfig::resolve(None, None);
-        assert_eq!(cfg.name, "e5-base");
+        assert_eq!(cfg.name, "bge-large");
         std::env::remove_var("CQS_EMBEDDING_MODEL");
     }
 
@@ -434,9 +448,31 @@ mod tests {
         };
         let cfg = ModelConfig::resolve(None, Some(&embedding_cfg));
         assert_eq!(
-            cfg.name, "e5-base",
-            "dim=0 should cause fallback to default e5-base"
+            cfg.name, "bge-large",
+            "dim=0 should cause fallback to default bge-large"
         );
-        assert_eq!(cfg.dim, 768, "Fallback should have dim=768");
+        assert_eq!(cfg.dim, 1024, "Fallback should have BGE-large dim=1024");
+    }
+
+    /// Consistency check: DEFAULT_MODEL_REPO and DEFAULT_DIM must match default_model().
+    /// If you change default_model() to point at a different preset, update these consts too.
+    #[test]
+    fn test_default_model_consts_consistent() {
+        let dm = ModelConfig::default_model();
+        assert_eq!(
+            dm.repo,
+            super::DEFAULT_MODEL_REPO,
+            "DEFAULT_MODEL_REPO must match default_model().repo"
+        );
+        assert_eq!(
+            dm.dim,
+            super::DEFAULT_DIM,
+            "DEFAULT_DIM must match default_model().dim"
+        );
+        assert_eq!(
+            dm.dim,
+            crate::EMBEDDING_DIM,
+            "EMBEDDING_DIM must match default_model().dim"
+        );
     }
 }

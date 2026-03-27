@@ -506,7 +506,7 @@ mod tests {
 
     /// Build a normalized 768-dim test vector for score_candidate tests.
     fn test_embedding(seed: f32) -> Vec<f32> {
-        let mut v = vec![seed; 768];
+        let mut v = vec![seed; crate::EMBEDDING_DIM];
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         if norm > 0.0 {
             for x in &mut v {
@@ -785,7 +785,7 @@ mod tests {
 
     #[test]
     fn score_candidate_zero_embedding() {
-        let zero_query = vec![0.0f32; 768];
+        let zero_query = vec![0.0f32; crate::EMBEDDING_DIM];
         let normal_emb = test_embedding(1.0);
         let filter = SearchFilter {
             query_text: "test".into(),

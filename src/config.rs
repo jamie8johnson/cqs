@@ -1049,7 +1049,7 @@ llm_max_tokens = 200
         };
         let cfg = crate::embedder::ModelConfig::resolve(None, Some(&embedding_cfg));
         assert_eq!(
-            cfg.name, "e5-base",
+            cfg.name, "bge-large",
             "Empty model string should fall back to default"
         );
     }

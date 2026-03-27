@@ -6,7 +6,7 @@ use cqs::embedder::Embedding;
 use cqs::hnsw::HnswIndex;
 use tempfile::TempDir;
 
-const EMBEDDING_DIM: usize = 768;
+const EMBEDDING_DIM: usize = cqs::EMBEDDING_DIM;
 
 fn make_embedding(seed: u32) -> Embedding {
     let mut v = vec![0.0f32; EMBEDDING_DIM];
