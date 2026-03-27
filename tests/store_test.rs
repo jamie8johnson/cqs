@@ -563,19 +563,15 @@ fn test_model_mismatch_rejected() {
         pool.close().await;
     });
 
-    // Re-opening should fail with model mismatch
+    // AD-43/DS-30 fix: Store::open no longer rejects model mismatches.
+    // Configurable models (v1.7.0) can legitimately use any model name.
+    // Model name is informational — dimension is validated at embed time.
     let result = cqs::store::Store::open(&db_path);
-    match result {
-        Ok(_) => panic!("Model mismatch should be rejected"),
-        Err(e) => {
-            let err_msg = e.to_string();
-            assert!(
-                err_msg.contains("mismatch") || err_msg.contains("Model"),
-                "Error should mention model mismatch: {}",
-                err_msg
-            );
-        }
-    }
+    assert!(
+        result.is_ok(),
+        "Store::open should accept any model name (configurable models): {:?}",
+        result.err()
+    );
 }
 
 // ===== Streaming Embeddings Tests =====

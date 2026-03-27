@@ -108,16 +108,13 @@ pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
         Err(e) => {
             tracing::warn!(error = %e, "Failed to create reference loading thread pool, loading sequentially");
             // Fallback: load sequentially instead of panicking
-            return configs
-                .iter()
-                .filter_map(|cfg| load_single_reference(cfg))
-                .collect();
+            return configs.iter().filter_map(load_single_reference).collect();
         }
     };
     let refs: Vec<ReferenceIndex> = pool.install(|| {
         configs
             .par_iter()
-            .filter_map(|cfg| load_single_reference(cfg))
+            .filter_map(load_single_reference)
             .collect()
     });
 
