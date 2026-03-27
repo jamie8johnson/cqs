@@ -76,8 +76,18 @@ pub(crate) fn cmd_export_model(repo: &str, output: &Path) -> anyhow::Result<()> 
         anyhow::bail!("ONNX export failed:\n{}", stderr);
     }
 
+    // EX-32: Auto-detect embedding dimension from HuggingFace config.json
+    let detected_dim = std::fs::read_to_string(output.join("config.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|j| j["hidden_size"].as_u64());
+
     // Write model.toml template
     let toml_path = output.join("model.toml");
+    let dim_line = match detected_dim {
+        Some(d) => format!("dim = {d}"),
+        None => "# dim = ???  # Check config.json for hidden_size".to_string(),
+    };
     let toml = format!(
         r#"# cqs embedding model configuration
 # Copy this to your project's cqs.toml [embedding] section
@@ -87,7 +97,7 @@ model = "custom"
 repo = "{repo}"
 onnx_path = "model.onnx"
 tokenizer_path = "tokenizer.json"
-# dim = ???  # Check {repo} config.json for hidden_size
+{dim_line}
 # query_prefix = ""
 # doc_prefix = ""
 "#

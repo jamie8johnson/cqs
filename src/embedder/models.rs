@@ -118,17 +118,30 @@ impl ModelConfig {
                     tracing::warn!(model = %embedding_cfg.model, "Custom model has dim=0, falling back to default");
                     return Self::e5_base();
                 }
+                // SEC-20: Validate custom paths don't contain traversal
+                let onnx_path = embedding_cfg
+                    .onnx_path
+                    .clone()
+                    .unwrap_or_else(|| "onnx/model.onnx".to_string());
+                let tokenizer_path = embedding_cfg
+                    .tokenizer_path
+                    .clone()
+                    .unwrap_or_else(|| "tokenizer.json".to_string());
+                for (label, path) in [
+                    ("onnx_path", &onnx_path),
+                    ("tokenizer_path", &tokenizer_path),
+                ] {
+                    if path.contains("..") || std::path::Path::new(path).is_absolute() {
+                        tracing::warn!(%label, %path, "Custom model path contains traversal or is absolute, falling back to default");
+                        return Self::e5_base();
+                    }
+                }
+
                 let cfg = Self {
                     name: embedding_cfg.model.clone(),
                     repo: embedding_cfg.repo.clone().expect("guarded by has_repo"),
-                    onnx_path: embedding_cfg
-                        .onnx_path
-                        .clone()
-                        .unwrap_or_else(|| "onnx/model.onnx".to_string()),
-                    tokenizer_path: embedding_cfg
-                        .tokenizer_path
-                        .clone()
-                        .unwrap_or_else(|| "tokenizer.json".to_string()),
+                    onnx_path,
+                    tokenizer_path,
                     dim,
                     max_seq_length: embedding_cfg.max_seq_length.unwrap_or(512),
                     query_prefix: embedding_cfg.query_prefix.clone().unwrap_or_default(),

@@ -203,7 +203,11 @@ The HNSW disaster: built an index, wrote save/load, marked "done" - but search n
 
 **"Done" means a user can use it, not that code exists.**
 
-5. **Update the roadmap.** Check off completed items in `ROADMAP.md`. Stale roadmaps cause duplicate work.
+5. **Verify wiring after parallel execution.** When agents build APIs in parallel, the *glue* between them is where bugs hide. After all agents finish: grep for the old pattern (e.g., `resolve(None, None)`) — if it still exists at call sites that should use the new API, the wiring is incomplete. Run `cqs impact <new_function>` to verify it has production callers.
+
+The configurable models disaster: `build_batched_with_dim()` existed and worked, but all 20 production callers still used `build_batched()` which hardcoded 768. The convenience wrapper masked the problem — no compiler warning, all tests passed, feature was completely non-functional.
+
+6. **Update the roadmap.** Check off completed items in `ROADMAP.md`. Stale roadmaps cause duplicate work.
 
 ## Project Conventions
 
