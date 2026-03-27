@@ -888,3 +888,13 @@ mentions = [
     "src/cli/commands/index.rs",
     "src/store/mod.rs",
 ]
+
+[[note]]
+sentiment = -1.0
+text = "92.7% R@1 was Relaxed R@1 (top-1 OR top-2), not strict R@1. Fresh pipeline eval: E5-base strict R@1 = 83.6%, Relaxed = 92.7%. BGE-large strict R@1 = 94.5%. All prior references to 92.7% were metric confusion across sessions."
+mentions = [
+    "RESULTS.md",
+    "research_log.md",
+    "Cargo.toml",
+    "README.md",
+]

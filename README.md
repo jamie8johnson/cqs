@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 92.7% Recall@1 on confusable function retrieval. 51 languages, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 94.5% Recall@1 (BGE-large) on confusable function retrieval. 51 languages, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -425,7 +425,7 @@ Without cqs, Claude uses grep/glob to find code and reads entire files for conte
 
 - **Fewer tool calls**: `gather`, `impact`, `trace`, `context`, `explain` each replace 5-10 sequential file reads with a single call
 - **Less context burn**: `cqs read --focus` returns a function + its type dependencies — not the whole file. Token budgeting (`--tokens N`) caps output across all commands.
-- **Find code by concept**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`. 92.7% Recall@1 on confusable functions.
+- **Find code by concept**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`. 94.5% Recall@1 (BGE-large) on confusable functions.
 - **Understand dependencies**: Call graphs, type dependencies, impact analysis, and risk scoring answer "what breaks if I change X?" without manual tracing
 - **Navigate unfamiliar codebases**: Semantic search + `cqs scout` + `cqs where` provide instant orientation without knowing project structure
 
@@ -573,7 +573,7 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 51 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination (SQ-11). Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — Configurable embedding model (E5-base-v2 default, BGE-large preset, or custom ONNX) generates embeddings locally. 92.7% Recall@1 on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
+3. **Embed** — Configurable embedding model (E5-base-v2 default, BGE-large preset, or custom ONNX) generates embeddings locally. 94.5% Recall@1 (BGE-large) on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
@@ -603,12 +603,11 @@ For most codebases (<100k chunks), defaults work well. Large repos may benefit f
 
 Evaluated on a hard eval suite of 55 queries across 5 languages (Rust, Python, TypeScript, JavaScript, Go) with 15 confusable functions per language (6 sort variants, 4 validators, etc.):
 
-| Metric | E5-base-v2 (cqs) | jina-v2-base-code |
-|--------|-------------------|-------------------|
-| **Recall@1** | **92.7%** | 80.0% |
-| **Recall@5** | **100%** | 94.5% |
-| **Recall@10** | **100%** | 100.0% |
-| **NDCG@10** | **0.9624** | 0.896 |
+| Metric | BGE-large (cqs default) | E5-base-v2 (cqs) | jina-v2-base-code |
+|--------|------------------------|-------------------|-------------------|
+| **Recall@1** | **94.5%** | 83.6% | 80.0% |
+| **Recall@5** | **98.2%** | 98.2% | 94.5% |
+| **MRR** | **0.966** | 0.909 | — |
 
 E5 column includes the full cqs enrichment stack (contrastive summaries, type-aware embeddings, hybrid RRF). jina column is raw embeddings without enrichment.
 

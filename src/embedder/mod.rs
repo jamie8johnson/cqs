@@ -666,6 +666,26 @@ impl Embedder {
 
 /// Download model and tokenizer from HuggingFace Hub
 fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderError> {
+    // CQS_ONNX_DIR: bypass HF download, load from local directory.
+    // Directory must contain model.onnx and tokenizer.json.
+    if let Ok(dir) = std::env::var("CQS_ONNX_DIR") {
+        let dir = PathBuf::from(dir);
+        let model_path = dir.join(&config.onnx_path);
+        let tokenizer_path = dir.join(&config.tokenizer_path);
+        if model_path.exists() && tokenizer_path.exists() {
+            tracing::info!(dir = %dir.display(), "Using local ONNX model directory");
+            return Ok((model_path, tokenizer_path));
+        }
+        // Try flat layout (model.onnx + tokenizer.json in same dir)
+        let flat_model = dir.join("model.onnx");
+        let flat_tok = dir.join("tokenizer.json");
+        if flat_model.exists() && flat_tok.exists() {
+            tracing::info!(dir = %dir.display(), "Using local ONNX model directory (flat)");
+            return Ok((flat_model, flat_tok));
+        }
+        tracing::warn!(dir = %dir.display(), "CQS_ONNX_DIR set but model files not found, falling back to HF download");
+    }
+
     use hf_hub::api::sync::Api;
 
     let api = Api::new().map_err(|e| EmbedderError::HfHub(e.to_string()))?;

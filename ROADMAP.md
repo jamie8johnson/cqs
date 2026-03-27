@@ -2,32 +2,50 @@
 
 ## Current: v1.8.0
 
-v1.8.0: Doc/roadmap fixes for release, hnswlib-rs migration path on roadmap.
+v1.8.0: 7th audit (85/95 fixed), multi-model functional, nl.rs split, convenience wrappers deleted, 1490 tests.
 
-v1.7.0: Configurable embedding models, 7th audit (85/95 fixed), nl.rs split, BatchSubmitItem, LlmProvider enum, skip_line_prefixes on 51 languages, 24 new tests. 1490 tests.
+### Complete Pipeline Eval Matrix (2026-03-27)
 
-v1.6.0: 6th full audit (82/82 fixed), FieldStyle field extraction (28 languages), BatchProvider trait, runtime embedding dim, CallGraph Arc<str>, CLI/store splits, lazy enrichment, GC single transaction.
+Config F (HNSW + name_boost + demotion). 55 queries, fixtures only. A6000.
 
-### Key Finding (2026-03-26)
-Enrichment stack contributes 43.6pp to hard eval (49.1% raw → 92.7% enriched). Model size is NOT the bottleneck — E5-large (3x params) scores the same as E5-base. Instruction models (GTE-Qwen2 1.5B, E5-mistral 7B) score WORSE. BGE-large best raw embedder at 61.8%.
+| Model | Params | Pipeline R@1 | R@5 | MRR | Raw R@1 |
+|-------|--------|-------------|-----|-----|---------|
+| **BGE-large** | 335M | **94.5%** | 98.2% | **0.966** | 61.8% |
+| v9-mini LoRA | 110M | 87.3% | 98.2% | 0.930 | 65.5% |
+| v5 LoRA | 110M | 85.5% | 94.5% | 0.897 | 54.5% |
+| v8 LoRA | 110M | 85.5% | 98.2% | 0.921 | 56.4% |
+| E5-base | 110M | 83.6% | 98.2% | 0.909 | 49.1% |
+| v7b LoRA | 110M | 81.8% | 98.2% | 0.880 | 67.3% |
+| v7 LoRA | 110M | 80.0% | 94.5% | 0.863 | 63.6% |
+
+BGE-large wins by +7.2pp over best LoRA (v9-mini). Enrichment is model-agnostic (+34pp E5, +33pp BGE). Raw vs pipeline ranking inverts (v7b best raw, worst pipeline). No 110M model reaches BGE-large.
+
+### Next — v1.9.0: BGE-large Default
+- [ ] Switch `DEFAULT_MODEL_REPO` to BGE-large
+- [ ] Update download size messaging (~1.3GB vs ~547MB)
+- [ ] E5-base as lightweight preset
+- [ ] Release v1.9.0
 
 ### Done — Embedding Model Options
 - [x] BGE-large-en-v1.5 as configurable alternative
 - [x] ModelConfig registry with per-model prefix/dim/repo
-- [ ] Eval: BGE-large + enrichment vs E5-base + enrichment
+- [x] Eval: BGE-large pipeline 94.5% R@1 vs E5-base 83.6% (+10.9pp)
+- [x] Multi-model verified end-to-end (init dim fix, convenience wrappers deleted)
 
 ### Done — Training (Exp 18: v9-mini)
 - [x] v9-mini training — Stack data + call-graph false-negative filter + synthetic queries
-- [x] Eval: 65.5% raw R@1, 89.1% enriched, 0.638 CSN (matches base enriched, better raw+CSN)
+- [x] Eval: 65.5% raw R@1, 89.1% enriched, 0.638 CSN
 
 ### Next — Dataset & Training
-**Raw pool**: 2.8M pairs across 9 languages from ~5,000 repos. Bottleneck: C++ at 115K.
+**Raw pool**: 3.7M pairs across 9 languages from ~5,000 repos. Bottleneck: C++ at 121K.
+**200K dataset assembled.** 22,222 × 9, 74% callers, 93% callees.
 
-- [ ] Gap-filling completes (~90%, actively indexing)
+- [x] Gap-filling complete (2,010 repos indexed, 109 failed)
+- [x] 200K dataset assembled + dataset card written
 - [ ] Publish HuggingFace datasets:
   - `cqs-code-search-200k` — 22,222 × 9 balanced, call graph metadata
-  - `cqs-code-search-500k` — 55,555 × 9 balanced (stretch)
-  - `cqs-code-search-1m` — 114,787 × 9 balanced (max, C++ bottleneck)
+  - `cqs-code-search-500k` — 55,555 × 9 balanced
+  - `cqs-code-search-1m` — 121,651 × 9 balanced (C++ bottleneck)
 - [ ] Mine hard negatives (call-graph false-negative filtering, zero API cost)
 - [ ] Train v9-200k → eval
 - [ ] Train v9-1m → eval (if 200k shows improvement)

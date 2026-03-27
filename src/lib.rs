@@ -5,7 +5,7 @@
 //!
 //! ## Features
 //!
-//! - **Semantic search**: Hybrid RRF (keyword + vector) with configurable embedding models (E5-base-v2 default, BGE-large preset, custom ONNX). 92.7% Recall@1 on confusable function retrieval.
+//! - **Semantic search**: Hybrid RRF (keyword + vector) with configurable embedding models (E5-base-v2 default, BGE-large preset, custom ONNX). 94.5% Recall@1 (BGE-large) on confusable function retrieval.
 //! - **Call graphs**: Callers, callees, transitive impact, shortest-path tracing between functions
 //! - **Impact analysis**: What breaks if you change X? Callers + affected tests + risk scoring
 //! - **Type dependencies**: Who uses this type? What types does this function use?
