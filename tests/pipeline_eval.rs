@@ -221,8 +221,12 @@ fn test_pipeline_scoring() {
 
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("pipeline_eval.db");
-    let store = Store::open(&db_path).unwrap();
-    store.init(&ModelInfo::default()).unwrap();
+    let mut store = Store::open(&db_path).unwrap();
+    let mc = ModelConfig::resolve(None, None);
+    store
+        .init(&ModelInfo::new(&mc.repo, mc.dim as u32))
+        .unwrap();
+    store.set_dim(mc.dim);
 
     // Parse and index both original AND hard fixtures for all 5 languages
     eprintln!("Parsing and indexing fixtures...");
@@ -274,8 +278,12 @@ fn test_pipeline_scoring() {
     // Build HNSW index from the store
     eprintln!("Building HNSW index...");
     let chunk_total = store.chunk_count().unwrap() as usize;
-    let hnsw = HnswIndex::build_batched(store.embedding_batches(10_000), chunk_total)
-        .expect("Failed to build HNSW index");
+    let hnsw = HnswIndex::build_batched_with_dim(
+        store.embedding_batches(10_000),
+        chunk_total,
+        store.dim(),
+    )
+    .expect("Failed to build HNSW index");
     eprintln!("  HNSW index: {} vectors\n", hnsw.len());
 
     // Pre-embed all queries
@@ -696,8 +704,12 @@ fn test_holdout_eval() {
 
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("holdout_eval.db");
-    let store = Store::open(&db_path).unwrap();
-    store.init(&ModelInfo::default()).unwrap();
+    let mut store = Store::open(&db_path).unwrap();
+    let mc = ModelConfig::resolve(None, None);
+    store
+        .init(&ModelInfo::new(&mc.repo, mc.dim as u32))
+        .unwrap();
+    store.set_dim(mc.dim);
 
     // Index both original AND hard fixtures (holdout queries target both)
     eprintln!("Parsing and indexing fixtures for holdout eval...");
@@ -726,8 +738,12 @@ fn test_holdout_eval() {
 
     // Build HNSW index
     let chunk_total = store.chunk_count().unwrap() as usize;
-    let hnsw = HnswIndex::build_batched(store.embedding_batches(10_000), chunk_total)
-        .expect("Failed to build HNSW index");
+    let hnsw = HnswIndex::build_batched_with_dim(
+        store.embedding_batches(10_000),
+        chunk_total,
+        store.dim(),
+    )
+    .expect("Failed to build HNSW index");
 
     // Embed all holdout queries
     let query_embeddings: Vec<_> = HOLDOUT_EVAL_CASES
@@ -829,8 +845,12 @@ fn test_stress_eval() {
 
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("stress_eval.db");
-    let store = Store::open(&db_path).unwrap();
-    store.init(&ModelInfo::default()).unwrap();
+    let mut store = Store::open(&db_path).unwrap();
+    let mc = ModelConfig::resolve(None, None);
+    store
+        .init(&ModelInfo::new(&mc.repo, mc.dim as u32))
+        .unwrap();
+    store.set_dim(mc.dim);
 
     // 1. Index eval fixtures (same as holdout) — with relationships for call graph enrichment
     eprintln!("=== Indexing eval fixtures ===");
@@ -1001,8 +1021,12 @@ fn test_stress_eval() {
 
     // Build HNSW index
     eprintln!("Building HNSW index...");
-    let hnsw = HnswIndex::build_batched(store.embedding_batches(10_000), total as usize)
-        .expect("Failed to build HNSW index");
+    let hnsw = HnswIndex::build_batched_with_dim(
+        store.embedding_batches(10_000),
+        total as usize,
+        store.dim(),
+    )
+    .expect("Failed to build HNSW index");
     eprintln!("  HNSW: {} vectors\n", hnsw.len());
 
     // Embed queries
