@@ -31,6 +31,18 @@ Enrichment stack contributes 43.6pp to hard eval (49.1% raw → 92.7% enriched).
 - [ ] Train v9-1m → eval (if 200k shows improvement)
 - [ ] Paper v0.6
 
+### Future — Migrate HNSW to `hnswlib-rs`
+Same author as `hnsw_rs` (jean-pierreBoth), redesigned to fix the borrowing API. Eliminates all 5 `unsafe` blocks in `src/hnsw/`.
+
+**Why:** Current `hnsw_rs` returns `Hnsw<'a>` borrowing from `&'a mut HnswIo`, forcing `UnsafeCell` + `unsafe impl Send/Sync` + `self_cell` for the self-referential pattern. `hnswlib-rs` uses a `VectorStore` trait — graph owns topology, you provide vectors on demand. Zero consumer unsafe.
+
+**What changes:** Delete `HnswIoCell`, `LoadedHnsw`, all `unsafe impl` blocks. Implement `VectorStore` trait backed by SQLite (vectors already stored there). Reindex required (format change). Build/search code adapts but structure is similar.
+
+**Risk:** 3.2K crate downloads (new). Mitigated by same proven author + we can vendor if needed.
+
+- [ ] Spike: implement `VectorStore` trait, benchmark build + search vs current
+- [ ] If comparable: full migration, delete `self_cell` dependency
+
 ### Next — Agent Adoption (cqs telemetry shows 87% search, 0% advanced commands)
 Current: CLAUDE.md restructured with task-triggered commands (2026-03-26). Check telemetry next session.
 If adoption doesn't improve, try these alternatives in order:
