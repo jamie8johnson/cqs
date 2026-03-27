@@ -594,11 +594,18 @@ fn reindex_files(
         .flat_map(|rel_path| {
             let abs_path = root.join(rel_path);
             if !abs_path.exists() {
-                // File was deleted, we'll handle this by removing old chunks
+                // RT-DATA-7: File was deleted — remove its chunks from the store
+                if let Err(e) = store.delete_by_origin(rel_path) {
+                    tracing::warn!(
+                        path = %rel_path.display(),
+                        error = %e,
+                        "Failed to delete chunks for deleted file"
+                    );
+                }
                 return vec![];
             }
             match parser.parse_file_all(&abs_path) {
-                Ok((mut file_chunks, _calls, chunk_type_refs)) => {
+                Ok((mut file_chunks, calls, chunk_type_refs)) => {
                     // Rewrite paths to be relative
                     for chunk in &mut file_chunks {
                         chunk.file = rel_path.clone();
@@ -606,6 +613,17 @@ fn reindex_files(
                     // Stash type refs for upsert after chunks are stored
                     if !chunk_type_refs.is_empty() {
                         all_type_refs.push((rel_path.clone(), chunk_type_refs));
+                    }
+                    // RT-DATA-8: Write function_calls table (file-level call graph).
+                    // Previously discarded — callers/impact/trace commands need this.
+                    if !calls.is_empty() {
+                        if let Err(e) = store.upsert_function_calls(rel_path, &calls) {
+                            tracing::warn!(
+                                path = %rel_path.display(),
+                                error = %e,
+                                "Failed to write function_calls for watched file"
+                            );
+                        }
                     }
                     file_chunks
                 }
