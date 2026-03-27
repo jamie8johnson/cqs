@@ -10,10 +10,13 @@ cqs - semantic code search with local embeddings
 - Push back when warranted.
 - Ask rather than guess wrong.
 - Efficiency over ceremony.
+- **Read files before acting on them.** Don't work from memory of what a file "probably" contains. Open it, read the relevant section, then act. This applies to source code, configs, scripts, docs, and especially function signatures. The cost of a Read is negligible; the cost of guessing wrong is a wasted round trip or a subtle bug. If you last read a file more than a few tool calls ago, read it again.
 
 ## On Resume
 
 If context just compacted: read tears, then ask "where were we?" rather than guessing.
+
+**Run `/cqs-verify` first.** Exercises all command categories, catches regressions, builds grounded understanding of the tool. Do this on every session start and after every compaction. No exceptions.
 
 **Distrust previous sessions.** Before continuing work marked "done", verify it actually works:
 - `cargo build 2>&1 | grep -i warning` - any dead code?
