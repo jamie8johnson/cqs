@@ -3,7 +3,7 @@
 mod models;
 mod provider;
 
-pub use models::{EmbeddingConfig, ModelConfig, DEFAULT_DIM, DEFAULT_MODEL_REPO};
+pub use models::{EmbeddingConfig, ModelConfig, ModelInfo, DEFAULT_DIM, DEFAULT_MODEL_REPO};
 
 use provider::ort_err;
 pub(crate) use provider::{create_session, select_provider};
@@ -235,10 +235,12 @@ pub struct Embedder {
 const DEFAULT_QUERY_CACHE_SIZE: usize = 32;
 
 impl Embedder {
-    /// Create a new embedder with lazy model loading
+    /// Create a new embedder with lazy model loading.
     ///
-    /// Automatically detects GPU and uses CUDA/TensorRT when available.
-    /// Falls back to CPU if no GPU is found.
+    /// When `force_cpu` is false, automatically detects GPU and uses CUDA/TensorRT
+    /// when available, falling back to CPU if no GPU is found.
+    /// When `force_cpu` is true, always uses CPU -- use this for single-query
+    /// embedding where CPU is faster than GPU due to CUDA context setup overhead.
     ///
     /// Note: Model download and ONNX session are lazy-loaded on first
     /// embedding request. This avoids HuggingFace API calls for commands
@@ -247,10 +249,10 @@ impl Embedder {
         Self::new_with_provider(model_config, select_provider())
     }
 
-    /// Create a CPU-only embedder with lazy model loading
+    /// Create a CPU-only embedder with lazy model loading.
     ///
-    /// Use this for single-query embedding where CPU is faster than GPU
-    /// due to CUDA context setup overhead. GPU only helps for batch embedding.
+    /// Convenience wrapper for `new()` — use this for single-query embedding
+    /// where CPU is faster than GPU due to CUDA context setup overhead.
     pub fn new_cpu(model_config: ModelConfig) -> Result<Self, EmbedderError> {
         Self::new_with_provider(model_config, ExecutionProvider::CPU)
     }
@@ -1120,6 +1122,97 @@ mod tests {
             let count = embedder.token_count(text).expect("token_count failed");
             // Unicode text may tokenize differently
             assert!(count > 0, "Expected >0 tokens for unicode, got {}", count);
+        }
+    }
+
+    // ===== TC-45: ensure_model / CQS_ONNX_DIR path tests =====
+
+    mod ensure_model_tests {
+        use super::*;
+        use std::sync::Mutex;
+
+        /// Mutex to serialize tests that manipulate CQS_ONNX_DIR env var.
+        static ONNX_DIR_MUTEX: Mutex<()> = Mutex::new(());
+
+        fn test_model_config() -> ModelConfig {
+            ModelConfig {
+                name: "test".to_string(),
+                repo: "test/model".to_string(),
+                onnx_path: "onnx/model.onnx".to_string(),
+                tokenizer_path: "tokenizer.json".to_string(),
+                dim: 768,
+                max_seq_length: 512,
+                query_prefix: String::new(),
+                doc_prefix: String::new(),
+            }
+        }
+
+        #[test]
+        fn cqs_onnx_dir_structured_layout() {
+            let _lock = ONNX_DIR_MUTEX.lock().unwrap();
+            let dir = tempfile::TempDir::new().unwrap();
+            let onnx_dir = dir.path().join("onnx");
+            std::fs::create_dir_all(&onnx_dir).unwrap();
+            std::fs::write(onnx_dir.join("model.onnx"), b"fake").unwrap();
+            std::fs::write(dir.path().join("tokenizer.json"), b"fake").unwrap();
+
+            std::env::set_var("CQS_ONNX_DIR", dir.path().to_str().unwrap());
+            let result = ensure_model(&test_model_config());
+            std::env::remove_var("CQS_ONNX_DIR");
+
+            let (model, tok) = result.unwrap();
+            assert!(
+                model.to_string_lossy().ends_with("model.onnx"),
+                "Expected model path ending in model.onnx, got {:?}",
+                model
+            );
+            assert!(
+                tok.to_string_lossy().ends_with("tokenizer.json"),
+                "Expected tokenizer path ending in tokenizer.json, got {:?}",
+                tok
+            );
+        }
+
+        #[test]
+        fn cqs_onnx_dir_flat_layout() {
+            let _lock = ONNX_DIR_MUTEX.lock().unwrap();
+            let dir = tempfile::TempDir::new().unwrap();
+            std::fs::write(dir.path().join("model.onnx"), b"fake").unwrap();
+            std::fs::write(dir.path().join("tokenizer.json"), b"fake").unwrap();
+
+            std::env::set_var("CQS_ONNX_DIR", dir.path().to_str().unwrap());
+            let result = ensure_model(&test_model_config());
+            std::env::remove_var("CQS_ONNX_DIR");
+
+            let (model, tok) = result.unwrap();
+            assert!(
+                model.to_string_lossy().ends_with("model.onnx"),
+                "Expected model path ending in model.onnx, got {:?}",
+                model
+            );
+            assert!(
+                tok.to_string_lossy().ends_with("tokenizer.json"),
+                "Expected tokenizer path ending in tokenizer.json, got {:?}",
+                tok
+            );
+        }
+
+        #[test]
+        fn cqs_onnx_dir_missing_files_falls_through() {
+            let _lock = ONNX_DIR_MUTEX.lock().unwrap();
+            let dir = tempfile::TempDir::new().unwrap();
+            // Empty dir -- neither structured nor flat layout
+
+            std::env::set_var("CQS_ONNX_DIR", dir.path().to_str().unwrap());
+            let result = ensure_model(&test_model_config());
+            std::env::remove_var("CQS_ONNX_DIR");
+
+            // Falls through to HF download -- which will fail in test env,
+            // but the point is it didn't return the CQS_ONNX_DIR path
+            assert!(
+                result.is_err() || !result.as_ref().unwrap().0.starts_with(dir.path()),
+                "Should not return paths from empty CQS_ONNX_DIR"
+            );
         }
     }
 }

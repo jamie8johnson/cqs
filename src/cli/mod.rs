@@ -783,14 +783,13 @@ mod tests {
             Some(Commands::Review {
                 base,
                 stdin,
-                format,
-                json,
+                ref output,
                 tokens,
             }) => {
                 assert!(base.is_none());
                 assert!(!stdin);
-                assert!(matches!(format, OutputFormat::Text));
-                assert!(!json);
+                assert!(matches!(output.format, OutputFormat::Text));
+                assert!(!output.json);
                 assert!(tokens.is_none());
             }
             _ => panic!("Expected Review command"),
@@ -812,9 +811,11 @@ mod tests {
     fn test_cmd_review_stdin_format_json() {
         let cli = Cli::try_parse_from(["cqs", "review", "--stdin", "--format", "json"]).unwrap();
         match cli.command {
-            Some(Commands::Review { stdin, format, .. }) => {
+            Some(Commands::Review {
+                stdin, ref output, ..
+            }) => {
                 assert!(stdin);
-                assert!(matches!(format, OutputFormat::Json));
+                assert!(matches!(output.format, OutputFormat::Json));
             }
             _ => panic!("Expected Review command"),
         }
@@ -863,9 +864,9 @@ mod tests {
     fn test_impact_json_flag() {
         let cli = Cli::try_parse_from(["cqs", "impact", "my_func", "--json"]).unwrap();
         match cli.command {
-            Some(Commands::Impact { json, format, .. }) => {
-                assert!(json);
-                assert!(matches!(format, OutputFormat::Text)); // default, overridden at dispatch
+            Some(Commands::Impact { ref output, .. }) => {
+                assert!(output.json);
+                assert!(matches!(output.format, OutputFormat::Text)); // default, overridden at dispatch
             }
             _ => panic!("Expected Impact command"),
         }
@@ -882,9 +883,9 @@ mod tests {
     fn test_review_json_flag() {
         let cli = Cli::try_parse_from(["cqs", "review", "--json"]).unwrap();
         match cli.command {
-            Some(Commands::Review { json, format, .. }) => {
-                assert!(json);
-                assert!(matches!(format, OutputFormat::Text));
+            Some(Commands::Review { ref output, .. }) => {
+                assert!(output.json);
+                assert!(matches!(output.format, OutputFormat::Text));
             }
             _ => panic!("Expected Review command"),
         }
@@ -900,9 +901,9 @@ mod tests {
     fn test_ci_json_flag() {
         let cli = Cli::try_parse_from(["cqs", "ci", "--json"]).unwrap();
         match cli.command {
-            Some(Commands::Ci { json, format, .. }) => {
-                assert!(json);
-                assert!(matches!(format, OutputFormat::Text));
+            Some(Commands::Ci { ref output, .. }) => {
+                assert!(output.json);
+                assert!(matches!(output.format, OutputFormat::Text));
             }
             _ => panic!("Expected Ci command"),
         }
@@ -918,9 +919,9 @@ mod tests {
     fn test_trace_json_flag() {
         let cli = Cli::try_parse_from(["cqs", "trace", "a", "b", "--json"]).unwrap();
         match cli.command {
-            Some(Commands::Trace { json, format, .. }) => {
-                assert!(json);
-                assert!(matches!(format, OutputFormat::Text));
+            Some(Commands::Trace { ref output, .. }) => {
+                assert!(output.json);
+                assert!(matches!(output.format, OutputFormat::Text));
             }
             _ => panic!("Expected Trace command"),
         }
@@ -1071,15 +1072,14 @@ mod tests {
             Some(Commands::Ci {
                 base,
                 stdin,
-                format,
-                json,
+                ref output,
                 gate,
                 tokens,
             }) => {
                 assert!(base.is_none());
                 assert!(!stdin);
-                assert!(matches!(format, OutputFormat::Text));
-                assert!(!json);
+                assert!(matches!(output.format, OutputFormat::Text));
+                assert!(!output.json);
                 assert!(matches!(gate, GateThreshold::High));
                 assert!(tokens.is_none());
             }
@@ -1118,12 +1118,12 @@ mod tests {
         match cli.command {
             Some(Commands::Ci {
                 stdin,
-                format,
+                ref output,
                 tokens,
                 ..
             }) => {
                 assert!(stdin);
-                assert!(matches!(format, OutputFormat::Json));
+                assert!(matches!(output.format, OutputFormat::Json));
                 assert_eq!(tokens, Some(5000));
             }
             _ => panic!("Expected Ci command"),

@@ -230,6 +230,51 @@ fn default_model_name() -> String {
     ModelConfig::default_model().name
 }
 
+/// Model metadata for index initialization.
+///
+/// Construct via `ModelInfo::new()` with explicit name + dim, or
+/// `ModelInfo::default()` for tests only (BGE-large, 1024-dim).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModelInfo {
+    pub name: String,
+    pub dimensions: usize,
+    pub version: String,
+}
+
+impl ModelInfo {
+    /// Create ModelInfo with explicit model name and dimension.
+    ///
+    /// This is the preferred constructor for production code. The name and dim
+    /// come from the Embedder at runtime.
+    pub fn new(name: impl Into<String>, dim: usize) -> Self {
+        ModelInfo {
+            name: name.into(),
+            dimensions: dim,
+            version: "2".to_string(),
+        }
+    }
+
+    /// Create ModelInfo with default model name and a specific dimension.
+    ///
+    /// Convenience for callers that only vary dimension (e.g., `Embedder::embedding_dim()`).
+    pub fn with_dim(dim: usize) -> Self {
+        Self::new(DEFAULT_MODEL_REPO, dim)
+    }
+}
+
+impl Default for ModelInfo {
+    /// Test-only default: BGE-large with default dim (1024).
+    ///
+    /// Production code should use `ModelInfo::new()` or `ModelInfo::with_dim()`.
+    fn default() -> Self {
+        ModelInfo {
+            name: DEFAULT_MODEL_REPO.to_string(),
+            dimensions: DEFAULT_DIM,
+            version: "2".to_string(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

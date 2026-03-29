@@ -175,6 +175,8 @@ pub struct LlmConfig {
     pub api_base: String,
     pub model: String,
     pub max_tokens: u32,
+    /// Max tokens for HyDE query predictions (default: 150).
+    pub hyde_max_tokens: u32,
 }
 
 impl LlmConfig {
@@ -267,11 +269,18 @@ impl LlmConfig {
         };
         tracing::debug!(source = max_tokens_source, "max_tokens resolved");
 
+        let hyde_max_tokens = std::env::var("CQS_HYDE_MAX_TOKENS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .or(config.llm_hyde_max_tokens)
+            .unwrap_or(HYDE_MAX_TOKENS);
+
         Self {
             provider,
             api_base,
             model,
             max_tokens,
+            hyde_max_tokens,
         }
     }
 }

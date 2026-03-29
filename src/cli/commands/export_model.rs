@@ -67,7 +67,7 @@ pub(crate) fn cmd_export_model(repo: &str, output: &Path) -> anyhow::Result<()> 
             "feature-extraction",
             "--opset",
             "11",
-            &output.display().to_string(),
+            &output.to_string_lossy(),
         ])
         .output()?;
 

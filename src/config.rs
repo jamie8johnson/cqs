@@ -118,6 +118,8 @@ pub struct Config {
     pub llm_api_base: Option<String>,
     /// LLM max tokens for summary generation (overridden by CQS_LLM_MAX_TOKENS env var)
     pub llm_max_tokens: Option<u32>,
+    /// LLM max tokens for HyDE query predictions (overridden by CQS_HYDE_MAX_TOKENS env var)
+    pub llm_hyde_max_tokens: Option<u32>,
     /// Embedding model configuration
     #[serde(default)]
     pub embedding: Option<crate::embedder::EmbeddingConfig>,
@@ -126,8 +128,16 @@ pub struct Config {
     pub references: Vec<ReferenceConfig>,
 }
 
-/// Clamp f32 config value to valid range and warn if out of bounds
+/// Clamp f32 config value to valid range and warn if out of bounds.
+///
+/// TC-48: Also catches NaN (which silently passes all comparisons as false)
+/// and clamps it to `min`, preventing silent data loss in downstream filters.
 fn clamp_config_f32(value: &mut f32, name: &str, min: f32, max: f32) {
+    if value.is_nan() {
+        tracing::warn!(field = name, "Config value is NaN, clamping to min");
+        *value = min;
+        return;
+    }
     if *value < min || *value > max {
         tracing::warn!(
             field = name,
@@ -316,6 +326,7 @@ impl Config {
             llm_model: other.llm_model.or(self.llm_model),
             llm_api_base: other.llm_api_base.or(self.llm_api_base),
             llm_max_tokens: other.llm_max_tokens.or(self.llm_max_tokens),
+            llm_hyde_max_tokens: other.llm_hyde_max_tokens.or(self.llm_hyde_max_tokens),
             embedding: other.embedding.or(self.embedding),
             references: refs,
         }
@@ -1012,22 +1023,33 @@ llm_max_tokens = 200
         assert!(config.embedding.is_none());
     }
 
-    // ===== TC-36: NaN threshold passes through clamp unchanged =====
+    // ===== TC-36/TC-48: NaN threshold clamped to min =====
 
     #[test]
-    fn tc36_nan_threshold_passes_clamp_unchanged() {
-        // NaN comparisons always return false, so `clamp_config_f32` never triggers
-        // (NaN < min → false, NaN > max → false). This means NaN silently passes
-        // validation. Document this behavior rather than add a special case.
+    fn tc36_nan_threshold_clamped_to_min() {
+        // TC-48: NaN is now caught by clamp_config_f32 and clamped to min (0.0
+        // for threshold). Previously NaN silently passed through because all NaN
+        // comparisons return false.
         let mut config = Config {
             threshold: Some(f32::NAN),
             ..Default::default()
         };
         config.validate();
-        // NaN survives clamping because all NaN comparisons are false
-        assert!(
-            config.threshold.unwrap().is_nan(),
-            "NaN should pass through clamp unchanged (NaN comparisons are always false)"
+        // NaN is now caught and clamped to min (0.0 for threshold)
+        assert_eq!(config.threshold, Some(0.0));
+    }
+
+    #[test]
+    fn tc48_nan_name_boost_clamped_to_min() {
+        let mut config = Config {
+            name_boost: Some(f32::NAN),
+            ..Default::default()
+        };
+        config.validate();
+        assert_eq!(
+            config.name_boost,
+            Some(0.0),
+            "NaN name_boost should be clamped to 0.0"
         );
     }
 

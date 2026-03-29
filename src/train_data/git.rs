@@ -79,6 +79,12 @@ pub fn git_log(repo: &Path, max_commits: usize) -> Result<Vec<CommitInfo>, Train
     }
 
     tracing::debug!(count = commits.len(), "Parsed git log commits");
+    if commits.len() > 100_000 {
+        tracing::warn!(
+            count = commits.len(),
+            "git_log returned >100K commits — consider setting max_commits to limit memory usage"
+        );
+    }
     Ok(commits)
 }
 

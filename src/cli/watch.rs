@@ -737,13 +737,16 @@ fn reindex_files(
             .collect();
         store.upsert_chunks_and_calls(pairs, mtime, &file_calls)?;
 
-        // RT-DATA-10: Delete phantom chunks — functions removed from the file
-        // but still lingering in the index. The upsert above handles updates
+        // DS-37 / RT-DATA-10: Delete phantom chunks — functions removed from the
+        // file but still lingering in the index. The upsert above handles updates
         // and inserts; this cleans up deletions.
+        //
+        // Ideally this would share a transaction with upsert_chunks_and_calls, but
+        // both methods manage their own internal transactions. A crash between the
+        // two leaves phantoms that get cleaned on the next reindex. Propagate the
+        // error rather than silently swallowing it.
         let live_ids: Vec<&str> = chunk_ids.iter().copied().collect();
-        if let Err(e) = store.delete_phantom_chunks(file, &live_ids) {
-            tracing::warn!(file = %file.display(), error = %e, "Failed to clean phantom chunks");
-        }
+        store.delete_phantom_chunks(file, &live_ids)?;
     }
 
     // Upsert type edges from the earlier parse_file_all() results.
@@ -776,12 +779,20 @@ fn reindex_notes(root: &Path, store: &Store, quiet: bool) -> Result<usize> {
         return Ok(0);
     }
 
+    // DS-34: Hold shared lock during read+index to prevent partial reads
+    // if another process is writing notes concurrently (e.g., `cqs notes add`).
+    let lock_file = std::fs::File::open(&notes_path)?;
+    lock_file.lock_shared()?;
+
     let notes = parse_notes(&notes_path)?;
     if notes.is_empty() {
+        drop(lock_file);
         return Ok(0);
     }
 
     let count = cqs::index_notes(&notes, &notes_path, store)?;
+
+    drop(lock_file); // release lock after index completes
 
     if !quiet {
         let ns = store.note_stats()?;

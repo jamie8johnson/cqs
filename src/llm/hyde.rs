@@ -1,10 +1,7 @@
 //! HyDE (Hypothetical Document Embeddings) query prediction pass.
 
 use super::batch::BatchPhase2;
-use super::{
-    collect_eligible_chunks, LlmConfig, LlmError, HYDE_MAX_TOKENS, MAX_BATCH_SIZE,
-    MAX_CONTENT_CHARS,
-};
+use super::{collect_eligible_chunks, LlmConfig, LlmError, MAX_BATCH_SIZE, MAX_CONTENT_CHARS};
 use crate::Store;
 
 /// Run the HyDE query prediction pass using the Batches API.
@@ -32,6 +29,7 @@ pub fn hyde_query_pass(
         "HyDE query pass starting"
     );
 
+    let hyde_max_tokens = llm_config.hyde_max_tokens;
     let client = super::create_client(llm_config)?;
 
     let effective_batch_size = if max_hyde > 0 {
@@ -77,7 +75,7 @@ pub fn hyde_query_pass(
     // Phase 2: Submit batch to Claude API (or resume a pending one)
     let phase2 = BatchPhase2 {
         purpose: "hyde",
-        max_tokens: HYDE_MAX_TOKENS,
+        max_tokens: hyde_max_tokens,
         quiet,
         lock_dir,
     };

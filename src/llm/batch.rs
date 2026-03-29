@@ -843,6 +843,89 @@ mod tests {
         );
     }
 
+    /// TC-46: Batch with results for nonexistent chunks returns empty map
+    /// (all results filtered as stale). Requires at least one real chunk
+    /// in the DB so the valid_hashes set is non-empty (empty DB = store-all).
+    #[test]
+    fn test_all_results_filtered_returns_empty() {
+        let (store, _dir) = setup_store();
+        // Insert one real chunk so valid_hashes is non-empty (otherwise the
+        // code assumes fresh DB and stores everything without filtering).
+        insert_chunk_with_hash(&store, "hash_real");
+
+        let mut results = HashMap::new();
+        results.insert("nonexistent_hash_1".to_string(), "summary 1".to_string());
+        results.insert("nonexistent_hash_2".to_string(), "summary 2".to_string());
+
+        let mock = MockBatchProvider::new("msgbatch_filter", results);
+        let phase2 = BatchPhase2 {
+            purpose: "summary",
+            max_tokens: 1024,
+            quiet: true,
+            lock_dir: None,
+        };
+
+        let items = vec![BatchSubmitItem {
+            custom_id: "nonexistent_hash_1".to_string(),
+            content: "fn ghost() {}".to_string(),
+            context: "function".to_string(),
+            language: "rust".to_string(),
+        }];
+
+        let result = phase2.submit_or_resume(
+            &mock,
+            &store,
+            &items,
+            &|s| s.get_pending_batch_id(),
+            &|s, id| s.set_pending_batch_id(id),
+            &|c, items, max_tok| c.submit_batch_prebuilt(items, max_tok),
+        );
+
+        let map = result.unwrap();
+        assert!(map.is_empty(), "All stale results should be filtered out");
+    }
+
+    /// TC-46: submit_or_resume with a stored pending batch ID resumes correctly.
+    #[test]
+    fn test_resume_with_pending_batch() {
+        let (store, _dir) = setup_store();
+
+        // Insert a chunk so the result passes validation
+        insert_chunk_with_hash(&store, "hash_resume");
+
+        // Set a pending batch ID (simulating a prior interrupted run)
+        store
+            .set_pending_batch_id(Some("msgbatch_pending_resume"))
+            .unwrap();
+
+        let mut results = HashMap::new();
+        results.insert("hash_resume".to_string(), "resumed summary".to_string());
+
+        let mock = MockBatchProvider::new("msgbatch_pending_resume", results);
+        let phase2 = BatchPhase2 {
+            purpose: "summary",
+            max_tokens: 1024,
+            quiet: true,
+            lock_dir: None,
+        };
+
+        // Empty items -- but there's a pending batch to resume
+        let result = phase2.submit_or_resume(
+            &mock,
+            &store,
+            &[],
+            &|s| s.get_pending_batch_id(),
+            &|s, id| s.set_pending_batch_id(id),
+            &|c, items, max_tok| c.submit_batch_prebuilt(items, max_tok),
+        );
+
+        let map = result.unwrap();
+        assert!(
+            map.contains_key("hash_resume"),
+            "Resumed batch should return valid results"
+        );
+    }
+
     #[test]
     fn test_clear_pending() {
         let (store, _dir) = setup_store();

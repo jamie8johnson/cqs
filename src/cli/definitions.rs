@@ -46,6 +46,50 @@ impl std::fmt::Display for OutputFormat {
     }
 }
 
+/// AD-49: Common output format arguments shared across commands that support text/json/mermaid.
+#[derive(Clone, Debug, clap::Args)]
+pub struct OutputArgs {
+    /// Output format: text, json, mermaid (use --json as shorthand for --format json)
+    #[arg(long, default_value = "text")]
+    pub format: OutputFormat,
+    /// Shorthand for --format json
+    #[arg(long, conflicts_with = "format")]
+    pub json: bool,
+}
+
+impl OutputArgs {
+    /// Resolve the effective format (--json overrides --format).
+    pub fn effective_format(&self) -> OutputFormat {
+        if self.json {
+            OutputFormat::Json
+        } else {
+            self.format.clone()
+        }
+    }
+}
+
+/// AD-49: Output format arguments for commands that only support text/json (no mermaid).
+#[derive(Clone, Debug, clap::Args)]
+pub struct TextJsonArgs {
+    /// Output format: text, json (use --json as shorthand for --format json; mermaid not supported)
+    #[arg(long, default_value = "text", value_parser = parse_text_or_json_format)]
+    pub format: OutputFormat,
+    /// Shorthand for --format json
+    #[arg(long, conflicts_with = "format")]
+    pub json: bool,
+}
+
+impl TextJsonArgs {
+    /// Resolve the effective format (--json overrides --format).
+    pub fn effective_format(&self) -> OutputFormat {
+        if self.json {
+            OutputFormat::Json
+        } else {
+            self.format.clone()
+        }
+    }
+}
+
 /// Re-export `GateThreshold` so CLI and batch code can reference it directly.
 pub use cqs::ci::GateThreshold;
 
@@ -371,12 +415,8 @@ pub(super) enum Commands {
     Impact {
         #[command(flatten)]
         args: args::ImpactArgs,
-        /// Output format: text, json, mermaid (use --json as shorthand for --format json)
-        #[arg(long, default_value = "text")]
-        format: OutputFormat,
-        /// Shorthand for --format json
-        #[arg(long, conflicts_with = "format")]
-        json: bool,
+        #[command(flatten)]
+        output: OutputArgs,
     },
     /// Impact analysis from a git diff — what callers and tests are affected
     #[command(name = "impact-diff")]
@@ -399,12 +439,8 @@ pub(super) enum Commands {
         /// Read diff from stdin instead of running git
         #[arg(long)]
         stdin: bool,
-        /// Output format: text, json (use --json as shorthand for --format json; mermaid not supported)
-        #[arg(long, default_value = "text", value_parser = parse_text_or_json_format)]
-        format: OutputFormat,
-        /// Shorthand for --format json
-        #[arg(long, conflicts_with = "format")]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
         /// Maximum token budget for output (truncates callers/tests lists)
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
@@ -417,12 +453,8 @@ pub(super) enum Commands {
         /// Read diff from stdin instead of running git
         #[arg(long)]
         stdin: bool,
-        /// Output format: text, json (use --json as shorthand for --format json; mermaid not supported)
-        #[arg(long, default_value = "text", value_parser = parse_text_or_json_format)]
-        format: OutputFormat,
-        /// Shorthand for --format json
-        #[arg(long, conflicts_with = "format")]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
         /// Gate threshold: high, medium, off (default: high)
         #[arg(long, default_value = "high")]
         gate: GateThreshold,
@@ -439,12 +471,8 @@ pub(super) enum Commands {
         /// Max search depth (1-50)
         #[arg(long, default_value = "10", value_parser = clap::value_parser!(u16).range(1..=50))]
         max_depth: u16,
-        /// Output format: text, json, mermaid (use --json as shorthand for --format json)
-        #[arg(long, default_value = "text")]
-        format: OutputFormat,
-        /// Shorthand for --format json
-        #[arg(long, conflicts_with = "format")]
-        json: bool,
+        #[command(flatten)]
+        output: OutputArgs,
     },
     /// Find tests that exercise a function
     TestMap {
