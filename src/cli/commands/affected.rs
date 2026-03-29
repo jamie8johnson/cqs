@@ -174,6 +174,7 @@ mod tests {
                 changed_count: 0,
                 caller_count: 0,
                 test_count: 0,
+                truncated: false,
             },
         };
         assert_eq!(overall_risk_label(&empty_result), "low");

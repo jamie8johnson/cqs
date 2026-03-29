@@ -338,16 +338,15 @@ impl LlmClient {
     }
 }
 
-/// Validates whether a string is a properly formatted batch ID.
+/// Validates whether a string is a properly formatted Anthropic batch ID.
 ///
-/// # Arguments
+/// Anthropic batch IDs start with `msgbatch_`, contain only ASCII
+/// alphanumeric characters or underscores, and are under 100 characters.
 ///
-/// * `id` - The string to validate as a batch ID
-///
-/// # Returns
-///
-/// Returns `true` if the ID starts with "msgbatch_", is less than 100 characters long, and contains only ASCII alphanumeric characters or underscores. Returns `false` otherwise.
-fn is_valid_batch_id(id: &str) -> bool {
+/// Other providers may have different ID formats; this function is
+/// Anthropic-specific. The [`BatchProvider::is_valid_batch_id`] trait
+/// method dispatches to the correct provider validation.
+fn is_valid_anthropic_batch_id(id: &str) -> bool {
     id.starts_with("msgbatch_")
         && id.len() < 100
         && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
@@ -461,17 +460,21 @@ mod tests {
 
     #[test]
     fn is_valid_batch_id_accepts_real_ids() {
-        assert!(is_valid_batch_id("msgbatch_abc123"));
-        assert!(is_valid_batch_id("msgbatch_0123456789abcdef_ABCDEF"));
+        assert!(is_valid_anthropic_batch_id("msgbatch_abc123"));
+        assert!(is_valid_anthropic_batch_id(
+            "msgbatch_0123456789abcdef_ABCDEF"
+        ));
     }
 
     #[test]
     fn is_valid_batch_id_rejects_crafted() {
-        assert!(!is_valid_batch_id("../../v1/complete"));
-        assert!(!is_valid_batch_id("msgbatch_abc?redirect=evil.com"));
-        assert!(!is_valid_batch_id(""));
-        assert!(!is_valid_batch_id("not_a_batch"));
-        assert!(!is_valid_batch_id(
+        assert!(!is_valid_anthropic_batch_id("../../v1/complete"));
+        assert!(!is_valid_anthropic_batch_id(
+            "msgbatch_abc?redirect=evil.com"
+        ));
+        assert!(!is_valid_anthropic_batch_id(""));
+        assert!(!is_valid_anthropic_batch_id("not_a_batch"));
+        assert!(!is_valid_anthropic_batch_id(
             &("msgbatch_".to_string() + &"a".repeat(200))
         ));
     }

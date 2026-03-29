@@ -385,6 +385,7 @@ mod tests {
                 changed_count: 1,
                 caller_count: 1,
                 test_count: 1,
+                truncated: false,
             },
         };
         let json = diff_impact_to_json(&result);
@@ -418,6 +419,7 @@ mod tests {
                 changed_count: 0,
                 caller_count: 0,
                 test_count: 0,
+                truncated: false,
             },
         };
         let json = diff_impact_to_json(&result);

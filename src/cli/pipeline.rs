@@ -31,8 +31,10 @@ pub(crate) const MAX_TOKENS_PER_WINDOW: usize = 480;
 pub(crate) const WINDOW_OVERLAP_TOKENS: usize = 64;
 
 // Pipeline tuning constants
-/// Embedding batch size (backed off from 64 — crashed at 2%)
-const EMBED_BATCH_SIZE: usize = 32;
+/// Embedding batch size. Was 32 (backed off from 64 after an undiagnosed crash at 2%).
+/// Restored to 64 with debug logging (PERF-45 investigation). If it crashes again,
+/// run with RUST_LOG=debug to capture batch_size/max_char_len/total_chars at failure.
+const EMBED_BATCH_SIZE: usize = 64;
 /// Files to parse per batch (bounded memory)
 const FILE_BATCH_SIZE: usize = 5_000;
 /// Parse channel depth — lightweight (chunk metadata only), can be deeper
@@ -540,6 +542,18 @@ fn gpu_embed_stage(
         }
 
         let max_len = prepared.texts.iter().map(|t| t.len()).max().unwrap_or(0);
+        let avg_len = if prepared.texts.is_empty() {
+            0
+        } else {
+            prepared.texts.iter().map(|t| t.len()).sum::<usize>() / prepared.texts.len()
+        };
+        tracing::debug!(
+            batch_size = prepared.texts.len(),
+            max_char_len = max_len,
+            avg_char_len = avg_len,
+            total_chars = prepared.texts.iter().map(|t| t.len()).sum::<usize>(),
+            "embed_batch start"
+        );
 
         // Pre-filter long batches to CPU (GPU hits CUDNN limits >8k chars)
         if max_len > 8000 {
@@ -555,8 +569,14 @@ fn gpu_embed_stage(
         }
 
         let text_refs: Vec<&str> = prepared.texts.iter().map(|s| s.as_str()).collect();
+        let embed_start = std::time::Instant::now();
         match embedder.embed_documents(&text_refs) {
             Ok(embs) => {
+                tracing::debug!(
+                    elapsed_ms = embed_start.elapsed().as_millis() as u64,
+                    count = embs.len(),
+                    "embed_batch ok"
+                );
                 let new_embeddings: Vec<Embedding> = embs;
                 let cached_count = prepared.cached.len();
                 let mut chunk_embeddings = prepared.cached;

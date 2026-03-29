@@ -2,58 +2,65 @@
 
 ## Right Now
 
-**8th audit: P1+P2 all fixed, PR #715 open (CI green). P3 fixer running. Training complete. (2026-03-29)**
+**v1.11.0 released. 8th audit (80/88 fixed). 6 new commands. Contrastive experiment confirmed 89.1% floor. (2026-03-29)**
 
-### Branch: `audit/v1.9.0-plus`
+### What shipped today
+- v1.11.0: 8th audit (80 findings fixed) + 6 new commands + query expansion
+- PR #715 merged (audit), PR #720 merged (commands), PR #721 open (CONTRIBUTING)
+- crates.io published, GitHub release building, binary installed
+- 19 OpenClaw contributions (9 PRs, 9 issues, 1 comment)
+- Paper v0.6 (thesis: training signal quality > model capacity)
+- Pre-Edit hook live (`.claude/hooks/pre-edit-context.py`)
+- Audit skill improved (prompt gen + review steps 8-9)
 
-### Audit v1.9.0+ — 88 findings, 14 categories
-- **P1 (12): ALL FIXED.** PR #715.
-- **P2 (15): ALL FIXED.** Including 4 large refactors (WatchState struct, N+1 UPDATE, O(N) contrastive, watch tests).
-- **P3 (39): Fixer agent running.** Prompts generated.
-- **P4 (25): 22 fixable (prompts generated), 3 hard (issues only: PERF-45, RM-40, CQ-38).**
-- Audit skill updated: steps 8-9 (prompt gen + review). P4 trivials fixed inline.
-- Pre-Edit hook installed: `.claude/hooks/pre-edit-context.py` auto-injects module context for .rs files.
+### Training — 89.1% basin confirmed (5 data points)
+| Variant | Change | Pipeline R@1 |
+|---------|--------|-------------|
+| v9-200k | baseline | **94.5%** |
+| v9-500k | 2.5× more data | 89.1% |
+| v9-200k-hn | + FAISS hard negatives | 89.1% |
+| v9-200k-1.5ep | 1.5× more epochs | 89.1% |
+| contrastive-B | 25% contrastive queries | 89.1% |
 
-### Training — v9-200k-1.5ep COMPLETE
-**Result: 1.5 epochs regresses pipeline by 5.4pp (94.5% → 89.1%). Raw flat (70.9%).**
-Third confirmation: 200K × 1 epoch × CG-filter-only is the recipe. More training doesn't help.
+Query format changes don't help. Need fundamentally different training signals (test-derived queries, type-aware negatives).
 
-| Model | Pipeline R@1 | Raw R@1 | Raw MRR |
-|-------|-------------|---------|---------|
-| v9-200k (1ep) | 94.5% | 70.9% | 0.795 |
-| v9-200k-1.5ep | 89.1% | 70.9% | 0.791 |
+### In Progress (2026-03-29 ~16:00 CDT)
+- Issue-fixer agent running: #711 (diff impact cap), #695 (export-model auto-dim), #694 (batch ID trait), #697 (cargo audit)
+- Markdown split done (waiting to commit together)
+- Pipeline batch=64 restored with debug logging (#716 investigation)
+- All on branch `docs/contributing-checklist` (or agents may have created `fix/open-issues-batch`)
 
-### OpenClaw — 19 contributions filed
-Tracking: `docs/openclaw-contributions.md`. 9 PRs, 9 issues, 1 comment. Six Greptile 5/5.
-
-### Uncommitted (on audit branch, beyond PR #715)
-- P3 fixer agent actively modifying files (36 dirty files)
-- CLAUDE.md workflow examples, ROADMAP agent adoption updates
-- Pre-edit hook script + settings.local.json hook config
-- math.rs test edit reverted
+### Uncommitted changes across branches
+- `src/cli/pipeline.rs` — EMBED_BATCH_SIZE 32→64 + debug logging
+- `src/parser/markdown/` — split from markdown.rs (4 files, 3 context structs)
+- Issue fixer agent modifying: impact/diff.rs, export_model.rs, llm/provider.rs, Cargo.toml
 
 ### Pending
-1. P3 fixer completes → commit + push to PR #715
-2. Apply fixable P4s (22 items, prompts ready)
-3. File 3 hard P4 issues (PERF-45, RM-40, CQ-38)
-4. Merge PR #715
-5. Update RESULTS.md + research_log with 1.5ep results
-6. Publish 500K/1M datasets to HF
+1. Issue-fixer agent completes → commit all + PR
+2. Merge PR #721 (CONTRIBUTING checklist)
+3. Re-run full eval matrix on final code state
+4. Close resolved issues (#711, #695, #694, #697, #716, #718)
+5. Next training: test-derived queries or type-aware negatives
 
 ## Parked
 - Dart language support
 - hnswlib-rs migration
 - DXF Phase 1
 - Blackwell GPU upgrade
+- Publish 500K/1M datasets to HF (waiting for training experiments to settle)
 
 ## Open Issues
 - #389, #255, #106, #63 (upstream)
-- #694-697, #700 (audit P4)
+- #694, #695 (audit P4)
 - #711 RT-RES-9
+- #716 PERF-45 (EMBED_BATCH_SIZE diagnosis)
+- #717 RM-40 (HNSW mmap)
+- #718 CQ-38 (markdown.rs split)
 
 ## Architecture
-- Version: 1.9.0, BGE-large default (1024-dim)
+- Version: 1.11.0, BGE-large default (1024-dim)
 - v9-200k LoRA: 94.5% pipeline, 70.9% raw (110M = 335M on pipeline)
+- 6 new commands: brief, affected, neighbors, doctor --fix, train-pairs, query expansion
 - HF dataset: https://huggingface.co/datasets/jamie8johnson/cqs-code-search-200k
-- OpenClaw PR: https://github.com/openclaw/openclaw/pull/56278
-- Tests: 1491
+- OpenClaw: https://github.com/openclaw/openclaw (19 contributions, all open)
+- Tests: ~1540

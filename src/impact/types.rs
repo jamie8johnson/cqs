@@ -94,6 +94,9 @@ pub struct DiffImpactSummary {
     pub changed_count: usize,
     pub caller_count: usize,
     pub test_count: usize,
+    /// True when changed functions exceeded the cap and were truncated.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 /// Aggregated impact result from a diff

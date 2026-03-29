@@ -42,18 +42,28 @@ Config F (HNSW + name_boost + demotion). 55 queries, fixtures only. A6000.
 - [x] Train v9-200k → **94.5% pipeline, 70.9% raw**
 - [x] Train v9-200k-hn → 89.1% pipeline (FAISS negs regress -5.4pp)
 - [x] Train v9-500k → 89.1% pipeline (more data regresses -5.4pp)
-- [ ] v9-200k-1.5ep (training in progress 2026-03-29, ~2h remaining)
+- [x] v9-200k-1.5ep → 89.1% pipeline (more epochs regresses -5.4pp). Raw flat (70.9%).
+- [x] Contrastive-B (25% contrastive queries from call graph) → 89.1% pipeline (-5.4pp). Fifth confirmation.
 
-**Conclusion:** 200K × 1 epoch × CG-filter-only is the recipe. More of anything hurts pipeline.
+**Conclusion:** 200K × 1 epoch × CG-filter-only is the recipe. Five independent perturbations (more data, FAISS negs, more epochs, contrastive queries, and by extension any query format change) all land at the same 89.1% floor. The 94.5% optimum is a narrow peak reachable only by the exact recipe.
+
+**The 89.1% basin of attraction (5 data points):**
+| Variant | Change | Pipeline R@1 |
+|---------|--------|-------------|
+| v9-200k | baseline | **94.5%** |
+| v9-500k | 2.5× more data | 89.1% |
+| v9-200k-hn | + FAISS hard negatives | 89.1% |
+| v9-200k-1.5ep | 1.5× more epochs | 89.1% |
+| contrastive-B | 25% contrastive queries | 89.1% |
 
 ### Future — Training Signal Experiments (from paper Section 5.5)
 
-These leverage code intelligence infrastructure for training signals that text-only pipelines can't produce. Each is independent and can be evaluated against the v9-200k baseline.
+Breaking the 94.5% ceiling requires fundamentally different training signals — not variations on data quantity, format, or training duration. Query format changes (contrastive prefixes) don't help. The value of code intelligence is in *negative filtering*, not query augmentation.
 
-- [ ] **Test-derived training queries** — `cqs test-map` maps functions to their tests. Test assertions encode behavioral specs more precise than docstrings: `test_validate_email` calling `validate("bad@")` asserting `false` → query "function that rejects invalid email addresses." Grounded in execution semantics.
-- [ ] **Contrastive summaries as training pairs** — The contrastive summaries generated at index time are themselves (summary, code) training pairs. "Unlike heap_sort which uses a binary max-heap, this function uses divide-and-conquer merge" → maps to merge_sort code. Free augmentation for indexed codebases, ~$0.38/index already paid.
-- [ ] **Type-aware negative mining** — Functions sharing return types but differing in behavior are harder negatives than structurally unrelated functions. `fn parse_json() -> Result<Value>` vs `fn parse_yaml() -> Result<Value>` is a more useful negative pair than `fn parse_json()` vs `fn render_html()`. Requires type graph edges (already in schema v16).
-- [ ] **f32→f64 cosine precision fix** — AC-28: `full_cosine_similarity` accumulates in f32 over 1024 dims. Fix to f64 may improve contrastive summary neighbor selection quality, which feeds embeddings.
+- [ ] **Test-derived training queries** — behavioral specs from test assertions. Different *pairs*, not different *format*. `test_validate_email` calling `validate("bad@")` asserting `false` → query "function that rejects invalid email addresses." This changes the underlying training data, not just the query text.
+- [x] ~~**Contrastive summaries as training pairs**~~ — Tested (Exp 24, condition B). 25% contrastive queries from call graph → 89.1% pipeline. Same floor. Query format augmentation doesn't help.
+- [ ] **Type-aware negative mining** — changes negative *selection* (different from CG filtering). Functions sharing return types but differing in behavior. Modifies which pairs the model sees, not the query text.
+- [x] **f32→f64 cosine precision fix** — Done in v1.11.0 (AC-28). Improves contrastive summary neighbor selection for inference-time enrichment.
 
 ### Done — Embedding Model Options
 - [x] BGE-large-en-v1.5 as configurable alternative
@@ -72,11 +82,12 @@ These leverage code intelligence infrastructure for training signals that text-o
 - [x] Gap-filling complete (2,010 repos indexed, 109 failed)
 - [x] 200K dataset assembled + published: https://huggingface.co/datasets/jamie8johnson/cqs-code-search-200k
 - [x] 500K dataset assembled locally
-- [ ] Publish 500K + 1M to HuggingFace
+- [ ] ~~Publish 500K + 1M to HuggingFace~~ (parked — waiting for training experiments to settle)
 - [x] Hard negatives mined (172K pairs, 6.8 avg negs)
 - [x] Training ablation complete (v9-200k / v9-200k-hn / v9-500k)
 - [ ] Ship v9-200k as LoRA preset in cqs
-- [ ] Paper v0.6 — all numbers verified on single code state
+- [x] Paper v0.6 — thesis rewritten (training signal quality > model capacity), all numbers from single verification run
+- [ ] Paper v0.7 — add 89.1% basin finding (5 data points), Exp 24 contrastive results
 
 ### Done — Red Team v1.9.0
 23 findings (0 critical, 2 high, 9 medium, 11 low). All actionable items fixed (PRs #712, #713).

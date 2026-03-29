@@ -270,7 +270,8 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::ExportModel {
             ref repo,
             ref output,
-        }) => cmd_export_model(repo, output),
+            dim,
+        }) => cmd_export_model(repo, output, dim),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {

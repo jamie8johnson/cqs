@@ -76,7 +76,7 @@ impl LlmClient {
         }
 
         let batch: BatchResponse = response.json()?;
-        if !super::is_valid_batch_id(&batch.id) {
+        if !super::is_valid_anthropic_batch_id(&batch.id) {
             return Err(LlmError::InvalidBatchId(batch.id));
         }
         tracing::info!(batch_id = %batch.id, count = items.len(), "{purpose} submitted");
@@ -126,7 +126,7 @@ impl LlmClient {
     /// Check the current status of a batch without polling.
     pub(super) fn check_batch_status(&self, batch_id: &str) -> Result<String, LlmError> {
         let _span = tracing::debug_span!("check_batch_status", batch_id).entered();
-        if !super::is_valid_batch_id(batch_id) {
+        if !super::is_valid_anthropic_batch_id(batch_id) {
             return Err(LlmError::InvalidBatchId(batch_id.to_string()));
         }
         let url = format!("{}/messages/batches/{}", self.llm_config.api_base, batch_id);
@@ -155,7 +155,7 @@ impl LlmClient {
 
     /// Poll until a batch completes. Returns when status is "ended".
     pub(super) fn wait_for_batch(&self, batch_id: &str, quiet: bool) -> Result<(), LlmError> {
-        if !super::is_valid_batch_id(batch_id) {
+        if !super::is_valid_anthropic_batch_id(batch_id) {
             return Err(LlmError::InvalidBatchId(batch_id.to_string()));
         }
         let url = format!("{}/messages/batches/{}", self.llm_config.api_base, batch_id);
@@ -211,7 +211,7 @@ impl LlmClient {
         &self,
         batch_id: &str,
     ) -> Result<HashMap<String, String>, LlmError> {
-        if !super::is_valid_batch_id(batch_id) {
+        if !super::is_valid_anthropic_batch_id(batch_id) {
             return Err(LlmError::InvalidBatchId(batch_id.to_string()));
         }
         let url = format!(
@@ -368,7 +368,7 @@ impl BatchProvider for LlmClient {
     }
 
     fn is_valid_batch_id(&self, id: &str) -> bool {
-        super::is_valid_batch_id(id)
+        super::is_valid_anthropic_batch_id(id)
     }
 
     fn model_name(&self) -> &str {
@@ -814,31 +814,33 @@ mod tests {
     #[test]
     fn test_is_valid_batch_id() {
         // Valid IDs
-        assert!(super::super::is_valid_batch_id("msgbatch_abc123"));
-        assert!(super::super::is_valid_batch_id("msgbatch_0123456789"));
-        assert!(super::super::is_valid_batch_id(
+        assert!(super::super::is_valid_anthropic_batch_id("msgbatch_abc123"));
+        assert!(super::super::is_valid_anthropic_batch_id(
+            "msgbatch_0123456789"
+        ));
+        assert!(super::super::is_valid_anthropic_batch_id(
             "msgbatch_ABCdef_underscore"
         ));
 
         // Invalid: empty
-        assert!(!super::super::is_valid_batch_id(""));
+        assert!(!super::super::is_valid_anthropic_batch_id(""));
         // Invalid: wrong prefix
-        assert!(!super::super::is_valid_batch_id("batch_123"));
+        assert!(!super::super::is_valid_anthropic_batch_id("batch_123"));
         // Invalid: no msgbatch_ prefix
-        assert!(!super::super::is_valid_batch_id("not_a_batch"));
+        assert!(!super::super::is_valid_anthropic_batch_id("not_a_batch"));
         // Invalid: contains spaces
         assert!(
-            !super::super::is_valid_batch_id("msgbatch_has spaces"),
+            !super::super::is_valid_anthropic_batch_id("msgbatch_has spaces"),
             "spaces should be rejected"
         );
         // Invalid: contains path separator
         assert!(
-            !super::super::is_valid_batch_id("msgbatch_has/slash"),
+            !super::super::is_valid_anthropic_batch_id("msgbatch_has/slash"),
             "slash should be rejected"
         );
         // Invalid: over-length (100+ chars)
         assert!(
-            !super::super::is_valid_batch_id(&format!("msgbatch_{}", "a".repeat(100))),
+            !super::super::is_valid_anthropic_batch_id(&format!("msgbatch_{}", "a".repeat(100))),
             "over-length should be rejected"
         );
     }

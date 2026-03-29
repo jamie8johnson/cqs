@@ -16,6 +16,10 @@ use super::DEFAULT_MAX_TEST_SEARCH_DEPTH;
 
 use crate::normalize_slashes;
 
+/// Maximum number of changed functions to process in diff impact analysis.
+/// Beyond this cap, results are truncated and a warning is emitted.
+const DEFAULT_MAX_CHANGED_FUNCTIONS: usize = 500;
+
 /// Map diff hunks to function names using the index.
 ///
 /// For each hunk, finds chunks whose line range overlaps the hunk's range.
@@ -116,9 +120,26 @@ pub fn analyze_diff_impact_with_graph(
                 changed_count: 0,
                 caller_count: 0,
                 test_count: 0,
+                truncated: false,
             },
         });
     }
+
+    // RT-RES-9: Cap changed functions to prevent unbounded processing on massive diffs
+    let truncated = changed.len() > DEFAULT_MAX_CHANGED_FUNCTIONS;
+    let changed = if truncated {
+        tracing::warn!(
+            total = changed.len(),
+            cap = DEFAULT_MAX_CHANGED_FUNCTIONS,
+            "Changed functions exceed cap, truncating"
+        );
+        changed
+            .into_iter()
+            .take(DEFAULT_MAX_CHANGED_FUNCTIONS)
+            .collect()
+    } else {
+        changed
+    };
 
     let mut all_tests: Vec<DiffTestInfo> = Vec::new();
     let mut seen_callers = HashSet::new();
@@ -224,6 +245,7 @@ pub fn analyze_diff_impact_with_graph(
         changed_count: changed.len(),
         caller_count: all_callers.len(),
         test_count: all_tests.len(),
+        truncated,
     };
 
     Ok(DiffImpactResult {
@@ -569,5 +591,60 @@ mod tests {
         // Multi-BFS minimum depth: test_t is at depth 1 (from func_a).
         assert_eq!(result.all_tests[0].call_depth, 1);
         assert_eq!(result.all_tests[0].via, "func_a");
+    }
+
+    /// RT-RES-9: When changed functions exceed the cap, results are truncated
+    /// and summary.truncated is true.
+    #[test]
+    fn test_changed_functions_truncated_when_exceeding_cap() {
+        let (store, _dir) = make_test_store();
+        let graph = make_empty_graph();
+        let test_chunks = vec![];
+
+        // Generate more changed functions than DEFAULT_MAX_CHANGED_FUNCTIONS (500)
+        let changed: Vec<ChangedFunction> = (0..600)
+            .map(|i| make_changed(&format!("func_{i}"), "src/lib.rs", i))
+            .collect();
+
+        let result = analyze_diff_impact_with_graph(
+            &store,
+            changed,
+            &graph,
+            &test_chunks,
+            std::path::Path::new(""),
+        )
+        .unwrap();
+
+        assert!(result.summary.truncated, "summary must indicate truncation");
+        assert_eq!(
+            result.summary.changed_count, 500,
+            "should be capped at DEFAULT_MAX_CHANGED_FUNCTIONS"
+        );
+        assert_eq!(result.changed_functions.len(), 500);
+    }
+
+    /// When changed functions are within the cap, truncated is false.
+    #[test]
+    fn test_changed_functions_not_truncated_within_cap() {
+        let (store, _dir) = make_test_store();
+        let graph = make_empty_graph();
+        let test_chunks = vec![];
+
+        let changed: Vec<ChangedFunction> = (0..10)
+            .map(|i| make_changed(&format!("func_{i}"), "src/lib.rs", i))
+            .collect();
+
+        let result = analyze_diff_impact_with_graph(
+            &store,
+            changed,
+            &graph,
+            &test_chunks,
+            std::path::Path::new(""),
+        )
+        .unwrap();
+
+        assert!(!result.summary.truncated);
+        assert_eq!(result.summary.changed_count, 10);
+        assert_eq!(result.changed_functions.len(), 10);
     }
 }

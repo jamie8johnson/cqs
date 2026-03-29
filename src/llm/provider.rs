@@ -69,7 +69,13 @@ pub trait BatchProvider {
     fn fetch_batch_results(&self, batch_id: &str) -> Result<HashMap<String, String>, LlmError>;
 
     /// Validate a batch ID format.
-    fn is_valid_batch_id(&self, id: &str) -> bool;
+    ///
+    /// Default accepts any non-empty ID. Provider implementations should
+    /// override with provider-specific validation (e.g., Anthropic checks
+    /// for `msgbatch_` prefix).
+    fn is_valid_batch_id(&self, id: &str) -> bool {
+        !id.is_empty()
+    }
 
     /// Get the model name for this provider.
     fn model_name(&self) -> &str;
@@ -143,10 +149,95 @@ impl BatchProvider for MockBatchProvider {
     }
 
     fn is_valid_batch_id(&self, id: &str) -> bool {
+        // Mock mimics Anthropic validation
         id.starts_with("msgbatch_")
     }
 
     fn model_name(&self) -> &str {
         &self.model
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal provider that uses default is_valid_batch_id (accepts any non-empty ID).
+    struct DefaultValidationProvider;
+
+    impl BatchProvider for DefaultValidationProvider {
+        fn submit_batch(
+            &self,
+            _items: &[BatchSubmitItem],
+            _max_tokens: u32,
+            _purpose: &str,
+            _prompt_builder: fn(&str, &str, &str) -> String,
+        ) -> Result<String, LlmError> {
+            Ok(String::new())
+        }
+
+        fn submit_batch_prebuilt(
+            &self,
+            _items: &[BatchSubmitItem],
+            _max_tokens: u32,
+        ) -> Result<String, LlmError> {
+            Ok(String::new())
+        }
+
+        fn submit_doc_batch(
+            &self,
+            _items: &[BatchSubmitItem],
+            _max_tokens: u32,
+        ) -> Result<String, LlmError> {
+            Ok(String::new())
+        }
+
+        fn submit_hyde_batch(
+            &self,
+            _items: &[BatchSubmitItem],
+            _max_tokens: u32,
+        ) -> Result<String, LlmError> {
+            Ok(String::new())
+        }
+
+        fn check_batch_status(&self, _batch_id: &str) -> Result<String, LlmError> {
+            Ok("ended".to_string())
+        }
+
+        fn wait_for_batch(&self, _batch_id: &str, _quiet: bool) -> Result<(), LlmError> {
+            Ok(())
+        }
+
+        fn fetch_batch_results(
+            &self,
+            _batch_id: &str,
+        ) -> Result<HashMap<String, String>, LlmError> {
+            Ok(HashMap::new())
+        }
+
+        fn model_name(&self) -> &str {
+            "default-test"
+        }
+    }
+
+    #[test]
+    fn default_is_valid_batch_id_accepts_any_nonempty() {
+        let provider = DefaultValidationProvider;
+        assert!(provider.is_valid_batch_id("any_format_123"));
+        assert!(provider.is_valid_batch_id("custom-provider-batch-xyz"));
+        assert!(provider.is_valid_batch_id("msgbatch_abc"));
+    }
+
+    #[test]
+    fn default_is_valid_batch_id_rejects_empty() {
+        let provider = DefaultValidationProvider;
+        assert!(!provider.is_valid_batch_id(""));
+    }
+
+    #[test]
+    fn mock_provider_uses_anthropic_validation() {
+        let mock = MockBatchProvider::new("msgbatch_test", HashMap::new());
+        assert!(mock.is_valid_batch_id("msgbatch_abc123"));
+        assert!(!mock.is_valid_batch_id("other_format"));
     }
 }

@@ -941,3 +941,16 @@ mentions = [
 sentiment = 0.5
 text = "Pre-Edit hook works: .claude/hooks/pre-edit-context.py runs cqs context on .rs files, injects function list + external caller count into agent context. Zero agent effort, automatic awareness. Key: paths from Claude Code are absolute, must convert to relative for cqs."
 mentions = ["hooks"]
+
+[[note]]
+sentiment = 0.0
+text = "89.1% basin of attraction confirmed with 5 data points: more data, FAISS negs, more epochs, contrastive queries all land at exactly 89.1% pipeline R@1. The 94.5% optimum is a narrow peak reachable only by v9-200k exact recipe. Breaking the ceiling requires fundamentally different training pairs, not format variations."
+mentions = [
+    "train_lora.py",
+    "research_log.md",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Session 2026-03-29: v1.11.0 released (80/88 audit fixes + 6 new commands + query expansion). 19 OpenClaw contributions. Contrastive training confirmed 89.1% floor (5th data point). Paper v0.6. Pre-Edit hook live. Markdown.rs split. Pipeline batch=64 restored with debug logging."
+mentions = ["PROJECT_CONTINUITY.md"]

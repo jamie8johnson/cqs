@@ -683,6 +683,9 @@ pub(super) enum Commands {
         /// Output directory
         #[arg(long, default_value = ".")]
         output: std::path::PathBuf,
+        /// Embedding dimension override (auto-detected from config.json if omitted)
+        #[arg(long)]
+        dim: Option<u64>,
     },
     /// Generate training data for fine-tuning from git history
     TrainData {
