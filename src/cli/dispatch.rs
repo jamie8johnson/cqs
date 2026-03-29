@@ -10,12 +10,12 @@ use super::{batch, chat, watch};
 #[cfg(feature = "convert")]
 use super::commands::cmd_convert;
 use super::commands::{
-    cmd_audit_mode, cmd_blame, cmd_callees, cmd_callers, cmd_ci, cmd_context, cmd_dead, cmd_deps,
-    cmd_diff, cmd_doctor, cmd_drift, cmd_explain, cmd_export_model, cmd_gather, cmd_gc, cmd_health,
-    cmd_impact, cmd_impact_diff, cmd_index, cmd_init, cmd_notes, cmd_onboard, cmd_plan,
-    cmd_project, cmd_query, cmd_read, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar,
-    cmd_stale, cmd_stats, cmd_suggest, cmd_task, cmd_test_map, cmd_trace, cmd_train_data,
-    cmd_where,
+    cmd_affected, cmd_audit_mode, cmd_blame, cmd_brief, cmd_callees, cmd_callers, cmd_ci,
+    cmd_context, cmd_dead, cmd_deps, cmd_diff, cmd_doctor, cmd_drift, cmd_explain,
+    cmd_export_model, cmd_gather, cmd_gc, cmd_health, cmd_impact, cmd_impact_diff, cmd_index,
+    cmd_init, cmd_neighbors, cmd_notes, cmd_onboard, cmd_plan, cmd_project, cmd_query, cmd_read,
+    cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats, cmd_suggest,
+    cmd_task, cmd_test_map, cmd_trace, cmd_train_data, cmd_train_pairs, cmd_where,
 };
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -40,6 +40,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     cli.limit = cli.limit.clamp(1, 100);
 
     match cli.command {
+        Some(Commands::Affected { ref base, json }) => cmd_affected(base.as_deref(), json),
         Some(Commands::Batch) => batch::cmd_batch(),
         Some(Commands::Blame {
             ref name,
@@ -47,9 +48,10 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             callers,
             json,
         }) => cmd_blame(name, json, depth, callers),
+        Some(Commands::Brief { ref path, json }) => cmd_brief(path, json),
         Some(Commands::Chat) => chat::cmd_chat(),
         Some(Commands::Init) => cmd_init(&cli),
-        Some(Commands::Doctor) => cmd_doctor(cli.model.as_deref()),
+        Some(Commands::Doctor { fix }) => cmd_doctor(cli.model.as_deref(), fix),
         Some(Commands::Index { ref args }) => cmd_index(&cli, args),
         Some(Commands::Stats { json }) => cmd_stats(&cli, json),
         Some(Commands::Watch {
@@ -74,6 +76,11 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             json,
             tokens,
         }) => cmd_onboard(&cli, query, depth, json, tokens),
+        Some(Commands::Neighbors {
+            ref name,
+            limit,
+            json,
+        }) => cmd_neighbors(name, limit, json),
         Some(Commands::Notes { ref subcmd }) => cmd_notes(&cli, subcmd),
         Some(Commands::Ref { ref subcmd }) => cmd_ref(&cli, subcmd),
         Some(Commands::Diff {
@@ -254,6 +261,12 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             resume,
             verbose,
         }),
+        Some(Commands::TrainPairs {
+            ref output,
+            limit,
+            ref language,
+            contrastive,
+        }) => cmd_train_pairs(output, limit, language.as_deref(), contrastive),
         Some(Commands::ExportModel {
             ref repo,
             ref output,

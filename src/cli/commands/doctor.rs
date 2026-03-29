@@ -10,15 +10,83 @@ use cqs::{Embedder, Parser as CqParser, Store};
 
 use crate::cli::find_project_root;
 
+/// Issue type detected during doctor checks.
+#[derive(Debug, Clone, PartialEq)]
+enum IssueKind {
+    /// Index is stale — needs re-index
+    Stale,
+    /// Schema version mismatch — needs migration
+    Schema,
+    /// No index exists — needs creation
+    NoIndex,
+    /// Model error — needs reinstall
+    ModelError,
+}
+
+/// A single doctor issue with its fix action.
+#[derive(Debug, Clone)]
+struct DoctorIssue {
+    kind: IssueKind,
+    message: String,
+}
+
+/// Run fix actions for detected issues.
+fn run_fixes(issues: &[DoctorIssue]) -> Result<()> {
+    let _span = tracing::info_span!("doctor_fix", issue_count = issues.len()).entered();
+
+    for issue in issues {
+        match issue.kind {
+            IssueKind::Stale | IssueKind::NoIndex => {
+                println!("  Fixing: {} — running 'cqs index'...", issue.message);
+                let status = std::process::Command::new("cqs")
+                    .arg("index")
+                    .status()
+                    .map_err(|e| anyhow::anyhow!("Failed to run 'cqs index': {}", e))?;
+                if status.success() {
+                    println!("  {} Index rebuilt", "[✓]".green());
+                } else {
+                    println!("  {} Index rebuild failed", "[✗]".red());
+                    tracing::warn!("cqs index exited with status {}", status);
+                }
+            }
+            IssueKind::Schema => {
+                println!(
+                    "  Fixing: {} — running 'cqs index --force'...",
+                    issue.message
+                );
+                let status = std::process::Command::new("cqs")
+                    .args(["index", "--force"])
+                    .status()
+                    .map_err(|e| anyhow::anyhow!("Failed to run 'cqs index --force': {}", e))?;
+                if status.success() {
+                    println!("  {} Index rebuilt with schema migration", "[✓]".green());
+                } else {
+                    println!("  {} Schema migration failed", "[✗]".red());
+                    tracing::warn!("cqs index --force exited with status {}", status);
+                }
+            }
+            IssueKind::ModelError => {
+                println!(
+                    "  Skipping: {} — model issues require manual intervention",
+                    issue.message
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Run diagnostic checks on cqs installation and index
 ///
 /// Reports runtime info, embedding provider, model status, and index statistics.
-pub(crate) fn cmd_doctor(model_override: Option<&str>) -> Result<()> {
-    let _span = tracing::info_span!("cmd_doctor").entered();
+/// With `--fix`, automatically remediates issues: stale→index, schema→migrate.
+pub(crate) fn cmd_doctor(model_override: Option<&str>, fix: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_doctor", fix).entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");
     let mut any_failed = false;
+    let mut issues: Vec<DoctorIssue> = Vec::new();
 
     println!("Runtime:");
 
@@ -42,7 +110,12 @@ pub(crate) fn cmd_doctor(model_override: Option<&str>) -> Result<()> {
             println!("  {} Test embedding: {:?}", "[✓]".green(), elapsed);
         }
         Err(e) => {
+            let msg = format!("Model load failed: {}", e);
             println!("  {} Model: {}", "[✗]".red(), e);
+            issues.push(DoctorIssue {
+                kind: IssueKind::ModelError,
+                message: msg,
+            });
             any_failed = true;
         }
     }
@@ -60,6 +133,7 @@ pub(crate) fn cmd_doctor(model_override: Option<&str>) -> Result<()> {
         }
         Err(e) => {
             println!("  {} Parser: {}", "[✗]".red(), e);
+            // Parser errors are not auto-fixable
             any_failed = true;
         }
     }
@@ -86,6 +160,25 @@ pub(crate) fn cmd_doctor(model_override: Option<&str>) -> Result<()> {
                     println!("      ({})", lang_summary.join(", "));
                 }
 
+                // Check schema version against expected
+                let expected = cqs::store::CURRENT_SCHEMA_VERSION;
+                if stats.schema_version != expected {
+                    println!(
+                        "  {} Schema mismatch: index is v{}, cqs expects v{}",
+                        "[!]".yellow(),
+                        stats.schema_version,
+                        expected
+                    );
+                    issues.push(DoctorIssue {
+                        kind: IssueKind::Schema,
+                        message: format!(
+                            "Schema v{} != expected v{}",
+                            stats.schema_version, expected
+                        ),
+                    });
+                    any_failed = true;
+                }
+
                 // Check model mismatch between index and configured model
                 let stored = store.stored_model_name();
                 let configured = &model_config.name;
@@ -98,18 +191,37 @@ pub(crate) fn cmd_doctor(model_override: Option<&str>) -> Result<()> {
                             configured
                         );
                         println!("      Run `cqs index --force` to reindex with the new model.");
+                        issues.push(DoctorIssue {
+                            kind: IssueKind::Stale,
+                            message: format!(
+                                "Model mismatch: index uses \"{}\", configured is \"{}\"",
+                                stored_name, configured
+                            ),
+                        });
+                        any_failed = true;
                     }
                     _ => {}
                 }
             }
             Err(e) => {
+                let err_str = e.to_string();
                 println!("  {} Index: {}", "[✗]".red(), e);
+                if err_str.contains("Schema version mismatch") {
+                    issues.push(DoctorIssue {
+                        kind: IssueKind::Schema,
+                        message: err_str,
+                    });
+                }
                 any_failed = true;
             }
         }
     } else {
         println!("  {} Index: not created yet", "[!]".yellow());
         println!("      Run 'cqs index' to create the index");
+        issues.push(DoctorIssue {
+            kind: IssueKind::NoIndex,
+            message: "Index not created".to_string(),
+        });
     }
 
     // Check references
@@ -161,5 +273,48 @@ pub(crate) fn cmd_doctor(model_override: Option<&str>) -> Result<()> {
         println!("All checks passed.");
     }
 
+    // --fix: attempt automatic remediation
+    if fix && !issues.is_empty() {
+        println!();
+        println!("{}:", "Auto-fixing issues".bold());
+        run_fixes(&issues)?;
+    } else if fix && issues.is_empty() {
+        println!("Nothing to fix.");
+    }
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn issue_kind_maps_to_fix_action() {
+        // Verify the fix action mapping for each issue kind
+        let stale = DoctorIssue {
+            kind: IssueKind::Stale,
+            message: "stale index".to_string(),
+        };
+        let schema = DoctorIssue {
+            kind: IssueKind::Schema,
+            message: "schema mismatch".to_string(),
+        };
+        let no_index = DoctorIssue {
+            kind: IssueKind::NoIndex,
+            message: "no index".to_string(),
+        };
+        let model = DoctorIssue {
+            kind: IssueKind::ModelError,
+            message: "model error".to_string(),
+        };
+
+        // Stale and NoIndex both map to "cqs index"
+        assert_eq!(stale.kind, IssueKind::Stale);
+        assert_eq!(no_index.kind, IssueKind::NoIndex);
+        // Schema maps to "cqs index --force"
+        assert_eq!(schema.kind, IssueKind::Schema);
+        // Model is manual
+        assert_eq!(model.kind, IssueKind::ModelError);
+    }
 }

@@ -2,8 +2,10 @@
 //!
 //! Each submodule handles one CLI subcommand.
 
+mod affected;
 mod audit_mode;
 pub(crate) mod blame;
+mod brief;
 pub(crate) mod ci;
 pub(crate) mod context;
 #[cfg(feature = "convert")]
@@ -23,6 +25,7 @@ mod impact;
 mod impact_diff;
 mod index;
 mod init;
+mod neighbors;
 mod notes;
 mod onboard;
 mod plan;
@@ -42,10 +45,13 @@ pub(crate) mod task;
 mod test_map;
 mod trace;
 mod train_data;
+mod train_pairs;
 mod where_cmd;
 
+pub(crate) use affected::cmd_affected;
 pub(crate) use audit_mode::cmd_audit_mode;
 pub(crate) use blame::cmd_blame;
+pub(crate) use brief::cmd_brief;
 pub(crate) use ci::cmd_ci;
 pub(crate) use context::cmd_context;
 #[cfg(feature = "convert")]
@@ -65,6 +71,7 @@ pub(crate) use impact::cmd_impact;
 pub(crate) use impact_diff::cmd_impact_diff;
 pub(crate) use index::{build_hnsw_index, build_hnsw_index_owned, cmd_index};
 pub(crate) use init::cmd_init;
+pub(crate) use neighbors::cmd_neighbors;
 pub(crate) use notes::{cmd_notes, NotesCommand};
 pub(crate) use onboard::cmd_onboard;
 pub(crate) use plan::cmd_plan;
@@ -83,6 +90,7 @@ pub(crate) use task::cmd_task;
 pub(crate) use test_map::cmd_test_map;
 pub(crate) use trace::cmd_trace;
 pub(crate) use train_data::cmd_train_data;
+pub(crate) use train_pairs::cmd_train_pairs;
 pub(crate) use where_cmd::cmd_where;
 
 /// Count tokens for text, with fallback estimation on error.

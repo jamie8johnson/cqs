@@ -244,8 +244,20 @@ impl Cli {
 pub(super) enum Commands {
     /// Download model and create .cqs/
     Init,
+    /// One-line-per-function summary for a file
+    Brief {
+        /// File path (as stored in index, e.g. src/lib.rs)
+        path: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Check model, index, hardware
-    Doctor,
+    Doctor {
+        /// Auto-fix detected issues (stale→index, schema→migrate)
+        #[arg(long)]
+        fix: bool,
+    },
     /// Index current project
     Index {
         #[command(flatten)]
@@ -268,6 +280,15 @@ pub(super) enum Commands {
         /// Use polling instead of inotify (reliable on WSL /mnt/ paths)
         #[arg(long)]
         poll: bool,
+    },
+    /// What functions, callers, and tests are affected by current diff
+    Affected {
+        /// Git ref to diff against (default: unstaged changes)
+        #[arg(long)]
+        base: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Batch mode: read commands from stdin, output JSONL
     Batch,
@@ -333,6 +354,17 @@ pub(super) enum Commands {
         /// Maximum token budget
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
+    },
+    /// Brute-force nearest neighbors for a function by cosine similarity
+    Neighbors {
+        /// Function name or file:function
+        name: String,
+        /// Max neighbors to return
+        #[arg(short = 'n', long, default_value = "5")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// List and manage notes
     Notes {
@@ -678,6 +710,21 @@ pub(super) enum Commands {
         /// Verbose output
         #[arg(long)]
         verbose: bool,
+    },
+    /// Extract (NL, code) training pairs from index as JSONL
+    TrainPairs {
+        /// Output JSONL file path
+        #[arg(long)]
+        output: String,
+        /// Max pairs to extract
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Filter by language (e.g., "Rust", "Python")
+        #[arg(long)]
+        language: Option<String>,
+        /// Add contrastive prefixes from call graph callees
+        #[arg(long)]
+        contrastive: bool,
     },
 }
 

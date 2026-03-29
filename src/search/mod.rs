@@ -5,6 +5,7 @@
 
 mod query;
 pub(crate) mod scoring;
+pub(crate) mod synonyms;
 
 use crate::store::helpers::{ChunkSummary, SearchResult};
 use crate::store::{Store, StoreError};

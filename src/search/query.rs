@@ -22,6 +22,7 @@ use super::scoring::{
     apply_parent_boost, build_filter_sql, compile_glob_filter, extract_file_from_chunk_id,
     score_candidate, BoundedScoreHeap, NameMatcher, NoteBoostIndex, ScoringContext,
 };
+use super::synonyms::expand_query_for_fts;
 
 impl Store {
     /// Raw embedding-only cosine similarity search (no RRF, no keyword matching).
@@ -220,13 +221,19 @@ impl Store {
         let final_scored: Vec<(String, f32)> = if use_rrf {
             let normalized = normalize_for_fts(query_text);
             let sanitized = sanitize_fts_query(&normalized);
-            let fts_ids = if sanitized.is_empty() {
+            let expanded = expand_query_for_fts(&sanitized);
+            let fts_query = if expanded.is_empty() {
+                sanitized.clone()
+            } else {
+                expanded
+            };
+            let fts_ids = if fts_query.is_empty() {
                 vec![]
             } else {
                 let fts_rows: Vec<(String,)> = sqlx::query_as(
                     "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2",
                 )
-                .bind(&sanitized)
+                .bind(&fts_query)
                 .bind((limit * 3) as i64)
                 .fetch_all(&self.pool)
                 .await?;
