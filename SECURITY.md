@@ -71,6 +71,7 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 | `docs/notes.toml` | Developer notes | Search, `cqs read` |
 | `~/.cache/huggingface/` | ML model cache | Embedding operations |
 | `~/.config/cqs/` | Config file (user-level defaults) | All operations |
+| `$CQS_ONNX_DIR/` | Local ONNX model directory | When `CQS_ONNX_DIR` is set |
 | `~/.local/share/cqs/refs/*/` | Reference indexes (read-only copies) | Search operations |
 
 ### Write Access

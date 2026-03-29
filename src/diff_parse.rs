@@ -32,6 +32,7 @@ pub struct DiffHunk {
 /// - Skips binary files and deleted files (`+++ /dev/null`)
 /// - Defaults count to 1 when omitted (`@@ +start @@`)
 pub fn parse_unified_diff(input: &str) -> Vec<DiffHunk> {
+    let _span = tracing::info_span!("parse_unified_diff", input_len = input.len()).entered();
     if input.is_empty() {
         return Vec::new();
     }

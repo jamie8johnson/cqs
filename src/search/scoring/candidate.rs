@@ -157,6 +157,8 @@ impl BoundedScoreHeap {
     /// # Returns
     ///
     /// A new `BoundedPriorityQueue` instance with the given capacity. The internal heap is pre-allocated with space for `capacity + 1` elements.
+    /// Note: `capacity == 0` is valid but silently discards all pushes.
+    /// Callers should check for zero before constructing if this is unexpected.
     pub fn new(capacity: usize) -> Self {
         Self {
             heap: BinaryHeap::with_capacity(capacity + 1),

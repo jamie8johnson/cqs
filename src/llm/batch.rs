@@ -62,7 +62,10 @@ impl LlmClient {
             });
         }
         if !status.is_success() {
-            let body = response.text().unwrap_or_default();
+            let body = response.text().unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to read HTTP error response body");
+                String::new()
+            });
             let message = serde_json::from_str::<ApiError>(&body)
                 .map(|err| format!("{purpose} submission failed: {}", err.error.message))
                 .unwrap_or_else(|_| format!("{purpose} submission failed: HTTP {status}: {body}"));
@@ -136,7 +139,10 @@ impl LlmClient {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().unwrap_or_default();
+            let body = response.text().unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to read HTTP error response body");
+                String::new()
+            });
             return Err(LlmError::Api {
                 status,
                 message: format!("Batch status check failed: {body}"),
@@ -163,7 +169,10 @@ impl LlmClient {
 
             if !response.status().is_success() {
                 let status = response.status().as_u16();
-                let body = response.text().unwrap_or_default();
+                let body = response.text().unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Failed to read HTTP error response body");
+                    String::new()
+                });
                 return Err(LlmError::Api {
                     status,
                     message: format!("Batch status check failed: {body}"),
@@ -218,7 +227,10 @@ impl LlmClient {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().unwrap_or_default();
+            let body = response.text().unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to read HTTP error response body");
+                String::new()
+            });
             return Err(LlmError::Api {
                 status,
                 message: format!("Batch results fetch failed: {body}"),

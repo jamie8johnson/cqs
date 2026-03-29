@@ -709,11 +709,11 @@ impl SearchFilter {
 /// Model metadata for index initialization.
 ///
 /// Construct via `ModelInfo::new()` with explicit name + dim, or
-/// `ModelInfo::default()` for tests only (E5-base-v2, 768-dim).
+/// `ModelInfo::default()` for tests only (BGE-large, 1024-dim).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ModelInfo {
     pub name: String,
-    pub dimensions: u32,
+    pub dimensions: usize,
     pub version: String,
 }
 
@@ -722,7 +722,7 @@ impl ModelInfo {
     ///
     /// This is the preferred constructor for production code. The name and dim
     /// come from the Embedder at runtime.
-    pub fn new(name: impl Into<String>, dim: u32) -> Self {
+    pub fn new(name: impl Into<String>, dim: usize) -> Self {
         ModelInfo {
             name: name.into(),
             dimensions: dim,
@@ -733,7 +733,7 @@ impl ModelInfo {
     /// Create ModelInfo with default model name and a specific dimension.
     ///
     /// Convenience for callers that only vary dimension (e.g., `Embedder::embedding_dim()`).
-    pub fn with_dim(dim: u32) -> Self {
+    pub fn with_dim(dim: usize) -> Self {
         Self::new(DEFAULT_MODEL_NAME, dim)
     }
 }
@@ -745,7 +745,7 @@ impl Default for ModelInfo {
     fn default() -> Self {
         ModelInfo {
             name: DEFAULT_MODEL_NAME.to_string(),
-            dimensions: crate::EMBEDDING_DIM as u32,
+            dimensions: crate::EMBEDDING_DIM,
             version: "2".to_string(),
         }
     }
@@ -771,7 +771,7 @@ pub struct IndexStats {
     pub created_at: String,
     /// ISO 8601 timestamp of last update
     pub updated_at: String,
-    /// Embedding model used (e.g., "intfloat/e5-base-v2")
+    /// Embedding model used (e.g., "BAAI/bge-large-en-v1.5")
     pub model_name: String,
     /// Database schema version
     pub schema_version: i32,
@@ -986,6 +986,16 @@ mod tests {
     fn test_search_filter_invalid_name_boost_negative() {
         let filter = SearchFilter {
             name_boost: -0.1,
+            ..Default::default()
+        };
+        assert!(filter.validate().is_err());
+        assert!(filter.validate().unwrap_err().contains("name_boost"));
+    }
+
+    #[test]
+    fn test_search_filter_invalid_name_boost_nan() {
+        let filter = SearchFilter {
+            name_boost: f32::NAN,
             ..Default::default()
         };
         assert!(filter.validate().is_err());

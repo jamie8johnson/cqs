@@ -194,8 +194,22 @@ impl LlmConfig {
         tracing::debug!(source = api_base_source, "api_base resolved");
 
         if !api_base.starts_with("https://") {
+            // Strip userinfo from URL before logging to avoid leaking credentials
+            let safe_url = api_base
+                .find("://")
+                .and_then(|scheme_end| {
+                    let after_scheme = &api_base[scheme_end + 3..];
+                    after_scheme.find('@').map(|at| {
+                        format!(
+                            "{}://***@{}",
+                            &api_base[..scheme_end],
+                            &after_scheme[at + 1..]
+                        )
+                    })
+                })
+                .unwrap_or_else(|| api_base.clone());
             tracing::warn!(
-                api_base = %api_base,
+                api_base = %safe_url,
                 "LLM API base does not use HTTPS — API key will be sent in cleartext"
             );
         }

@@ -105,9 +105,15 @@ pub(crate) fn build_vector_index_with_config(
     let _ = store; // Used only with gpu-index feature
     #[cfg(feature = "gpu-index")]
     {
-        const CAGRA_THRESHOLD: u64 = 5000;
-        let chunk_count = store.chunk_count().unwrap_or(0);
-        if chunk_count >= CAGRA_THRESHOLD && cqs::cagra::CagraIndex::gpu_available() {
+        let cagra_threshold: u64 = std::env::var("CQS_CAGRA_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5000);
+        let chunk_count = store.chunk_count().unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to get chunk count for CAGRA threshold check");
+            0
+        });
+        if chunk_count >= cagra_threshold && cqs::cagra::CagraIndex::gpu_available() {
             match cqs::cagra::CagraIndex::build_from_store(store, store.dim()) {
                 Ok(idx) => {
                     tracing::info!("Using CAGRA GPU index ({} vectors)", idx.len());
@@ -117,11 +123,11 @@ pub(crate) fn build_vector_index_with_config(
                     tracing::warn!(error = %e, "Failed to build CAGRA index, falling back to HNSW");
                 }
             }
-        } else if chunk_count < CAGRA_THRESHOLD {
+        } else if chunk_count < cagra_threshold {
             tracing::debug!(
                 "Index too small for CAGRA ({} < {}), using HNSW",
                 chunk_count,
-                CAGRA_THRESHOLD
+                cagra_threshold
             );
         } else {
             tracing::debug!("GPU not available, using HNSW");

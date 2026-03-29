@@ -278,7 +278,13 @@ impl HnswIndex {
                 let final_path = dir.join(format!("{}.{}", basename, ext));
                 let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
                 if final_path.exists() {
-                    let _ = std::fs::rename(&final_path, &bak_path);
+                    if let Err(e) = std::fs::rename(&final_path, &bak_path) {
+                        tracing::warn!(
+                            path = %final_path.display(),
+                            error = %e,
+                            "Failed to back up existing HNSW file before save"
+                        );
+                    }
                 }
             }
 
@@ -328,7 +334,13 @@ impl HnswIndex {
                 let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
                 let final_path = dir.join(format!("{}.{}", basename, ext));
                 if bak_path.exists() {
-                    let _ = std::fs::rename(&bak_path, &final_path);
+                    if let Err(e) = std::fs::rename(&bak_path, &final_path) {
+                        tracing::error!(
+                            path = %final_path.display(),
+                            error = %e,
+                            "Failed to restore backup during HNSW save rollback"
+                        );
+                    }
                 }
             }
             tracing::warn!(error = %e, "HNSW save failed mid-rename, rolled back to original files");

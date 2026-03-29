@@ -186,7 +186,7 @@ pub fn generate_nl_description(chunk: &Chunk) -> String {
 pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String {
     // Section chunks (markdown): breadcrumb + name + content preview.
     // Markdown IS natural language, so we embed more content than code chunks.
-    // E5-base-v2 handles ~512 tokens (~2000 chars). Budget:
+    // Embedding models handle ~512 tokens (~2000 chars). Budget:
     //   breadcrumb ~25 tokens + name ~12 tokens + preview ~450 tokens = ~487 tokens.
     if chunk.chunk_type == ChunkType::Section {
         let mut parts = Vec::new();

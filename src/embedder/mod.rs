@@ -52,7 +52,7 @@ pub enum EmbedderError {
 
 /// An L2-normalized embedding vector.
 ///
-/// Dimension depends on the configured model (e.g., 768 for E5-base-v2).
+/// Dimension depends on the configured model (e.g., 1024 for BGE-large, 768 for E5-base).
 /// Can be compared using cosine similarity (dot product for normalized vectors).
 #[derive(Debug, Clone)]
 pub struct Embedding(Vec<f32>);
@@ -93,10 +93,11 @@ impl std::fmt::Display for EmbeddingDimensionError {
 impl std::error::Error for EmbeddingDimensionError {}
 
 impl Embedding {
-    /// Create a new embedding from raw vector data.
+    /// Create a new embedding from raw vector data (unchecked).
     ///
     /// Accepts any dimension — the Embedder validates consistency via `detected_dim`.
-    /// For validation that the vector is non-empty and finite, use `try_new()`.
+    /// **Prefer `try_new()` for untrusted input** (external APIs, deserialized data).
+    /// Use `new()` only when the data is known-good (e.g., fresh from ONNX inference).
     pub fn new(data: Vec<f32>) -> Self {
         Self(data)
     }
@@ -152,7 +153,7 @@ impl Embedding {
 
     /// Get the dimension of the embedding.
     ///
-    /// Returns 768 for cqs embeddings (E5-base-v2).
+    /// Returns the number of dimensions (e.g., 1024 for BGE-large, 768 for E5-base).
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -193,7 +194,7 @@ impl std::fmt::Display for ExecutionProvider {
     }
 }
 
-/// Text embedding generator using a configurable model (default: E5-base-v2)
+/// Text embedding generator using a configurable model (default: BGE-large-en-v1.5)
 ///
 /// Automatically downloads the model from HuggingFace Hub on first use.
 /// Detects GPU availability and uses CUDA/TensorRT when available.
@@ -230,7 +231,7 @@ pub struct Embedder {
     model_config: ModelConfig,
 }
 
-/// Default query cache size (entries). Each entry is ~3KB (768 floats + key).
+/// Default query cache size (entries). Each entry is ~4KB (1024 floats + key).
 const DEFAULT_QUERY_CACHE_SIZE: usize = 32;
 
 impl Embedder {
@@ -515,7 +516,11 @@ impl Embedder {
     pub fn clear_session(&self) {
         let mut guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
         *guard = None;
-        tracing::info!("Embedder session cleared");
+        // Also clear query cache -- stale embeddings from old session would be wrong
+        // if model config changes before session is re-created.
+        let mut cache = self.query_cache.lock().unwrap_or_else(|p| p.into_inner());
+        cache.clear();
+        tracing::info!("Embedder session and query cache cleared");
     }
 
     /// Warm up the model with a dummy inference

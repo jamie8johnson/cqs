@@ -928,3 +928,16 @@ mentions = ["openclaw-contributions.md"]
 sentiment = 0.5
 text = "P4 audit findings: trivially fixable items (doc comments, one-liners, undocumented edge cases) should be fixed inline, not filed as issues. Issues that outlive their usefulness are waste. Updated audit skill P4 policy."
 mentions = ["audit"]
+
+[[note]]
+sentiment = 0.0
+text = "v9-200k-1.5ep: pipeline regresses 5.4pp (94.5→89.1%), raw flat (70.9%). Third independent confirmation that more training hurts pipeline. 200K × 1ep × CG-filter is the ceiling for this architecture."
+mentions = [
+    "train_lora.py",
+    "research_log.md",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Pre-Edit hook works: .claude/hooks/pre-edit-context.py runs cqs context on .rs files, injects function list + external caller count into agent context. Zero agent effort, automatic awareness. Key: paths from Claude Code are absolute, must convert to relative for cqs."
+mentions = ["hooks"]

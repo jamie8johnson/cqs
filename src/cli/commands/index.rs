@@ -129,7 +129,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         let mut store = Store::open(&index_path)
             .with_context(|| format!("Failed to create store at {}", index_path.display()))?;
         let mc = cli.model_config();
-        store.init(&ModelInfo::new(&mc.repo, mc.dim as u32))?;
+        store.init(&ModelInfo::new(&mc.repo, mc.dim))?;
         // Update dim to match the model — open() defaulted to EMBEDDING_DIM
         // because metadata didn't exist yet before init().
         store.set_dim(mc.dim);
@@ -368,7 +368,10 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
     let needs_reindex = force
         || store
             .notes_need_reindex(&notes_path)
-            .unwrap_or(Some(0))
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to check notes reindex status, forcing reindex");
+                Some(0)
+            })
             .is_some();
 
     if !needs_reindex {

@@ -92,17 +92,17 @@ pub use helpers::UnifiedResult;
 /// Current database schema version.
 pub use helpers::CURRENT_SCHEMA_VERSION;
 
-/// Name of the embedding model (compile-time default for E5-base-v2).
+/// Name of the embedding model (compile-time default for BGE-large).
 ///
 /// Runtime code should use `Store::stored_model_name()` or `ModelInfo::new()`.
 /// This constant exists for callers outside the store (e.g. `doctor.rs`).
 pub const MODEL_NAME: &str = crate::embedder::DEFAULT_MODEL_REPO;
 
-/// Expected embedding dimensions (compile-time default for E5-base-v2).
+/// Expected embedding dimensions (compile-time default for BGE-large).
 ///
 /// Runtime code should use `Store::dim` instead. This constant exists for
 /// callers outside the store that need a compile-time value.
-pub const EXPECTED_DIMENSIONS: u32 = crate::EMBEDDING_DIM as u32;
+pub const EXPECTED_DIMENSIONS: usize = crate::EMBEDDING_DIM;
 
 /// Default name_boost weight for CLI search commands.
 pub use helpers::DEFAULT_NAME_BOOST;

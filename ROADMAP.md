@@ -103,12 +103,18 @@ These leverage code intelligence infrastructure for training signals that text-o
 - [ ] Spike: fork, implement simsimd Metric, benchmark vs current
 - [ ] If comparable: full migration, delete self_cell + UnsafeCell machinery
 
-### Next — Agent Adoption (cqs telemetry shows 87% search, 0% advanced commands)
-Current: CLAUDE.md restructured with task-triggered commands (2026-03-26). Check telemetry next session.
-If adoption doesn't improve, try these alternatives in order:
-- [ ] **Pre-hook injection** — Claude Code hook runs `cqs impact` before Edit/Write, injects into context automatically
+### Next — Agent Adoption
+Telemetry update (2026-03-29, 72 events since v1.9.0 reset): test-map 37%, notes 15%, health 7%, search 6%. Structural commands dominate (49%). Orchestrators (task, review, plan, impact-diff) still 0%.
+
+**Done:**
+- [x] CLAUDE.md restructured with task-triggered commands
+- [x] Workflow examples added ("how a good session uses cqs")
+
+**In progress / next:**
+- [ ] **Pre-Edit hook** — Claude Code PostToolUse hook on Edit runs `cqs context <file>` and injects module overview. Automatic, no agent action needed.
+- [ ] **`cqs task --brief`** — compact output (~200 tokens: files to touch, functions at risk, test coverage). Agents skip `task` because the full output is ~2K tokens.
+- [ ] **Pre-commit review** — hook runs `cqs review` on Stop event, surfaces risk before commit.
 - [ ] **Fewer commands in prompts** — only mention `scout` and `task` (highest value, fewest choices)
-- [ ] **Richer default output** — non-JSON default output formatted for direct agent consumption (like `cqs read`)
 - [ ] **Telemetry dashboard** — `cqs telemetry` command showing usage patterns, adoption gaps
 
 ### 1.0.x Highlights

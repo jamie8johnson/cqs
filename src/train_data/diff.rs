@@ -129,6 +129,12 @@ pub fn find_changed_functions(
     hunks: &[HunkRange],
     functions: &[FunctionSpan],
 ) -> Vec<FunctionSpan> {
+    let _span = tracing::info_span!(
+        "find_changed_functions",
+        hunks = hunks.len(),
+        functions = functions.len()
+    )
+    .entered();
     let mut matched: Vec<&FunctionSpan> = Vec::new();
 
     for func in functions {

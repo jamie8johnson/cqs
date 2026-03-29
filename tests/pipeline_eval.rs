@@ -226,9 +226,7 @@ fn test_pipeline_scoring() {
     // Warm up embedder to detect actual dim (CQS_ONNX_DIR may override model)
     embedder.warm().expect("Failed to warm embedder");
     let actual_dim = embedder.embedding_dim();
-    store
-        .init(&ModelInfo::new(&mc.repo, actual_dim as u32))
-        .unwrap();
+    store.init(&ModelInfo::new(&mc.repo, actual_dim)).unwrap();
     store.set_dim(actual_dim);
 
     // Parse and index both original AND hard fixtures for all 5 languages
@@ -711,9 +709,7 @@ fn test_holdout_eval() {
     let mc = ModelConfig::resolve(None, None);
     embedder.warm().expect("Failed to warm embedder");
     let actual_dim = embedder.embedding_dim();
-    store
-        .init(&ModelInfo::new(&mc.repo, actual_dim as u32))
-        .unwrap();
+    store.init(&ModelInfo::new(&mc.repo, actual_dim)).unwrap();
     store.set_dim(actual_dim);
 
     // Index both original AND hard fixtures (holdout queries target both)
@@ -854,9 +850,7 @@ fn test_stress_eval() {
     let mc = ModelConfig::resolve(None, None);
     embedder.warm().expect("Failed to warm embedder");
     let actual_dim = embedder.embedding_dim();
-    store
-        .init(&ModelInfo::new(&mc.repo, actual_dim as u32))
-        .unwrap();
+    store.init(&ModelInfo::new(&mc.repo, actual_dim)).unwrap();
     store.set_dim(actual_dim);
 
     // 1. Index eval fixtures (same as holdout) — with relationships for call graph enrichment

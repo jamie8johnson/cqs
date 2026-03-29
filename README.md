@@ -70,6 +70,11 @@ model = "bge-large"
 
 For custom ONNX models, see `cqs export-model --help`.
 
+```bash
+# Skip HuggingFace download, load from local directory
+export CQS_ONNX_DIR=/path/to/model-dir  # must contain model.onnx + tokenizer.json
+```
+
 ## Filters
 
 ```

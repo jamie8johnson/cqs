@@ -655,3 +655,34 @@ pub(super) enum Commands {
 
 // Re-export the subcommand types used in Commands variants
 pub(super) use super::commands::{NotesCommand, ProjectCommand, RefCommand};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_finite_f32_normal_values() {
+        assert!(validate_finite_f32(0.0, "test").is_ok());
+        assert!(validate_finite_f32(1.0, "test").is_ok());
+        assert!(validate_finite_f32(-1.0, "test").is_ok());
+        assert!(validate_finite_f32(0.5, "test").is_ok());
+    }
+
+    #[test]
+    fn validate_finite_f32_rejects_nan() {
+        let result = validate_finite_f32(f32::NAN, "threshold");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("threshold"));
+    }
+
+    #[test]
+    fn validate_finite_f32_rejects_infinity() {
+        assert!(validate_finite_f32(f32::INFINITY, "test").is_err());
+        assert!(validate_finite_f32(f32::NEG_INFINITY, "test").is_err());
+    }
+
+    #[test]
+    fn validate_finite_f32_returns_value_on_success() {
+        assert_eq!(validate_finite_f32(0.42, "x").unwrap(), 0.42);
+    }
+}

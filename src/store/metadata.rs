@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(test)]
 use super::helpers::DEFAULT_MODEL_NAME;
 use super::migrations;
 use super::{NoteSummary, Store, StoreError, CURRENT_SCHEMA_VERSION};
@@ -91,7 +92,7 @@ impl Store {
     /// # Errors
     ///
     /// Returns `StoreError::ModelMismatch` if the stored model name differs from `DEFAULT_MODEL_NAME`.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn check_model_version(&self) -> Result<(), StoreError> {
         self.check_model_version_with(DEFAULT_MODEL_NAME)
     }
@@ -100,7 +101,7 @@ impl Store {
     ///
     /// Separated from `check_model_version()` so callers can supply a runtime
     /// model name without changing the open() signature.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn check_model_version_with(&self, expected_model: &str) -> Result<(), StoreError> {
         self.rt.block_on(async {
             let row: Option<(String,)> =

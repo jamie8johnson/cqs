@@ -2,42 +2,42 @@
 
 ## Right Now
 
-**8th full audit (v1.9.0+) in progress. P1 fixes applied. OpenClaw contributions complete. (2026-03-29)**
+**8th audit: P1+P2 all fixed, PR #715 open (CI green). P3 fixer running. Training complete. (2026-03-29)**
+
+### Branch: `audit/v1.9.0-plus`
 
 ### Audit v1.9.0+ — 88 findings, 14 categories
-- Batch 1 (5 categories): 37 findings. Done.
-- Batch 2 (5 categories): 27 findings. Done.
-- Batch 3 (4 categories): 24 findings. Done.
-- **P1 (12 items): ALL FIXED.** Compiles clean, 1490/1491 tests pass (1 failure under investigation).
-- **P2 (15 items): Fix prompts generated, review agent running.**
-- **P3 (39 items): Fix prompts generated, review pending.**
-- **P4 (25 items): Issue descriptions generated. Trivial ones to be fixed inline.**
-- Audit skill updated with prompt-generation + review steps (steps 8-9).
-- Key P1 fixes: dim=0 panic guard, empty-name zero-vector guard, SQLite 999-param temp table, chunked-encoding size cap, dunce on CQS_ONNX_DIR, 9 stale E5-base/768 references.
+- **P1 (12): ALL FIXED.** PR #715.
+- **P2 (15): ALL FIXED.** Including 4 large refactors (WatchState struct, N+1 UPDATE, O(N) contrastive, watch tests).
+- **P3 (39): Fixer agent running.** Prompts generated.
+- **P4 (25): 22 fixable (prompts generated), 3 hard (issues only: PERF-45, RM-40, CQ-38).**
+- Audit skill updated: steps 8-9 (prompt gen + review). P4 trivials fixed inline.
+- Pre-Edit hook installed: `.claude/hooks/pre-edit-context.py` auto-injects module context for .rs files.
 
-### OpenClaw Contributions (tracking: `docs/openclaw-contributions.md`)
-19 contributions (9 PRs, 9 issues, 1 comment). Six Greptile 5/5 scores.
-OpenClaw clone at `/home/user001/openclaw`, fork at `/mnt/c/Projects/openclaw-fork`.
+### Training — v9-200k-1.5ep COMPLETE
+**Result: 1.5 epochs regresses pipeline by 5.4pp (94.5% → 89.1%). Raw flat (70.9%).**
+Third confirmation: 200K × 1 epoch × CG-filter-only is the recipe. More training doesn't help.
 
-### Training
-- v9-200k-1.5ep: ~55% complete, ~1.5h remaining on A6000.
-- Future experiments added to ROADMAP + research_log: test-derived queries, contrastive training pairs, type-aware negatives, f64 cosine fix.
+| Model | Pipeline R@1 | Raw R@1 | Raw MRR |
+|-------|-------------|---------|---------|
+| v9-200k (1ep) | 94.5% | 70.9% | 0.795 |
+| v9-200k-1.5ep | 89.1% | 70.9% | 0.791 |
 
-### Paper v0.6
-Updated `~/training-data/paper/draft.md` — thesis: training signal quality > model capacity.
+### OpenClaw — 19 contributions filed
+Tracking: `docs/openclaw-contributions.md`. 9 PRs, 9 issues, 1 comment. Six Greptile 5/5.
 
-### Uncommitted (cqs repo — large diff)
-- P1 audit fixes: hnsw/build.rs, nl/mod.rs, embedder/mod.rs, store/chunks/crud.rs, llm/batch.rs, store/migrations.rs, cli/definitions.rs, lib.rs, README.md, SECURITY.md
-- Audit infrastructure: audit-findings.md, audit-triage.md, audit skill update
-- Prior session carryover: pipeline_eval.rs, openclaw-contributions.md, openclaw-security-contribution.md
-- ROADMAP.md (future experiments), PROJECT_CONTINUITY.md, notes.toml
+### Uncommitted (on audit branch, beyond PR #715)
+- P3 fixer agent actively modifying files (36 dirty files)
+- CLAUDE.md workflow examples, ROADMAP agent adoption updates
+- Pre-edit hook script + settings.local.json hook config
+- math.rs test edit reverted
 
 ### Pending
-1. Fix 1 test failure from P1 changes
-2. Apply P2 fixes after review
-3. Apply P3 fixes
-4. Fix trivial P4s, file issues for hard P4s
-5. Commit + PR all audit fixes
+1. P3 fixer completes → commit + push to PR #715
+2. Apply fixable P4s (22 items, prompts ready)
+3. File 3 hard P4 issues (PERF-45, RM-40, CQ-38)
+4. Merge PR #715
+5. Update RESULTS.md + research_log with 1.5ep results
 6. Publish 500K/1M datasets to HF
 
 ## Parked

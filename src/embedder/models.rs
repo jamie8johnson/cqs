@@ -12,7 +12,8 @@ pub struct ModelConfig {
     pub name: String,
     /// HuggingFace repo ID (e.g. "intfloat/e5-base-v2")
     pub repo: String,
-    /// Path to ONNX model file within the repo
+    /// Path to ONNX model file within the HuggingFace repo (always forward-slash separated,
+    /// e.g., `"onnx/model.onnx"`). Not a filesystem path -- HuggingFace Hub resolves this.
     pub onnx_path: String,
     /// Path to tokenizer file within the repo
     pub tokenizer_path: String,
@@ -206,7 +207,7 @@ impl ModelConfig {
 /// All fields except `model` are optional — preset names fill them automatically.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EmbeddingConfig {
-    /// Model name or preset (default: "e5-base")
+    /// Model name or preset (default: "bge-large")
     #[serde(default = "default_model_name")]
     pub model: String,
     /// HuggingFace repo ID (required for custom models)

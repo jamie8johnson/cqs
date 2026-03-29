@@ -85,6 +85,10 @@ impl Store {
         &self,
         updates: &[(String, Embedding)],
     ) -> Result<usize, StoreError> {
+        if updates.is_empty() {
+            tracing::debug!("update_embeddings_batch called with empty batch, skipping");
+            return Ok(0);
+        }
         let with_none: Vec<(String, Embedding, Option<String>)> = updates
             .iter()
             .map(|(id, emb)| (id.clone(), emb.clone(), None))
@@ -200,12 +204,7 @@ impl Store {
             let mut result = std::collections::HashMap::new();
             // Process in batches to stay under SQLite parameter limit
             for batch in chunk_ids.chunks(500) {
-                let placeholders: String = batch
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| format!("?{}", i + 1))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT id, enrichment_hash FROM chunks WHERE id IN ({}) AND enrichment_hash IS NOT NULL",
                     placeholders
@@ -897,5 +896,86 @@ mod tests {
         assert_eq!(all_summary.len(), 1);
         let all_doc = store.get_all_summaries("doc-comment").unwrap();
         assert_eq!(all_doc.len(), 1);
+    }
+
+    // ===== delete_phantom_chunks tests (TC-42) =====
+
+    #[test]
+    fn delete_phantom_chunks_removes_stale() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let c1 = make_chunk("a", "file.rs");
+        let c2 = make_chunk("b", "file.rs");
+        let c3 = make_chunk("c", "file.rs");
+        let id1 = c1.id.clone();
+        let id2 = c2.id.clone();
+        store
+            .upsert_chunks_batch(
+                &[(c1, emb.clone()), (c2, emb.clone()), (c3, emb.clone())],
+                Some(100),
+            )
+            .unwrap();
+
+        // "c" was removed from the file
+        let live: Vec<&str> = vec![id1.as_str(), id2.as_str()];
+        let deleted = store
+            .delete_phantom_chunks(std::path::Path::new("file.rs"), &live)
+            .unwrap();
+        assert_eq!(deleted, 1, "Should delete one phantom chunk");
+        assert_eq!(store.chunk_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn delete_phantom_chunks_empty_live_ids_deletes_all() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let c1 = make_chunk("a", "file.rs");
+        let c2 = make_chunk("b", "file.rs");
+        store
+            .upsert_chunks_batch(&[(c1, emb.clone()), (c2, emb.clone())], Some(100))
+            .unwrap();
+
+        let deleted = store
+            .delete_phantom_chunks(std::path::Path::new("file.rs"), &[])
+            .unwrap();
+        assert_eq!(
+            deleted, 2,
+            "Empty live_ids should delete all chunks for file"
+        );
+    }
+
+    #[test]
+    fn delete_phantom_chunks_no_phantoms() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let c1 = make_chunk("a", "file.rs");
+        let id1 = c1.id.clone();
+        store.upsert_chunks_batch(&[(c1, emb)], Some(100)).unwrap();
+
+        let deleted = store
+            .delete_phantom_chunks(std::path::Path::new("file.rs"), &[id1.as_str()])
+            .unwrap();
+        assert_eq!(deleted, 0, "No phantoms to delete");
+    }
+
+    #[test]
+    fn delete_phantom_chunks_wrong_file_unaffected() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let c1 = make_chunk("a", "file1.rs");
+        let c2 = make_chunk("b", "file2.rs");
+        store
+            .upsert_chunks_batch(&[(c1, emb.clone()), (c2, emb)], Some(100))
+            .unwrap();
+
+        let deleted = store
+            .delete_phantom_chunks(std::path::Path::new("file1.rs"), &[])
+            .unwrap();
+        assert_eq!(deleted, 1, "Should only delete file1.rs chunks");
+        assert_eq!(
+            store.chunk_count().unwrap(),
+            1,
+            "file2.rs chunk should remain"
+        );
     }
 }

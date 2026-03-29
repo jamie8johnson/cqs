@@ -38,6 +38,10 @@ impl VectorIndex for MockIndex {
     fn name(&self) -> &'static str {
         "Mock"
     }
+
+    fn dim(&self) -> usize {
+        cqs::EMBEDDING_DIM
+    }
 }
 
 // ============ Helpers ============

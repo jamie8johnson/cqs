@@ -141,6 +141,12 @@ pub fn git_show(repo: &Path, sha: &str, path: &str) -> Result<Option<String>, Tr
             path
         )));
     }
+    if path.contains(':') {
+        return Err(TrainDataError::Git(format!(
+            "Invalid path '{}': must not contain ':' (reserved for git rev:path syntax)",
+            path
+        )));
+    }
 
     let spec = format!("{}:{}", sha, path);
     let output = Command::new("git")

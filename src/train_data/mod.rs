@@ -162,7 +162,10 @@ pub fn generate_training_data(config: &TrainDataConfig) -> Result<TrainDataStats
         for (commit_idx, commit) in commits.iter().enumerate() {
             // Skip commits already processed (before checkpoint SHA)
             if !past_checkpoint {
-                if commit.sha == *checkpoint_sha.as_ref().unwrap() {
+                if checkpoint_sha
+                    .as_ref()
+                    .is_some_and(|sha| commit.sha == **sha)
+                {
                     past_checkpoint = true;
                     stats.commits_skipped += 1;
                     continue;
