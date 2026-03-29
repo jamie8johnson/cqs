@@ -53,6 +53,14 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
     let _span = tracing::info_span!("webhelp_to_markdown", dir = %dir.display()).entered();
 
     let content_dir = dir.join(WEBHELP_CONTENT_DIR);
+    // SEC-29: Reject symlinked content_dir to prevent traversal outside trusted directories.
+    // is_webhelp_dir already checks `dir` itself, but content_dir could be a symlink too.
+    if content_dir.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
+        anyhow::bail!(
+            "Web help content/ directory is a symlink (rejected for security): {}",
+            content_dir.display()
+        );
+    }
     if !content_dir.is_dir() {
         anyhow::bail!(
             "Web help directory has no content/ subdirectory: {}",

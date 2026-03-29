@@ -12,7 +12,8 @@ pub struct ModelConfig {
     pub name: String,
     /// HuggingFace repo ID (e.g. "intfloat/e5-base-v2")
     pub repo: String,
-    /// Path to ONNX model file within the repo
+    /// Path to ONNX model file within the HuggingFace repo (always forward-slash separated,
+    /// e.g., `"onnx/model.onnx"`). Not a filesystem path -- HuggingFace Hub resolves this.
     pub onnx_path: String,
     /// Path to tokenizer file within the repo
     pub tokenizer_path: String,
@@ -132,6 +133,24 @@ impl ModelConfig {
                     tracing::warn!(model = %embedding_cfg.model, "Custom model has dim=0, falling back to default");
                     return Self::default_model();
                 }
+
+                // SEC-28: Validate repo format — must be "org/model" without injection chars
+                let repo = embedding_cfg.repo.as_ref().expect("guarded by has_repo");
+                if !repo.contains('/')
+                    || repo.contains('"')
+                    || repo.contains('\n')
+                    || repo.contains('\\')
+                    || repo.contains(' ')
+                    || repo.starts_with('/')
+                    || repo.contains("..")
+                {
+                    tracing::warn!(
+                        %repo,
+                        "Custom model repo contains invalid characters, falling back to default"
+                    );
+                    return Self::default_model();
+                }
+
                 // SEC-20: Validate custom paths don't contain traversal
                 let onnx_path = embedding_cfg
                     .onnx_path
@@ -188,7 +207,7 @@ impl ModelConfig {
 /// All fields except `model` are optional — preset names fill them automatically.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EmbeddingConfig {
-    /// Model name or preset (default: "e5-base")
+    /// Model name or preset (default: "bge-large")
     #[serde(default = "default_model_name")]
     pub model: String,
     /// HuggingFace repo ID (required for custom models)
@@ -209,6 +228,51 @@ pub struct EmbeddingConfig {
 
 fn default_model_name() -> String {
     ModelConfig::default_model().name
+}
+
+/// Model metadata for index initialization.
+///
+/// Construct via `ModelInfo::new()` with explicit name + dim, or
+/// `ModelInfo::default()` for tests only (BGE-large, 1024-dim).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModelInfo {
+    pub name: String,
+    pub dimensions: usize,
+    pub version: String,
+}
+
+impl ModelInfo {
+    /// Create ModelInfo with explicit model name and dimension.
+    ///
+    /// This is the preferred constructor for production code. The name and dim
+    /// come from the Embedder at runtime.
+    pub fn new(name: impl Into<String>, dim: usize) -> Self {
+        ModelInfo {
+            name: name.into(),
+            dimensions: dim,
+            version: "2".to_string(),
+        }
+    }
+
+    /// Create ModelInfo with default model name and a specific dimension.
+    ///
+    /// Convenience for callers that only vary dimension (e.g., `Embedder::embedding_dim()`).
+    pub fn with_dim(dim: usize) -> Self {
+        Self::new(DEFAULT_MODEL_REPO, dim)
+    }
+}
+
+impl Default for ModelInfo {
+    /// Test-only default: BGE-large with default dim (1024).
+    ///
+    /// Production code should use `ModelInfo::new()` or `ModelInfo::with_dim()`.
+    fn default() -> Self {
+        ModelInfo {
+            name: DEFAULT_MODEL_REPO.to_string(),
+            dimensions: DEFAULT_DIM,
+            version: "2".to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -469,6 +533,180 @@ mod tests {
             "dim=0 should cause fallback to default bge-large"
         );
         assert_eq!(cfg.dim, 1024, "Fallback should have BGE-large dim=1024");
+    }
+
+    // ===== TC-43: SEC-20 path traversal rejection tests =====
+
+    #[test]
+    fn test_sec20_onnx_path_traversal_rejected() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBEDDING_MODEL");
+        let cfg = EmbeddingConfig {
+            model: "evil-model".to_string(),
+            repo: Some("evil/model".to_string()),
+            onnx_path: Some("../../../etc/passwd".to_string()),
+            tokenizer_path: None,
+            dim: Some(768),
+            max_seq_length: None,
+            query_prefix: None,
+            doc_prefix: None,
+        };
+        let resolved = ModelConfig::resolve(None, Some(&cfg));
+        assert_eq!(
+            resolved.name, "bge-large",
+            "Traversal in onnx_path should fall back to default"
+        );
+    }
+
+    #[test]
+    fn test_sec20_tokenizer_path_traversal_rejected() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBEDDING_MODEL");
+        let cfg = EmbeddingConfig {
+            model: "evil-model".to_string(),
+            repo: Some("evil/model".to_string()),
+            onnx_path: Some("model.onnx".to_string()),
+            tokenizer_path: Some("../../secret/tokenizer.json".to_string()),
+            dim: Some(768),
+            max_seq_length: None,
+            query_prefix: None,
+            doc_prefix: None,
+        };
+        let resolved = ModelConfig::resolve(None, Some(&cfg));
+        assert_eq!(
+            resolved.name, "bge-large",
+            "Traversal in tokenizer_path should fall back to default"
+        );
+    }
+
+    #[test]
+    fn test_sec20_absolute_onnx_path_rejected() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBEDDING_MODEL");
+        let cfg = EmbeddingConfig {
+            model: "evil-model".to_string(),
+            repo: Some("evil/model".to_string()),
+            onnx_path: Some("/etc/passwd".to_string()),
+            tokenizer_path: None,
+            dim: Some(768),
+            max_seq_length: None,
+            query_prefix: None,
+            doc_prefix: None,
+        };
+        let resolved = ModelConfig::resolve(None, Some(&cfg));
+        assert_eq!(
+            resolved.name, "bge-large",
+            "Absolute onnx_path should fall back to default"
+        );
+    }
+
+    #[test]
+    fn test_sec20_valid_custom_paths_accepted() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBEDDING_MODEL");
+        let cfg = EmbeddingConfig {
+            model: "safe-model".to_string(),
+            repo: Some("org/safe-model".to_string()),
+            onnx_path: Some("onnx/model.onnx".to_string()),
+            tokenizer_path: Some("tokenizer.json".to_string()),
+            dim: Some(384),
+            max_seq_length: None,
+            query_prefix: None,
+            doc_prefix: None,
+        };
+        let resolved = ModelConfig::resolve(None, Some(&cfg));
+        assert_eq!(
+            resolved.name, "safe-model",
+            "Valid paths should be accepted"
+        );
+        assert_eq!(resolved.onnx_path, "onnx/model.onnx");
+        assert_eq!(resolved.tokenizer_path, "tokenizer.json");
+    }
+
+    #[test]
+    fn test_sec20_dotdot_in_middle_rejected() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBEDDING_MODEL");
+        let cfg = EmbeddingConfig {
+            model: "tricky".to_string(),
+            repo: Some("org/tricky".to_string()),
+            onnx_path: Some("models/../../../etc/shadow".to_string()),
+            tokenizer_path: None,
+            dim: Some(768),
+            max_seq_length: None,
+            query_prefix: None,
+            doc_prefix: None,
+        };
+        let resolved = ModelConfig::resolve(None, Some(&cfg));
+        assert_eq!(
+            resolved.name, "bge-large",
+            ".. anywhere in path should fall back"
+        );
+    }
+
+    // ===== SEC-28: repo validation tests =====
+
+    #[test]
+    fn test_sec28_repo_no_slash_rejected() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBEDDING_MODEL");
+        let cfg = EmbeddingConfig {
+            model: "bad-repo".to_string(),
+            repo: Some("no-slash-repo".to_string()),
+            onnx_path: None,
+            tokenizer_path: None,
+            dim: Some(768),
+            max_seq_length: None,
+            query_prefix: None,
+            doc_prefix: None,
+        };
+        let resolved = ModelConfig::resolve(None, Some(&cfg));
+        assert_eq!(
+            resolved.name, "bge-large",
+            "Repo without slash should fall back to default"
+        );
+    }
+
+    #[test]
+    fn test_sec28_repo_traversal_rejected() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBEDDING_MODEL");
+        let cfg = EmbeddingConfig {
+            model: "traversal-repo".to_string(),
+            repo: Some("../../other-repo/model".to_string()),
+            onnx_path: None,
+            tokenizer_path: None,
+            dim: Some(768),
+            max_seq_length: None,
+            query_prefix: None,
+            doc_prefix: None,
+        };
+        let resolved = ModelConfig::resolve(None, Some(&cfg));
+        assert_eq!(
+            resolved.name, "bge-large",
+            "Repo with .. should fall back to default"
+        );
+    }
+
+    #[test]
+    fn test_sec28_repo_absolute_path_rejected() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBEDDING_MODEL");
+        let cfg = EmbeddingConfig {
+            model: "abs-repo".to_string(),
+            repo: Some("/etc/passwd/model".to_string()),
+            onnx_path: None,
+            tokenizer_path: None,
+            dim: Some(768),
+            max_seq_length: None,
+            query_prefix: None,
+            doc_prefix: None,
+        };
+        let resolved = ModelConfig::resolve(None, Some(&cfg));
+        assert_eq!(
+            resolved.name, "bge-large",
+            "Repo starting with / should fall back to default"
+        );
     }
 
     /// Consistency check: DEFAULT_MODEL_REPO and DEFAULT_DIM must match default_model().

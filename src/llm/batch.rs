@@ -62,7 +62,10 @@ impl LlmClient {
             });
         }
         if !status.is_success() {
-            let body = response.text().unwrap_or_default();
+            let body = response.text().unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to read HTTP error response body");
+                String::new()
+            });
             let message = serde_json::from_str::<ApiError>(&body)
                 .map(|err| format!("{purpose} submission failed: {}", err.error.message))
                 .unwrap_or_else(|_| format!("{purpose} submission failed: HTTP {status}: {body}"));
@@ -136,7 +139,10 @@ impl LlmClient {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().unwrap_or_default();
+            let body = response.text().unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to read HTTP error response body");
+                String::new()
+            });
             return Err(LlmError::Api {
                 status,
                 message: format!("Batch status check failed: {body}"),
@@ -163,7 +169,10 @@ impl LlmClient {
 
             if !response.status().is_success() {
                 let status = response.status().as_u16();
-                let body = response.text().unwrap_or_default();
+                let body = response.text().unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Failed to read HTTP error response body");
+                    String::new()
+                });
                 return Err(LlmError::Api {
                     status,
                     message: format!("Batch status check failed: {body}"),
@@ -218,14 +227,20 @@ impl LlmClient {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().unwrap_or_default();
+            let body = response.text().unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to read HTTP error response body");
+                String::new()
+            });
             return Err(LlmError::Api {
                 status,
                 message: format!("Batch results fetch failed: {body}"),
             });
         }
 
-        // RM-32: Check response size before buffering to prevent OOM
+        // RM-32: Check response size before buffering to prevent OOM.
+        // Check Content-Length header first (fast path), then enforce limit
+        // while reading the body (handles chunked transfer encoding where
+        // content_length() returns None).
         const MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024; // 100MB
         if let Some(len) = response.content_length() {
             if len > MAX_RESPONSE_BYTES {
@@ -239,8 +254,30 @@ impl LlmClient {
             }
         }
 
-        // Results are JSONL (one JSON object per line)
-        let body = response.text()?;
+        // Read body with size limit via Read::take() — works for both
+        // Content-Length and chunked transfer encoding responses.
+        use std::io::Read;
+        let mut body_bytes = Vec::new();
+        response
+            .take(MAX_RESPONSE_BYTES + 1)
+            .read_to_end(&mut body_bytes)
+            .map_err(|e| LlmError::Api {
+                status: 200,
+                message: format!("Failed to read batch response body: {e}"),
+            })?;
+        if body_bytes.len() as u64 > MAX_RESPONSE_BYTES {
+            return Err(LlmError::Api {
+                status: 200,
+                message: format!(
+                    "Batch response exceeded {} byte limit while streaming",
+                    MAX_RESPONSE_BYTES
+                ),
+            });
+        }
+        let body = String::from_utf8(body_bytes).map_err(|e| LlmError::Api {
+            status: 200,
+            message: format!("Batch response not valid UTF-8: {e}"),
+        })?;
         let mut results = HashMap::new();
 
         for line in body.lines() {
@@ -556,17 +593,16 @@ impl BatchPhase2<'_> {
 
         // DS-20: Validate results against current index — skip stale content_hashes
         // (e.g., after --force rebuild, the batch results reference chunks that no longer exist)
-        let valid_hashes: std::collections::HashSet<String> = match store.get_all_content_hashes() {
-            Ok(hashes) => hashes.into_iter().collect(),
+        let hash_result = store.get_all_content_hashes();
+        let valid_hashes: std::collections::HashSet<String> = match &hash_result {
+            Ok(hashes) => hashes.iter().cloned().collect(),
             Err(e) => {
                 tracing::warn!(error = %e, "Could not validate content hashes, storing all results");
                 std::collections::HashSet::new()
             }
         };
 
-        let (valid_results, stale_count) = if valid_hashes.is_empty()
-            && store.get_all_content_hashes().is_err()
-        {
+        let (valid_results, stale_count) = if valid_hashes.is_empty() && hash_result.is_err() {
             // Hash fetch failed — skip storage entirely to avoid committing stale data (DS-29).
             // Next run will retry the batch.
             tracing::error!(purpose = self.purpose, "Cannot validate batch results — skipping storage to prevent stale data. Will retry on next run.");
@@ -637,9 +673,17 @@ impl BatchPhase2<'_> {
             "Submitting batch to Claude API"
         );
         let id = submit(client, batch_items, self.max_tokens)?;
-        if let Err(e) = set_pending(store, Some(&id)) {
-            tracing::warn!(error = %e, purpose = self.purpose, "Failed to store pending batch ID");
-        }
+        set_pending(store, Some(&id)).map_err(|e| {
+            tracing::error!(
+                error = %e,
+                batch_id = %id,
+                purpose = self.purpose,
+                "Failed to store pending batch ID — batch {} submitted but ID lost. \
+                 Manual recovery: cqs llm-resume --batch-id {}",
+                id, id
+            );
+            LlmError::Store(e)
+        })?;
         tracing::info!(batch_id = %id, purpose = self.purpose, "Batch submitted, waiting for results");
         Ok(id)
     }
@@ -796,6 +840,89 @@ mod tests {
         assert!(
             !super::super::is_valid_batch_id(&format!("msgbatch_{}", "a".repeat(100))),
             "over-length should be rejected"
+        );
+    }
+
+    /// TC-46: Batch with results for nonexistent chunks returns empty map
+    /// (all results filtered as stale). Requires at least one real chunk
+    /// in the DB so the valid_hashes set is non-empty (empty DB = store-all).
+    #[test]
+    fn test_all_results_filtered_returns_empty() {
+        let (store, _dir) = setup_store();
+        // Insert one real chunk so valid_hashes is non-empty (otherwise the
+        // code assumes fresh DB and stores everything without filtering).
+        insert_chunk_with_hash(&store, "hash_real");
+
+        let mut results = HashMap::new();
+        results.insert("nonexistent_hash_1".to_string(), "summary 1".to_string());
+        results.insert("nonexistent_hash_2".to_string(), "summary 2".to_string());
+
+        let mock = MockBatchProvider::new("msgbatch_filter", results);
+        let phase2 = BatchPhase2 {
+            purpose: "summary",
+            max_tokens: 1024,
+            quiet: true,
+            lock_dir: None,
+        };
+
+        let items = vec![BatchSubmitItem {
+            custom_id: "nonexistent_hash_1".to_string(),
+            content: "fn ghost() {}".to_string(),
+            context: "function".to_string(),
+            language: "rust".to_string(),
+        }];
+
+        let result = phase2.submit_or_resume(
+            &mock,
+            &store,
+            &items,
+            &|s| s.get_pending_batch_id(),
+            &|s, id| s.set_pending_batch_id(id),
+            &|c, items, max_tok| c.submit_batch_prebuilt(items, max_tok),
+        );
+
+        let map = result.unwrap();
+        assert!(map.is_empty(), "All stale results should be filtered out");
+    }
+
+    /// TC-46: submit_or_resume with a stored pending batch ID resumes correctly.
+    #[test]
+    fn test_resume_with_pending_batch() {
+        let (store, _dir) = setup_store();
+
+        // Insert a chunk so the result passes validation
+        insert_chunk_with_hash(&store, "hash_resume");
+
+        // Set a pending batch ID (simulating a prior interrupted run)
+        store
+            .set_pending_batch_id(Some("msgbatch_pending_resume"))
+            .unwrap();
+
+        let mut results = HashMap::new();
+        results.insert("hash_resume".to_string(), "resumed summary".to_string());
+
+        let mock = MockBatchProvider::new("msgbatch_pending_resume", results);
+        let phase2 = BatchPhase2 {
+            purpose: "summary",
+            max_tokens: 1024,
+            quiet: true,
+            lock_dir: None,
+        };
+
+        // Empty items -- but there's a pending batch to resume
+        let result = phase2.submit_or_resume(
+            &mock,
+            &store,
+            &[],
+            &|s| s.get_pending_batch_id(),
+            &|s, id| s.set_pending_batch_id(id),
+            &|c, items, max_tok| c.submit_batch_prebuilt(items, max_tok),
+        );
+
+        let map = result.unwrap();
+        assert!(
+            map.contains_key("hash_resume"),
+            "Resumed batch should return valid results"
         );
     }
 

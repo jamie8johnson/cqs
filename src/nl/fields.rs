@@ -177,6 +177,13 @@ fn extract_method_name_from_line(line: &str, language: Language) -> Option<Strin
         return None;
     }
 
+    // EX-35: Visibility/modifier prefixes are hardcoded here rather than in LanguageDef
+    // because: (1) the set is small and shared across most C-family languages,
+    // (2) LanguageDef is macro-generated for 51 languages — adding per-language
+    // prefix arrays would bloat the macro for negligible benefit, and (3) these
+    // prefixes are only used in this one function. If a new language needs
+    // language-specific modifiers not covered here, consider moving to LanguageDef then.
+    //
     // Rust: fn name(, pub fn name(, pub(crate) fn name(
     // Go: func (r *T) Name(, func Name(
     // Python: def name(

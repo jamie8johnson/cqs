@@ -124,7 +124,7 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
             .with_context(|| format!("Failed to open reference store at {}", db_path.display()))?,
     );
     let mc = cli.model_config();
-    store.init(&ModelInfo::new(&mc.repo, mc.dim as u32))?;
+    store.init(&ModelInfo::new(&mc.repo, mc.dim))?;
     let stats = run_index_pipeline(
         &source,
         files,

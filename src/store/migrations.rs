@@ -185,8 +185,8 @@ async fn migrate_v14_to_v15(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
         .await?;
 
     tracing::info!(
-        "Updated dimensions to 768 and marked HNSW dirty. \
-         Run 'cqs index --force' to rebuild with 768-dim embeddings."
+        "Updated dimensions and marked HNSW dirty. \
+         Run 'cqs index --force' to rebuild embeddings."
     );
     Ok(())
 }

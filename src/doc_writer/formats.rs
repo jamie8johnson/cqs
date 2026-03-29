@@ -450,6 +450,36 @@ mod tests {
     }
 
     #[test]
+    fn all_language_doc_formats_are_valid() {
+        // EX-36: Verify all language doc_format tags map to known formats.
+        // A typo in a language definition would silently fall through to "default".
+        let valid = [
+            "triple_slash",
+            "python_docstring",
+            "go_comment",
+            "javadoc",
+            "hash_comment",
+            "elixir_doc",
+            "lua_ldoc",
+            "haskell_haddock",
+            "ocaml_doc",
+            "erlang_edoc",
+            "r_roxygen",
+            "default",
+        ];
+        for lang in Language::all_variants() {
+            if let Some(def) = lang.try_def() {
+                assert!(
+                    valid.contains(&def.doc_format),
+                    "Language {:?} has unknown doc_format: {:?}",
+                    lang,
+                    def.doc_format
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_format_preserves_internal_indentation() {
         // Python text with its own indentation (e.g., Args section)
         let text = "Short summary.\n\nArgs:\n    x: The input value.";

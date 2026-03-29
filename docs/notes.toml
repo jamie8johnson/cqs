@@ -869,3 +869,75 @@ mentions = [
     "Cargo.toml",
     "README.md",
 ]
+
+[[note]]
+sentiment = 1.0
+text = "v9-200k: 94.5% pipeline R@1, 70.9% raw R@1. Ties BGE-large (335M) at 1/3 size. Best raw R@1 of any model. 200K balanced dataset + call-graph false-negative filtering is the key — training signal quality > model capacity."
+mentions = [
+    "training-data",
+    "embedder",
+]
+
+[[note]]
+sentiment = -0.5
+text = "run_v9_200k.sh bug: sed removed --call-graph line but broke the backslash continuation, leaving --export-onnx as a standalone shell command. Training completed but ONNX wasn't exported. Always verify script edits don't break multi-line continuations."
+mentions = ["run_v9_200k.sh"]
+
+[[note]]
+sentiment = -0.5
+text = "Pipeline eval numbers shifted after P3 code fixes (AC-24 RRF flag dedup, etc). E5-base 83.6%→85.5%, v9-mini 87.3%→89.1%, v5/v8 85.5%→89.1%. Always re-verify all models on the same code state before publishing. Numbers from different code states are not comparable."
+mentions = [
+    "RESULTS.md",
+    "tests/pipeline_eval.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "v1.9.0 default model change: bare cargo test without CQS_EMBEDDING_MODEL now uses BGE-large, not E5-base. Must explicitly set CQS_EMBEDDING_MODEL=e5-base to get real E5 numbers. Caught during full re-verification run."
+mentions = [
+    "src/embedder/models.rs",
+    "tests/pipeline_eval.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "OpenClaw codebase is unusually clean — all catches annotated, all as-any suppressed, no deprecated APIs, no floating promises. Verification before submission is critical: initial scan claimed 30 duplicate utilities, verification reduced to 6 actionable (2 clean drop-in). Always verify agent findings before filing."
+mentions = ["openclaw-contributions.md"]
+
+[[note]]
+sentiment = 0.5
+text = "Greptile bot auto-reviews OpenClaw PRs instantly. Two 5/5 scores confirms our verification-before-submission calibration is right. PRs that pass our verification process pass automated review first try."
+mentions = ["openclaw-contributions.md"]
+
+[[note]]
+sentiment = 0.0
+text = "OpenClaw #11202 (apiKey leak into LLM prompt) is already fixed despite issue being Open. Multi-layered: ModelCatalogEntry has no apiKey field, marker system stores env var names not plaintext, config.get uses redactConfigSnapshot, auth isolated to HTTP headers. Posted comment documenting the fix."
+mentions = ["openclaw-contributions.md"]
+
+[[note]]
+sentiment = 0.5
+text = "Audit prompt-generation + review step catches ~33% of fix prompts with compilation errors (wrong field names, nonexistent APIs, moved code). Always verify prompts against actual source before executing. Added as steps 8-9 in audit skill."
+mentions = ["audit"]
+
+[[note]]
+sentiment = 0.5
+text = "OpenClaw codebase scanned with 6 parallel audit agents. 19 contributions filed (9 PRs, 9 issues, 1 comment). Greptile auto-reviews PRs — six 5/5 scores. Codex also reviews and caught a real edge case (TTL sweep of active tool calls). pnpm needed for lockfile regeneration on dep changes."
+mentions = ["openclaw-contributions.md"]
+
+[[note]]
+sentiment = 0.5
+text = "P4 audit findings: trivially fixable items (doc comments, one-liners, undocumented edge cases) should be fixed inline, not filed as issues. Issues that outlive their usefulness are waste. Updated audit skill P4 policy."
+mentions = ["audit"]
+
+[[note]]
+sentiment = 0.0
+text = "v9-200k-1.5ep: pipeline regresses 5.4pp (94.5→89.1%), raw flat (70.9%). Third independent confirmation that more training hurts pipeline. 200K × 1ep × CG-filter is the ceiling for this architecture."
+mentions = [
+    "train_lora.py",
+    "research_log.md",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Pre-Edit hook works: .claude/hooks/pre-edit-context.py runs cqs context on .rs files, injects function list + external caller count into agent context. Zero agent effort, automatic awareness. Key: paths from Claude Code are absolute, must convert to relative for cqs."
+mentions = ["hooks"]

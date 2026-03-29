@@ -22,8 +22,9 @@ use crate::parser::{Chunk, ChunkType, Language};
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
 pub const CURRENT_SCHEMA_VERSION: i32 = 16;
-/// Default model name for backward compatibility and tests.
-/// Production code should use `Store::stored_model_name()` or `ModelInfo::new()`.
+/// Default model name for metadata checks (used by test-only `check_model_version`).
+/// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.
+#[cfg(test)]
 pub(crate) const DEFAULT_MODEL_NAME: &str = crate::embedder::DEFAULT_MODEL_REPO;
 
 #[derive(Error, Debug)]
@@ -706,50 +707,9 @@ impl SearchFilter {
     }
 }
 
-/// Model metadata for index initialization.
-///
-/// Construct via `ModelInfo::new()` with explicit name + dim, or
-/// `ModelInfo::default()` for tests only (E5-base-v2, 768-dim).
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ModelInfo {
-    pub name: String,
-    pub dimensions: u32,
-    pub version: String,
-}
-
-impl ModelInfo {
-    /// Create ModelInfo with explicit model name and dimension.
-    ///
-    /// This is the preferred constructor for production code. The name and dim
-    /// come from the Embedder at runtime.
-    pub fn new(name: impl Into<String>, dim: u32) -> Self {
-        ModelInfo {
-            name: name.into(),
-            dimensions: dim,
-            version: "2".to_string(),
-        }
-    }
-
-    /// Create ModelInfo with default model name and a specific dimension.
-    ///
-    /// Convenience for callers that only vary dimension (e.g., `Embedder::embedding_dim()`).
-    pub fn with_dim(dim: u32) -> Self {
-        Self::new(DEFAULT_MODEL_NAME, dim)
-    }
-}
-
-impl Default for ModelInfo {
-    /// Test-only default: BGE-large with `EMBEDDING_DIM` (1024).
-    ///
-    /// Production code should use `ModelInfo::new()` or `ModelInfo::with_dim()`.
-    fn default() -> Self {
-        ModelInfo {
-            name: DEFAULT_MODEL_NAME.to_string(),
-            dimensions: crate::EMBEDDING_DIM as u32,
-            version: "2".to_string(),
-        }
-    }
-}
+/// AD-52: ModelInfo moved to embedder::models where it logically belongs.
+/// Re-exported here so `store::helpers::ModelInfo` and `store::ModelInfo` continue to work.
+pub use crate::embedder::ModelInfo;
 
 /// Index statistics
 ///
@@ -771,7 +731,7 @@ pub struct IndexStats {
     pub created_at: String,
     /// ISO 8601 timestamp of last update
     pub updated_at: String,
-    /// Embedding model used (e.g., "intfloat/e5-base-v2")
+    /// Embedding model used (e.g., "BAAI/bge-large-en-v1.5")
     pub model_name: String,
     /// Database schema version
     pub schema_version: i32,
@@ -986,6 +946,16 @@ mod tests {
     fn test_search_filter_invalid_name_boost_negative() {
         let filter = SearchFilter {
             name_boost: -0.1,
+            ..Default::default()
+        };
+        assert!(filter.validate().is_err());
+        assert!(filter.validate().unwrap_err().contains("name_boost"));
+    }
+
+    #[test]
+    fn test_search_filter_invalid_name_boost_nan() {
+        let filter = SearchFilter {
+            name_boost: f32::NAN,
             ..Default::default()
         };
         assert!(filter.validate().is_err());

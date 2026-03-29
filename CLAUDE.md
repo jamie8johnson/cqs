@@ -56,6 +56,25 @@ Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
 - `/investigate <task>` — scout + gather → implementation brief
 - `/check-my-work` — review current diff → risk assessment
 
+### Workflow examples (how a good session uses cqs):
+
+**Example 1: Before editing `store::search`**
+"I need to change search scoring. Let me check what depends on it."
+→ Ran `cqs impact search_filtered` → found 3 callers + 12 tests
+→ Ran `cqs test-map search_filtered` → confirmed all 12 tests exercise scoring path
+→ Made the edit, ran tests, all 12 passed. No surprise breakage.
+
+**Example 2: Starting a new feature**
+"I need to add a --rerank flag to search."
+→ Ran `cqs task "add reranking to search"` → got: files to touch, existing patterns, test gaps
+→ Ran `cqs where "reranking cross-encoder"` → got suggested file placement
+→ Built it following the placement suggestion. Tests covered from the start.
+
+**Example 3: Before submitting a PR**
+"Let me check what my diff affects."
+→ Ran `cqs review` → found 2 high-risk changes (scoring function with 8 callers)
+→ Added a test for the risky path before pushing.
+
 ### Before modifying a function:
 ```bash
 cqs impact <function_name> --json    # WHO calls this? What tests cover it? What breaks?

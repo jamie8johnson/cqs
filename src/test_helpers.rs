@@ -14,7 +14,7 @@ pub fn setup_store() -> (Store, TempDir) {
     (store, dir)
 }
 
-/// Create a deterministic 768-dim embedding from a seed value, L2-normalized.
+/// Create a deterministic EMBEDDING_DIM embedding from a seed value, L2-normalized.
 ///
 /// Fills the vector with `seed` repeated, then normalizes. This makes embeddings
 /// distinguishable by seed while keeping consistent magnitude.

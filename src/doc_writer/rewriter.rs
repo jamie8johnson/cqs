@@ -240,6 +240,12 @@ pub fn rewrite_file(
         return Ok(0);
     }
 
+    // RB-33: Exclusive lock prevents concurrent modifications during
+    // the read->parse->edit->write cycle. Uses std file locking (Rust 1.89+).
+    // Advisory lock: other cqs processes cooperate, external editors may not.
+    let lock_file = std::fs::File::open(path)?;
+    lock_file.lock()?;
+
     // Read current file content
     let content = std::fs::read_to_string(path)?;
     let file_lines: Vec<&str> = content.lines().collect();

@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use super::config::{apply_config_defaults, find_project_root};
-use super::definitions::{Cli, Commands, OutputFormat};
+use super::definitions::{Cli, Commands};
 use super::telemetry;
 use super::{batch, chat, watch};
 
@@ -111,10 +111,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }) => cmd_similar(&cli, target, limit, threshold, json),
         Some(Commands::Impact {
             ref args,
-            format,
-            json,
+            ref output,
         }) => {
-            let format = if json { OutputFormat::Json } else { format };
+            let format = output.effective_format();
             cmd_impact(
                 &args.name,
                 args.depth,
@@ -131,32 +130,29 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Review {
             ref base,
             stdin,
-            format,
-            json,
+            ref output,
             tokens,
         }) => {
-            let format = if json { OutputFormat::Json } else { format };
+            let format = output.effective_format();
             cmd_review(base.as_deref(), stdin, &format, tokens)
         }
         Some(Commands::Ci {
             ref base,
             stdin,
-            format,
-            json,
+            ref output,
             ref gate,
             tokens,
         }) => {
-            let format = if json { OutputFormat::Json } else { format };
+            let format = output.effective_format();
             cmd_ci(base.as_deref(), stdin, &format, gate, tokens)
         }
         Some(Commands::Trace {
             ref source,
             ref target,
             max_depth,
-            format,
-            json,
+            ref output,
         }) => {
-            let format = if json { OutputFormat::Json } else { format };
+            let format = output.effective_format();
             cmd_trace(source, target, max_depth as usize, &format)
         }
         Some(Commands::TestMap {

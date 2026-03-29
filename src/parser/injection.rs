@@ -279,7 +279,7 @@ fn build_injection_tree(
     source: &str,
     ranges: &[tree_sitter::Range],
 ) -> Option<tree_sitter::Tree> {
-    let grammar = language.grammar();
+    let grammar = language.try_grammar()?;
     let mut parser = tree_sitter::Parser::new();
     if let Err(e) = parser.set_language(&grammar) {
         tracing::warn!(

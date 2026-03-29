@@ -322,6 +322,10 @@ impl VectorIndex for HnswIndex {
     fn name(&self) -> &'static str {
         "HNSW"
     }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
 }
 
 /// Shared test helper: create a deterministic normalized embedding from a seed.

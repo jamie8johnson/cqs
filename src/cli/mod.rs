@@ -105,9 +105,15 @@ pub(crate) fn build_vector_index_with_config(
     let _ = store; // Used only with gpu-index feature
     #[cfg(feature = "gpu-index")]
     {
-        const CAGRA_THRESHOLD: u64 = 5000;
-        let chunk_count = store.chunk_count().unwrap_or(0);
-        if chunk_count >= CAGRA_THRESHOLD && cqs::cagra::CagraIndex::gpu_available() {
+        let cagra_threshold: u64 = std::env::var("CQS_CAGRA_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5000);
+        let chunk_count = store.chunk_count().unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to get chunk count for CAGRA threshold check");
+            0
+        });
+        if chunk_count >= cagra_threshold && cqs::cagra::CagraIndex::gpu_available() {
             match cqs::cagra::CagraIndex::build_from_store(store, store.dim()) {
                 Ok(idx) => {
                     tracing::info!("Using CAGRA GPU index ({} vectors)", idx.len());
@@ -117,11 +123,11 @@ pub(crate) fn build_vector_index_with_config(
                     tracing::warn!(error = %e, "Failed to build CAGRA index, falling back to HNSW");
                 }
             }
-        } else if chunk_count < CAGRA_THRESHOLD {
+        } else if chunk_count < cagra_threshold {
             tracing::debug!(
                 "Index too small for CAGRA ({} < {}), using HNSW",
                 chunk_count,
-                CAGRA_THRESHOLD
+                cagra_threshold
             );
         } else {
             tracing::debug!("GPU not available, using HNSW");
@@ -777,14 +783,13 @@ mod tests {
             Some(Commands::Review {
                 base,
                 stdin,
-                format,
-                json,
+                ref output,
                 tokens,
             }) => {
                 assert!(base.is_none());
                 assert!(!stdin);
-                assert!(matches!(format, OutputFormat::Text));
-                assert!(!json);
+                assert!(matches!(output.format, OutputFormat::Text));
+                assert!(!output.json);
                 assert!(tokens.is_none());
             }
             _ => panic!("Expected Review command"),
@@ -806,9 +811,11 @@ mod tests {
     fn test_cmd_review_stdin_format_json() {
         let cli = Cli::try_parse_from(["cqs", "review", "--stdin", "--format", "json"]).unwrap();
         match cli.command {
-            Some(Commands::Review { stdin, format, .. }) => {
+            Some(Commands::Review {
+                stdin, ref output, ..
+            }) => {
                 assert!(stdin);
-                assert!(matches!(format, OutputFormat::Json));
+                assert!(matches!(output.format, OutputFormat::Json));
             }
             _ => panic!("Expected Review command"),
         }
@@ -857,9 +864,9 @@ mod tests {
     fn test_impact_json_flag() {
         let cli = Cli::try_parse_from(["cqs", "impact", "my_func", "--json"]).unwrap();
         match cli.command {
-            Some(Commands::Impact { json, format, .. }) => {
-                assert!(json);
-                assert!(matches!(format, OutputFormat::Text)); // default, overridden at dispatch
+            Some(Commands::Impact { ref output, .. }) => {
+                assert!(output.json);
+                assert!(matches!(output.format, OutputFormat::Text)); // default, overridden at dispatch
             }
             _ => panic!("Expected Impact command"),
         }
@@ -876,9 +883,9 @@ mod tests {
     fn test_review_json_flag() {
         let cli = Cli::try_parse_from(["cqs", "review", "--json"]).unwrap();
         match cli.command {
-            Some(Commands::Review { json, format, .. }) => {
-                assert!(json);
-                assert!(matches!(format, OutputFormat::Text));
+            Some(Commands::Review { ref output, .. }) => {
+                assert!(output.json);
+                assert!(matches!(output.format, OutputFormat::Text));
             }
             _ => panic!("Expected Review command"),
         }
@@ -894,9 +901,9 @@ mod tests {
     fn test_ci_json_flag() {
         let cli = Cli::try_parse_from(["cqs", "ci", "--json"]).unwrap();
         match cli.command {
-            Some(Commands::Ci { json, format, .. }) => {
-                assert!(json);
-                assert!(matches!(format, OutputFormat::Text));
+            Some(Commands::Ci { ref output, .. }) => {
+                assert!(output.json);
+                assert!(matches!(output.format, OutputFormat::Text));
             }
             _ => panic!("Expected Ci command"),
         }
@@ -912,9 +919,9 @@ mod tests {
     fn test_trace_json_flag() {
         let cli = Cli::try_parse_from(["cqs", "trace", "a", "b", "--json"]).unwrap();
         match cli.command {
-            Some(Commands::Trace { json, format, .. }) => {
-                assert!(json);
-                assert!(matches!(format, OutputFormat::Text));
+            Some(Commands::Trace { ref output, .. }) => {
+                assert!(output.json);
+                assert!(matches!(output.format, OutputFormat::Text));
             }
             _ => panic!("Expected Trace command"),
         }
@@ -974,6 +981,7 @@ mod tests {
             llm_model: None,
             llm_api_base: None,
             llm_max_tokens: None,
+            llm_hyde_max_tokens: None,
             embedding: None,
         };
         config::apply_config_defaults(&mut cli, &config);
@@ -1001,6 +1009,7 @@ mod tests {
             llm_api_base: None,
             llm_max_tokens: None,
             embedding: None,
+            llm_hyde_max_tokens: None,
         };
         config::apply_config_defaults(&mut cli, &config);
 
@@ -1065,15 +1074,14 @@ mod tests {
             Some(Commands::Ci {
                 base,
                 stdin,
-                format,
-                json,
+                ref output,
                 gate,
                 tokens,
             }) => {
                 assert!(base.is_none());
                 assert!(!stdin);
-                assert!(matches!(format, OutputFormat::Text));
-                assert!(!json);
+                assert!(matches!(output.format, OutputFormat::Text));
+                assert!(!output.json);
                 assert!(matches!(gate, GateThreshold::High));
                 assert!(tokens.is_none());
             }
@@ -1112,12 +1120,12 @@ mod tests {
         match cli.command {
             Some(Commands::Ci {
                 stdin,
-                format,
+                ref output,
                 tokens,
                 ..
             }) => {
                 assert!(stdin);
-                assert!(matches!(format, OutputFormat::Json));
+                assert!(matches!(output.format, OutputFormat::Json));
                 assert_eq!(tokens, Some(5000));
             }
             _ => panic!("Expected Ci command"),

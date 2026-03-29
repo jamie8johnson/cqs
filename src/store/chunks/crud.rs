@@ -85,6 +85,10 @@ impl Store {
         &self,
         updates: &[(String, Embedding)],
     ) -> Result<usize, StoreError> {
+        if updates.is_empty() {
+            tracing::debug!("update_embeddings_batch called with empty batch, skipping");
+            return Ok(0);
+        }
         let with_none: Vec<(String, Embedding, Option<String>)> = updates
             .iter()
             .map(|(id, emb)| (id.clone(), emb.clone(), None))
@@ -115,34 +119,70 @@ impl Store {
             .map(|(_, emb, _)| embedding_to_bytes(emb, dim))
             .collect::<Result<Vec<_>, _>>()?;
 
+        // PERF-40: Temp table + single UPDATE...FROM instead of N individual UPDATEs.
+        // Reduces ~10K round-trips to ~100 batch INSERTs + 1 UPDATE.
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
-            let mut updated = 0usize;
-            for (i, (id, _, hash)) in updates.iter().enumerate() {
-                let result =
-                    match hash {
-                        Some(h) => sqlx::query(
-                            "UPDATE chunks SET embedding = ?1, enrichment_hash = ?2 WHERE id = ?3",
-                        )
-                        .bind(&embedding_bytes[i])
-                        .bind(h)
-                        .bind(id)
-                        .execute(&mut *tx)
-                        .await?,
-                        None => {
-                            sqlx::query("UPDATE chunks SET embedding = ?1 WHERE id = ?2")
-                                .bind(&embedding_bytes[i])
-                                .bind(id)
-                                .execute(&mut *tx)
-                                .await?
-                        }
-                    };
-                if result.rows_affected() > 0 {
-                    updated += 1;
-                } else {
-                    tracing::debug!(chunk_id = %id, "Enrichment update found no row");
+
+            // 1. Create temp table for batch staging
+            sqlx::query(
+                "CREATE TEMP TABLE IF NOT EXISTS _update_embeddings \
+                 (id TEXT PRIMARY KEY, embedding BLOB NOT NULL, enrichment_hash TEXT)",
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            sqlx::query("DELETE FROM _update_embeddings")
+                .execute(&mut *tx)
+                .await?;
+
+            // 2. Batch INSERT into temp table (100 rows per batch, 3 params each = 300 < 999 limit)
+            const BATCH_SIZE: usize = 100;
+            for batch_start in (0..updates.len()).step_by(BATCH_SIZE) {
+                let batch_end = (batch_start + BATCH_SIZE).min(updates.len());
+                let batch = &updates[batch_start..batch_end];
+                let batch_bytes = &embedding_bytes[batch_start..batch_end];
+
+                let mut placeholders = Vec::with_capacity(batch.len());
+                for i in 0..batch.len() {
+                    let base = i * 3;
+                    placeholders.push(format!("(?{}, ?{}, ?{})", base + 1, base + 2, base + 3));
                 }
+                let sql = format!(
+                    "INSERT INTO _update_embeddings (id, embedding, enrichment_hash) VALUES {}",
+                    placeholders.join(", ")
+                );
+                let mut query = sqlx::query(&sql);
+                for (i, (id, _, hash)) in batch.iter().enumerate() {
+                    query = query.bind(id);
+                    query = query.bind(&batch_bytes[i]);
+                    query = query.bind(hash.as_deref());
+                }
+                query.execute(&mut *tx).await?;
             }
+
+            // 3. Single UPDATE...FROM join (SQLite 3.33+)
+            let result = sqlx::query(
+                "UPDATE chunks SET \
+                    embedding = t.embedding, \
+                    enrichment_hash = COALESCE(t.enrichment_hash, chunks.enrichment_hash) \
+                 FROM _update_embeddings t \
+                 WHERE chunks.id = t.id",
+            )
+            .execute(&mut *tx)
+            .await?;
+            let updated = result.rows_affected() as usize;
+
+            if updated < updates.len() {
+                let missing = updates.len() - updated;
+                tracing::debug!(missing, "Enrichment update: some chunk IDs not found");
+            }
+
+            // 4. Drop temp table
+            sqlx::query("DROP TABLE IF EXISTS _update_embeddings")
+                .execute(&mut *tx)
+                .await?;
+
             tx.commit().await?;
             Ok(updated)
         })
@@ -164,12 +204,7 @@ impl Store {
             let mut result = std::collections::HashMap::new();
             // Process in batches to stay under SQLite parameter limit
             for batch in chunk_ids.chunks(500) {
-                let placeholders: String = batch
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| format!("?{}", i + 1))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT id, enrichment_hash FROM chunks WHERE id IN ({}) AND enrichment_hash IS NOT NULL",
                     placeholders
@@ -464,30 +499,44 @@ impl Store {
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
 
-            // Build IN-list for live IDs. Batch at 500 to stay well under SQLite limits.
-            // We need to find IDs to delete first, then clean FTS + chunks.
-            let placeholders: Vec<String> = live_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 2)).collect();
-            let in_list = placeholders.join(",");
+            // Use a temp table to avoid SQLite's 999-parameter limit.
+            // A file can have 1000+ chunks (e.g., large generated files).
+            sqlx::query("CREATE TEMP TABLE IF NOT EXISTS _live_ids (id TEXT PRIMARY KEY)")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM _live_ids")
+                .execute(&mut *tx)
+                .await?;
 
-            let fts_query = format!(
-                "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin = ?1 AND id NOT IN ({}))",
-                in_list
-            );
-            let mut fts_stmt = sqlx::query(&fts_query).bind(&origin_str);
-            for id in live_ids {
-                fts_stmt = fts_stmt.bind(id);
+            // Batch inserts into temp table at 500 to stay under SQLite limits.
+            for batch in live_ids.chunks(500) {
+                let placeholders: Vec<String> =
+                    batch.iter().enumerate().map(|(i, _)| format!("(?{})", i + 1)).collect();
+                let insert_sql = format!(
+                    "INSERT OR IGNORE INTO _live_ids (id) VALUES {}",
+                    placeholders.join(",")
+                );
+                let mut stmt = sqlx::query(&insert_sql);
+                for id in batch {
+                    stmt = stmt.bind(id);
+                }
+                stmt.execute(&mut *tx).await?;
             }
-            fts_stmt.execute(&mut *tx).await?;
 
-            let chunks_query = format!(
-                "DELETE FROM chunks WHERE origin = ?1 AND id NOT IN ({})",
-                in_list
-            );
-            let mut chunks_stmt = sqlx::query(&chunks_query).bind(&origin_str);
-            for id in live_ids {
-                chunks_stmt = chunks_stmt.bind(id);
-            }
-            let result = chunks_stmt.execute(&mut *tx).await?;
+            let fts_query =
+                "DELETE FROM chunks_fts WHERE id IN \
+                 (SELECT id FROM chunks WHERE origin = ?1 AND id NOT IN (SELECT id FROM _live_ids))";
+            sqlx::query(fts_query)
+                .bind(&origin_str)
+                .execute(&mut *tx)
+                .await?;
+
+            let chunks_query =
+                "DELETE FROM chunks WHERE origin = ?1 AND id NOT IN (SELECT id FROM _live_ids)";
+            let result = sqlx::query(chunks_query)
+                .bind(&origin_str)
+                .execute(&mut *tx)
+                .await?;
 
             tx.commit().await?;
             let deleted = result.rows_affected() as u32;
@@ -847,5 +896,86 @@ mod tests {
         assert_eq!(all_summary.len(), 1);
         let all_doc = store.get_all_summaries("doc-comment").unwrap();
         assert_eq!(all_doc.len(), 1);
+    }
+
+    // ===== delete_phantom_chunks tests (TC-42) =====
+
+    #[test]
+    fn delete_phantom_chunks_removes_stale() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let c1 = make_chunk("a", "file.rs");
+        let c2 = make_chunk("b", "file.rs");
+        let c3 = make_chunk("c", "file.rs");
+        let id1 = c1.id.clone();
+        let id2 = c2.id.clone();
+        store
+            .upsert_chunks_batch(
+                &[(c1, emb.clone()), (c2, emb.clone()), (c3, emb.clone())],
+                Some(100),
+            )
+            .unwrap();
+
+        // "c" was removed from the file
+        let live: Vec<&str> = vec![id1.as_str(), id2.as_str()];
+        let deleted = store
+            .delete_phantom_chunks(std::path::Path::new("file.rs"), &live)
+            .unwrap();
+        assert_eq!(deleted, 1, "Should delete one phantom chunk");
+        assert_eq!(store.chunk_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn delete_phantom_chunks_empty_live_ids_deletes_all() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let c1 = make_chunk("a", "file.rs");
+        let c2 = make_chunk("b", "file.rs");
+        store
+            .upsert_chunks_batch(&[(c1, emb.clone()), (c2, emb.clone())], Some(100))
+            .unwrap();
+
+        let deleted = store
+            .delete_phantom_chunks(std::path::Path::new("file.rs"), &[])
+            .unwrap();
+        assert_eq!(
+            deleted, 2,
+            "Empty live_ids should delete all chunks for file"
+        );
+    }
+
+    #[test]
+    fn delete_phantom_chunks_no_phantoms() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let c1 = make_chunk("a", "file.rs");
+        let id1 = c1.id.clone();
+        store.upsert_chunks_batch(&[(c1, emb)], Some(100)).unwrap();
+
+        let deleted = store
+            .delete_phantom_chunks(std::path::Path::new("file.rs"), &[id1.as_str()])
+            .unwrap();
+        assert_eq!(deleted, 0, "No phantoms to delete");
+    }
+
+    #[test]
+    fn delete_phantom_chunks_wrong_file_unaffected() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let c1 = make_chunk("a", "file1.rs");
+        let c2 = make_chunk("b", "file2.rs");
+        store
+            .upsert_chunks_batch(&[(c1, emb.clone()), (c2, emb)], Some(100))
+            .unwrap();
+
+        let deleted = store
+            .delete_phantom_chunks(std::path::Path::new("file1.rs"), &[])
+            .unwrap();
+        assert_eq!(deleted, 1, "Should only delete file1.rs chunks");
+        assert_eq!(
+            store.chunk_count().unwrap(),
+            1,
+            "file2.rs chunk should remain"
+        );
     }
 }

@@ -175,6 +175,8 @@ pub struct LlmConfig {
     pub api_base: String,
     pub model: String,
     pub max_tokens: u32,
+    /// Max tokens for HyDE query predictions (default: 150).
+    pub hyde_max_tokens: u32,
 }
 
 impl LlmConfig {
@@ -194,8 +196,22 @@ impl LlmConfig {
         tracing::debug!(source = api_base_source, "api_base resolved");
 
         if !api_base.starts_with("https://") {
+            // Strip userinfo from URL before logging to avoid leaking credentials
+            let safe_url = api_base
+                .find("://")
+                .and_then(|scheme_end| {
+                    let after_scheme = &api_base[scheme_end + 3..];
+                    after_scheme.find('@').map(|at| {
+                        format!(
+                            "{}://***@{}",
+                            &api_base[..scheme_end],
+                            &after_scheme[at + 1..]
+                        )
+                    })
+                })
+                .unwrap_or_else(|| api_base.clone());
             tracing::warn!(
-                api_base = %api_base,
+                api_base = %safe_url,
                 "LLM API base does not use HTTPS — API key will be sent in cleartext"
             );
         }
@@ -253,11 +269,18 @@ impl LlmConfig {
         };
         tracing::debug!(source = max_tokens_source, "max_tokens resolved");
 
+        let hyde_max_tokens = std::env::var("CQS_HYDE_MAX_TOKENS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .or(config.llm_hyde_max_tokens)
+            .unwrap_or(HYDE_MAX_TOKENS);
+
         Self {
             provider,
             api_base,
             model,
             max_tokens,
+            hyde_max_tokens,
         }
     }
 }

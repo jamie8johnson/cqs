@@ -34,7 +34,9 @@ impl Parser {
             std::borrow::Cow::Borrowed(source)
         };
 
-        let grammar = language.grammar();
+        let Some(grammar) = language.try_grammar() else {
+            return vec![]; // Grammar-less language — custom parser handles it
+        };
         let mut parser = tree_sitter::Parser::new();
         if let Err(e) = parser.set_language(&grammar) {
             tracing::warn!(error = ?e, %language, "set_language failed in extract_calls");
@@ -271,7 +273,9 @@ impl Parser {
             };
         }
 
-        let grammar = language.grammar();
+        let grammar = language.try_grammar().ok_or_else(|| {
+            ParserError::ParseFailed(format!("{} has no tree-sitter grammar", language))
+        })?;
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&grammar)
@@ -650,7 +654,9 @@ fn another() {
         fn extract_types_from_source(content: &str, ext: &str) -> Vec<TypeRef> {
             let parser = Parser::new().unwrap();
             let language = Language::from_extension(ext).unwrap();
-            let grammar = language.grammar();
+            let grammar = language
+                .try_grammar()
+                .expect("test language must have grammar");
             let mut ts_parser = tree_sitter::Parser::new();
             ts_parser.set_language(&grammar).unwrap();
             let tree = ts_parser.parse(content, None).unwrap();

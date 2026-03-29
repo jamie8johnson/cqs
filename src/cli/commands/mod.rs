@@ -169,6 +169,10 @@ pub(crate) fn token_pack<T>(
 /// kept indices (in original order) so callers can selectively extract from
 /// multiple parallel collections. Used by waterfall budgeting in `task`.
 ///
+/// **Difference from `token_pack`:** returns empty when `budget == 0`.
+/// `token_pack` always includes at least one item (for user-facing search).
+/// `index_pack` is for internal budgeting where zero-allocation sections are valid.
+///
 /// Returns `(kept_indices_in_original_order, tokens_used)`.
 pub(crate) fn index_pack(
     token_counts: &[usize],

@@ -406,6 +406,10 @@ impl VectorIndex for CagraIndex {
     fn name(&self) -> &'static str {
         "CAGRA"
     }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
 }
 
 // SAFETY: CagraIndex is thread-safe because:

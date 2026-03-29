@@ -269,18 +269,30 @@ fn flush_to_cpu(
     true
 }
 
-/// Stage 1: Parse files in parallel batches, filter by staleness, and send to embedder channels.
-#[allow(clippy::too_many_arguments)]
-fn parser_stage(
-    files: Vec<PathBuf>,
+/// CQ-39: Context struct for parser_stage to avoid too_many_arguments.
+struct ParserStageContext {
     root: PathBuf,
     force: bool,
     parser: Arc<CqParser>,
     store: Arc<Store>,
     parsed_count: Arc<AtomicUsize>,
     parse_errors: Arc<AtomicUsize>,
+}
+
+/// Stage 1: Parse files in parallel batches, filter by staleness, and send to embedder channels.
+fn parser_stage(
+    files: Vec<PathBuf>,
+    ctx: ParserStageContext,
     parse_tx: Sender<ParsedBatch>,
 ) -> Result<()> {
+    let ParserStageContext {
+        root,
+        force,
+        parser,
+        store,
+        parsed_count,
+        parse_errors,
+    } = ctx;
     let batch_size = EMBED_BATCH_SIZE;
     let file_batch_size = FILE_BATCH_SIZE;
 
@@ -828,12 +840,14 @@ pub(crate) fn run_index_pipeline(
         thread::spawn(move || {
             parser_stage(
                 files,
-                root,
-                force,
-                parser,
-                store,
-                parsed_count,
-                parse_errors,
+                ParserStageContext {
+                    root,
+                    force,
+                    parser,
+                    store,
+                    parsed_count,
+                    parse_errors,
+                },
                 parse_tx,
             )
         })

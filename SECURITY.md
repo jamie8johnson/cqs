@@ -37,8 +37,8 @@ cqs runs locally by default. No network telemetry. Optional local command loggin
 The only network activity is:
 
 - **Model download** (`cqs init`): Downloads embedding model from HuggingFace Hub
-  - Default: `huggingface.co/intfloat/e5-base-v2` (~438MB)
-  - Preset: `bge-large` (`BAAI/bge-large-en-v1.5`)
+  - Default: `huggingface.co/BAAI/bge-large-en-v1.5` (~1.2GB)
+  - Preset: `e5-base` (`intfloat/e5-base-v2`, ~438MB)
   - Custom: any HuggingFace repo via `[embedding]` config or `CQS_EMBEDDING_MODEL` env var. Custom model configs download ONNX files from the specified repo — only configure repos you trust.
   - One-time download per model, cached in `~/.cache/huggingface/`
 
@@ -71,6 +71,7 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 | `docs/notes.toml` | Developer notes | Search, `cqs read` |
 | `~/.cache/huggingface/` | ML model cache | Embedding operations |
 | `~/.config/cqs/` | Config file (user-level defaults) | All operations |
+| `$CQS_ONNX_DIR/` | Local ONNX model directory | When `CQS_ONNX_DIR` is set |
 | `~/.local/share/cqs/refs/*/` | Reference indexes (read-only copies) | Search operations |
 
 ### Write Access
@@ -169,7 +170,7 @@ This blocks:
 ## Index Storage
 
 - Stored in `.cqs/index.db` (SQLite with WAL mode)
-- Contains: code chunks, embeddings (768-dim vectors), file metadata
+- Contains: code chunks, embeddings (1024-dim vectors for default BGE-large), file metadata
 - Add `.cqs/` to `.gitignore` to avoid committing
 - Database is **not encrypted** - it contains your code
 

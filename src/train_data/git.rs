@@ -79,6 +79,12 @@ pub fn git_log(repo: &Path, max_commits: usize) -> Result<Vec<CommitInfo>, Train
     }
 
     tracing::debug!(count = commits.len(), "Parsed git log commits");
+    if commits.len() > 100_000 {
+        tracing::warn!(
+            count = commits.len(),
+            "git_log returned >100K commits — consider setting max_commits to limit memory usage"
+        );
+    }
     Ok(commits)
 }
 
@@ -138,6 +144,12 @@ pub fn git_show(repo: &Path, sha: &str, path: &str) -> Result<Option<String>, Tr
     if path.starts_with('-') || path.contains('\0') {
         return Err(TrainDataError::Git(format!(
             "Invalid path '{}': must not start with '-' or contain null bytes",
+            path
+        )));
+    }
+    if path.contains(':') {
+        return Err(TrainDataError::Git(format!(
+            "Invalid path '{}': must not contain ':' (reserved for git rev:path syntax)",
             path
         )));
     }

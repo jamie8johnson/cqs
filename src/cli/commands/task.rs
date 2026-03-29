@@ -132,6 +132,10 @@ pub(crate) fn waterfall_pack(
     remaining = remaining.saturating_sub(scout_used);
 
     // 2. Code section (+ surplus) — pack gathered chunks by score
+    // NOTE: `pack_section` guarantees at least one item even if it exceeds the
+    // budget. That overshoot is absorbed here via saturating_sub on `remaining`,
+    // which reduces downstream section budgets proportionally. The total output
+    // may slightly exceed `budget` by at most one item's token count.
     let code_budget = ((budget as f64 * WATERFALL_CODE) as usize
         + scout_budget.saturating_sub(scout_used))
     .min(remaining);

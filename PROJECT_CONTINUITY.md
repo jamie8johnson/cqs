@@ -2,49 +2,58 @@
 
 ## Right Now
 
-**v9-200k training 67% (ETA ~19:12 CDT). All PRs merged. (2026-03-27 18:27 CDT)**
+**8th audit: P1+P2 all fixed, PR #715 open (CI green). P3 fixer running. Training complete. (2026-03-29)**
 
-### Active
-- **v9-200k training**: 3953/5938 steps, GPU 100%. Monitor: `~/training-data/monitor_v9_200k.log`
-  - Auto-eval runs raw + pipeline when training finishes
-  - Output: `~/training-data/e5-code-search-lora-v9-200k/`
-  - Next: v9-200k-hn (`bash run_v9_200k.sh --with-hard-negs`)
-  - Then: v9-200k-1.5ep (`bash run_v9_200k.sh --with-hard-negs --epochs 1.5`)
+### Branch: `audit/v1.9.0-plus`
 
-### All merged today
-- #701: 7th audit (85/95 fixed)
-- #702: Roadmap (hnswlib-rs, datasets)
-- #703: v1.8.0 release
-- #704: Init dim fix
-- #705: Metric corrections, CQS_ONNX_DIR, convenience wrappers
-- #706: Notes groom
-- #707: v1.9.0 BGE-large default
-- #712: Red team 8 fixes
-- #713: Watch mode RT-DATA-7/8
+### Audit v1.9.0+ — 88 findings, 14 categories
+- **P1 (12): ALL FIXED.** PR #715.
+- **P2 (15): ALL FIXED.** Including 4 large refactors (WatchState struct, N+1 UPDATE, O(N) contrastive, watch tests).
+- **P3 (39): Fixer agent running.** Prompts generated.
+- **P4 (25): 22 fixable (prompts generated), 3 hard (issues only: PERF-45, RM-40, CQ-38).**
+- Audit skill updated: steps 8-9 (prompt gen + review). P4 trivials fixed inline.
+- Pre-Edit hook installed: `.claude/hooks/pre-edit-context.py` auto-injects module context for .rs files.
+
+### Training — v9-200k-1.5ep COMPLETE
+**Result: 1.5 epochs regresses pipeline by 5.4pp (94.5% → 89.1%). Raw flat (70.9%).**
+Third confirmation: 200K × 1 epoch × CG-filter-only is the recipe. More training doesn't help.
+
+| Model | Pipeline R@1 | Raw R@1 | Raw MRR |
+|-------|-------------|---------|---------|
+| v9-200k (1ep) | 94.5% | 70.9% | 0.795 |
+| v9-200k-1.5ep | 89.1% | 70.9% | 0.791 |
+
+### OpenClaw — 19 contributions filed
+Tracking: `docs/openclaw-contributions.md`. 9 PRs, 9 issues, 1 comment. Six Greptile 5/5.
+
+### Uncommitted (on audit branch, beyond PR #715)
+- P3 fixer agent actively modifying files (36 dirty files)
+- CLAUDE.md workflow examples, ROADMAP agent adoption updates
+- Pre-edit hook script + settings.local.json hook config
+- math.rs test edit reverted
 
 ### Pending
-1. PR the /cqs-verify skill + CLAUDE.md changes (1 commit on main ahead of remote)
-2. v9-200k eval (auto-running when training completes)
-3. v9-200k-hn training (~7h)
-4. v9-200k-1.5ep training (~10h)
-5. Compare all, update RESULTS.md
-6. Publish HF datasets
-7. Paper v0.6
+1. P3 fixer completes → commit + push to PR #715
+2. Apply fixable P4s (22 items, prompts ready)
+3. File 3 hard P4 issues (PERF-45, RM-40, CQ-38)
+4. Merge PR #715
+5. Update RESULTS.md + research_log with 1.5ep results
+6. Publish 500K/1M datasets to HF
 
 ## Parked
 - Dart language support
 - hnswlib-rs migration
-- BGE-large LoRA
+- DXF Phase 1
+- Blackwell GPU upgrade
 
 ## Open Issues
 - #389, #255, #106, #63 (upstream)
 - #694-697, #700 (audit P4)
-- #711 RT-RES-9 (diff impact cap)
+- #711 RT-RES-9
 
 ## Architecture
-- Version: 1.9.0
-- Default: BGE-large 1024-dim
-- ModelConfig::default_model() single source of truth
-- /cqs-verify skill for session start verification
+- Version: 1.9.0, BGE-large default (1024-dim)
+- v9-200k LoRA: 94.5% pipeline, 70.9% raw (110M = 335M on pipeline)
+- HF dataset: https://huggingface.co/datasets/jamie8johnson/cqs-code-search-200k
+- OpenClaw PR: https://github.com/openclaw/openclaw/pull/56278
 - Tests: 1491
-- Metrics: 94.5% R@1 / 0.966 MRR (BGE-large pipeline)

@@ -39,6 +39,9 @@ pub trait VectorIndex: Send + Sync {
 
     /// Index type name (e.g., "HNSW", "CAGRA")
     fn name(&self) -> &'static str;
+
+    /// Embedding dimension of vectors in this index
+    fn dim(&self) -> usize;
 }
 
 #[cfg(test)]
@@ -49,6 +52,7 @@ mod tests {
     struct MockIndex {
         results: Vec<IndexResult>,
         size: usize,
+        dim: usize,
     }
 
     impl MockIndex {
@@ -65,6 +69,7 @@ mod tests {
             Self {
                 results: Vec::new(),
                 size,
+                dim: crate::EMBEDDING_DIM,
             }
         }
 
@@ -79,7 +84,11 @@ mod tests {
         /// A new Self instance initialized with the provided results and their count.
         fn with_results(results: Vec<IndexResult>) -> Self {
             let size = results.len();
-            Self { results, size }
+            Self {
+                results,
+                size,
+                dim: crate::EMBEDDING_DIM,
+            }
         }
     }
 
@@ -114,6 +123,10 @@ mod tests {
         /// A static string slice containing the name "Mock".
         fn name(&self) -> &'static str {
             "Mock"
+        }
+
+        fn dim(&self) -> usize {
+            self.dim
         }
     }
 

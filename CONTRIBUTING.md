@@ -242,10 +242,11 @@ src/
     before-edit/  - Pre-edit workflow: snapshot state before changes
     investigate/  - Investigation workflow: structured code exploration
     check-my-work/ - Post-implementation verification checklist
+    cqs-verify/   - Exercise all command categories, catch regressions
 ```
 
 **Key design notes:**
-- Configurable embeddings (E5-base-v2 768-dim default, BGE-large 1024-dim, custom ONNX)
+- Configurable embeddings (BGE-large 1024-dim default, E5-base 768-dim preset, custom ONNX)
 - HNSW index is chunk-only; notes use brute-force SQLite search (always fresh)
 - Streaming HNSW build via `build_batched()` for memory efficiency
 - Large chunks split by windowing (480 tokens, 64 overlap); notes capped at 10k entries

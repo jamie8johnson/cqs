@@ -68,6 +68,7 @@ struct AuditModeFile {
 /// Load audit mode state from `.cqs/audit-mode.json`.
 /// Returns default (inactive) if file is missing, expired, or unreadable.
 pub fn load_audit_state(cqs_dir: &Path) -> AuditMode {
+    let _span = tracing::info_span!("load_audit_state", dir = %cqs_dir.display()).entered();
     let path = cqs_dir.join("audit-mode.json");
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
@@ -103,6 +104,9 @@ pub fn load_audit_state(cqs_dir: &Path) -> AuditMode {
 
 /// Save audit mode state to `.cqs/audit-mode.json`.
 pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
+    let _span =
+        tracing::info_span!("save_audit_state", dir = %cqs_dir.display(), enabled = mode.enabled)
+            .entered();
     let path = cqs_dir.join("audit-mode.json");
     let file = AuditModeFile {
         enabled: mode.enabled,

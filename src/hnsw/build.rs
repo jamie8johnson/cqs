@@ -47,6 +47,9 @@ impl HnswIndex {
         dim: usize,
     ) -> Result<Self, HnswError> {
         let _span = tracing::debug_span!("hnsw_build").entered();
+        if dim == 0 {
+            return Err(HnswError::Build("Embedding dimension must be > 0".into()));
+        }
         if embeddings.is_empty() {
             // Create empty index
             let hnsw = Hnsw::new(MAX_NB_CONNECTION, 1, MAX_LAYER, EF_CONSTRUCTION, DistCosine);
@@ -123,6 +126,9 @@ impl HnswIndex {
         E: std::fmt::Display,
     {
         let _span = tracing::debug_span!("hnsw_build_batched", estimated_total).entered();
+        if dim == 0 {
+            return Err(HnswError::Build("Embedding dimension must be > 0".into()));
+        }
         let capacity = estimated_total.max(1);
         tracing::info!(
             "Building HNSW index incrementally (estimated {} vectors)",
@@ -417,12 +423,14 @@ mod tests {
 
     #[test]
     fn tc40_build_batched_with_dim_zero() {
-        // TC-40: dim=0 with no embeddings should produce an empty index (not panic)
+        // TC-40 / RB-34: dim=0 should return an error (not panic on chunks_exact(0))
         let batches: Vec<Result<Vec<(String, Embedding)>, std::convert::Infallible>> = vec![];
-        let index = HnswIndex::build_batched_with_dim(batches.into_iter(), 0, 0).unwrap();
+        let result = HnswIndex::build_batched_with_dim(batches.into_iter(), 0, 0);
+        assert!(result.is_err(), "dim=0 should return error");
+        let err = result.err().unwrap();
         assert!(
-            index.is_empty(),
-            "dim=0 with empty batches should yield empty index"
+            err.to_string().contains("must be > 0"),
+            "error message should mention dimension requirement"
         );
     }
 

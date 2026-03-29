@@ -217,6 +217,7 @@ pub(crate) fn select_provider() -> ExecutionProvider {
 
 /// Detect the best available execution provider
 fn detect_provider() -> ExecutionProvider {
+    let _span = tracing::info_span!("detect_provider").entered();
     use ort::ep::{TensorRT, CUDA};
 
     // Ensure provider libs are findable before checking availability
@@ -248,6 +249,7 @@ pub(crate) fn create_session(
     model_path: &Path,
     provider: ExecutionProvider,
 ) -> Result<Session, EmbedderError> {
+    let _span = tracing::info_span!("create_session", provider = ?provider).entered();
     use ort::ep::{TensorRT, CUDA};
 
     tracing::info!(provider = ?provider, model_path = %model_path.display(), "Creating ONNX session");

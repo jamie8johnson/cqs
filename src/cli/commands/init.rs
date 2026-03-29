@@ -42,6 +42,8 @@ pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
 
     // Download model
     if !cli.quiet {
+        // Heuristic: BGE-large (dim=1024) is ~1.3GB, E5-base (dim=768) is ~547MB.
+        // Custom models with unknown sizes will show whichever is closer by dimension.
         let size = if cli.model_config().dim >= 1024 {
             "~1.3GB"
         } else {

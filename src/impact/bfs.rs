@@ -14,6 +14,8 @@ pub(super) const DEFAULT_BFS_MAX_NODES: usize = 10_000;
 /// actual ancestors should filter out depth-0 entries.
 ///
 /// Expansion stops when either `max_depth` or `DEFAULT_BFS_MAX_NODES` is reached.
+///
+/// When `max_depth == 0`, returns only the target node at depth 0 (no traversal).
 pub(super) fn reverse_bfs(
     graph: &CallGraph,
     target: &str,
@@ -38,6 +40,9 @@ pub(super) fn reverse_bfs(
         }
         if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
+                if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+                    break;
+                }
                 if !ancestors.contains_key(caller.as_ref()) {
                     ancestors.insert(caller.to_string(), d + 1);
                     queue.push_back((caller.to_string(), d + 1));
@@ -90,6 +95,9 @@ pub(super) fn reverse_bfs_multi(
         }
         if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
+                if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+                    break;
+                }
                 match ancestors.entry(caller.to_string()) {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert(d + 1);
@@ -160,6 +168,9 @@ pub(super) fn reverse_bfs_multi_attributed(
         }
         if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
+                if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+                    break;
+                }
                 match ancestors.entry(caller.to_string()) {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert((d + 1, src));
@@ -189,6 +200,12 @@ pub(super) fn reverse_bfs_multi_attributed(
 /// produce identical reachable sets (beyond the test node itself). We group
 /// tests into equivalence classes by their direct callees and BFS once per
 /// unique class, multiplying counts by the class size.
+///
+/// **Limitation:** Equivalence classes are based solely on first-hop callees.
+/// Two tests that call different functions which converge at depth 2+ are
+/// treated as separate classes, so BFS runs once per class rather than being
+/// shared. This is correct (counts are accurate) but not maximally efficient
+/// for deep convergent call graphs.
 pub(crate) fn test_reachability(
     graph: &CallGraph,
     test_names: &[&str],
@@ -244,6 +261,9 @@ pub(crate) fn test_reachability(
             }
             if let Some(callees) = graph.forward.get(current.as_str()) {
                 for callee in callees {
+                    if visited.len() >= DEFAULT_BFS_MAX_NODES {
+                        break;
+                    }
                     if !visited.contains_key(callee.as_ref()) {
                         visited.insert(callee.to_string(), d + 1);
                         queue.push_back((callee.to_string(), d + 1));
