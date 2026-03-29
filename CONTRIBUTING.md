@@ -106,7 +106,7 @@ src/
     definitions.rs - Clap argument definitions and command enum
     dispatch.rs - Command dispatch (match on command, call handlers)
     commands/   - Command implementations
-      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, drift.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs, where_cmd.rs, scout.rs, onboard.rs, convert.rs, review.rs, ci.rs, health.rs, suggest.rs, deps.rs, task.rs, blame.rs, plan.rs, train_data.rs, export_model.rs
+      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, drift.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs, where_cmd.rs, scout.rs, onboard.rs, convert.rs, review.rs, ci.rs, health.rs, suggest.rs, deps.rs, task.rs, blame.rs, plan.rs, train_data.rs, export_model.rs, brief.rs, affected.rs, neighbors.rs, train_pairs.rs
     chat.rs     - Interactive REPL (wraps batch mode with rustyline)
     batch/      - Batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
       mod.rs      - BatchContext, vector index builder, main loop
@@ -148,7 +148,12 @@ src/
     calls.rs    - Call graph extraction, callee filtering
     injection.rs - Multi-grammar injection (HTML→JS/CSS via set_included_ranges)
     markdown.rs - Heading-based markdown parser, cross-reference extraction
-  embedder/      - ONNX embedding models (configurable: E5-base-v2 default, BGE-large preset, custom ONNX)
+  search/       - Search algorithms, query expansion
+    mod.rs      - Module re-exports
+    query.rs    - search_filtered, search_by_candidate_ids, RRF fusion
+    synonyms.rs - Query expansion synonym map (31 programming abbreviations)
+    scoring/    - Scoring pipeline (candidate, note_boost)
+  embedder/      - ONNX embedding models (configurable: BGE-large-en-v1.5 default, E5-base preset, custom ONNX)
     mod.rs      - Embedder struct, embed(), batch embedding, runtime dimension detection
     models.rs   - ModelConfig struct, built-in presets (e5-base, bge-large), resolution logic, EmbeddingConfig
     provider.rs - ORT execution provider selection (CUDA/TensorRT/CPU)
@@ -252,6 +257,23 @@ src/
 - Large chunks split by windowing (480 tokens, 64 overlap); notes capped at 10k entries
 - Schema migrations allow upgrading indexes without full rebuild
 - Skills in `.claude/skills/*/SKILL.md` are auto-discovered by Claude Code
+
+## Adding a New CLI Command
+
+Checklist for every new command:
+
+1. **Implementation** — `src/cli/commands/<name>.rs` with the core logic
+2. **CLI definition** — `Commands` enum variant in `src/cli/definitions.rs` with clap args
+3. **Dispatch** — match arm in `src/cli/dispatch.rs`
+4. **`--json` support** — serde serialization for programmatic output
+5. **Tracing** — `tracing::info_span!` at entry, `tracing::warn!` on error fallback
+6. **Error handling** — `Result` propagation, no bare `.unwrap_or_default()` in production
+7. **Tests** — happy path + empty input + error path + edge cases
+8. **CLAUDE.md** — add to the command reference section
+9. **Skills** — add to `.claude/skills/cqs/SKILL.md` and `.claude/skills/cqs-bootstrap/SKILL.md`
+10. **CHANGELOG** — entry in the next release section
+
+Pattern to follow: look at `src/cli/commands/blame.rs` or `src/cli/commands/dead.rs` for a minimal example.
 
 ## Adding Injection Rules (Multi-Grammar)
 
