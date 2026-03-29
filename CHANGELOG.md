@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-03-29
+
+### Added
+- **`cqs brief <file>`** — one-line-per-function summary with caller count and test coverage.
+- **`cqs affected`** — diff → changed functions → callers → tests → risk score. The "before you commit" command.
+- **`cqs neighbors <fn>`** — embedding-space nearest neighbors with cosine similarity scores.
+- **`cqs doctor --fix`** — auto-remediate diagnosed issues (stale index, schema mismatch).
+- **`cqs train-pairs`** — extract training pairs from index as JSONL, with `--contrastive` for call-graph-based "Unlike X" prefixes.
+- **Query expansion** — static synonym map (31 programming abbreviations). "auth" also matches "authentication", "authorize", "credential". Zero-cost OR-based FTS expansion.
+- **`VectorIndex::dim()` trait method** — both HnswIndex and CagraIndex expose dimension through the trait.
+- **`CQS_CAGRA_THRESHOLD` env var** — override the 5000-vector threshold for GPU-accelerated CAGRA index.
+- **`CQS_HYDE_MAX_TOKENS` env var** — configure HyDE prediction token budget (default: 150).
+- **`OutputArgs`/`TextJsonArgs` shared structs** — reduced per-command boilerplate for `--json`/`--format` flags.
+- **`WatchConfig`/`WatchState` structs** — replaced 12-parameter `process_file_changes` with clean context structs.
+- **Pre-Edit hook** (`.claude/hooks/pre-edit-context.py`) — auto-injects module context for `.rs` files.
+- **43 new tests** (1540 total).
+
+### Changed
+- **`ModelInfo.dimensions`: u32 → usize** — eliminates `as u32`/`as usize` casts.
+- **`ModelInfo` moved to `embedder::models`** — re-exported from `store::helpers`.
+- **`full_cosine_similarity` uses f64 accumulators** — precision fix at 1024+ dimensions.
+- **Contrastive neighbor extraction: O(N) via `select_nth_unstable_by`** — was O(N²).
+- **Enrichment batch: single UPDATE...FROM join** — was N individual UPDATEs per transaction.
+- **Notes cache: `Arc<Vec<NoteSummary>>`** — was deep-clone per search.
+
+### Fixed
+- 80 of 88 audit findings fixed across 14 categories. Key fixes:
+  - `build_with_dim(dim=0)` panic → returns Err
+  - Empty chunk names → zero-vector embeddings → file path fallback
+  - `delete_phantom_chunks` SQLite 999-parameter limit → temp table
+  - Batch response 100MB cap bypassed by chunked encoding → `Read::take()`
+  - BFS inner-loop node cap prevents 10K→15K overshoot
+  - `grammar()` → `try_grammar()` at all 9 parser call sites
+  - `clamp_config_f32` NaN passthrough → clamped to min
+  - 9 stale E5-base-v2/768-dim references → BGE-large/1024
+  - See `docs/audit-triage.md` for the full list.
+
 ## [1.9.0] - 2026-03-27
 
 ### Changed
