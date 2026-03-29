@@ -82,10 +82,25 @@ You have `cqs` on PATH. Use it for faster code exploration — still read source
    - P1: Easy + high impact → fix immediately
    - P2: Medium effort + high impact → fix in batch
    - P3: Easy + low impact → fix if time
-   - P4: Hard or low impact → create issues
+   - P4: Hard or low impact → create issues for hard items; fix trivial ones inline (doc comments, one-liners, undocumented edge cases)
    - **Write triage to `docs/audit-triage.md`** — fresh file with P1-P4 tables (include Status column). This survives context compaction.
 
-8. **Disable audit mode**: `cqs audit-mode off -q`
+8. **Generate fix prompts**: For each P1, P2, and P3 finding, spawn opus agents to (P4 trivials get prompts too; hard P4s get issue descriptions):
+   - Read the actual source file at the stated line numbers
+   - Write a self-contained fix prompt with: exact file path, current code verbatim, replacement code, one-line "why"
+   - Group related findings (e.g., stale doc references) into a single prompt
+   - Save to `docs/audit-fix-prompts.md`
+
+9. **Review fix prompts**: Spawn a second opus agent to verify each prompt against the actual source:
+   - Does the "current code" match what's really in the file? (catches line drift)
+   - Does the fix compile? (check types, imports, API existence)
+   - Are there any missing edge cases?
+   - Report: "VERIFIED" or "NEEDS FIX — [specific issue]"
+   - This step catches ~20% of prompt errors (wrong field names, nonexistent APIs, moved code)
+
+10. **Execute fixes**: P1 first, then P2. Mark each item in triage as fixed.
+
+11. **Disable audit mode**: `cqs audit-mode off`
 
 ## Category Scopes
 

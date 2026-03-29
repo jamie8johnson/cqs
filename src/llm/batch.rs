@@ -225,7 +225,10 @@ impl LlmClient {
             });
         }
 
-        // RM-32: Check response size before buffering to prevent OOM
+        // RM-32: Check response size before buffering to prevent OOM.
+        // Check Content-Length header first (fast path), then enforce limit
+        // while reading the body (handles chunked transfer encoding where
+        // content_length() returns None).
         const MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024; // 100MB
         if let Some(len) = response.content_length() {
             if len > MAX_RESPONSE_BYTES {
@@ -239,8 +242,30 @@ impl LlmClient {
             }
         }
 
-        // Results are JSONL (one JSON object per line)
-        let body = response.text()?;
+        // Read body with size limit via Read::take() — works for both
+        // Content-Length and chunked transfer encoding responses.
+        use std::io::Read;
+        let mut body_bytes = Vec::new();
+        response
+            .take(MAX_RESPONSE_BYTES + 1)
+            .read_to_end(&mut body_bytes)
+            .map_err(|e| LlmError::Api {
+                status: 200,
+                message: format!("Failed to read batch response body: {e}"),
+            })?;
+        if body_bytes.len() as u64 > MAX_RESPONSE_BYTES {
+            return Err(LlmError::Api {
+                status: 200,
+                message: format!(
+                    "Batch response exceeded {} byte limit while streaming",
+                    MAX_RESPONSE_BYTES
+                ),
+            });
+        }
+        let body = String::from_utf8(body_bytes).map_err(|e| LlmError::Api {
+            status: 200,
+            message: format!("Batch response not valid UTF-8: {e}"),
+        })?;
         let mut results = HashMap::new();
 
         for line in body.lines() {
@@ -556,17 +581,16 @@ impl BatchPhase2<'_> {
 
         // DS-20: Validate results against current index — skip stale content_hashes
         // (e.g., after --force rebuild, the batch results reference chunks that no longer exist)
-        let valid_hashes: std::collections::HashSet<String> = match store.get_all_content_hashes() {
-            Ok(hashes) => hashes.into_iter().collect(),
+        let hash_result = store.get_all_content_hashes();
+        let valid_hashes: std::collections::HashSet<String> = match &hash_result {
+            Ok(hashes) => hashes.iter().cloned().collect(),
             Err(e) => {
                 tracing::warn!(error = %e, "Could not validate content hashes, storing all results");
                 std::collections::HashSet::new()
             }
         };
 
-        let (valid_results, stale_count) = if valid_hashes.is_empty()
-            && store.get_all_content_hashes().is_err()
-        {
+        let (valid_results, stale_count) = if valid_hashes.is_empty() && hash_result.is_err() {
             // Hash fetch failed — skip storage entirely to avoid committing stale data (DS-29).
             // Next run will retry the batch.
             tracing::error!(purpose = self.purpose, "Cannot validate batch results — skipping storage to prevent stale data. Will retry on next run.");
@@ -637,9 +661,17 @@ impl BatchPhase2<'_> {
             "Submitting batch to Claude API"
         );
         let id = submit(client, batch_items, self.max_tokens)?;
-        if let Err(e) = set_pending(store, Some(&id)) {
-            tracing::warn!(error = %e, purpose = self.purpose, "Failed to store pending batch ID");
-        }
+        set_pending(store, Some(&id)).map_err(|e| {
+            tracing::error!(
+                error = %e,
+                batch_id = %id,
+                purpose = self.purpose,
+                "Failed to store pending batch ID — batch {} submitted but ID lost. \
+                 Manual recovery: cqs llm-resume --batch-id {}",
+                id, id
+            );
+            LlmError::Store(e)
+        })?;
         tracing::info!(batch_id = %id, purpose = self.purpose, "Batch submitted, waiting for results");
         Ok(id)
     }

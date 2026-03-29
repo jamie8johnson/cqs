@@ -464,30 +464,44 @@ impl Store {
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
 
-            // Build IN-list for live IDs. Batch at 500 to stay well under SQLite limits.
-            // We need to find IDs to delete first, then clean FTS + chunks.
-            let placeholders: Vec<String> = live_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 2)).collect();
-            let in_list = placeholders.join(",");
+            // Use a temp table to avoid SQLite's 999-parameter limit.
+            // A file can have 1000+ chunks (e.g., large generated files).
+            sqlx::query("CREATE TEMP TABLE IF NOT EXISTS _live_ids (id TEXT PRIMARY KEY)")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM _live_ids")
+                .execute(&mut *tx)
+                .await?;
 
-            let fts_query = format!(
-                "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin = ?1 AND id NOT IN ({}))",
-                in_list
-            );
-            let mut fts_stmt = sqlx::query(&fts_query).bind(&origin_str);
-            for id in live_ids {
-                fts_stmt = fts_stmt.bind(id);
+            // Batch inserts into temp table at 500 to stay under SQLite limits.
+            for batch in live_ids.chunks(500) {
+                let placeholders: Vec<String> =
+                    batch.iter().enumerate().map(|(i, _)| format!("(?{})", i + 1)).collect();
+                let insert_sql = format!(
+                    "INSERT OR IGNORE INTO _live_ids (id) VALUES {}",
+                    placeholders.join(",")
+                );
+                let mut stmt = sqlx::query(&insert_sql);
+                for id in batch {
+                    stmt = stmt.bind(id);
+                }
+                stmt.execute(&mut *tx).await?;
             }
-            fts_stmt.execute(&mut *tx).await?;
 
-            let chunks_query = format!(
-                "DELETE FROM chunks WHERE origin = ?1 AND id NOT IN ({})",
-                in_list
-            );
-            let mut chunks_stmt = sqlx::query(&chunks_query).bind(&origin_str);
-            for id in live_ids {
-                chunks_stmt = chunks_stmt.bind(id);
-            }
-            let result = chunks_stmt.execute(&mut *tx).await?;
+            let fts_query =
+                "DELETE FROM chunks_fts WHERE id IN \
+                 (SELECT id FROM chunks WHERE origin = ?1 AND id NOT IN (SELECT id FROM _live_ids))";
+            sqlx::query(fts_query)
+                .bind(&origin_str)
+                .execute(&mut *tx)
+                .await?;
+
+            let chunks_query =
+                "DELETE FROM chunks WHERE origin = ?1 AND id NOT IN (SELECT id FROM _live_ids)";
+            let result = sqlx::query(chunks_query)
+                .bind(&origin_str)
+                .execute(&mut *tx)
+                .await?;
 
             tx.commit().await?;
             let deleted = result.rows_affected() as u32;

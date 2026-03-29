@@ -16,7 +16,7 @@ use crate::store::helpers::{
     embedding_slice, CandidateRow, ChunkSummary, SearchFilter, SearchResult,
 };
 use crate::store::sanitize_fts_query;
-use crate::store::{Store, StoreError};
+use crate::store::{NoteSummary, Store, StoreError};
 
 use super::scoring::{
     apply_parent_boost, build_filter_sql, compile_glob_filter, extract_file_from_chunk_id,
@@ -62,17 +62,28 @@ impl Store {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<SearchResult>, StoreError> {
-        let _span = tracing::info_span!("search_filtered", limit = limit, rrf = filter.enable_rrf)
-            .entered();
-
         // Load notes once for note-boosted ranking (cheap — no embeddings)
         let notes = match self.cached_notes_summaries() {
             Ok(n) => n,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to load notes for search boosting");
-                Vec::new()
+                std::sync::Arc::new(Vec::new())
             }
         };
+        self.search_filtered_with_notes(query, filter, limit, threshold, &notes)
+    }
+
+    /// Inner implementation of `search_filtered` that accepts pre-loaded notes.
+    fn search_filtered_with_notes(
+        &self,
+        query: &Embedding,
+        filter: &SearchFilter,
+        limit: usize,
+        threshold: f32,
+        notes: &[NoteSummary],
+    ) -> Result<Vec<SearchResult>, StoreError> {
+        let _span = tracing::info_span!("search_filtered", limit = limit, rrf = filter.enable_rrf)
+            .entered();
 
         self.rt.block_on(async {
             let fsql = build_filter_sql(filter);
@@ -288,6 +299,15 @@ impl Store {
         threshold: f32,
         index: Option<&dyn VectorIndex>,
     ) -> Result<Vec<SearchResult>, StoreError> {
+        // PERF-44: Load notes once for all search paths
+        let notes = match self.cached_notes_summaries() {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load notes for search boosting");
+                std::sync::Arc::new(Vec::new())
+            }
+        };
+
         if let Some(idx) = index {
             let _span = tracing::info_span!("search_index_guided", limit = limit).entered();
 
@@ -296,16 +316,23 @@ impl Store {
 
             if index_results.is_empty() {
                 tracing::info!("Index returned no candidates, falling back to brute-force search (performance may degrade)");
-                return self.search_filtered(query, filter, limit, threshold);
+                return self.search_filtered_with_notes(query, filter, limit, threshold, &notes);
             }
 
             tracing::debug!("Index returned {} candidates", index_results.len());
 
             let candidate_ids: Vec<&str> = index_results.iter().map(|r| r.id.as_str()).collect();
-            return self.search_by_candidate_ids(&candidate_ids, query, filter, limit, threshold);
+            return self.search_by_candidate_ids_with_notes(
+                &candidate_ids,
+                query,
+                filter,
+                limit,
+                threshold,
+                &notes,
+            );
         }
 
-        self.search_filtered(query, filter, limit, threshold)
+        self.search_filtered_with_notes(query, filter, limit, threshold, &notes)
     }
 
     /// Search within a set of candidate IDs (for HNSW-guided filtered search)
@@ -316,6 +343,34 @@ impl Store {
         filter: &SearchFilter,
         limit: usize,
         threshold: f32,
+    ) -> Result<Vec<SearchResult>, StoreError> {
+        // Load notes once for note-boosted ranking
+        let notes = match self.cached_notes_summaries() {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load notes for search boosting");
+                std::sync::Arc::new(Vec::new())
+            }
+        };
+        self.search_by_candidate_ids_with_notes(
+            candidate_ids,
+            query,
+            filter,
+            limit,
+            threshold,
+            &notes,
+        )
+    }
+
+    /// Inner implementation of `search_by_candidate_ids` that accepts pre-loaded notes.
+    fn search_by_candidate_ids_with_notes(
+        &self,
+        candidate_ids: &[&str],
+        query: &Embedding,
+        filter: &SearchFilter,
+        limit: usize,
+        threshold: f32,
+        notes: &[NoteSummary],
     ) -> Result<Vec<SearchResult>, StoreError> {
         let _span = tracing::info_span!(
             "search_by_candidates",
@@ -332,15 +387,6 @@ impl Store {
         let flags = build_filter_sql(filter);
         let use_hybrid = flags.use_hybrid;
         let use_rrf = flags.use_rrf;
-
-        // Load notes once for note-boosted ranking
-        let notes = match self.cached_notes_summaries() {
-            Ok(n) => n,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to load notes for search boosting");
-                Vec::new()
-            }
-        };
 
         self.rt.block_on(async {
             // Phase 1: Lightweight candidate fetch — only scoring fields + embedding.

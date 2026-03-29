@@ -1,6 +1,7 @@
 //! Metadata get/set and version validation for the Store.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use super::helpers::DEFAULT_MODEL_NAME;
 use super::migrations;
@@ -295,27 +296,28 @@ impl Store {
 
     /// Get cached notes summaries (loaded on first call, invalidated on mutation).
     ///
-    /// Returns a cloned Vec rather than a slice reference to avoid holding the
-    /// RwLock read guard across caller code. The clone cost is negligible — notes
-    /// are typically <100 entries with small strings.
-    pub fn cached_notes_summaries(&self) -> Result<Vec<NoteSummary>, StoreError> {
+    /// Returns `Arc<Vec<NoteSummary>>` — the warm-cache path is an `Arc::clone()`
+    /// (pointer bump) instead of deep-cloning all note strings. Notes are read-only
+    /// during search, so shared ownership is safe and avoids O(notes * string_len)
+    /// cloning on every search call.
+    pub fn cached_notes_summaries(&self) -> Result<Arc<Vec<NoteSummary>>, StoreError> {
         {
             let guard = self.notes_summaries_cache.read().unwrap_or_else(|p| {
                 tracing::warn!("notes cache read lock poisoned, recovering");
                 p.into_inner()
             });
             if let Some(ref ns) = *guard {
-                return Ok(ns.clone());
+                return Ok(Arc::clone(ns));
             }
         }
         // Cache miss — load from DB and populate
-        let ns = self.list_notes_summaries()?;
+        let ns = Arc::new(self.list_notes_summaries()?);
         {
             let mut guard = self.notes_summaries_cache.write().unwrap_or_else(|p| {
                 tracing::warn!("notes cache write lock poisoned, recovering");
                 p.into_inner()
             });
-            *guard = Some(ns.clone());
+            *guard = Some(Arc::clone(&ns));
         }
         Ok(ns)
     }

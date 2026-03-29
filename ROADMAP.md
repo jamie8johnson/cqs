@@ -1,24 +1,27 @@
 # Roadmap
 
-## Current: v1.8.0
+## Current: v1.9.0
 
-v1.8.0: 7th audit (85/95 fixed), multi-model functional, nl.rs split, convenience wrappers deleted, 1490 tests.
+v1.9.0: BGE-large default (1024-dim), v9-200k ties BGE-large on pipeline, 1491 tests.
 
-### Complete Pipeline Eval Matrix (2026-03-27)
+### Verified Pipeline Eval Matrix (re-verified 2026-03-28, v1.9.0 + all fixes)
 
 Config F (HNSW + name_boost + demotion). 55 queries, fixtures only. A6000.
 
-| Model | Params | Pipeline R@1 | R@5 | MRR | Raw R@1 |
-|-------|--------|-------------|-----|-----|---------|
-| **BGE-large** | 335M | **94.5%** | 98.2% | **0.966** | 61.8% |
-| v9-mini LoRA | 110M | 87.3% | 98.2% | 0.930 | 65.5% |
-| v5 LoRA | 110M | 85.5% | 94.5% | 0.897 | 54.5% |
-| v8 LoRA | 110M | 85.5% | 98.2% | 0.921 | 56.4% |
-| E5-base | 110M | 83.6% | 98.2% | 0.909 | 49.1% |
-| v7b LoRA | 110M | 81.8% | 98.2% | 0.880 | 67.3% |
-| v7 LoRA | 110M | 80.0% | 94.5% | 0.863 | 63.6% |
+| Model | Params | Pipeline R@1 | R@5 | MRR | Raw R@1 | CSN |
+|-------|--------|-------------|-----|-----|---------|-----|
+| **v9-200k** | **110M** | **94.5%** | 98.2% | 0.966 | **70.9%** | 0.615 |
+| **BGE-large** | 335M | **94.5%** | 98.2% | 0.967 | 61.8% | **0.770** |
+| v9-500k | 110M | 89.1% | 100.0% | 0.938 | 70.9% | 0.629 |
+| v9-200k-hn | 110M | 89.1% | 100.0% | 0.936 | 70.9% | 0.614 |
+| v9-mini | 110M | 89.1% | 98.2% | 0.934 | 65.5% | 0.638 |
+| v5 | 110M | 89.1% | 98.2% | 0.929 | 54.5% | 0.683 |
+| v8 | 110M | 89.1% | 98.2% | 0.934 | 56.4% | 0.652 |
+| E5-base | 110M | 85.5% | 98.2% | 0.918 | 49.1% | 0.627 |
+| v7 | 110M | 83.6% | 100.0% | 0.897 | 63.6% | 0.707 |
+| v7b | 110M | 83.6% | 98.2% | 0.896 | 67.3% | 0.702 |
 
-BGE-large wins by +7.2pp over best LoRA (v9-mini). Enrichment is model-agnostic (+34pp E5, +33pp BGE). Raw vs pipeline ranking inverts (v7b best raw, worst pipeline). No 110M model reaches BGE-large.
+**v9-200k (110M) ties BGE-large (335M) on pipeline at 1/3 size.** Best raw R@1 ever (70.9%). CSN and pipeline anti-correlate for LoRAs. More data (500K) and FAISS hard negatives both hurt pipeline. 200K + CG-filter-only is the sweet spot.
 
 ### Done — v1.9.0: BGE-large Default
 - [x] Switch `DEFAULT_MODEL_REPO` to BGE-large
@@ -27,23 +30,30 @@ BGE-large wins by +7.2pp over best LoRA (v9-mini). Enrichment is model-agnostic 
 - [x] E5-base as lightweight preset (`CQS_EMBEDDING_MODEL=e5-base`)
 - [x] Released v1.9.0, published crates.io
 
-### Next — Training (Exp 19: 110M model improvement)
+### Done — Training (Exp 19: 110M model improvement)
 
-**Goal**: Best possible 110M model for size-constrained deployments.
+| Experiment | Data | Hard Negs | Epochs | Pipeline R@1 | Raw R@1 | Result |
+|-----------|------|-----------|--------|-------------|---------|--------|
+| **v9-200k** | **200K** | **CG only** | **1** | **94.5%** | **70.9%** | **Winner — ties BGE-large** |
+| v9-200k-hn | 200K | CG + FAISS | 1 | 89.1% | 70.9% | FAISS hurts pipeline |
+| v9-500k | 500K | CG only | 1 | 89.1% | 70.9% | More data hurts pipeline |
 
-v9-mini (87.3% pipeline) is the only LoRA that beats base E5 (83.6%). The differentiator: call-graph false-negative filtering. Nobody has combined that with FAISS hard negatives or multi-epoch training.
+- [x] Mine FAISS hard negatives (172K pairs, 6.8 avg negs)
+- [x] Train v9-200k → **94.5% pipeline, 70.9% raw**
+- [x] Train v9-200k-hn → 89.1% pipeline (FAISS negs regress -5.4pp)
+- [x] Train v9-500k → 89.1% pipeline (more data regresses -5.4pp)
+- [ ] v9-200k-1.5ep (training in progress 2026-03-29, ~2h remaining)
 
-| Experiment | Data | Hard Negs | Epochs | New variable |
-|-----------|------|-----------|--------|-------------|
-| v9-200k | 200K | Call-graph only | 1 | 3.3x more data |
-| v9-200k-hn | 200K | Call-graph + FAISS | 1 | Combined neg strategy |
-| v9-200k-3ep | 200K | Call-graph + FAISS | 3 | Multi-epoch |
+**Conclusion:** 200K × 1 epoch × CG-filter-only is the recipe. More of anything hurts pipeline.
 
-- [ ] Mine FAISS hard negatives on 200K dataset
-- [ ] Train v9-200k (baseline: more data, same recipe)
-- [ ] Train v9-200k-hn (combined negative strategy)
-- [ ] Train v9-200k-3ep (multi-epoch)
-- [ ] Pipeline eval all three + compare to v9-mini (87.3%) and BGE-large (94.5%)
+### Future — Training Signal Experiments (from paper Section 5.5)
+
+These leverage code intelligence infrastructure for training signals that text-only pipelines can't produce. Each is independent and can be evaluated against the v9-200k baseline.
+
+- [ ] **Test-derived training queries** — `cqs test-map` maps functions to their tests. Test assertions encode behavioral specs more precise than docstrings: `test_validate_email` calling `validate("bad@")` asserting `false` → query "function that rejects invalid email addresses." Grounded in execution semantics.
+- [ ] **Contrastive summaries as training pairs** — The contrastive summaries generated at index time are themselves (summary, code) training pairs. "Unlike heap_sort which uses a binary max-heap, this function uses divide-and-conquer merge" → maps to merge_sort code. Free augmentation for indexed codebases, ~$0.38/index already paid.
+- [ ] **Type-aware negative mining** — Functions sharing return types but differing in behavior are harder negatives than structurally unrelated functions. `fn parse_json() -> Result<Value>` vs `fn parse_yaml() -> Result<Value>` is a more useful negative pair than `fn parse_json()` vs `fn render_html()`. Requires type graph edges (already in schema v16).
+- [ ] **f32→f64 cosine precision fix** — AC-28: `full_cosine_similarity` accumulates in f32 over 1024 dims. Fix to f64 may improve contrastive summary neighbor selection quality, which feeds embeddings.
 
 ### Done — Embedding Model Options
 - [x] BGE-large-en-v1.5 as configurable alternative
@@ -60,26 +70,22 @@ v9-mini (87.3% pipeline) is the only LoRA that beats base E5 (83.6%). The differ
 **200K dataset assembled.** 22,222 × 9, 74% callers, 93% callees.
 
 - [x] Gap-filling complete (2,010 repos indexed, 109 failed)
-- [x] 200K dataset assembled + dataset card written
-- [ ] Publish HuggingFace datasets:
-  - `cqs-code-search-200k` — 22,222 × 9 balanced, call graph metadata
-  - `cqs-code-search-500k` — 55,555 × 9 balanced
-  - `cqs-code-search-1m` — 121,651 × 9 balanced (C++ bottleneck)
-- [x] Mine hard negatives: 172,219 pairs with 6.8 avg negs, CG + FAISS, balanced
-- [ ] Train v9-200k (CG filter only, 1ep) — **running** (~7h)
-- [ ] Train v9-200k-hn (CG + FAISS negs, 1ep)
-- [ ] Train v9-200k-1.5ep (CG + FAISS, 1.5ep)
-- [ ] Train v9-200k-3ep (only if 1.5ep helps)
+- [x] 200K dataset assembled + published: https://huggingface.co/datasets/jamie8johnson/cqs-code-search-200k
+- [x] 500K dataset assembled locally
+- [ ] Publish 500K + 1M to HuggingFace
+- [x] Hard negatives mined (172K pairs, 6.8 avg negs)
+- [x] Training ablation complete (v9-200k / v9-200k-hn / v9-500k)
+- [ ] Ship v9-200k as LoRA preset in cqs
+- [ ] Paper v0.6 — all numbers verified on single code state
 
-### Red Team v1.9.0 — Watch Mode Gaps
-23 findings (0 critical, 2 high, 9 medium, 11 low). Watch mode is the theme.
+### Done — Red Team v1.9.0
+23 findings (0 critical, 2 high, 9 medium, 11 low). All actionable items fixed (PRs #712, #713).
 
-- [ ] #708 RT-DATA-7: Watch never deletes chunks for deleted files (**high**)
-- [ ] #709 RT-DATA-8: Watch discards function_calls data (**high**)
-- [ ] #710 RT-RES-1: Impact BFS no node cap (medium)
-- [ ] #711 RT-RES-9: Diff impact no cap on changed functions (medium)
-- Non-breaking fixes (INJ-1, INJ-2, INJ-4, RES-5, RES-7, FS-1, DATA-10) being applied
-- [ ] Paper v0.6
+- [x] #708 RT-DATA-7: Watch file deletion (fixed, merged)
+- [x] #709 RT-DATA-8: Watch function_calls (fixed, merged)
+- [x] #710 RT-RES-1: Impact BFS capped at 10K (fixed, merged)
+- [x] Non-breaking fixes: INJ-1/2/4, RES-5/7, FS-1, DATA-10 (PR #712)
+- [ ] #711 RT-RES-9: Diff impact cap (open)
 
 ### Future — Migrate HNSW to `hnswlib-rs` (wilsonzlin/corenn)
 **NOT the same author as hnsw_rs.** Different library: `hnswlib-rs` 0.10.0 by wilsonzlin (corenn project). Owned `Hnsw<K,M>`, `VectorStore` trait, zero unsafe, Apache-2.0.

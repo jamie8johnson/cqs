@@ -38,6 +38,9 @@ pub(super) fn reverse_bfs(
         }
         if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
+                if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+                    break;
+                }
                 if !ancestors.contains_key(caller.as_ref()) {
                     ancestors.insert(caller.to_string(), d + 1);
                     queue.push_back((caller.to_string(), d + 1));
@@ -90,6 +93,9 @@ pub(super) fn reverse_bfs_multi(
         }
         if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
+                if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+                    break;
+                }
                 match ancestors.entry(caller.to_string()) {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert(d + 1);
@@ -160,6 +166,9 @@ pub(super) fn reverse_bfs_multi_attributed(
         }
         if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
+                if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+                    break;
+                }
                 match ancestors.entry(caller.to_string()) {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert((d + 1, src));
@@ -244,6 +253,9 @@ pub(crate) fn test_reachability(
             }
             if let Some(callees) = graph.forward.get(current.as_str()) {
                 for callee in callees {
+                    if visited.len() >= DEFAULT_BFS_MAX_NODES {
+                        break;
+                    }
                     if !visited.contains_key(callee.as_ref()) {
                         visited.insert(callee.to_string(), d + 1);
                         queue.push_back((callee.to_string(), d + 1));

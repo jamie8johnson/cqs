@@ -675,6 +675,7 @@ impl Embedder {
                 let pooled: Vec<f32> = if count > 0.0 {
                     row.iter().map(|v| v / count).collect()
                 } else {
+                    tracing::warn!(batch_idx = i, "Zero attention mask — producing zero vector");
                     vec![0.0f32; embedding_dim]
                 };
                 Embedding::new(normalize_l2(pooled))
@@ -690,7 +691,7 @@ fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderErro
     // CQS_ONNX_DIR: bypass HF download, load from local directory.
     // Directory must contain model.onnx and tokenizer.json.
     if let Ok(dir) = std::env::var("CQS_ONNX_DIR") {
-        let dir = PathBuf::from(dir);
+        let dir = dunce::canonicalize(PathBuf::from(&dir)).unwrap_or_else(|_| PathBuf::from(dir));
         let model_path = dir.join(&config.onnx_path);
         let tokenizer_path = dir.join(&config.tokenizer_path);
         if model_path.exists() && tokenizer_path.exists() {

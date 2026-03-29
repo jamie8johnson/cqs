@@ -225,8 +225,18 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
     // On first file change, does a full build and keeps the Owned index in memory.
     // Subsequent changes insert only changed chunks via insert_batch.
     // Full rebuild every HNSW_REBUILD_THRESHOLD incremental inserts to clean orphans.
-    let mut hnsw_index: Option<HnswIndex> = None;
-    let mut incremental_count: usize = 0;
+    //
+    // DS-35: Load existing HNSW index from disk if present, to avoid orphan accumulation
+    // across restarts. Start incremental_count at threshold/2 so the first rebuild
+    // happens sooner, cleaning any orphans from prior sessions.
+    let (mut hnsw_index, mut incremental_count) =
+        match HnswIndex::load_with_dim(cqs_dir.as_ref(), "index", store.dim()) {
+            Ok(index) => {
+                info!(vectors = index.len(), "Loaded existing HNSW index");
+                (Some(index), HNSW_REBUILD_THRESHOLD / 2)
+            }
+            Err(_) => (None, 0),
+        };
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {

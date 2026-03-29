@@ -202,6 +202,16 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         return parts.join(". ");
     }
 
+    // Guard: chunks with empty names and no doc/signature produce degenerate embeddings.
+    // Return file path as minimal discriminator so the embedding isn't a zero vector.
+    if chunk.name.is_empty() && chunk.doc.is_none() && chunk.signature.is_empty() {
+        return if chunk.file.as_os_str().is_empty() {
+            "(unnamed)".to_string()
+        } else {
+            chunk.file.display().to_string()
+        };
+    }
+
     let mut parts = Vec::new();
 
     // Compact enrichment: file path + module context for discrimination.

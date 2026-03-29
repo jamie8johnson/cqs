@@ -53,7 +53,7 @@ cqs "database connection pool"
 
 ### Embedding Model
 
-cqs ships with E5-base-v2 (768-dim) as the default. Alternative models can be configured:
+cqs ships with BGE-large-en-v1.5 (1024-dim) as the default. Alternative models can be configured:
 
 ```bash
 # Built-in preset
@@ -149,7 +149,7 @@ stale_check = true
 quiet = false
 verbose = false
 
-# Embedding model (optional — defaults to e5-base)
+# Embedding model (optional — defaults to bge-large)
 [embedding]
 model = "bge-large"              # built-in preset
 # model = "custom"               # for custom ONNX models:
@@ -573,7 +573,7 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 51 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination (SQ-11). Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — Configurable embedding model (E5-base-v2 default, BGE-large preset, or custom ONNX) generates embeddings locally. 94.5% Recall@1 (BGE-large) on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
+3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 94.5% Recall@1 (BGE-large) on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.

@@ -245,10 +245,11 @@ fn find_contrastive_neighbors(
 
     // Pairwise cosine = normalized @ normalized.T
     let sims = matrix.dot(&matrix.t());
+    drop(matrix); // RM-39: Free N*dim*4 bytes (~49MB at 12k*1024)
 
-    // Extract top-N neighbors per chunk (excluding self) using a min-heap.
+    // Extract top-N neighbors per chunk, then drop the N*N matrix.
     // Only maintains `limit` elements instead of sorting all N-1 candidates.
-    let mut result: HashMap<String, Vec<String>> = HashMap::with_capacity(n);
+    let mut per_row_neighbors: Vec<Vec<(usize, f32)>> = Vec::with_capacity(n);
     for i in 0..n {
         let row = sims.row(i);
         // Min-heap: keeps the top-`limit` highest scores. We push MinScored
@@ -269,15 +270,25 @@ fn find_contrastive_neighbors(
                 }
             }
         }
-        // Drain heap into sorted-desc order
-        let mut neighbors_scored: Vec<MinScored> = heap.into_vec();
-        neighbors_scored.sort_unstable_by(|a, b| b.score.total_cmp(&a.score));
-        let neighbors: Vec<String> = neighbors_scored
-            .iter()
-            .map(|ms| valid_owned[ms.index].1.clone())
+        let mut scored: Vec<(usize, f32)> = heap
+            .into_vec()
+            .into_iter()
+            .map(|ms| (ms.index, ms.score))
             .collect();
-        if !neighbors.is_empty() {
-            result.insert(valid_owned[i].0.clone(), neighbors);
+        scored.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+        per_row_neighbors.push(scored);
+    }
+    drop(sims); // RM-39: Free N*N*4 bytes (~550MB at 12k)
+
+    // Build result map from pre-extracted neighbors
+    let mut result: HashMap<String, Vec<String>> = HashMap::with_capacity(n);
+    for (i, neighbors) in per_row_neighbors.into_iter().enumerate() {
+        let names: Vec<String> = neighbors
+            .iter()
+            .map(|(idx, _)| valid_owned[*idx].1.clone())
+            .collect();
+        if !names.is_empty() {
+            result.insert(valid_owned[i].0.clone(), names);
         }
     }
 

@@ -111,7 +111,12 @@ impl Parser {
         })?;
 
         cell.get_or_try_init(|| {
-            let grammar = language.grammar();
+            let grammar = language.try_grammar().ok_or_else(|| {
+                ParserError::QueryCompileFailed(
+                    language.to_string(),
+                    "no tree-sitter grammar".into(),
+                )
+            })?;
             let pattern = language.query_pattern();
             tree_sitter::Query::new(&grammar, pattern).map_err(|e| {
                 ParserError::QueryCompileFailed(language.to_string(), format!("{}", e))
@@ -129,7 +134,12 @@ impl Parser {
         })?;
 
         cell.get_or_try_init(|| {
-            let grammar = language.grammar();
+            let grammar = language.try_grammar().ok_or_else(|| {
+                ParserError::QueryCompileFailed(
+                    format!("{}_calls", language),
+                    "no tree-sitter grammar".into(),
+                )
+            })?;
             let pattern = language.call_query_pattern();
             tree_sitter::Query::new(&grammar, pattern).map_err(|e| {
                 ParserError::QueryCompileFailed(format!("{}_calls", language), format!("{}", e))
@@ -147,7 +157,12 @@ impl Parser {
         })?;
 
         cell.get_or_try_init(|| {
-            let grammar = language.grammar();
+            let grammar = language.try_grammar().ok_or_else(|| {
+                ParserError::QueryCompileFailed(
+                    format!("{}_types", language),
+                    "no tree-sitter grammar".into(),
+                )
+            })?;
             let pattern = language.type_query_pattern();
             tree_sitter::Query::new(&grammar, pattern).map_err(|e| {
                 ParserError::QueryCompileFailed(format!("{}_types", language), format!("{}", e))
@@ -227,7 +242,9 @@ impl Parser {
             };
         }
 
-        let grammar = language.grammar();
+        let grammar = language.try_grammar().ok_or_else(|| {
+            ParserError::ParseFailed(format!("{} has no tree-sitter grammar", language))
+        })?;
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&grammar)
@@ -392,7 +409,9 @@ impl Parser {
         }
 
         // Single tree-sitter parse
-        let grammar = language.grammar();
+        let grammar = language.try_grammar().ok_or_else(|| {
+            ParserError::ParseFailed(format!("{} has no tree-sitter grammar", language))
+        })?;
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&grammar)

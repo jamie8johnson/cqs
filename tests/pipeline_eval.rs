@@ -223,10 +223,13 @@ fn test_pipeline_scoring() {
     let db_path = dir.path().join("pipeline_eval.db");
     let mut store = Store::open(&db_path).unwrap();
     let mc = ModelConfig::resolve(None, None);
+    // Warm up embedder to detect actual dim (CQS_ONNX_DIR may override model)
+    embedder.warm().expect("Failed to warm embedder");
+    let actual_dim = embedder.embedding_dim();
     store
-        .init(&ModelInfo::new(&mc.repo, mc.dim as u32))
+        .init(&ModelInfo::new(&mc.repo, actual_dim as u32))
         .unwrap();
-    store.set_dim(mc.dim);
+    store.set_dim(actual_dim);
 
     // Parse and index both original AND hard fixtures for all 5 languages
     eprintln!("Parsing and indexing fixtures...");
@@ -706,10 +709,12 @@ fn test_holdout_eval() {
     let db_path = dir.path().join("holdout_eval.db");
     let mut store = Store::open(&db_path).unwrap();
     let mc = ModelConfig::resolve(None, None);
+    embedder.warm().expect("Failed to warm embedder");
+    let actual_dim = embedder.embedding_dim();
     store
-        .init(&ModelInfo::new(&mc.repo, mc.dim as u32))
+        .init(&ModelInfo::new(&mc.repo, actual_dim as u32))
         .unwrap();
-    store.set_dim(mc.dim);
+    store.set_dim(actual_dim);
 
     // Index both original AND hard fixtures (holdout queries target both)
     eprintln!("Parsing and indexing fixtures for holdout eval...");
@@ -847,10 +852,12 @@ fn test_stress_eval() {
     let db_path = dir.path().join("stress_eval.db");
     let mut store = Store::open(&db_path).unwrap();
     let mc = ModelConfig::resolve(None, None);
+    embedder.warm().expect("Failed to warm embedder");
+    let actual_dim = embedder.embedding_dim();
     store
-        .init(&ModelInfo::new(&mc.repo, mc.dim as u32))
+        .init(&ModelInfo::new(&mc.repo, actual_dim as u32))
         .unwrap();
-    store.set_dim(mc.dim);
+    store.set_dim(actual_dim);
 
     // 1. Index eval fixtures (same as holdout) — with relationships for call graph enrichment
     eprintln!("=== Indexing eval fixtures ===");
