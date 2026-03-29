@@ -40,6 +40,31 @@ const HNSW_REBUILD_THRESHOLD: usize = 100;
 /// Maximum pending files to prevent unbounded memory growth
 const MAX_PENDING_FILES: usize = 10_000;
 
+/// Immutable references shared across the watch loop.
+///
+/// Does not include `Store` because it is re-opened each cycle (DS-9).
+struct WatchConfig<'a> {
+    root: &'a Path,
+    cqs_dir: &'a Path,
+    notes_path: &'a Path,
+    supported_ext: &'a HashSet<&'a str>,
+    parser: &'a CqParser,
+    embedder: &'a OnceCell<Embedder>,
+    quiet: bool,
+    model_config: &'a ModelConfig,
+}
+
+/// Mutable session state that evolves across watch cycles.
+struct WatchState {
+    embedder_backoff: EmbedderBackoff,
+    pending_files: HashSet<PathBuf>,
+    pending_notes: bool,
+    last_event: std::time::Instant,
+    last_indexed_mtime: HashMap<PathBuf, SystemTime>,
+    hnsw_index: Option<HnswIndex>,
+    incremental_count: usize,
+}
+
 /// Track exponential backoff state for embedder initialization retries.
 ///
 /// On repeated failures, backs off from 0s to max 5 minutes between attempts
@@ -75,6 +100,7 @@ impl EmbedderBackoff {
     /// Reset backoff on success.
     fn reset(&mut self) {
         self.failures = 0;
+        self.next_retry = std::time::Instant::now();
     }
 
     /// Whether we should attempt initialization (backoff expired).
@@ -189,10 +215,6 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
     };
     watcher.watch(&root, RecursiveMode::Recursive)?;
 
-    // Track pending changes for debouncing
-    let mut pending_files: HashSet<PathBuf> = HashSet::new();
-    let mut pending_notes = false;
-    let mut last_event = std::time::Instant::now();
     let debounce = Duration::from_millis(debounce_ms);
     let notes_path = root.join("docs/notes.toml");
     let cqs_dir = dunce::canonicalize(&cqs_dir).unwrap_or_else(|e| {
@@ -207,19 +229,11 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
     // Lazy-initialized embedder (~500MB, avoids startup delay unless changes occur).
     // Once initialized, stays in memory for fast reindexing. See module docs for memory details.
     let embedder: OnceCell<Embedder> = OnceCell::new();
-    let mut embedder_backoff = EmbedderBackoff::new();
 
     // Open store and reuse across reindex operations within a cycle.
     // Re-opened after each reindex cycle to clear stale OnceLock caches (DS-9).
     let mut store = Store::open(&index_path)
         .with_context(|| format!("Failed to open store at {}", index_path.display()))?;
-
-    // Track last-indexed mtime per file to skip duplicate WSL/NTFS events.
-    // On WSL, inotify over 9P delivers repeated events for the same file change.
-    // Bounded: pruned when >10k entries or >1k entries on single-file reindex.
-    let mut last_indexed_mtime: HashMap<PathBuf, SystemTime> = HashMap::with_capacity(1024);
-
-    let mut cycles_since_clear: u32 = 0;
 
     // Persistent HNSW state for incremental updates.
     // On first file change, does a full build and keeps the Owned index in memory.
@@ -229,7 +243,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
     // DS-35: Load existing HNSW index from disk if present, to avoid orphan accumulation
     // across restarts. Start incremental_count at threshold/2 so the first rebuild
     // happens sooner, cleaning any orphans from prior sessions.
-    let (mut hnsw_index, mut incremental_count) =
+    let (hnsw_index, incremental_count) =
         match HnswIndex::load_with_dim(cqs_dir.as_ref(), "index", store.dim()) {
             Ok(index) => {
                 info!(vectors = index.len(), "Loaded existing HNSW index");
@@ -238,27 +252,44 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
             Err(_) => (None, 0),
         };
 
+    let model_config = cli.model_config();
+    let watch_cfg = WatchConfig {
+        root: &root,
+        cqs_dir: &cqs_dir,
+        notes_path: &notes_path,
+        supported_ext: &supported_ext,
+        parser: &parser,
+        embedder: &embedder,
+        quiet: cli.quiet,
+        model_config,
+    };
+
+    let mut state = WatchState {
+        embedder_backoff: EmbedderBackoff::new(),
+        pending_files: HashSet::new(),
+        pending_notes: false,
+        last_event: std::time::Instant::now(),
+        // Track last-indexed mtime per file to skip duplicate WSL/NTFS events.
+        // On WSL, inotify over 9P delivers repeated events for the same file change.
+        // Bounded: pruned when >10k entries or >1k entries on single-file reindex.
+        last_indexed_mtime: HashMap::with_capacity(1024),
+        hnsw_index,
+        incremental_count,
+    };
+
+    let mut cycles_since_clear: u32 = 0;
+
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
-                collect_events(
-                    &event,
-                    &root,
-                    &cqs_dir,
-                    &notes_path,
-                    &supported_ext,
-                    &mut pending_files,
-                    &mut pending_notes,
-                    &mut last_event,
-                    &last_indexed_mtime,
-                );
+                collect_events(&event, &watch_cfg, &mut state);
             }
             Ok(Err(e)) => {
                 warn!(error = %e, "Watch error");
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                let should_process = (!pending_files.is_empty() || pending_notes)
-                    && last_event.elapsed() >= debounce;
+                let should_process = (!state.pending_files.is_empty() || state.pending_notes)
+                    && state.last_event.elapsed() >= debounce;
 
                 if should_process {
                     cycles_since_clear = 0;
@@ -277,25 +308,12 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
                         }
                     };
 
-                    if !pending_files.is_empty() {
-                        process_file_changes(
-                            &root,
-                            &cqs_dir,
-                            &store,
-                            &parser,
-                            &embedder,
-                            &mut embedder_backoff,
-                            &mut pending_files,
-                            &mut last_indexed_mtime,
-                            &mut hnsw_index,
-                            &mut incremental_count,
-                            cli.quiet,
-                            cli.model_config(),
-                        );
+                    if !state.pending_files.is_empty() {
+                        process_file_changes(&watch_cfg, &store, &mut state);
                     }
 
-                    if pending_notes {
-                        pending_notes = false;
+                    if state.pending_notes {
+                        state.pending_notes = false;
                         process_note_changes(&root, &store, cli.quiet);
                     }
 
@@ -317,8 +335,8 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
                         if let Some(emb) = embedder.get() {
                             emb.clear_session();
                         }
-                        hnsw_index = None;
-                        incremental_count = 0;
+                        state.hnsw_index = None;
+                        state.incremental_count = 0;
                         cycles_since_clear = 0;
                     }
                 }
@@ -341,18 +359,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
 }
 
 /// Collect file system events into pending sets, filtering by extension and deduplicating.
-#[allow(clippy::too_many_arguments)]
-fn collect_events(
-    event: &notify::Event,
-    root: &Path,
-    cqs_dir: &Path,
-    notes_path: &Path,
-    supported_ext: &HashSet<&str>,
-    pending_files: &mut HashSet<PathBuf>,
-    pending_notes: &mut bool,
-    last_event: &mut std::time::Instant,
-    last_indexed_mtime: &HashMap<PathBuf, SystemTime>,
-) {
+fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchState) {
     for path in &event.paths {
         // PB-26: Skip canonicalize for deleted files — dunce::canonicalize
         // requires the file to exist (calls std::fs::canonicalize internally).
@@ -362,39 +369,40 @@ fn collect_events(
             path.clone()
         };
         // Skip .cqs directory
-        if path.starts_with(cqs_dir) {
+        if path.starts_with(cfg.cqs_dir) {
             continue;
         }
 
         // Check if it's notes.toml
-        if path == notes_path {
-            *pending_notes = true;
-            *last_event = std::time::Instant::now();
+        if path == cfg.notes_path {
+            state.pending_notes = true;
+            state.last_event = std::time::Instant::now();
             continue;
         }
 
         // Skip if not a supported extension
         let ext_raw = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let ext = ext_raw.to_ascii_lowercase();
-        if !supported_ext.contains(ext.as_str()) {
+        if !cfg.supported_ext.contains(ext.as_str()) {
             continue;
         }
 
         // Convert to relative path
-        if let Ok(rel) = path.strip_prefix(root) {
+        if let Ok(rel) = path.strip_prefix(cfg.root) {
             // Skip if mtime unchanged since last index (dedup WSL/NTFS events)
             if let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) {
-                if last_indexed_mtime
+                if state
+                    .last_indexed_mtime
                     .get(rel)
                     .is_some_and(|last| mtime <= *last)
                 {
                     continue;
                 }
             }
-            if pending_files.len() < MAX_PENDING_FILES {
-                pending_files.insert(rel.to_path_buf());
+            if state.pending_files.len() < MAX_PENDING_FILES {
+                state.pending_files.insert(rel.to_path_buf());
             }
-            *last_event = std::time::Instant::now();
+            state.last_event = std::time::Instant::now();
         }
     }
 }
@@ -403,32 +411,18 @@ fn collect_events(
 ///
 /// Uses incremental HNSW insertion when an Owned index is available in memory.
 /// Falls back to full rebuild on first run or after `HNSW_REBUILD_THRESHOLD` incremental inserts.
-#[allow(clippy::too_many_arguments)]
-fn process_file_changes(
-    root: &Path,
-    cqs_dir: &Path,
-    store: &Store,
-    parser: &CqParser,
-    embedder: &OnceCell<Embedder>,
-    embedder_backoff: &mut EmbedderBackoff,
-    pending_files: &mut HashSet<PathBuf>,
-    last_indexed_mtime: &mut HashMap<PathBuf, SystemTime>,
-    hnsw_index: &mut Option<HnswIndex>,
-    incremental_count: &mut usize,
-    quiet: bool,
-    model_config: &ModelConfig,
-) {
-    let files: Vec<PathBuf> = pending_files.drain().collect();
+fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState) {
+    let files: Vec<PathBuf> = state.pending_files.drain().collect();
     let _span = info_span!("process_file_changes", file_count = files.len()).entered();
-    pending_files.shrink_to(64);
-    if !quiet {
+    state.pending_files.shrink_to(64);
+    if !cfg.quiet {
         println!("\n{} file(s) changed, reindexing...", files.len());
         for f in &files {
             println!("  {}", f.display());
         }
     }
 
-    let emb = match try_init_embedder(embedder, embedder_backoff, model_config) {
+    let emb = match try_init_embedder(cfg.embedder, &mut state.embedder_backoff, cfg.model_config) {
         Some(e) => e,
         None => return,
     };
@@ -437,7 +431,7 @@ fn process_file_changes(
     let pre_mtimes: HashMap<PathBuf, SystemTime> = files
         .iter()
         .filter_map(|f| {
-            std::fs::metadata(root.join(f))
+            std::fs::metadata(cfg.root.join(f))
                 .and_then(|m| m.modified())
                 .ok()
                 .map(|t| (f.clone(), t))
@@ -454,51 +448,53 @@ fn process_file_changes(
         tracing::warn!(error = %e, "Cannot set HNSW dirty flag — skipping reindex to prevent stale index on crash");
         return;
     }
-    match reindex_files(root, store, &files, parser, emb, quiet) {
+    match reindex_files(cfg.root, store, &files, cfg.parser, emb, cfg.quiet) {
         Ok((count, content_hashes)) => {
             // Record mtimes to skip duplicate events
             for (file, mtime) in pre_mtimes {
-                last_indexed_mtime.insert(file, mtime);
+                state.last_indexed_mtime.insert(file, mtime);
             }
             // RM-17: Prune entries for deleted files when >1,000 entries regardless
             // of batch size. The files.len() == 1 guard was overly conservative.
-            if last_indexed_mtime.len() > 10_000 {
-                last_indexed_mtime.retain(|f, _| root.join(f).exists());
+            if state.last_indexed_mtime.len() > 10_000 {
+                state
+                    .last_indexed_mtime
+                    .retain(|f, _| cfg.root.join(f).exists());
             }
-            if !quiet {
+            if !cfg.quiet {
                 println!("Indexed {} chunk(s)", count);
             }
 
             // Incremental HNSW update: insert changed chunks into existing Owned index.
             // Falls back to full rebuild on first run or after HNSW_REBUILD_THRESHOLD inserts.
             let needs_full_rebuild =
-                hnsw_index.is_none() || *incremental_count >= HNSW_REBUILD_THRESHOLD;
+                state.hnsw_index.is_none() || state.incremental_count >= HNSW_REBUILD_THRESHOLD;
 
             // During full rebuild the old index and new batch coexist briefly,
             // but `build_batched` streams one batch at a time so peak memory is
             // old_index + one_batch, not 2× the full index.
             if needs_full_rebuild {
-                match super::commands::build_hnsw_index_owned(store, cqs_dir) {
+                match super::commands::build_hnsw_index_owned(store, cfg.cqs_dir) {
                     Ok(Some(index)) => {
                         let n = index.len();
-                        *hnsw_index = Some(index);
-                        *incremental_count = 0;
+                        state.hnsw_index = Some(index);
+                        state.incremental_count = 0;
                         if let Err(e) = store.set_hnsw_dirty(false) {
                             tracing::warn!(error = %e, "Failed to clear HNSW dirty flag — unnecessary rebuild on next load");
                         }
                         info!(vectors = n, "HNSW index rebuilt (full)");
-                        if !quiet {
+                        if !cfg.quiet {
                             println!("  HNSW index: {} vectors (full rebuild)", n);
                         }
                     }
                     Ok(None) => {
-                        *hnsw_index = None;
+                        state.hnsw_index = None;
                     }
                     Err(e) => {
                         warn!(error = %e, "HNSW rebuild failed, removing stale HNSW files (search falls back to brute-force)");
-                        *hnsw_index = None;
+                        state.hnsw_index = None;
                         for ext in cqs::hnsw::HNSW_ALL_EXTENSIONS {
-                            let path = cqs_dir.join(format!("index.{}", ext));
+                            let path = cfg.cqs_dir.join(format!("index.{}", ext));
                             if path.exists() {
                                 let _ = std::fs::remove_file(&path);
                             }
@@ -518,12 +514,12 @@ fn process_file_changes(
                             .iter()
                             .map(|(id, emb)| (id.clone(), emb.as_slice()))
                             .collect();
-                        if let Some(ref mut index) = hnsw_index {
+                        if let Some(ref mut index) = state.hnsw_index {
                             match index.insert_batch(&items) {
                                 Ok(n) => {
-                                    *incremental_count += n;
+                                    state.incremental_count += n;
                                     // Save updated index to disk for search processes
-                                    if let Err(e) = index.save(cqs_dir, "index") {
+                                    if let Err(e) = index.save(cfg.cqs_dir, "index") {
                                         warn!(error = %e, "Failed to save HNSW after incremental insert");
                                     } else if let Err(e) = store.set_hnsw_dirty(false) {
                                         tracing::warn!(error = %e, "Failed to clear HNSW dirty flag — unnecessary rebuild on next load");
@@ -531,10 +527,10 @@ fn process_file_changes(
                                     info!(
                                         inserted = n,
                                         total = index.len(),
-                                        incremental_count = *incremental_count,
+                                        incremental_count = state.incremental_count,
                                         "HNSW incremental insert"
                                     );
-                                    if !quiet {
+                                    if !cfg.quiet {
                                         println!(
                                             "  HNSW index: +{} vectors (incremental, {} total)",
                                             n,
@@ -545,7 +541,7 @@ fn process_file_changes(
                                 Err(e) => {
                                     warn!(error = %e, "HNSW incremental insert failed, will rebuild next cycle");
                                     // Force full rebuild next cycle
-                                    *hnsw_index = None;
+                                    state.hnsw_index = None;
                                 }
                             }
                         }
@@ -796,4 +792,270 @@ fn reindex_notes(root: &Path, store: &Store, quiet: bool) -> Result<usize> {
     }
 
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::EventKind;
+    use std::collections::{HashMap, HashSet};
+    use std::path::PathBuf;
+
+    fn make_event(paths: Vec<PathBuf>, kind: EventKind) -> notify::Event {
+        notify::Event {
+            kind,
+            paths,
+            attrs: Default::default(),
+        }
+    }
+
+    /// Helper to build a minimal WatchConfig for testing collect_events.
+    fn test_watch_config<'a>(
+        root: &'a Path,
+        cqs_dir: &'a Path,
+        notes_path: &'a Path,
+        supported_ext: &'a HashSet<&'a str>,
+    ) -> WatchConfig<'a> {
+        // These fields are unused by collect_events but required by the struct.
+        // We leak a parser since tests don't call process_file_changes.
+        let parser = Box::leak(Box::new(CqParser::new().unwrap()));
+        let embedder = Box::leak(Box::new(OnceCell::new()));
+        let model_config = Box::leak(Box::new(ModelConfig::default_model()));
+        WatchConfig {
+            root,
+            cqs_dir,
+            notes_path,
+            supported_ext,
+            parser,
+            embedder,
+            quiet: true,
+            model_config,
+        }
+    }
+
+    fn test_watch_state() -> WatchState {
+        WatchState {
+            embedder_backoff: EmbedderBackoff::new(),
+            pending_files: HashSet::new(),
+            pending_notes: false,
+            last_event: std::time::Instant::now(),
+            last_indexed_mtime: HashMap::new(),
+            hnsw_index: None,
+            incremental_count: 0,
+        }
+    }
+
+    // ===== EmbedderBackoff tests =====
+
+    #[test]
+    fn backoff_initial_state_allows_retry() {
+        let backoff = EmbedderBackoff::new();
+        assert!(backoff.should_retry(), "Fresh backoff should allow retry");
+    }
+
+    #[test]
+    fn backoff_after_failure_delays_retry() {
+        let mut backoff = EmbedderBackoff::new();
+        backoff.record_failure();
+        // After 1 failure, delay is 2^1 = 2 seconds
+        assert!(
+            !backoff.should_retry(),
+            "Should not retry immediately after failure"
+        );
+        assert_eq!(backoff.failures, 1);
+    }
+
+    #[test]
+    fn backoff_reset_clears_failures() {
+        let mut backoff = EmbedderBackoff::new();
+        backoff.record_failure();
+        backoff.record_failure();
+        backoff.reset();
+        assert_eq!(backoff.failures, 0);
+        assert!(backoff.should_retry());
+    }
+
+    #[test]
+    fn backoff_caps_at_300s() {
+        let mut backoff = EmbedderBackoff::new();
+        // 2^9 = 512 > 300, so it should be capped
+        for _ in 0..9 {
+            backoff.record_failure();
+        }
+        // Verify it doesn't panic or overflow
+        assert_eq!(backoff.failures, 9);
+    }
+
+    #[test]
+    fn backoff_saturating_add_no_overflow() {
+        let mut backoff = EmbedderBackoff::new();
+        backoff.failures = u32::MAX;
+        backoff.record_failure();
+        assert_eq!(backoff.failures, u32::MAX, "Should saturate, not overflow");
+    }
+
+    // ===== collect_events tests =====
+
+    #[test]
+    fn collect_events_filters_unsupported_extensions() {
+        let root = PathBuf::from("/tmp/test_project");
+        let cqs_dir = PathBuf::from("/tmp/test_project/.cqs");
+        let notes_path = PathBuf::from("/tmp/test_project/docs/notes.toml");
+        let supported: HashSet<&str> = ["rs", "py", "js"].iter().cloned().collect();
+        let cfg = test_watch_config(&root, &cqs_dir, &notes_path, &supported);
+        let mut state = test_watch_state();
+
+        // .txt is not supported
+        let event = make_event(
+            vec![PathBuf::from("/tmp/test_project/readme.txt")],
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+        );
+
+        collect_events(&event, &cfg, &mut state);
+
+        assert!(
+            state.pending_files.is_empty(),
+            "Unsupported extension should not be added"
+        );
+        assert!(!state.pending_notes);
+    }
+
+    #[test]
+    fn collect_events_skips_cqs_dir() {
+        let root = PathBuf::from("/tmp/test_project");
+        let cqs_dir = PathBuf::from("/tmp/test_project/.cqs");
+        let notes_path = PathBuf::from("/tmp/test_project/docs/notes.toml");
+        let supported: HashSet<&str> = ["rs", "db"].iter().cloned().collect();
+        let cfg = test_watch_config(&root, &cqs_dir, &notes_path, &supported);
+        let mut state = test_watch_state();
+
+        let event = make_event(
+            vec![PathBuf::from("/tmp/test_project/.cqs/index.db")],
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+        );
+
+        collect_events(&event, &cfg, &mut state);
+
+        assert!(
+            state.pending_files.is_empty(),
+            ".cqs dir events should be skipped"
+        );
+    }
+
+    #[test]
+    fn collect_events_detects_notes_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let cqs_dir = root.join(".cqs");
+        let notes_dir = root.join("docs");
+        std::fs::create_dir_all(&notes_dir).unwrap();
+        let notes_path = notes_dir.join("notes.toml");
+        std::fs::write(&notes_path, "# notes").unwrap();
+
+        let supported: HashSet<&str> = ["rs"].iter().cloned().collect();
+        let cfg = test_watch_config(&root, &cqs_dir, &notes_path, &supported);
+        let mut state = test_watch_state();
+
+        let event = make_event(
+            vec![notes_path.clone()],
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+        );
+
+        collect_events(&event, &cfg, &mut state);
+
+        assert!(state.pending_notes, "Notes path should set pending_notes");
+        assert!(
+            state.pending_files.is_empty(),
+            "Notes should not be added to pending_files"
+        );
+    }
+
+    #[test]
+    fn collect_events_respects_max_pending_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let cqs_dir = root.join(".cqs");
+        let notes_path = root.join("docs/notes.toml");
+        let supported: HashSet<&str> = ["rs"].iter().cloned().collect();
+        let cfg = test_watch_config(&root, &cqs_dir, &notes_path, &supported);
+        let mut state = test_watch_state();
+
+        // Pre-fill pending_files to MAX_PENDING_FILES
+        for i in 0..MAX_PENDING_FILES {
+            state
+                .pending_files
+                .insert(PathBuf::from(format!("f{}.rs", i)));
+        }
+
+        // Create a real file so mtime check passes
+        let new_file = root.join("overflow.rs");
+        std::fs::write(&new_file, "fn main() {}").unwrap();
+
+        let event = make_event(
+            vec![new_file],
+            EventKind::Create(notify::event::CreateKind::File),
+        );
+
+        collect_events(&event, &cfg, &mut state);
+
+        assert_eq!(
+            state.pending_files.len(),
+            MAX_PENDING_FILES,
+            "Should not exceed MAX_PENDING_FILES"
+        );
+    }
+
+    #[test]
+    fn collect_events_skips_unchanged_mtime() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let cqs_dir = root.join(".cqs");
+        let notes_path = root.join("docs/notes.toml");
+        let supported: HashSet<&str> = ["rs"].iter().cloned().collect();
+        let cfg = test_watch_config(&root, &cqs_dir, &notes_path, &supported);
+        let mut state = test_watch_state();
+
+        // Create a file and record its mtime as already indexed
+        let file = root.join("src/lib.rs");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(&file, "fn main() {}").unwrap();
+        let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+        state
+            .last_indexed_mtime
+            .insert(PathBuf::from("src/lib.rs"), mtime);
+
+        let event = make_event(
+            vec![file],
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+        );
+
+        collect_events(&event, &cfg, &mut state);
+
+        assert!(
+            state.pending_files.is_empty(),
+            "Unchanged mtime should be skipped"
+        );
+    }
+
+    // ===== Constants tests =====
+
+    #[test]
+    fn hnsw_rebuild_threshold_is_reasonable() {
+        assert!(HNSW_REBUILD_THRESHOLD > 0);
+        assert!(HNSW_REBUILD_THRESHOLD <= 1000);
+    }
+
+    #[test]
+    fn max_pending_files_is_bounded() {
+        assert!(MAX_PENDING_FILES > 0);
+        assert!(MAX_PENDING_FILES <= 100_000);
+    }
 }

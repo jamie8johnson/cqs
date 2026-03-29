@@ -1,7 +1,6 @@
 //! LLM summary pass orchestration — collects chunks, submits batches, stores results.
 
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
 
 use ndarray::Array2;
 
@@ -247,36 +246,28 @@ fn find_contrastive_neighbors(
     let sims = matrix.dot(&matrix.t());
     drop(matrix); // RM-39: Free N*dim*4 bytes (~49MB at 12k*1024)
 
-    // Extract top-N neighbors per chunk, then drop the N*N matrix.
-    // Only maintains `limit` elements instead of sorting all N-1 candidates.
+    // PERF-43: Extract top-N neighbors per chunk using select_nth_unstable_by
+    // for O(N) average per row instead of O(N log K) with BinaryHeap.
     let mut per_row_neighbors: Vec<Vec<(usize, f32)>> = Vec::with_capacity(n);
     for i in 0..n {
         let row = sims.row(i);
-        // Min-heap: keeps the top-`limit` highest scores. We push MinScored
-        // (inverted ordering) so BinaryHeap's max-heap acts as a min-heap,
-        // letting us cheaply evict the smallest when the heap exceeds `limit`.
-        let mut heap: BinaryHeap<MinScored> = BinaryHeap::with_capacity(limit + 1);
-        for j in 0..n {
-            if j == i {
-                continue;
-            }
-            let score = row[j];
-            if heap.len() < limit {
-                heap.push(MinScored { index: j, score });
-            } else if let Some(top) = heap.peek() {
-                if score > top.score {
-                    heap.pop();
-                    heap.push(MinScored { index: j, score });
-                }
-            }
+        // Collect all candidates except self into a mutable Vec
+        let mut candidates: Vec<(usize, f32)> =
+            (0..n).filter(|&j| j != i).map(|j| (j, row[j])).collect();
+
+        if candidates.len() <= limit {
+            // Fewer candidates than limit — take all, sorted desc
+            candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+            per_row_neighbors.push(candidates);
+        } else {
+            // Partial sort: partition so top-`limit` elements are in [0..limit].
+            // select_nth_unstable_by is O(N) average — no heap overhead.
+            candidates.select_nth_unstable_by(limit - 1, |a, b| b.1.total_cmp(&a.1));
+            candidates.truncate(limit);
+            // Sort the top-K for stable output order
+            candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+            per_row_neighbors.push(candidates);
         }
-        let mut scored: Vec<(usize, f32)> = heap
-            .into_vec()
-            .into_iter()
-            .map(|ms| (ms.index, ms.score))
-            .collect();
-        scored.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-        per_row_neighbors.push(scored);
     }
     drop(sims); // RM-39: Free N*N*4 bytes (~550MB at 12k)
 
@@ -296,36 +287,6 @@ fn find_contrastive_neighbors(
     tracing::info!(total = n, with_neighbors, "Contrastive neighbors computed");
 
     Ok(result)
-}
-
-/// Min-heap entry for top-K neighbor extraction.
-///
-/// Implements reverse ordering so `BinaryHeap` (a max-heap) acts as a min-heap,
-/// keeping the K highest-scored entries by evicting the minimum.
-struct MinScored {
-    index: usize,
-    score: f32,
-}
-
-impl PartialEq for MinScored {
-    fn eq(&self, other: &Self) -> bool {
-        self.score == other.score && self.index == other.index
-    }
-}
-
-impl Eq for MinScored {}
-
-impl PartialOrd for MinScored {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for MinScored {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Reverse: smallest score = highest priority in max-heap
-        other.score.total_cmp(&self.score)
-    }
 }
 
 #[cfg(test)]

@@ -105,7 +105,7 @@ impl Store {
             };
 
             // Pre-compute note boost lookup for O(1) name matching in scoring loop
-            let note_index = NoteBoostIndex::new(&notes);
+            let note_index = NoteBoostIndex::new(notes);
 
             // Build loop-invariant scoring context once
             let scoring_ctx = ScoringContext {
@@ -404,7 +404,7 @@ impl Store {
             };
 
             // Pre-compute note boost lookup for O(1) name matching in scoring loop
-            let note_index = NoteBoostIndex::new(&notes);
+            let note_index = NoteBoostIndex::new(notes);
 
             // Build loop-invariant scoring context once
             let scoring_ctx = ScoringContext {
