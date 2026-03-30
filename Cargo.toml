@@ -138,7 +138,7 @@ tempfile = "3"
 fast_html2md = { version = "0.0", optional = true }
 walkdir = { version = "2", optional = true }
 self_cell = "1"
-rustyline = "17"
+rustyline = "18"
 
 # LLM summaries (optional — for SQ-6 API calls to Claude)
 reqwest = { version = "0.13", features = ["json", "blocking"], optional = true }
