@@ -50,9 +50,13 @@ Config F (HNSW + name_boost + demotion). 55 queries, fixtures only. A6000.
 - [ ] v9-225k (225K assembled from 500K pool, 25K/lang — ready to train)
 - [ ] v9-100k, v9-150k (assembled, lower priority — run if 175K reveals a gradient)
 
-Known: v9-mini (50K) → 89.1%, v9-200k → 94.5%, v9-500k → 89.1%. If 175K also hits 94.5%, the peak is a plateau. If 89.1%, the peak is exactly 200K.
+Known: v9-mini (50K, 11K/lang) → 89.1%, v9-200k (22K/lang) → 94.5%, v9-500k (55K/lang) → 89.1%.
 
-**Conclusion:** 200K × 1 epoch × CG-filter-only is the recipe. Five independent perturbations (more data, FAISS negs, more epochs, contrastive queries) all land at 89.1%. The data size sweep will determine whether 200K is uniquely optimal or part of a ~175-225K plateau.
+**Hypothesis:** The magic number is ~22K per language, not 200K total. Per-language CG-filtered signal saturates at ~22K examples. 175K = 19.4K/lang — possibly just under threshold. If 175K hits 94.5%, the per-language saturation is lower and there's a plateau. If 89.1%, saturation is sharp at ~22K/lang.
+
+**Follow-up if plateau found:** Imbalanced 200K (30K Python/Rust + 10K others) tests whether total count or per-language balance matters.
+
+**Current best:** 200K × 1 epoch × CG-filter-only (v9-200k, 94.5%). Five independent perturbations all land at 89.1%. Contrastive-B produced best CSN (0.689, +7.4pp) while hitting same pipeline floor — confirming basin = "generic retrieval" regime.
 
 **The 89.1% basin of attraction (5 data points):**
 | Variant | Change | Pipeline R@1 |
