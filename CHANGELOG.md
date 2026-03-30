@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-03-30
+
+### Fixed
+- **#711** RT-RES-9: Diff impact analysis capped at 500 changed functions (was unbounded).
+- **#695** EX-32: `export-model` auto-detects embedding dimension from `config.json` `hidden_size`.
+- **#694** EX-30: `BatchProvider::is_valid_batch_id` moved to trait method (was hardcoded Anthropic `msgbatch_` prefix).
+- **#697** SEC-22: `cargo audit` config ignores 3 transitive unmaintained advisories (bincode, number_prefix, paste).
+- **#716** PERF-45: `EMBED_BATCH_SIZE` restored to 64 (was 32 after undiagnosed crash). Debug logging added. Full reindex verified stable.
+
+### Changed
+- **#718** CQ-38: `parser/markdown.rs` (2030 lines) split into `markdown/` directory with 4 files (`mod.rs`, `headings.rs`, `code_blocks.rs`, `tables.rs`). All 3 `clippy::too_many_arguments` suppressions resolved with context structs.
+- **CONTRIBUTING.md**: Added "Adding a New CLI Command" checklist (10-item process).
+- **v9-200k model published** to HuggingFace (`jamie8johnson/e5-base-v2-code-search`).
+
 ## [1.11.0] - 2026-03-29
 
 ### Added
