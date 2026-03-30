@@ -2,16 +2,27 @@
 
 ## Right Now
 
-**v1.11.0 released. 8th audit (80/88 fixed). 6 new commands. Contrastive experiment confirmed 89.1% floor. (2026-03-29)**
+**v1.11.0 released. PR #722 awaiting CI (6 issues + markdown split). Session winding down. (2026-03-29 17:00 CDT)**
 
-### What shipped today
-- v1.11.0: 8th audit (80 findings fixed) + 6 new commands + query expansion
-- PR #715 merged (audit), PR #720 merged (commands), PR #721 open (CONTRIBUTING)
-- crates.io published, GitHub release building, binary installed
-- 19 OpenClaw contributions (9 PRs, 9 issues, 1 comment)
+### What shipped this session
+- v1.11.0: 8th audit (80/88 fixed) + 6 new commands + query expansion
+- PRs merged: #715 (audit), #720 (commands), #721 (CONTRIBUTING checklist)
+- crates.io published, GitHub release built, binary installed
+- 19 OpenClaw contributions (9 PRs, 9 issues, 1 comment — all awaiting maintainer review)
 - Paper v0.6 (thesis: training signal quality > model capacity)
 - Pre-Edit hook live (`.claude/hooks/pre-edit-context.py`)
-- Audit skill improved (prompt gen + review steps 8-9)
+- Audit skill improved (prompt gen + review steps 8-9, P4 trivials fixed inline)
+
+### PR #722 awaiting CI
+Branch: `fix/open-issues-batch`. Closes 6 issues:
+- #711 RT-RES-9: diff impact capped at 500 functions
+- #695 EX-32: export-model auto-detect dim from config.json
+- #694 EX-30: BatchProvider::is_valid_batch_id moved to trait
+- #697 SEC-22: cargo audit config for transitive advisories
+- #718 CQ-38: parser/markdown.rs split into 4-file directory
+- #716 PERF-45: EMBED_BATCH_SIZE restored to 64 with debug logging
+
+CI passed. PR #722 merged. Local failure was 3 concurrent test runs competing for GPU/DB.
 
 ### Training — 89.1% basin confirmed (5 data points)
 | Variant | Change | Pipeline R@1 |
@@ -22,25 +33,20 @@
 | v9-200k-1.5ep | 1.5× more epochs | 89.1% |
 | contrastive-B | 25% contrastive queries | 89.1% |
 
-Query format changes don't help. Need fundamentally different training signals (test-derived queries, type-aware negatives).
+Breaking the ceiling requires fundamentally different training pairs (test-derived queries, type-aware negatives), not format variations.
 
-### In Progress (2026-03-29 ~16:00 CDT)
-- Issue-fixer agent running: #711 (diff impact cap), #695 (export-model auto-dim), #694 (batch ID trait), #697 (cargo audit)
-- Markdown split done (waiting to commit together)
-- Pipeline batch=64 restored with debug logging (#716 investigation)
-- All on branch `docs/contributing-checklist` (or agents may have created `fix/open-issues-batch`)
+### Active training
+- v9-175k: training in progress on A6000 (~2h remaining, started 18:20 CDT)
+- CSN eval for contrastive-B: **done — 0.689** (best LoRA CSN ever, +7.4pp over v9-200k)
+- 225K dataset assembled (25K/lang from 500K pool), ready to train after 175K
+- Contrastive prefix is a CSN optimization technique: +7.4pp CSN but same -5.4pp pipeline
 
-### Uncommitted changes across branches
-- `src/cli/pipeline.rs` — EMBED_BATCH_SIZE 32→64 + debug logging
-- `src/parser/markdown/` — split from markdown.rs (4 files, 3 context structs)
-- Issue fixer agent modifying: impact/diff.rs, export_model.rs, llm/provider.rs, Cargo.toml
-
-### Pending
-1. Issue-fixer agent completes → commit all + PR
-2. Merge PR #721 (CONTRIBUTING checklist)
-3. Re-run full eval matrix on final code state
-4. Close resolved issues (#711, #695, #694, #697, #716, #718)
-5. Next training: test-derived queries or type-aware negatives
+### Next session
+1. Check 175K results → if 94.5% run 225K, if 89.1% peak is at exactly 200K
+2. Rebuild binary (main has #722 fixes beyond v1.11.0 tag)
+3. Re-run full eval matrix on current code (synonym expansion changed FTS behavior)
+4. Release v1.12.0 after eval re-verification
+5. Paper v0.7 with basin finding (5+ data points) + data size sweep results
 
 ## Parked
 - Dart language support
@@ -50,17 +56,18 @@ Query format changes don't help. Need fundamentally different training signals (
 - Publish 500K/1M datasets to HF (waiting for training experiments to settle)
 
 ## Open Issues
-- #389, #255, #106, #63 (upstream)
-- #694, #695 (audit P4)
-- #711 RT-RES-9
-- #716 PERF-45 (EMBED_BATCH_SIZE diagnosis)
-- #717 RM-40 (HNSW mmap)
-- #718 CQ-38 (markdown.rs split)
+- #717 RM-40 (HNSW fully in RAM, no mmap)
+- #389 (upstream cuVS CAGRA memory)
+- #255, #106, #63 (upstream deps)
+- #694, #695, #697, #711, #716, #718 closed by #722
 
 ## Architecture
 - Version: 1.11.0, BGE-large default (1024-dim)
 - v9-200k LoRA: 94.5% pipeline, 70.9% raw (110M = 335M on pipeline)
-- 6 new commands: brief, affected, neighbors, doctor --fix, train-pairs, query expansion
-- HF dataset: https://huggingface.co/datasets/jamie8johnson/cqs-code-search-200k
-- OpenClaw: https://github.com/openclaw/openclaw (19 contributions, all open)
+- Commands: 50+ (including brief, affected, neighbors, doctor --fix, train-pairs)
+- Query expansion: 31 synonym mappings (auth→authentication, etc.)
+- parser/markdown.rs split into markdown/ directory (4 files, 3 context structs)
+- EMBED_BATCH_SIZE: 64 (restored from 32, with debug logging)
+- Pre-Edit hook: auto-injects module context for .rs files
 - Tests: ~1540
+- OpenClaw: 19 contributions (all awaiting review)

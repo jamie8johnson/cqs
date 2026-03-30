@@ -45,7 +45,14 @@ Config F (HNSW + name_boost + demotion). 55 queries, fixtures only. A6000.
 - [x] v9-200k-1.5ep → 89.1% pipeline (more epochs regresses -5.4pp). Raw flat (70.9%).
 - [x] Contrastive-B (25% contrastive queries from call graph) → 89.1% pipeline (-5.4pp). Fifth confirmation.
 
-**Conclusion:** 200K × 1 epoch × CG-filter-only is the recipe. Five independent perturbations (more data, FAISS negs, more epochs, contrastive queries, and by extension any query format change) all land at the same 89.1% floor. The 94.5% optimum is a narrow peak reachable only by the exact recipe.
+**Next — Data size sweep (is 200K a peak or a plateau?):**
+- [ ] v9-175k (training in progress 2026-03-29)
+- [ ] v9-225k (225K assembled from 500K pool, 25K/lang — ready to train)
+- [ ] v9-100k, v9-150k (assembled, lower priority — run if 175K reveals a gradient)
+
+Known: v9-mini (50K) → 89.1%, v9-200k → 94.5%, v9-500k → 89.1%. If 175K also hits 94.5%, the peak is a plateau. If 89.1%, the peak is exactly 200K.
+
+**Conclusion:** 200K × 1 epoch × CG-filter-only is the recipe. Five independent perturbations (more data, FAISS negs, more epochs, contrastive queries) all land at 89.1%. The data size sweep will determine whether 200K is uniquely optimal or part of a ~175-225K plateau.
 
 **The 89.1% basin of attraction (5 data points):**
 | Variant | Change | Pipeline R@1 |
