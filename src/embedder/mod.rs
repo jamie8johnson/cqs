@@ -701,6 +701,19 @@ fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderErro
         let dir = dunce::canonicalize(PathBuf::from(&dir)).unwrap_or_else(|_| PathBuf::from(dir));
         let model_path = dir.join(&config.onnx_path);
         let tokenizer_path = dir.join(&config.tokenizer_path);
+        // SEC-3: Verify joined paths stay inside CQS_ONNX_DIR (symlink/traversal defense)
+        for (label, path) in [("model", &model_path), ("tokenizer", &tokenizer_path)] {
+            if let Ok(canonical) = dunce::canonicalize(path) {
+                if !canonical.starts_with(&dir) {
+                    return Err(EmbedderError::ModelNotFound(format!(
+                        "SEC-3: {} path escapes CQS_ONNX_DIR: {} resolves to {}",
+                        label,
+                        path.display(),
+                        canonical.display()
+                    )));
+                }
+            }
+        }
         if model_path.exists() && tokenizer_path.exists() {
             tracing::info!(dir = %dir.display(), "Using local ONNX model directory");
             return Ok((model_path, tokenizer_path));

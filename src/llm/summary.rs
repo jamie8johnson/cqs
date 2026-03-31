@@ -250,25 +250,22 @@ fn find_contrastive_neighbors(
 
     // PERF-43: Extract top-N neighbors per chunk using select_nth_unstable_by
     // for O(N) average per row instead of O(N log K) with BinaryHeap.
+    // RM-5: Reuse a single candidates buffer to avoid N*(N-1) intermediate allocations.
     let mut per_row_neighbors: Vec<Vec<(usize, f32)>> = Vec::with_capacity(n);
+    let mut candidates: Vec<(usize, f32)> = Vec::with_capacity(n);
     for i in 0..n {
         let row = sims.row(i);
-        // Collect all candidates except self into a mutable Vec
-        let mut candidates: Vec<(usize, f32)> =
-            (0..n).filter(|&j| j != i).map(|j| (j, row[j])).collect();
+        candidates.clear();
+        candidates.extend((0..n).filter(|&j| j != i).map(|j| (j, row[j])));
 
         if candidates.len() <= limit {
-            // Fewer candidates than limit — take all, sorted desc
             candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-            per_row_neighbors.push(candidates);
+            per_row_neighbors.push(candidates.clone());
         } else {
-            // Partial sort: partition so top-`limit` elements are in [0..limit].
-            // select_nth_unstable_by is O(N) average — no heap overhead.
             candidates.select_nth_unstable_by(limit - 1, |a, b| b.1.total_cmp(&a.1));
             candidates.truncate(limit);
-            // Sort the top-K for stable output order
             candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-            per_row_neighbors.push(candidates);
+            per_row_neighbors.push(candidates.clone());
         }
     }
     drop(sims); // RM-39: Free N*N*4 bytes (~550MB at 12k)
