@@ -272,18 +272,19 @@ impl Store {
         // Step 2: Fetch full content only for top-N results (PF-5 payoff —
         // heavy content/doc/signature columns loaded only for winners)
         let ids: Vec<&str> = final_scored.iter().map(|(id, _)| id.as_str()).collect();
-        let rows_map = self.fetch_chunks_by_ids_async(&ids).await?;
+        let mut rows_map = self.fetch_chunks_by_ids_async(&ids).await?;
 
-        // Step 3: Parent dedup — keep first occurrence per parent_id
+        // Step 3: Parent dedup — keep first occurrence per parent_id.
+        // Use remove() instead of get()+clone() to avoid copying 10+ Strings per result (PERF-6).
         let mut seen_parents: HashSet<String> = HashSet::new();
         let mut results: Vec<SearchResult> = final_scored
             .into_iter()
             .filter_map(|(id, score)| {
-                let row = rows_map.get(&id)?;
+                let row = rows_map.remove(&id)?;
                 let dedup_key = row.parent_id.clone().unwrap_or_else(|| row.id.clone());
                 if seen_parents.insert(dedup_key) {
                     Some(SearchResult {
-                        chunk: ChunkSummary::from(row.clone()),
+                        chunk: ChunkSummary::from(row),
                         score,
                     })
                 } else {

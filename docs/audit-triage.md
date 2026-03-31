@@ -34,7 +34,7 @@
 | DS-43 | Batch mode doesn't reload HNSW dim after config change | |
 | SEC-3 | ensure_model doesn't verify joined paths stay inside CQS_ONNX_DIR | |
 | PERF-2 | upsert_fts_conditional: 2 SQL per chunk instead of batching (22K round trips) | |
-| PERF-6 | finalize_results clones ChunkRow for every search result | |
+| PERF-6 | finalize_results clones ChunkRow for every search result | ✅ PR #738 |
 | RM-5 | Contrastive neighbors allocates N*(N-1) pairs — 1.6GB intermediate | |
 | CQ-2 | dispatch_test_map duplicates 80-line reverse-BFS with divergent guard | |
 | RB-5 | embed_batched panics on unexpected ONNX output shape | |
