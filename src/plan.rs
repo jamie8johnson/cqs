@@ -382,6 +382,7 @@ pub fn plan(
     root: &Path,
     limit: usize,
 ) -> Result<PlanResult, crate::AnalysisError> {
+    let _span = tracing::info_span!("plan", %description).entered();
     let idx = classify(description);
     let tmpl = &TEMPLATES[idx].template;
 

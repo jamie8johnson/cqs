@@ -154,7 +154,7 @@ pub fn semantic_diff(
     }
 
     // Batch-fetch embeddings in groups of ~1000 to bound memory usage.
-    // For 20k pairs at ~12 bytes/dim * 768 dims, each batch is ~9 MB instead of ~240 MB total.
+    // For 20k pairs at ~12 bytes/dim * model_dim, each batch is ~9-12 MB instead of ~240 MB total.
     const EMBEDDING_BATCH_SIZE: usize = 1000;
 
     for batch in matched_pairs.chunks(EMBEDDING_BATCH_SIZE) {

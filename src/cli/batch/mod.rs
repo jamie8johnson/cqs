@@ -233,6 +233,7 @@ impl BatchContext {
     /// Uses cached config (RM-21) and loads only the target reference (RM-16),
     /// not all references.
     pub fn get_ref(&self, name: &str) -> Result<()> {
+        let _span = tracing::info_span!("batch_get_ref", %name).entered();
         let refs = self.refs.borrow();
         if refs.contains(name) {
             return Ok(());

@@ -153,13 +153,15 @@ fn find_contrastive_neighbors(
         .collect();
 
     // DS-21: Cap N×N matrix size to avoid OOM on very large codebases.
-    // Memory is N×N×4 bytes (~3.4GB at 15k). Caller handles empty map gracefully
-    // by falling back to non-contrastive summaries.
-    const MAX_CONTRASTIVE_CHUNKS: usize = 15_000;
-    if chunk_ids.len() > MAX_CONTRASTIVE_CHUNKS {
+    // Memory is N×N×4 bytes (~3.4GB at 30k). Override with CQS_MAX_CONTRASTIVE_CHUNKS.
+    let max_contrastive: usize = std::env::var("CQS_MAX_CONTRASTIVE_CHUNKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30_000);
+    if chunk_ids.len() > max_contrastive {
         tracing::warn!(
             chunks = chunk_ids.len(),
-            max = MAX_CONTRASTIVE_CHUNKS,
+            max = max_contrastive,
             "Too many callable chunks for contrastive neighbor matrix, skipping"
         );
         return Ok(HashMap::new());

@@ -150,6 +150,12 @@ pub(crate) fn token_pack<T>(
             break;
         }
         if !kept_any && tokens > budget {
+            // Always include at least one result, but cap at 10x budget to avoid
+            // pathological cases (e.g., 50K-token item with 300-token budget)
+            if tokens > budget * 10 {
+                tracing::debug!(tokens, budget, "First item exceeds 10x budget, skipping");
+                continue;
+            }
             tracing::debug!(
                 tokens,
                 budget,

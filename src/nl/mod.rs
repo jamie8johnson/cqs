@@ -194,9 +194,16 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
             parts.push(chunk.signature.clone());
         }
         parts.push(chunk.name.clone());
+        // ~4 chars per token. Scale with model's max_seq_length via env override.
+        // Default 512 → 1800 chars. Larger models (8192 → ~32000 chars) get more context.
+        let max_seq: usize = std::env::var("CQS_MAX_SEQ_LENGTH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(512);
+        let char_budget = max_seq.saturating_mul(4).saturating_sub(200).max(400);
         let preview: String = strip_markdown_noise(&chunk.content)
             .chars()
-            .take(1800)
+            .take(char_budget)
             .collect();
         parts.push(preview);
         return parts.join(". ");

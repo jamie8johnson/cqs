@@ -107,7 +107,11 @@ pub(crate) fn try_acquire_index_lock(cqs_dir: &Path) -> Result<Option<std::fs::F
             write_pid(&mut file)?;
             Ok(Some(file))
         }
-        Err(_) => Ok(None),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(e) => {
+            tracing::warn!(error = %e, path = %lock_path.display(), "Lock I/O error (not contention)");
+            Err(anyhow::anyhow!("Lock error: {}", e))
+        }
     }
 }
 

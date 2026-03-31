@@ -245,9 +245,10 @@ pub(crate) fn score_candidate(
     }
 
     // Apply note-based boost: notes mentioning this chunk's file or name
-    // adjust its score by up to ±15%
+    // adjust its score by up to ±15%. Clamp base_score to non-negative first —
+    // negative cosine scores invert multiplicative boost/demotion semantics.
     let chunk_name = name.unwrap_or("");
-    let mut score = base_score * ctx.note_index.boost(file_part, chunk_name);
+    let mut score = base_score.max(0.0) * ctx.note_index.boost(file_part, chunk_name);
 
     // Apply demotion for test functions and underscore-prefixed names
     if ctx.filter.enable_demotion {

@@ -695,17 +695,17 @@ fn reindex_files(
     // DS-2: Extract call graph from chunks (same loop), then use atomic upsert.
     // This mirrors the pipeline's approach: extract_calls_from_chunk per chunk,
     // then upsert_chunks_and_calls in a single transaction per file.
-    let all_calls: Vec<(String, cqs::parser::CallSite)> = chunks
-        .iter()
-        .flat_map(|chunk| {
-            let calls = parser.extract_calls_from_chunk(chunk);
-            calls
-                .into_iter()
-                .map(|c| (chunk.id.clone(), c))
-                .collect::<Vec<_>>()
-        })
-        .collect();
-
+    // Pre-group calls by chunk ID for O(1) lookup per file (PERF-4).
+    let mut calls_by_id: HashMap<String, Vec<cqs::parser::CallSite>> = HashMap::new();
+    for chunk in &chunks {
+        let calls = parser.extract_calls_from_chunk(chunk);
+        if !calls.is_empty() {
+            calls_by_id
+                .entry(chunk.id.clone())
+                .or_default()
+                .extend(calls);
+        }
+    }
     // Group chunks by file and atomically upsert chunks + calls in a single transaction
     let mut mtime_cache: HashMap<PathBuf, Option<i64>> = HashMap::new();
     let mut by_file: HashMap<PathBuf, Vec<(cqs::Chunk, Embedding)>> = HashMap::new();
@@ -726,14 +726,15 @@ fn reindex_files(
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as i64)
         });
-        // `all_calls` is scoped to the changed files in this reindex batch, not the full
-        // index, so this filter is O(changed_chunks) rather than O(all_chunks).
-        // Filter calls to only those belonging to chunks in this file
-        let chunk_ids: HashSet<&str> = pairs.iter().map(|(c, _)| c.id.as_str()).collect();
-        let file_calls: Vec<_> = all_calls
+        // PERF-4: O(1) lookup per chunk via pre-grouped HashMap instead of linear scan.
+        let file_calls: Vec<_> = pairs
             .iter()
-            .filter(|(id, _)| chunk_ids.contains(id.as_str()))
-            .cloned()
+            .flat_map(|(c, _)| {
+                calls_by_id
+                    .get(&c.id)
+                    .into_iter()
+                    .flat_map(|calls| calls.iter().map(|call| (c.id.clone(), call.clone())))
+            })
             .collect();
         store.upsert_chunks_and_calls(pairs, mtime, &file_calls)?;
 
@@ -745,18 +746,16 @@ fn reindex_files(
         // both methods manage their own internal transactions. A crash between the
         // two leaves phantoms that get cleaned on the next reindex. Propagate the
         // error rather than silently swallowing it.
-        let live_ids: Vec<&str> = chunk_ids.iter().copied().collect();
+        let live_ids: Vec<&str> = pairs.iter().map(|(c, _)| c.id.as_str()).collect();
         store.delete_phantom_chunks(file, &live_ids)?;
     }
 
     // Upsert type edges from the earlier parse_file_all() results.
     // Type edges are soft data — separate from chunk+call atomicity.
     // They depend on chunk IDs existing in the DB, which is why we upsert
-    // them after chunks are stored above.
-    for (rel_path, chunk_type_refs) in &all_type_refs {
-        if let Err(e) = store.upsert_type_edges_for_file(rel_path, chunk_type_refs) {
-            tracing::warn!(file = %rel_path.display(), error = %e, "Failed to update type edges");
-        }
+    // them after chunks are stored above. Use batched version (single transaction).
+    if let Err(e) = store.upsert_type_edges_for_files(&all_type_refs) {
+        tracing::warn!(error = %e, "Failed to update type edges");
     }
 
     if let Err(e) = store.touch_updated_at() {

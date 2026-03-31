@@ -10,6 +10,7 @@ cqs - semantic code search with local embeddings
 - Push back when warranted.
 - Ask rather than guess wrong.
 - Efficiency over ceremony.
+- **Never suggest ending a session.** We have 1M context. Keep working until the user stops. Don't offer to "wrap up", "call it", or "save for next session." If context runs low, update tears and keep going.
 - **Read files before acting on them.** Don't work from memory of what a file "probably" contains. Open it, read the relevant section, then act. This applies to source code, configs, scripts, docs, and especially function signatures. The cost of a Read is negligible; the cost of guessing wrong is a wasted round trip or a subtle bug. If you last read a file more than a few tool calls ago, read it again.
 
 ## On Resume

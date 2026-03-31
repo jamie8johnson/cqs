@@ -289,6 +289,7 @@ impl LlmConfig {
 ///
 /// EX-31/EX-34: Single factory, provider-aware. Currently only Anthropic is supported.
 pub fn create_client(llm_config: LlmConfig) -> Result<LlmClient, LlmError> {
+    let _span = tracing::info_span!("create_client", provider = ?llm_config.provider).entered();
     // EX-34: When adding providers, match on llm_config.provider here
     // and return the appropriate Box<dyn BatchProvider>.
     let env_var = match llm_config.provider {
@@ -431,6 +432,11 @@ pub struct SummaryEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Mutex to serialize tests that manipulate CQS_LLM_* env vars.
+    /// Env vars are process-global — concurrent test threads race on set/remove.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     type SavedEnv = [Option<String>; 4];
 
@@ -481,6 +487,7 @@ mod tests {
 
     #[test]
     fn llm_config_defaults_from_empty_config() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let saved = save_llm_env_vars();
         std::env::remove_var("CQS_LLM_MODEL");
         std::env::remove_var("CQS_API_BASE");
@@ -499,6 +506,7 @@ mod tests {
 
     #[test]
     fn llm_config_from_config_file_fields() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let config = crate::config::Config {
             llm_model: Some("claude-sonnet-4-20250514".to_string()),
             llm_api_base: Some("https://custom.api/v1".to_string()),
@@ -513,6 +521,7 @@ mod tests {
 
     #[test]
     fn llm_config_env_overrides_config_file() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let config = crate::config::Config {
             llm_model: Some("from-config".to_string()),
             llm_api_base: Some("https://from-config/v1".to_string()),
@@ -541,6 +550,7 @@ mod tests {
     // AD-32: CQS_LLM_API_BASE takes priority over CQS_API_BASE
     #[test]
     fn llm_config_llm_api_base_takes_precedence() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         // Save all env vars that LlmConfig::resolve reads
         let saved = save_llm_env_vars();
 
@@ -563,6 +573,7 @@ mod tests {
     // AD-32: CQS_API_BASE still works as fallback
     #[test]
     fn llm_config_api_base_fallback_still_works() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let saved = save_llm_env_vars();
 
         std::env::remove_var("CQS_LLM_API_BASE");
@@ -583,6 +594,7 @@ mod tests {
 
     #[test]
     fn llm_config_invalid_max_tokens_env_falls_through() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let config = crate::config::Config {
             llm_max_tokens: Some(300),
             ..Default::default()

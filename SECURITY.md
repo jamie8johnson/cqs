@@ -39,6 +39,7 @@ The only network activity is:
 - **Model download** (`cqs init`): Downloads embedding model from HuggingFace Hub
   - Default: `huggingface.co/BAAI/bge-large-en-v1.5` (~1.2GB)
   - Preset: `e5-base` (`intfloat/e5-base-v2`, ~438MB)
+  - Preset: `v9-200k` (`jamie8johnson/e5-base-v2-code-search`, ~417MB) — fine-tuned E5-base LoRA
   - Custom: any HuggingFace repo via `[embedding]` config or `CQS_EMBEDDING_MODEL` env var. Custom model configs download ONNX files from the specified repo — only configure repos you trust.
   - One-time download per model, cached in `~/.cache/huggingface/`
 

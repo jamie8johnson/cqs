@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 94.5% Recall@1 (BGE-large) on confusable function retrieval. 51 languages, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 94.5% Recall@1 (BGE-large) on confusable function retrieval. 52 languages, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -576,7 +576,7 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 **Parse → Describe → Embed → Enrich → Index → Search → Reason**
 
-1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 51 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
+1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 52 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination (SQ-11). Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
 3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 94.5% Recall@1 (BGE-large) on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
@@ -606,19 +606,17 @@ For most codebases (<100k chunks), defaults work well. Large repos may benefit f
 
 ## Retrieval Quality
 
-Evaluated on a hard eval suite of 55 queries across 5 languages (Rust, Python, TypeScript, JavaScript, Go) with 15 confusable functions per language (6 sort variants, 4 validators, etc.):
+Evaluated on an expanded eval suite of 296 queries across 7 languages (Rust, Python, TypeScript, JavaScript, Go, Java, PHP):
 
-| Metric | BGE-large (cqs default) | E5-base-v2 (cqs) | jina-v2-base-code |
-|--------|------------------------|-------------------|-------------------|
-| **Recall@1** | **94.5%** | 83.6% | 80.0% |
-| **Recall@5** | **98.2%** | 98.2% | 94.5% |
-| **MRR** | **0.966** | 0.909 | — |
+| Model | Params | Recall@1 | Recall@5 | MRR |
+|-------|--------|----------|----------|-----|
+| **BGE-large** (default) | 335M | **90.9%** | 99.3% | **0.949** |
+| **v9-200k LoRA** (preset) | 110M | **90.5%** | 99.3% | 0.948 |
+| E5-base (preset) | 110M | 75.3% | 99.0% | 0.869 |
 
-E5 column includes the full cqs enrichment stack (contrastive summaries, type-aware embeddings, hybrid RRF). jina column is raw embeddings without enrichment.
+All columns include the full cqs enrichment stack (contrastive summaries, type-aware embeddings, call graph context). The enrichment stack is the dominant contributor — it compresses top model differences to ~1pp.
 
-General-purpose E5 outperforms code-specific jina because cqs generates natural language descriptions of each code element — doc comments, parameter types, return types, parent type context — transforming the retrieval task from code→code to NL→NL, where general-purpose models excel.
-
-E5 reaches perfect recall at Recall@5 with the enrichment stack. jina catches up at Recall@10 (100%) but ranks results lower, reflected in its lower NDCG@10.
+The v9-200k LoRA (fine-tuned on 200K code pairs with call-graph false-negative filtering) virtually ties BGE-large at 1/3 the parameter cost. Use `CQS_EMBEDDING_MODEL=v9-200k` for resource-constrained environments.
 
 ## RAG Efficiency
 

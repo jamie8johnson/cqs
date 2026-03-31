@@ -71,15 +71,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "batch_size=64 crashed system at ~2% through rust-lang/rust. batch_size=32 runs stable. With 2048-token windowing, GPU util cycles 0-99% (bursty) as it waits for ort CPU fallback ops between batches."
-mentions = [
-    "src/cli/mod.rs",
-    "batch_size",
-    "gpu-index",
-]
-
-[[note]]
 sentiment = 0.5
 text = "Notes surface heavily in search results because they contain dense semantic content about architecture decisions. That's intentional - observations are indexed to be found when conceptually relevant."
 mentions = [
@@ -109,7 +100,7 @@ mentions = [
 
 [[note]]
 sentiment = 1.0
-text = "BGE-large-en-v1.5 (335M) is the best model: 94.5% pipeline R@1, 0.966 MRR. Beats all 110M LoRAs (best: v9-mini at 87.3%). E5-base (83.6%) remains lightweight preset. General-purpose models beat code-specific because NL enrichment transforms code into natural language descriptions."
+text = "BGE-large-en-v1.5 (335M) is the default model: 90.5% R@1 on 296-query expanded eval. v9-200k (110M) 90.2%, v5 (110M) 89.5% — all within GPU non-determinism (~1.4pp). Enrichment compresses top model differences to ~1pp above a ~54% raw R@1 threshold."
 mentions = [
     "src/embedder/mod.rs",
     "CUDA",
@@ -239,17 +230,17 @@ mentions = ["pymupdf4llm"]
 [[note]]
 sentiment = -0.5
 text = '''Rust regex crate doesn't support lookbehind (?<!). Had to rewrite markdown image link filter from (?<!!)\[...\] to match all links then check preceding byte. Common gotcha when porting regex from other languages.'''
-mentions = ["src/parser/markdown.rs"]
+mentions = ["src/parser/markdown/"]
 
 [[note]]
 sentiment = -0.5
 text = "Merge-small-sections logic was backwards: small section absorbed the next instead of being absorbed by it. Title (4 lines) ate Section A (37 lines), producing one giant chunk. Direction matters — small merges INTO next, not extends to swallow."
-mentions = ["src/parser/markdown.rs"]
+mentions = ["src/parser/markdown/"]
 
 [[note]]
 sentiment = 0.5
 text = "Adaptive heading detection works for both standard and inverted hierarchies. Heuristic: 'shallowest heading level appearing more than once, excluding title' = primary split level. Handles AVEVA docs (H2 title → H1 chapters) and standard markdown (H1 title → H2 sections) with same code."
-mentions = ["src/parser/markdown.rs"]
+mentions = ["src/parser/markdown/"]
 
 [[note]]
 sentiment = -0.5
@@ -779,7 +770,7 @@ mentions = ["training-data"]
 
 [[note]]
 sentiment = 1.0
-text = "Enrichment stack contributes +34pp (E5-base: 49.1% raw → 83.6% pipeline; BGE-large: 61.8% raw → 94.5% pipeline). Model-agnostic — both get ~34pp lift. But model is NOT a commodity: BGE-large's raw advantage carries through enrichment (+10.9pp pipeline over E5-base). Historical 92.7% was Relaxed R@1."
+text = "Enrichment stack contributes +15pp on expanded eval (296q) and compresses top model differences to ~1pp. E5-base 75.3%, v5 89.5-90.2%, v9-200k 90.2%, BGE-large 90.5%. Above ~54% raw R@1, enrichment is the great equalizer. Below that threshold (E5-base 49.1%), enrichment can't fully compensate."
 mentions = [
     "embedder",
     "enrichment",
@@ -988,4 +979,20 @@ text = "Expanded eval (296 queries, 7 langs) shows BGE-large and v9-200k are vir
 mentions = [
     "pipeline_eval.rs",
     "eval_common.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "v5 (simple MNR, 166K CSN, no CG filtering) ties BGE-large and v9-200k on enriched pipeline at 296-query scale (89.5-90.9%, within GPU non-determinism). The enrichment stack compresses model differences above a ~54% raw R@1 threshold. Small eval sets (55q) exaggerated model differences."
+mentions = [
+    "pipeline_eval.rs",
+    "enrichment",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Audit agents hitting 500 errors after ~100 tool uses. Test Coverage agent failed twice. Workaround: relaunch with tighter scope (5-8 findings max). Split TC into happy-path and adversarial categories for the audit skill."
+mentions = [
+    "audit",
+    "agents",
 ]

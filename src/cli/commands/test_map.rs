@@ -1,7 +1,7 @@
 //! Test map command — find tests that exercise a function
 
 use anyhow::{Context as _, Result};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 use super::resolve::resolve_target;
 
@@ -17,8 +17,6 @@ pub(crate) fn cmd_test_map(name: &str, max_depth: usize, json: bool) -> Result<(
     let test_chunks = store
         .find_test_chunks()
         .context("Failed to find test chunks")?;
-    let _test_names: HashSet<String> = test_chunks.iter().map(|t| t.name.clone()).collect();
-
     // Reverse BFS from target
     let mut ancestors: HashMap<String, (usize, String)> = HashMap::new();
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();

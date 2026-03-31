@@ -124,11 +124,13 @@ impl Reranker {
         if results.len() <= 1 {
             return Ok(());
         }
-        assert_eq!(
-            results.len(),
-            passages.len(),
-            "passages must match results length"
-        );
+        if results.len() != passages.len() {
+            return Err(RerankerError::Inference(format!(
+                "passages length ({}) must match results length ({})",
+                passages.len(),
+                results.len()
+            )));
+        }
 
         let tokenizer = self.tokenizer()?;
 

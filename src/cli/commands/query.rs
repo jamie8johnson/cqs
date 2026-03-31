@@ -39,7 +39,12 @@ fn emit_empty_results(query: &str, json: bool, context: Option<&str>) -> ! {
 /// Execute a semantic search query and display results
 pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let query_preview = if query.len() > 200 {
-        &query[..200]
+        // Find a valid UTF-8 boundary near 200 bytes
+        let mut end = 200;
+        while end > 0 && !query.is_char_boundary(end) {
+            end -= 1;
+        }
+        &query[..end]
     } else {
         query
     };

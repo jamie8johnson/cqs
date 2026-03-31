@@ -39,6 +39,11 @@ pub fn log_command(
     let path = cqs_dir.join("telemetry.jsonl");
     let _ = (|| -> std::io::Result<()> {
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
         writeln!(file, "{}", entry)?;
         Ok(())
     })();

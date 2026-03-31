@@ -60,6 +60,7 @@
 //! - `lang-vue` - Vue support (enabled by default)
 //! - `lang-markdown` - Markdown support (enabled by default, no external deps)
 //! - `lang-aspx` - ASP.NET Web Forms support (enabled by default, no external deps)
+//! - `lang-st` - IEC 61131-3 Structured Text support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -853,16 +854,6 @@ impl Language {
     /// Check if this language's feature flag is enabled
     pub fn is_enabled(&self) -> bool {
         REGISTRY.get(&self.to_string()).is_some()
-    }
-
-    /// Get the tree-sitter grammar for this language.
-    /// Panics if the language has no grammar (e.g., Markdown uses a custom parser).
-    pub fn grammar(&self) -> tree_sitter::Language {
-        let grammar_fn = self
-            .def()
-            .grammar
-            .unwrap_or_else(|| panic!("{} has no tree-sitter grammar — use custom parser", self));
-        grammar_fn()
     }
 
     /// Get the tree-sitter grammar, returning `None` if the language feature

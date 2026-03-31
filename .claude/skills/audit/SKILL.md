@@ -11,15 +11,14 @@ Run the 14-category code audit. Full design: `docs/plans/2026-02-04-20-category-
 
 ## Arguments
 
-- `$ARGUMENTS` — batch number (1-3) or `all` for full audit
+- `$ARGUMENTS` — batch number (1-2) or `all` for full audit
 
 ## Batches
 
 | Batch | Categories |
 |-------|-----------|
-| 1 | Code Quality, Documentation, API Design, Error Handling, Observability |
-| 2 | Test Coverage, Robustness, Algorithm Correctness, Extensibility, Platform Behavior |
-| 3 | Security, Data Safety, Performance, Resource Management |
+| 1 | Code Quality, Documentation, API Design, Error Handling, Observability, Test Coverage (adversarial), Robustness, Scaling & Hardcoded Limits |
+| 2 | Algorithm Correctness, Extensibility, Platform Behavior, Security, Data Safety, Performance, Resource Management, Test Coverage (happy path) |
 
 ## Process
 
@@ -111,7 +110,9 @@ You have `cqs` on PATH. Use it for faster code exploration — still read source
 | API Design | Consistency, ergonomics, naming, type design |
 | Error Handling | Result chains, context, recovery, swallowed errors |
 | Observability | Logging coverage, tracing, debuggability |
-| Test Coverage | Gaps, meaningful assertions, integration tests, adversarial/edge-case coverage (malformed input, concurrent access, NaN/Inf values, error paths) |
+| Test Coverage (adversarial) | Edge-case/sad-path gaps: malformed input, NaN/Inf embeddings, concurrent access, empty queries, huge inputs, error paths not tested |
+| Test Coverage (happy path) | Missing tests for high-caller public functions, untested modules, integration test gaps, meaningful assertion quality |
+| Scaling & Hardcoded Limits | Constants that should scale with model config, corpus size, or hardware. Magic numbers without rationale. |
 | Robustness | unwrap/expect, edge cases (empty/huge/unicode/malformed), panic paths |
 | Algorithm Correctness | Off-by-one, boundary conditions, logic errors |
 | Extensibility | Adding features without surgery, hardcoded values |

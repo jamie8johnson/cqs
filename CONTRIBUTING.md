@@ -83,7 +83,7 @@ Rules:
 
 ### Feature Ideas
 
-- Additional language support (see `src/language/` for current list — 51 languages supported)
+- Additional language support (see `src/language/` for current list — 52 languages supported)
 - Non-CUDA GPU support (ROCm for AMD, Metal for Apple Silicon)
 - VS Code extension
 - Performance improvements

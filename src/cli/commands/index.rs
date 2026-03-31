@@ -66,10 +66,15 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");
 
-    // Ensure .cqs directory exists
+    // Ensure .cqs directory exists with restrictive permissions
     if !cqs_dir.exists() {
         std::fs::create_dir_all(&cqs_dir)
             .with_context(|| format!("Failed to create {}", cqs_dir.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&cqs_dir, std::fs::Permissions::from_mode(0o700));
+        }
     }
 
     // Acquire lock (unless dry run)

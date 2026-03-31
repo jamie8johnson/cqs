@@ -63,6 +63,9 @@ impl Store {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<SearchResult>, StoreError> {
+        let _span =
+            tracing::info_span!("search_filtered", limit, threshold, rrf = filter.enable_rrf)
+                .entered();
         // Load notes once for note-boosted ranking (cheap — no embeddings)
         let notes = match self.cached_notes_summaries() {
             Ok(n) => n,

@@ -148,7 +148,11 @@ impl HnswIndex {
         // This prevents concurrent cqs processes from corrupting the index,
         // but cannot protect against external Windows process modifications.
         let lock_path = dir.join(format!("{}.hnsw.lock", basename));
-        let lock_file = std::fs::File::create(&lock_path)?;
+        #[allow(clippy::suspicious_open_options)] // Intentional: create if missing, don't truncate
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&lock_path)?;
         lock_file.lock().map_err(HnswError::Io)?;
         warn_wsl_advisory_locking(dir);
         tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW save lock");

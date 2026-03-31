@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **IEC 61131-3 Structured Text** — 52nd language. FUNCTION_BLOCK, FUNCTION, PROGRAM, METHOD, TYPE, ACTION. Grammar: `jamie8johnson/tree-sitter-structured-text`.
+
 ## [1.13.0] - 2026-03-31
 
 ### Added

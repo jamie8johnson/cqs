@@ -171,8 +171,8 @@ async fn migrate_v13_to_v14(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 
 /// Migrate from v14 to v15: 768-dim embeddings (SQ-9)
 ///
-/// Dropped the sentiment dimension — embeddings are now pure 768-dim E5-base-v2 output.
-/// - Updates dimensions metadata from 769 to 768
+/// Dropped the sentiment dimension — embeddings are now pure model-native output.
+/// - Updates dimensions metadata from 769 to model dim (was 768 for E5-base-v2)
 /// - Sets hnsw_dirty to trigger HNSW rebuild (old index has 769-dim vectors)
 /// - Notes embedding column is left as-is (we write empty blobs now, old data is harmless)
 async fn migrate_v14_to_v15(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
@@ -223,7 +223,7 @@ async fn migrate_v15_to_v16(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     .execute(&mut *conn)
     .await?;
 
-    sqlx::query("DROP TABLE llm_summaries")
+    sqlx::query("DROP TABLE IF EXISTS llm_summaries")
         .execute(&mut *conn)
         .await?;
 

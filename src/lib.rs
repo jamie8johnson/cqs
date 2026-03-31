@@ -5,7 +5,7 @@
 //!
 //! ## Features
 //!
-//! - **Semantic search**: Hybrid RRF (keyword + vector) with configurable embedding models (E5-base-v2 default, BGE-large preset, custom ONNX). 94.5% Recall@1 (BGE-large) on confusable function retrieval.
+//! - **Semantic search**: Hybrid RRF (keyword + vector) with configurable embedding models (BGE-large default, E5-base and v9-200k presets, custom ONNX). 90.9% Recall@1 on 296-query expanded eval.
 //! - **Call graphs**: Callers, callees, transitive impact, shortest-path tracing between functions
 //! - **Impact analysis**: What breaks if you change X? Callers + affected tests + risk scoring
 //! - **Type dependencies**: Who uses this type? What types does this function use?
@@ -13,7 +13,7 @@
 //! - **Diff review & CI**: Structured risk analysis, dead code detection in diffs, gating pipeline
 //! - **Batch & chat modes**: Persistent session with pipeline syntax (`search "error" | callers | test-map`)
 //! - **Notes with sentiment**: Unified memory system for AI collaborators
-//! - **Multi-language**: 51 languages with multi-grammar injection (HTML→JS/CSS, Svelte, Vue, Razor, etc.)
+//! - **Multi-language**: 52 languages with multi-grammar injection (HTML→JS/CSS, Svelte, Vue, Razor, etc.)
 //! - **Type-aware embeddings**: Full signatures appended to NL descriptions for richer type discrimination
 //! - **Doc comment generation**: `--improve-docs` generates and writes doc comments to source files via LLM
 //! - **HyDE query predictions**: `--hyde-queries` generates synthetic search queries per function for improved recall

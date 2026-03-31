@@ -449,14 +449,33 @@ impl Store {
 
             // Upsert calls: delete old calls for these chunk IDs, insert new ones
             if !calls.is_empty() {
-                let mut seen_ids = std::collections::HashSet::new();
-                for (chunk_id, _) in calls {
-                    if seen_ids.insert(chunk_id.as_str()) {
-                        sqlx::query("DELETE FROM calls WHERE caller_id = ?1")
-                            .bind(chunk_id)
-                            .execute(&mut *tx)
-                            .await?;
+                // Batch DELETE: collect unique caller IDs, delete in batches of 500
+                let unique_ids: Vec<&str> = {
+                    let mut seen = std::collections::HashSet::new();
+                    calls
+                        .iter()
+                        .filter_map(|(id, _)| {
+                            if seen.insert(id.as_str()) {
+                                Some(id.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                };
+                for batch in unique_ids.chunks(500) {
+                    let placeholders: String = batch
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _)| format!("?{}", i + 1))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let sql = format!("DELETE FROM calls WHERE caller_id IN ({})", placeholders);
+                    let mut query = sqlx::query(&sql);
+                    for id in batch {
+                        query = query.bind(*id);
                     }
+                    query.execute(&mut *tx).await?;
                 }
 
                 const INSERT_BATCH: usize = 300;
@@ -489,6 +508,9 @@ impl Store {
         file: &std::path::Path,
         live_ids: &[&str],
     ) -> Result<u32, StoreError> {
+        let _span =
+            tracing::info_span!("delete_phantom_chunks", ?file, live_count = live_ids.len())
+                .entered();
         let origin_str = crate::normalize_path(file);
         if live_ids.is_empty() {
             // No live chunks means the whole file was emptied/deleted —

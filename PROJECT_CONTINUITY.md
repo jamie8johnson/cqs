@@ -2,47 +2,57 @@
 
 ## Right Now
 
-**Expanded eval complete. Paper v0.8. Full 9-model matrix on 296 queries. (2026-03-31 08:15 CDT)**
+**9th audit: 43/110 fixed, PR #737 CI running. (2026-03-31 17:30 CDT)**
 
-### Session deliverables
-- Fixed FTS5 synonym expansion bug (OR groups need explicit AND)
-- Expanded eval: 55→296 queries, 5→7 languages (added Java + PHP)
-- Full 9-model eval matrix on expanded eval — all models completed
-- Paper revised to v0.8 — all 55-query references replaced with 296-query results
-- Results log + research log updated with Exp 27
-- ROADMAP updated with BGE-large fine-tuning experiment
-- PR #731 merged, binary rebuilt
+Branch: `fix/v1.13-audit-p1-p3`
 
-### Key numbers (296 queries, 7 langs, Config A cosine-only)
-| Model | R@1 | MRR |
-|-------|-----|-----|
-| BGE-large (335M) | **90.9%** | 0.9493 |
-| v9-200k (110M) | **90.5%** | 0.9482 |
-| Basin (6 variants) | 81–82% | ~0.90 |
-| E5-base (110M) | 75.3% | 0.8688 |
+### Session summary
+- v1.13.0 released (crates.io + GitHub) — 8 PRs merged (#728-736), 4 issues closed
+- IEC 61131-3 Structured Text (52nd language) — grammar forked, extended, merged
+- Paper v0.9 — thesis revised: enrichment dominates, model differences compress
+- 13-model expanded eval (296q, 7 langs) — v5 ties top tier, GPU variance discovery
+- v9-200k full CoIR: 45.02 (10 tasks), testq CSN: 0.622, all raw MRRs filled
+- 9th audit: 110 findings across 15 categories, 43 fixed (all 15 P1s)
+- Windowing artifact: MAX_TOKENS_PER_WINDOW now uses ModelConfig::max_seq_length
+- Contrastive cap: 15K→30K + CQS_MAX_CONTRASTIVE_CHUNKS env override
+- NL char budget: scales with CQS_MAX_SEQ_LENGTH env var
+- 153GB disk freed (debug artifacts + unused HF models)
+- Claude Code source indexed (19,648 chunks) — explored feature flags, memory system
+- Audit skill updated: 2 batches of 8, TC split into happy/adversarial
+- CLAUDE.md: "never suggest ending a session"
 
-### Key finding
-55-query eval exaggerated model differences (94.5% vs 89.1% = 3-query gap). Expanded eval shows BGE-large and v9-200k are virtually tied. Basin is at 81-82% (was 89.1%). RRF hurts at scale (74.7% vs 90.9%).
+### PR #737 — audit fixes (CI running)
+All P1s fixed (15): panics, correctness, scaling, security, docs
+P2 fixes (6): NL budget, PERF-3 batch type edges, PB-1 lock, PERF-5 batch delete, PERF-4 HashMap
+P3 fixes (22): spans, dead code, docs, migration idempotency, token_pack cap
 
-### Next
-1. Fine-tune BGE-large on 200K CG-filtered data (~3-4h on A6000)
-2. Ship v9-200k as LoRA preset in cqs
-3. Resume repo indexing (88/2332 done)
-4. Release v1.13.0 with expanded eval
+### Remaining unfixed (67)
+- 8 P2s: DS-38 (process lock), SEC-3 (ONNX symlink), PERF-2 (FTS batch), PERF-6 (clone), RM-5 (1.6GB alloc), CQ-2 (test-map duplication), RB-5 (ONNX shape panic), EX-3 (duplicate of SHL-1, already fixed)
+- 36 P3s: mostly easy but low impact
+- 23 P4s: hard refactors or cosmetic
+
+### Key discoveries
+- **Enrichment compresses model differences** — BGE-large 90.5%, v9-200k 90.2%, v5 89.5% all within GPU noise (~1.4pp) on 296-query eval
+- **Windowing artifact** — MAX_TOKENS_PER_WINDOW=480 handicapped all large-context model evals (GTE-Qwen2, nomic, E5-mistral). Prior results invalid. Fixed.
+- **v9-200k CoIR 45.02** — sharpest benchmark-product split: best pipeline, worst CoIR among non-KeyDAC LoRAs
+
+### Next session
+1. Merge PR #737 after CI
+2. Fix remaining P2s (DS-38 process lock, SEC-3, PERF-2)
+3. Re-eval GTE-Qwen2 and nomic with correct windowing
+4. BGE-large full CoIR run
+5. Fine-tune BGE-large on 200K CG-filtered data
 
 ### OpenClaw — 7 PRs, 6 issues
-Tracker: `docs/openclaw-contributions.md`. Consolidated from 12→7 PRs.
+Tracker: `docs/openclaw-contributions.md`.
 
 ## Parked
 - Dart language support
 - hnswlib-rs migration
 - DXF Phase 1 (P&ID → PLC function block mapping)
-- IEC 61131-3 language support
 - Openclaw variant for PLC process control (long horizon)
 - Blackwell GPU upgrade
 - Publish 500K/1M datasets to HF
-- Type-aware negative mining (7 basin points suggest diminishing returns)
-- Imbalanced 200K experiment (lower priority post per-query analysis)
 
 ## Open Issues (cqs)
 - #717 RM-40 (HNSW fully in RAM, no mmap)
@@ -50,9 +60,11 @@ Tracker: `docs/openclaw-contributions.md`. Consolidated from 12→7 PRs.
 - #255, #106, #63 (upstream deps)
 
 ## Architecture
-- Version: 1.12.0
-- v9-200k LoRA: 90.5% pipeline (296q), 70.9% raw — published to HF
-- BGE-large: 90.9% pipeline (296q), off-the-shelf
-- Expanded eval: 296 queries, 7 languages
-- Commands: 50+
+- Version: 1.13.0
+- Languages: 52 (IEC 61131-3 ST)
+- Presets: BGE-large (default, 1024d), E5-base (768d), v9-200k (768d)
+- Metrics: 90.5% R@1 BGE-large, 90.2% v9-200k, 89.5% v5 (same-session, 296q)
+- CoIR: v9-200k 45.02, v7 49.19, base E5 49.47
 - Tests: ~1540
+- Hooks: Pre-Edit (module context), Pre-Bash (git commit → cqs review)
+- 9 audits, 43/110 findings fixed in latest

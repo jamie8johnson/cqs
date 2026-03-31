@@ -122,7 +122,7 @@ pub fn run_ci_analysis(
             dead
         }
         Err(e) => {
-            tracing::warn!(error = %e, "Dead code detection failed, skipping");
+            tracing::warn!(error = %e, "Dead code detection failed — CI will report 0 dead code (not 'scan passed')");
             Vec::new()
         }
     };

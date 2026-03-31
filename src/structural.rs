@@ -245,21 +245,6 @@ fn matches_recursion(content: &str, name: &str) -> bool {
         .any(|line| line.contains(&call_paren) || line.contains(&call_space))
 }
 
-/// Filter a list of items by structural pattern
-#[allow(dead_code)] // Public API — used in tests, available for external consumers
-pub fn filter_by_pattern<T, F>(items: Vec<T>, pattern: &Pattern, get_info: F) -> Vec<T>
-where
-    F: Fn(&T) -> (&str, &str, Option<Language>),
-{
-    items
-        .into_iter()
-        .filter(|item| {
-            let (content, name, lang) = get_info(item);
-            pattern.matches(content, name, lang)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,21 +426,6 @@ mod tests {
         let pat = Pattern::Recursion;
         // Single-line content should not match (can't distinguish sig from body)
         assert!(!pat.matches("fn foo() { foo() }", "foo", None));
-    }
-
-    #[test]
-    fn test_filter_by_pattern() {
-        let items = vec![
-            ("unsafe { ptr::read(p) }", "read_ptr", Some(Language::Rust)),
-            ("fn safe() -> i32 { 42 }", "safe", Some(Language::Rust)),
-            ("unsafe { transmute(x) }", "cast", Some(Language::Rust)),
-        ];
-
-        let filtered = filter_by_pattern(items, &Pattern::Unsafe, |item| (item.0, item.1, item.2));
-
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].1, "read_ptr");
-        assert_eq!(filtered[1].1, "cast");
     }
 
     #[test]

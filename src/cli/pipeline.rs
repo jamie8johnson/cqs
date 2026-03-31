@@ -24,11 +24,20 @@ use super::check_interrupted;
 
 // Windowing constants
 //
-// These values balance quality with memory/time constraints:
-// - MAX_TOKENS_PER_WINDOW: E5-base-v2 has 512 token limit; we use 480 for safety
-// - WINDOW_OVERLAP_TOKENS: 64 tokens overlap provides context continuity
-pub(crate) const MAX_TOKENS_PER_WINDOW: usize = 480;
+// WINDOW_OVERHEAD: reserved tokens for query/passage prefix and special tokens
+// WINDOW_OVERLAP_TOKENS: context continuity between windows
+const WINDOW_OVERHEAD: usize = 32;
 pub(crate) const WINDOW_OVERLAP_TOKENS: usize = 64;
+
+/// Compute max tokens per window from the model's max_seq_length.
+/// Falls back to 480 (safe for 512-token models) if model config unavailable.
+pub(crate) fn max_tokens_per_window(model_max_seq: usize) -> usize {
+    if model_max_seq == 0 {
+        480
+    } else {
+        model_max_seq.saturating_sub(WINDOW_OVERHEAD).max(128)
+    }
+}
 
 // Pipeline tuning constants
 /// Embedding batch size. Was 32 (backed off from 64 after an undiagnosed crash at 2%).
@@ -49,11 +58,8 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
     let mut result = Vec::with_capacity(chunks.len());
 
     for chunk in chunks {
-        match embedder.split_into_windows(
-            &chunk.content,
-            MAX_TOKENS_PER_WINDOW,
-            WINDOW_OVERLAP_TOKENS,
-        ) {
+        let max_tokens = max_tokens_per_window(embedder.model_config().max_seq_length);
+        match embedder.split_into_windows(&chunk.content, max_tokens, WINDOW_OVERLAP_TOKENS) {
             Ok(windows) if windows.len() == 1 => {
                 // Fits in one window - pass through unchanged
                 result.push(chunk);
@@ -1117,9 +1123,12 @@ mod tests {
 
     #[test]
     fn test_windowing_constants() {
-        // Verify constants are sensible (const blocks for compile-time checks)
-        const { assert!(MAX_TOKENS_PER_WINDOW <= 512) };
-        const { assert!(WINDOW_OVERLAP_TOKENS < MAX_TOKENS_PER_WINDOW) };
+        // Verify windowing function produces sensible values
+        assert_eq!(max_tokens_per_window(512), 480); // E5-base/BGE-large
+        assert_eq!(max_tokens_per_window(8192), 8160); // nomic, jina
+        assert_eq!(max_tokens_per_window(32768), 32736); // GTE-Qwen2
+        assert_eq!(max_tokens_per_window(0), 480); // fallback
+        assert!(max_tokens_per_window(64) >= 128); // floor
         const { assert!(WINDOW_OVERLAP_TOKENS > 0) };
     }
 

@@ -194,13 +194,15 @@ fn mermaid_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// BFS shortest path through forward adjacency list
+/// BFS shortest path through forward adjacency list.
+/// Capped at 10,000 visited nodes to prevent OOM on dense graphs.
 fn bfs_shortest_path(
     forward: &HashMap<std::sync::Arc<str>, Vec<std::sync::Arc<str>>>,
     source: &str,
     target: &str,
     max_depth: usize,
 ) -> Option<Vec<String>> {
+    const MAX_NODES: usize = 10_000;
     let mut visited: HashMap<String, String> = HashMap::new();
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
 
@@ -208,6 +210,10 @@ fn bfs_shortest_path(
     queue.push_back((source.to_string(), 0));
 
     while let Some((current, depth)) = queue.pop_front() {
+        if visited.len() >= MAX_NODES {
+            tracing::warn!(max_nodes = MAX_NODES, "BFS trace capped — graph too dense");
+            break;
+        }
         if current == target {
             let mut path = vec![current.clone()];
             let mut node = &current;

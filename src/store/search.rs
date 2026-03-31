@@ -128,7 +128,13 @@ impl Store {
         let mut scores: HashMap<&str, f32> =
             HashMap::with_capacity(semantic_ids.len() + fts_ids.len());
 
+        // Deduplicate semantic_ids — keep first occurrence (best rank) only.
+        // Duplicates would get RRF contributions at multiple ranks, inflating score.
+        let mut seen_semantic = std::collections::HashSet::with_capacity(semantic_ids.len());
         for (rank, id) in semantic_ids.iter().enumerate() {
+            if !seen_semantic.insert(*id) {
+                continue; // skip duplicate
+            }
             // RRF formula: 1 / (K + rank). The + 1.0 converts 0-indexed enumerate()
             // to 1-indexed ranks (first result = rank 1, not rank 0).
             let contribution = 1.0 / (K + rank as f32 + 1.0);

@@ -779,6 +779,8 @@ pub fn score_name_match_pre_lower(name_lower: &str, query_lower: &str) -> f32 {
         1.0
     } else if name_lower.starts_with(query_lower) {
         0.9
+    } else if query_lower.contains(name_lower) {
+        0.8
     } else if name_lower.contains(query_lower) {
         0.7
     } else {
@@ -900,10 +902,11 @@ pub fn embedding_slice(bytes: &[u8], expected_dim: usize) -> Option<&[f32]> {
 pub fn bytes_to_embedding(bytes: &[u8], expected_dim: usize) -> Option<Vec<f32>> {
     let expected_bytes = expected_dim * 4;
     if bytes.len() != expected_bytes {
-        tracing::trace!(
-            expected = expected_bytes,
-            actual = bytes.len(),
-            "Embedding byte length mismatch, skipping"
+        tracing::warn!(
+            expected_dim = expected_dim,
+            expected_bytes = expected_bytes,
+            actual_bytes = bytes.len(),
+            "Embedding dimension mismatch — index may need rebuilding after model change"
         );
         return None;
     }
