@@ -540,7 +540,7 @@ pub const EVAL_CASES: &[EvalCase] = &[
 ];
 
 /// Hard eval cases - confusable queries where multiple similar functions exist
-/// 11 per language = 55 total
+/// 11 per language x 7 languages = 77 total (PHP behind lang-php feature)
 pub const HARD_EVAL_CASES: &[EvalCase] = &[
     // Rust (11) - must distinguish between 6 sort variants, 4 validators, etc.
     EvalCase {
@@ -876,6 +876,151 @@ pub const HARD_EVAL_CASES: &[EvalCase] = &[
         expected_name: "ShouldAllow",
         language: Language::Go,
         also_accept: &["CircuitBreakerGo"],
+    },
+    // Java (11) - same confusable categories
+    EvalCase {
+        query: "stable sort preserving relative order of equal elements",
+        expected_name: "mergeSort",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "sort using binary max-heap data structure",
+        expected_name: "heapSort",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "simple sort efficient for small nearly sorted arrays",
+        expected_name: "insertionSort",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "non-comparison integer sort processing digits",
+        expected_name: "radixSort",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "validate phone number with international country code",
+        expected_name: "validatePhone",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "check if URL has valid protocol and hostname",
+        expected_name: "validateUrl",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "pad string to fixed width with fill character",
+        expected_name: "padString",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "count number of words in text",
+        expected_name: "countWords",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "extract numeric values from mixed text string",
+        expected_name: "extractNumbers",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "stop calling service after consecutive failures",
+        expected_name: "CircuitBreaker",
+        language: Language::Java,
+        also_accept: &["shouldAllow", "recordFailure"],
+    },
+    EvalCase {
+        query: "check whether circuit allows request through",
+        expected_name: "shouldAllow",
+        language: Language::Java,
+        also_accept: &["CircuitBreaker"],
+    },
+    // PHP (11) - same confusable categories
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "stable sort preserving relative order of equal elements",
+        expected_name: "mergeSort",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "sort using binary max-heap data structure",
+        expected_name: "heapSort",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "simple sort efficient for small nearly sorted arrays",
+        expected_name: "insertionSort",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "non-comparison integer sort processing digits",
+        expected_name: "radixSort",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "validate phone number with international country code",
+        expected_name: "validatePhone",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "check if URL has valid protocol and hostname",
+        expected_name: "validateUrl",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "pad string to fixed width with fill character",
+        expected_name: "padString",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "count number of words in text",
+        expected_name: "countWords",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "extract numeric values from mixed text string",
+        expected_name: "extractNumbers",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "stop calling service after consecutive failures",
+        expected_name: "CircuitBreaker",
+        language: Language::Php,
+        also_accept: &["shouldAllow", "recordFailure"],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "check whether circuit allows request through",
+        expected_name: "shouldAllow",
+        language: Language::Php,
+        also_accept: &["CircuitBreaker"],
     },
 ];
 
@@ -1789,6 +1934,528 @@ pub const HOLDOUT_EVAL_CASES: &[EvalCase] = &[
         query: "read the entire contents of a text file as a UTF-8 encoded string",
         expected_name: "ReadFileUtf8",
         language: Language::Go,
+        also_accept: &[],
+    },
+    // ================================================================
+    // Java holdout cases
+    // ================================================================
+
+    // --- Category 1: Uncovered basic eval functions (Java) ---
+    EvalCase {
+        query: "send data to remote API endpoint as JSON",
+        expected_name: "httpPostJson",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "load text content from file on disk",
+        expected_name: "readFileUtf8",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "safely write data to file without corruption on crash",
+        expected_name: "writeFileAtomic",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compute arithmetic average of a list of numbers",
+        expected_name: "calculateMean",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "find the largest element in an array",
+        expected_name: "findMaximum",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "create a unique random identifier string",
+        expected_name: "generateRandomId",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compress data using run-length encoding",
+        expected_name: "compressRle",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "parse command-line flags and arguments into a map",
+        expected_name: "parseCliArgs",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "delay function execution until input stops changing",
+        expected_name: "Debouncer",
+        language: Language::Java,
+        also_accept: &["debounce"],
+    },
+    // --- Category 1b: Uncovered hard eval functions (Java) ---
+    EvalCase {
+        query: "sort by repeatedly swapping adjacent out-of-order elements",
+        expected_name: "bubbleSort",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "reverse the order of characters in a string",
+        expected_name: "reverseString",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "check if string is a valid IPv4 address with four octets",
+        expected_name: "validateIpAddress",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compute CRC32 checksum of byte data",
+        expected_name: "hashCrc32",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "throttle request rate using token bucket algorithm",
+        expected_name: "RateLimiter",
+        language: Language::Java,
+        also_accept: &["allow"],
+    },
+    EvalCase {
+        query: "mark a successful call to reset circuit breaker failure count",
+        expected_name: "recordSuccess",
+        language: Language::Java,
+        also_accept: &["CircuitBreaker"],
+    },
+    // --- Category 2: Paraphrase queries (Java) ---
+    EvalCase {
+        query: "automatically retry failed operations with increasing delay between attempts",
+        expected_name: "retryWithBackoff",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "check if a string looks like a properly formatted email with @ and domain",
+        expected_name: "validateEmail",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "divide and conquer sort that picks a pivot and partitions around it",
+        expected_name: "quicksort",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "display a decimal number as money with dollar sign and commas",
+        expected_name: "formatCurrency",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "transform PascalCase or camelCase identifiers to underscore_separated lowercase",
+        expected_name: "camelToSnake",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "validate that a string matches the 8-4-4-4-12 hexadecimal UUID pattern",
+        expected_name: "isValidUuid",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "generate a cryptographic digest of data using the SHA-256 algorithm",
+        expected_name: "hashSha256",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "shorten text to a character limit and append ellipsis if trimmed",
+        expected_name: "truncateString",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "deserialize a JSON string into a typed configuration object",
+        expected_name: "parseJsonConfig",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    // --- Category 3: Behavioral queries (Java) ---
+    EvalCase {
+        query: "prevent API abuse by limiting how many requests a client can make per second",
+        expected_name: "RateLimiter",
+        language: Language::Java,
+        also_accept: &["allow"],
+    },
+    EvalCase {
+        query: "cache the results of expensive function calls to avoid redundant computation",
+        expected_name: "getOrCompute",
+        language: Language::Java,
+        also_accept: &["Memoizer"],
+    },
+    EvalCase {
+        query: "read the entire contents of a text file as a UTF-8 encoded string",
+        expected_name: "readFileUtf8",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    // --- Category 4: New query categories (Java) ---
+    // Tree/graph traversal
+    EvalCase {
+        query: "traverse graph level by level visiting nearest nodes first using a queue",
+        expected_name: "bfsTraversal",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "traverse graph exploring as deep as possible before backtracking using a stack",
+        expected_name: "dfsTraversal",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    // Caching strategies
+    EvalCase {
+        query: "cache that evicts the least recently accessed entry when full",
+        expected_name: "LruCache",
+        language: Language::Java,
+        also_accept: &["get", "put"],
+    },
+    EvalCase {
+        query: "cache that automatically expires entries after a time-to-live duration",
+        expected_name: "TtlCache",
+        language: Language::Java,
+        also_accept: &["get", "put", "evictExpired"],
+    },
+    // Serialization
+    EvalCase {
+        query: "convert list of records into comma-separated values format with header",
+        expected_name: "serializeToCsv",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "convert key-value data into XML document with named elements",
+        expected_name: "serializeToXml",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    // String matching
+    EvalCase {
+        query: "match filename against wildcard pattern with asterisk and question mark",
+        expected_name: "globMatch",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "match text against regular expression and extract captured groups",
+        expected_name: "regexMatchGroups",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    // Error handling
+    EvalCase {
+        query: "try primary operation and fall back to alternative on repeated failure",
+        expected_name: "retryWithFallback",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "recursively flatten nested lists into a single flat list",
+        expected_name: "flattenNestedList",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "recursively merge two nested dictionaries or config objects",
+        expected_name: "deepMergeMaps",
+        language: Language::Java,
+        also_accept: &[],
+    },
+    // ================================================================
+    // PHP holdout cases
+    // ================================================================
+
+    // --- Category 1: Uncovered basic eval functions (PHP) ---
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "send data to remote API endpoint as JSON",
+        expected_name: "httpPostJson",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "load text content from file on disk",
+        expected_name: "readFileUtf8",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "safely write data to file without corruption on crash",
+        expected_name: "writeFileAtomic",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "compute arithmetic average of a list of numbers",
+        expected_name: "calculateMean",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "find the largest element in an array",
+        expected_name: "findMaximum",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "create a unique random identifier string",
+        expected_name: "generateRandomId",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "compress data using run-length encoding",
+        expected_name: "compressRle",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "parse command-line flags and arguments into a map",
+        expected_name: "parseCliArgs",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "delay function execution until input stops changing",
+        expected_name: "debounce",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    // --- Category 1b: Uncovered hard eval functions (PHP) ---
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "sort by repeatedly swapping adjacent out-of-order elements",
+        expected_name: "bubbleSort",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "reverse the order of characters in a string",
+        expected_name: "reverseString",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "check if string is a valid IPv4 address with four octets",
+        expected_name: "validateIpAddress",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "compute CRC32 checksum of string data",
+        expected_name: "hashCrc32",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "throttle request rate using token bucket algorithm",
+        expected_name: "RateLimiter",
+        language: Language::Php,
+        also_accept: &["allow"],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "mark a successful call to reset circuit breaker failure count",
+        expected_name: "recordSuccess",
+        language: Language::Php,
+        also_accept: &["CircuitBreaker"],
+    },
+    // --- Category 2: Paraphrase queries (PHP) ---
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "automatically retry failed operations with increasing delay between attempts",
+        expected_name: "retryWithBackoff",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "check if a string looks like a properly formatted email with @ and domain",
+        expected_name: "validateEmail",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "divide and conquer sort that picks a pivot and partitions around it",
+        expected_name: "quicksort",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "display a decimal number as money with dollar sign and commas",
+        expected_name: "formatCurrency",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "transform PascalCase or camelCase identifiers to underscore_separated lowercase",
+        expected_name: "camelToSnake",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "validate that a string matches the 8-4-4-4-12 hexadecimal UUID pattern",
+        expected_name: "isValidUuid",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "generate a cryptographic digest of data using the SHA-256 algorithm",
+        expected_name: "hashSha256",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "shorten text to a character limit and append ellipsis if trimmed",
+        expected_name: "truncateString",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "deserialize a JSON string into a typed configuration object",
+        expected_name: "parseJsonConfig",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    // --- Category 3: Behavioral queries (PHP) ---
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "prevent API abuse by limiting how many requests a client can make per second",
+        expected_name: "RateLimiter",
+        language: Language::Php,
+        also_accept: &["allow"],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "cache the results of expensive function calls to avoid redundant computation",
+        expected_name: "memoize",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "read the entire contents of a text file as a UTF-8 encoded string",
+        expected_name: "readFileUtf8",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    // --- Category 4: New query categories (PHP) ---
+    // Tree/graph traversal
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "traverse graph level by level visiting nearest nodes first using a queue",
+        expected_name: "bfsTraversal",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "traverse graph exploring as deep as possible before backtracking using a stack",
+        expected_name: "dfsTraversal",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    // Caching strategies
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "cache that evicts the least recently accessed entry when full",
+        expected_name: "LruCache",
+        language: Language::Php,
+        also_accept: &["get", "put"],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "cache that automatically expires entries after a time-to-live duration",
+        expected_name: "TtlCache",
+        language: Language::Php,
+        also_accept: &["get", "put", "evictExpired"],
+    },
+    // Serialization
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "convert list of records into comma-separated values format with header",
+        expected_name: "serializeToCsv",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "convert key-value data into XML document with named elements",
+        expected_name: "serializeToXml",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    // String matching
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "match filename against wildcard pattern with asterisk and question mark",
+        expected_name: "globMatch",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "match text against regular expression and extract captured groups",
+        expected_name: "regexMatchGroups",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    // Error handling
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "try primary operation and fall back to alternative on repeated failure",
+        expected_name: "retryWithFallback",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "recursively flatten nested arrays into a single flat array",
+        expected_name: "flattenNestedArray",
+        language: Language::Php,
+        also_accept: &[],
+    },
+    #[cfg(feature = "lang-php")]
+    EvalCase {
+        query: "recursively merge two nested arrays with deep merge strategy",
+        expected_name: "deepMergeArrays",
+        language: Language::Php,
         also_accept: &[],
     },
 ];

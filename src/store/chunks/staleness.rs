@@ -390,7 +390,6 @@ mod tests {
     use crate::parser::{Chunk, ChunkType, Language};
     use crate::test_helpers::{mock_embedding, setup_store};
     use std::collections::HashSet;
-    use std::path::PathBuf;
 
     // ===== list_stale_files tests =====
 

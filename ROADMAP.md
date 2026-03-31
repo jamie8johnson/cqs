@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v1.9.0
+## Current: v1.12.0
 
-v1.9.0: BGE-large default (1024-dim), v9-200k ties BGE-large on pipeline, 1491 tests.
+v1.12.0: 8th audit (80/88 fixed), 6 new commands, query expansion, markdown split, batch=64 restored. v9-200k published to HuggingFace. ~1540 tests.
 
 ### Verified Pipeline Eval Matrix (re-verified 2026-03-28, v1.9.0 + all fixes)
 
@@ -69,12 +69,17 @@ Known: v9-mini (50K, 11K/lang) → 89.1%, v9-200k (22K/lang) → 94.5%, v9-500k 
 
 ### Future — Training Signal Experiments (from paper Section 5.5)
 
-Breaking the 94.5% ceiling requires fundamentally different training signals — not variations on data quantity, format, or training duration. Query format changes (contrastive prefixes) don't help. The value of code intelligence is in *negative filtering*, not query augmentation.
+7 experiments tested. All land at 89.1%. The 5.4pp gap = 3 TypeScript queries (sort/string discrimination). The ceiling is about enrichment-compatible embedding geometry for these specific discriminations, not broad training data quality.
 
-- [ ] **Test-derived training queries** — behavioral specs from test assertions. Different *pairs*, not different *format*. `test_validate_email` calling `validate("bad@")` asserting `false` → query "function that rejects invalid email addresses." This changes the underlying training data, not just the query text.
-- [x] ~~**Contrastive summaries as training pairs**~~ — Tested (Exp 24, condition B). 25% contrastive queries from call graph → 89.1% pipeline. Same floor. Query format augmentation doesn't help.
-- [ ] **Type-aware negative mining** — changes negative *selection* (different from CG filtering). Functions sharing return types but differing in behavior. Modifies which pairs the model sees, not the query text.
-- [x] **f32→f64 cosine precision fix** — Done in v1.11.0 (AC-28). Improves contrastive summary neighbor selection for inference-time enrichment.
+**New direction: improve the enrichment stack or eval, not training data.**
+
+- [ ] **Better TypeScript sort enrichment** — the 3 missing queries are all TypeScript sort/string functions. More discriminating contrastive summaries specifically for sorting algorithms might recover them.
+- [ ] **Expand eval fixtures** — 55 queries may be too narrow. The 3-query effect dominates the score. More fixtures dilute the effect of any single discrimination.
+- [x] ~~**Test-derived training queries**~~ — Tested (Exp 26). 13.6K LLM-generated behavioral queries from test assertions → 89.1%. Behavioral descriptions produce the same embedding space.
+- [x] ~~**Contrastive summaries as training pairs**~~ — Tested (Exp 24). → 89.1%, CSN 0.689 (best LoRA).
+- [ ] **Type-aware negative mining** — still untested. Changes negative *selection*, not query format. May be worth trying but 7 basin data points suggest diminishing returns on training-side changes.
+- [x] **f32→f64 cosine precision fix** — Done in v1.11.0 (AC-28).
+- [ ] **Imbalanced 200K** — test whether per-language saturation varies. Lower priority given the per-query analysis.
 
 ### Done — Embedding Model Options
 - [x] BGE-large-en-v1.5 as configurable alternative

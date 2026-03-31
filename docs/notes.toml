@@ -954,3 +954,30 @@ mentions = [
 sentiment = 0.5
 text = "Session 2026-03-29: v1.11.0 released (80/88 audit fixes + 6 new commands + query expansion). 19 OpenClaw contributions. Contrastive training confirmed 89.1% floor (5th data point). Paper v0.6. Pre-Edit hook live. Markdown.rs split. Pipeline batch=64 restored with debug logging."
 mentions = ["PROJECT_CONTINUITY.md"]
+
+[[note]]
+sentiment = -0.5
+text = "OpenClaw 10-PR limit: auto-closes PRs when >10 open. Consolidate related changes into single PRs. We went from 12 to 7 by grouping: 4 perf optimizations into 1, 2 code quality fixes into 1."
+mentions = ["openclaw-contributions.md"]
+
+[[note]]
+sentiment = -0.5
+text = "process.on exit handlers are synchronous only — event loop does not drain. Use fsSync.closeSync(handle.fd) not handle.close(). Greptile and Codex both caught this on our gateway lock PR."
+mentions = ["openclaw-contributions.md"]
+
+[[note]]
+sentiment = -0.5
+text = "FTS5 requires explicit AND between terms when any OR group is present. (a OR b) c is a syntax error; must be (a OR b) AND c. Synonym expansion was producing invalid FTS5 queries that crashed on 'command' after expanding 'parse'."
+mentions = [
+    "synonyms.rs",
+    "query.rs",
+    "fts5",
+]
+
+[[note]]
+sentiment = -0.5
+text = "RRF (keyword+semantic fusion) hurts recall at expanded eval scale: 74.7% vs 90.9% cosine-only on 296 queries. Keywords pull in irrelevant matches that dilute the semantic signal. Pure embedding search with name_boost is the sweet spot."
+mentions = [
+    "query.rs",
+    "pipeline_eval",
+]
