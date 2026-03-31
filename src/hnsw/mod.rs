@@ -53,12 +53,54 @@ use crate::index::{IndexResult, VectorIndex};
 // - Larger codebases (>100k): M=32, ef_construction=400, ef_search=200
 // - Batch processing: Lower ef_search for speed
 // - Maximum accuracy: Higher ef_search (up to ef_construction)
-pub(crate) const MAX_NB_CONNECTION: usize = 24; // M parameter - connections per node
-pub(crate) const MAX_LAYER: usize = 16; // Maximum layers in the graph
-pub(crate) const EF_CONSTRUCTION: usize = 200; // Construction-time search width
+//
+// All three parameters are overridable via environment variables:
+// - CQS_HNSW_M (default 24)
+// - CQS_HNSW_EF_CONSTRUCTION (default 200)
+// - CQS_HNSW_EF_SEARCH (default 100)
 
-/// Search width for queries (higher = more accurate but slower)
-pub(crate) const EF_SEARCH: usize = 100;
+pub(crate) const MAX_LAYER: usize = 16; // Maximum layers in the graph
+
+const DEFAULT_M: usize = 24;
+const DEFAULT_EF_CONSTRUCTION: usize = 200;
+const DEFAULT_EF_SEARCH: usize = 100;
+
+/// M parameter — connections per node. Override with `CQS_HNSW_M`.
+pub(crate) fn max_nb_connection() -> usize {
+    let m: usize = std::env::var("CQS_HNSW_M")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_M);
+    if m != DEFAULT_M {
+        tracing::info!(m, "CQS_HNSW_M override active");
+    }
+    m
+}
+
+/// Construction-time search width. Override with `CQS_HNSW_EF_CONSTRUCTION`.
+pub(crate) fn ef_construction() -> usize {
+    let ef: usize = std::env::var("CQS_HNSW_EF_CONSTRUCTION")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_EF_CONSTRUCTION);
+    if ef != DEFAULT_EF_CONSTRUCTION {
+        tracing::info!(ef, "CQS_HNSW_EF_CONSTRUCTION override active");
+    }
+    ef
+}
+
+/// Search width for queries (higher = more accurate but slower).
+/// Override with `CQS_HNSW_EF_SEARCH`.
+pub(crate) fn ef_search() -> usize {
+    let ef: usize = std::env::var("CQS_HNSW_EF_SEARCH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_EF_SEARCH);
+    if ef != DEFAULT_EF_SEARCH {
+        tracing::info!(ef, "CQS_HNSW_EF_SEARCH override active");
+    }
+    ef
+}
 
 #[derive(Error, Debug)]
 pub enum HnswError {
@@ -135,7 +177,7 @@ pub struct HnswIndex {
     pub(crate) inner: HnswInner,
     /// Mapping from internal index to chunk ID
     pub(crate) id_map: Vec<String>,
-    /// Configurable search width (defaults to EF_SEARCH constant)
+    /// Configurable search width (defaults to ef_search())
     pub(crate) ef_search: usize,
     /// Embedding dimension of vectors in this index
     pub(crate) dim: usize,
@@ -491,5 +533,83 @@ mod insert_batch_tests {
             }
             other => panic!("Expected DimensionMismatch, got: {}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod env_override_tests {
+    use std::sync::Mutex;
+
+    /// Mutex to serialize tests that manipulate CQS_HNSW_* env vars.
+    /// Env vars are process-global -- concurrent test threads race on set/remove.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn test_m_default() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_HNSW_M");
+        assert_eq!(super::max_nb_connection(), 24);
+    }
+
+    #[test]
+    fn test_m_override() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("CQS_HNSW_M", "32");
+        assert_eq!(super::max_nb_connection(), 32);
+        std::env::remove_var("CQS_HNSW_M");
+    }
+
+    #[test]
+    fn test_m_invalid_falls_back() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("CQS_HNSW_M", "not_a_number");
+        assert_eq!(super::max_nb_connection(), 24);
+        std::env::remove_var("CQS_HNSW_M");
+    }
+
+    #[test]
+    fn test_ef_construction_default() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_HNSW_EF_CONSTRUCTION");
+        assert_eq!(super::ef_construction(), 200);
+    }
+
+    #[test]
+    fn test_ef_construction_override() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("CQS_HNSW_EF_CONSTRUCTION", "400");
+        assert_eq!(super::ef_construction(), 400);
+        std::env::remove_var("CQS_HNSW_EF_CONSTRUCTION");
+    }
+
+    #[test]
+    fn test_ef_construction_invalid_falls_back() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("CQS_HNSW_EF_CONSTRUCTION", "xyz");
+        assert_eq!(super::ef_construction(), 200);
+        std::env::remove_var("CQS_HNSW_EF_CONSTRUCTION");
+    }
+
+    #[test]
+    fn test_ef_search_default() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_HNSW_EF_SEARCH");
+        assert_eq!(super::ef_search(), 100);
+    }
+
+    #[test]
+    fn test_ef_search_override() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("CQS_HNSW_EF_SEARCH", "250");
+        assert_eq!(super::ef_search(), 250);
+        std::env::remove_var("CQS_HNSW_EF_SEARCH");
+    }
+
+    #[test]
+    fn test_ef_search_invalid_falls_back() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("CQS_HNSW_EF_SEARCH", "");
+        assert_eq!(super::ef_search(), 100);
+        std::env::remove_var("CQS_HNSW_EF_SEARCH");
     }
 }

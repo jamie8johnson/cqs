@@ -43,7 +43,25 @@ pub(crate) fn max_tokens_per_window(model_max_seq: usize) -> usize {
 /// Embedding batch size. Was 32 (backed off from 64 after an undiagnosed crash at 2%).
 /// Restored to 64 with debug logging (PERF-45 investigation). If it crashes again,
 /// run with RUST_LOG=debug to capture batch_size/max_char_len/total_chars at failure.
-const EMBED_BATCH_SIZE: usize = 64;
+/// Configurable via `CQS_EMBED_BATCH_SIZE` environment variable.
+fn embed_batch_size() -> usize {
+    match std::env::var("CQS_EMBED_BATCH_SIZE") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(size) if size > 0 => {
+                tracing::info!(batch_size = size, "CQS_EMBED_BATCH_SIZE override");
+                size
+            }
+            _ => {
+                tracing::warn!(
+                    value = %val,
+                    "Invalid CQS_EMBED_BATCH_SIZE, using default 64"
+                );
+                64
+            }
+        },
+        Err(_) => 64,
+    }
+}
 /// Files to parse per batch (bounded memory)
 const FILE_BATCH_SIZE: usize = 5_000;
 /// Parse channel depth — lightweight (chunk metadata only), can be deeper
@@ -301,7 +319,7 @@ fn parser_stage(
         parsed_count,
         parse_errors,
     } = ctx;
-    let batch_size = EMBED_BATCH_SIZE;
+    let batch_size = embed_batch_size();
     let file_batch_size = FILE_BATCH_SIZE;
 
     for (batch_idx, file_batch) in files.chunks(file_batch_size).enumerate() {
@@ -1242,5 +1260,33 @@ mod tests {
         for window in &result[1..] {
             assert_eq!(window.doc, None, "non-first window should have doc = None");
         }
+    }
+
+    #[test]
+    fn test_embed_batch_size_default() {
+        // Clear any existing override
+        std::env::remove_var("CQS_EMBED_BATCH_SIZE");
+        assert_eq!(embed_batch_size(), 64);
+    }
+
+    #[test]
+    fn test_embed_batch_size_env_override() {
+        std::env::set_var("CQS_EMBED_BATCH_SIZE", "128");
+        assert_eq!(embed_batch_size(), 128);
+        std::env::remove_var("CQS_EMBED_BATCH_SIZE");
+    }
+
+    #[test]
+    fn test_embed_batch_size_invalid_env() {
+        std::env::set_var("CQS_EMBED_BATCH_SIZE", "not_a_number");
+        assert_eq!(embed_batch_size(), 64);
+        std::env::remove_var("CQS_EMBED_BATCH_SIZE");
+    }
+
+    #[test]
+    fn test_embed_batch_size_zero_env() {
+        std::env::set_var("CQS_EMBED_BATCH_SIZE", "0");
+        assert_eq!(embed_batch_size(), 64);
+        std::env::remove_var("CQS_EMBED_BATCH_SIZE");
     }
 }

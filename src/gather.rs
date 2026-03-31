@@ -154,6 +154,28 @@ impl Default for GatherOptions {
     ///
     /// A new `Self` instance initialized with sensible defaults for graph expansion operations.
     fn default() -> Self {
+        let max_expanded_nodes = match std::env::var("CQS_GATHER_MAX_NODES") {
+            Ok(val) => match val.parse::<usize>() {
+                Ok(n) => {
+                    tracing::info!(
+                        max_nodes = n,
+                        "BFS node cap overridden via CQS_GATHER_MAX_NODES"
+                    );
+                    n
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        value = %val,
+                        error = %e,
+                        "Invalid CQS_GATHER_MAX_NODES, using default {}",
+                        DEFAULT_MAX_EXPANDED_NODES
+                    );
+                    DEFAULT_MAX_EXPANDED_NODES
+                }
+            },
+            Err(_) => DEFAULT_MAX_EXPANDED_NODES,
+        };
+
         Self {
             expand_depth: 1,
             direction: GatherDirection::Both,
@@ -161,7 +183,7 @@ impl Default for GatherOptions {
             seed_limit: 5,
             seed_threshold: 0.3,
             decay_factor: 0.8,
-            max_expanded_nodes: DEFAULT_MAX_EXPANDED_NODES,
+            max_expanded_nodes,
         }
     }
 }

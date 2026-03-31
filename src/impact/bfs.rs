@@ -1,19 +1,41 @@
 //! BFS graph traversal for impact analysis
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::sync::OnceLock;
 
 use crate::store::CallGraph;
 
 /// Maximum nodes in any reverse BFS traversal (RT-RES-1).
 /// Prevents unbounded expansion on hub functions with thousands of transitive callers.
-pub(super) const DEFAULT_BFS_MAX_NODES: usize = 10_000;
+const DEFAULT_BFS_MAX_NODES: usize = 10_000;
+
+/// Returns the BFS node cap, reading `CQS_IMPACT_MAX_NODES` once on first call.
+pub(super) fn bfs_max_nodes() -> usize {
+    static CAP: OnceLock<usize> = OnceLock::new();
+    *CAP.get_or_init(|| match std::env::var("CQS_IMPACT_MAX_NODES") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(n) if n > 0 => {
+                tracing::info!(cap = n, "BFS node cap overridden via CQS_IMPACT_MAX_NODES");
+                n
+            }
+            _ => {
+                tracing::warn!(
+                    val,
+                    "CQS_IMPACT_MAX_NODES invalid, using default {DEFAULT_BFS_MAX_NODES}"
+                );
+                DEFAULT_BFS_MAX_NODES
+            }
+        },
+        Err(_) => DEFAULT_BFS_MAX_NODES,
+    })
+}
 
 /// Reverse BFS from a target node, returning all ancestors with their depths.
 ///
 /// The target itself is always included at depth 0. Callers that need only
 /// actual ancestors should filter out depth-0 entries.
 ///
-/// Expansion stops when either `max_depth` or `DEFAULT_BFS_MAX_NODES` is reached.
+/// Expansion stops when either `max_depth` or `bfs_max_nodes()` is reached.
 ///
 /// When `max_depth == 0`, returns only the target node at depth 0 (no traversal).
 pub(super) fn reverse_bfs(
@@ -30,7 +52,7 @@ pub(super) fn reverse_bfs(
         if d >= max_depth {
             continue;
         }
-        if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+        if ancestors.len() >= bfs_max_nodes() {
             tracing::warn!(
                 target,
                 nodes = ancestors.len(),
@@ -40,7 +62,7 @@ pub(super) fn reverse_bfs(
         }
         if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
-                if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+                if ancestors.len() >= bfs_max_nodes() {
                     break;
                 }
                 if !ancestors.contains_key(caller.as_ref()) {
@@ -80,7 +102,7 @@ pub(super) fn reverse_bfs_multi(
         if d >= max_depth {
             continue;
         }
-        if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+        if ancestors.len() >= bfs_max_nodes() {
             tracing::warn!(
                 nodes = ancestors.len(),
                 "reverse_bfs_multi hit node cap, returning partial results"
@@ -95,7 +117,7 @@ pub(super) fn reverse_bfs_multi(
         }
         if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
-                if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+                if ancestors.len() >= bfs_max_nodes() {
                     break;
                 }
                 match ancestors.entry(caller.to_string()) {
@@ -152,7 +174,7 @@ pub(super) fn reverse_bfs_multi_attributed(
         if d >= max_depth {
             continue;
         }
-        if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+        if ancestors.len() >= bfs_max_nodes() {
             tracing::warn!(
                 nodes = ancestors.len(),
                 "reverse_bfs_multi_attributed hit node cap, returning partial results"
@@ -168,7 +190,7 @@ pub(super) fn reverse_bfs_multi_attributed(
         }
         if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
-                if ancestors.len() >= DEFAULT_BFS_MAX_NODES {
+                if ancestors.len() >= bfs_max_nodes() {
                     break;
                 }
                 match ancestors.entry(caller.to_string()) {
@@ -252,7 +274,7 @@ pub(crate) fn test_reachability(
             if d >= max_depth {
                 continue;
             }
-            if visited.len() >= DEFAULT_BFS_MAX_NODES {
+            if visited.len() >= bfs_max_nodes() {
                 tracing::warn!(
                     nodes = visited.len(),
                     "test_reachability BFS hit node cap, returning partial results"
@@ -261,7 +283,7 @@ pub(crate) fn test_reachability(
             }
             if let Some(callees) = graph.forward.get(current.as_str()) {
                 for callee in callees {
-                    if visited.len() >= DEFAULT_BFS_MAX_NODES {
+                    if visited.len() >= bfs_max_nodes() {
                         break;
                     }
                     if !visited.contains_key(callee.as_ref()) {

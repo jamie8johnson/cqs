@@ -78,12 +78,29 @@ impl Reranker {
     /// Create a new reranker with lazy model loading
     pub fn new() -> Result<Self, RerankerError> {
         let provider = select_provider();
+        let max_length = match std::env::var("CQS_RERANKER_MAX_LENGTH") {
+            Ok(val) => match val.parse::<usize>() {
+                Ok(len) => {
+                    tracing::info!(max_length = len, "Using custom reranker max_length");
+                    len
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        value = %val,
+                        error = %e,
+                        "Invalid CQS_RERANKER_MAX_LENGTH, using default 512"
+                    );
+                    512
+                }
+            },
+            Err(_) => 512,
+        };
         Ok(Self {
             session: Mutex::new(None),
             tokenizer: OnceCell::new(),
             model_paths: OnceCell::new(),
             provider,
-            max_length: 512,
+            max_length,
         })
     }
 

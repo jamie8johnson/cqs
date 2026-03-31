@@ -217,7 +217,17 @@ pub fn search_across_projects(
     // RM-25: Cap concurrency to 4 threads — each project opens Store + HNSW (~200MB).
     // RB-16: Fall back to sequential execution if thread pool creation fails,
     // rather than panicking on a double-unwrap.
-    let pool = match rayon::ThreadPoolBuilder::new().num_threads(4).build() {
+    let threads = std::env::var("CQS_RAYON_THREADS")
+        .ok()
+        .and_then(|v| {
+            let parsed = v.parse();
+            if parsed.is_err() {
+                tracing::warn!(value = %v, "Invalid CQS_RAYON_THREADS, using default");
+            }
+            parsed.ok()
+        })
+        .unwrap_or(4);
+    let pool = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to build rayon thread pool, falling back to sequential");

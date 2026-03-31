@@ -6,9 +6,7 @@ use hnsw_rs::hnsw::Hnsw;
 
 use crate::embedder::Embedding;
 
-use super::{
-    HnswError, HnswIndex, HnswInner, EF_CONSTRUCTION, EF_SEARCH, MAX_LAYER, MAX_NB_CONNECTION,
-};
+use super::{HnswError, HnswIndex, HnswInner, MAX_LAYER};
 
 impl HnswIndex {
     /// Build a new HNSW index from embeddings (single-pass).
@@ -52,11 +50,17 @@ impl HnswIndex {
         }
         if embeddings.is_empty() {
             // Create empty index
-            let hnsw = Hnsw::new(MAX_NB_CONNECTION, 1, MAX_LAYER, EF_CONSTRUCTION, DistCosine);
+            let hnsw = Hnsw::new(
+                super::max_nb_connection(),
+                1,
+                MAX_LAYER,
+                super::ef_construction(),
+                DistCosine,
+            );
             return Ok(Self {
                 inner: HnswInner::Owned(hnsw),
                 id_map: Vec::new(),
-                ef_search: EF_SEARCH,
+                ef_search: super::ef_search(),
                 dim,
             });
         }
@@ -67,10 +71,10 @@ impl HnswIndex {
 
         // Create HNSW with cosine distance
         let mut hnsw = Hnsw::new(
-            MAX_NB_CONNECTION,
+            super::max_nb_connection(),
             nb_elem,
             MAX_LAYER,
-            EF_CONSTRUCTION,
+            super::ef_construction(),
             DistCosine,
         );
 
@@ -89,7 +93,7 @@ impl HnswIndex {
         Ok(Self {
             inner: HnswInner::Owned(hnsw),
             id_map,
-            ef_search: EF_SEARCH,
+            ef_search: super::ef_search(),
             dim,
         })
     }
@@ -136,10 +140,10 @@ impl HnswIndex {
         );
 
         let mut hnsw = Hnsw::new(
-            MAX_NB_CONNECTION,
+            super::max_nb_connection(),
             capacity,
             MAX_LAYER,
-            EF_CONSTRUCTION,
+            super::ef_construction(),
             DistCosine,
         );
 
@@ -206,14 +210,14 @@ impl HnswIndex {
             tracing::info!("HNSW index built (empty)");
             return Ok(Self {
                 inner: HnswInner::Owned(Hnsw::new(
-                    MAX_NB_CONNECTION,
+                    super::max_nb_connection(),
                     1,
                     MAX_LAYER,
-                    EF_CONSTRUCTION,
+                    super::ef_construction(),
                     DistCosine,
                 )),
                 id_map: Vec::new(),
-                ef_search: EF_SEARCH,
+                ef_search: super::ef_search(),
                 dim,
             });
         }
@@ -223,7 +227,7 @@ impl HnswIndex {
         Ok(Self {
             inner: HnswInner::Owned(hnsw),
             id_map,
-            ef_search: EF_SEARCH,
+            ef_search: super::ef_search(),
             dim,
         })
     }

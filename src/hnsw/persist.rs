@@ -10,7 +10,7 @@ use hnsw_rs::hnswio::HnswIo;
 
 use crate::index::VectorIndex;
 
-use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw, EF_SEARCH};
+use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw};
 
 /// Whether the WSL advisory locking warning has been emitted (once per process)
 static WSL_LOCK_WARNED: AtomicBool = AtomicBool::new(false);
@@ -534,7 +534,7 @@ impl HnswIndex {
         Ok(Self {
             inner: HnswInner::Loaded(loaded),
             id_map,
-            ef_search: EF_SEARCH,
+            ef_search: super::ef_search(),
             dim,
         })
     }

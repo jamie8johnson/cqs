@@ -232,7 +232,8 @@ pub struct Embedder {
 }
 
 /// Default query cache size (entries). Each entry is ~4KB (1024 floats + key).
-const DEFAULT_QUERY_CACHE_SIZE: usize = 32;
+/// Override with `CQS_QUERY_CACHE_SIZE` environment variable.
+const DEFAULT_QUERY_CACHE_SIZE: usize = 128;
 
 impl Embedder {
     /// Create a new embedder with lazy model loading.
@@ -264,9 +265,27 @@ impl Embedder {
     ) -> Result<Self, EmbedderError> {
         let max_length = model_config.max_seq_length;
 
+        let cache_size = match std::env::var("CQS_QUERY_CACHE_SIZE") {
+            Ok(val) => match val.parse::<usize>() {
+                Ok(n) if n > 0 => {
+                    tracing::info!(
+                        size = n,
+                        "Query cache size override from CQS_QUERY_CACHE_SIZE"
+                    );
+                    n
+                }
+                _ => {
+                    tracing::warn!(
+                        value = %val,
+                        "Invalid CQS_QUERY_CACHE_SIZE (must be positive integer), using default {DEFAULT_QUERY_CACHE_SIZE}"
+                    );
+                    DEFAULT_QUERY_CACHE_SIZE
+                }
+            },
+            Err(_) => DEFAULT_QUERY_CACHE_SIZE,
+        };
         let query_cache = Mutex::new(LruCache::new(
-            NonZeroUsize::new(DEFAULT_QUERY_CACHE_SIZE)
-                .expect("DEFAULT_QUERY_CACHE_SIZE is non-zero"),
+            NonZeroUsize::new(cache_size).expect("cache_size is non-zero"),
         ));
 
         Ok(Self {
