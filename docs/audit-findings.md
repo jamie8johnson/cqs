@@ -731,3 +731,153 @@ Constants that should scale with model configuration, corpus size, or hardware.
 - **Location:** src/cli/batch/mod.rs:130-155
 - **Description:** When `check_index_staleness` detects that `index.db` mtime changed, it invalidates mutable caches (clearing the HNSW `RefCell`) and re-opens the Store. The new Store reads the correct `dim` from metadata. However, when `vector_index()` is subsequently called, it calls `build_vector_index` which passes `store.dim()` to `HnswIndex::try_load_with_ef`. This is correct for the fresh Store. But `BatchContext.model_config` is a field set at construction time and never updated on invalidation. If the model changed between sessions (e.g., user edited `.cqs/config.toml` to switch from E5-base to BGE-large), `model_config.dim` would be stale. The embedder (cached in `OnceLock`) would still produce embeddings at the old dimension, while the Store expects the new dimension. Queries would produce wrong-dimension embeddings and get zero search results.
 - **Suggested fix:** On `check_index_staleness` invalidation, also re-read the config file and update `model_config`. Or check if `store.dim()` differs from `model_config.dim` after re-opening, and if so, log a warning and clear the embedder `OnceLock` (though `OnceLock` cannot be cleared -- would need to switch to `RefCell<Option<Embedder>>`).
+
+## Research Extensibility
+
+Deep audit of cqs as a research platform for embedding quality, training signal experiments, and code intelligence. Focuses on architectural gaps that impede model experimentation, eval extensibility, training data generation, enrichment modularity, large-context model support, multi-model indexing, and plugin/extension points.
+
+### 1. Model Experimentation Friction
+
+#### RX-1: No A/B test infrastructure -- model comparison requires full reindex
+- **Difficulty:** hard
+- **Location:** src/cli/commands/index.rs:136-141, src/store/mod.rs:258, src/embedder/models.rs
+- **Description:** Comparing two models requires: (1) index with model A, (2) run eval, (3) reindex with model B, (4) run eval, (5) compare manually. There is no `cqs index --model bge-large --tag baseline` that would store embeddings in a tagged column or side table. The schema stores one embedding blob per chunk (schema.sql:26 `embedding BLOB NOT NULL`). `Store::init` writes model_name to metadata, and `Store::set_dim` locks the dimension for the lifetime of the DB. To test a new model you must create an entirely separate `.cqs/` directory or destroy and rebuild the index. For a 50K-chunk codebase, each reindex takes ~15 minutes on GPU. This is the single biggest friction point for model experimentation.
+- **Suggested fix:** Add a `model_embeddings` table: `(chunk_id TEXT, model_tag TEXT, embedding BLOB, PRIMARY KEY (chunk_id, model_tag))`. The main `chunks.embedding` stays as the "active" embedding. A `cqs index --model v9-200k --tag experiment-1` would populate the side table without disturbing the primary index. A `cqs eval --compare baseline experiment-1` could run the same queries against both embedding sets. Migration: v16->v17, new table only.
+
+#### RX-2: ScoringConfig::DEFAULT is a compile-time constant -- no runtime override
+- **Difficulty:** medium
+- **Location:** src/search/scoring/config.rs:21-32
+- **Description:** `ScoringConfig::DEFAULT` is a `const` struct with 9 hardcoded scoring parameters (name_exact: 1.0, note_boost_factor: 0.15, importance_test: 0.70, etc.). These cannot be overridden at runtime via config file or CLI flags. A researcher testing "what if I weight name matches at 0.5 instead of 1.0?" must edit source code, recompile, and rerun. The same constant is used in `chunk_importance`, `score_candidate`, `apply_parent_boost`, and `NoteBoostIndex`. All scoring experiments require code changes.
+- **Suggested fix:** Add `[scoring]` section to `.cqs.toml` config. Load it in `ScoringConfig::load()` with `DEFAULT` as fallback. Pass `ScoringConfig` through `ScoringContext` (which already exists and is passed to `score_candidate`). This makes scoring experiments zero-recompile.
+
+#### RX-3: Reranker model is hardcoded with no config file integration
+- **Difficulty:** easy
+- **Location:** src/reranker.rs:19-25, 32-40
+- **Description:** The cross-encoder reranker uses `cross-encoder/ms-marco-MiniLM-L-6-v2` hardcoded at line 19. It reads `CQS_RERANKER_MODEL` env var as an override (line 33), but this is not exposed in the config file system (`Config`, `EmbeddingConfig`). A researcher wanting to test different reranker models must set env vars, which don't persist across sessions and can't be per-project. The reranker's `max_length: 512` (line 86) is also hardcoded with no override.
+- **Suggested fix:** Add `[reranker]` section to config: `model`, `max_length`. Wire through `Config::load()`. Env var remains as highest-priority override.
+
+### 2. Eval Pipeline Extensibility
+
+#### RX-4: Eval cases are hardcoded in Rust source -- adding cases requires recompile
+- **Difficulty:** medium
+- **Location:** tests/eval_common.rs:238-2465
+- **Description:** All 296 eval cases (77 hard + 219 holdout) are defined as `pub const EVAL_CASES`, `HARD_EVAL_CASES`, and `HOLDOUT_EVAL_CASES` in `eval_common.rs` -- compile-time Rust arrays of `EvalCase` structs with `&'static str` fields. Adding a new language, a new query, or a new eval set requires editing Rust source. The `EvalCase` struct has 4 fields: `query`, `expected_name`, `language`, `also_accept`. This makes it impossible to: (a) share eval sets as data files, (b) let a training pipeline auto-generate eval cases, (c) run evals without recompiling.
+- **Suggested fix:** Support loading eval cases from JSONL files alongside the compiled-in cases. Add `load_eval_cases(path: &Path) -> Vec<EvalCase>` that reads `{"query": "...", "expected": "...", "language": "rust", "also_accept": [...]}` lines. Keep the compiled-in cases as the baseline but allow `cargo test pipeline_eval -- --eval-file custom.jsonl`.
+
+#### RX-5: Eval metrics are limited to R@1, R@5, MRR -- no per-query diagnostics
+- **Difficulty:** medium
+- **Location:** tests/pipeline_eval.rs:160-198
+- **Description:** `compute_metrics_refs` returns aggregate (recall@1, recall@5, MRR, per-lang MRR, relaxed_recall@1). There is no per-query output showing: which queries failed, what rank the expected result appeared at, what the top-5 results actually were, or the score distribution. When a model change causes R@1 to drop from 90.5% to 82%, the researcher has to manually inspect each failing query. The 296-query expansion makes this untenable. The `model_eval.rs` harness has the same limitation.
+- **Suggested fix:** Add `--diagnostics` flag that outputs per-query JSON: `{"query": "...", "expected": "...", "rank": 3, "top5": [...], "scores": [...], "language": "rust"}`. Write to a file alongside the summary. This enables: (a) diffing two model runs query-by-query, (b) identifying which query categories regress, (c) automated regression detection in CI.
+
+#### RX-6: No eval for enrichment stack ablation
+- **Difficulty:** medium
+- **Location:** tests/pipeline_eval.rs:25-100, src/cli/commands/index.rs:291-313
+- **Description:** The pipeline eval always runs with enrichment (`enrich_with_call_context` at line 25). There is no way to run the eval without enrichment, or with only summary enrichment, or with only HyDE enrichment. The enrichment stack contributes ~15pp (README finding), but this was measured by comparing models, not by ablation within a single model. The `cmd_index` function runs enrichment unconditionally when `stats.total_calls > 0` (line 292). There is no `--skip-enrichment`, `--enrichment=call-graph-only`, or similar flag.
+- **Suggested fix:** (1) Add `--skip-enrichment` flag to `cqs index`. (2) In the eval, add a parameter to `enrich_with_call_context` that selects which enrichment layers to apply (call graph, summary, HyDE, none). (3) Run ablation: base, +call-graph, +summary, +HyDE, +all. This quantifies each layer's contribution independently.
+
+#### RX-7: Eval fixture path convention prevents adding new languages without code changes
+- **Difficulty:** easy
+- **Location:** tests/eval_common.rs:21-123
+- **Description:** `fixture_path()` and `hard_fixture_path()` have exhaustive match arms over `Language` variants, each mapping to a file extension. Adding a new language to the eval requires: (1) add the match arm, (2) create the fixture file, (3) add eval cases. Steps 1 and 3 require recompilation. Furthermore, languages behind feature flags (e.g., `lang-php`, `lang-lua`) have `#[cfg(feature = "...")]` guards on each match arm, making the match non-exhaustive and requiring careful feature-flag management.
+- **Suggested fix:** Replace the match with `Language::extension()` method (which already exists -- `Language::from_extension` is the reverse). Use `format!("tests/fixtures/eval_{}.{}", lang.to_string().to_lowercase(), lang.extension())`. This eliminates the match arm maintenance.
+
+### 3. Training Data Pipeline
+
+#### RX-8: Training data pipeline generates (query, positive, negatives) but not enriched variants
+- **Difficulty:** medium
+- **Location:** src/train_data/mod.rs:258-288
+- **Description:** `generate_training_data` produces triplets where `positive` is the raw function content (line 274). The production pipeline embeds NL descriptions (via `generate_nl_description`) enriched with call graph context, LLM summaries, and HyDE predictions. Training data does not include any of these enrichment signals -- it trains on raw code while production searches enriched NL. This means the model is trained on a different distribution than what it sees in production. The paper (Section 5.5) identified that enrichment compresses model differences, but the training pipeline cannot produce enriched positives because it does not have an index or call graph at generation time.
+- **Suggested fix:** Add `--enriched` flag that: (1) requires a cqs index for the target repo, (2) looks up each function in the index, (3) retrieves the enriched NL description from the store, (4) uses the enriched NL as the positive instead of raw code. This creates training data that matches the production embedding distribution. Alternatively, add the NL description as an additional field in the Triplet struct for multi-task training.
+
+#### RX-9: BM25 hard negative selection has no pluggable alternatives
+- **Difficulty:** medium
+- **Location:** src/train_data/mod.rs:268-269, src/train_data/bm25.rs
+- **Description:** Hard negative selection is hardcoded to BM25 (line 268: `bm25.select_negatives`). The expanded eval showed that FAISS hard negatives regress pipeline performance by 5.4pp (v9-200k-hn). But the BM25 selection strategy is not configurable. A researcher wanting to test: (a) random negatives, (b) embedding-similarity negatives, (c) call-graph-aware negatives (functions in the same module but different call chains), (d) hybrid BM25+embedding negatives -- must edit source code. The `Bm25Index::select_negatives` interface takes `(query, exclude_hash, positive_content, k)` which couples the negative selection strategy to BM25.
+- **Suggested fix:** Define a `NegativeSelector` trait: `fn select(&self, query: &str, positive_hash: &str, positive_content: &str, k: usize) -> Vec<(String, String)>`. Implement `Bm25Selector`, `RandomSelector`, `EmbeddingSelector`. Wire selection strategy through `TrainDataConfig`. This enables training experiments without code changes.
+
+#### RX-10: No contrastive training pair generation from call graph
+- **Difficulty:** medium
+- **Location:** src/train_data/mod.rs (missing)
+- **Description:** The call graph knows which functions call which others. This is a rich source of (query, positive) pairs that doesn't require commit messages: "function that calls X and Y" -> the function itself. The paper mentions contrastive-B (25% contrastive queries from call graph) landing in the basin. But the mechanism for generating these contrastive pairs is not in the `train_data` module -- it was done externally. The pipeline has `build_bm25_corpus` which walks repo files and parses them, but does not extract call relationships. Adding call-graph-derived pairs would require the parser's call extraction (already implemented in `parser/calls.rs`) to be integrated into the training pipeline.
+- **Suggested fix:** Add `--call-graph-pairs` flag that, for each function with callers in the index, generates (NL description of callers, function content) pairs. The NL description would be synthesized from caller names and signatures. This closes the loop between the production enrichment stack and the training pipeline.
+
+### 4. Enrichment Stack Modularity
+
+#### RX-11: Enrichment layers are not independently togglable at index time
+- **Difficulty:** medium
+- **Location:** src/cli/commands/index.rs:209-313, src/cli/enrichment.rs:146-149
+- **Description:** The enrichment pass (`enrichment_pass` in enrichment.rs) is monolithic: it applies all available enrichment in one pass (call graph context + LLM summary + HyDE). The skip condition (line 147) is `!has_callers && !has_callees && summary.is_none() && hyde.is_none()`, meaning if any enrichment signal exists, all get applied together. There is no way to say "enrich with call graph only" or "enrich with summary only". The `cmd_index` function gathers: (a) LLM summaries (line 217), (b) doc comments (line 231), (c) HyDE predictions (line 278), (d) call graph enrichment (line 300) -- but only (a), (b), (c) have feature flags. The call graph enrichment runs unconditionally when calls exist. For ablation studies, a researcher needs: `cqs index --enrichment call-graph,summary` or `cqs index --no-enrichment`.
+- **Suggested fix:** Add `--enrichment` flag accepting comma-separated values: `call-graph`, `summary`, `hyde`, `all`, `none`. Default: `all`. Pass as a bitflag set through `enrichment_pass`. Modify the skip condition to check only the enabled layers. This enables controlled ablation without recompilation.
+
+#### RX-12: Enrichment hash couples all layers -- changing one layer re-enriches everything
+- **Difficulty:** medium
+- **Location:** src/cli/enrichment.rs:176-177
+- **Description:** `compute_enrichment_hash_with_summary` hashes the call context, callee doc freq filter result, summary, and HyDE together into one blake3 hash. If the LLM summary changes (e.g., re-run with a better model), the enrichment hash changes, causing ALL chunks with summaries to be re-embedded even if their call graph context is identical. For a 50K-chunk index with 30K callable chunks, this means re-embedding 30K chunks at ~3ms each = 90 seconds of GPU time. The enrichment hash should be layered so that only the changed layer triggers re-embedding.
+- **Suggested fix:** Store per-layer hashes: `enrichment_hash_calls`, `enrichment_hash_summary`, `enrichment_hash_hyde`. Only re-embed when the combined NL would actually change. This requires a schema migration (v16->v17) to add columns, but eliminates wasted re-embedding when only one layer changes.
+
+### 5. Large-Context Model Support
+
+#### RX-13: NL generation char budget reads CQS_MAX_SEQ_LENGTH from env on every call
+- **Difficulty:** easy
+- **Location:** src/nl/mod.rs:199-202
+- **Description:** `generate_nl_with_template` reads `CQS_MAX_SEQ_LENGTH` env var on every call (line 199) for Section chunks. This works but is inefficient (env var lookup per chunk) and disconnected from the model config. The model's actual `max_seq_length` is available in `ModelConfig` but not threaded through to NL generation. For large-context models (8192 or 32768 tokens), the NL generator should automatically use the model's context window without requiring a manual env var.
+- **Suggested fix:** Thread `ModelConfig::max_seq_length` into `generate_nl_description` and `generate_nl_with_template` as a parameter (or via a `NlConfig` struct). Remove the env var override or keep it as an emergency override only. The pipeline already has the embedder available when calling NL generation.
+
+#### RX-14: Windowing overlap is fixed at 64 tokens -- suboptimal for large-context models
+- **Difficulty:** easy
+- **Location:** src/cli/pipeline.rs:30
+- **Description:** `WINDOW_OVERLAP_TOKENS = 64` is a compile-time constant. For 512-token models, 64 tokens of overlap is 12.5% -- reasonable. For an 8192-token model, 64 tokens is 0.8% -- negligible context continuity between windows. For 32K models, it's 0.2%. The overlap should scale with the window size to maintain a consistent overlap ratio.
+- **Suggested fix:** Compute overlap dynamically: `max(64, max_tokens_per_window / 8)`. This gives 64 for 512-token, 1020 for 8192-token, 4092 for 32K-token models. The `max_tokens_per_window` function already exists and takes `model_max_seq` -- add overlap computation there.
+
+#### RX-15: Reranker max_length hardcoded to 512
+- **Difficulty:** easy
+- **Location:** src/reranker.rs:86
+- **Description:** `max_length: 512` in the reranker tokenization is hardcoded. This is correct for `ms-marco-MiniLM-L-6-v2` (512 max), but if a researcher swaps to a longer-context cross-encoder via `CQS_RERANKER_MODEL`, the truncation at 512 tokens would silently discard the extra context that the new model could use. There is no mechanism to set the reranker's max_length.
+- **Suggested fix:** Add `max_length` to the reranker config (alongside `CQS_RERANKER_MODEL`). Read from config/env. Default 512.
+
+### 6. Multi-Model Indexing
+
+#### RX-16: Reference index system could enable A/B testing but lacks comparison tooling
+- **Difficulty:** medium
+- **Location:** src/reference.rs:19-28, src/config.rs:56-68
+- **Description:** The reference index system (`ReferenceIndex`) can load separate Store+HNSW pairs with different models. A researcher could: index the same repo with model A as the primary and model B as a reference, then search both. But there is no comparison mode: `search_across_projects` merges results by score (with weight multiplier), not by showing per-model rankings side-by-side. There is no `cqs compare --ref model-b "query"` that shows "Model A ranked X at position 2, Model B ranked X at position 5." The reference system was designed for cross-project search (e.g., searching both your project and a library), not for A/B comparison within the same codebase.
+- **Suggested fix:** Add `cqs compare --ref <name> "query"` that runs the query against both the primary and reference index, then outputs a side-by-side table: `| Rank | Primary (bge-large) | Reference (v9-200k) |`. Reuse `search_across_projects` internals but tag results by source and present them as parallel ranked lists instead of merging.
+
+#### RX-17: Different-dimension models cannot share the same HNSW index
+- **Difficulty:** hard (architectural)
+- **Location:** src/hnsw/mod.rs:56-61, src/hnsw/build.rs, src/store/mod.rs:253-254
+- **Description:** HNSW parameters (M=24, ef_construction=200, ef_search=100) are global constants. The HNSW index is built with a specific dimension (`store.dim()`). Store has a single `dim` field set at construction. If a researcher indexes with BGE-large (1024-dim) and wants to compare with E5-base (768-dim), they need entirely separate `.cqs/` directories with separate HNSW files. The reference system handles this correctly (each reference has its own Store+HNSW), but creating a reference of the same repo at a different dimension requires: `mkdir /tmp/cqs-e5 && CQS_EMBEDDING_MODEL=e5-base cqs --project /tmp/cqs-e5 index`, which is clumsy. There is no `cqs index --model e5-base --output /path/to/alt-index`.
+- **Suggested fix:** Add `cqs index --model e5-base --index-dir /path/to/alt-index` that creates a full cqs index at an alternate location. Then `cqs ref add --name e5-test --path /path/to/alt-index` to register it. Combined with RX-16, this enables: index with two models, register the second as a reference, run comparison queries.
+
+### 7. Plugin/Extension Points
+
+#### RX-18: No trait abstraction for scoring functions -- all scoring logic is direct function calls
+- **Difficulty:** medium
+- **Location:** src/search/scoring/candidate.rs:26-36, src/search/scoring/name_match.rs, src/search/scoring/note_boost.rs
+- **Description:** Scoring is implemented as free functions (`chunk_importance`, `score_candidate`, `apply_parent_boost`) and structs (`NameMatcher`, `NoteBoostIndex`) with no trait abstraction. A researcher adding a new scoring signal (e.g., "recency boost" based on git last-modified, or "popularity boost" based on call count) must: (1) add a new function, (2) thread it through `score_candidate` via `ScoringContext`, (3) modify all callers. There is no `ScoringPlugin` trait or extensible scoring pipeline. The `ScoringContext` struct is the closest thing to an extension point, but adding a field requires modifying every construction site.
+- **Suggested fix:** This is acceptable for the current scale (5 scoring signals). If the scoring pipeline grows past ~8 signals, consider a `Vec<Box<dyn ScoringPlugin>>` pattern where each plugin gets `(query, candidate, context)` and returns a multiplier. But the current direct-call approach has zero overhead and is easier to reason about. Medium priority -- only worth changing if scoring experiments become frequent.
+
+#### RX-19: Enrichment layers are hardcoded in generate_nl_with_call_context_and_summary
+- **Difficulty:** medium
+- **Location:** src/nl/mod.rs:65-147
+- **Description:** The enrichment assembly in `generate_nl_with_call_context_and_summary` is a monolithic function that concatenates: base NL + callers + callees + summary + HyDE. The structure is: `"{summary} {base}. Called by: {callers}. Calls: {callees}. Queries: {hyde}"`. A researcher wanting to test a different assembly order (e.g., HyDE first, or callees before callers) or a different format (e.g., structured JSON instead of natural language) must edit this function. There is no `EnrichmentAssembler` trait or configurable template.
+- **Suggested fix:** Extract the assembly into a configurable template system. Define an `NlAssemblyConfig` with ordered slots: `[summary, base, callers, callees, hyde]` with per-slot formatters. Default template matches current behavior. Alternative templates for experiments. Low priority -- the current format was validated through the eval pipeline.
+
+#### RX-20: No hook for custom eval metrics
+- **Difficulty:** easy
+- **Location:** tests/pipeline_eval.rs:160-198
+- **Description:** `compute_metrics_refs` computes a fixed set of metrics (R@1, R@5, MRR, per-lang MRR, relaxed R@1). A researcher wanting to add NDCG@10, MAP, or a custom metric (e.g., "enrichment lift" = score-with-enrichment / score-without) must edit the function. There is no metric registration or plugin system.
+- **Suggested fix:** Extract metrics into a `Metric` trait: `fn name(&self) -> &str; fn compute(&self, ranks: &[(usize, Option<usize>)], cases: &[&EvalCase]) -> f64`. Implement `RecallAtK`, `MRR`, `NDCG`. Pass a `Vec<Box<dyn Metric>>` to the eval runner. Low priority for now -- the current 5 metrics cover the standard IR evaluation battery.
+
+#### RX-21: train_data::Triplet lacks metadata for downstream filtering
+- **Difficulty:** easy
+- **Location:** src/train_data/mod.rs:39-55
+- **Description:** `Triplet` includes `language`, `function_name`, `function_size`, `diff_lines`, `files_changed`, and `msg_len`. Missing but useful for training experiments: (a) `chunk_type` (function vs method vs class -- training on class-level positives may help or hurt), (b) `negative_strategy` (which strategy produced the negatives -- needed if multiple strategies are used), (c) `caller_count` and `callee_count` (functions with many callers are more important and might warrant oversampling), (d) `has_doc_comment` (functions with docs produce better NL, potentially better training signal). These are available during generation but not captured.
+- **Suggested fix:** Add optional metadata fields to `Triplet`. Since the format is JSONL, additional fields are backward-compatible. Training scripts can filter by any field.
+
+#### RX-22: No structured output from pipeline eval -- results are println only
+- **Difficulty:** easy
+- **Location:** tests/pipeline_eval.rs:200+ (the eval runner output sections)
+- **Description:** Pipeline eval and model eval print results to stdout via `println!`. There is no `--json` output, no file output, no machine-readable format. Tracking eval results across model versions requires manual copy-paste into `ROADMAP.md` or `RESULTS.md`. The full pipeline eval (296 queries, enrichment, HNSW build) takes ~20 minutes -- if the results are lost (terminal scroll, session end), the entire run must be repeated.
+- **Suggested fix:** Write results to `tests/eval_results/<timestamp>_<model>.json` with all metrics, per-query diagnostics, and config metadata. This creates an automatic eval history. Pair with RX-5 for per-query diagnostics.

@@ -30,11 +30,12 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     let config = cqs::config::Config::load(&find_project_root());
     apply_config_defaults(&mut cli, &config);
 
-    // Resolve embedding model config once (CLI > env > config > default)
-    cli.resolved_model = Some(cqs::embedder::ModelConfig::resolve(
-        cli.model.as_deref(),
-        config.embedding.as_ref(),
-    ));
+    // Resolve embedding model config once (CLI > env > config > default),
+    // then apply env var overrides (CQS_MAX_SEQ_LENGTH, CQS_EMBEDDING_DIM)
+    cli.resolved_model = Some(
+        cqs::embedder::ModelConfig::resolve(cli.model.as_deref(), config.embedding.as_ref())
+            .apply_env_overrides(),
+    );
 
     // Clamp limit to prevent usize::MAX wrapping to -1 in SQLite queries
     cli.limit = cli.limit.clamp(1, 100);
