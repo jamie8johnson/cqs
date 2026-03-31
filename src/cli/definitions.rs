@@ -599,6 +599,14 @@ pub(super) enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Reconstruct source file from index (works without source on disk)
+    Reconstruct {
+        /// File path (as indexed)
+        path: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Find functions related by shared callers, callees, or types
     Related {
         /// Function name or file:function
