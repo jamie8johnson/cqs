@@ -233,44 +233,69 @@ pub(super) async fn batch_insert_chunks(
 }
 
 /// Conditional FTS upsert: skip if content_hash unchanged (compared to pre-INSERT snapshot).
+/// Batches DELETE and INSERT for efficiency (PERF-2: was 2 SQL per chunk, now batched).
 pub(super) async fn upsert_fts_conditional(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     chunks: &[(Chunk, Embedding)],
     old_hashes: &HashMap<String, String>,
 ) -> Result<(), StoreError> {
-    for (chunk, _) in chunks {
-        let content_changed = old_hashes
-            .get(&chunk.id)
-            .map(|old_hash| old_hash != &chunk.content_hash)
-            .unwrap_or(true);
+    // Collect changed chunks
+    let changed: Vec<&Chunk> = chunks
+        .iter()
+        .filter_map(|(chunk, _)| {
+            let content_changed = old_hashes
+                .get(&chunk.id)
+                .map(|old_hash| old_hash != &chunk.content_hash)
+                .unwrap_or(true);
+            if content_changed {
+                Some(chunk)
+            } else {
+                None
+            }
+        })
+        .collect();
 
-        if content_changed {
-            let fts_name = normalize_for_fts(&chunk.name);
-            let fts_sig = normalize_for_fts(&chunk.signature);
-            let fts_content = normalize_for_fts(&chunk.content);
-            let fts_doc = chunk
-                .doc
-                .as_ref()
-                .map(|d| normalize_for_fts(d))
-                .unwrap_or_default();
-
-            sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
-                .bind(&chunk.id)
-                .execute(&mut **tx)
-                .await?;
-
-            sqlx::query(
-                "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
-            )
-            .bind(&chunk.id)
-            .bind(&fts_name)
-            .bind(&fts_sig)
-            .bind(&fts_content)
-            .bind(&fts_doc)
-            .execute(&mut **tx)
-            .await?;
-        }
+    if changed.is_empty() {
+        return Ok(());
     }
+
+    // Batch DELETE: remove old FTS entries for changed chunks
+    for batch in changed.chunks(500) {
+        let placeholders: String = batch
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("DELETE FROM chunks_fts WHERE id IN ({})", placeholders);
+        let mut query = sqlx::query(&sql);
+        for chunk in batch {
+            query = query.bind(&chunk.id);
+        }
+        query.execute(&mut **tx).await?;
+    }
+
+    // Batch INSERT: add new FTS entries
+    for batch in changed.chunks(180) {
+        // 180 chunks × 5 bind params = 900, under SQLite 999 limit
+        let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> =
+            sqlx::QueryBuilder::new("INSERT INTO chunks_fts (id, name, signature, content, doc) ");
+        qb.push_values(batch.iter(), |mut b, chunk| {
+            b.push_bind(&chunk.id)
+                .push_bind(normalize_for_fts(&chunk.name))
+                .push_bind(normalize_for_fts(&chunk.signature))
+                .push_bind(normalize_for_fts(&chunk.content))
+                .push_bind(
+                    chunk
+                        .doc
+                        .as_ref()
+                        .map(|d| normalize_for_fts(d))
+                        .unwrap_or_default(),
+                );
+        });
+        qb.build().execute(&mut **tx).await?;
+    }
+
     Ok(())
 }
 
