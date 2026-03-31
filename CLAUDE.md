@@ -41,11 +41,16 @@ Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
 - `/cqs <command>` -- unified CLI dispatcher (search, callers, impact, etc.)
 - `/cqs-bootstrap` -- set up tears infrastructure for new projects
 - `/cqs-plan` -- task planning with scout data + task-type templates
+- `/cqs-verify` -- exercise all command categories, catch regressions
+- `/cqs-batch` -- batch cqs queries in persistent session
 - `/reindex` -- rebuild index with before/after stats
 - `/docs-review` -- check docs for staleness, fix drift
-- `/cqs-batch` -- batch cqs queries in persistent session
 - `/migrate` -- handle schema version upgrades
 - `/troubleshoot` -- diagnose common cqs issues
+- `/red-team` -- adversarial testing against cqs
+- `/before-edit` -- impact + tests + callers before modifying a function
+- `/check-my-work` -- review current diff, risk assessment
+- `/investigate` -- scout + gather before starting a task
 
 ## Code Intelligence — When to Use What
 
@@ -141,7 +146,16 @@ cqs read --focus <function>          # Function + type dependencies only
 - `cqs audit-mode on/off` — toggle audit mode
 - `cqs convert <path>` — convert PDF/HTML/CHM/MD to Markdown
 - `cqs train-data` — generate training data from git history
+- `cqs train-pairs` — extract (NL, code) training pairs as JSONL
 - `cqs stats` — index statistics
+- `cqs brief <file>` — one-line-per-function summary with caller/test counts
+- `cqs affected [--base REF]` — diff -> changed functions -> callers -> tests -> risk
+- `cqs neighbors <fn>` — embedding-space nearest neighbors with cosine scores
+- `cqs plan "description"` — task planning with template classification
+- `cqs test-map <fn>` — find tests that exercise a function
+- `cqs doctor [--fix]` — check model, index, hardware; auto-fix with --fix
+- `cqs export-model --repo <id>` — export HuggingFace model to ONNX
+- `cqs completions <shell>` — generate shell completions
 
 **Token budgeting** — `--tokens N` on `query`, `gather`, `context`, `explain`, `scout`, `onboard`, and `task` packs results into a token budget (greedy knapsack by score). Commands that don't normally output content (`context`, `explain`, `scout`) include source code within the budget. `task` uses waterfall budgeting across sections (scout 15%, code 50%, impact 15%, placement 10%, notes 10%). JSON output adds `token_count` and `token_budget` fields.
 
@@ -184,7 +198,7 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 
 **Teammate prompts must be self-contained.** Include file paths, context, and acceptance criteria. Teammates start with zero context — they can't see your conversation.
 
-**Every agent prompt MUST include cqs tool instructions.** Agents can't use cqs unless told how. Include the key commands: `search, read, read --focus, callers, callees, explain, similar, gather, impact, impact-diff, test-map, trace, context, dead, scout, task, plan, onboard, where, deps, related, diff, drift, batch, review, ci, health, suggest, stale, gc, convert, ref, notes, blame, doctor, index, stats`.
+**Every agent prompt MUST include cqs tool instructions.** Agents can't use cqs unless told how. Include the key commands: `search, read, read --focus, callers, callees, explain, similar, gather, impact, impact-diff, test-map, trace, context, dead, scout, task, plan, onboard, where, deps, related, diff, drift, batch, review, ci, health, suggest, stale, gc, convert, ref, notes, blame, doctor, index, stats, brief, affected, neighbors, train-data, train-pairs, export-model`.
 
 ## Code Audit
 

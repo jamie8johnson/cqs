@@ -35,8 +35,10 @@ Config A (Cosine-only, best config). A6000. 77 hard + 219 holdout queries across
 
 ### Done — Training (Exp 19: 110M model improvement)
 
-| Experiment | Data | Hard Negs | Epochs | Pipeline R@1 | Raw R@1 | Result |
-|-----------|------|-----------|--------|-------------|---------|--------|
+55-query eval numbers (historical). See expanded eval table (296 queries) at top for definitive results.
+
+| Experiment | Data | Hard Negs | Epochs | 55q R@1 | Raw R@1 | Result |
+|-----------|------|-----------|--------|---------|---------|--------|
 | **v9-200k** | **200K** | **CG only** | **1** | **94.5%** | **70.9%** | **Winner — ties BGE-large** |
 | v9-200k-hn | 200K | CG + FAISS | 1 | 89.1% | 70.9% | FAISS hurts pipeline |
 | v9-500k | 500K | CG only | 1 | 89.1% | 70.9% | More data hurts pipeline |
@@ -49,30 +51,31 @@ Config A (Cosine-only, best config). A6000. 77 hard + 219 holdout queries across
 - [x] Contrastive-B (25% contrastive queries from call graph) → 89.1% pipeline (-5.4pp). Fifth confirmation.
 
 **Next — Data size sweep (is 200K a peak or a plateau?):**
-- [ ] v9-175k (training in progress 2026-03-29)
+- [x] v9-175k — 82.1% R@1, 0.9010 MRR. Confirms per-language saturation is sharp at ~22K/lang.
 - [ ] v9-225k (225K assembled from 500K pool, 25K/lang — ready to train)
 - [ ] v9-100k, v9-150k (assembled, lower priority — run if 175K reveals a gradient)
 
-Known: v9-mini (50K, 11K/lang) → 89.1%, v9-200k (22K/lang) → 94.5%, v9-500k (55K/lang) → 89.1%.
+Known (expanded eval, 296 queries): v9-mini (50K, 11K/lang) → basin, v9-175k (19.4K/lang) → 82.1%, v9-200k (22K/lang) → **90.5%**, v9-500k (55K/lang) → 81.1%.
 
-**Hypothesis:** The magic number is ~22K per language, not 200K total. Per-language CG-filtered signal saturates at ~22K examples. 175K = 19.4K/lang — possibly just under threshold. If 175K hits 94.5%, the per-language saturation is lower and there's a plateau. If 89.1%, saturation is sharp at ~22K/lang.
+**Result:** Saturation is sharp at ~22K/lang. v9-175k (19.4K/lang) hit 82.1% on expanded eval — firmly in the basin. v9-200k (22K/lang) is the only variant that escapes at 90.5%. The magic number is ~22K per language, not 200K total.
 
-**Follow-up if plateau found:** Imbalanced 200K (30K Python/Rust + 10K others) tests whether total count or per-language balance matters.
+**Follow-up if plateau found:** Imbalanced 200K (30K Python/Rust + 10K others) tests whether per-language saturation varies. Lower priority given the sharp threshold result.
 
-**Current best:** 200K × 1 epoch × CG-filter-only (v9-200k, 94.5%). Five independent perturbations all land at 89.1%. Contrastive-B produced best CSN (0.689, +7.4pp) while hitting same pipeline floor — confirming basin = "generic retrieval" regime.
+**Current best:** 200K x 1 epoch x CG-filter-only (v9-200k). On expanded eval (296 queries): 90.5% R@1, virtually tied with BGE-large (90.9%). Five independent perturbations all land in the basin (~81-82% expanded). Contrastive-B produced best CSN (0.689, +7.4pp) while hitting same basin — confirming basin = "generic retrieval" regime.
 
-**The 89.1% basin of attraction (5 data points):**
-| Variant | Change | Pipeline R@1 |
-|---------|--------|-------------|
-| v9-200k | baseline | **94.5%** |
-| v9-500k | 2.5× more data | 89.1% |
-| v9-200k-hn | + FAISS hard negatives | 89.1% |
-| v9-200k-1.5ep | 1.5× more epochs | 89.1% |
-| contrastive-B | 25% contrastive queries | 89.1% |
+**The basin of attraction (55-query eval: 89.1%, expanded eval: ~81-82%):**
+| Variant | Change | 55q R@1 | 296q R@1 |
+|---------|--------|---------|----------|
+| v9-200k | baseline | **94.5%** | **90.5%** |
+| v9-500k | 2.5x more data | 89.1% | 81.1% |
+| v9-200k-hn | + FAISS hard negatives | 89.1% | 82.4% |
+| v9-200k-1.5ep | 1.5x more epochs | 89.1% | 81.4% |
+| contrastive-B | 25% contrastive queries | 89.1% | 81.1% |
+| v9-175k | 12.5% less data | — | 82.1% |
 
 ### Future — Training Signal Experiments (from paper Section 5.5)
 
-7 experiments tested. All land at 89.1%. The 5.4pp gap = 3 TypeScript queries (sort/string discrimination). The ceiling is about enrichment-compatible embedding geometry for these specific discriminations, not broad training data quality.
+7 experiments tested. All land in the basin. The expanded eval (296 queries) confirms the pattern at scale — the gap narrows from 5.4pp (55q) to ~8-9pp (296q) but the separation is still clear.
 
 **New direction: improve the enrichment stack or eval, not training data.**
 
@@ -87,7 +90,7 @@ Known: v9-mini (50K, 11K/lang) → 89.1%, v9-200k (22K/lang) → 94.5%, v9-500k 
 **Value:** If fine-tuned BGE-large breaks past 91%, it proves model capacity + training signal is additive. If it plateaus, it confirms enrichment is the ceiling.
 
 - [ ] **Better TypeScript sort enrichment** — the 3 missing queries are all TypeScript sort/string functions. More discriminating contrastive summaries specifically for sorting algorithms might recover them.
-- [ ] **Expand eval fixtures** — 55 queries may be too narrow. The 3-query effect dominates the score. More fixtures dilute the effect of any single discrimination.
+- [x] **Expand eval fixtures** — Done (296 queries, 7 languages). See expanded eval table at top of file. The 3-query effect is diluted; BGE-large and v9-200k are virtually tied (90.9% vs 90.5%).
 - [x] ~~**Test-derived training queries**~~ — Tested (Exp 26). 13.6K LLM-generated behavioral queries from test assertions → 89.1%. Behavioral descriptions produce the same embedding space.
 - [x] ~~**Contrastive summaries as training pairs**~~ — Tested (Exp 24). → 89.1%, CSN 0.689 (best LoRA).
 - [ ] **Type-aware negative mining** — still untested. Changes negative *selection*, not query format. May be worth trying but 7 basin data points suggest diminishing returns on training-side changes.
@@ -97,7 +100,7 @@ Known: v9-mini (50K, 11K/lang) → 89.1%, v9-200k (22K/lang) → 94.5%, v9-500k 
 ### Done — Embedding Model Options
 - [x] BGE-large-en-v1.5 as configurable alternative
 - [x] ModelConfig registry with per-model prefix/dim/repo
-- [x] Eval: BGE-large pipeline 94.5% R@1 vs E5-base 83.6% (+10.9pp)
+- [x] Eval: BGE-large 94.5% R@1 (55q) / 90.9% (296q) vs E5-base 83.6% (55q) / 75.3% (296q)
 - [x] Multi-model verified end-to-end (init dim fix, convenience wrappers deleted)
 
 ### Done — Training (Exp 18: v9-mini)
@@ -114,7 +117,7 @@ Known: v9-mini (50K, 11K/lang) → 89.1%, v9-200k (22K/lang) → 94.5%, v9-500k 
 - [ ] ~~Publish 500K + 1M to HuggingFace~~ (parked — waiting for training experiments to settle)
 - [x] Hard negatives mined (172K pairs, 6.8 avg negs)
 - [x] Training ablation complete (v9-200k / v9-200k-hn / v9-500k)
-- [ ] Ship v9-200k as LoRA preset in cqs
+- [x] Ship v9-200k as LoRA preset in cqs (commit 94731f5, `ModelConfig::v9_200k()`, `CQS_EMBEDDING_MODEL=v9-200k`)
 - [x] Paper v0.6 — thesis rewritten (training signal quality > model capacity), all numbers from single verification run
 - [ ] Paper v0.7 — add 89.1% basin finding (5 data points), Exp 24 contrastive results
 
@@ -125,7 +128,7 @@ Known: v9-mini (50K, 11K/lang) → 89.1%, v9-200k (22K/lang) → 94.5%, v9-500k 
 - [x] #709 RT-DATA-8: Watch function_calls (fixed, merged)
 - [x] #710 RT-RES-1: Impact BFS capped at 10K (fixed, merged)
 - [x] Non-breaking fixes: INJ-1/2/4, RES-5/7, FS-1, DATA-10 (PR #712)
-- [ ] #711 RT-RES-9: Diff impact cap (open)
+- [x] #711 RT-RES-9: Diff impact cap (fixed in v1.12.0, capped at 500 changed functions)
 
 ### Future — Migrate HNSW to `hnswlib-rs` (wilsonzlin/corenn)
 **NOT the same author as hnsw_rs.** Different library: `hnswlib-rs` 0.10.0 by wilsonzlin (corenn project). Owned `Hnsw<K,M>`, `VectorStore` trait, zero unsafe, Apache-2.0.
@@ -150,10 +153,12 @@ Telemetry update (2026-03-29, 72 events since v1.9.0 reset): test-map 37%, notes
 - [x] CLAUDE.md restructured with task-triggered commands
 - [x] Workflow examples added ("how a good session uses cqs")
 
-**In progress / next:**
-- [ ] **Pre-Edit hook** — Claude Code PostToolUse hook on Edit runs `cqs context <file>` and injects module overview. Automatic, no agent action needed.
-- [ ] **`cqs task --brief`** — compact output (~200 tokens: files to touch, functions at risk, test coverage). Agents skip `task` because the full output is ~2K tokens.
-- [ ] **Pre-commit review** — hook runs `cqs review` on Stop event, surfaces risk before commit.
+**Done:**
+- [x] **Pre-Edit hook** — `.claude/hooks/pre-edit-context.py` — PostToolUse hook on Edit runs `cqs context <file>`. Shipped v1.11.0.
+- [x] **`cqs task --brief`** — compact output (~200 tokens: files to touch, functions at risk, test coverage). Shipped post-v1.12.0.
+- [x] **Pre-commit review** — `.claude/hooks/stop-review.sh` — hook runs `cqs review` on Stop event.
+
+**Next:**
 - [ ] **Fewer commands in prompts** — only mention `scout` and `task` (highest value, fewest choices)
 - [ ] **Telemetry dashboard** — `cqs telemetry` command showing usage patterns, adoption gaps
 
@@ -335,7 +340,7 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 
 **Other ideas (lower priority):**
 - **Verified HF eval results** — run CoIR eval via HF Jobs + inspect-ai for cryptographic `verifyToken`. Requires CoIR benchmark datasets to have `eval.yaml` registered. Unverified results already uploaded.
-- **Query expansion** — synonym table or small LLM. Cheap recall boost. No model changes.
+- ~~**Query expansion**~~ — Done (v1.11.0). Static synonym map, 31 programming abbreviations. OR-based FTS expansion.
 - **SPLADE** — sparse learned retrieval. Could replace/augment FTS5.
 - **GNN on call graph** — embed by call graph position. Marginal over SQ-4 text enrichment.
 - **Mixed LoRA** — train on CSN + cosqa + SO for generalist adapter (prevents over-specialization).
@@ -354,7 +359,7 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 | E5 + LoRA v4 | 0.680 | +0.053 | Over-specializes (Python 0.971, CosQA drops) |
 | E5 + LoRA v5 | 0.678 | +0.051 | Best CosQA transfer (0.348) |
 | E5 + LoRA v6-mixed | 0.644 | +0.017 | CSN+CosQA+SO dilutes signal |
-| E5 + Pipeline (v3+enrichment) | RUNNING | — | Full 10-task run in progress |
+| E5 + Pipeline (v3+enrichment) | Stale | — | Was in progress, status unknown |
 
 **Transfer (cosqa, out-of-distribution):** LoRA v3 +0.5pp, v5 +1.9pp, v4 -2.4pp (over-specialized).
 
@@ -379,42 +384,16 @@ See `docs/research-log.md` for full experiment history and next steps.
 | 1 | Type-aware signatures (SQ-11) | Shipped (PR #630) | Free | +3.6pp R@1 |
 | 2 | Call graph enrichment (SQ-4) | Shipped (v1.0.7) | Free | 63% of chunks enriched |
 | 3 | LLM summaries (SQ-6) | Shipped (v1.0.14) | ~$0.15/3k fn | High for undocumented code |
-| 4 | **LoRA embedding model** | **Next: ship as default** | Free (baked in) | +4.3pp CoIR NDCG@10 |
+| 4 | LoRA embedding model (v9-200k) | Shipped as preset (`CQS_EMBEDDING_MODEL=v9-200k`) | Free (baked in) | 90.5% R@1 (296q), ties BGE-large |
 | 5 | Hyde predictions (SQ-12) | Shipped, optional | ~$0.15/3k fn | Optional enrichment |
 
 ### Paper thesis
 
 "Different evaluation regimes surface different quality dimensions. Adversarial evals (confusable function pairs) test precision — type-aware embeddings dominate. Realistic benchmarks (CoIR) test recall and ranking — LoRA fine-tuning dominates. A layered architecture — signatures for precision, LoRA for recall, LLM enrichment for coverage — lets a 110M model compete with specialized models 3-20x larger."
 
-### v1.1.0 Release Plan
+### Done — v1.1.0 through v1.12.0
 
-**Execution order:**
-
-1. **SQ-9: Notes simplification + 769→768-dim** (in progress — plan at `docs/superpowers/plans/2026-03-19-sq9-notes-simplification.md`)
-   - Phase 1: Remove notes from search results
-   - Phase 2: Drop sentiment dimension (769→768)
-   - Phase 3: Schema v15 migration + reindex required
-2. **P3 deferred audit fixes:** EX-6/EX-7 (Pattern/ChunkType macros), CQ-13 (shared test fixtures), PERF-11/13/16 (batch INSERT, llm allocations)
-3. **P4 refactors:**
-   - PERF-12: CAGRA lazy rebuild (stop rebuilding index after every search)
-   - CQ-11: Extract `Store::open_with_config()` (80% duplication between open/open_readonly)
-   - EX-8: Shared CLI/batch arg structs via `#[command(flatten)]`
-   - Split `search.rs` (2576 lines) → `search/` module (scoring, finalize, orchestration)
-   - Extract enrichment pass from `cli/pipeline.rs` into own file
-   - Extract ORT provider setup from `embedder.rs` into own module
-   - DS-9: Watch mode Store re-open (OnceLock cache staleness)
-   - RM-18: BatchContext reference LRU eviction
-   - EX-9: LLM config env/config overrides (CQS_LLM_MODEL, CQS_API_BASE)
-   - EX-11: Consolidate search scoring constants into ScoringConfig
-4. **Release v1.1.0** — doc fixes:
-   - "Local ML" → "Local-first ML, GPU-accelerated, optional LLM enrichment" in repo description
-   - README pipeline: add Enrich step, fix dimensions, fix Describe
-   - CLAUDE.md: fix notes wording ("available immediately" not "indexes immediately"), opus-only agents, complete agent command list
-   - CLAUDE.md agent tools: add `plan, blame, doctor, index, stats, batch` — drop `chat, completions, init, watch`
-   - Bootstrap skill: sync agent tools list, fix `--json`/`--format json`, add `--include-refs`, add missing skills, opus-only
-   - All 769→768 dimension references across README, PRIVACY, SECURITY, CONTRIBUTING, CLAUDE.md, lib.rs
-   - Re-run eval benchmarks or qualify numbers with measured version
-   - Update Cargo.toml version to 1.1.0
+Shipped: SQ-9 notes simplification (769->768-dim, schema v16), ScoringConfig consolidation (EX-11), shared CLI/batch arg structs (EX-8, OutputArgs/TextJsonArgs), search module split, doc fixes, dimension corrections. See CHANGELOG for full history.
 
 ### Parked
 
