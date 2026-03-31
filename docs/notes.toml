@@ -981,3 +981,11 @@ mentions = [
     "query.rs",
     "pipeline_eval",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "Expanded eval (296 queries, 7 langs) shows BGE-large and v9-200k are virtually tied (90.9% vs 90.5%). The 55-query eval exaggerated model differences — 94.5% vs 89.1% was a 3-query artifact."
+mentions = [
+    "pipeline_eval.rs",
+    "eval_common.rs",
+]

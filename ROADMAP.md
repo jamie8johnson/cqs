@@ -4,24 +4,27 @@
 
 v1.12.0: 8th audit (80/88 fixed), 6 new commands, query expansion, markdown split, batch=64 restored. v9-200k published to HuggingFace. ~1540 tests.
 
-### Verified Pipeline Eval Matrix (re-verified 2026-03-28, v1.9.0 + all fixes)
+### Expanded Pipeline Eval (296 queries, 7 languages, 2026-03-31)
 
-Config F (HNSW + name_boost + demotion). 55 queries, fixtures only. A6000.
+Config A (Cosine-only, best config). A6000. 77 hard + 219 holdout queries across Rust, Python, TypeScript, JavaScript, Go, Java, PHP.
 
-| Model | Params | Pipeline R@1 | R@5 | MRR | Raw R@1 | CSN |
-|-------|--------|-------------|-----|-----|---------|-----|
-| **v9-200k** | **110M** | **94.5%** | 98.2% | 0.966 | **70.9%** | 0.615 |
-| **BGE-large** | 335M | **94.5%** | 98.2% | 0.967 | 61.8% | **0.770** |
-| v9-500k | 110M | 89.1% | 100.0% | 0.938 | 70.9% | 0.629 |
-| v9-200k-hn | 110M | 89.1% | 100.0% | 0.936 | 70.9% | 0.614 |
-| v9-mini | 110M | 89.1% | 98.2% | 0.934 | 65.5% | 0.638 |
-| v5 | 110M | 89.1% | 98.2% | 0.929 | 54.5% | 0.683 |
-| v8 | 110M | 89.1% | 98.2% | 0.934 | 56.4% | 0.652 |
-| E5-base | 110M | 85.5% | 98.2% | 0.918 | 49.1% | 0.627 |
-| v7 | 110M | 83.6% | 100.0% | 0.897 | 63.6% | 0.707 |
-| v7b | 110M | 83.6% | 98.2% | 0.896 | 67.3% | 0.702 |
+| Model | Params | R@1 | R@5 | MRR | Raw R@1 | CSN |
+|-------|--------|-----|-----|-----|---------|-----|
+| **BGE-large** | 335M | **90.9%** | 99.3% | **0.9493** | 61.8% | **0.770** |
+| **v9-200k** | 110M | **90.5%** | 99.3% | 0.9482 | **70.9%** | 0.615 |
+| v9-200k-hn | 110M | 82.4% | 99.3% | 0.9033 | 70.9% | 0.614 |
+| v9-200k-testq | 110M | 82.1% | 99.3% | 0.9025 | 70.9% | — |
+| v9-175k | 110M | 82.1% | 99.0% | 0.9010 | 70.9% | 0.619 |
+| v9-200k-1.5ep | 110M | 81.4% | 99.3% | 0.8995 | 70.9% | 0.607 |
+| v9-500k | 110M | 81.1% | 99.3% | 0.8971 | 70.9% | 0.629 |
+| contrastive-B | 110M | 81.1% | 99.3% | 0.8954 | 70.9% | 0.689 |
+| E5-base | 110M | 75.3% | 99.0% | 0.8688 | 49.1% | 0.627 |
 
-**v9-200k (110M) ties BGE-large (335M) on pipeline at 1/3 size.** Best raw R@1 ever (70.9%). CSN and pipeline anti-correlate for LoRAs. More data (500K) and FAISS hard negatives both hurt pipeline. 200K + CG-filter-only is the sweet spot.
+**Key findings from expanded eval:**
+- BGE-large and v9-200k are virtually tied (90.9% vs 90.5%). The old 55-query eval exaggerated the gap.
+- Basin now at ~81-82% (was 89.1% on narrow eval). v9-200k still clearly separates from the pack.
+- RRF hurts at this scale (74.7% vs 90.9% cosine-only). Pure embedding search is best.
+- Enrichment stack contributes ~15pp (E5-base 75.3% vs BGE-large 90.9% off-the-shelf).
 
 ### Done — v1.9.0: BGE-large Default
 - [x] Switch `DEFAULT_MODEL_REPO` to BGE-large
@@ -72,6 +75,16 @@ Known: v9-mini (50K, 11K/lang) → 89.1%, v9-200k (22K/lang) → 94.5%, v9-500k 
 7 experiments tested. All land at 89.1%. The 5.4pp gap = 3 TypeScript queries (sort/string discrimination). The ceiling is about enrichment-compatible embedding geometry for these specific discriminations, not broad training data quality.
 
 **New direction: improve the enrichment stack or eval, not training data.**
+
+### Future — Fine-Tune BGE-large on 200K CG-Filtered Data
+
+**Hypothesis:** BGE-large (335M, 1024d) already ties v9-200k at 90.9% without fine-tuning. Fine-tuning on the same 200K CG-filtered dataset that produced v9-200k could push it higher — or hit the same basin. Either result is informative.
+
+**Effort:** ~3-4 hours training on A6000 (3× E5-base due to model size). Requires adapting `train_lora.py` for BGE architecture (different tokenizer, query instruction prefix).
+
+**Risk:** Diminishing returns — the expanded eval shows enrichment is the dominant factor. BGE-large may already be near the ceiling. Basin effect may recur.
+
+**Value:** If fine-tuned BGE-large breaks past 91%, it proves model capacity + training signal is additive. If it plateaus, it confirms enrichment is the ceiling.
 
 - [ ] **Better TypeScript sort enrichment** — the 3 missing queries are all TypeScript sort/string functions. More discriminating contrastive summaries specifically for sorting algorithms might recover them.
 - [ ] **Expand eval fixtures** — 55 queries may be too narrow. The 3-query effect dominates the score. More fixtures dilute the effect of any single discrimination.
