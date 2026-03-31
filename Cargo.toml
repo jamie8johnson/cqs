@@ -78,6 +78,7 @@ tree-sitter-svelte = { version = "0.1", package = "tree-sitter-svelte-next", opt
 tree-sitter-razor = { version = "0.1", optional = true }
 tree-sitter-vb-dotnet = { version = "0.1", optional = true }
 tree-sitter-vue = { version = "0.1", package = "tree-sitter-vue-next", optional = true }
+tree-sitter-structured-text = { git = "https://github.com/jamie8johnson/tree-sitter-structured-text", optional = true }
 
 # ML (CUDA/TensorRT added for non-macOS targets below)
 ort = "2.0.0-rc.12"
@@ -151,7 +152,7 @@ libc = "0.2"
 ort = { version = "2.0.0-rc.12", features = ["cuda", "tensorrt"] }
 
 [features]
-default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "lang-aspx", "convert", "llm-summaries"]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "lang-aspx", "lang-st", "convert", "llm-summaries"]
 
 # Language support (opt-in, all enabled by default)
 lang-rust = ["dep:tree-sitter-rust"]
@@ -205,7 +206,8 @@ lang-vbnet = ["dep:tree-sitter-vb-dotnet"]
 lang-vue = ["dep:tree-sitter-vue"]
 lang-markdown = []  # No external deps — custom parser
 lang-aspx = ["lang-csharp", "lang-vbnet"]  # Delegates to C#/VB.NET grammars
-lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "lang-aspx"]
+lang-st = ["dep:tree-sitter-structured-text"]
+lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "lang-aspx", "lang-st"]
 
 # Document conversion
 convert = ["dep:fast_html2md", "dep:walkdir"]
