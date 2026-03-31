@@ -87,6 +87,7 @@ None.
    - `cqs-bootstrap` — this skill (for nested projects)
    - `cqs-batch` — batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
    - `cqs-plan` — task planning with scout data + task-type templates
+   - `cqs-verify` — exercise all command categories, catch regressions
    - `before-edit` — run before modifying a function (impact + test-map + explain → checklist)
    - `investigate` — run before starting a task (scout + gather → implementation brief)
    - `check-my-work` — run after changes (review diff → risk checklist)
@@ -96,6 +97,10 @@ None.
    - `reindex` — rebuild index with stats
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
+   - `red-team` — adversarial testing against cqs
+   - `audit` — 14-category code audit with parallel agents
+   - `pr` — WSL-safe PR creation (always --body-file)
+   - `release` — version bump, changelog, publish, GitHub release
 
 ### Phase 3: cqs Init & Index
 
@@ -168,17 +173,31 @@ cqs read --focus <function>
 - `cqs callers <fn>` / `cqs callees <fn>` — call graph navigation
 - `cqs deps <type>` — type dependencies
 - `cqs similar <fn>` — find similar code
+- `cqs related <fn>` — co-occurrence: shared callers, callees, types
 - `cqs where "description"` — placement suggestion
 - `cqs trace <source> <target>` — shortest call path
 - `cqs context <file>` — module overview
 - `cqs impact-diff [--base REF]` — diff-aware impact
 - `cqs review` — diff review with risk scoring
+- `cqs ci [--base REF] [--gate high|medium|off]` — CI gate
+- `cqs blame <fn>` — semantic git blame
 - `cqs dead` — find dead code
 - `cqs health` — codebase quality snapshot
 - `cqs stale` — check index freshness
 - `cqs notes add/update/remove` — manage project notes
 - `cqs stats` — index statistics
 - `cqs batch` — batch mode with pipeline syntax
+- `cqs brief <file>` — one-line-per-function summary
+- `cqs affected [--base REF]` — diff -> changed functions -> callers -> tests
+- `cqs neighbors <fn>` — embedding-space nearest neighbors
+- `cqs plan "description"` — task planning with templates
+- `cqs test-map <fn>` — find tests that exercise a function
+- `cqs doctor [--fix]` — check model, index, hardware
+- `cqs diff <ref>` / `cqs drift <ref>` — semantic diff/drift
+- `cqs suggest` — auto-suggest notes from patterns
+- `cqs chat` — interactive REPL
+- `cqs audit-mode on/off` — toggle audit mode
+- `cqs gc` — clean stale index entries
 
 Run `cqs watch` in a separate terminal to keep the index fresh, or `cqs index` for one-time refresh.
 
