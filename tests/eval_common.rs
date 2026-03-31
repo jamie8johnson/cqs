@@ -114,6 +114,8 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         Language::Vue => "vue",
         #[cfg(feature = "lang-aspx")]
         Language::Aspx => "aspx",
+        #[cfg(feature = "lang-st")]
+        Language::StructuredText => "st",
     };
     PathBuf::from(manifest_dir)
         .join("tests")
@@ -218,6 +220,8 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         Language::Vue => "vue",
         #[cfg(feature = "lang-aspx")]
         Language::Aspx => "aspx",
+        #[cfg(feature = "lang-st")]
+        Language::StructuredText => "st",
     };
     PathBuf::from(manifest_dir)
         .join("tests")
