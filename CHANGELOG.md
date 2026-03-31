@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-03-31
+
+### Added
+- **`cqs task --brief`** — compact ~200 token output: files to touch, placement suggestions, at-risk functions, test coverage. Both text and JSON output. Designed for agent context windows.
+- **v9-200k LoRA preset** — `CQS_EMBEDDING_MODEL=v9-200k` or config `model = "v9-200k"`. 110M model achieving 90.5% R@1 on expanded eval, virtually ties BGE-large (90.9%) at 1/3 the size.
+- **Stop hook** — `cqs review` runs on session end, surfaces diff risk via systemMessage.
+- **Expanded pipeline eval** — 296 queries across 7 languages (added Java + PHP). Replaces 55-query eval.
+
+### Fixed
+- **FTS5 synonym expansion** — OR groups require explicit AND between terms (`(a OR b) AND c`, not `(a OR b) c`). Crashed on queries with expanded tokens like "parse command-line".
+- **Pipeline eval resilience** — search errors treated as misses instead of panicking.
+- Removed unused test imports (`crud.rs` Chunk, `staleness.rs` PathBuf).
+
+### Changed
+- **CLAUDE.md** — added 5 missing skills, 8 missing commands to reference lists.
+- **ROADMAP.md** — marked 8 completed items, collapsed stale v1.1.0 release plan, updated eval tables.
+- **Bootstrap skill** — added 5 missing portable skills, 15 missing commands to template.
+
+### Dependencies
+- `proptest` 1.10.0 → 1.11.0
+- `tree-sitter-rust` 0.24.1 → 0.24.2
+- `toml` 1.0.7 → 1.1.0
+- `insta` 1.46.3 → 1.47.1
+- `rustyline` 17.0.2 → 18.0.0
+
 ## [1.12.0] - 2026-03-30
 
 ### Fixed
