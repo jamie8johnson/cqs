@@ -465,6 +465,7 @@ mod tests {
             "ocaml_doc",
             "erlang_edoc",
             "r_roxygen",
+            "block_comment",
             "default",
         ];
         for lang in Language::all_variants() {

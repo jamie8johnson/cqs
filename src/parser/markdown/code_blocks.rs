@@ -71,6 +71,7 @@ pub(super) fn normalize_lang(lang: &str) -> Option<&'static str> {
         "ini" => Some("ini"),
         "markdown" | "md" => Some("markdown"),
         "aspx" | "ascx" | "asmx" | "webforms" => Some("aspx"),
+        "structured_text" | "st" | "stl" | "iec61131" | "iec-st" => Some("structured_text"),
         _ => None,
     }
 }

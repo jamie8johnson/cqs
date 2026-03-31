@@ -1294,6 +1294,10 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-st")]
+        {
+            expected += 1;
+        }
         assert_eq!(all.len(), expected);
     }
 
