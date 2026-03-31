@@ -656,6 +656,9 @@ pub(super) enum Commands {
         /// Maximum token budget (waterfall across sections)
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
+        /// Compact output (~200 tokens): files, at-risk functions, test coverage
+        #[arg(long)]
+        brief: bool,
     },
     /// Convert documents (PDF, HTML, CHM) to Markdown
     #[cfg(feature = "convert")]

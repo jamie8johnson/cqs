@@ -59,6 +59,21 @@ impl ModelConfig {
         }
     }
 
+    /// v9-200k LoRA: E5-base fine-tuned with call-graph false-negative filtering.
+    /// 768-dim, 512 tokens. 90.5% R@1 on expanded eval (296 queries, 7 languages).
+    pub fn v9_200k() -> Self {
+        Self {
+            name: "v9-200k".to_string(),
+            repo: "jamie8johnson/e5-base-v2-code-search".to_string(),
+            onnx_path: "model.onnx".to_string(),
+            tokenizer_path: "tokenizer.json".to_string(),
+            dim: 768,
+            max_seq_length: 512,
+            query_prefix: "query: ".to_string(),
+            doc_prefix: "passage: ".to_string(),
+        }
+    }
+
     /// BGE-large-en-v1.5: 1024-dim, 512 tokens. Higher quality, slower.
     pub fn bge_large() -> Self {
         Self {
@@ -79,6 +94,7 @@ impl ModelConfig {
     pub fn from_preset(name: &str) -> Option<Self> {
         match name {
             "e5-base" | "intfloat/e5-base-v2" => Some(Self::e5_base()),
+            "v9-200k" | "jamie8johnson/e5-base-v2-code-search" => Some(Self::v9_200k()),
             "bge-large" | "BAAI/bge-large-en-v1.5" => Some(Self::bge_large()),
             _ => None,
         }
@@ -313,11 +329,23 @@ mod tests {
         assert_eq!(cfg.doc_prefix, "");
     }
 
+    #[test]
+    fn test_v9_200k_preset() {
+        let cfg = ModelConfig::v9_200k();
+        assert_eq!(cfg.name, "v9-200k");
+        assert_eq!(cfg.repo, "jamie8johnson/e5-base-v2-code-search");
+        assert_eq!(cfg.dim, 768);
+        assert_eq!(cfg.onnx_path, "model.onnx");
+        assert_eq!(cfg.query_prefix, "query: ");
+        assert_eq!(cfg.doc_prefix, "passage: ");
+    }
+
     // ===== from_preset tests =====
 
     #[test]
     fn test_from_preset_short_name() {
         assert!(ModelConfig::from_preset("e5-base").is_some());
+        assert!(ModelConfig::from_preset("v9-200k").is_some());
         assert!(ModelConfig::from_preset("bge-large").is_some());
     }
 
@@ -325,6 +353,9 @@ mod tests {
     fn test_from_preset_repo_id() {
         let cfg = ModelConfig::from_preset("intfloat/e5-base-v2").unwrap();
         assert_eq!(cfg.name, "e5-base");
+
+        let cfg = ModelConfig::from_preset("jamie8johnson/e5-base-v2-code-search").unwrap();
+        assert_eq!(cfg.name, "v9-200k");
 
         let cfg = ModelConfig::from_preset("BAAI/bge-large-en-v1.5").unwrap();
         assert_eq!(cfg.name, "bge-large");

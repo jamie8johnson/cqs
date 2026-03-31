@@ -21,21 +21,124 @@ pub(crate) fn cmd_task(
     limit: usize,
     json: bool,
     max_tokens: Option<usize>,
+    brief: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_task", ?max_tokens).entered();
+    let _span = tracing::info_span!("cmd_task", ?max_tokens, brief).entered();
     let (store, root, _) = crate::cli::open_project_store_readonly()?;
     let embedder = Embedder::new(cli.model_config().clone())?;
     let limit = limit.clamp(1, 10);
 
     let result = task(&store, &embedder, description, &root, limit)?;
 
-    if let Some(budget) = max_tokens {
+    if brief {
+        output_brief(&result, &root, json)?;
+    } else if let Some(budget) = max_tokens {
         output_with_budget(&result, &root, &embedder, budget, json)?;
     } else if json {
         let output = task_to_json(&result);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         output_text(&result, &root);
+    }
+
+    Ok(())
+}
+
+/// Compact output (~200 tokens): files to touch, at-risk functions, test coverage.
+fn output_brief(result: &cqs::TaskResult, root: &std::path::Path, json: bool) -> Result<()> {
+    use std::collections::BTreeSet;
+
+    // Collect unique files from scout file groups
+    let files: BTreeSet<String> = result
+        .scout
+        .file_groups
+        .iter()
+        .map(|g| {
+            g.file
+                .strip_prefix(root)
+                .unwrap_or(&g.file)
+                .display()
+                .to_string()
+        })
+        .collect();
+
+    // Collect placement suggestions
+    let placements: Vec<String> = result
+        .placement
+        .iter()
+        .take(3)
+        .map(|p| {
+            let path = p.file.strip_prefix(root).unwrap_or(&p.file);
+            format!(
+                "{}:{} (near {})",
+                path.display(),
+                p.insertion_line,
+                p.near_function
+            )
+        })
+        .collect();
+
+    // Collect at-risk functions
+    let risks: Vec<(&str, String)> = result
+        .risk
+        .iter()
+        .map(|r| (r.name.as_str(), r.risk.risk_level.to_string()))
+        .collect();
+
+    // Collect test names
+    let tests: Vec<&str> = result.tests.iter().map(|t| t.name.as_str()).collect();
+
+    if json {
+        let mut obj = serde_json::Map::new();
+        obj.insert("files".into(), serde_json::json!(files));
+        obj.insert("placements".into(), serde_json::json!(placements));
+        obj.insert(
+            "risk".into(),
+            serde_json::json!(risks
+                .iter()
+                .map(|(n, l)| { serde_json::json!({"name": n, "risk_level": l}) })
+                .collect::<Vec<_>>()),
+        );
+        obj.insert("tests".into(), serde_json::json!(tests));
+        obj.insert(
+            "summary".into(),
+            serde_json::json!({
+                "files": result.summary.total_files,
+                "functions": result.summary.total_functions,
+                "high_risk": result.summary.high_risk_count,
+                "tests": result.summary.test_count,
+            }),
+        );
+        println!("{}", serde_json::to_string_pretty(&obj)?);
+    } else {
+        println!("{}", "Files:".bold());
+        for f in &files {
+            println!("  {f}");
+        }
+        if !placements.is_empty() {
+            println!("\n{}", "Add code at:".bold());
+            for p in &placements {
+                println!("  {p}");
+            }
+        }
+        if !risks.is_empty() {
+            println!("\n{}", "At risk:".bold());
+            for (name, level) in &risks {
+                let styled = match level.as_str() {
+                    "High" => format!("{name} [{level}]").red().to_string(),
+                    "Medium" => format!("{name} [{level}]").yellow().to_string(),
+                    _ => format!("{name} [{level}]"),
+                };
+                println!("  {styled}");
+            }
+        }
+        println!(
+            "\n{} files, {} functions, {} high-risk, {} tests",
+            result.summary.total_files,
+            result.summary.total_functions,
+            result.summary.high_risk_count,
+            result.summary.test_count,
+        );
     }
 
     Ok(())

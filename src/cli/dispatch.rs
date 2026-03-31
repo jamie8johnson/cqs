@@ -227,7 +227,8 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             limit,
             json,
             tokens,
-        }) => cmd_task(&cli, description, limit, json, tokens),
+            brief,
+        }) => cmd_task(&cli, description, limit, json, tokens, brief),
         #[cfg(feature = "convert")]
         Some(Commands::Convert {
             ref path,
