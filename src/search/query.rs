@@ -230,6 +230,7 @@ impl Store {
             let fts_ids = if fts_query.is_empty() {
                 vec![]
             } else {
+                tracing::debug!(fts_query = %fts_query, "FTS MATCH query");
                 let fts_rows: Vec<(String,)> = sqlx::query_as(
                     "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2",
                 )

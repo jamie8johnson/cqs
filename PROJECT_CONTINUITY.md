@@ -2,72 +2,70 @@
 
 ## Right Now
 
-**v1.11.0 released. PR #722 awaiting CI (6 issues + markdown split). Session winding down. (2026-03-29 17:00 CDT)**
+**FTS5 synonym expansion fix + expanded eval (296 queries, 7 languages). (2026-03-31 07:35 CDT)**
 
-### What shipped this session
-- v1.11.0: 8th audit (80/88 fixed) + 6 new commands + query expansion
-- PRs merged: #715 (audit), #720 (commands), #721 (CONTRIBUTING checklist)
-- crates.io published, GitHub release built, binary installed
-- 19 OpenClaw contributions (9 PRs, 9 issues, 1 comment — all awaiting maintainer review)
-- Paper v0.6 (thesis: training signal quality > model capacity)
-- Pre-Edit hook live (`.claude/hooks/pre-edit-context.py`)
-- Audit skill improved (prompt gen + review steps 8-9, P4 trivials fixed inline)
+### What's done this session
+- Fixed FTS5 syntax error: OR groups require explicit AND between terms (`(a OR b) AND c`, not `(a OR b) c`)
+- Hardened pipeline_eval to treat search errors as misses instead of panicking
+- Removed unused test imports (crud.rs Chunk, staleness.rs PathBuf)
+- Clean build, zero warnings
 
-### PR #722 awaiting CI
-Branch: `fix/open-issues-batch`. Closes 6 issues:
-- #711 RT-RES-9: diff impact capped at 500 functions
-- #695 EX-32: export-model auto-detect dim from config.json
-- #694 EX-30: BatchProvider::is_valid_batch_id moved to trait
-- #697 SEC-22: cargo audit config for transitive advisories
-- #718 CQ-38: parser/markdown.rs split into 4-file directory
-- #716 PERF-45: EMBED_BATCH_SIZE restored to 64 with debug logging
+### Expanded eval results (BGE-large, 296 queries, 7 langs)
+| Config | R@1 | MRR |
+|--------|-----|-----|
+| A: Cosine-only | **90.9%** | 0.9493 |
+| B: RRF | 74.7% | 0.8618 |
+| C: RRF + name_boost | 75.3% | 0.8656 |
+| D: HNSW + name_boost | 90.5% | 0.9448 |
+| E: Cosine + demotion | 90.9% | 0.9493 |
+| F: HNSW + boost + demote | 90.5% | 0.9448 |
 
-CI passed. PR #722 merged. Local failure was 3 concurrent test runs competing for GPU/DB.
+Key: RRF hurts at this scale (74% vs 91%). Cosine-only is best. HNSW close to brute-force.
 
-### Training — 89.1% basin confirmed (5 data points)
-| Variant | Change | Pipeline R@1 |
-|---------|--------|-------------|
-| v9-200k | baseline | **94.5%** |
-| v9-500k | 2.5× more data | 89.1% |
-| v9-200k-hn | + FAISS hard negatives | 89.1% |
-| v9-200k-1.5ep | 1.5× more epochs | 89.1% |
-| contrastive-B | 25% contrastive queries | 89.1% |
+### Pending changes (uncommitted)
+- `src/search/synonyms.rs` — FTS5 explicit AND fix + new test
+- `src/search/query.rs` — removed debug eprintln
+- `tests/pipeline_eval.rs` — search error resilience (4 configs)
+- `tests/eval_common.rs` — 296 queries (77 hard + 219 holdout), 7 languages
+- `tests/fixtures/eval_*_java.java`, `eval_*_php.php` — new fixtures
+- `src/store/chunks/crud.rs`, `staleness.rs` — removed unused imports
+- `Cargo.toml`, `Cargo.lock`, `ROADMAP.md`, `docs/notes.toml`, `docs/openclaw-contributions.md` — various prior-session updates
 
-Breaking the ceiling requires fundamentally different training pairs (test-derived queries, type-aware negatives), not format variations.
+### Next
+1. Commit + PR the FTS5 fix and expanded eval
+2. Run full eval matrix (9 models × 296 queries) once committed
+3. Update paper with expanded eval results
+4. Ship v9-200k as LoRA preset in cqs
 
-### Active training
-- v9-175k: training in progress on A6000 (~2h remaining, started 18:20 CDT)
-- CSN eval for contrastive-B: **done — 0.689** (best LoRA CSN ever, +7.4pp over v9-200k)
-- 225K dataset assembled (25K/lang from 500K pool), ready to train after 175K
-- Contrastive prefix is a CSN optimization technique: +7.4pp CSN but same -5.4pp pipeline
+### Training basin (7 data points, 55-query eval)
+| Variant | Pipeline R@1 |
+|---------|-------------|
+| v9-200k | **94.5%** |
+| v9-175k, v9-500k, v9-200k-hn, v9-200k-1.5ep, contrastive-B, v9-200k-testq | 89.1% |
 
-### Next session
-1. Check 175K results → if 94.5% run 225K, if 89.1% peak is at exactly 200K
-2. Rebuild binary (main has #722 fixes beyond v1.11.0 tag)
-3. Re-run full eval matrix on current code (synonym expansion changed FTS behavior)
-4. Release v1.12.0 after eval re-verification
-5. Paper v0.7 with basin finding (5+ data points) + data size sweep results
+### OpenClaw — 7 PRs, 6 issues
+Tracker: `docs/openclaw-contributions.md`. Consolidated from 12→7 PRs.
 
 ## Parked
 - Dart language support
 - hnswlib-rs migration
-- DXF Phase 1
+- DXF Phase 1 (P&ID → PLC function block mapping)
+- IEC 61131-3 language support
+- Openclaw variant for PLC process control (long horizon)
 - Blackwell GPU upgrade
-- Publish 500K/1M datasets to HF (waiting for training experiments to settle)
+- Publish 500K/1M datasets to HF
+- Type-aware negative mining (7 basin points suggest diminishing returns)
+- Imbalanced 200K experiment (lower priority post per-query analysis)
 
-## Open Issues
+## Open Issues (cqs)
 - #717 RM-40 (HNSW fully in RAM, no mmap)
 - #389 (upstream cuVS CAGRA memory)
 - #255, #106, #63 (upstream deps)
-- #694, #695, #697, #711, #716, #718 closed by #722
 
 ## Architecture
-- Version: 1.11.0, BGE-large default (1024-dim)
-- v9-200k LoRA: 94.5% pipeline, 70.9% raw (110M = 335M on pipeline)
-- Commands: 50+ (including brief, affected, neighbors, doctor --fix, train-pairs)
-- Query expansion: 31 synonym mappings (auth→authentication, etc.)
-- parser/markdown.rs split into markdown/ directory (4 files, 3 context structs)
-- EMBED_BATCH_SIZE: 64 (restored from 32, with debug logging)
-- Pre-Edit hook: auto-injects module context for .rs files
+- Version: 1.12.0
+- v9-200k LoRA: 94.5% pipeline, 70.9% raw — published to HF
+- Narrow peak at 22K/lang. Gap = 3 TypeScript queries.
+- Expanded eval: 296 queries, 7 languages (Rust, Python, TS, JS, Go, Java, PHP)
+- Commands: 50+
 - Tests: ~1540
-- OpenClaw: 19 contributions (all awaiting review)

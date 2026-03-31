@@ -551,7 +551,6 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::super::test_utils::make_chunk;
-    use crate::parser::Chunk;
     use crate::test_helpers::{mock_embedding, setup_store};
 
     // ===== upsert_chunks_batch tests =====

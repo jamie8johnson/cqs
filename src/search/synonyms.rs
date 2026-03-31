@@ -60,6 +60,7 @@ pub fn expand_query_for_fts(sanitized_query: &str) -> String {
     }
 
     let mut parts: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut has_or_group = false;
     for token in &tokens {
         let lower = token.to_lowercase();
         if let Some(synonyms) = SYNONYMS.get(lower.as_str()) {
@@ -71,12 +72,16 @@ pub fn expand_query_for_fts(sanitized_query: &str) -> String {
             }
             group.push(')');
             parts.push(group);
+            has_or_group = true;
         } else {
             parts.push(token.to_string());
         }
     }
 
-    parts.join(" ")
+    // FTS5 requires explicit AND between terms when any OR group is present.
+    // Implicit AND (space) causes "syntax error near" after an OR group.
+    let sep = if has_or_group { " AND " } else { " " };
+    parts.join(sep)
 }
 
 #[cfg(test)]
@@ -109,8 +114,9 @@ mod tests {
     fn mixed_tokens_expand_selectively() {
         let result = expand_query_for_fts("auth middleware");
         // "auth" should expand, "middleware" should not
+        // FTS5 requires explicit AND when OR groups are present
         assert!(result.contains("(auth OR authentication"));
-        assert!(result.contains("middleware"));
+        assert!(result.contains("AND middleware"));
         assert!(!result.contains("(middleware"));
     }
 
@@ -118,7 +124,15 @@ mod tests {
     fn all_synonyms_expand() {
         let result = expand_query_for_fts("config err");
         assert!(result.contains("(config OR configuration"));
-        assert!(result.contains("(err OR error"));
+        assert!(result.contains("AND (err OR error"));
+    }
+
+    #[test]
+    fn no_expansion_uses_implicit_and() {
+        // When no synonyms match, use space (implicit AND) for simplicity
+        let result = expand_query_for_fts("hello world");
+        assert_eq!(result, "hello world");
+        assert!(!result.contains("AND"));
     }
 
     #[test]
