@@ -11,7 +11,6 @@ use cqs::reference::TaggedResult;
 use cqs::store::{ParentContext, UnifiedResult};
 
 /// Read context lines before and after a range in a file
-///
 /// # Arguments
 /// * `line_start` - 1-indexed start line (0 treated as 1)
 /// * `line_end` - 1-indexed end line (must be >= line_start)
@@ -494,7 +493,6 @@ mod tests {
     // ===== read_context_lines tests (P3-14, P3-18) =====
 
     /// Creates a temp test file and returns (TempDir, relative_path).
-    ///
     /// Returns a relative path (just the filename) suitable for the SEC-12
     /// absolute-path guard. The returned TempDir must stay alive for the
     /// duration of the test (drop deletes the dir). The CWD is changed to

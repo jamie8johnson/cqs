@@ -21,7 +21,6 @@ use crate::normalize_slashes;
 const DEFAULT_MAX_CHANGED_FUNCTIONS: usize = 500;
 
 /// Map diff hunks to function names using the index.
-///
 /// For each hunk, finds chunks whose line range overlaps the hunk's range.
 /// Returns deduplicated function names.
 pub fn map_hunks_to_functions(
@@ -84,7 +83,6 @@ pub fn map_hunks_to_functions(
 }
 
 /// Run impact analysis across all changed functions from a diff.
-///
 /// Fetches call graph and test chunks once, then analyzes each function.
 /// Results are deduplicated by name.
 pub fn analyze_diff_impact(
@@ -98,9 +96,7 @@ pub fn analyze_diff_impact(
 }
 
 /// Like [`analyze_diff_impact`] but accepts pre-loaded graph and test chunks.
-///
 /// Paths in the returned result are relative to `root`.
-///
 /// Use when the caller already has the graph/test_chunks (e.g., `review_diff`
 /// which also needs them for risk scoring).
 pub fn analyze_diff_impact_with_graph(
@@ -265,17 +261,12 @@ mod tests {
     use std::path::PathBuf;
 
     /// Creates a test Store instance with a temporary database directory.
-    ///
     /// This function initializes a new Store with a temporary directory and default ModelInfo configuration. The temporary directory is returned alongside the Store to ensure the database persists for the duration of the test.
-    ///
     /// # Returns
-    ///
     /// A tuple containing:
     /// - A newly initialized Store instance
     /// - The TempDir holding the temporary database file
-    ///
     /// # Panics
-    ///
     /// Panics if temporary directory creation fails, if opening the Store fails, or if Store initialization fails.
     fn make_test_store() -> (crate::Store, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
@@ -286,17 +277,12 @@ mod tests {
     }
 
     /// Creates a ChunkSummary for a Rust function with basic initialization.
-    ///
     /// Constructs a ChunkSummary struct with default values for a Rust function chunk. The function sets up metadata like the function name, file path, and line information, while leaving content and documentation fields empty for later population.
-    ///
     /// # Arguments
-    ///
     /// * `name` - The name of the function, used for both the id and name fields
     /// * `file` - The file path where the function is located
     /// * `line_start` - The starting line number of the function
-    ///
     /// # Returns
-    ///
     /// A new ChunkSummary struct with language set to Rust, chunk_type set to Function, line_end calculated as line_start + 5, and other fields initialized to empty or default values.
     fn make_chunk_summary(name: &str, file: &str, line_start: u32) -> ChunkSummary {
         ChunkSummary {
@@ -318,15 +304,11 @@ mod tests {
     }
 
     /// Creates a `ChangedFunction` struct from the provided function metadata.
-    ///
     /// # Arguments
-    ///
     /// * `name` - The name of the function
     /// * `file` - The file path where the function is defined
     /// * `line_start` - The starting line number of the function in the file
-    ///
     /// # Returns
-    ///
     /// A `ChangedFunction` struct containing the provided function name, file path, and line number information.
     fn make_changed(name: &str, file: &str, line_start: u32) -> ChangedFunction {
         ChangedFunction {
@@ -337,9 +319,7 @@ mod tests {
     }
 
     /// Constructs an empty call graph with no edges or nodes.
-    ///
     /// # Returns
-    ///
     /// A new `CallGraph` instance with empty forward and reverse adjacency maps, ready to have nodes and edges added to it.
     fn make_empty_graph() -> CallGraph {
         CallGraph::from_string_maps(HashMap::new(), HashMap::new())
@@ -439,7 +419,6 @@ mod tests {
     /// BFS anomaly: multi-BFS finds the test at depth > 0, but the only per-function
     /// path to it is at depth 0 (the test IS the changed function in that function's BFS),
     /// so no `d > 0` match exists → falls back to "(unknown)" via.
-    ///
     /// Setup: two changed functions A and B.
     /// - A's individual BFS finds test_T at depth 0 (A == T — same node, which never happens
     ///   in practice, but we model it via the graph rather than name identity).
@@ -447,22 +426,17 @@ mod tests {
     ///   at depth 1 (via B→test_T), but A's BFS reaches test_T at depth 0 (A calls test_T
     ///   directly with A == test_T is impossible; instead we make A's reverse graph have
     ///   test_T as itself).
-    ///
     /// Actually the most natural anomaly: test_T appears at depth 1 in multi-BFS
     /// (from changed_B), but in changed_A's per-function BFS test_T appears only at depth 0
     /// because test_T == changed_A. The via for test_T then comes from changed_B, not "(unknown)".
-    ///
     /// To get "(unknown)" we need: multi-BFS finds test_T but BOTH per-function BFS results
     /// only have test_T at depth 0.  This happens when test_T == changed_A AND test_T == changed_B
     /// — impossible. The real "(unknown)" path requires a graph topology bug.
-    ///
     /// We test the logged anomaly branch via the depth-0 skip: when multi-BFS returns depth 1
     /// for a test, but the per-function BFS has it at depth 0 only, best_via stays None.
-    ///
     /// Simulate: changed = [T], test_chunks = [T]. Multi-BFS has T at 0 (excluded by `depth > 0`
     /// on the outer if). So actually with a single changed function that IS the test,
     /// there's no way to trigger the inner anomaly without separate multi/single BFS disagreement.
-    ///
     /// Instead, test the closest approximation: multi-source with two functions where one
     /// reaches the test normally.
     #[test]

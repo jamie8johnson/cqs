@@ -66,7 +66,6 @@ struct FormatEntry {
 }
 
 /// All supported document formats. One row per format.
-///
 /// To add a new file-based format:
 /// 1. Add a variant to [`DocFormat`]
 /// 2. Add a row here with extensions and converter function
@@ -127,15 +126,10 @@ fn markdown_passthrough(path: &Path) -> anyhow::Result<String> {
 #[cfg(feature = "convert")]
 impl std::fmt::Display for DocFormat {
     /// Formats the enum variant as a human-readable string.
-    ///
     /// This method implements the Display trait by looking up the variant in a format table and writing its corresponding display name to the formatter. If the variant is not found in the table, it defaults to "Unknown".
-    ///
     /// # Arguments
-    ///
     /// * `f` - The formatter to write the display name into
-    ///
     /// # Returns
-    ///
     /// A `std::fmt::Result` indicating whether the formatting succeeded or failed.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = FORMAT_TABLE
@@ -168,7 +162,6 @@ pub struct ConvertResult {
 }
 
 /// Detect document format from file extension.
-///
 /// Looks up the extension in [`FORMAT_TABLE`]. Returns `None` for unsupported
 /// extensions and for directory-based formats (which have no file extension).
 #[cfg(feature = "convert")]
@@ -181,7 +174,6 @@ pub fn detect_format(path: &Path) -> Option<DocFormat> {
 }
 
 /// Convert a file or directory to Markdown.
-///
 /// If `path` is a directory, converts all supported files recursively.
 /// Returns a result per successfully converted document.
 #[cfg(feature = "convert")]
@@ -235,7 +227,6 @@ fn convert_file(path: &Path, opts: &ConvertOptions) -> anyhow::Result<ConvertRes
 }
 
 /// Shared post-processing: write cleaned Markdown with overwrite guards and error context.
-///
 /// Used by both `convert_file()` and `convert_webhelp()` to avoid duplicating
 /// the output directory creation, overwrite guard, and fs::write logic.
 #[cfg(feature = "convert")]
@@ -325,7 +316,6 @@ fn finalize_output(
 }
 
 /// Convert all supported documents in a directory (recursive).
-///
 /// Detects web help sites (directories with `content/` + HTML) and converts
 /// them as single merged documents instead of individual HTML files.
 #[cfg(feature = "convert")]

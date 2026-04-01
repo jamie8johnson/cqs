@@ -9,15 +9,12 @@ use super::HnswIndex;
 
 impl HnswIndex {
     /// Search for nearest neighbors (inherent implementation).
-    ///
     /// This is the actual search implementation. The `VectorIndex` trait method
     /// delegates to this inherent method. Both methods have identical signatures
     /// and behavior - use whichever is more convenient at the call site.
-    ///
     /// # Arguments
     /// * `query` - Query embedding vector (dimension detected at runtime from model)
     /// * `k` - Maximum number of results to return
-    ///
     /// # Returns
     /// Vector of (chunk_id, score) pairs, sorted by descending score
     pub fn search(&self, query: &Embedding, k: usize) -> Vec<IndexResult> {

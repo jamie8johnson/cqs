@@ -5,10 +5,8 @@ use crate::store::helpers::SearchFilter;
 use super::name_match::is_name_like_query;
 
 /// Extract file path from a chunk ID.
-///
 /// Standard format: `"path:line_start:hash_prefix"` (3 segments from right)
 /// Windowed format: `"path:line_start:hash_prefix:wN"` (4 segments)
-///
 /// The hash_prefix is always 8 hex chars. Windowed chunk IDs append `:wN` where
 /// N is a small integer (0-99). We detect windowed IDs by checking if the last
 /// segment starts with 'w' followed by digits.
@@ -45,7 +43,6 @@ pub(crate) fn extract_file_from_chunk_id(id: &str) -> &str {
 }
 
 /// Compile a glob pattern into a matcher, logging and ignoring invalid patterns.
-///
 /// Returns `None` if the pattern is `None` or invalid (with a warning logged).
 pub(crate) fn compile_glob_filter(pattern: Option<&String>) -> Option<globset::GlobMatcher> {
     pattern.and_then(|p| match globset::Glob::new(p) {
@@ -58,7 +55,6 @@ pub(crate) fn compile_glob_filter(pattern: Option<&String>) -> Option<globset::G
 }
 
 /// Result of assembling SQL WHERE conditions from a [`SearchFilter`].
-///
 /// Separates filter analysis (testable without a database) from SQL execution.
 /// The caller combines these pieces with cursor-specific clauses (rowid, LIMIT).
 pub(crate) struct FilterSql {
@@ -75,7 +71,6 @@ pub(crate) struct FilterSql {
 }
 
 /// Build SQL filter components from a [`SearchFilter`].
-///
 /// Pure function — no database access. Returns conditions, bind values, and
 /// the column list needed for the scoring loop. Bind parameter indices are
 /// 1-based and contiguous.

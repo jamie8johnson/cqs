@@ -47,7 +47,6 @@ pub struct ReviewedFunction {
 }
 
 /// A note relevant to the review.
-///
 /// Named `ReviewNoteEntry` to avoid collision with `note::NoteEntry`
 /// (parsed note from TOML) which is a different type.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -67,7 +66,6 @@ pub struct RiskSummary {
 }
 
 /// Analyze a unified diff and produce a comprehensive review.
-///
 /// Steps:
 /// 1. Parse diff -> changed functions
 /// 2. Load call graph + test chunks (once, shared by impact + risk)
@@ -185,7 +183,6 @@ pub fn review_diff(
 }
 
 /// Match notes to a set of changed file paths.
-///
 /// Returns an error if notes cannot be loaded (caller decides how to handle).
 fn match_notes(
     store: &Store,
@@ -259,14 +256,10 @@ mod tests {
     use crate::note::path_matches_mention;
 
     /// Creates a mock ReviewedFunction with minimal default values for testing purposes.
-    ///
     /// # Arguments
-    ///
     /// * `name` - The name to assign to the reviewed function
     /// * `level` - The RiskLevel to use for both risk_level and blast_radius
-    ///
     /// # Returns
-    ///
     /// A ReviewedFunction instance with the provided name and risk level, hardcoded file path of "src/lib.rs", line_start of 1, and all numeric risk scores initialized to zero.
     fn mock_reviewed(name: &str, level: RiskLevel) -> ReviewedFunction {
         ReviewedFunction {

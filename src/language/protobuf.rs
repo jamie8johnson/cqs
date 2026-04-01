@@ -3,7 +3,6 @@
 use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Protobuf code chunks.
-///
 /// Messages → Struct, Services → Interface, RPCs → Function (reclassified to Method
 /// when inside a service via `method_containers`), Enums → Enum.
 const CHUNK_QUERY: &str = r#"
@@ -29,7 +28,6 @@ const CHUNK_QUERY: &str = r#"
 "#;
 
 /// Tree-sitter query for extracting type references in Protobuf.
-///
 /// `message_or_enum_type` appears in field types and RPC input/output types.
 const CALL_QUERY: &str = r#"
 ;; Type references in fields and RPCs
@@ -47,7 +45,6 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// Extract service name from a service node.
-///
 /// The proto grammar uses `service_name` children (not a `name` field),
 /// so the default container name extractor won't work.
 fn extract_container_name(node: tree_sitter::Node, source: &str) -> Option<String> {
@@ -113,21 +110,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a protobuf3 message definition and verifies the parser correctly identifies it as a struct chunk.
-    /// 
-    /// This test function creates a temporary protobuf file containing a User message definition, parses it using the Parser, and asserts that the resulting chunk has the correct name and type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None
-    /// 
-    /// # Returns
-    /// 
-    /// None (unit test function)
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to initialize, the file cannot be parsed, the User message chunk is not found, or the chunk type assertion fails.
 
     #[test]
     fn parse_proto_message() {
@@ -145,19 +127,6 @@ message User {
         let msg = chunks.iter().find(|c| c.name == "User").unwrap();
         assert_eq!(msg.chunk_type, ChunkType::Struct);
     }
-    /// Parses a proto3 service definition and verifies it is correctly identified as an Interface chunk.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This function is a self-contained test that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function is a test assertion helper.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the proto file cannot be written, if parsing fails, or if the UserService is not found in the parsed chunks with ChunkType::Interface.
 
     #[test]
     fn parse_proto_service() {
@@ -176,21 +145,6 @@ service UserService {
             .find(|c| c.name == "UserService" && c.chunk_type == ChunkType::Interface);
         assert!(svc.is_some(), "Should find 'UserService' as Interface");
     }
-    /// Parses a protobuf file containing RPC service definitions and verifies that RPC methods are correctly identified with their associated service.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be created
-    /// - The parser fails to initialize
-    /// - The parser fails to parse the proto file
-    /// - The "GetUser" RPC method is not found in the parsed chunks
-    /// - The parsed RPC method does not have `ChunkType::Method` type
-    /// - The parsed RPC method's parent is not "UserService"
 
     #[test]
     fn parse_proto_rpc() {
@@ -209,21 +163,6 @@ service UserService {
         assert_eq!(rpc.chunk_type, ChunkType::Method);
         assert_eq!(rpc.parent_type_name.as_deref(), Some("UserService"));
     }
-    /// Verifies that the parser correctly identifies and parses a protobuf enum definition from a proto3 file.
-    /// 
-    /// This is a test function that creates a temporary proto file containing an enum definition, parses it using the Parser, and asserts that the resulting chunks contain the expected enum with the correct name and type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a standalone test function with no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function returns unit type `()`.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to create a new instance, fails to parse the file, or fails to find a chunk named "Status" with `ChunkType::Enum` in the parsed results.
 
     #[test]
     fn parse_proto_enum() {
@@ -244,21 +183,6 @@ enum Status {
             .find(|c| c.name == "Status" && c.chunk_type == ChunkType::Enum);
         assert!(e.is_some(), "Should find 'Status' as Enum");
     }
-    /// Parses a Protocol Buffer file and verifies that message type references are correctly extracted.
-    /// 
-    /// This is a test function that creates a temporary proto3 file with nested message types, parses it to extract chunks, and validates that cross-message references (specifically that User references Address) are properly identified in the call extraction process.
-    /// 
-    /// # Arguments
-    /// 
-    /// None
-    /// 
-    /// # Returns
-    /// 
-    /// None (unit type)
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser cannot be initialized, the proto file cannot be parsed, the User message chunk is not found, or the Address type reference is not found in the extracted calls.
 
     #[test]
     fn parse_proto_calls() {

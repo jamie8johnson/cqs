@@ -8,13 +8,10 @@ use crate::store::helpers::NoteSummary;
 use super::config::ScoringConfig;
 
 /// Compute the note-based score boost for a chunk.
-///
 /// Checks if any note's mentions match the chunk's file path or name.
 /// When multiple notes match, takes the strongest absolute sentiment
 /// (preserving sign) to avoid averaging away strong signals.
-///
 /// Returns a multiplier: `1.0 + sentiment * ScoringConfig::DEFAULT.note_boost_factor`
-///
 /// Production code uses [`NoteBoostIndex::boost`] for amortized O(1) lookups.
 /// This function is retained for unit tests.
 #[cfg(test)]
@@ -43,7 +40,6 @@ fn note_boost(file_path: &str, chunk_name: &str, notes: &[NoteSummary]) -> f32 {
 }
 
 /// Pre-computed note boost lookup for O(1) name matching and reduced path scans.
-///
 /// Built once from notes before the scoring loop, amortizing the O(notes x mentions)
 /// cost across all chunks. Name mentions use exact HashMap lookup (O(1)).
 /// Path mentions are stored separately for suffix/prefix matching, but with only
@@ -101,11 +97,9 @@ impl<'a> NoteBoostIndex<'a> {
     }
 
     /// Compute the note-based score boost for a chunk.
-    ///
     /// Checks name mentions via HashMap lookup (O(1)), then scans path mentions
     /// for suffix/prefix matches. Takes strongest absolute sentiment across all
     /// matches (preserving sign).
-    ///
     /// Returns a multiplier: `1.0 + sentiment * note_boost_factor`
     #[inline]
     pub fn boost(&self, file_path: &str, chunk_name: &str) -> f32 {

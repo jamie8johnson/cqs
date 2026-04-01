@@ -53,15 +53,10 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// Extracts the return type from a SQL function signature.
-/// 
 /// Searches for the "RETURNS" keyword in a SQL function signature and extracts the return type that follows it. The return type is the first word after "RETURNS", with any precision suffixes (e.g., "(10,2)") removed, and converted to lowercase.
-/// 
 /// # Arguments
-/// 
 /// * `signature` - A SQL function signature string to parse
-/// 
 /// # Returns
-/// 
 /// `Some(String)` containing a formatted return type description (e.g., "Returns int"), or `None` if no "RETURNS" keyword is found in the signature.
 fn extract_return(signature: &str) -> Option<String> {
     // SQL functions: look for RETURNS type between name and AS
@@ -128,13 +123,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a SQL CREATE TABLE statement and verifies the resulting parsed structure.
-    /// 
-    /// This test function creates a temporary SQL file containing a CREATE TABLE statement for a "users" table with id and name columns, parses it using the Parser, and asserts that the parsed chunk is correctly identified as a Struct type with the name "users".
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the file cannot be parsed, the "users" chunk is not found in the parsed output, or the chunk type is not ChunkType::Struct.
 
     #[test]
     fn parse_sql_create_table() {
@@ -145,21 +133,6 @@ mod tests {
         let table = chunks.iter().find(|c| c.name == "users").unwrap();
         assert_eq!(table.chunk_type, ChunkType::Struct);
     }
-    /// Verifies that a SQL CREATE VIEW statement is correctly parsed as a Function chunk type.
-    /// 
-    /// This is a unit test that validates the parser's ability to recognize and categorize SQL VIEW definitions. It creates a temporary SQL file containing a CREATE VIEW statement, parses it, and asserts that the resulting chunk has the correct name and is classified as a Function chunk type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a standalone test function with no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function asserts conditions and returns unit type `()`.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if any unwrap() call fails (file creation, parser initialization, or parsing) or if the assertions do not hold (chunk not found, incorrect chunk type).
 
     #[test]
     fn parse_sql_create_view_as_function() {
@@ -170,25 +143,6 @@ mod tests {
         let view = chunks.iter().find(|c| c.name == "active_users").unwrap();
         assert_eq!(view.chunk_type, ChunkType::Function);
     }
-    /// Parses a SQL CREATE TYPE statement and verifies the resulting chunk metadata.
-    /// 
-    /// This function creates a temporary SQL file containing a CREATE TYPE ENUM statement, parses it using the Parser, and asserts that the parsed chunk has the correct name and type classification.
-    /// 
-    /// # Arguments
-    /// 
-    /// None
-    /// 
-    /// # Returns
-    /// 
-    /// None (unit type)
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be created or written
-    /// - The parser fails to initialize or parse the file
-    /// - A chunk named "status" is not found in the parsed results
-    /// - The parsed chunk's type is not `ChunkType::TypeAlias`
 
     #[test]
     fn parse_sql_create_type() {

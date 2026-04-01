@@ -18,31 +18,22 @@ pub(in crate::cli::batch) struct SearchParams {
 }
 
 /// Dispatches a search query and returns results as JSON.
-///
 /// Performs either a name-only search or a full semantic search using embeddings. For name-only searches, queries the store directly by name. For semantic searches, embeds the query and retrieves results, optionally reranking them.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch processing context containing the store and embedder
 /// * `params` - Search parameters including query text, limit, language filter, and search mode
-///
 /// # Returns
-///
 /// A `Result` containing a JSON object with:
 /// * `results` - Array of matching search results
 /// * `query` - The original query string
 /// * `total` - Number of results returned
-///
 /// # Errors
-///
 /// Returns an error if:
 /// * The embedder cannot be initialized
 /// * Query embedding fails
 /// * The language parameter is invalid
 /// * Store operations fail
-///
 /// # Panics
-///
 /// Panics indirectly if JSON serialization fails unexpectedly (logs warning and returns error object instead for known cases).
 pub(in crate::cli::batch) fn dispatch_search(
     ctx: &BatchContext,

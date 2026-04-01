@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 
 /// Direct caller with display-ready fields (call-site context + snippet).
-///
 /// Named `CallerDetail` to distinguish from `store::CallerInfo` which has
 /// only basic fields (name, file, line). This struct adds `call_line` and
 /// `snippet` for impact analysis display.
@@ -135,13 +134,9 @@ pub enum RiskLevel {
 
 impl std::fmt::Display for RiskLevel {
     /// Formats the RiskLevel enum variant as a human-readable string.
-    ///
     /// # Arguments
-    ///
     /// * `f` - The formatter to write the output to.
-    ///
     /// # Returns
-    ///
     /// A `std::fmt::Result` indicating whether the formatting operation succeeded.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -158,7 +153,6 @@ pub struct RiskScore {
     pub caller_count: usize,
     pub test_count: usize,
     /// Ratio of test_count to caller_count, capped at 1.0.
-    ///
     /// This is NOT transitive test coverage -- it is `min(test_count / max(caller_count, 1), 1.0)`.
     /// A value of 1.0 means at least as many tests reach this function as callers exist,
     /// but does not guarantee every caller path is tested.

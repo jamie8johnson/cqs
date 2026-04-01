@@ -84,7 +84,6 @@ fn has_function_value(node: tree_sitter::Node) -> bool {
 }
 
 /// Tree-sitter query for extracting Lua code chunks.
-///
 /// Functions → Function (both `function foo()` and local function forms).
 /// Method-style declarations via `method_index_expression` name field
 /// are captured as functions and reclassified to Method via method_containers.
@@ -131,13 +130,9 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// Extracts the return type from a function signature.
-/// 
 /// # Arguments
-/// 
 /// * `_signature` - A function signature string to parse
-/// 
 /// # Returns
-/// 
 /// Returns `None` as Lua does not support type annotations in function signatures, so return types cannot be extracted from the signature itself.
 fn extract_return(_signature: &str) -> Option<String> {
     // Lua has no type annotations in signatures
@@ -198,22 +193,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a Lua function definition from a temporary file and verifies the parser correctly identifies it.
-    /// 
-    /// This is a test function that creates a temporary Lua file containing a simple function definition, parses it using the Parser, and asserts that the resulting chunk is correctly identified as a Function type with the name "greet".
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This function uses internal test data.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be created
-    /// - The parser initialization fails
-    /// - The file parsing fails
-    /// - A chunk named "greet" is not found in the parsed chunks
-    /// - The parsed chunk's type is not ChunkType::Function
 
     #[test]
     fn parse_lua_function() {
@@ -228,21 +207,6 @@ end
         let func = chunks.iter().find(|c| c.name == "greet").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
-    /// Parses a Lua file containing a local function definition and verifies the parser correctly identifies it as a function chunk.
-    /// 
-    /// This is a unit test that creates a temporary Lua file with a local function named "helper", parses it using the Parser, and asserts that the resulting chunk has the correct name and type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None - this is a test function that operates on internally created test data.
-    /// 
-    /// # Returns
-    /// 
-    /// Nothing - this function is a test assertion that will panic if the parsed function chunk does not match expectations.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to read the file, if the "helper" function chunk is not found in the parsed results, or if the chunk type is not `ChunkType::Function`.
 
     #[test]
     fn parse_lua_local_function() {
@@ -257,26 +221,6 @@ end
         let func = chunks.iter().find(|c| c.name == "helper").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
-    /// Parses a Lua file containing a function definition and verifies that function calls within it are correctly extracted.
-    /// 
-    /// This is a test function that creates a temporary Lua file with a `process` function, parses it using a Lua parser, extracts all function calls from the parsed function chunk, and asserts that the expected function calls (`print` and `tonumber`) are present in the results.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a self-contained test function with no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function returns unit type `()`.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be written
-    /// - The parser fails to initialize
-    /// - The parser fails to parse the file
-    /// - The `process` function is not found in the parsed chunks
-    /// - The extracted calls do not contain the expected `print` or `tonumber` function names
 
     #[test]
     fn parse_lua_calls() {
@@ -300,21 +244,6 @@ end
             names
         );
     }
-    /// Tests parsing and extraction of Lua method calls from a function.
-    /// 
-    /// This test verifies that the parser correctly identifies method calls using the colon syntax (e.g., `obj:init()`) within a Lua function. It creates a temporary Lua file containing a function with method calls, parses it, extracts the function chunk, and validates that all method names are correctly identified.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This is a test function that asserts expected behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the file cannot be parsed, the "setup" function cannot be found, or if the expected method calls ("init" or "configure") are not found in the extracted calls.
 
     #[test]
     fn parse_lua_method_call() {

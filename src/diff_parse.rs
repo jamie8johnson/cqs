@@ -24,7 +24,6 @@ pub struct DiffHunk {
 }
 
 /// Parse unified diff output into hunks.
-///
 /// Handles standard `git diff` output:
 /// - Splits on `diff --git` boundaries
 /// - Extracts file path from `+++ b/...`

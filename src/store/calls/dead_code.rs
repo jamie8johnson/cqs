@@ -15,21 +15,17 @@ use crate::store::Store;
 
 impl Store {
     /// Find functions/methods never called by indexed code (dead code detection).
-    ///
     /// Returns two lists:
     /// - `confident`: Functions with no callers that are likely dead (with confidence scores)
     /// - `possibly_dead_pub`: Public functions with no callers (may be used externally)
-    ///
     /// Uses two-phase query: lightweight metadata first, then content only for
     /// candidates that pass name/test/path filters (avoids loading large function bodies).
-    ///
     /// Exclusions applied:
     /// - Entry point names (`main`, `init`, `handler`, etc.)
     /// - Test functions (via `find_test_chunks()` heuristics)
     /// - Functions in test files
     /// - Trait implementations (dynamic dispatch invisible to call graph)
     /// - `#[no_mangle]` functions (FFI)
-    ///
     /// Confidence scoring:
     /// - **High**: Private function in a file where no other function has callers
     /// - **Medium**: Private function in an active file (other functions are called)
@@ -72,7 +68,6 @@ impl Store {
     }
 
     /// Phase 1: Query all callable chunks with no callers in the call graph.
-    ///
     /// Returns lightweight metadata without content/doc to minimize memory.
     async fn fetch_uncalled_functions(&self) -> Result<Vec<LightChunk>, StoreError> {
         let callable = ChunkType::callable_sql_list();
@@ -115,7 +110,6 @@ impl Store {
     }
 
     /// Phase 1 filter: exclude entry points, tests, trait methods from uncalled functions.
-    ///
     /// Operates on lightweight metadata only — no content needed.
     /// Entry point and trait method names are sourced from `LanguageDef` fields
     /// across all enabled languages, with cross-language fallbacks.
@@ -164,7 +158,6 @@ impl Store {
     }
 
     /// Fetch sets of files with call graph or type-edge activity.
-    ///
     /// Used for confidence scoring: files with active functions are "active".
     async fn fetch_active_files(&self) -> Result<std::collections::HashSet<String>, StoreError> {
         // PERF-22: Query function_calls directly (no JOIN on chunks) for files with callers.
@@ -182,7 +175,6 @@ impl Store {
     }
 
     /// Phase 2: Batch-fetch content for candidates and assign confidence scores.
-    ///
     /// Splits results into confident dead code and possibly-dead public functions.
     async fn score_confidence(
         &self,

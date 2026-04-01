@@ -6,11 +6,9 @@ use crate::store::Store;
 
 impl Store {
     /// Async helper for find_test_chunks (reused by find_dead_code)
-    ///
     /// Loads only lightweight columns (no content/doc) since callers only need
     /// name, file, and line_start. The SQL WHERE clause still filters on content
     /// (for test markers like `#[test]`) but avoids returning it.
-    ///
     /// Test markers and path patterns are sourced from `LanguageDef` fields
     /// (`test_markers`, `test_path_patterns`) across all enabled languages,
     /// falling back to hardcoded defaults when no language provides any.
@@ -27,7 +25,6 @@ impl Store {
     }
 
     /// Async helper that returns only test chunk names (no metadata).
-    ///
     /// Avoids allocating `ChunkSummary` structs when callers only need
     /// the name set (e.g., `find_dead_code` exclusion filtering).
     pub(super) async fn find_test_chunk_names_async(&self) -> Result<Vec<String>, StoreError> {
@@ -39,7 +36,6 @@ impl Store {
     }
 
     /// Delete function_calls for files no longer in the chunks table.
-    ///
     /// Used by GC to clean up orphaned call graph entries after pruning chunks.
     pub fn prune_stale_calls(&self) -> Result<u64, StoreError> {
         let _span = tracing::info_span!("prune_stale_calls").entered();
@@ -58,16 +54,12 @@ impl Store {
     }
 
     /// Find test chunks using language-specific heuristics.
-    ///
     /// Identifies test functions across all supported languages by:
     /// - Name patterns: `test_*` (Rust/Python), `Test*` (Go)
     /// - Content patterns: sourced from `LanguageDef::test_markers` per language
     /// - Path patterns: sourced from `LanguageDef::test_path_patterns` per language
-    ///
     /// Uses a broad SQL filter then Rust post-filter for precision.
-    ///
     /// Cached test chunks — populated on first access, returns clone from OnceLock.
-    ///
     /// **No invalidation by design.** Same contract as `get_call_graph`: the cache is
     /// intentionally write-once for the `Store` lifetime. Long-lived modes (batch, watch)
     /// must re-open the `Store` to see updated test discovery — do not add a `clear()`.

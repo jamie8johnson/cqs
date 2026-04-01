@@ -78,7 +78,6 @@ pub(crate) struct FullData {
 }
 
 /// Build full-mode data: chunks with external callers/callees/dependent files.
-///
 /// Shared between CLI summary mode (uses counts) and full mode (uses details).
 pub(crate) fn build_full_data(store: &Store, path: &str, root: &Path) -> Result<FullData> {
     let chunks = store
@@ -157,7 +156,6 @@ pub(crate) fn build_full_data(store: &Store, path: &str, root: &Path) -> Result<
 }
 
 /// Serialize full data to JSON, optionally including content within a token budget.
-///
 /// When `content_set` is `Some`, only chunks whose names are in the set include content.
 /// When `None`, no content is included.
 pub(crate) fn full_to_json(
@@ -215,7 +213,6 @@ pub(crate) fn full_to_json(
 }
 
 /// Pack chunks by relevance (caller count descending) within a token budget.
-///
 /// Returns the set of included chunk names and total tokens used.
 pub(crate) fn pack_by_relevance(
     chunks: &[ChunkSummary],

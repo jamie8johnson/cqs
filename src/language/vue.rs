@@ -8,7 +8,6 @@
 use super::{ChunkType, FieldStyle, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Vue SFC chunks.
-///
 /// Elements → Property (filtered/reclassified by post-process).
 /// Script/style blocks are captured as Module but are replaced by injected
 /// JS/CSS chunks during injection phase. Template blocks remain as Module.
@@ -64,7 +63,6 @@ const NOISE_TAGS: &[&str] = &[
 ];
 
 /// Post-process Vue element chunks.
-///
 /// Same logic as HTML/Svelte: headings→Section, script/style/template→Module,
 /// landmarks→Section, noise→filter unless id, else Property.
 fn post_process_vue(
@@ -215,19 +213,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a Vue file containing a template and script block, verifying that JavaScript functions are correctly extracted via language injection.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that uses hardcoded test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the parser cannot be initialized, the Vue file cannot be parsed, or if the expected JavaScript functions 'handleClick' and 'formatName' are not found in the parsed chunks.
 
     #[test]
     fn parse_vue_with_script() {
@@ -271,21 +256,6 @@ function formatName(first, last) {
             "Expected JS function 'formatName'"
         );
     }
-    /// Verifies that the parser correctly identifies and extracts TypeScript code blocks from Vue files with `lang="ts"` attributes.
-    /// 
-    /// This is a test function that validates the parser's ability to handle Vue single-file components containing TypeScript. It creates a temporary Vue file with a TypeScript script block containing a function and interface, parses it, and asserts that the TypeScript function is correctly identified and extracted.
-    /// 
-    /// # Arguments
-    /// 
-    /// No parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing (unit type).
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to create a new instance, fails to parse the temporary file, or if the expected TypeScript function "greet" is not found in the parsed chunks.
 
     #[test]
     fn parse_vue_with_typescript() {
@@ -321,19 +291,6 @@ function greet(user: User): string {
                 .collect::<Vec<_>>()
         );
     }
-    /// Parses a Vue file containing both template and style blocks, verifying that CSS chunks are correctly extracted from the `<style>` block.
-    /// 
-    /// # Arguments
-    /// 
-    /// This is a test function with no parameters. It creates its own test data internally by writing a temporary Vue file with template and style sections.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing (unit type). This is a test assertion function.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to parse the file, if no CSS language chunks are extracted from the `<style>` block, or if file operations fail.
 
     #[test]
     fn parse_vue_with_style() {
@@ -369,19 +326,6 @@ function greet(user: User): string {
                 .collect::<Vec<_>>()
         );
     }
-    /// Parses a Vue single-file component with a `<script setup>` block and verifies that JavaScript functions are correctly extracted via injection.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that uses hardcoded Vue content.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to verify correct parsing behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to extract the `increment` function from the `<script setup>` block, or if the expected JavaScript chunks are not found in the parsed output.
 
     #[test]
     fn parse_vue_setup_script() {
@@ -414,13 +358,6 @@ function increment() {
                 .collect::<Vec<_>>()
         );
     }
-    /// Tests that the parser correctly extracts headings and landmarks from Vue template files.
-    /// 
-    /// This test verifies that when parsing a Vue file containing an h1 heading and a nav element with an id attribute, the parser produces Section chunks with the expected names: "Welcome Page" for the heading and "nav#main-nav" for the landmark element.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to create a new instance, fails to parse the temporary Vue file, or if the extracted sections do not contain the expected heading "Welcome Page" and landmark "nav#main-nav".
 
     #[test]
     fn parse_vue_heading_extraction() {
@@ -453,15 +390,6 @@ function increment() {
             "Expected landmark 'nav#main-nav'"
         );
     }
-    /// Tests that parsing a Vue file containing only a template block produces no JavaScript chunks.
-    /// 
-    /// # Arguments
-    /// 
-    /// This is a test function with no parameters.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the parser fails to initialize, file parsing fails, or if JavaScript chunks are unexpectedly found in the parsed output.
 
     #[test]
     fn parse_vue_no_script() {

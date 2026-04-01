@@ -3,7 +3,6 @@
 use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Julia code chunks.
-///
 /// Julia constructs:
 ///   - `function_definition` → Function (name in `signature` → `identifier`)
 ///   - `struct_definition` → Struct (name in `type_head` → `identifier`)
@@ -37,7 +36,6 @@ const CHUNK_QUERY: &str = r#"
 "#;
 
 /// Tree-sitter query for extracting Julia calls.
-///
 /// Julia uses `call_expression` for function calls:
 ///   - Direct: `add(x, y)` → (call_expression (identifier))
 const CALL_QUERY: &str = r#"
@@ -77,7 +75,6 @@ fn post_process_julia(
 }
 
 /// Extract return type from Julia function signatures.
-///
 /// Julia signatures: `function add(x::Int, y::Int)::Int`
 /// Return type is after `)::`
 fn extract_return(signature: &str) -> Option<String> {
@@ -163,19 +160,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a Julia function definition from a temporary file and verifies that the parser correctly identifies it as a function chunk.
-    /// 
-    /// # Arguments
-    /// 
-    /// This function takes no arguments.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing. This is a test function that performs assertions.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, if the parser fails to parse the file, if no chunk named "add" is found in the parsed chunks, or if the parsed chunk's type is not `ChunkType::Function`.
 
     #[test]
     fn parse_julia_function() {
@@ -190,19 +174,6 @@ end
         let func = chunks.iter().find(|c| c.name == "add").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
-    /// Tests the parser's ability to correctly identify and extract Julia struct definitions from source files.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded Julia code.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function asserts that a struct named "Point" with type ChunkType::Struct is found in the parsed chunks.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to initialize, fails to parse the temporary file, or fails to find the "Point" struct in the parsed chunks.
 
     #[test]
     fn parse_julia_struct() {
@@ -220,19 +191,6 @@ end
             .find(|c| c.name == "Point" && c.chunk_type == ChunkType::Struct);
         assert!(s.is_some(), "Should find 'Point' struct");
     }
-    /// Parses a Julia module definition and verifies that the parser correctly identifies a module chunk with the expected name and type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data internally.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, or the expected "Calculator" module chunk is not found in the parsed output.
 
     #[test]
     fn parse_julia_module() {
@@ -251,23 +209,6 @@ end
             .find(|c| c.name == "Calculator" && c.chunk_type == ChunkType::Module);
         assert!(module.is_some(), "Should find 'Calculator' module");
     }
-    /// Verifies that the parser correctly identifies and extracts Julia abstract type definitions from source files.
-    /// 
-    /// # Arguments
-    /// 
-    /// This function takes no parameters. It creates its own test fixtures internally.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing (unit type). This is a test function that validates parser behavior through assertions.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be written
-    /// - The parser fails to initialize
-    /// - The parser fails to process the file
-    /// - The parsed chunks do not contain a chunk named "Shape" with type `TypeAlias`
 
     #[test]
     fn parse_julia_abstract_type() {
@@ -282,19 +223,6 @@ abstract type Shape end
             .find(|c| c.name == "Shape" && c.chunk_type == ChunkType::TypeAlias);
         assert!(at.is_some(), "Should find 'Shape' abstract type");
     }
-    /// Parses a Julia function definition and verifies that function calls within the function body are correctly extracted.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded Julia source code.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the parser cannot be initialized, the file cannot be parsed, the "process" function cannot be found in the parsed chunks, or if the extracted function calls do not include the expected "transform" call.
 
     #[test]
     fn parse_julia_calls() {

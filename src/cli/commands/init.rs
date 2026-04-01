@@ -9,7 +9,6 @@ use cqs::Embedder;
 use crate::cli::{find_project_root, Cli};
 
 /// Initialize cqs in a project directory
-///
 /// Creates `.cqs/` directory, downloads the embedding model, and warms up the embedder.
 pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
     let _span = tracing::info_span!("cmd_init").entered();

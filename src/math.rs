@@ -4,11 +4,9 @@
 
 /// Dot product of two embeddings (= cosine similarity for L2-normalized vectors).
 /// Uses SIMD acceleration when available (2-4x faster on AVX2/NEON).
-///
 /// **Assumes L2-normalized inputs.** For zero-norm vectors, returns `Some(0.0)` (the
 /// dot product is technically correct, but undefined as cosine similarity). Use
 /// [`full_cosine_similarity`] when inputs may not be normalized.
-///
 /// Returns `None` if vectors have different lengths or are empty.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
     if a.len() != b.len() || a.is_empty() {
@@ -32,7 +30,6 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
 /// Full cosine similarity with norm computation.
 /// Used for cross-store comparison where vectors may not share normalization
 /// and may have arbitrary dimensions (not necessarily EMBEDDING_DIM).
-///
 /// Returns `None` on dimension mismatch, empty vectors, or zero-norm denominator.
 /// This matches the `Option<f32>` convention used by [`cosine_similarity`].
 pub fn full_cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
@@ -74,26 +71,19 @@ mod tests {
     use super::*;
 
     /// Creates a vector embedding by repeating a single float value 768 times.
-    ///
     /// # Arguments
-    ///
     /// * `val` - The float value to repeat in the embedding vector
-    ///
     /// # Returns
-    ///
     /// A `Vec<f32>` of length 768 where every element equals `val`
     fn make_embedding(val: f32) -> Vec<f32> {
         vec![val; crate::EMBEDDING_DIM]
     }
 
     /// Creates a one-hot encoded embedding vector of dimension 768.
-    ///
     /// # Arguments
     /// * `idx` - The index position where the value should be set to 1.0
-    ///
     /// # Returns
     /// A vector of 768 f32 values with all elements initialized to 0.0 except at position `idx` which is set to 1.0.
-    ///
     /// # Panics
     /// Panics if `idx` >= 768.
     fn make_unit_embedding(idx: usize) -> Vec<f32> {

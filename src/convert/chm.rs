@@ -8,16 +8,12 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 /// Convert a CHM file to Markdown.
-///
 /// 1. Extracts the CHM archive to a temp directory using `7z`
 /// 2. Finds all HTML/HTM files in the extracted content
 /// 3. Converts each page to Markdown
 /// 4. Merges all pages with `---` separators
-///
 /// Requires `7z` (p7zip-full / brew install p7zip) to be installed.
-///
 /// ## Security
-///
 /// After extraction, all file paths are verified to be inside the temp directory
 /// (zip-slip containment). Symlinks in extracted content are skipped.
 pub fn chm_to_markdown(path: &Path) -> Result<String> {
@@ -180,7 +176,6 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
 }
 
 /// Find a working `7z` executable.
-///
 /// Checks that the candidate actually executes successfully (exit code 0 or
 /// recognizable help output). This prevents accidentally running an unrelated
 /// binary that happens to share the name.

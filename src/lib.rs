@@ -1,3 +1,4 @@
+#![allow(clippy::doc_lazy_continuation)] // Bulk doc comment cleanup left some continuation formatting
 //! # cqs - Code Intelligence and RAG for AI Agents
 //!
 //! Semantic search, call graph analysis, impact tracing, type dependencies, and smart

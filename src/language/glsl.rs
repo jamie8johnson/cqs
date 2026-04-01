@@ -72,15 +72,10 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// Extracts the return type from a C-style function signature and formats it as a documentation string.
-/// 
 /// Parses a function signature to identify the return type (the portion before the opening parenthesis). Filters out storage class and precision qualifiers (static, inline, const, volatile, highp, mediump, lowp). Skips void return types and signatures without a clear return type. Tokenizes the resulting type identifier and formats it as a returns documentation string.
-/// 
 /// # Arguments
-/// 
 /// `signature` - A function signature string in C-style format (return type followed by function name and parameters).
-/// 
 /// # Returns
-/// 
 /// `Some(String)` containing a formatted returns documentation string if a non-void return type is found, or `None` if the signature has no return type, contains only void, or is malformed.
 fn extract_return(signature: &str) -> Option<String> {
     // C-style: return type before function name
@@ -168,26 +163,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a GLSL vertex shader and verifies that the main function is correctly identified as a Function chunk type.
-    /// 
-    /// This is a test function that creates a temporary GLSL vertex shader file with input/output attributes and uniforms, parses it using the Parser, and asserts that the resulting chunks contain a "main" function chunk with the correct chunk type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This function takes no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// Nothing. This function returns the unit type and is intended to be run as a test.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be written
-    /// - The parser fails to initialize
-    /// - The parser fails to parse the shader file
-    /// - The "main" function chunk is not found in the parsed chunks
-    /// - The "main" chunk's type is not ChunkType::Function
 
     #[test]
     fn parse_glsl_vertex_shader() {
@@ -212,19 +187,6 @@ void main() {
         let main_fn = chunks.iter().find(|c| c.name == "main").unwrap();
         assert_eq!(main_fn.chunk_type, ChunkType::Function);
     }
-    /// Parses a GLSL struct definition from a temporary file and verifies the parser correctly identifies it as a struct chunk type.
-    /// 
-    /// # Arguments
-    /// 
-    /// No parameters. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing. This is a unit test that asserts the parser correctly identifies a GLSL struct named "Light" with chunk type `ChunkType::Struct`.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to parse the file, the "Light" struct is not found in the parsed chunks, or the chunk type assertion fails.
 
     #[test]
     fn parse_glsl_struct() {
@@ -241,21 +203,6 @@ struct Light {
         let s = chunks.iter().find(|c| c.name == "Light").unwrap();
         assert_eq!(s.chunk_type, ChunkType::Struct);
     }
-    /// Parses a GLSL shader file and extracts function calls from a specific function chunk.
-    /// 
-    /// This test function verifies that the parser correctly identifies built-in GLSL function calls (max, dot, mix, normalize) within a shader function. It writes a temporary GLSL file containing a lighting function, parses it, locates the "applyLighting" chunk, and asserts that all expected function calls are extracted.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded shader code.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser initialization fails, file parsing fails, the "applyLighting" function is not found, or if any of the expected function calls (max, dot, mix, normalize) are not found in the extracted calls.
 
     #[test]
     fn parse_glsl_calls() {

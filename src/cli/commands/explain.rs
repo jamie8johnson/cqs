@@ -33,9 +33,7 @@ pub(crate) struct ExplainData {
 
 /// Build explain data: resolve target, fetch callers/callees/similar, compute hints,
 /// and optionally pack content within a token budget.
-///
 /// Shared between CLI `cmd_explain` and batch `dispatch_explain`.
-///
 /// * `index` — pre-loaded vector index (batch passes its cached one, CLI passes `None`
 ///   to load fresh).
 /// * `embedder` — required only when `max_tokens` is `Some`. Batch passes its cached one;
@@ -172,7 +170,6 @@ pub(crate) fn build_explain_data(
 }
 
 /// Build JSON output from explain data.
-///
 /// Shared between CLI `cmd_explain --json` and batch `dispatch_explain`.
 pub(crate) fn explain_to_json(data: &ExplainData, root: &Path) -> serde_json::Value {
     let chunk = &data.chunk;

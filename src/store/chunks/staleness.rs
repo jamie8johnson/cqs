@@ -21,9 +21,7 @@ pub struct PruneAllResult {
 
 impl Store {
     /// Delete chunks for files that no longer exist
-    ///
     /// Batches deletes in groups of 100 to balance memory usage and query efficiency.
-    ///
     /// Uses Rust HashSet for existence check rather than SQL WHERE NOT IN because:
     /// - Existing files often number 10k+, exceeding SQLite's parameter limit (~999)
     /// - Sending full file list to SQLite would require chunked queries anyway
@@ -109,7 +107,6 @@ impl Store {
     }
 
     /// Run all prune operations in a single SQLite transaction.
-    ///
     /// Ensures concurrent readers never see an inconsistent state where chunks
     /// are deleted but orphan call graph / type edge / summary entries remain.
     /// Without this, the window between `prune_missing` and `prune_stale_calls`
@@ -228,10 +225,8 @@ impl Store {
     }
 
     /// Count files that are stale (mtime changed) or missing from disk.
-    ///
     /// Compares stored source_mtime against current filesystem state.
     /// Only checks files with source_type='file' (not notes or other sources).
-    ///
     /// Returns `(stale_count, missing_count)`.
     pub fn count_stale_files(
         &self,
@@ -243,7 +238,6 @@ impl Store {
     }
 
     /// List files that are stale (mtime changed) or missing from disk.
-    ///
     /// Like `count_stale_files()` but returns full details for display.
     /// Requires `existing_files` from `enumerate_files()` (~100ms for 10k files).
     pub fn list_stale_files(
@@ -309,12 +303,9 @@ impl Store {
     }
 
     /// Check if specific origins are stale (mtime changed on disk).
-    ///
     /// Lightweight per-query check: only examines the given origins, not the
     /// entire index. O(result_count), not O(index_size).
-    ///
     /// `root` is the project root — origins are relative paths joined against it.
-    ///
     /// Returns the set of stale origin paths.
     pub fn check_origins_stale(
         &self,

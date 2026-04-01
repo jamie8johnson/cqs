@@ -71,7 +71,6 @@ pub(super) fn atx_heading_level(line: &str) -> Option<u32> {
 }
 
 /// Detect title, primary split level, and overflow split level
-///
 /// Returns (title_heading_index, primary_level, overflow_level)
 pub(super) fn detect_heading_levels(headings: &[Heading]) -> (Option<usize>, u32, Option<u32>) {
     // Count frequency of each heading level

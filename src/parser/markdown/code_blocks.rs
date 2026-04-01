@@ -77,7 +77,6 @@ pub(super) fn normalize_lang(lang: &str) -> Option<&'static str> {
 }
 
 /// Extract fenced code blocks from markdown source.
-///
 /// Scans for `` ```lang `` and `~~~lang` markers, returning blocks with
 /// recognized language identifiers. Blocks without a language tag or with
 /// unrecognized languages are skipped.

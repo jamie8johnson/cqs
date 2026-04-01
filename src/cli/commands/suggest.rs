@@ -65,7 +65,6 @@ pub(crate) fn cmd_suggest(json: bool, apply: bool) -> Result<()> {
 }
 
 /// Applies suggested notes to the notes file and re-indexes them in the store.
-///
 fn apply_suggestions(
     suggestions: &[cqs::suggest::SuggestedNote],
     root: &std::path::Path,

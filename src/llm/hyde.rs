@@ -5,10 +5,8 @@ use super::{collect_eligible_chunks, LlmConfig, LlmError, MAX_BATCH_SIZE, MAX_CO
 use crate::Store;
 
 /// Run the HyDE query prediction pass using the Batches API.
-///
 /// Scans all callable chunks, submits them as a batch to Claude for query prediction,
 /// polls for completion, then stores results with purpose="hyde".
-///
 /// Returns the number of new HyDE predictions generated.
 pub fn hyde_query_pass(
     store: &Store,

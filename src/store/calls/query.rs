@@ -40,7 +40,6 @@ impl Store {
     }
 
     /// Get all callees of a function (from full call graph)
-    ///
     /// When `file` is provided, scopes to callees of that function in that specific file.
     /// When `None`, returns callees across all files (backwards compatible, but ambiguous
     /// for common names like `new`, `parse`, `from_str`).
@@ -70,13 +69,10 @@ impl Store {
     }
 
     /// Load the call graph as forward + reverse adjacency lists.
-    ///
     /// Single SQL scan of `function_calls`, capped at 500K edges to prevent OOM
     /// on adversarial databases. Typical projects have ~2000 edges.
     /// Used by trace (forward BFS), impact (reverse BFS), and test-map (reverse BFS).
-    ///
     /// Cached call graph — populated on first access, returns clone from OnceLock.
-    ///
     /// **No invalidation by design.** The cache lives for the `Store` lifetime and is
     /// never cleared. Normal usage is one `Store` per CLI command, so the index cannot
     /// change while the cache is live. In long-lived modes (batch, watch), callers must
@@ -145,7 +141,6 @@ impl Store {
     }
 
     /// Find callers with call-site line numbers for impact analysis.
-    ///
     /// Returns the caller function name, file, start line, and the specific line
     /// where the call to `callee_name` occurs.
     pub fn get_callers_with_context(
@@ -178,7 +173,6 @@ impl Store {
     }
 
     /// Batch-fetch callers with context for multiple callee names.
-    ///
     /// Returns `callee_name -> Vec<CallerWithContext>` using a single
     /// `WHERE callee_name IN (...)` query per batch of 500 names.
     /// Avoids N+1 `get_callers_with_context` calls in diff impact analysis.
@@ -229,7 +223,6 @@ impl Store {
     }
 
     /// Batch-fetch callers (full call graph) for multiple callee names.
-    ///
     /// Returns `callee_name -> Vec<CallerInfo>` using a single
     /// `WHERE callee_name IN (...)` query per batch of 500 names.
     /// Avoids N+1 `get_callers_full` calls in the context command.
@@ -278,11 +271,9 @@ impl Store {
     }
 
     /// Batch-fetch callees (full call graph) for multiple caller names.
-    ///
     /// Returns `caller_name -> Vec<(callee_name, call_line)>` using a single
     /// `WHERE caller_name IN (...)` query per batch of 500 names.
     /// Avoids N+1 `get_callees_full` calls in the context command.
-    ///
     /// Unlike [`get_callees_full`], does not support file scoping — returns
     /// callees across all files. This is acceptable for the context command
     /// which later filters by origin.

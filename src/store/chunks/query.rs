@@ -27,7 +27,6 @@ impl Store {
     }
 
     /// Get index statistics
-    ///
     /// Uses batched queries to minimize database round trips:
     /// 1. Single query for counts with GROUP BY using CTEs
     /// 2. Single query for all metadata keys
@@ -130,7 +129,6 @@ impl Store {
     }
 
     /// Get all chunks for a given file (origin).
-    ///
     /// Returns chunks sorted by line_start. Used by `cqs context` to list
     /// all functions/types in a file.
     pub fn get_chunks_by_origin(&self, origin: &str) -> Result<Vec<ChunkSummary>, StoreError> {
@@ -154,7 +152,6 @@ impl Store {
     }
 
     /// Batch-fetch chunks by multiple origin paths.
-    ///
     /// Returns a map of origin -> Vec<ChunkSummary> for all found origins.
     /// Batches queries in groups of 500 to stay within SQLite's parameter limit (~999).
     /// Used by `cqs where` to avoid N+1 `get_chunks_by_origin` calls.
@@ -200,7 +197,6 @@ impl Store {
     }
 
     /// Batch-fetch chunks by multiple function names.
-    ///
     /// Returns a map of name -> Vec<ChunkSummary> for all found names.
     /// Batches queries in groups of 500 to stay within SQLite's parameter limit (~999).
     /// Used by `cqs related` to avoid N+1 `get_chunks_by_name` calls.
@@ -247,9 +243,7 @@ impl Store {
     }
 
     /// Batch signature search: find function/method chunks matching any of the given type names.
-    ///
     /// Get a chunk with its embedding vector.
-    ///
     /// Returns `Ok(None)` if the chunk doesn't exist or has a corrupt embedding.
     /// Used by `cqs similar` and `cqs explain` to search by example.
     pub fn get_chunk_with_embedding(
@@ -275,7 +269,6 @@ impl Store {
     }
 
     /// Batch-fetch chunks by IDs.
-    ///
     /// Returns a map of chunk ID → ChunkSummary for all found IDs.
     /// Used by `--expand` to fetch parent chunks for small-to-big retrieval.
     pub fn get_chunks_by_ids(
@@ -293,11 +286,9 @@ impl Store {
     }
 
     /// Batch-fetch embeddings by chunk IDs.
-    ///
     /// Returns a map of chunk ID → Embedding for all found IDs.
     /// Skips chunks with corrupt embeddings. Batches queries in groups of 500
     /// to stay within SQLite's parameter limit (~999).
-    ///
     /// Used by `semantic_diff` to avoid N+1 queries when comparing matched pairs.
     pub fn get_embeddings_by_ids(
         &self,
@@ -341,11 +332,9 @@ impl Store {
     }
 
     /// Batch name search: look up multiple names in a single call.
-    ///
     /// For each name, returns up to `limit_per_name` matching chunks.
     /// Batches names into groups of 20 and issues a combined FTS OR query
     /// per batch, then post-filters results to assign to matching names.
-    ///
     /// Used by `gather` BFS expansion to avoid N+1 query patterns.
     pub fn search_by_names_batch(
         &self,
@@ -435,7 +424,6 @@ impl Store {
     }
 
     /// Get identity metadata for all chunks (for diff comparison).
-    ///
     /// Returns minimal metadata needed to match chunks across stores.
     /// Loads all rows but only lightweight columns (no content or embeddings).
     pub fn all_chunk_identities(&self) -> Result<Vec<ChunkIdentity>, StoreError> {
@@ -444,7 +432,6 @@ impl Store {
     }
 
     /// Fetch a page of full chunks by rowid cursor.
-    ///
     /// Returns `(chunks, next_cursor)`. When the returned vec is empty, iteration
     /// is complete. Used by the enrichment pass to iterate all chunks without
     /// loading everything into memory.
@@ -482,7 +469,6 @@ impl Store {
     }
 
     /// Like `all_chunk_identities` but with an optional language filter.
-    ///
     /// When `language` is `Some`, only chunks matching that language are returned,
     /// avoiding loading all chunks into memory when only one language is needed.
     pub fn all_chunk_identities_filtered(

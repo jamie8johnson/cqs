@@ -7,27 +7,19 @@ use cqs::normalize_path;
 use cqs::store::DeadConfidence;
 
 /// Identifies and reports dead code in a codebase.
-///
 /// Analyzes code to find functions that are never called, filtering results based on confidence level and visibility. Returns structured JSON containing categorized dead code findings.
-///
 /// # Arguments
-///
 /// * `ctx` - Batch context containing the code store and root directory path
 /// * `include_pub` - Whether to include public functions in the dead code analysis
 /// * `min_confidence` - Minimum confidence threshold for including results
-///
 /// # Returns
-///
 /// A JSON object with four fields:
 /// - `dead`: Array of confidently identified dead functions
 /// - `possibly_dead_pub`: Array of possibly dead public functions
 /// - `total_dead`: Count of confidently dead functions
 /// - `total_possibly_dead_pub`: Count of possibly dead public functions
-///
 /// Each function entry includes name, file path, line range, type, signature, language, and confidence level.
-///
 /// # Errors
-///
 /// Returns an error if the code store query fails.
 pub(in crate::cli::batch) fn dispatch_dead(
     ctx: &BatchContext,
@@ -70,24 +62,17 @@ pub(in crate::cli::batch) fn dispatch_dead(
 }
 
 /// Dispatches a request to identify stale and missing files in the batch store.
-///
 /// Retrieves the file set from the batch context and queries the store for files whose modification times have changed or are no longer present on disk. Returns a JSON report containing lists of stale files with their stored and current modification times, missing files, and summary statistics.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch context containing the store and file set information.
-///
 /// # Returns
-///
 /// A JSON object containing:
 /// - `stale`: Array of stale files with their origin path, stored mtime, and current mtime
 /// - `missing`: Array of missing file paths
 /// - `total_indexed`: Total number of indexed files
 /// - `stale_count`: Count of stale files
 /// - `missing_count`: Count of missing files
-///
 /// # Errors
-///
 /// Returns an error if the file set cannot be retrieved from the context or if the store query fails.
 pub(in crate::cli::batch) fn dispatch_stale(ctx: &BatchContext) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_stale").entered();
@@ -123,19 +108,12 @@ pub(in crate::cli::batch) fn dispatch_stale(ctx: &BatchContext) -> Result<serde_
 }
 
 /// Performs a health check on the batch processing system and returns the results as JSON.
-///
 /// This function executes a comprehensive health check that validates the store, file set, and CQS directory, then serializes the health report to a JSON value for reporting purposes.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch processing context containing the store, file set, and CQS directory paths.
-///
 /// # Returns
-///
 /// A `Result` containing a `serde_json::Value` representing the health check report, or an error if the health check fails or serialization fails.
-///
 /// # Errors
-///
 /// Returns an error if retrieving the file set fails, if the health check itself fails, or if serializing the report to JSON fails.
 pub(in crate::cli::batch) fn dispatch_health(ctx: &BatchContext) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_health").entered();
@@ -193,7 +171,6 @@ pub(in crate::cli::batch) fn dispatch_suggest(
 }
 
 /// Runs a diff-aware review and returns results as JSON.
-///
 /// Executes `git diff` against the given base ref (or HEAD) and runs the
 /// review pipeline: diff impact, risk scoring, note matching, staleness.
 pub(in crate::cli::batch) fn dispatch_review(
@@ -228,7 +205,6 @@ pub(in crate::cli::batch) fn dispatch_review(
 }
 
 /// Runs CI analysis (review + dead code + gate) and returns results as JSON.
-///
 /// Note: In batch mode, gate failure is reported in the JSON output rather than
 /// causing a process exit, since the batch session must continue.
 pub(in crate::cli::batch) fn dispatch_ci(

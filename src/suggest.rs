@@ -31,13 +31,11 @@ pub struct SuggestedNote {
 }
 
 /// A detector function that scans for a specific anti-pattern.
-///
 /// Takes a store and project root, returns suggested notes or an error.
 /// Errors are non-fatal — other detectors still run.
 type Detector = fn(&Store, &Path) -> Result<Vec<SuggestedNote>, StoreError>;
 
 /// Registry of all active detectors, run in order by `suggest_notes`.
-///
 /// To add a new detector: define a `fn(&Store, &Path) -> Result<Vec<SuggestedNote>>`
 /// and append it here.
 const DETECTORS: &[(&str, Detector)] = &[
@@ -51,7 +49,6 @@ const DETECTORS: &[(&str, Detector)] = &[
 ];
 
 /// Scan the index for anti-patterns and suggest notes.
-///
 /// Each detector runs independently — if one fails, the others still produce results.
 pub fn suggest_notes(store: &Store, project_root: &Path) -> Result<Vec<SuggestedNote>, StoreError> {
     let _span = tracing::info_span!("suggest_notes").entered();
@@ -185,7 +182,6 @@ pub(crate) fn is_pascal_case(s: &str) -> bool {
 }
 
 /// Core logic: find stale mentions across all notes.
-///
 /// Returns `(note_text, stale_mentions)` pairs for each note with at least one
 /// stale mention. Shared by `detect_stale_mentions` and `check_note_staleness`.
 fn find_stale_mentions(
@@ -274,7 +270,6 @@ fn detect_stale_mentions(
 }
 
 /// Check all notes for stale mentions.
-///
 /// Returns `(note_text, stale_mentions)` pairs for each note that has at least
 /// one stale mention. Reusable by `notes list --check` and future `health` integration.
 pub fn check_note_staleness(
@@ -549,7 +544,6 @@ mod tests {
     }
 
     /// TC-2: Verify the high_risk branch in detect_risk_patterns.
-    ///
     /// A function with many callers but *some* tests still scores High if
     /// coverage is low enough (score = callers * (1 - coverage) >= 5.0).
     /// With 6 callers and 1 test: score = 6 * (1 - 1/6) = 5.0 → High.

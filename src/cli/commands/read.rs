@@ -22,7 +22,6 @@ use crate::cli::find_project_root;
 // ─── Shared core functions ──────────────────────────────────────────────────
 
 /// Validate path (traversal, size) and read file contents.
-///
 /// Returns `(file_path, content)` where `file_path` is root.join(path).
 pub(crate) fn validate_and_read_file(root: &Path, path: &str) -> Result<(PathBuf, String)> {
     let file_path = root.join(path);
@@ -58,7 +57,6 @@ pub(crate) fn validate_and_read_file(root: &Path, path: &str) -> Result<(PathBuf
 }
 
 /// Build note-injection header for a full file read.
-///
 /// Returns `(header_string, notes_injected)`.
 pub(crate) fn build_file_note_header(
     path: &str,
@@ -112,7 +110,6 @@ pub(crate) struct FocusedReadResult {
 }
 
 /// Build focused-read output: header + hints + notes + target + type deps.
-///
 /// Shared between CLI `cmd_read --focus` and batch `dispatch_read --focus`.
 pub(crate) fn build_focused_output(
     store: &Store,

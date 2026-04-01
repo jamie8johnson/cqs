@@ -93,13 +93,9 @@ fn post_process_javascript(
 }
 
 /// Extracts the return type from a JavaScript function signature.
-/// 
 /// # Arguments
-/// 
 /// * `_signature` - A string slice containing a JavaScript function signature
-/// 
 /// # Returns
-/// 
 /// Always returns `None`, as JavaScript function signatures do not contain type annotations. Return type information should be extracted from JSDoc comments instead, which are handled separately during natural language generation.
 fn extract_return(_signature: &str) -> Option<String> {
     // JavaScript doesn't have type annotations in signatures.

@@ -55,7 +55,6 @@ struct TableWindowContext<'a> {
 }
 
 /// Extract table chunks from a section's line range and append to `chunks`.
-///
 /// For each detected table, creates an additional chunk with `parent_id` set to
 /// the containing section. Large tables are split row-wise with headers preserved.
 pub(super) fn extract_table_chunks(ctx: &TableContext<'_>, chunks: &mut Vec<Chunk>) {
@@ -181,7 +180,6 @@ fn emit_table_window(
 }
 
 /// Detect markdown tables within a slice of lines.
-///
 /// Tables are identified by their separator row (the `|---|---|` line).
 /// The header row is the line immediately above the separator, and data rows
 /// follow below. Tables inside fenced code blocks are ignored.

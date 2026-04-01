@@ -14,13 +14,11 @@ use indicatif::{ProgressBar, ProgressStyle};
 use cqs::{Embedder, Embedding, Store};
 
 /// Second-pass enrichment: re-embed chunks with call graph context.
-///
 /// After the main pipeline populates the `function_calls` table, this pass:
 /// 1. Computes callee document frequency (IDF) for stopword filtering
 /// 2. Iterates all chunks in pages
 /// 3. For each chunk with callers or callees, regenerates NL with call context
 /// 4. Re-embeds and updates the embedding in-place
-///
 /// Returns the number of chunks re-embedded.
 pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -> Result<usize> {
     let _span = tracing::info_span!("enrichment_pass").entered();
@@ -232,7 +230,6 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
 }
 
 /// Compute enrichment hash including optional LLM summary (SQ-6).
-///
 /// Extends `compute_enrichment_hash` to also include the summary text.
 /// If the summary changes, the hash changes, triggering re-embedding.
 fn compute_enrichment_hash_with_summary(

@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use super::LlmError;
 
 /// A single item in a batch submission.
-///
 /// Named fields replace the opaque `(String, String, String, String)` tuple
 /// to prevent positional errors at call sites.
 pub struct BatchSubmitItem {
@@ -20,12 +19,10 @@ pub struct BatchSubmitItem {
 }
 
 /// Trait for LLM batch API providers.
-///
 /// Abstracts the batch submission, polling, and result fetching lifecycle.
 /// Currently implemented for Anthropic's Messages Batches API.
 pub trait BatchProvider {
     /// Submit a batch of prompt requests. Returns the batch ID.
-    ///
     /// `prompt_builder` constructs the user message from (content, context, language).
     fn submit_batch(
         &self,
@@ -36,7 +33,6 @@ pub trait BatchProvider {
     ) -> Result<String, LlmError>;
 
     /// Submit a batch where prompts are already built (content field IS the prompt).
-    ///
     /// Used by the contrastive summary path which pre-builds prompts with neighbor context.
     fn submit_batch_prebuilt(
         &self,
@@ -69,7 +65,6 @@ pub trait BatchProvider {
     fn fetch_batch_results(&self, batch_id: &str) -> Result<HashMap<String, String>, LlmError>;
 
     /// Validate a batch ID format.
-    ///
     /// Default accepts any non-empty ID. Provider implementations should
     /// override with provider-specific validation (e.g., Anthropic checks
     /// for `msgbatch_` prefix).

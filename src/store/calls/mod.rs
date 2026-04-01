@@ -22,7 +22,6 @@ use super::helpers::ChunkSummary;
 use crate::parser::{ChunkType, Language};
 
 /// A dead function with confidence scoring.
-///
 /// Wraps a `ChunkSummary` with a confidence level indicating how likely
 /// the function is truly dead (not just invisible to static analysis).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -34,7 +33,6 @@ pub struct DeadFunction {
 }
 
 /// Confidence level for dead code detection.
-///
 /// Ordered from least to most confident, enabling `>=` filtering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, clap::ValueEnum)]
 pub enum DeadConfidence {
@@ -83,7 +81,6 @@ fn build_entry_point_names() -> Vec<&'static str> {
 }
 
 /// Lightweight chunk metadata for dead code analysis.
-///
 /// Used by `find_dead_code` Phase 1 to avoid loading full content/doc
 /// until candidates pass name/test/path filters.
 #[derive(Debug, Clone)]
@@ -182,7 +179,6 @@ fn build_trait_method_names() -> Vec<&'static str> {
 }
 
 /// Build the shared SQL WHERE filter clause for test chunks.
-///
 /// Combines name patterns, content markers, and path patterns into a single
 /// OR-joined clause string. Computed once at startup via LazyLock callers.
 fn build_test_chunk_filter() -> String {

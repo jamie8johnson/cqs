@@ -10,7 +10,6 @@ use crate::store::Store;
 
 impl Store {
     /// Get embeddings for chunks with matching content hashes (batch lookup).
-    ///
     /// Batches queries in groups of 500 to stay within SQLite's parameter limit (~999).
     pub fn get_embeddings_by_hashes(
         &self,
@@ -55,10 +54,8 @@ impl Store {
     }
 
     /// Get (chunk_id, embedding) pairs for chunks with matching content hashes.
-    ///
     /// Unlike `get_embeddings_by_hashes` (which keys by content_hash), this returns
     /// the chunk ID alongside the embedding — exactly what HNSW `insert_batch` needs.
-    ///
     /// Batches queries in groups of 500 to stay within SQLite's parameter limit (~999).
     pub fn get_chunk_ids_and_embeddings_by_hashes(
         &self,

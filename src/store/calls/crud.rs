@@ -48,7 +48,6 @@ impl Store {
     }
 
     /// Insert call sites for multiple chunks in a single transaction.
-    ///
     /// Takes `(chunk_id, CallSite)` pairs and batches them into one transaction.
     pub fn upsert_calls_batch(
         &self,
@@ -95,12 +94,10 @@ impl Store {
     }
 
     /// Get all function names called by a given chunk.
-    ///
     /// Takes a chunk **ID** (unique) rather than a name. Returns only callee
     /// **names** (not full chunks) because:
     /// - Callees may not exist in the index (external functions)
     /// - Callers typically chain: `get_callees` → `get_callers_full` for graph traversal
-    ///
     /// For richer callee data, see [`get_callers_with_context`].
     pub fn get_callees(&self, chunk_id: &str) -> Result<Vec<String>, StoreError> {
         let _span = tracing::debug_span!("get_callees", chunk_id = %chunk_id).entered();
@@ -117,21 +114,14 @@ impl Store {
     }
 
     /// Retrieves aggregated statistics about function calls from the database.
-    ///
     /// Queries the calls table to obtain the total number of calls and the count of distinct callees, returning this information as a CallStats structure.
-    ///
     /// # Arguments
-    ///
     /// * `&self` - A reference to the store instance containing the database connection pool and async runtime.
-    ///
     /// # Returns
-    ///
     /// Returns a `Result` containing:
     /// * `Ok(CallStats)` - A struct with `total_calls` (total number of recorded calls) and `unique_callees` (number of distinct functions called).
     /// * `Err(StoreError)` - If the database query fails.
-    ///
     /// # Errors
-    ///
     /// Returns `StoreError` if the SQL query execution fails or if database connectivity issues occur.
     pub fn call_stats(&self) -> Result<CallStats, StoreError> {
         let _span = tracing::debug_span!("call_stats").entered();

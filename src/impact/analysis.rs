@@ -22,9 +22,7 @@ fn rel_path(path: &Path, root: &Path) -> std::path::PathBuf {
 }
 
 /// Run impact analysis: find callers, affected tests, and transitive callers.
-///
 /// Paths in the returned result are relative to `root`.
-///
 /// When `include_types` is true, also performs one-hop type expansion: finds
 /// other functions that share type dependencies with the target via `type_edges`.
 pub fn analyze_impact(
@@ -81,10 +79,8 @@ pub fn analyze_impact(
 }
 
 /// Build caller detail with call-site snippets.
-///
 /// Batch-fetches all caller chunks in a single query (via `search_by_names_batch`)
 /// to avoid N+1 per-caller `search_by_name` calls.
-///
 /// Returns `(callers, degraded)` — `degraded` is true when the batch name search
 /// failed and caller snippets may be incomplete.
 fn build_caller_info(
@@ -127,7 +123,6 @@ fn build_caller_info(
 }
 
 /// Extract a snippet around the call site using pre-fetched chunk data.
-///
 /// Prefers non-windowed chunks (correct line offsets) over windowed ones.
 pub(super) fn extract_call_snippet_from_cache(
     chunks_by_name: &HashMap<String, Vec<SearchResult>>,
@@ -169,7 +164,6 @@ pub(super) fn extract_call_snippet_from_cache(
 }
 
 /// Find tests that exercise `target_name` via call graph traversal.
-///
 /// Accepts pre-loaded graph and test chunks — no Store access needed.
 /// Used by `onboard` and `task` commands that pre-load shared resources.
 pub(crate) fn find_affected_tests_with_chunks(
@@ -201,7 +195,6 @@ pub(crate) fn find_affected_tests_with_chunks(
 }
 
 /// Find transitive callers up to the given depth.
-///
 /// Uses `reverse_bfs` to discover all ancestor names in a single graph traversal,
 /// then batch-fetches chunk locations with `search_by_names_batch` to avoid N+1 queries.
 fn find_transitive_callers(
@@ -251,7 +244,6 @@ fn find_transitive_callers(
 }
 
 /// Suggest tests for untested callers in an impact result.
-///
 /// Loads its own call graph and test chunks — only called when `--suggest-tests`
 /// is set, so the normal path pays zero overhead.
 pub fn suggest_tests(store: &Store, impact: &ImpactResult, root: &Path) -> Vec<TestSuggestion> {
@@ -368,7 +360,6 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult, root: &Path) -> Vec<T
 }
 
 /// Derive a test file path from a source file path.
-///
 /// Uses per-language test file conventions from `LanguageDef::test_file_suggestion`.
 /// Falls back to `{parent}/tests/{stem}_test.{ext}` for unknown languages.
 fn suggest_test_file(source: &str) -> String {
@@ -391,7 +382,6 @@ fn suggest_test_file(source: &str) -> String {
 }
 
 /// One-hop type expansion: find functions that share type dependencies with the target.
-///
 /// Uses the type_edges table (not the full TypeGraph) to avoid loading the entire graph
 /// when only one function's types are needed. Steps:
 /// 1. Get types used by target via `get_types_used_by`

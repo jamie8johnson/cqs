@@ -6,7 +6,6 @@
 use super::{ChunkType, FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting XML elements.
-///
 /// XML grammar uses capitalized node kinds per the XML spec:
 ///   - `STag` = start tag, `ETag` = end tag, `EmptyElemTag` = self-closing
 ///   - `Name` = element/attribute name
@@ -34,13 +33,9 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// Extracts the return type from a function signature.
-/// 
 /// # Arguments
-/// 
 /// * `_signature` - A string slice containing a function signature (unused for XML)
-/// 
 /// # Returns
-/// 
 /// Returns `None` as XML has no concept of functions or return types.
 fn extract_return(_signature: &str) -> Option<String> {
     // XML has no functions or return types
@@ -129,17 +124,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Verifies that the XML parser correctly extracts root and intermediate-level elements while filtering out deeply nested ones.
-    /// 
-    /// This test creates an XML document with a root `catalog` element containing nested `book` elements, which themselves contain `title` and `author` children. It validates that the parser returns the `catalog` (depth 1) and `book` (depth 2) elements but filters out the `title` and `author` elements (depth 3).
-    /// 
-    /// # Returns
-    /// 
-    /// Does not return a value; panics if any assertion fails.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the expected elements (`catalog`, `book`) are not found in the parsed chunks, or if deeply nested elements (`title`) are unexpectedly included in the results.
 
     #[test]
     fn parse_xml_root_elements() {
@@ -177,19 +161,6 @@ mod tests {
             names
         );
     }
-    /// Tests that the XML parser correctly identifies and categorizes the root element as a Struct chunk type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and returns nothing.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to create, the file fails to parse, the 'root' element is not found, or if the root element's chunk_type is not ChunkType::Struct.
 
     #[test]
     fn parse_xml_element_type() {
@@ -201,17 +172,6 @@ mod tests {
         assert!(root.is_some(), "Expected 'root' element");
         assert_eq!(root.unwrap().chunk_type, ChunkType::Struct);
     }
-    /// Verifies that parsing an XML file with no function calls produces an empty call list.
-    /// 
-    /// This test function creates a temporary XML file containing a simple root element with a child, parses it using the Parser, and asserts that no function calls are extracted from any resulting chunks.
-    /// 
-    /// # Arguments
-    /// 
-    /// This function takes no arguments. It uses hardcoded test data internally.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser cannot be instantiated, the file cannot be parsed, or if any extracted calls are found (assertion failure).
 
     #[test]
     fn parse_xml_no_calls() {

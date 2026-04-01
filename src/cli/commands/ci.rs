@@ -56,7 +56,6 @@ pub(crate) fn cmd_ci(
 }
 
 /// Apply token budget by truncating callers and tests lists.
-///
 /// Reuses the same logic as review.rs — changed functions and risk summary
 /// are always included, callers and tests are truncated.
 /// Public entry point for batch mode to apply CI token budgeting.

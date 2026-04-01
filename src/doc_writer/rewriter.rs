@@ -37,11 +37,9 @@ struct ResolvedEdit {
 }
 
 /// Find the 1-based line number where a doc comment should be inserted.
-///
 /// For `BeforeFunction`: scans upward from the line above the function,
 /// skipping blank lines and decorator/attribute lines (`@`, `#[`, `#![`, `[`).
 /// Returns the line number above the first decorator (or `line_start` if none).
-///
 /// For `InsideBody` (Python): returns `line_start + 1` (line after `def`).
 pub fn find_insertion_point(line_start: usize, file_lines: &[&str], language: Language) -> usize {
     let _span = tracing::debug_span!("find_insertion_point", line_start, %language).entered();
@@ -100,11 +98,9 @@ pub fn find_insertion_point(line_start: usize, file_lines: &[&str], language: La
 }
 
 /// Detect an existing doc comment range near the insertion point.
-///
 /// For `BeforeFunction`: scans upward from `insertion_line - 1` looking for
 /// consecutive lines matching the language's doc prefix (e.g., `///` for Rust).
 /// Returns the 0-based line range to remove.
-///
 /// For `InsideBody` (Python): checks if the line at `insertion_line` starts
 /// with `"""` or `'''`, finds the closing delimiter, and returns the range.
 pub fn detect_existing_doc_range(
@@ -221,13 +217,10 @@ pub fn detect_existing_doc_range(
 }
 
 /// Rewrite a source file by inserting or replacing doc comments.
-///
 /// Re-parses the file with tree-sitter to get current chunk positions, matches
 /// each edit to a chunk by function name, computes insertion points and existing
 /// doc ranges, then applies all edits bottom-up to preserve line numbers.
-///
 /// Uses atomic write (temp file + rename) with cross-device fallback.
-///
 /// Returns the number of functions that were successfully documented.
 pub fn rewrite_file(
     path: &Path,
@@ -483,18 +476,14 @@ mod tests {
     use crate::language::Language;
 
     /// Constructs a DocCommentResult containing metadata about a generated documentation comment.
-    ///
     /// # Arguments
-    ///
     /// * `file` - The path to the source file being documented
     /// * `function_name` - The name of the function for which documentation was generated
     /// * `generated_doc` - The content of the generated documentation comment
     /// * `language` - The programming language of the source file
     /// * `line_start` - The line number where the documentation comment begins
     /// * `had_existing_doc` - Whether the function previously had documentation
-    ///
     /// # Returns
-    ///
     /// A new `DocCommentResult` struct populated with the provided arguments and a placeholder content hash.
     fn make_edit(
         file: &Path,

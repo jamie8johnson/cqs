@@ -60,13 +60,9 @@ const COMMON_TYPES: &[&str] = &[
 ];
 
 /// Extracts the return type from a PowerShell function signature.
-/// 
 /// # Arguments
-/// 
 /// * `signature` - A PowerShell function signature string to parse
-/// 
 /// # Returns
-/// 
 /// Returns `None` because PowerShell function signatures do not include explicit return type annotations.
 fn extract_return(_signature: &str) -> Option<String> {
     // PowerShell doesn't have return type syntax in function signatures
@@ -135,21 +131,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a PowerShell function definition and verifies the parser correctly identifies it as a Function chunk type.
-    /// 
-    /// This is a unit test that creates a temporary PowerShell file containing a function definition, parses it using the Parser, and asserts that the resulting chunk is properly recognized as a Function with the expected name.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a self-contained test function.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and panics on failure.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to parse the file, the function chunk cannot be found, or the chunk type is not Function.
 
     #[test]
     fn parse_powershell_function() {
@@ -165,19 +146,6 @@ function Get-UserInfo {
         let func = chunks.iter().find(|c| c.name == "Get-UserInfo").unwrap();
         assert_eq!(func.chunk_type, crate::parser::ChunkType::Function);
     }
-    /// Parses a PowerShell class definition and verifies it is correctly identified as a Class chunk.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function asserts the parsing result rather than returning a value.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the parser fails to initialize, file parsing fails, the Calculator class chunk is not found, or the chunk type is not Class.
 
     #[test]
     fn parse_powershell_class() {
@@ -194,19 +162,6 @@ class Calculator {
         let class = chunks.iter().find(|c| c.name == "Calculator").unwrap();
         assert_eq!(class.chunk_type, crate::parser::ChunkType::Class);
     }
-    /// Verifies that the parser correctly identifies and extracts PowerShell class methods with their associated metadata.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that uses hardcoded PowerShell class content.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if any assertion fails, indicating the parser did not correctly identify the method name, chunk type, or parent class name.
 
     #[test]
     fn parse_powershell_method() {
@@ -224,19 +179,6 @@ class Calculator {
         assert_eq!(method.chunk_type, crate::parser::ChunkType::Method);
         assert_eq!(method.parent_type_name.as_deref(), Some("Calculator"));
     }
-    /// Tests that the parser correctly identifies and extracts PowerShell class properties.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to create a temporary file, parse the file, find the expected "Name" property chunk, or if the chunk type assertion fails.
 
     #[test]
     fn parse_powershell_property() {
@@ -255,23 +197,6 @@ class Person {
             .unwrap();
         assert_eq!(prop.chunk_type, crate::parser::ChunkType::Property);
     }
-    /// Tests parsing of PowerShell enum declarations from a file.
-    /// 
-    /// # Arguments
-    /// 
-    /// This function takes no arguments.
-    /// 
-    /// # Returns
-    /// 
-    /// This function returns nothing (unit type). It is a test function that verifies parser behavior through assertions.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be written
-    /// - The parser fails to initialize or parse the file
-    /// - An enum named "Color" is not found in the parsed chunks
-    /// - The found chunk is not of type `ChunkType::Enum`
 
     #[test]
     fn parse_powershell_enum() {
@@ -288,21 +213,6 @@ enum Color {
         let en = chunks.iter().find(|c| c.name == "Color").unwrap();
         assert_eq!(en.chunk_type, crate::parser::ChunkType::Enum);
     }
-    /// Parses PowerShell code and verifies that function calls are correctly extracted.
-    /// 
-    /// This is a test function that creates a PowerShell code sample containing a function definition with a Get-Process cmdlet call and a static method invocation. It then uses a Parser to extract all calls from the code and asserts that the "Get-Process" call is found in the extracted results.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function with no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function returns unit type `()`.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the Parser fails to initialize or if the "Get-Process" call is not found in the extracted calls, with an assertion message showing the actual calls that were found.
 
     #[test]
     fn parse_powershell_calls() {

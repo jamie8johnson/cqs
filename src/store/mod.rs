@@ -23,7 +23,6 @@ mod search;
 mod types;
 
 /// Helper types and embedding conversion functions.
-///
 /// This module is `pub(crate)` - external consumers should use the re-exported
 /// types from `cqs::store` instead of accessing `cqs::store::helpers` directly.
 pub(crate) mod helpers;
@@ -93,13 +92,11 @@ pub use helpers::UnifiedResult;
 pub use helpers::CURRENT_SCHEMA_VERSION;
 
 /// Name of the embedding model (compile-time default for BGE-large).
-///
 /// Runtime code should use `Store::stored_model_name()` or `ModelInfo::new()`.
 /// This constant exists for callers outside the store (e.g. `doctor.rs`).
 pub const MODEL_NAME: &str = crate::embedder::DEFAULT_MODEL_REPO;
 
 /// Expected embedding dimensions (compile-time default for BGE-large).
-///
 /// Runtime code should use `Store::dim` instead. This constant exists for
 /// callers outside the store that need a compile-time value.
 pub const EXPECTED_DIMENSIONS: usize = crate::EMBEDDING_DIM;
@@ -138,16 +135,12 @@ pub use types::TypeGraph;
 pub use types::TypeUsage;
 
 /// Defense-in-depth sanitization for FTS5 query strings.
-///
 /// Strips or escapes FTS5 special characters that could alter query semantics.
 /// Applied after `normalize_for_fts()` as an extra safety layer — if `normalize_for_fts`
 /// ever changes to allow characters through, this prevents FTS5 injection.
-///
 /// FTS5 special characters: `"`, `*`, `(`, `)`, `+`, `-`, `^`, `:`, `NEAR`
 /// FTS5 boolean operators: `OR`, `AND`, `NOT` (case-sensitive in FTS5)
-///
 /// # Safety (injection)
-///
 /// This function independently strips all FTS5-significant characters including
 /// double quotes. Safe for use in `format!`-constructed FTS5 queries even without
 /// `normalize_for_fts()`. The double-pass pattern (`normalize_for_fts` then
@@ -178,25 +171,19 @@ pub(crate) fn sanitize_fts_query(s: &str) -> String {
 }
 
 /// Thread-safe SQLite store for chunks and embeddings
-///
 /// Uses sqlx connection pooling for concurrent reads and WAL mode
 /// for crash safety. All methods are synchronous but internally use
 /// an async runtime to execute sqlx operations.
-///
 /// # Memory-mapped I/O
-///
 /// `open()` sets `PRAGMA mmap_size = 256MB` per connection with a 4-connection pool,
 /// reserving up to 1GB of virtual address space. `open_readonly()` uses 64MB × 1.
 /// This is intentional and benign on 64-bit systems (128TB virtual address space).
 /// Mmap pages are demand-paged from the database file and evicted under memory
 /// pressure — actual RSS reflects only accessed pages, not the mmap reservation.
-///
 /// # Example
-///
 /// ```no_run
 /// use cqs::Store;
 /// use std::path::Path;
-///
 /// let store = Store::open(Path::new(".cqs/index.db"))?;
 /// let stats = store.stats()?;
 /// println!("Indexed {} chunks", stats.total_chunks);
@@ -211,7 +198,6 @@ pub struct Store {
     closed: AtomicBool,
     notes_summaries_cache: RwLock<Option<Arc<Vec<NoteSummary>>>>,
     /// Cached call graph — populated on first access, valid for Store lifetime.
-    ///
     /// **No invalidation mechanism by design.** `OnceLock` is intentionally write-once:
     /// once populated the cache is never cleared. This is safe because `Store` is opened
     /// per-command (one `open()` → use → `close()` cycle), so the index cannot change
@@ -221,7 +207,6 @@ pub struct Store {
     /// normal case and racy for the long-lived case (use a fresh `Store` instead).
     call_graph_cache: std::sync::OnceLock<std::sync::Arc<CallGraph>>,
     /// Cached test chunks — populated on first access, valid for Store lifetime.
-    ///
     /// Same no-invalidation contract as `call_graph_cache` above: intentionally
     /// write-once for the per-command `Store` lifetime. Re-open the `Store` if the
     /// underlying index has been updated (e.g., after `cqs index` in watch mode).
@@ -229,7 +214,6 @@ pub struct Store {
 }
 
 /// Internal configuration for [`Store::open_with_config`].
-///
 /// Captures the five parameters that differ between read-write and read-only
 /// opens so the shared connection/pool/validation logic lives in one place.
 struct StoreOpenConfig {
@@ -247,7 +231,6 @@ impl Store {
     }
 
     /// Update the embedding dimension after init (fresh DB only).
-    ///
     /// `Store::open` defaults to `EMBEDDING_DIM` when the metadata table doesn't
     /// exist yet. After `init()` writes the correct dim, call this to sync.
     pub fn set_dim(&mut self, dim: usize) {
@@ -269,7 +252,6 @@ impl Store {
     }
 
     /// Open an existing index with single-threaded runtime but full memory.
-    ///
     /// Uses `current_thread` tokio runtime (1 OS thread instead of 4) while
     /// keeping the full 256MB mmap and 16MB cache of `open()`. Ideal for
     /// read-only CLI commands on the primary project index where we need
@@ -288,7 +270,6 @@ impl Store {
     }
 
     /// Open an existing index in read-only mode with reduced resources.
-    ///
     /// Uses minimal connection pool, smaller cache, and single-threaded runtime.
     /// Suitable for reference stores and background builds that only read data.
     pub fn open_readonly(path: &Path) -> Result<Self, StoreError> {
@@ -452,7 +433,6 @@ impl Store {
     }
 
     /// Create a new index
-    ///
     /// Wraps all DDL and metadata inserts in a single transaction so a
     /// crash mid-init cannot leave a partial schema.
     pub fn init(&self, model_info: &ModelInfo) -> Result<(), StoreError> {
@@ -518,11 +498,9 @@ impl Store {
     }
 
     /// Gracefully close the store, performing WAL checkpoint.
-    ///
     /// This ensures all WAL changes are written to the main database file,
     /// reducing startup time for subsequent opens and freeing disk space
     /// used by WAL files.
-    ///
     /// Safe to skip (pool will close connections on drop), but recommended
     /// for clean shutdown in long-running processes.
     pub fn close(self) -> Result<(), StoreError> {
@@ -541,17 +519,11 @@ impl Store {
 
 impl Drop for Store {
     /// Performs a best-effort WAL (Write-Ahead Logging) checkpoint when the Store is dropped to prevent accumulation of large WAL files.
-    ///
     /// # Arguments
-    ///
     /// * `&mut self` - A mutable reference to the Store instance being dropped
-    ///
     /// # Returns
-    ///
     /// Nothing. Errors during checkpoint are logged as warnings but not propagated, as Drop implementations cannot fail.
-    ///
     /// # Panics
-    ///
     /// Does not panic. Uses `catch_unwind` to safely handle potential panics from `block_on` when called from within an async context (e.g., dropping Store inside a tokio runtime).
     fn drop(&mut self) {
         if self.closed.load(Ordering::Acquire) {

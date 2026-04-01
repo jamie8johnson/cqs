@@ -144,10 +144,8 @@ fn post_process_typescript(
 }
 
 /// Extracts the return type from a TypeScript function signature and formats it as a description.
-/// 
 /// # Arguments
 /// * `signature` - A TypeScript function signature string to parse
-/// 
 /// # Returns
 /// `Some(String)` containing a formatted return type description (e.g., "Returns string") if a return type annotation is found after `):`, or `None` if no return type is present or the signature is malformed.
 fn extract_return(signature: &str) -> Option<String> {
@@ -221,19 +219,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a TypeScript namespace declaration and verifies it is recognized as a module chunk.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to initialize, the file cannot be parsed, the "Validators" namespace is not found in the parsed chunks, or the chunk type assertion fails.
 
     #[test]
     fn parse_typescript_namespace() {
@@ -244,13 +229,6 @@ mod tests {
         let ns = chunks.iter().find(|c| c.name == "Validators").unwrap();
         assert_eq!(ns.chunk_type, ChunkType::Module);
     }
-    /// Parses a TypeScript type alias and verifies it is correctly identified.
-    /// 
-    /// This test function writes a TypeScript type alias definition to a temporary file, parses it using the Parser, and asserts that the resulting chunk is correctly identified as a TypeAlias with the name "Result".
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the file cannot be parsed, or if a chunk named "Result" is not found in the parsed output.
 
     #[test]
     fn parse_typescript_type_alias() {

@@ -5,7 +5,6 @@ use std::path::Path;
 use anyhow::Result;
 
 /// Convert HTML source to Markdown.
-///
 /// Uses `fast_html2md::rewrite_html` for the heavy lifting.
 /// Returns an error if the conversion produces no content.
 pub fn html_to_markdown(source: &str) -> Result<String> {
@@ -23,7 +22,6 @@ pub fn html_to_markdown(source: &str) -> Result<String> {
 }
 
 /// Convert an HTML file to Markdown.
-///
 /// Reads the file at `path` and converts its HTML content to Markdown.
 /// This is the path-based wrapper used by `FORMAT_TABLE`; the string-based
 /// [`html_to_markdown`] is still used directly by `chm` and `webhelp`.
@@ -31,19 +29,12 @@ pub fn html_to_markdown(source: &str) -> Result<String> {
 const MAX_CONVERT_FILE_SIZE: u64 = 100 * 1024 * 1024;
 
 /// Converts an HTML file to Markdown format.
-///
 /// Reads the HTML file from the specified path and converts its contents to Markdown. The file size must not exceed the configured maximum limit.
-///
 /// # Arguments
-///
 /// * `path` - Path to the HTML file to convert
-///
 /// # Returns
-///
 /// Returns a `Result` containing the converted Markdown string, or an error if the file cannot be read or converted.
-///
 /// # Errors
-///
 /// Returns an error if:
 /// * The file cannot be accessed or its metadata cannot be retrieved
 /// * The file exceeds the maximum allowed file size

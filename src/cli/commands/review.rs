@@ -60,7 +60,6 @@ pub(crate) fn cmd_review(
 }
 
 /// Apply token budget by truncating callers and tests lists.
-///
 /// Changed functions and risk summary are always included (small, essential).
 /// Callers and tests are the variable-size sections that get truncated.
 /// `json` adds per-item overhead for JSON field names and structure tokens.
@@ -139,11 +138,8 @@ fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> u
 }
 
 /// Creates and returns a JSON object representing an empty code review with no findings.
-///
 /// This function constructs a default review structure containing empty arrays for changed functions, affected callers, and affected tests, along with empty risk assessments and a null stale warning field.
-///
 /// # Returns
-///
 /// A `serde_json::Value` containing a JSON object with the following fields:
 /// - `changed_functions`: empty array
 /// - `affected_callers`: empty array

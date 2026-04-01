@@ -36,7 +36,6 @@ pub enum InsertionPosition {
 }
 
 /// Returns the doc comment format for a given language.
-///
 /// Delegates to the `doc_format` field on `LanguageDef`, which each language
 /// definition populates. The string tag is mapped to a `DocFormat` struct here.
 pub fn doc_format_for(language: Language) -> DocFormat {
@@ -127,16 +126,13 @@ fn doc_format_from_tag(tag: &str) -> DocFormat {
 }
 
 /// Format raw doc text into a language-specific doc comment with indentation.
-///
 /// Takes the raw LLM-generated doc text (plain prose, possibly multi-line) and
 /// wraps it in the correct doc comment syntax for the target language.
-///
 /// # Arguments
 /// * `text` - Raw doc text from LLM (no comment markers)
 /// * `language` - Target language (determines format)
 /// * `indent` - Indentation prefix for each line (spaces/tabs matching the function)
 /// * `func_name` - Function name (used by Go convention: "// FuncName does X")
-///
 /// # Returns
 /// Formatted doc comment string ready to insert into source, including trailing newline.
 pub fn format_doc_comment(text: &str, language: Language, indent: &str, func_name: &str) -> String {

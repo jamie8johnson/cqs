@@ -25,7 +25,6 @@ pub struct TypeEdgeStats {
 }
 
 /// In-memory type graph for BFS traversal
-///
 /// Built from a single scan of the `type_edges` table joined with `chunks`.
 /// Forward: chunk_name -> Vec<type_name>, Reverse: type_name -> Vec<chunk_name>.
 /// Used by Phase 4 BFS traversal over type edges.
@@ -45,7 +44,6 @@ pub struct TypeUsage {
 }
 
 /// Per-file type edge upsert: resolve chunk IDs, delete old edges, insert new ones.
-///
 /// Returns the number of edges inserted. Shared by both single-file and
 /// multi-file upsert methods so the SQL logic lives in one place.
 async fn upsert_type_edges_one_file(
@@ -134,7 +132,6 @@ impl Store {
     // ============ Type Edge Upsert Methods ============
 
     /// Upsert type edges for a single chunk.
-    ///
     /// Deletes existing type edges for the chunk, then batch-inserts new ones.
     /// 4 binds per row → 249 rows per batch (996 < 999 SQLite limit).
     pub fn upsert_type_edges(
@@ -184,11 +181,9 @@ impl Store {
     }
 
     /// Upsert type edges for all chunks in a file.
-    ///
     /// Resolves chunk names to chunk IDs via the chunks table, then deletes old
     /// type edges and batch-inserts new ones. Chunks not found in the database
     /// are warned and skipped (not an error).
-    ///
     /// For windowed chunks, associates type edges with the first window
     /// (window_idx IS NULL or window_idx = 0).
     pub fn upsert_type_edges_for_file(
@@ -230,7 +225,6 @@ impl Store {
     }
 
     /// Upsert type edges for multiple files in a single transaction.
-    ///
     /// Batches all per-file work (chunk ID resolution, delete, insert) into one
     /// transaction instead of one transaction per file. Falls back per-file on
     /// individual resolution failures (warns and skips unresolved chunks).
@@ -272,7 +266,6 @@ impl Store {
     // ============ Type Edge Query Methods ============
 
     /// Get chunks that reference a given type name.
-    ///
     /// Forward query: "who uses Config?" Returns chunks that have type edges
     /// pointing to the given type name.
     pub fn get_type_users(&self, type_name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
@@ -300,7 +293,6 @@ impl Store {
     }
 
     /// Get types used by a given chunk (by function name).
-    ///
     /// Reverse query: "what types does parse_config use?" Returns [`TypeUsage`] structs
     /// where edge_kind is "" for catch-all types.
     pub fn get_types_used_by(&self, chunk_name: &str) -> Result<Vec<TypeUsage>, StoreError> {
@@ -330,7 +322,6 @@ impl Store {
     }
 
     /// Batch-fetch type users for multiple type names.
-    ///
     /// Returns type_name -> Vec<ChunkSummary>. Uses WHERE IN with 200 names per batch.
     pub fn get_type_users_batch(
         &self,
@@ -377,7 +368,6 @@ impl Store {
     }
 
     /// Batch-fetch types used by multiple chunk names.
-    ///
     /// Returns chunk_name -> Vec<(type_name, edge_kind)>. Uses WHERE IN with 200 names per batch.
     pub fn get_types_used_by_batch(
         &self,
@@ -429,15 +419,10 @@ impl Store {
     // ============ Type Edge Statistics ============
 
     /// Retrieves statistics about type edges in the store.
-    ///
     /// Queries the database to obtain the total count of type edges and the number of distinct target type names, then returns these metrics as a TypeEdgeStats struct.
-    ///
     /// # Returns
-    ///
     /// A Result containing TypeEdgeStats with the total number of edges and count of unique types, or a StoreError if the database query fails.
-    ///
     /// # Errors
-    ///
     /// Returns StoreError if the database query cannot be executed or the connection fails.
     pub fn type_edge_stats(&self) -> Result<TypeEdgeStats, StoreError> {
         let _span = tracing::debug_span!("type_edge_stats").entered();
@@ -457,7 +442,6 @@ impl Store {
     }
 
     /// Load the type graph as forward + reverse adjacency lists.
-    ///
     /// Single SQL scan of `type_edges` joined with `chunks`, capped at 500K edges.
     /// Forward: chunk_name -> Vec<type_name>, Reverse: type_name -> Vec<chunk_name>.
     pub fn get_type_graph(&self) -> Result<TypeGraph, StoreError> {
@@ -498,7 +482,6 @@ impl Store {
     }
 
     /// Find types that share users with target (co-occurrence).
-    ///
     /// "Types commonly used alongside Config" → Vec<(type_name, overlap_count)>.
     /// Uses self-join: find other types referenced by the same chunks that reference target.
     pub fn find_shared_type_users(
@@ -534,7 +517,6 @@ impl Store {
     // ============ Type Edge Maintenance ============
 
     /// Delete type_edges for chunks no longer in the chunks table (GC).
-    ///
     /// Returns the number of pruned rows.
     pub fn prune_stale_type_edges(&self) -> Result<u64, StoreError> {
         let _span = tracing::info_span!("prune_stale_type_edges").entered();
@@ -587,11 +569,8 @@ mod tests {
     }
 
     /// Creates a vector of type references for testing purposes.
-    ///
     /// This function constructs and returns a hardcoded collection of `TypeRef` objects representing different kinds of type relationships: a parameter type, a return type, and a field type. Each reference includes the type name, line number where it appears, and the kind of relationship it represents.
-    ///
     /// # Returns
-    ///
     /// A `Vec<TypeRef>` containing three type reference entries with predefined values for testing or demonstration purposes.
     fn make_type_refs() -> Vec<TypeRef> {
         vec![

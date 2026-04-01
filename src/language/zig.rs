@@ -3,7 +3,6 @@
 use super::{ChunkType, FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Zig code chunks.
-///
 /// Functions → Function, container types (struct/enum/union) are assigned via
 /// `variable_declaration` and reclassified by `post_process_zig`.
 const CHUNK_QUERY: &str = r#"
@@ -102,15 +101,10 @@ fn post_process_zig(
 }
 
 /// Extracts and formats the return type from a Zig function signature.
-/// 
 /// Parses a Zig function signature to locate the return type between the closing parenthesis and opening brace. Strips error union syntax (leading `!`) and filters out void and noreturn types. Returns a formatted string describing the return type.
-/// 
 /// # Arguments
-/// 
 /// * `signature` - A Zig function signature string (e.g., `fn name(params) ReturnType { ... }`)
-/// 
 /// # Returns
-/// 
 /// `Some(String)` containing a formatted description like "Returns TypeName" if a valid return type is found, or `None` if the signature has no return type, returns void/noreturn, or contains only whitespace.
 fn extract_return(signature: &str) -> Option<String> {
     // Zig: fn name(params) ReturnType { ... }
@@ -189,19 +183,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a Zig source file containing a simple addition function and verifies that the parser correctly identifies it as a function chunk.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, if the parser fails to parse the file, if the "add" function chunk is not found in the parsed results, or if the parsed chunk is not of type `ChunkType::Function`.
 
     #[test]
     fn parse_zig_function() {
@@ -218,21 +199,6 @@ pub fn add(a: i32, b: i32) i32 {
         let func = chunks.iter().find(|c| c.name == "add").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
-    /// Verifies that the parser correctly identifies and classifies a Zig struct definition.
-    /// 
-    /// This test parses a Zig source file containing a struct named `Point` with fields and a method, then validates that the parser recognizes it as a struct chunk with the correct name and type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This is a test function that asserts parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the file cannot be parsed, the `Point` struct is not found in the parsed chunks, or the chunk type is not `ChunkType::Struct`.
 
     #[test]
     fn parse_zig_struct() {
@@ -254,21 +220,6 @@ const Point = struct {
         let s = chunks.iter().find(|c| c.name == "Point").unwrap();
         assert_eq!(s.chunk_type, ChunkType::Struct);
     }
-    /// Tests parsing of Zig enum declarations.
-    /// 
-    /// This test function verifies that the parser correctly identifies and classifies enum definitions in Zig source code. It creates a temporary file containing a simple enum definition with three variants, parses it, and validates that the resulting chunk is properly recognized as an enum type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None.
-    /// 
-    /// # Returns
-    /// 
-    /// None (unit type). This is a test function.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to initialize, if file parsing fails, if the "Color" enum is not found in the parsed chunks, or if the chunk type is not correctly identified as `ChunkType::Enum`.
 
     #[test]
     fn parse_zig_enum() {
@@ -285,21 +236,6 @@ const Color = enum {
         let e = chunks.iter().find(|c| c.name == "Color").unwrap();
         assert_eq!(e.chunk_type, ChunkType::Enum);
     }
-    /// Parses a Zig source file and verifies that function calls within code chunks are correctly extracted.
-    /// 
-    /// This test function creates a temporary Zig file containing a `process` function with standard library calls, parses it using the Parser, locates the `process` function chunk, extracts all calls from that chunk, and asserts that expected function calls (like `init` or `print`) are present in the extracted results.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function with no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function returns `()` and is intended to be run as a test.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, if the parser fails to initialize or parse the file, if the `process` function chunk is not found, or if the expected function calls are not present in the extracted results.
 
     #[test]
     fn parse_zig_calls() {

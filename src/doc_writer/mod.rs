@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use crate::language::Language;
 
 /// Result from Phase 2 LLM doc generation.
-///
 /// Carries everything needed to write a doc comment back to a source file:
 /// the target location, the generated text, and metadata for cache/idempotency.
 #[derive(Debug, Clone)]

@@ -12,7 +12,6 @@ use super::BatchContext;
 const PIPELINE_FAN_OUT_LIMIT: usize = 50;
 
 /// Check if a command (first token) can receive piped names.
-///
 /// Parses the tokens with a dummy name arg to get a `BatchCmd`, then checks
 /// `is_pipeable()`. Falls back to false on parse failure.
 fn is_pipeable_command(tokens: &[String]) -> bool {
@@ -28,7 +27,6 @@ fn is_pipeable_command(tokens: &[String]) -> bool {
 }
 
 /// Names of pipeable commands for error messages.
-///
 /// Kept in sync with `BatchCmd::is_pipeable()` — the `test_pipeable_names_sync`
 /// test verifies every name here actually parses as a pipeable command.
 const PIPEABLE_NAMES: &[&str] = &[
@@ -37,16 +35,13 @@ const PIPEABLE_NAMES: &[&str] = &[
 ];
 
 /// Returns a comma-separated string of all command names that support piping.
-///
 /// # Returns
-///
 /// A `String` containing the names of pipeable commands joined by ", ".
 fn pipeable_command_names() -> String {
     PIPEABLE_NAMES.join(", ")
 }
 
 /// Extract function/chunk names from a dispatch result JSON value.
-///
 /// Tries each extractor in order: bare array, standard named fields, scout
 /// nested groups, plus the top-level "name" field (explain). Deduplicates
 /// preserving order.
@@ -91,12 +86,10 @@ fn extract_from_bare_array(val: &serde_json::Value) -> Vec<String> {
 }
 
 /// Extract names from any fields in a JSON object, with one level of nesting.
-///
 /// Walks all top-level object values looking for:
 /// 1. Arrays of objects with a `"name"` field (flat: `results[].name`)
 /// 2. Arrays of objects containing nested arrays with `"name"` fields
 ///    (nested: `file_groups[].chunks[].name` — scout pattern)
-///
 /// This is key-agnostic: adding a new command with any nesting shape
 /// automatically works without adding bespoke extractors.
 fn extract_from_standard_fields(val: &serde_json::Value) -> Vec<String> {

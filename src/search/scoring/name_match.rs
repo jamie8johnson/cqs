@@ -7,10 +7,8 @@ use crate::nl::tokenize_identifier;
 use super::config::ScoringConfig;
 
 /// Detect whether a query looks like a code identifier vs natural language.
-///
 /// Name-like: "parseConfig", "handle_error", "CircuitBreaker"
 /// NL-like: "function that handles errors", "how does parsing work"
-///
 /// Used to gate name_boost — boosting by name similarity is harmful for
 /// NL queries because it rewards coincidental substring matches over
 /// semantic relevance.
@@ -71,7 +69,6 @@ pub(crate) fn is_name_like_query(query: &str) -> bool {
 }
 
 /// Pre-tokenized query for efficient name matching in loops
-///
 /// Create once before iterating over search results, then call `score()` for each name.
 /// Avoids re-tokenizing the query for every result.
 pub(crate) struct NameMatcher {
@@ -164,7 +161,6 @@ impl NameMatcher {
 }
 
 /// Compute name match score for hybrid search
-///
 /// For repeated calls with the same query, use `NameMatcher::new(query).score(name)` instead.
 #[cfg(test)]
 pub(crate) fn name_match_score(query: &str, name: &str) -> f32 {

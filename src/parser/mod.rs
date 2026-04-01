@@ -29,7 +29,6 @@ use tree_sitter::StreamingIterator;
 pub(crate) const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
 
 /// Combined parse result: chunks, function calls, and type references.
-///
 /// Returned by `parse_file_all()` and `parse_injected_all()` which extract
 /// everything in a single file read + tree-sitter parse.
 pub type ParseAllResult = (Vec<Chunk>, Vec<FunctionCalls>, Vec<ChunkTypeRefs>);
@@ -38,15 +37,11 @@ pub type ParseAllResult = (Vec<Chunk>, Vec<FunctionCalls>, Vec<ChunkTypeRefs>);
 pub(crate) const MAX_CHUNK_BYTES: usize = 100_000;
 
 /// Code parser using tree-sitter grammars
-///
 /// Extracts functions, methods, classes, and other code elements
 /// from source files in supported languages.
-///
 /// # Example
-///
 /// ```no_run
 /// use cqs::Parser;
-///
 /// let parser = Parser::new()?;
 /// let chunks = parser.parse_file(std::path::Path::new("src/main.rs"))?;
 /// for chunk in chunks {
@@ -171,7 +166,6 @@ impl Parser {
     }
 
     /// Parse a source file and extract code chunks
-    ///
     /// Returns an empty Vec for non-UTF8 files (with a warning logged).
     /// Returns an error for unsupported file types.
     pub fn parse_file(&self, path: &Path) -> Result<Vec<Chunk>, ParserError> {
@@ -214,11 +208,9 @@ impl Parser {
     }
 
     /// Parse in-memory source code and extract code chunks.
-    ///
     /// Like `parse_file`, but operates on already-read source content with a
     /// known language. The `path` is used only for chunk origin metadata
     /// (`Chunk.file` field), not for filesystem access.
-    ///
     /// Used by `train_data` to parse `git show` output without writing temp files.
     pub fn parse_source(
         &self,
@@ -348,13 +340,10 @@ impl Parser {
     }
 
     /// Parse a source file and extract chunks, calls, AND type references in one pass.
-    ///
     /// Combines `parse_file()` and `parse_file_relationships()` to avoid double
     /// file read + double tree-sitter parse. Single file read, single outer parse,
     /// two query cursor passes on the same tree, single injection parse.
-    ///
     /// Returns `(chunks, function_calls, chunk_type_refs)`.
-    ///
     /// Used by `pipeline::parser_stage()` for single-pass indexing and
     /// `watch::reindex_files()` for incremental updates.
     pub fn parse_file_all(&self, path: &Path) -> Result<ParseAllResult, ParserError> {
@@ -630,16 +619,13 @@ impl Parser {
     }
 
     /// Retrieves the list of file extensions supported by the language registry.
-    ///
     /// # Returns
-    ///
     /// A vector of supported file extensions as static string slices (e.g., "rs", "py", "js").
     pub fn supported_extensions(&self) -> Vec<&'static str> {
         crate::language::REGISTRY.supported_extensions().collect()
     }
 
     /// Parse fenced code blocks from markdown into typed chunks.
-    ///
     /// For each block with a recognized language, parses the content with that
     /// language's tree-sitter grammar and extracts chunks. Line numbers are
     /// adjusted to reflect their position in the original markdown file.
@@ -740,7 +726,6 @@ impl Parser {
 }
 
 /// Find a direct child of a tree-sitter node by kind.
-///
 /// Shared helper used by injection parsing and HTML language definition.
 #[allow(clippy::manual_find)]
 pub(crate) fn find_child_by_kind<'a>(
@@ -794,19 +779,12 @@ mod tests {
     use tempfile::TempDir;
 
     /// Verifies that the Parser correctly extracts function definitions from Rust source code.
-    ///
     /// This is a unit test that validates the `parse_source` method's ability to identify and parse individual functions from a source file. It tests parsing a Rust snippet containing two function definitions and asserts that both functions are extracted as separate chunks with their correct names.
-    ///
     /// # Arguments
-    ///
     /// None. This is a test function that creates its own test data internally.
-    ///
     /// # Returns
-    ///
     /// None. This function performs assertions and will panic if any assertion fails.
-    ///
     /// # Panics
-    ///
     /// Panics if the parser initialization fails, if source parsing fails, or if any of the assertions about extracted chunks fail (incorrect count, missing function names).
 
     #[test]

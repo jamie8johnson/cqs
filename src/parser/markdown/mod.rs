@@ -70,10 +70,8 @@ fn make_markdown_chunk(fields: ChunkFields<'_>) -> Chunk {
 }
 
 /// Parse markdown into chunks using heading-based splitting
-///
 /// Adaptive heading detection handles both standard (H1 -> H2 -> H3) and
 /// inverted (H2 title -> H1 chapters -> H3 subsections) hierarchies.
-///
 /// **Precondition:** `source` should use LF line endings. CRLF input works
 /// (Rust's `.lines()` handles both), but content hashes will differ from
 /// LF-normalized versions of the same file. The parser pipeline normalizes
@@ -525,7 +523,6 @@ fn build_breadcrumb(title: &str, heading_stack: &[String]) -> String {
 }
 
 /// Extract file stem from a relative .md/.mdx URL.
-///
 /// Returns None for external URLs (http/https), absolute paths, or non-markdown targets.
 fn extract_md_file_stem(url: &str) -> Option<String> {
     // Skip external URLs
@@ -555,7 +552,6 @@ fn extract_md_file_stem(url: &str) -> Option<String> {
 }
 
 /// Extract anchor fragment from a URL.
-///
 /// Returns the part after `#` if present and non-empty.
 fn extract_anchor(url: &str) -> Option<String> {
     let anchor = url.split_once('#')?.1;

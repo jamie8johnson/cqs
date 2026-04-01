@@ -6,7 +6,6 @@
 use super::{ChunkType, FieldStyle, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting LaTeX definitions as chunks.
-///
 /// Captures:
 /// - Sectioning commands: \chapter, \section, \subsection, etc.
 /// - Command definitions: \newcommand, \renewcommand, etc.
@@ -64,7 +63,6 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// Map minted/lstlisting language names to cqs language identifiers.
-///
 /// Returns `None` if the language name maps to the default target,
 /// `Some("_skip")` if unrecognized, or `Some(lang)` for a specific language.
 fn map_code_language(lang: &str) -> Option<&'static str> {
@@ -92,7 +90,6 @@ fn map_code_language(lang: &str) -> Option<&'static str> {
 }
 
 /// Detect code language from a `minted_environment` node.
-///
 /// Checks the `begin` child's `language` field (`\begin{minted}{python}`).
 fn detect_minted_language(node: tree_sitter::Node, source: &str) -> Option<&'static str> {
     let mut cursor = node.walk();
@@ -128,7 +125,6 @@ fn detect_minted_language(node: tree_sitter::Node, source: &str) -> Option<&'sta
 }
 
 /// Detect code language from a `listing_environment` node.
-///
 /// The LaTeX grammar includes `[language=X]` options in the `source_code`
 /// content (not as a parsed `begin` attribute). This function checks the
 /// `source_code` content prefix for `[language=X]`.
@@ -248,23 +244,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Tests that the parser correctly identifies and extracts LaTeX document sections and subsections.
-    /// 
-    /// This test creates a temporary LaTeX file containing multiple sections and subsections, parses it using the Parser, and verifies that all expected sections ("Introduction", "Background", "Methods") are extracted as chunks with their correct types and names.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function asserts test conditions and panics on failure.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if any assertion fails, including:
-    /// - If the expected "Introduction", "Background", or "Methods" sections are not found in the parsed chunks
-    /// - If the "Introduction" chunk does not have the correct ChunkType::Section type
 
     #[test]
     fn parse_latex_sections() {
@@ -304,22 +283,6 @@ The methods section.
         let intro = chunks.iter().find(|c| c.name == "Introduction").unwrap();
         assert_eq!(intro.chunk_type, ChunkType::Section);
     }
-    /// Parses a LaTeX file containing custom command definitions and verifies they are correctly extracted.
-    /// 
-    /// This is a test function that creates a temporary LaTeX file with `\newcommand` definitions, parses it using the Parser, and asserts that the custom commands (`highlight` and `todo`) are properly recognized and classified as functions in the resulting chunks.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This function operates on hardcoded LaTeX content.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be created
-    /// - The parser initialization fails
-    /// - File parsing fails
-    /// - The expected `highlight` or `todo` commands are not found in parsed chunks
-    /// - The `highlight` command is not classified as `ChunkType::Function`
 
     #[test]
     fn parse_latex_command_definition() {
@@ -349,19 +312,6 @@ The methods section.
         let cmd = chunks.iter().find(|c| c.name == "highlight").unwrap();
         assert_eq!(cmd.chunk_type, ChunkType::Function);
     }
-    /// Parses LaTeX environments from a temporary file and verifies that theorem and proof environments are correctly identified.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data internally.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to initialize, fails to parse the file, or if any of the assertions fail (missing expected environments or incorrect chunk type classification).
 
     #[test]
     fn parse_latex_environment() {
@@ -397,25 +347,6 @@ This is left as an exercise.
     }
 
     // --- Injection tests ---
-    /// Verifies that the parser correctly extracts code blocks from LaTeX minted environments and preserves LaTeX section structure.
-    /// 
-    /// This is a unit test that validates the parser's ability to:
-    /// 1. Recognize `\begin{minted}{language}` blocks in LaTeX documents
-    /// 2. Extract the code content with the correct language designation (Python in this case)
-    /// 3. Parse nested code structures like function and class definitions
-    /// 4. Maintain LaTeX sections alongside extracted code chunks
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a self-contained test function that creates its own test data and parser instance.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function is a test assertion that either passes silently or panics on failure.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to extract the Python function `greet` from the minted block, or if the LaTeX section `Code Example` is not found in the parsed chunks.
 
     #[test]
     fn parse_latex_minted_extracts_code() {
@@ -461,19 +392,6 @@ class Calculator:
             "Expected LaTeX section 'Code Example'"
         );
     }
-    /// Verifies that the parser correctly extracts code chunks from LaTeX lstlisting environments with language specifications.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function asserts expected behavior and panics on failure.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if no Rust language chunks are extracted from a LaTeX document containing a `\begin{lstlisting}[language=Rust]` block, or if file operations fail.
 
     #[test]
     fn parse_latex_listing_extracts_code() {
@@ -514,19 +432,6 @@ fn add(a: i32, b: i32) -> i32 {
                 .collect::<Vec<_>>()
         );
     }
-    /// Tests that a LaTeX file without code listings is parsed as a single LaTeX chunk with no code injection.
-    /// 
-    /// # Arguments
-    /// 
-    /// This is a test function with no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing. The function performs assertions to verify expected behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if any assertion fails, specifically if any parsed chunk is not identified as LaTeX language, or if file operations fail unexpectedly.
 
     #[test]
     fn parse_latex_without_listings_unchanged() {
@@ -551,19 +456,6 @@ Some methods.
             );
         }
     }
-    /// Tests that the parser correctly identifies a LaTeX document with no function calls.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to verify parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to initialize, fails to parse the test file, or if any extracted chunks contain function calls when none are expected.
 
     #[test]
     fn parse_latex_no_calls() {

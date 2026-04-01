@@ -19,7 +19,6 @@ impl LlmClient {
     }
 
     /// Build a contrastive prompt with nearest-neighbor context.
-    ///
     /// Tells the LLM about similar functions, producing summaries like
     /// "unlike heap_sort, this function uses a divide-and-conquer merge strategy".
     pub(super) fn build_contrastive_prompt(
@@ -55,7 +54,6 @@ impl LlmClient {
     }
 
     /// Build the prompt for generating a doc comment for a code chunk.
-    ///
     /// Unlike `build_prompt` (one-sentence summary), this generates a full documentation
     /// comment with language-specific conventions (Rust `# Arguments`/`# Returns`, Python
     /// Google-style docstrings, Go function-name-first, etc.).
@@ -86,7 +84,11 @@ impl LlmClient {
 
         format!(
             "Write a concise doc comment for this {}. \
-             Describe what it does, its parameters, and return value. \
+             Focus on WHAT it does and WHY, not HOW. \
+             Skip boilerplate sections (# Arguments, # Returns, # Panics) unless they add \
+             non-obvious information beyond what the signature already shows. \
+             For simple functions (≤3 params, obvious return type), one sentence is enough. \
+             Never generate empty lines. \
              Output only the doc text, no code fences or comment markers.{}\n\n\
              ```{}\n{}\n```",
             chunk_type, appendix, language, truncated
@@ -94,7 +96,6 @@ impl LlmClient {
     }
 
     /// Build the prompt for HyDE query prediction.
-    ///
     /// Given a function's content, signature, and language, produces a prompt that
     /// asks the LLM to generate 3-5 search queries a developer would use to find
     /// this function.
@@ -192,7 +193,6 @@ mod tests {
         assert!(prompt.contains("doc comment"));
         assert!(prompt.contains("```elixir"));
         // No language-specific appendix for elixir
-        assert!(!prompt.contains("# Arguments"));
         assert!(!prompt.contains("Google-style"));
         assert!(!prompt.contains("Go conventions"));
         assert!(!prompt.contains("JSDoc"));

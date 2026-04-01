@@ -8,7 +8,6 @@ use crate::store::ChunkSummary;
 use crate::Store;
 
 /// Signal words that indicate an intentional doc comment, even if short.
-///
 /// These words (case-insensitive) mark comments that carry meaningful safety,
 /// maintenance, or deprecation signals. A short doc containing any of these
 /// should be preserved rather than replaced by LLM-generated text.
@@ -28,17 +27,14 @@ const SIGNAL_WORDS: &[&str] = &[
 ];
 
 /// Determine whether a chunk needs an LLM-generated doc comment.
-///
 /// Returns `true` when the chunk is a callable (function/method/property/macro),
 /// is the first window (or not windowed), and has either no doc comment or a
 /// "thin" doc (fewer than 30 characters with no signal words).
 /// Check if a chunk should be skipped for doc comment generation.
-///
 /// Skips test functions (by name or file path) and non-source files
 /// (docs, config, markdown) that may contain code-like chunks but
 /// shouldn't have doc comments injected.
 /// Delegates to the canonical `crate::is_test_chunk` plus content-based markers (EX-14).
-///
 /// The canonical function checks name patterns and file paths. We add content-based
 /// checks for test attributes/annotations since doc comments are never useful on tests.
 fn is_test_chunk(chunk: &ChunkSummary) -> bool {
@@ -51,7 +47,6 @@ fn is_test_chunk(chunk: &ChunkSummary) -> bool {
 }
 
 /// Check if a chunk is in a writable source file (not docs, config, etc.).
-///
 /// Uses the language registry's supported extensions instead of a hardcoded list (EX-13).
 /// Excludes `docs/` directories and data-format languages (JSON, XML, YAML, TOML, INI,
 /// Markdown, HTML, CSS, Nix, Make, LaTeX, ASP.NET) that shouldn't have doc comments injected.
@@ -89,18 +84,13 @@ fn is_source_file(chunk: &ChunkSummary) -> bool {
 }
 
 /// Determines whether a code chunk needs a documentation comment.
-///
 /// Returns `true` if the chunk is a callable, non-test item from a source file that either
 /// lacks documentation or has inadequate documentation (less than 30 characters and no signal
 /// words like "TODO" or "FIXME"). Only the first window of windowed chunks is considered
 /// eligible.
-///
 /// # Arguments
-///
 /// * `chunk` - A reference to the ChunkSummary to evaluate
-///
 /// # Returns
-///
 /// true if the chunk should receive a generated doc comment, false otherwise
 pub fn needs_doc_comment(chunk: &ChunkSummary) -> bool {
     // Only callable types get doc comments
@@ -137,11 +127,9 @@ pub fn needs_doc_comment(chunk: &ChunkSummary) -> bool {
 }
 
 /// Run the LLM doc-comment generation pass using the Batches API.
-///
 /// Scans all indexed chunks, selects those needing doc comments (via `needs_doc_comment`),
 /// checks the cache, submits uncached candidates as a batch to Claude with `build_doc_prompt`,
 /// and returns the results. Cached results are returned without an API call.
-///
 /// `max_docs` limits how many functions to process (0 = unlimited).
 /// `improve_all` regenerates docs for all functions, even those with existing adequate docs.
 pub fn doc_comment_pass(

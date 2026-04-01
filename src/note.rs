@@ -10,7 +10,6 @@ use thiserror::Error;
 use crate::normalize_slashes;
 
 /// Sentiment thresholds for classification
-///
 /// 0.3 chosen to separate neutral observations from significant notes:
 /// - Values near 0 are neutral observations
 /// - Values beyond ±0.3 indicate meaningful sentiment (warning/pattern)
@@ -74,7 +73,6 @@ pub struct Note {
 
 impl Note {
     /// Generate embedding text for this note
-    ///
     /// Adds a prefix based on sentiment to help with retrieval:
     /// - Negative sentiment: "Warning: "
     /// - Positive sentiment: "Pattern: "
@@ -91,9 +89,7 @@ impl Note {
     }
 
     /// Returns the sentiment score of this analysis result.
-    ///
     /// # Returns
-    ///
     /// A floating-point value representing the sentiment score, typically in the range [-1.0, 1.0] where negative values indicate negative sentiment, zero indicates neutral sentiment, and positive values indicate positive sentiment.
     pub fn sentiment(&self) -> f32 {
         self.sentiment
@@ -110,7 +106,6 @@ impl Note {
     }
 
     /// Get the human-readable sentiment label for this note.
-    ///
     /// Returns "WARNING" for negative, "PATTERN" for positive, "NOTE" for neutral.
     /// Used by read commands for note injection headers.
     pub fn sentiment_label(&self) -> &'static str {
@@ -199,7 +194,6 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
 }
 
 /// Rewrite notes.toml by applying a mutation to the parsed entries.
-///
 /// Reads the file, parses into `NoteEntry` structs, applies `mutate`,
 /// serializes back with the standard header, and writes atomically.
 /// Holds an exclusive file lock for the entire read-modify-write cycle.
@@ -334,7 +328,6 @@ pub fn rewrite_notes_file(
 }
 
 /// Parse notes from a string (for testing)
-///
 /// Note IDs are generated from a hash of the text content (first 16 hex chars = 64 bits).
 /// This ensures IDs are stable when notes are reordered in the file.
 /// With 16 hex chars, collision probability is ~0.003% at 10k notes (birthday paradox).

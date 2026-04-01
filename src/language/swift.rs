@@ -3,7 +3,6 @@
 use super::{ChunkType, FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Swift code chunks.
-///
 /// Swift's tree-sitter grammar uses `class_declaration` for classes, structs,
 /// enums, actors, AND extensions. The `post_process_chunk` hook reclassifies
 /// based on keyword children and body type.
@@ -97,15 +96,10 @@ const COMMON_TYPES: &[&str] = &[
 ];
 
 /// Extracts the return type from a Swift function signature and formats it as documentation text.
-/// 
 /// Parses a Swift function signature to find the return type annotation (the part after `->` and before `{`), then formats it as a documentation string. Void and empty return types are treated as no return value.
-/// 
 /// # Arguments
-/// 
 /// * `signature` - A Swift function signature string containing a `->` return type annotation
-/// 
 /// # Returns
-/// 
 /// Returns `Some(String)` containing formatted return documentation if a non-void return type is found, or `None` if the signature has no `->` marker, an empty return type, or a `Void` return type.
 fn extract_return(signature: &str) -> Option<String> {
     // Swift: func name(params) -> ReturnType {
@@ -127,7 +121,6 @@ fn extract_return(signature: &str) -> Option<String> {
 }
 
 /// Post-process Swift chunks to reclassify `class_declaration` into the correct type.
-///
 /// Swift's tree-sitter grammar uses `class_declaration` for all structural types:
 /// classes, structs, enums, actors, and extensions. We distinguish them by:
 /// - `enum_class_body` child → Enum
@@ -135,7 +128,6 @@ fn extract_return(signature: &str) -> Option<String> {
 /// - Anonymous "actor" keyword → Class (actor treated as class)
 /// - Anonymous "extension" keyword → Extension
 /// - Anonymous "class" keyword or default → Class
-///
 /// Also reclassifies `init` methods as Constructor.
 fn post_process_swift(
     name: &mut String,
@@ -279,21 +271,6 @@ mod tests {
         );
         assert_eq!(extract_return("func nothing() -> Void {"), None);
     }
-    /// Parses a Swift class definition from a temporary file and verifies the parser correctly identifies it as a Class chunk type.
-    /// 
-    /// This is an integration test that creates a temporary Swift file containing a Shape class with a property and method, then uses the Parser to extract code chunks and validates that the Shape class is correctly identified with the Class chunk type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This function is a self-contained test with no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function is a test that asserts parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to parse the file, the Shape class is not found in the parsed chunks, or the chunk type is not Class.
 
     #[test]
     fn parse_swift_class() {
@@ -312,23 +289,6 @@ class Shape {
         let class = chunks.iter().find(|c| c.name == "Shape").unwrap();
         assert_eq!(class.chunk_type, ChunkType::Class);
     }
-    /// Parses a Swift struct definition and verifies the parser correctly identifies it as a Struct chunk type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be written
-    /// - The parser fails to parse the file
-    /// - A chunk named "Point" is not found in the parsed chunks
-    /// - The Point chunk type is not identified as `ChunkType::Struct`
 
     #[test]
     fn parse_swift_struct() {
@@ -344,24 +304,6 @@ struct Point {
         let s = chunks.iter().find(|c| c.name == "Point").unwrap();
         assert_eq!(s.chunk_type, ChunkType::Struct);
     }
-    /// Tests that the parser correctly identifies and classifies Swift enum declarations.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded Swift source code.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function asserts conditions and panics if any assertion fails.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - Writing the temporary file fails
-    /// - Parser initialization fails
-    /// - Parsing the file fails
-    /// - The "Direction" enum chunk is not found in the parsed results
-    /// - The parsed chunk type is not `ChunkType::Enum`
 
     #[test]
     fn parse_swift_enum() {
@@ -379,23 +321,6 @@ enum Direction {
         let e = chunks.iter().find(|c| c.name == "Direction").unwrap();
         assert_eq!(e.chunk_type, ChunkType::Enum);
     }
-    /// Parses a Swift protocol definition and verifies it is correctly identified as a Trait chunk type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on a hardcoded Swift protocol definition.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parsing behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be written
-    /// - The parser fails to initialize or parse the file
-    /// - A chunk named "Drawable" is not found in the parsed output
-    /// - The parsed chunk type does not equal `ChunkType::Trait`
 
     #[test]
     fn parse_swift_protocol() {
@@ -410,21 +335,6 @@ protocol Drawable {
         let p = chunks.iter().find(|c| c.name == "Drawable").unwrap();
         assert_eq!(p.chunk_type, ChunkType::Trait);
     }
-    /// Parses a Swift function definition and verifies its metadata.
-    /// 
-    /// This test function creates a temporary Swift file containing a function definition, parses it using the Parser, and asserts that the resulting chunk is correctly identified as a Function type with the expected name.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that uses hardcoded Swift source code.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and panics on failure.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the parser fails to initialize or parse the file, the "greet" function chunk is not found in the parsed results, or the chunk type is not ChunkType::Function.
 
     #[test]
     fn parse_swift_function() {
@@ -439,25 +349,6 @@ func greet(name: String) -> String {
         let func = chunks.iter().find(|c| c.name == "greet").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
-    /// Parses a Swift actor declaration and verifies it is correctly identified as a class chunk type.
-    /// 
-    /// This test function creates a temporary Swift file containing an actor definition with a property and method, parses it using the Parser, and asserts that the resulting chunk for the actor is correctly classified as a ChunkType::Class.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function with no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and returns unit type `()`.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be created
-    /// - Parsing the Swift file fails
-    /// - No chunk named "Counter" is found in the parsed results
-    /// - The Counter chunk is not of type ChunkType::Class
 
     #[test]
     fn parse_swift_actor() {
@@ -476,23 +367,6 @@ actor Counter {
         let a = chunks.iter().find(|c| c.name == "Counter").unwrap();
         assert_eq!(a.chunk_type, ChunkType::Class);
     }
-    /// Verifies that the parser correctly identifies and separates Swift struct definitions from their extensions.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded Swift source code.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The parser fails to parse the temporary Swift file
-    /// - Fewer than 2 chunks named "Point" are found (struct + extension)
-    /// - No chunk with type `ChunkType::Struct` is found
-    /// - No chunk with type `ChunkType::Class` (representing the extension) is found
 
     #[test]
     fn parse_swift_extension() {
@@ -529,21 +403,6 @@ extension Point {
             "Expected one Point to be Extension"
         );
     }
-    /// Parses a Swift typealias declaration and verifies it is correctly identified as a TypeAlias chunk.
-    /// 
-    /// This test function creates a temporary Swift file containing a typealias definition, parses it using the Parser, and asserts that the resulting chunk has the correct name and type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function with no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and returns nothing.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file creation fails, parsing fails, the "StringMap" chunk is not found, or the chunk type assertion fails.
 
     #[test]
     fn parse_swift_typealias() {
@@ -554,21 +413,6 @@ extension Point {
         let ta = chunks.iter().find(|c| c.name == "StringMap").unwrap();
         assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
     }
-    /// Parses a Swift source file and verifies that function calls within a function are correctly extracted.
-    /// 
-    /// This test function creates a temporary Swift file containing a `process` function, parses it using the `Parser`, locates the `process` function chunk, and extracts all function calls from it. It then asserts that the expected function calls (`transform` and `print`) are present in the extracted calls.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded Swift source code.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and panics on failure.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file creation fails, parsing fails, the `process` function is not found in the parsed chunks, or if the expected function calls (`transform` or `print`) are not found in the extracted calls.
 
     #[test]
     fn parse_swift_calls() {
@@ -597,24 +441,6 @@ func process(input: String) -> Int {
             names
         );
     }
-    /// Parses a Swift method defined within a class and verifies correct extraction of method metadata.
-    /// 
-    /// # Arguments
-    /// 
-    /// This function takes no arguments.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing. This is a test function that asserts on parsed results.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be written
-    /// - The parser fails to initialize or parse the file
-    /// - The "add" method chunk is not found in the parsed results
-    /// - The parsed method's chunk type is not `ChunkType::Method`
-    /// - The parsed method's parent type name is not "Calculator"
 
     #[test]
     fn parse_swift_method_in_class() {

@@ -1,7 +1,6 @@
 //! Central scoring configuration constants.
 
 /// Central configuration for all search scoring constants.
-///
 /// Consolidates name matching tiers, note boost factor, importance
 /// demotion weights, and parent boost parameters into one struct.
 /// Use `ScoringConfig::DEFAULT` everywhere — no scattered magic numbers.

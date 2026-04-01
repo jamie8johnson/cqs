@@ -42,7 +42,6 @@ pub struct HealthReport {
 }
 
 /// Run a comprehensive health check on the index.
-///
 /// Only `store.stats()` is fatal. All other sub-queries degrade gracefully,
 /// populating defaults and adding warnings.
 pub fn health_check(
@@ -341,7 +340,6 @@ mod tests {
     }
 
     /// TC-3: Verify untested_hotspots is populated when a high-caller function has no tests.
-    ///
     /// The filter (health.rs lines 93-97) requires:
     ///   caller_count >= HOTSPOT_MIN_CALLERS (5)
     ///   test_count == 0
@@ -419,7 +417,6 @@ mod tests {
     }
 
     /// TC-3b: Verify untested_hotspots is empty when a hotspot has test coverage.
-    ///
     /// When a high-caller function has at least one test, it should not appear
     /// in untested_hotspots even if risk is otherwise High.
     #[test]

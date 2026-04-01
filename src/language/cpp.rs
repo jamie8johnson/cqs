@@ -185,21 +185,14 @@ fn extract_qualified_method(node: tree_sitter::Node, source: &str) -> Option<Str
 }
 
 /// Extracts the return type from a function signature in either Rust or C-style syntax.
-/// 
 /// # Arguments
-/// 
 /// * `signature` - A string slice containing a function signature to parse
-/// 
 /// # Returns
-/// 
 /// Returns `Some(String)` containing a formatted return type description (e.g., "returns i32") if a non-void return type is found. Returns `None` if no return type is detected or the return type is void.
-/// 
 /// # Description
-/// 
 /// Attempts two parsing strategies:
 /// 1. Rust-style: Looks for `->` return type annotation after the closing parenthesis
 /// 2. C-style: Extracts the type specifier(s) preceding the function name (filtered to exclude storage class and qualifier keywords)
-/// 
 /// The extracted type is tokenized and formatted with a "returns " prefix.
 fn extract_return(signature: &str) -> Option<String> {
     // Check for trailing return type: auto foo() -> ReturnType
@@ -254,7 +247,6 @@ fn extract_return(signature: &str) -> Option<String> {
 }
 
 /// Post-process C++ chunks: detect constructors.
-///
 /// A `function_definition` with no return type (no type child before the declarator)
 /// is a constructor. Destructors (name starts with `~`) are excluded.
 #[allow(clippy::ptr_arg)] // signature must match PostProcessChunkFn type alias
@@ -363,24 +355,6 @@ mod tests {
             Some("Returns std::string".to_string())
         );
     }
-    /// Verifies that the parser correctly identifies and extracts a free C++ function from source code.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and panics on failure.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be written
-    /// - The parser fails to initialize or parse the file
-    /// - A chunk named "foo" is not found in the parsed results
-    /// - The parsed chunk is not of type `Function`
-    /// - The function has an unexpected parent type name
 
     #[test]
     fn parse_cpp_free_function() {
@@ -392,25 +366,6 @@ mod tests {
         assert_eq!(func.chunk_type, ChunkType::Function);
         assert!(func.parent_type_name.is_none());
     }
-    /// Parses a C++ class definition and verifies the parser correctly identifies it as a class chunk.
-    /// 
-    /// This is a test function that creates a temporary C++ file containing a simple Calculator class, parses it using the Parser, and asserts that the resulting chunks contain the Calculator class with the correct chunk type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This function uses hardcoded test data.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing (`()`). This is a test function that uses assertions to validate behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if any of the following assertions fail:
-    /// - Creating the Parser fails
-    /// - Parsing the temporary file fails
-    /// - The Calculator class is not found in the parsed chunks
-    /// - The Calculator chunk does not have type `ChunkType::Class`
 
     #[test]
     fn parse_cpp_class() {
@@ -428,17 +383,6 @@ public:
         let class = chunks.iter().find(|c| c.name == "Calculator").unwrap();
         assert_eq!(class.chunk_type, ChunkType::Class);
     }
-    /// Parses a C++ struct definition and verifies it is correctly identified.
-    /// 
-    /// This function creates a temporary C++ file containing a Point struct definition, parses it using the Parser, and asserts that the resulting chunk is correctly identified as a struct with the name "Point".
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to initialize, if parsing the temporary file fails, if no chunk named "Point" is found in the parsed results, or if the chunk type is not `ChunkType::Struct`.
 
     #[test]
     fn parse_cpp_struct() {
@@ -449,25 +393,6 @@ public:
         let s = chunks.iter().find(|c| c.name == "Point").unwrap();
         assert_eq!(s.chunk_type, ChunkType::Struct);
     }
-    /// Parses a C++ file containing a namespace declaration and verifies that the namespace is correctly identified as a Module chunk.
-    /// 
-    /// This test function creates a temporary C++ file with a `utils` namespace, parses it using the Parser, and asserts that the resulting chunks contain a chunk named "utils" with the type ChunkType::Module.
-    /// 
-    /// # Arguments
-    /// 
-    /// None.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This is a test function that performs assertions.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be created
-    /// - The parser fails to initialize or parse the file
-    /// - A chunk named "utils" is not found in the parsed chunks
-    /// - The "utils" chunk does not have type ChunkType::Module
 
     #[test]
     fn parse_cpp_namespace() {
@@ -482,19 +407,6 @@ namespace utils {
         let ns = chunks.iter().find(|c| c.name == "utils").unwrap();
         assert_eq!(ns.chunk_type, ChunkType::Module);
     }
-    /// Verifies that a C++ concept declaration is correctly parsed as a Trait chunk type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded C++ concept syntax.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and panics on test failure.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser initialization fails, file parsing fails, the "Printable" concept is not found in parsed chunks, or the chunk type is not ChunkType::Trait.
 
     #[test]
     fn parse_cpp_concept() {
@@ -510,19 +422,6 @@ concept Printable = requires(T t) {
         let concept = chunks.iter().find(|c| c.name == "Printable").unwrap();
         assert_eq!(concept.chunk_type, ChunkType::Trait);
     }
-    /// Verifies that the parser correctly identifies and categorizes C++ type aliases.
-    /// 
-    /// # Arguments
-    /// 
-    /// This function takes no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing; validates parser behavior through assertions.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if a temporary file cannot be created, the parser fails to initialize, file parsing fails, the "StringVec" chunk is not found, or the chunk type is not `ChunkType::TypeAlias`.
 
     #[test]
     fn parse_cpp_using_alias() {
@@ -533,21 +432,6 @@ concept Printable = requires(T t) {
         let ta = chunks.iter().find(|c| c.name == "StringVec").unwrap();
         assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
     }
-    /// Parses a C++ typedef declaration and verifies the resulting chunk is correctly identified as a type alias.
-    /// 
-    /// This is a test function that writes a C++ typedef statement to a temporary file, parses it using the Parser, and asserts that the parsed chunk for "size_type" is recognized with the ChunkType::TypeAlias variant.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This function is a self-contained test with no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// Nothing. This is a test function that performs assertions.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the file cannot be parsed, the "size_type" chunk is not found in the parsed results, or if the chunk type is not ChunkType::TypeAlias.
 
     #[test]
     fn parse_cpp_typedef() {
@@ -558,19 +442,6 @@ concept Printable = requires(T t) {
         let ta = chunks.iter().find(|c| c.name == "size_type").unwrap();
         assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
     }
-    /// Parses a C++ class method and verifies correct extraction of method metadata.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. Performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to find the `add` method or if assertions about the method's type or parent class fail.
 
     #[test]
     fn parse_cpp_method_in_class() {
@@ -590,19 +461,6 @@ public:
         assert_eq!(method.chunk_type, ChunkType::Method);
         assert_eq!(method.parent_type_name.as_deref(), Some("Calculator"));
     }
-    /// Parses a C++ file containing an out-of-class method definition and verifies that the parser correctly identifies it.
-    /// 
-    /// # Arguments
-    /// 
-    /// This function takes no parameters. It creates a temporary C++ file with a class declaration and an out-of-class method implementation, then parses it.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing. This is a test function that asserts expected parsing behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to find an out-of-class method named "bar" with `ChunkType::Method`, or if the method's parent type is not correctly identified as "Foo".
 
     #[test]
     fn parse_cpp_out_of_class_method() {
@@ -625,19 +483,6 @@ void Foo::bar() {
         assert!(impl_method.is_some(), "Expected out-of-class method, got: {:?}", methods.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>());
         assert_eq!(impl_method.unwrap().parent_type_name.as_deref(), Some("Foo"));
     }
-    /// Verifies that the parser correctly identifies and classifies an inline C++ destructor defined within a class body as a Method chunk.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded C++ source code.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the destructor is not found in the parsed chunks, or if the destructor's chunk type is not classified as `ChunkType::Method`.
 
     #[test]
     fn parse_cpp_destructor_inline() {
@@ -657,19 +502,6 @@ public:
         // Destructor inside class body should be Method
         assert_eq!(dtor.unwrap().chunk_type, ChunkType::Method);
     }
-    /// Parses a C++ file containing both an in-class destructor declaration and an out-of-class destructor definition, verifying that destructors are correctly identified.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded C++ source code.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function asserts that at least one destructor was parsed.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the parser fails to initialize, file parsing fails, or no destructor chunks are found in the parsed output.
 
     #[test]
     fn parse_cpp_destructor_out_of_class() {
@@ -689,17 +521,6 @@ Foo::~Foo() {
         let dtors: Vec<_> = chunks.iter().filter(|c| c.name.contains("~")).collect();
         assert!(!dtors.is_empty(), "Expected destructor, got: {:?}", chunks.iter().map(|c| &c.name).collect::<Vec<_>>());
     }
-    /// Parses a C++ enum class definition and verifies the parser correctly identifies it as an enum chunk type.
-    /// 
-    /// This test function creates a temporary C++ file containing an enum class definition, parses it using the Parser, and asserts that the resulting chunk has the correct name and type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the file cannot be parsed, the "Color" enum is not found in the parsed chunks, or the chunk type is not `ChunkType::Enum`.
 
     #[test]
     fn parse_cpp_enum_class() {
@@ -710,17 +531,6 @@ Foo::~Foo() {
         let e = chunks.iter().find(|c| c.name == "Color").unwrap();
         assert_eq!(e.chunk_type, ChunkType::Enum);
     }
-    /// Parses a C++ union definition and verifies it is correctly identified as a struct chunk.
-    /// 
-    /// This test function creates a temporary C++ file containing a union declaration, parses it using the Parser, and asserts that the resulting chunk has the name "Data" and type ChunkType::Struct.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded test data.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the file cannot be parsed, the "Data" chunk is not found in the parsed results, or the chunk type is not ChunkType::Struct.
 
     #[test]
     fn parse_cpp_union() {
@@ -731,19 +541,6 @@ Foo::~Foo() {
         let u = chunks.iter().find(|c| c.name == "Data").unwrap();
         assert_eq!(u.chunk_type, ChunkType::Struct);
     }
-    /// Parses a C++ template class definition and verifies that the parser correctly identifies it as a class chunk.
-    /// 
-    /// # Arguments
-    /// 
-    /// This function takes no parameters. It internally creates a temporary C++ file containing a template class definition with a generic type parameter `T`.
-    /// 
-    /// # Returns
-    /// 
-    /// This function returns nothing. It performs assertions to validate the parser's behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, if the parser fails to initialize or parse the file, if no chunk named "Container" is found, or if the identified chunk is not of type `ChunkType::Class`.
 
     #[test]
     fn parse_cpp_template_class() {
@@ -760,21 +557,6 @@ public:
         let class = chunks.iter().find(|c| c.name == "Container").unwrap();
         assert_eq!(class.chunk_type, ChunkType::Class);
     }
-    /// Parses C++ source code and extracts function calls from a code chunk.
-    /// 
-    /// This test function creates a temporary C++ file containing a function with various types of calls (free functions, method calls, pointer dereferences, and constructors), parses it, and verifies that the parser correctly identifies all call expressions including `transform`, `method`, and `cleanup`.
-    /// 
-    /// # Arguments
-    /// 
-    /// None - this is a test function that operates on hardcoded C++ source content.
-    /// 
-    /// # Returns
-    /// 
-    /// Nothing - this is a test assertion function that panics if assertions fail.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to initialize or parse the file, the "process" function chunk is not found, or if any of the expected function calls (`transform`, `method`, `cleanup`) are not extracted from the code.
 
     #[test]
     fn parse_cpp_calls() {

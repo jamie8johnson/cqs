@@ -9,9 +9,7 @@ use super::super::BatchContext;
 use crate::cli::validate_finite_f32;
 
 /// Performs a semantic search gather operation with optional cross-index querying and token budget constraints.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch execution context containing store, embedder, and vector index
 /// * `query` - The search query string to embed and match against
 /// * `expand` - Depth of expansion (clamped 0-5) for gathering related chunks
@@ -19,13 +17,9 @@ use crate::cli::validate_finite_f32;
 /// * `limit` - Maximum number of results to return (clamped 1-100)
 /// * `tokens` - Optional token budget to limit response size
 /// * `ref_name` - Optional reference index name for cross-index search
-///
 /// # Returns
-///
 /// Returns a JSON value containing the gathered results and optional token usage information.
-///
 /// # Errors
-///
 /// Returns an error if embedding fails, the reference index is not loaded, vector index access fails, or the gather operation fails.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::cli::batch) fn dispatch_gather(
@@ -113,21 +107,14 @@ pub(in crate::cli::batch) fn dispatch_gather(
 }
 
 /// Dispatches filtered notes from the batch context as a JSON response.
-///
 /// Retrieves all notes from the provided batch context and filters them based on the specified criteria. If `warnings` is true, only warning notes are included; if `patterns` is true, only pattern notes are included; otherwise, all notes are included. Each note is serialized to JSON with its text, sentiment score, sentiment label, and mentions.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch context containing the notes to dispatch
 /// * `warnings` - If true, filter to only warning notes
 /// * `patterns` - If true, filter to only pattern notes
-///
 /// # Returns
-///
 /// A JSON object containing an array of filtered notes and the total count of notes matching the filter criteria.
-///
 /// # Errors
-///
 /// Returns an error if JSON serialization fails.
 pub(in crate::cli::batch) fn dispatch_notes(
     ctx: &BatchContext,
@@ -165,22 +152,15 @@ pub(in crate::cli::batch) fn dispatch_notes(
 }
 
 /// Dispatches a task execution within a batch context, optionally with token budgeting.
-///
 /// This function executes a task based on a natural language description, retrieving relevant code chunks and generating a JSON representation of the results. When a token budget is specified, it applies waterfall budgeting similar to the CLI; otherwise, it returns the standard task JSON representation.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch execution context containing store, embedder, and root path
 /// * `description` - Natural language description of the task to execute
 /// * `limit` - Maximum number of results to return (clamped to 1-10)
 /// * `tokens` - Optional token budget for waterfall budgeting of results
-///
 /// # Returns
-///
 /// A `Result` containing a JSON value representing the task execution results, with optional token-based budgeting applied.
-///
 /// # Errors
-///
 /// Returns an error if the embedder, call graph, test chunks cannot be retrieved from the context, or if task execution fails.
 pub(in crate::cli::batch) fn dispatch_task(
     ctx: &BatchContext,
@@ -214,22 +194,15 @@ pub(in crate::cli::batch) fn dispatch_task(
 }
 
 /// Performs a scout search query with optional token budget packing.
-///
 /// Executes a scout search on the store using the provided query and returns results as JSON. If a token budget is specified, attempts to batch-fetch chunk content and pack results based on relevance scoring within the token limit.
-///
 /// # Arguments
-///
 /// * `ctx` - Batch context containing the embedder and data store
 /// * `query` - Search query string
 /// * `limit` - Maximum number of results to return (clamped to 1-50)
 /// * `tokens` - Optional token budget for content packing; if None, returns results without content
-///
 /// # Returns
-///
 /// A JSON value containing scout search results with optional packed content based on token budget.
-///
 /// # Errors
-///
 /// Returns an error if embedder initialization fails or if the core scout search operation fails.
 pub(in crate::cli::batch) fn dispatch_scout(
     ctx: &BatchContext,
@@ -309,21 +282,14 @@ pub(in crate::cli::batch) fn dispatch_scout(
 }
 
 /// Suggests optimal file placements for code based on a natural language description.
-///
 /// Uses an embedder to analyze the provided description and searches the codebase to find the most suitable locations for placing new code. Returns placement suggestions ranked by relevance score, along with contextual information about each candidate location.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch processing context containing the code store and embedder.
 /// * `description` - A natural language description of the code to be placed.
 /// * `limit` - The maximum number of suggestions to return (clamped to 1-10).
-///
 /// # Returns
-///
 /// A JSON value containing the input description and an array of placement suggestions, each with file path, relevance score, insertion line, nearby function name, reasoning, and detected code patterns (imports, error handling, naming conventions, visibility, inline tests).
-///
 /// # Errors
-///
 /// Returns an error if the embedder cannot be initialized or if the placement suggestion operation fails.
 pub(in crate::cli::batch) fn dispatch_where(
     ctx: &BatchContext,
@@ -364,18 +330,14 @@ pub(in crate::cli::batch) fn dispatch_where(
 }
 
 /// Detects content drift between a reference dataset and the current dataset by comparing similarity scores.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch processing context containing reference and current data stores
 /// * `reference` - The name of the reference dataset to compare against
 /// * `threshold` - The similarity threshold (0.0-1.0) below which content is considered drifted
 /// * `min_drift` - The minimum drift value to report
 /// * `lang` - Optional language specification for drift detection
 /// * `limit` - Optional maximum number of drifted items to return in results
-///
 /// # Returns
-///
 /// A JSON object containing:
 /// - `reference`: The reference dataset name
 /// - `threshold`: The similarity threshold used
@@ -383,9 +345,7 @@ pub(in crate::cli::batch) fn dispatch_where(
 /// - `drifted`: Array of drifted items with name, file, chunk_type, similarity, and drift values
 /// - `total_compared`: Total number of items compared
 /// - `unchanged`: Number of unchanged items
-///
 /// # Errors
-///
 /// Returns an error if:
 /// - The threshold or min_drift values are not finite numbers
 /// - The reference dataset cannot be loaded or accessed
@@ -566,7 +526,6 @@ pub(in crate::cli::batch) fn dispatch_plan(
 }
 
 /// Runs garbage collection on the index.
-///
 /// In batch mode, GC skips HNSW rebuild (the batch session holds the index)
 /// and reports what was pruned.
 pub(in crate::cli::batch) fn dispatch_gc(ctx: &BatchContext) -> Result<serde_json::Value> {
@@ -605,13 +564,9 @@ pub(in crate::cli::batch) fn dispatch_refresh(ctx: &BatchContext) -> Result<serd
 }
 
 /// Generates help documentation for the BatchInput command and returns it as JSON.
-///
 /// # Returns
-///
 /// A Result containing a JSON object with a "help" key mapped to the formatted help text for the BatchInput command.
-///
 /// # Errors
-///
 /// Returns an error if writing help text to the buffer fails or if UTF-8 conversion fails.
 pub(in crate::cli::batch) fn dispatch_help() -> Result<serde_json::Value> {
     use clap::CommandFactory;

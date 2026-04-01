@@ -137,10 +137,8 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// Extracts the return type from a Go function signature string.
-/// 
 /// # Arguments
 /// * `signature` - A Go function signature string, potentially including the trailing `{` brace
-/// 
 /// # Returns
 /// Returns `Some(String)` containing a formatted return type description if a return type is found in the signature. The returned string is prefixed with "Returns " and contains either the multi-return tuple (e.g., "(string, error)") or a single return type with tokenized identifiers. Returns `None` if no return type is present or the signature format is invalid.
 fn extract_return(signature: &str) -> Option<String> {
@@ -193,7 +191,6 @@ fn extract_return(signature: &str) -> Option<String> {
 }
 
 /// Post-process Go chunks: reclassify `New*` functions as Constructor (convention).
-///
 /// Go convention: `func NewTypeName(...)` is a constructor for TypeName.
 #[allow(clippy::ptr_arg)] // signature must match PostProcessChunkFn type alias
 fn post_process_go(
@@ -269,19 +266,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a Go source file containing a named type alias and verifies it is correctly identified.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate the parsing behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the parser fails to initialize, file parsing fails, the "MyInt" chunk is not found in the parsed results, or the chunk type assertion fails.
 
     #[test]
     fn parse_go_named_type() {
@@ -292,19 +276,6 @@ mod tests {
         let ta = chunks.iter().find(|c| c.name == "MyInt").unwrap();
         assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
     }
-    /// Parses a Go source file containing a function type definition and verifies it is correctly identified as a type alias.
-    /// 
-    /// # Arguments
-    /// 
-    /// This function takes no arguments.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing. This is a test function that performs assertions.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to initialize or parse the file, or if the "Handler" type alias is not found in the parsed chunks. Also panics if the parsed chunk's type is not `ChunkType::TypeAlias`.
 
     #[test]
     fn parse_go_function_type() {
@@ -315,19 +286,6 @@ mod tests {
         let ta = chunks.iter().find(|c| c.name == "Handler").unwrap();
         assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
     }
-    /// Tests that the parser correctly identifies and classifies Go type alias declarations using the equals syntax. Verifies that a type alias definition (`type MyInt = int`) is parsed as a ChunkType::TypeAlias chunk with the appropriate name.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function asserts parser behavior and panics if assertions fail.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, the "MyInt" chunk is not found in parsed results, or the chunk type is not TypeAlias.
 
     #[test]
     fn parse_go_type_alias_equals() {
@@ -338,19 +296,6 @@ mod tests {
         let ta = chunks.iter().find(|c| c.name == "MyInt").unwrap();
         assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
     }
-    /// Verifies that Go struct type declarations are parsed and classified as Struct types rather than TypeAlias types.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a unit test function.
-    /// 
-    /// # Returns
-    /// 
-    /// None. The function uses assertions to validate parsing behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, the "Foo" chunk is not found, or if the parsed chunk type is not ChunkType::Struct.
 
     #[test]
     fn parse_go_struct_still_struct() {

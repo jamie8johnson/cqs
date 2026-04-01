@@ -291,7 +291,6 @@ pub(crate) enum BatchCmd {
 
 impl BatchCmd {
     /// Whether this command accepts a piped function name as its first positional arg.
-    ///
     /// Used by pipeline execution to validate downstream segments. Commands that
     /// take a function name as their primary input are pipeable; commands that
     /// take queries, paths, or no arguments are not.
@@ -315,7 +314,6 @@ impl BatchCmd {
 // ─── Dispatch ────────────────────────────────────────────────────────────────
 
 /// Execute a batch command and return a JSON value.
-///
 /// This is the seam for step 3 (REPL): import `BatchContext` + `dispatch`, wrap
 /// with readline.
 pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::Value> {

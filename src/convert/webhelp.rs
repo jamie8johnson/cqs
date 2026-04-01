@@ -14,7 +14,6 @@ use anyhow::Result;
 const WEBHELP_CONTENT_DIR: &str = "content";
 
 /// Check if a directory looks like a web help site.
-///
 /// Heuristic: has a `content/` subdirectory containing at least one `.html` file.
 pub fn is_webhelp_dir(dir: &Path) -> bool {
     // Reject symlinks to prevent traversal outside trusted directories
@@ -46,7 +45,6 @@ pub fn is_webhelp_dir(dir: &Path) -> bool {
 }
 
 /// Convert a web help site directory to a single merged Markdown document.
-///
 /// Walks `content/` for HTML files, converts each page, merges with separators.
 /// Skips asset directories (css/, js/, fonts/, images/).
 pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {

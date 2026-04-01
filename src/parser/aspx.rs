@@ -70,7 +70,6 @@ struct CodeRegion {
 // ---------------------------------------------------------------------------
 
 /// Detect the server-side language from the ASPX `<%@ ... %>` directive.
-///
 /// Scans for `Language="VB"` (case-insensitive). Returns `Language::VbNet`
 /// for VB, `Language::CSharp` for C# (the default when not found or
 /// when the value is "C#", "csharp", etc.).
@@ -102,7 +101,6 @@ fn byte_to_point(source: &str, byte: usize) -> (usize, usize) {
 }
 
 /// Find all `<script runat="server">...</script>` regions.
-///
 /// Returns one `CodeRegion` per script block, covering the content bytes
 /// inside the element (between the closing `>` and opening `</`).
 fn find_server_script_blocks(source: &str) -> Vec<CodeRegion> {
@@ -139,7 +137,6 @@ fn find_server_script_blocks(source: &str) -> Vec<CodeRegion> {
 }
 
 /// Find all inline code blocks: `<% %>`, `<%= %>`, `<%: %>`.
-///
 /// Excludes directives (`<%@ %>`), comments (`<%-- --%>`), and empty blocks.
 fn find_code_blocks(source: &str) -> Vec<CodeRegion> {
     let mut regions = Vec::new();
@@ -188,11 +185,9 @@ fn find_code_blocks(source: &str) -> Vec<CodeRegion> {
 // ---------------------------------------------------------------------------
 
 /// Parse server-side code regions using the appropriate tree-sitter grammar.
-///
 /// Uses `set_included_ranges()` to tell tree-sitter which byte ranges within
 /// the full source contain valid code. This means line/column numbers in
 /// extracted chunks refer to positions in the original ASPX file.
-///
 /// Returns extracted chunks. Falls back to an empty vec on parse failure
 /// (with a warning logged) rather than propagating an error — ASPX files
 /// with syntactically invalid server code should still yield HTML chunks.
@@ -303,7 +298,6 @@ fn parse_server_code(
 }
 
 /// Parse server-side code regions and extract function calls.
-///
 /// Runs the call query over the same `set_included_ranges()` tree used
 /// for chunk extraction. Returns `FunctionCalls` grouped by chunk.
 fn parse_server_code_calls(
@@ -425,7 +419,6 @@ fn parse_server_code_calls(
 }
 
 /// Parse server-side code regions and extract type references.
-///
 /// Returns a flat `Vec<TypeRef>` (not grouped by chunk) — suitable for
 /// the custom-parser pattern used in ASPX where we don't need per-chunk
 /// type tracking.
@@ -489,11 +482,9 @@ fn parse_server_code_types(
 // ---------------------------------------------------------------------------
 
 /// Parse an ASPX/ASCX/ASMX/Master file into chunks.
-///
 /// Detects the server-side language from the `<%@ ... Language="..." %>` directive
 /// (defaulting to C#), then uses `set_included_ranges()` to parse server-side code
 /// with the appropriate tree-sitter grammar. Returns extracted chunks.
-///
 /// HTML content outside server blocks is not currently chunked (tree-sitter HTML
 /// injection would go here if needed in the future).
 pub fn parse_aspx_chunks(
@@ -519,7 +510,6 @@ pub fn parse_aspx_chunks(
 }
 
 /// Parse an ASPX/ASCX/ASMX/Master file into chunks, calls, and type refs.
-///
 /// Combines chunk extraction, call graph construction, and type reference
 /// extraction in a single parser pass (one tree-sitter parse per language).
 pub fn parse_aspx_all(
@@ -575,18 +565,12 @@ mod tests {
     use tempfile::NamedTempFile;
 
     /// Creates a temporary file with the specified content and extension.
-    ///
     /// # Arguments
-    ///
     /// * `content` - The string content to write to the temporary file
     /// * `ext` - The file extension (without leading dot) to append to the temporary filename
-    ///
     /// # Returns
-    ///
     /// A `NamedTempFile` object representing the created temporary file with the content written and flushed to disk.
-    ///
     /// # Panics
-    ///
     /// Panics if the temporary file cannot be created or if writing/flushing the content fails.
     fn write_temp_file(content: &str, ext: &str) -> NamedTempFile {
         let mut f = tempfile::Builder::new()
@@ -602,17 +586,11 @@ mod tests {
     // detect_language tests
     // -------------------------------------------------------------------------
     /// Tests that the detect_language function correctly identifies C# when given a C# ASP.NET Page directive.
-    ///
     /// # Arguments
-    ///
     /// None. This is a test function that uses a hardcoded C# ASP.NET source string.
-    ///
     /// # Returns
-    ///
     /// Nothing. This function asserts that detect_language returns Language::CSharp for the test input.
-    ///
     /// # Panics
-    ///
     /// Panics if the assertion fails, indicating that detect_language did not correctly identify the source as C#.
 
     #[test]
@@ -621,17 +599,11 @@ mod tests {
         assert_eq!(detect_language(source), Language::CSharp);
     }
     /// Verifies that the language detection function correctly identifies Visual Basic .NET source code based on the VB language directive in an ASP.NET Page declaration.
-    ///
     /// # Arguments
-    ///
     /// None. This is a test function that uses hardcoded source code.
-    ///
     /// # Returns
-    ///
     /// Nothing. This function asserts that `detect_language()` returns `Language::VbNet` for the given ASP.NET page source code containing a VB language directive.
-    ///
     /// # Panics
-    ///
     /// Panics if the assertion fails, indicating that the language detection did not correctly identify the source as Visual Basic .NET.
 
     #[test]
@@ -640,17 +612,11 @@ mod tests {
         assert_eq!(detect_language(source), Language::VbNet);
     }
     /// Tests that the language detection correctly identifies Visual Basic .NET from a Page directive with case-insensitive language attribute.
-    ///
     /// # Arguments
-    ///
     /// None. This is a unit test function that uses hardcoded test data.
-    ///
     /// # Returns
-    ///
     /// None. This function asserts the result of language detection and returns nothing.
-    ///
     /// # Panics
-    ///
     /// Panics if the detected language is not `Language::VbNet`, indicating the language detection failed to properly handle case-insensitive VB language attributes.
 
     #[test]
@@ -659,17 +625,11 @@ mod tests {
         assert_eq!(detect_language(source), Language::VbNet);
     }
     /// Verifies that the language detection defaults to CSharp when processing HTML content without any language directive.
-    ///
     /// # Arguments
-    ///
     /// This function takes no parameters. It uses a hardcoded HTML string as test input.
-    ///
     /// # Returns
-    ///
     /// This function returns nothing. It is a test function that asserts the expected behavior.
-    ///
     /// # Panics
-    ///
     /// Panics if `detect_language()` does not return `Language::CSharp` for HTML input without a language directive.
 
     #[test]
@@ -678,17 +638,11 @@ mod tests {
         assert_eq!(detect_language(source), Language::CSharp);
     }
     /// Verifies that the language detection defaults to C# when an unknown or unsupported language is specified in ASP.NET page directives.
-    ///
     /// # Arguments
-    ///
     /// This is a test function with no parameters.
-    ///
     /// # Returns
-    ///
     /// This function returns nothing (unit type). It asserts that when `detect_language` is called with an ASP.NET Page directive containing an unknown language identifier ("COBOL"), the result is `Language::CSharp`.
-    ///
     /// # Panics
-    ///
     /// Panics if the assertion fails, indicating that unknown languages are not defaulting to C# as expected.
 
     #[test]
@@ -698,19 +652,12 @@ mod tests {
         assert_eq!(detect_language(source), Language::CSharp);
     }
     /// Verifies that the `detect_language` function correctly identifies VB.NET as the language when parsing an ASP.NET control directive.
-    ///
     /// This is a unit test that validates language detection for a control directive containing a Language attribute set to "VB".
-    ///
     /// # Arguments
-    ///
     /// None. This is a test function that operates on a hardcoded ASP.NET control directive string.
-    ///
     /// # Returns
-    ///
     /// None. This function asserts the correctness of language detection and panics if the assertion fails.
-    ///
     /// # Panics
-    ///
     /// Panics if `detect_language` does not return `Language::VbNet` for the given control directive source code.
 
     #[test]
@@ -723,19 +670,12 @@ mod tests {
     // find_server_script_blocks tests
     // -------------------------------------------------------------------------
     /// Verifies that `find_server_script_blocks` correctly identifies a single server-side script block in HTML source code.
-    ///
     /// This test function parses HTML containing one `<script runat="server">` block and asserts that exactly one script region is found. It validates that the identified region's byte range correctly points to the script content between the opening and closing tags.
-    ///
     /// # Arguments
-    ///
     /// None. This is a test function that uses hardcoded HTML source.
-    ///
     /// # Returns
-    ///
     /// None. Returns `()`. This function performs assertions to validate behavior.
-    ///
     /// # Panics
-    ///
     /// Panics if any assertion fails:
     /// - If the number of found regions is not exactly 1
     /// - If the region's content does not contain the expected script code ("void Page_Load")
@@ -755,19 +695,12 @@ void Page_Load() { }
         assert!(content.contains("void Page_Load"));
     }
     /// Verifies that the `find_server_script_blocks` function correctly identifies multiple server-side script blocks within HTML source code.
-    ///
     /// This test parses HTML containing two `<script runat="server">` blocks and confirms that exactly 2 script regions are found and returned.
-    ///
     /// # Arguments
-    ///
     /// None (this is a test function with no parameters).
-    ///
     /// # Returns
-    ///
     /// None (this is a test function that performs assertions).
-    ///
     /// # Panics
-    ///
     /// Panics if the number of found script blocks does not equal 2, indicating the `find_server_script_blocks` function is not working as expected.
 
     #[test]
@@ -785,17 +718,11 @@ void Second() { }
         assert_eq!(regions.len(), 2);
     }
     /// Verifies that find_server_script_blocks returns an empty collection when the input HTML contains no server script blocks.
-    ///
     /// # Arguments
-    ///
     /// This is a test function with no parameters.
-    ///
     /// # Returns
-    ///
     /// Returns nothing. This function validates behavior through assertions.
-    ///
     /// # Panics
-    ///
     /// Panics if the regions collection is not empty, indicating that server script blocks were incorrectly identified in plain HTML content.
 
     #[test]
@@ -805,15 +732,10 @@ void Second() { }
         assert!(regions.is_empty());
     }
     /// Verifies that client-side script blocks without the `runat="server"` attribute are not identified as server script regions.
-    ///
     /// This is a test function that validates the `find_server_script_blocks` function correctly ignores standard HTML script elements that lack server-side execution markers.
-    ///
     /// # Arguments
-    ///
     /// None
-    ///
     /// # Returns
-    ///
     /// None (unit test)
 
     #[test]
@@ -828,17 +750,11 @@ void Second() { }
     // find_code_blocks tests
     // -------------------------------------------------------------------------
     /// Tests the `find_code_blocks` function to verify it correctly identifies inline code blocks within HTML markup.
-    ///
     /// # Arguments
-    ///
     /// None. This is a test function that uses hardcoded test data.
-    ///
     /// # Returns
-    ///
     /// None. This function performs assertions to validate behavior.
-    ///
     /// # Panics
-    ///
     /// Panics if any assertion fails, indicating that `find_code_blocks` did not correctly identify the expected code block region or its content.
 
     #[test]
@@ -850,15 +766,10 @@ void Second() { }
         assert!(content.contains("Response.Write"));
     }
     /// Searches for embedded code expression blocks in template source code.
-    ///
     /// Scans the provided source string for template expression delimiters and identifies all code blocks enclosed by `<%= ... %>` and `<%: ... %>` markers. Returns a vector of regions representing each discovered block's location and content.
-    ///
     /// # Arguments
-    ///
     /// * `source` - A string slice containing the template markup to search
-    ///
     /// # Returns
-    ///
     /// A vector of regions, where each region represents a found code expression block. The regions contain information about the block's position and content within the source string.
 
     #[test]
@@ -869,19 +780,12 @@ void Second() { }
         assert_eq!(regions.len(), 2);
     }
     /// Verifies that ASP.NET page directives are not incorrectly identified as code blocks.
-    ///
     /// This test function checks that the `find_code_blocks` function properly distinguishes between ASP.NET directives (starting with `<%@`) and actual code blocks. It ensures that directives like `<%@ Page Language="C#" %>` are excluded from the code block detection results.
-    ///
     /// # Arguments
-    ///
     /// None. This is a test function that operates on a hardcoded ASP.NET source string.
-    ///
     /// # Returns
-    ///
     /// None. This function performs assertions to validate the behavior of `find_code_blocks`.
-    ///
     /// # Panics
-    ///
     /// Panics if the assertion fails, indicating that `find_code_blocks` incorrectly identified directives as code blocks.
 
     #[test]
@@ -892,13 +796,9 @@ void Second() { }
         assert!(regions.is_empty());
     }
     /// Verifies that empty code blocks are not identified as valid code regions.
-    ///
     /// # Arguments
-    ///
     /// This is a test function with no parameters.
-    ///
     /// # Returns
-    ///
     /// Returns nothing. Asserts that parsing HTML containing an empty code block `<% %>` results in no identified code regions.
 
     #[test]
@@ -912,19 +812,12 @@ void Second() { }
     // parse_aspx_chunks integration tests
     // -------------------------------------------------------------------------
     /// Parses C# code blocks embedded in ASP.NET ASPX files and validates correct extraction of methods.
-    ///
     /// This is a unit test that verifies the parser can correctly identify and extract C# methods (Page_Load and Add) from a server-side script block in an ASPX page. It creates a temporary ASPX file, parses it using the ASPX chunk parser, and asserts that the resulting chunks contain the expected method names and are correctly tagged as C# language.
-    ///
     /// # Arguments
-    ///
     /// None. This is a test function with no parameters.
-    ///
     /// # Returns
-    ///
     /// None. This function returns unit type `()` and is intended to be run as a test.
-    ///
     /// # Panics
-    ///
     /// Panics if any of the following assertions fail:
     /// - Chunks are successfully parsed and not empty
     /// - The "Page_Load" method name is found in parsed chunks
@@ -975,11 +868,8 @@ void Second() { }
         }
     }
     /// Parses and validates VB.NET script blocks embedded in ASP.NET Web Forms markup.
-    ///
     /// Creates a temporary ASP.NET file containing VB.NET code within a `<script runat="server">` block, parses it into language chunks, and verifies that all chunks are correctly identified as VB.NET. This test ensures that the parser properly extracts and classifies server-side VB.NET code from Web Forms pages.
-    ///
     /// # Panics
-    ///
     /// Panics if no chunks are parsed from the script block, indicating the parser failed to extract the VB.NET code.
 
     #[test]
@@ -1017,17 +907,11 @@ End Class
         }
     }
     /// Tests that the parser correctly handles inline code blocks in ASPX markup without producing errors. Inline code blocks (delimited by `<% %>` and `<%= %>`) are parsed through `set_included_ranges` and may not generate named chunks, but the parse operation must succeed without errors.
-    ///
     /// # Arguments
-    ///
     /// No arguments. This is a test function that uses hardcoded ASPX source containing inline code blocks.
-    ///
     /// # Returns
-    ///
     /// Nothing. This is a test function that asserts parsing succeeds.
-    ///
     /// # Panics
-    ///
     /// Panics if the parse operation returns an error, indicating that inline code blocks were not handled correctly.
 
     #[test]
@@ -1049,17 +933,11 @@ End Class
         assert!(result.is_ok());
     }
     /// Verifies that parsing an ASPX file containing only static HTML markup (no server-side code) results in an empty chunks collection.
-    ///
     /// # Arguments
-    ///
     /// This is a test function with no parameters.
-    ///
     /// # Returns
-    ///
     /// None. This function performs assertions and panics if the test fails.
-    ///
     /// # Panics
-    ///
     /// Panics if the ASPX parser fails to initialize, if parsing the temporary file fails, or if the returned chunks collection is not empty.
 
     #[test]
@@ -1074,17 +952,11 @@ End Class
         assert!(chunks.is_empty());
     }
     /// Tests that ASPX files without an explicit Language directive are correctly parsed as C# by default.
-    ///
     /// # Arguments
-    ///
     /// This is a test function with no parameters. It internally creates a temporary ASPX file containing server-side code without a language directive and parses it using the `Parser`.
-    ///
     /// # Returns
-    ///
     /// Returns nothing. This is a test function that validates behavior through assertions.
-    ///
     /// # Panics
-    ///
     /// Panics if:
     /// - The temporary file cannot be created
     /// - The parser fails to initialize
@@ -1118,17 +990,11 @@ End Class
         }
     }
     /// Verifies that the ASPX parser correctly identifies and processes both standard expression blocks (`<%= %>`) and HTML-encoded expression blocks (`<%: %>`).
-    ///
     /// # Arguments
-    ///
     /// None. This is a test function that uses hardcoded ASPX source code.
-    ///
     /// # Returns
-    ///
     /// None. This function asserts expected behavior and panics on test failure.
-    ///
     /// # Panics
-    ///
     /// Panics if the number of found expression blocks is not exactly 2, or if the ASPX parsing fails unexpectedly.
 
     #[test]
@@ -1161,19 +1027,12 @@ End Class
     // parse_aspx_all tests
     // -------------------------------------------------------------------------
     /// Parses an ASPX file and verifies that code chunks are extracted and function calls are properly identified.
-    ///
     /// This is a test function that validates the `parse_aspx_all` parser by processing a sample ASPX source file containing C# script with a Page_Load method that calls a Helper method. It asserts that chunks are extracted and that the function call from Page_Load to Helper is correctly recorded.
-    ///
     /// # Arguments
-    ///
     /// None. Uses hardcoded ASPX source code containing a Page_Load method and Helper method.
-    ///
     /// # Returns
-    ///
     /// None. This is a test function that performs assertions rather than returning values.
-    ///
     /// # Panics
-    ///
     /// Panics if:
     /// - Creating a temporary file fails
     /// - Parsing the ASPX source fails
@@ -1211,17 +1070,11 @@ End Class
     // ascx / master extension tests
     // -------------------------------------------------------------------------
     /// Parses an ASP.NET user control (.ascx) file and verifies that chunks are successfully extracted.
-    ///
     /// # Arguments
-    ///
     /// None. This function creates its own test data internally.
-    ///
     /// # Returns
-    ///
     /// Nothing. This is a test function that verifies parsing behavior through assertions.
-    ///
     /// # Panics
-    ///
     /// Panics if the parser fails to initialize, if parsing the ASPX chunks fails, or if the resulting chunks collection is empty.
 
     #[test]

@@ -13,11 +13,9 @@ fn is_upper_snake_case(name: &str) -> bool {
 }
 
 /// Tree-sitter query for extracting R code chunks.
-///
 /// R has no named function definitions — functions are assigned to variables:
 ///   `my_func <- function(x) { ... }`
 ///   `my_func = function(x) { ... }`
-///
 /// We also capture:
 ///   - Non-function assignments for constants (UPPER_CASE) and R6 classes
 ///   - Top-level `call` nodes for S4 class definitions (setClass)
@@ -103,7 +101,6 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// Extracts the return type from an R function signature.
-///
 /// Returns `None` — R functions do not have type annotations in their signatures.
 fn extract_return(_signature: &str) -> Option<String> {
     None

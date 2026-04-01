@@ -3,7 +3,6 @@
 use super::{ChunkType, FieldStyle, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Gleam code chunks.
-///
 /// Gleam constructs:
 ///   - `function` → Function (has named `name` field)
 ///   - `type_definition` → Enum (custom types with constructors)
@@ -30,7 +29,6 @@ const CHUNK_QUERY: &str = r#"
 "#;
 
 /// Tree-sitter query for extracting Gleam calls.
-///
 /// Gleam uses `function_call` with named `function` and `arguments` fields:
 ///   - Direct: `add(x, y)` → (function_call function: (identifier))
 ///   - Qualified: `io.println(msg)` → (function_call function: (field_access field: (label)))
@@ -73,7 +71,6 @@ fn post_process_gleam(
 }
 
 /// Extract return type from Gleam function signatures.
-///
 /// Gleam signatures: `fn add(x: Int, y: Int) -> Int {`
 /// Return type is after `->`.
 fn extract_return(signature: &str) -> Option<String> {
@@ -155,23 +152,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a Gleam source file containing a function definition and verifies the parser correctly identifies it.
-    /// 
-    /// # Arguments
-    /// 
-    /// This function takes no parameters. It uses a hardcoded Gleam function definition as test input.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing. This is a test function that performs assertions.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be written
-    /// - The parser fails to parse the file
-    /// - The "add" function chunk is not found in the parsed results
-    /// - The parsed chunk type is not `ChunkType::Function`
 
     #[test]
     fn parse_gleam_function() {
@@ -186,15 +166,6 @@ pub fn add(x: Int, y: Int) -> Int {
         let func = chunks.iter().find(|c| c.name == "add").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
-    /// Parses a Gleam source file containing a custom type definition and verifies that the parser correctly identifies it as an enum chunk.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, if the parser fails to initialize or parse the file, or if the "Color" type is not found in the parsed chunks as an Enum chunk type.
 
     #[test]
     fn parse_gleam_type() {
@@ -213,15 +184,6 @@ pub type Color {
             .find(|c| c.name == "Color" && c.chunk_type == ChunkType::Enum);
         assert!(dt.is_some(), "Should find 'Color' type as Enum");
     }
-    /// Parses a Gleam type alias definition and verifies it is correctly identified as a TypeAlias chunk.
-    /// 
-    /// # Arguments
-    /// 
-    /// None
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the parser fails to parse the file, or the 'UserId' type alias chunk is not found in the parsed output.
 
     #[test]
     fn parse_gleam_type_alias() {
@@ -236,19 +198,6 @@ pub type UserId = Int
             .find(|c| c.name == "UserId" && c.chunk_type == ChunkType::TypeAlias);
         assert!(ta.is_some(), "Should find 'UserId' type alias");
     }
-    /// Parses a Gleam source file containing a constant declaration and verifies that the parser correctly identifies and extracts the constant definition.
-    /// 
-    /// # Arguments
-    /// 
-    /// This is a test function with no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing; this is a test function that validates parser behavior through assertions.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, if the parser fails to initialize or parse the file, or if the expected `max_retries` constant is not found in the parsed chunks.
 
     #[test]
     fn parse_gleam_constant() {
@@ -263,17 +212,6 @@ pub const max_retries: Int = 3
             .find(|c| c.name == "max_retries" && c.chunk_type == ChunkType::Constant);
         assert!(c.is_some(), "Should find 'max_retries' constant");
     }
-    /// Parses a Gleam source file and verifies that function calls within a chunk are correctly extracted.
-    /// 
-    /// This is a test function that creates a temporary Gleam file with sample code, parses it using the Parser, extracts function calls from the main function chunk, and asserts that the "add" function call is detected.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This function takes no parameters and uses hardcoded Gleam source code.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the file cannot be parsed, the main function chunk is not found, or the "add" function call is not found in the extracted calls.
 
     #[test]
     fn parse_gleam_calls() {

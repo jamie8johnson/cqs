@@ -4,7 +4,6 @@ const K1: f32 = 1.2;
 const B: f32 = 0.75;
 
 /// BM25 index for hard negative selection in training data generation.
-///
 /// Built from a corpus of (content_hash, content) pairs. Scores queries
 /// against the corpus using BM25 ranking and selects top-k negatives
 /// with a content hash guard to exclude duplicates.

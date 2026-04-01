@@ -19,20 +19,15 @@ static JSDOC_RETURNS_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"@returns?\s+\{([^}]+)\}").expect("valid regex"));
 
 /// Parse JSDoc tags from a documentation comment.
-///
 /// Extracts @param and @returns/@return tags from JSDoc-style comments.
-///
 /// # Example
-///
 /// ```ignore
 /// use cqs::nl::parse_jsdoc_tags;
-///
 /// let doc = r#"/**
 ///  * Validates an email address
 ///  * @param {string} email - The email to validate
 ///  * @returns {boolean} Whether valid
 ///  */"#;
-///
 /// let info = parse_jsdoc_tags(doc);
 /// assert_eq!(info.params, vec![("email".to_string(), "string".to_string())]);
 /// assert_eq!(info.returns, Some("boolean".to_string()));
@@ -68,7 +63,6 @@ static MULTI_NEWLINE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\n{3,}").expect("valid regex"));
 
 /// Strip markdown formatting noise for cleaner embedding text.
-///
 /// Removes heading prefixes, image syntax, simplifies links to just text,
 /// strips bold/italic markers, HTML tags, and collapses whitespace.
 /// Keeps inline code content (strips backticks but preserves text).

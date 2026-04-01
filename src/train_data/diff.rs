@@ -29,7 +29,6 @@ pub struct FunctionSpan {
 }
 
 /// Parse a `@@ -old_start,old_count +new_start,new_count @@` header line.
-///
 /// Returns `None` if the line doesn't match the expected format.
 pub fn parse_hunk_header(line: &str) -> Option<HunkRange> {
     // Format: @@ -A,B +C,D @@ optional context
@@ -65,7 +64,6 @@ pub fn parse_hunk_header(line: &str) -> Option<HunkRange> {
 }
 
 /// Parse unified diff output into per-file entries with hunk ranges.
-///
 /// Skips submodule entries (detected by "Subproject commit" lines).
 /// Returns empty vec for empty input.
 pub fn parse_diff_output(diff: &str) -> Vec<DiffFile> {
@@ -122,7 +120,6 @@ pub fn parse_diff_output(diff: &str) -> Vec<DiffFile> {
 }
 
 /// Find functions whose line ranges overlap with any diff hunk.
-///
 /// Deduplicates nested functions: if a nested span (e.g., closure) and its
 /// enclosing parent both match, only the outermost (parent) is kept.
 pub fn find_changed_functions(
@@ -168,17 +165,11 @@ pub fn find_changed_functions(
 mod tests {
     use super::*;
     /// Parses a basic unified diff hunk header and validates the extracted line numbers and counts.
-    ///
     /// # Arguments
-    ///
     /// None. This is a unit test that uses a hardcoded hunk header string.
-    ///
     /// # Returns
-    ///
     /// None. This function asserts expected values and panics if they don't match.
-    ///
     /// # Panics
-    ///
     /// Panics if `parse_hunk_header` returns `None` (via `unwrap()`) or if any assertion fails (new_start != 12 or new_count != 8).
 
     #[test]
@@ -189,13 +180,9 @@ mod tests {
         assert_eq!(hunk.new_count, 8);
     }
     /// Verifies that `parse_diff_output` correctly extracts file paths and hunks from unified diff format.
-    ///
     /// # Arguments
-    ///
     /// This is a test function with no parameters.
-    ///
     /// # Returns
-    ///
     /// None. This function asserts the correctness of parsing a sample diff string containing one modified file with one hunk.
 
     #[test]
@@ -207,14 +194,10 @@ mod tests {
         assert_eq!(files[0].hunks.len(), 1);
     }
     /// Tests that `find_changed_functions` correctly identifies which functions are affected by code hunks.
-    ///
     /// # Arguments
-    ///
     /// * `hunks` - A vector of `HunkRange` representing modified line ranges in code
     /// * `functions` - A vector of `FunctionSpan` representing function definitions with their line ranges
-    ///
     /// # Returns
-    ///
     /// A vector of `FunctionSpan` containing only the functions whose line ranges intersect with the modified hunks. In this test case, function "b" (lines 5-10) intersects with the hunk at lines 5-7, while function "a" (lines 1-4) does not.
 
     #[test]
@@ -242,15 +225,11 @@ mod tests {
         assert_eq!(changed[0].name, "b");
     }
     /// Tests that `find_changed_functions` correctly identifies multiple functions when a code hunk spans across function boundaries.
-    ///
     /// # Arguments
-    ///
     /// This is a test function with no parameters. It internally creates:
     /// - `hunks`: A vector containing a single `HunkRange` representing lines 4-7
     /// - `functions`: A vector of two `FunctionSpan` objects where the hunk overlaps both function "a" (lines 1-5) and function "b" (lines 6-10)
-    ///
     /// # Returns
-    ///
     /// No explicit return value. Asserts that `find_changed_functions` returns a collection with 2 elements, validating that both functions are identified as changed.
 
     #[test]
@@ -277,15 +256,11 @@ mod tests {
         assert_eq!(changed.len(), 2);
     }
     /// Tests that `find_changed_functions` returns an empty list when hunks modify lines outside of any function definitions.
-    ///
     /// # Arguments
-    ///
     /// This is a test function with no parameters. It internally creates:
     /// - `hunks`: A vector containing a single `HunkRange` with changes at lines 1-2
     /// - `functions`: A vector containing a single `FunctionSpan` for function "a" at lines 5-10
-    ///
     /// # Returns
-    ///
     /// None. This function asserts that `find_changed_functions` returns an empty collection when the modified lines do not overlap with any function spans.
 
     #[test]
@@ -304,17 +279,11 @@ mod tests {
         assert!(changed.is_empty());
     }
     /// Verifies that submodule entries are excluded from parsed diff output.
-    ///
     /// # Arguments
-    ///
     /// This is a test function with no parameters.
-    ///
     /// # Returns
-    ///
     /// Returns nothing; this is a test assertion that verifies `parse_diff_output` correctly skips submodule commit changes.
-    ///
     /// # Panics
-    ///
     /// Panics if the assertion fails, indicating that `parse_diff_output` incorrectly included submodule entries in its output.
 
     #[test]
@@ -324,13 +293,9 @@ mod tests {
         assert!(files.is_empty());
     }
     /// Verifies that parsing an empty diff output string returns an empty collection of files.
-    ///
     /// # Arguments
-    ///
     /// None
-    ///
     /// # Returns
-    ///
     /// None. This is a test function that asserts the expected behavior rather than returning a value.
 
     #[test]
@@ -339,13 +304,9 @@ mod tests {
         assert!(files.is_empty());
     }
     /// Tests that when a code hunk matches both an outer function and a nested closure, `find_changed_functions` returns only the outermost function, deduplicating nested matches.
-    ///
     /// # Arguments
-    ///
     /// This is a test function with no parameters. It internally creates test data including a code hunk at line 3 and two function spans (an outer function from lines 1-10 and a nested closure from lines 2-5).
-    ///
     /// # Returns
-    ///
     /// Returns nothing. Asserts that the changed functions list contains exactly one entry with the name "outer".
 
     #[test]
@@ -374,17 +335,11 @@ mod tests {
         assert_eq!(changed[0].name, "outer");
     }
     /// Verifies that the total added lines counter correctly aggregates line counts across multiple hunks in a diff. Parses a multi-hunk diff output for a single file and asserts that the total added lines equals the sum of additions from all hunks (5 lines from first hunk plus 4 from second hunk).
-    ///
     /// # Arguments
-    ///
     /// None. This is a test function that uses hardcoded test data.
-    ///
     /// # Returns
-    ///
     /// None. This function asserts equality and panics on failure.
-    ///
     /// # Panics
-    ///
     /// Panics if the total added lines count does not equal 9, indicating the total_added_lines() method failed to correctly sum additions across multiple hunks.
 
     #[test]

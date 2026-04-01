@@ -13,7 +13,6 @@ pub const RISK_THRESHOLD_HIGH: f32 = 5.0;
 pub const RISK_THRESHOLD_MEDIUM: f32 = 2.0;
 
 /// Core implementation — accepts pre-loaded graph and test chunks.
-///
 /// Use this when processing multiple functions to avoid loading the graph
 /// N times (e.g., scout, which processes 10+ functions).
 pub fn compute_hints_with_graph(
@@ -50,7 +49,6 @@ pub fn compute_hints_with_graph(
 }
 
 /// Compute caller count and test count for a single function.
-///
 /// Convenience wrapper that loads graph internally. Pass `prefetched_caller_count`
 /// to avoid re-querying callers when the caller already has them (e.g., `explain`
 /// fetches callers before this).
@@ -75,7 +73,6 @@ pub fn compute_hints(
 }
 
 /// Batch compute hints for multiple functions using forward BFS (PERF-20).
-///
 /// Single `test_reachability` call replaces N independent `reverse_bfs` calls.
 pub fn compute_hints_batch(
     graph: &CallGraph,
@@ -104,14 +101,11 @@ pub fn compute_hints_batch(
 }
 
 /// Compute risk scores for a batch of function names.
-///
 /// Uses pre-loaded call graph and test chunks to avoid repeated queries.
 /// Formula: `score = caller_count * (1.0 - test_ratio)` where
 /// `test_ratio = min(test_count / max(caller_count, 1), 1.0)`.
-///
 /// Entry-point handling: functions with 0 callers and 0 tests get `Medium`
 /// risk (likely entry points that should have tests).
-///
 /// PERF-24: Uses a single forward BFS from all test nodes to build a
 /// reachability map, instead of N independent reverse_bfs calls.
 pub fn compute_risk_batch(
@@ -169,7 +163,6 @@ pub fn compute_risk_batch(
 }
 
 /// Compute risk scores and collect deduplicated tests in a single pass.
-///
 /// Shares BFS results across risk scoring and test collection, avoiding the
 /// duplicate `reverse_bfs` that occurs when calling `compute_risk_batch` and
 /// `find_affected_tests_with_chunks` separately.
@@ -249,7 +242,6 @@ pub fn compute_risk_and_tests(
 }
 
 /// Find the most-called functions in the codebase (hotspots).
-///
 /// Returns [`Hotspot`] entries sorted by caller count descending.
 pub fn find_hotspots(graph: &CallGraph, top_n: usize) -> Vec<crate::health::Hotspot> {
     let _span = tracing::info_span!("find_hotspots", top_n).entered();

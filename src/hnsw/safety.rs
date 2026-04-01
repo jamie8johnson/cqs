@@ -21,7 +21,6 @@ mod tests {
     use crate::EMBEDDING_DIM;
 
     /// Create a well-separated embedding for testing.
-    ///
     /// Uses one-hot-like vectors: a strong signal in a unique dimension per seed,
     /// with a small baseline everywhere else. This produces cosine similarity ~0.01
     /// between different seeds and 1.0 for same seed, ensuring HNSW always ranks

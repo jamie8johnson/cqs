@@ -3,7 +3,6 @@
 use std::path::Path;
 
 /// Extract the document title from Markdown content.
-///
 /// Priority:
 /// 1. First `# ` (H1) heading
 /// 2. First `## ` (H2) heading
@@ -58,15 +57,12 @@ pub fn extract_title(markdown: &str, source_path: &Path) -> String {
 }
 
 /// Convert a title string to a kebab-case filename with `.md` extension.
-///
 /// - Lowercases everything
 /// - Keeps alphanumeric characters, spaces, and hyphens
 /// - Replaces parentheses content: `(v2024)` → `v2024`
 /// - Collapses whitespace into single hyphens
 /// - Strips leading/trailing hyphens
-///
 /// # Examples
-///
 /// ```
 /// use cqs::convert::naming::title_to_filename;
 /// assert_eq!(title_to_filename("AVEVA MES Client User Guide"), "aveva-mes-client-user-guide.md");
@@ -96,7 +92,6 @@ pub fn title_to_filename(title: &str) -> String {
 }
 
 /// Resolve filename conflicts with multiple strategies.
-///
 /// 1. If no conflict, use as-is
 /// 2. Append source filename stem as disambiguator
 /// 3. Append numeric suffix (-2, -3, etc.)

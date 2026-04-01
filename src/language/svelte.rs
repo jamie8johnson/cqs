@@ -8,7 +8,6 @@
 use super::{ChunkType, FieldStyle, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Svelte component chunks.
-///
 /// Elements → Property (filtered/reclassified by post-process),
 /// Script blocks → Module, Style blocks → Module.
 const CHUNK_QUERY: &str = r#"
@@ -59,7 +58,6 @@ const NOISE_TAGS: &[&str] = &[
 ];
 
 /// Post-process Svelte element chunks.
-///
 /// Same logic as HTML: headings→Section, script/style→Module,
 /// landmarks→Section, noise→filter unless id, else Property.
 fn post_process_svelte(
@@ -207,21 +205,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a Svelte file containing script and markup sections, verifying that JavaScript functions within the `<script>` block are correctly extracted as separate code chunks with their function names and JavaScript language classification.
-    /// 
-    /// This is a test function that validates the parser's ability to handle Svelte component files by injecting and extracting embedded JavaScript code blocks.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This function is a standalone test with hardcoded Svelte content.
-    /// 
-    /// # Returns
-    /// 
-    /// Nothing. This function asserts on parser output and panics if assertions fail.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to extract the expected JavaScript functions `handleClick` and `formatName` from the Svelte script block, or if file creation/parsing operations fail.
 
     #[test]
     fn parse_svelte_with_script() {
@@ -261,17 +244,6 @@ function formatName(first, last) {
             "Expected JS function 'formatName'"
         );
     }
-    /// Parses a Svelte file containing a TypeScript script block and verifies that TypeScript code is correctly identified and extracted.
-    /// 
-    /// This test function creates a temporary Svelte file with a `<script lang="ts">` block containing TypeScript code (interface and function definitions), parses it using the Parser, and asserts that the TypeScript function `greet` is correctly detected and categorized as TypeScript language.
-    /// 
-    /// # Returns
-    /// 
-    /// Nothing. This function panics if the assertion fails, indicating that the TypeScript function was not properly parsed or identified.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parsed chunks do not contain a TypeScript chunk with the function name "greet", or if file creation or parsing operations fail.
 
     #[test]
     fn parse_svelte_with_typescript() {
@@ -306,19 +278,6 @@ function greet(user: User): string {
                 .collect::<Vec<_>>()
         );
     }
-    /// Parses a Svelte file containing script, template, and style blocks, and verifies that CSS chunks are correctly extracted from the `<style>` block.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function asserts that CSS chunks are present in the parsed output.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if no CSS chunks are found in the parsed Svelte file, indicating that the style block was not properly parsed or extracted.
 
     #[test]
     fn parse_svelte_with_style() {
@@ -357,23 +316,6 @@ body {
                 .collect::<Vec<_>>()
         );
     }
-    /// Parses a Svelte template file and verifies that semantic HTML elements are correctly extracted as chunks.
-    /// 
-    /// This test function creates a temporary Svelte file containing a script block, heading, navigation landmark, and main content area. It then parses the file and asserts that the parser correctly identifies and extracts the heading as a Section chunk and the nav element as a landmark with the expected name format.
-    /// 
-    /// # Arguments
-    /// 
-    /// None
-    /// 
-    /// # Returns
-    /// 
-    /// None (unit test function)
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if any of the following assertions fail:
-    /// - The "Counter App" heading is not found in the extracted sections
-    /// - The nav landmark with id "main-nav" is not found in the extracted sections
 
     #[test]
     fn parse_svelte_template_elements() {
@@ -414,21 +356,6 @@ let count = 0;
             sections.iter().map(|c| &c.name).collect::<Vec<_>>()
         );
     }
-    /// Parses a Svelte component file and verifies that the call graph correctly identifies function relationships.
-    /// 
-    /// This test function creates a temporary Svelte file containing nested function calls, parses it using the Parser to extract the call graph, and asserts that the `handleSubmit` function is properly recorded as calling `fetchData`.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This function operates on hardcoded Svelte source code.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This is a test function that performs assertions.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the call graph does not contain an entry for `handleSubmit` or if `handleSubmit` does not list `fetchData` as a callee.
 
     #[test]
     fn parse_svelte_call_graph() {
@@ -467,19 +394,6 @@ function handleSubmit(event) {
             callee_names
         );
     }
-    /// Verifies that a template-only Svelte component (without script or style blocks) is parsed correctly with all chunks identified as Svelte language and expected content preserved.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded Svelte template content.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and panics on test failure.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if any parsed chunk has a language other than Svelte, or if the expected heading "Simple Page" is not found in the parsed chunks.
 
     #[test]
     fn parse_svelte_no_script_unchanged() {

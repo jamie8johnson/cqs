@@ -22,11 +22,9 @@ pub struct CommitInfo {
 // ─── Git wrapper functions ───────────────────────────────────────────────────
 
 /// List non-merge commits in reverse chronological order.
-///
 /// Uses `--format="%H%x00%s%x00%aI"` with NUL separators for reliable parsing
 /// (commit messages can contain any printable character). `--no-merges` excludes
 /// merge commits which typically have no meaningful diff.
-///
 /// `max_commits == 0` means no limit.
 pub fn git_log(repo: &Path, max_commits: usize) -> Result<Vec<CommitInfo>, TrainDataError> {
     let _span = tracing::info_span!("git_log", repo = %repo.display(), max_commits).entered();
@@ -89,7 +87,6 @@ pub fn git_log(repo: &Path, max_commits: usize) -> Result<Vec<CommitInfo>, Train
 }
 
 /// Get the unified diff for a single commit.
-///
 /// Uses `--root` so the initial commit (no parent) produces a diff against
 /// the empty tree. `--no-commit-id -r -p` gives raw recursive patch output.
 pub fn git_diff_tree(repo: &Path, sha: &str) -> Result<String, TrainDataError> {
@@ -128,7 +125,6 @@ pub fn git_diff_tree(repo: &Path, sha: &str) -> Result<String, TrainDataError> {
 const MAX_SHOW_SIZE: usize = 50 * 1024 * 1024;
 
 /// Retrieve file content at a specific commit.
-///
 /// Returns `Ok(None)` if the content exceeds 50 MB or is not valid UTF-8
 /// (binary files). Returns `Err` if git itself fails (e.g., path doesn't
 /// exist at that commit).
@@ -195,7 +191,6 @@ pub fn git_show(repo: &Path, sha: &str, path: &str) -> Result<Option<String>, Tr
 }
 
 /// Check whether the repository is a shallow clone.
-///
 /// Returns `true` if `git rev-parse --is-shallow-repository` says "true".
 /// Returns `false` on any error (conservative: assume full history).
 pub fn is_shallow(repo: &Path) -> bool {
@@ -301,11 +296,8 @@ mod tests {
         dir
     }
     /// Verifies that `git_log` correctly retrieves commit information from a test repository.
-    ///
     /// Creates a temporary test repository, calls `git_log` with offset 0, and asserts that the returned commits list is non-empty and contains valid commit data (non-empty SHA, message, and date fields).
-    ///
     /// # Panics
-    ///
     /// Panics if any of the assertions fail, indicating that `git_log` did not return expected commit data or the test repository could not be created.
 
     #[test]
@@ -318,13 +310,9 @@ mod tests {
         assert!(!commits[0].date.is_empty());
     }
     /// Tests that the git_log function correctly respects the max_commits parameter to limit the number of returned commits.
-    ///
     /// # Arguments
-    ///
     /// This is a test function with no parameters.
-    ///
     /// # Behavior
-    ///
     /// Creates a test repository with multiple commits, then verifies that:
     /// - git_log with max_commits=0 returns all commits (2 in this case)
     /// - git_log with max_commits=1 returns only 1 commit
@@ -342,17 +330,11 @@ mod tests {
         assert_eq!(limited[0].sha, all[0].sha);
     }
     /// Tests that `git_log` returns commit dates in ISO 8601 format.
-    ///
     /// # Arguments
-    ///
     /// This is a test function with no parameters.
-    ///
     /// # Returns
-    ///
     /// Returns nothing. This is a test function that asserts the date format of git commits contains either 'T' or '-' characters, which are present in ISO 8601 formatted dates (e.g., 2026-03-19T14:30:00+00:00).
-    ///
     /// # Panics
-    ///
     /// Panics if the assertion fails, indicating that `git_log` did not return dates in the expected ISO 8601 format.
 
     #[test]
@@ -367,11 +349,8 @@ mod tests {
         );
     }
     /// Tests the git_diff_tree function with a test repository containing a committed change.
-    ///
     /// Creates a test repository with a change, retrieves the most recent commit, and generates a diff tree for that commit. Asserts that the diff output contains references to the modified file (test.rs) and includes standard unified diff hunk headers (@@).
-    ///
     /// # Panics
-    ///
     /// Panics if the test repository creation fails, git_log returns an error, git_diff_tree returns an error, or if the generated diff does not contain the expected file reference or hunk headers.
 
     #[test]
@@ -383,17 +362,11 @@ mod tests {
         assert!(diff.contains("@@"), "diff should contain hunk headers");
     }
     /// Verifies that `git_diff_tree` correctly generates a diff for the initial commit in a repository.
-    ///
     /// # Arguments
-    ///
     /// This function takes no parameters. It creates a test repository internally.
-    ///
     /// # Returns
-    ///
     /// Returns nothing. This is a test function that asserts expected behavior.
-    ///
     /// # Panics
-    ///
     /// Panics if the initial commit diff does not contain a reference to "test.rs".
 
     #[test]
@@ -408,17 +381,11 @@ mod tests {
         );
     }
     /// Test function that verifies `git_show` correctly retrieves file content from a git repository.
-    ///
     /// # Arguments
-    ///
     /// None. This function creates its own test repository and uses hardcoded test data.
-    ///
     /// # Returns
-    ///
     /// None. This function is a test assertion function that panics if assertions fail.
-    ///
     /// # Panics
-    ///
     /// Panics if:
     /// - The test repository creation fails
     /// - `git_log` fails to retrieve commits
@@ -435,13 +402,9 @@ mod tests {
         assert!(content.unwrap().contains("fn hello"));
     }
     /// Tests that `git_show` returns an error when attempting to retrieve a nonexistent file from a git commit.
-    ///
     /// # Arguments
-    ///
     /// This function takes no parameters. It creates its own temporary test repository internally.
-    ///
     /// # Panics
-    ///
     /// Panics if the test repository cannot be created, if `git_log` fails unexpectedly, or if the commits list is empty.
 
     #[test]
@@ -452,13 +415,10 @@ mod tests {
         assert!(result.is_err(), "Should error for nonexistent file");
     }
     /// Tests that a normally cloned repository is not detected as shallow.
-    ///
     /// # Arguments
     /// None
-    ///
     /// # Returns
     /// None (unit test)
-    ///
     /// # Panics
     /// Panics if the assertion fails, indicating the repository was incorrectly identified as shallow.
 
@@ -468,13 +428,9 @@ mod tests {
         assert!(!is_shallow(dir.path()));
     }
     /// Tests that `is_shallow` returns false for a nonexistent repository path instead of panicking.
-    ///
     /// # Arguments
-    ///
     /// None. This is a test function that uses hardcoded paths.
-    ///
     /// # Returns
-    ///
     /// Nothing. This is a test that asserts `is_shallow` returns `false` when given a nonexistent path.
 
     #[test]

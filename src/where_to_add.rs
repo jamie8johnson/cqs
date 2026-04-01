@@ -12,7 +12,6 @@ use crate::store::{ChunkSummary, SearchFilter};
 use crate::{AnalysisError, Store};
 
 /// Local code patterns extracted from existing chunks in the target file/module.
-///
 /// Uses String fields intentionally rather than an enum — this keeps the design
 /// flexible for arbitrary language-specific patterns without requiring type changes
 /// when adding new conventions. Adding a new naming convention or error handling
@@ -79,9 +78,7 @@ pub struct PlacementOptions {
 
 impl Default for PlacementOptions {
     /// Creates a new instance with default configuration values for placement search parameters.
-    ///
     /// # Returns
-    ///
     /// A new `Self` instance with `search_limit` set to `DEFAULT_PLACEMENT_SEARCH_LIMIT`, `search_threshold` set to `DEFAULT_PLACEMENT_SEARCH_THRESHOLD`, `max_imports` set to `MAX_IMPORT_COUNT`, and `query_embedding` set to `None`.
     fn default() -> Self {
         Self {
@@ -94,7 +91,6 @@ impl Default for PlacementOptions {
 }
 
 /// Suggest where to place new code matching a description.
-///
 /// Uses default search parameters. For custom parameters, use [`suggest_placement_with_options`].
 pub fn suggest_placement(
     store: &Store,
@@ -112,10 +108,8 @@ pub fn suggest_placement(
 }
 
 /// Suggest where to place new code matching a description with configurable search parameters.
-///
 /// If `opts.query_embedding` is set, reuses it (avoids redundant ONNX inference).
 /// Otherwise, computes the embedding from `description` using `embedder`.
-///
 /// 1. Searches for semantically similar code
 /// 2. Groups results by file, ranks by aggregate score
 /// 3. Extracts local patterns from each file
@@ -253,7 +247,6 @@ fn suggest_placement_with_options_core(
 const MAX_IMPORT_COUNT: usize = 5;
 
 /// Extract import/include statements from chunks by matching line prefixes.
-///
 /// Deduplicates imports using a HashSet and caps at `max` entries. This is the
 /// shared extraction logic used by all language arms in `extract_patterns`.
 fn extract_imports(chunks: &[ChunkSummary], prefixes: &[&str], max: usize) -> Vec<String> {
@@ -421,7 +414,6 @@ fn eval_visibility(rule: &VisibilityRule, chunks: &[ChunkSummary]) -> String {
 }
 
 /// Lookup table: language → pattern definition.
-///
 /// Returns `None` for languages with custom logic (Rust, TS/JS, Go) or
 /// non-code languages (SQL, Markdown, JSON, etc.) that have no patterns.
 fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
@@ -618,10 +610,8 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
 }
 
 /// Extract local coding patterns from a file's chunks.
-///
 /// Iterates chunks individually instead of concatenating all content into
 /// one string (avoids a large allocation for files with many chunks).
-///
 /// Most languages use data-driven lookup via `pattern_def_for`. Three languages
 /// have custom logic: Rust (3-way visibility with `pub(crate)`), TS/JS (custom
 /// `require()` import matching), Go (name-based uppercase export detection).
@@ -771,13 +761,11 @@ mod tests {
     use crate::parser::ChunkType;
 
     /// Creates a ChunkSummary struct with test data for a function code chunk.
-    ///
     /// # Arguments
     /// * `name` - The name of the function chunk
     /// * `sig` - The function signature string
     /// * `content` - The function body content
     /// * `lang` - The programming language of the chunk
-    ///
     /// # Returns
     /// A ChunkSummary struct populated with the provided parameters and default test values (file path "src/test.rs", lines 1-10, chunk_type as Function, and empty/None fields for doc, parent_id, parent_type_name, content_hash, and window_idx).
     fn make_chunk(name: &str, sig: &str, content: &str, lang: Language) -> ChunkSummary {

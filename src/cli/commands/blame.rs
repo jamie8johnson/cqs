@@ -133,7 +133,6 @@ fn run_git_log_line_range(
 }
 
 /// Parse NUL-delimited git log output into BlameEntry list.
-///
 /// Expected format per line: `hash\0author\0date\0message`
 pub(crate) fn parse_git_log_output(output: &str) -> Vec<BlameEntry> {
     let mut entries = Vec::new();

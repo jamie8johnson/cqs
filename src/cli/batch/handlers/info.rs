@@ -9,22 +9,15 @@ use crate::cli::validate_finite_f32;
 use cqs::normalize_path;
 
 /// Dispatches a blame analysis request for a specified target and returns the results as JSON.
-///
 /// This function orchestrates the blame operation by building blame data for the given target and converting it to JSON format. It uses tracing instrumentation to log the operation.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch context containing the store and root directory path
 /// * `target` - The target identifier to analyze for blame information
 /// * `depth` - The depth level for traversing blame dependencies
 /// * `show_callers` - Whether to include caller information in the blame data
-///
 /// # Returns
-///
 /// Returns a `Result` containing a `serde_json::Value` representing the blame analysis in JSON format, or an error if the blame data construction fails.
-///
 /// # Errors
-///
 /// Returns an error if building the blame data fails, such as when the target cannot be found or accessed in the store.
 pub(in crate::cli::batch) fn dispatch_blame(
     ctx: &BatchContext,
@@ -44,19 +37,13 @@ pub(in crate::cli::batch) fn dispatch_blame(
 }
 
 /// Dispatches an explain request for a target in batch mode, retrieving and formatting explanation data.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch execution context providing access to the vector index, embedder, store, and configuration.
 /// * `target` - The name or identifier of the target to explain.
 /// * `tokens` - Optional token limit for embedder processing. If provided, the embedder will be initialized.
-///
 /// # Returns
-///
 /// A JSON value containing the formatted explanation data for the specified target.
-///
 /// # Errors
-///
 /// Returns an error if the vector index cannot be retrieved, the embedder fails to initialize (when tokens are specified), or if the explanation data cannot be built or converted to JSON.
 pub(in crate::cli::batch) fn dispatch_explain(
     ctx: &BatchContext,
@@ -89,25 +76,18 @@ pub(in crate::cli::batch) fn dispatch_explain(
 }
 
 /// Searches for chunks similar to a specified target chunk using vector embeddings.
-///
 /// Resolves the target chunk by name, retrieves its embedding, and performs a similarity search against the vector index. Returns the top matching chunks ranked by similarity score, excluding the target chunk itself.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch processing context containing the data store and vector index
 /// * `target` - The name or identifier of the chunk to find similar chunks for
 /// * `limit` - Maximum number of results to return (clamped to 1-100)
 /// * `threshold` - Minimum similarity score (0.0-1.0) for results to be included
-///
 /// # Returns
-///
 /// A JSON object containing:
 /// * `results` - Array of matching chunks with their names, file paths, and similarity scores
 /// * `target` - Name of the queried chunk
 /// * `total` - Number of results returned
-///
 /// # Errors
-///
 /// Returns an error if:
 /// * The threshold is not a finite number
 /// * The target chunk cannot be resolved
@@ -168,21 +148,15 @@ pub(in crate::cli::batch) fn dispatch_similar(
 }
 
 /// Dispatches a context query for a given file path in batch mode, returning JSON data.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch context containing the indexed data store
 /// * `path` - The file path to query context for
 /// * `summary` - If true, returns aggregated caller/callee counts; if false, returns full context data
 /// * `compact` - If true, returns compacted context data regardless of other flags
 /// * `tokens` - Optional token limit for packing the full context response
-///
 /// # Returns
-///
 /// Returns a `Result` containing a `serde_json::Value` with the context data. The structure varies based on flags: compact mode returns compacted representation, summary mode returns total caller/callee counts, and full mode returns detailed context information.
-///
 /// # Errors
-///
 /// Returns an error if the file at `path` is not indexed or if data retrieval from the store fails.
 pub(in crate::cli::batch) fn dispatch_context(
     ctx: &BatchContext,
@@ -276,19 +250,12 @@ pub(in crate::cli::batch) fn dispatch_context(
 }
 
 /// Collects and aggregates statistics from the batch processing context into a JSON response.
-///
 /// This function gathers various metrics from the store including chunk counts, file counts, notes, errors, call graph statistics, type graph statistics, and breakdowns by language and type. All statistics are combined into a single JSON object for reporting.
-///
 /// # Arguments
-///
 /// `ctx` - The batch processing context containing the store and error counter.
-///
 /// # Returns
-///
 /// A JSON value containing aggregated statistics with the following top-level fields: `total_chunks`, `total_files`, `notes`, `errors`, `call_graph` (with `total_calls`, `unique_callers`, `unique_callees`), `type_graph` (with `total_edges`, `unique_types`), `by_language`, `by_type`, `model`, and `schema_version`.
-///
 /// # Errors
-///
 /// Returns an error if any of the store queries fail (stats, note_count, function_call_stats, or type_edge_stats).
 pub(in crate::cli::batch) fn dispatch_stats(ctx: &BatchContext) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_stats").entered();
@@ -324,20 +291,14 @@ pub(in crate::cli::batch) fn dispatch_stats(ctx: &BatchContext) -> Result<serde_
 }
 
 /// Dispatches an onboarding request that identifies relevant code entry points and their relationships, with optional token-based budget limiting.
-///
 /// # Arguments
-///
 /// * `ctx` - Batch execution context containing the code store and embedder
 /// * `query` - Search query string to find relevant code entry points
 /// * `depth` - Traversal depth for call chain exploration (clamped to 1-5)
 /// * `tokens` - Optional token budget; if provided, limits serialization to fit within budget
-///
 /// # Returns
-///
 /// Returns a JSON value containing the onboarding result with the entry point, call chain hierarchy with depth-based scoring, and related callers. If tokens budget is not specified, returns the complete serialized result. If budget is specified, performs batch fetching of code chunks to optimize token usage.
-///
 /// # Errors
-///
 /// Returns an error if embedder initialization fails, onboarding query fails, or serialization fails.
 pub(in crate::cli::batch) fn dispatch_onboard(
     ctx: &BatchContext,
@@ -427,22 +388,16 @@ pub(in crate::cli::batch) fn dispatch_onboard(
 }
 
 /// Dispatches a read operation on a file within a batch context, optionally with focused reading on a specific note.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch execution context containing root directory and audit state
 /// * `path` - The file path to read, relative to the context root
 /// * `focus` - Optional focus identifier to read a specific note instead of the full file
-///
 /// # Returns
-///
 /// A JSON object containing:
 /// * `path` - The requested file path
 /// * `content` - The file content, optionally prepended with an audit note header
 /// * `notes_injected` - Boolean indicating whether notes were injected into the header
-///
 /// # Errors
-///
 /// Returns an error if file validation or reading fails.
 pub(in crate::cli::batch) fn dispatch_read(
     ctx: &BatchContext,
@@ -477,23 +432,16 @@ pub(in crate::cli::batch) fn dispatch_read(
 }
 
 /// Dispatches a focused read operation and returns the results as JSON.
-///
 /// Builds output for a specific focused target from the store and formats it as a JSON object containing the focus identifier, content, and optional hints about callers and tests.
-///
 /// # Arguments
-///
 /// * `ctx` - The batch execution context containing store, root path, audit state, and notes
 /// * `focus` - The identifier of the target to focus on for the read operation
-///
 /// # Returns
-///
 /// A JSON value containing:
 /// - `focus`: the focus identifier
 /// - `content`: the generated output for the focused target
 /// - `hints` (optional): an object with caller_count, test_count, no_callers, and no_tests fields
-///
 /// # Errors
-///
 /// Returns an error if building the focused output fails.
 fn dispatch_read_focused(ctx: &BatchContext, focus: &str) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_read_focused", focus).entered();

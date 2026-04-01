@@ -85,13 +85,9 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// Extracts the return type from a C function signature and formats it as documentation text.
-/// 
 /// # Arguments
-/// 
 /// `signature` - A C function signature string, expected to contain a return type, function name, and parameter list in parentheses (e.g., "int add(int a, int b)").
-/// 
 /// # Returns
-/// 
 /// `Some(String)` containing the formatted return type documentation (e.g., "Returns int") if a non-void return type is found after filtering out storage class specifiers (static, inline, extern, const, volatile). Returns `None` if the signature is malformed, has no return type, or the return type is void.
 fn extract_return(signature: &str) -> Option<String> {
     // C: return type is before the function name, e.g., "int add(int a, int b)"
@@ -173,17 +169,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a C union declaration and verifies it is correctly identified as a struct chunk type.
-    /// 
-    /// This function tests the parser's ability to handle C union syntax by writing a union definition to a temporary file, parsing it, and asserting that the resulting chunk has the expected name and type classification.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data internally.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser cannot be initialized, the file cannot be parsed, the "Data" chunk is not found in the parse results, or the chunk type assertion fails.
 
     #[test]
     fn parse_c_union() {
@@ -194,19 +179,6 @@ mod tests {
         let u = chunks.iter().find(|c| c.name == "Data").unwrap();
         assert_eq!(u.chunk_type, ChunkType::Struct);
     }
-    /// Parses a C preprocessor define directive and verifies it is recognized as a constant chunk.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, the MAX_SIZE chunk is not found, or the chunk type is not identified as a Constant.
 
     #[test]
     fn parse_c_define_constant() {
@@ -217,19 +189,6 @@ mod tests {
         let c = chunks.iter().find(|c| c.name == "MAX_SIZE").unwrap();
         assert_eq!(c.chunk_type, ChunkType::Constant);
     }
-    /// Tests that the parser correctly identifies and classifies C preprocessor define macros.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function asserts on parsing results and panics if assertions fail.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the parser fails to initialize, file parsing fails, the "SWAP" macro is not found in parsed chunks, or the chunk type is not correctly identified as a Macro.
 
     #[test]
     fn parse_c_define_macro() {
@@ -240,24 +199,6 @@ mod tests {
         let m = chunks.iter().find(|c| c.name == "SWAP").unwrap();
         assert_eq!(m.chunk_type, ChunkType::Macro);
     }
-    /// Verifies that a C typedef declaration is correctly parsed as a TypeAlias chunk.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that uses internal helper functions and assertions.
-    /// 
-    /// # Returns
-    /// 
-    /// None. Returns `()`.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be written
-    /// - The parser fails to initialize
-    /// - Parsing the file fails
-    /// - A chunk named "MyInt" is not found in the parsed results
-    /// - The parsed chunk is not of type `ChunkType::TypeAlias`
 
     #[test]
     fn parse_c_typedef_as_typealias() {

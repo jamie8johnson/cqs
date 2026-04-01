@@ -11,7 +11,6 @@ use crate::Store;
 
 impl LlmClient {
     /// Core batch submission: builds requests using the given prompt builder, posts to the API.
-    ///
     /// `items` is a list of (custom_id, content, field3, language) — field3 is chunk_type or signature
     /// depending on the prompt builder.
     /// `prompt_builder` constructs the user message from (content, field3, language).
@@ -84,7 +83,6 @@ impl LlmClient {
     }
 
     /// Submit a batch where prompts are already built (content field IS the prompt).
-    ///
     /// Used by the contrastive summary path which pre-builds prompts with neighbor context.
     pub(super) fn submit_batch_prebuilt(
         &self,
@@ -98,7 +96,6 @@ impl LlmClient {
     }
 
     /// Submit a batch of doc-comment requests to the Batches API.
-    ///
     /// Like `submit_batch` but uses `build_doc_prompt` instead of `build_prompt`.
     /// `items` is a list of (custom_id, content, chunk_type, language).
     /// Returns the batch ID for polling.
@@ -111,7 +108,6 @@ impl LlmClient {
     }
 
     /// Submit a batch of HyDE query prediction requests to the Batches API.
-    ///
     /// Like `submit_doc_batch` but uses `build_hyde_prompt` instead of `build_doc_prompt`.
     /// `items` is a list of (custom_id, content, signature, language).
     /// Returns the batch ID for polling.
@@ -205,7 +201,6 @@ impl LlmClient {
     }
 
     /// Fetch results from a completed batch.
-    ///
     /// Returns a map from custom_id to summary text.
     pub(super) fn fetch_batch_results(
         &self,
@@ -377,7 +372,6 @@ impl BatchProvider for LlmClient {
 }
 
 /// Configuration for the Phase 2 batch orchestration pattern.
-///
 /// Type alias for pending metadata get/set closures (clippy::type_complexity).
 type PendingFn = dyn Fn(&Store, Option<&str>) -> Result<(), crate::store::StoreError>;
 /// Type alias for batch submit closures (clippy::type_complexity).
@@ -445,12 +439,10 @@ impl BatchPhase2<'_> {
     }
 
     /// Run the Phase 2 orchestration: check for pending batch, submit or resume, fetch results.
-    ///
     /// `batch_items`: items to submit (empty = only check for pending).
     /// `get_pending`: reads the pending batch ID from the store.
     /// `set_pending`: writes/clears the pending batch ID in the store.
     /// `submit`: submits a new batch via the client.
-    ///
     /// Returns the raw results map. Results are stored in the DB with `self.purpose`.
     pub fn submit_or_resume(
         &self,
@@ -565,7 +557,6 @@ impl BatchPhase2<'_> {
     }
 
     /// Remove the batch lock file if it exists (RM-34).
-    ///
     /// Called after the lock handle is dropped to avoid leaving stale lock files on disk.
     fn cleanup_batch_lock(&self) {
         if let Some(dir) = self.lock_dir {

@@ -20,7 +20,6 @@ pub(crate) const DEFAULT_THRESHOLD: f32 = 0.3;
 // DEFAULT_NAME_BOOST lives in cqs::store (single source of truth).
 pub(crate) use cqs::store::DEFAULT_NAME_BOOST;
 /// Find project root by looking for common markers.
-///
 /// For Cargo projects, detects workspace roots: if a `Cargo.toml` is found,
 /// continues walking up to check if it's inside a workspace. A parent directory
 /// with `[workspace]` in its `Cargo.toml` takes precedence as the project root.
@@ -99,7 +98,6 @@ pub(crate) fn find_project_root() -> PathBuf {
 }
 
 /// Walk up from a directory containing Cargo.toml to find a workspace root.
-///
 /// Returns `Some(path)` if a parent directory has a `Cargo.toml` with `[workspace]`,
 /// `None` if no workspace root found (the original dir is the root).
 fn find_cargo_workspace_root(from: &std::path::Path) -> Option<PathBuf> {

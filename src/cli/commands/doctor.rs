@@ -77,7 +77,6 @@ fn run_fixes(issues: &[DoctorIssue]) -> Result<()> {
 }
 
 /// Run diagnostic checks on cqs installation and index
-///
 /// Reports runtime info, embedding provider, model status, and index statistics.
 /// With `--fix`, automatically remediates issues: stale→index, schema→migrate.
 pub(crate) fn cmd_doctor(model_override: Option<&str>, fix: bool) -> Result<()> {

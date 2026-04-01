@@ -16,12 +16,10 @@ pub(super) fn ort_err<T>(e: ort::Error<T>) -> EmbedderError {
 }
 
 /// Ensure ORT CUDA provider libraries are findable (Unix only)
-///
 /// ORT's C++ runtime resolves provider paths via `dladdr` -> `argv[0]`.
 /// With static linking and PATH invocation, `argv[0]` is the bare binary
 /// name (e.g., "cqs"), so ORT constructs `absolute("cqs").remove_filename()`
 /// = CWD. Providers must exist there for `dlopen` to succeed.
-///
 /// Strategy: compute the same directory ORT will search (from argv[0]),
 /// and create symlinks from the ORT cache there. Symlinks are cleaned up
 /// on process exit.
@@ -66,7 +64,6 @@ fn ensure_ort_provider_libs() {
 }
 
 /// Compute the directory ORT's GetRuntimePath() will resolve to.
-///
 /// Reproduces ORT's logic: `dladdr` returns `dli_fname = argv[0]` (glibc),
 /// then `std::filesystem::absolute(dli_fname).remove_filename()`.
 #[cfg(target_os = "linux")]
@@ -172,15 +169,10 @@ fn register_provider_cleanup(paths: Vec<PathBuf>) {
     static REGISTERED: std::sync::Once = std::sync::Once::new();
     REGISTERED.call_once(|| {
         /// Cleans up temporary files and symlinks registered for deletion during program termination.
-        ///
         /// This function is registered as an exit handler and removes any files that were added to the cleanup list during execution. It safely iterates through registered paths, verifying each is a symlink before attempting deletion, and silently ignores any removal failures.
-        ///
         /// # Arguments
-        ///
         /// None. Accesses a global `CLEANUP_PATHS` collection to determine which files to remove.
-        ///
         /// # Returns
-        ///
         /// Nothing. This is an extern "C" function with no return value, suitable for use as an exit handler.
         extern "C" fn cleanup() {
             // Note: remove_file may allocate. Acceptable for CLI tool that exits normally.
@@ -208,7 +200,6 @@ fn ensure_ort_provider_libs() {
 static CACHED_PROVIDER: OnceCell<ExecutionProvider> = OnceCell::new();
 
 /// Select the best available execution provider (cached)
-///
 /// Provider detection is expensive (checks CUDA/TensorRT availability).
 /// Result is cached in a static OnceCell for subsequent calls.
 pub(crate) fn select_provider() -> ExecutionProvider {

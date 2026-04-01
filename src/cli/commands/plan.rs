@@ -35,7 +35,6 @@ pub(crate) fn cmd_plan(
 }
 
 /// Displays a formatted text representation of a code query plan result to stdout.
-///
 fn display_plan_text(
     result: &cqs::plan::PlanResult,
     root: &std::path::Path,

@@ -54,7 +54,6 @@ pub(crate) fn cmd_diff(
 }
 
 /// Displays a formatted diff report showing changes between two versions.
-///
 fn display_diff(result: &DiffResult) -> Result<()> {
     println!("Diff: {} → {}", result.source.bold(), result.target.bold());
     println!();
@@ -119,7 +118,6 @@ fn display_diff(result: &DiffResult) -> Result<()> {
 }
 
 /// Formats and outputs a diff result as a formatted JSON document to stdout.
-///
 fn display_diff_json(result: &DiffResult) -> Result<()> {
     let added: Vec<_> = result
         .added

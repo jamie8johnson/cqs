@@ -8,7 +8,6 @@ use crate::store::Store;
 
 impl Store {
     /// Batch count query for call graph columns.
-    ///
     /// Shared implementation for caller/callee count queries. Filters by `filter_column`
     /// and groups by `group_column` to count edges.
     async fn batch_count_query(
@@ -42,7 +41,6 @@ impl Store {
     }
 
     /// Caller counts for multiple functions in one query.
-    ///
     /// Returns how many callers each function has. Functions not in the call graph
     /// won't appear in the result map (caller count is implicitly 0).
     pub fn get_caller_counts_batch(
@@ -59,7 +57,6 @@ impl Store {
     }
 
     /// Callee counts for multiple functions in one query.
-    ///
     /// Returns how many callees each function has. Functions not in the call graph
     /// won't appear in the result map (callee count is implicitly 0).
     pub fn get_callee_counts_batch(
@@ -80,7 +77,6 @@ impl Store {
     }
 
     /// Functions that share callers with target (called by the same functions).
-    ///
     /// For target X, finds functions Y where some function A calls both X and Y.
     /// Returns (function_name, overlap_count) sorted by overlap descending.
     pub fn find_shared_callers(
@@ -112,7 +108,6 @@ impl Store {
     }
 
     /// Functions that share callees with target (call the same functions).
-    ///
     /// For target X, finds functions Y where X and Y both call some function C.
     /// Returns (function_name, overlap_count) sorted by overlap descending.
     pub fn find_shared_callees(
@@ -162,7 +157,6 @@ impl Store {
     }
 
     /// Count distinct callers for each callee name.
-    ///
     /// Returns `(callee_name, distinct_caller_count)` pairs. Used by the
     /// enrichment pass for IDF-style filtering: callees called by many
     /// distinct callers are likely utilities (log, unwrap, etc.).
@@ -197,15 +191,10 @@ mod tests {
     use super::*;
 
     /// Initializes the store with a predefined call graph for testing purposes.
-    ///
     /// Creates a test call graph where function A calls B and C, B calls C, and D calls B, then inserts it into the store for the file "src/test.rs".
-    ///
     /// # Arguments
-    ///
     /// * `store` - The store instance to populate with the test call graph data.
-    ///
     /// # Panics
-    ///
     /// Panics if the `upsert_function_calls` operation fails (via `unwrap()`).
     fn seed_call_graph(store: &Store) {
         // A calls B and C; B calls C; D calls B

@@ -50,7 +50,6 @@ fn open_store_with(
 }
 
 /// Open the project store, returning the store, project root, and index directory.
-///
 /// Bails with a user-friendly message if no index exists.
 pub(crate) fn open_project_store(
 ) -> anyhow::Result<(cqs::Store, std::path::PathBuf, std::path::PathBuf)> {
@@ -58,7 +57,6 @@ pub(crate) fn open_project_store(
 }
 
 /// Open the project store with a single-threaded runtime for read-only commands.
-///
 /// Same as [`open_project_store`] but uses `Store::open_light()` which creates a
 /// `current_thread` tokio runtime (1 OS thread) instead of `multi_thread` (4 OS threads).
 /// Keeps full 256MB mmap and 16MB cache for search performance.
@@ -68,7 +66,6 @@ pub(crate) fn open_project_store_readonly(
 }
 
 /// Build the best available vector index for the store.
-///
 /// Priority: CAGRA (GPU, large indexes) > HNSW (CPU) > brute-force (None).
 /// CAGRA rebuilds index each CLI invocation (~1s for 474 vectors).
 /// Only worth it when search time savings exceed rebuild cost.
@@ -81,21 +78,14 @@ pub(crate) fn build_vector_index(
 }
 
 /// Builds a vector index for the store with the specified configuration.
-///
 /// Attempts to build a GPU-accelerated CAGRA index if the store contains enough vectors and GPU support is available. Falls back to HNSW index otherwise. If the HNSW index is detected to be stale due to an interrupted write, returns None to fall back to brute-force search.
-///
 /// # Arguments
-///
 /// * `store` - Reference to the data store containing vectors to index
 /// * `cqs_dir` - Path to the CQS directory
 /// * `ef_search` - Optional search parameter to configure index behavior
-///
 /// # Returns
-///
 /// Returns `Ok(Some(index))` with a boxed vector index implementation if indexing succeeds, or `Ok(None)` if the index is stale or unavailable.
-///
 /// # Errors
-///
 /// Returns an error if the HNSW index building fails or store operations encounter errors.
 pub(crate) fn build_vector_index_with_config(
     store: &cqs::Store,

@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 /// Convert a PDF file to Markdown by shelling out to the Python converter.
-///
 /// Looks for `scripts/pdf_to_md.py` relative to CWD, or via `CQS_PDF_SCRIPT` env var.
 /// Requires `python3` and `pip install pymupdf4llm`.
 pub fn pdf_to_markdown(path: &Path) -> Result<String> {
@@ -48,7 +47,6 @@ pub fn pdf_to_markdown(path: &Path) -> Result<String> {
 }
 
 /// Locate the PDF conversion script.
-///
 /// Search order:
 /// 1. `CQS_PDF_SCRIPT` environment variable
 /// 2. `scripts/pdf_to_md.py` relative to CWD
@@ -104,16 +102,11 @@ mod tests {
 
     impl EnvGuard {
         /// Sets an environment variable and returns a guard that restores the previous value.
-        ///
         /// This method temporarily modifies an environment variable and returns an `EnvGuard` that will restore the original value when dropped. Useful for testing code that depends on environment variables.
-        ///
         /// # Arguments
-        ///
         /// * `key` - The name of the environment variable to set
         /// * `val` - The new value to assign to the environment variable
-        ///
         /// # Returns
-        ///
         /// An `EnvGuard` instance that stores the previous value of the environment variable and will restore it upon being dropped.
         fn set(key: &'static str, val: &str) -> Self {
             let prev = std::env::var(key).ok();
@@ -122,15 +115,10 @@ mod tests {
         }
 
         /// Temporarily removes an environment variable and returns a guard that restores it.
-        ///
         /// This method removes the environment variable specified by `key` and captures its previous value. When the returned `EnvGuard` is dropped, it automatically restores the variable to its previous state, or removes it if it didn't exist before.
-        ///
         /// # Arguments
-        ///
         /// * `key` - The name of the environment variable to remove.
-        ///
         /// # Returns
-        ///
         /// An `EnvGuard` that, when dropped, restores the environment variable to its previous value or removes it if it was not previously set.
         fn unset(key: &'static str) -> Self {
             let prev = std::env::var(key).ok();
@@ -141,17 +129,11 @@ mod tests {
 
     impl Drop for EnvGuard {
         /// Restores the previous environment variable state when this guard is dropped.
-        ///
         /// # Arguments
-        ///
         /// `&mut self` - A mutable reference to the environment variable guard
-        ///
         /// # Returns
-        ///
         /// Nothing
-        ///
         /// # Description
-        ///
         /// If a previous value existed before this guard was created, it is restored. Otherwise, the environment variable is removed entirely. This implements automatic cleanup of environment variable changes through Rust's drop semantics.
         fn drop(&mut self) {
             match &self.prev {
@@ -286,7 +268,6 @@ mod tests {
 }
 
 /// Find a working Python interpreter.
-///
 /// Tries `python3` first, falls back to `python`. Validates that the candidate
 /// exits cleanly with `--version` to avoid running unrelated binaries.
 fn find_python() -> Result<String> {

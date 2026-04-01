@@ -3,7 +3,6 @@
 use std::path::Path;
 
 /// Find a working Python interpreter.
-///
 /// Tries `python3`, `python`, `py` in order. Validates with `--version`.
 fn find_python() -> anyhow::Result<String> {
     for name in &["python3", "python", "py"] {

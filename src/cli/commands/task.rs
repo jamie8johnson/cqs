@@ -181,7 +181,6 @@ pub(crate) struct PackedSections {
 }
 
 /// Pack a section: count tokens for texts, run index_pack, return (indices, used).
-///
 /// Extracts the repeated pattern of count_tokens_batch + index_pack used by
 /// each waterfall section. CQ-26.
 fn pack_section(
@@ -196,7 +195,6 @@ fn pack_section(
 }
 
 /// Compute waterfall token budgeting across all task sections.
-///
 /// Shared between CLI `cqs task --tokens` and batch `task --tokens`.
 /// `overhead_per_item` should be `JSON_OVERHEAD_PER_RESULT` for JSON, 0 for text.
 pub(crate) fn waterfall_pack(
@@ -363,7 +361,6 @@ pub(crate) fn waterfall_pack(
 }
 
 /// Build budgeted JSON for a task result using full waterfall token budgeting.
-///
 /// Shared between CLI `cqs task --tokens --json` and batch `task --tokens`.
 pub(crate) fn task_to_budgeted_json(
     result: &cqs::TaskResult,
@@ -471,7 +468,6 @@ fn build_risk_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_jso
 }
 
 /// Converts a subset of test results to JSON format.
-///
 /// Paths in tests are already relative to the project root.
 fn build_tests_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_json::Value> {
     indices
@@ -481,7 +477,6 @@ fn build_tests_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_js
 }
 
 /// Builds a JSON representation of task result placements for specified indices.
-///
 /// Paths in placement are already relative to the project root.
 fn build_placement_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_json::Value> {
     indices

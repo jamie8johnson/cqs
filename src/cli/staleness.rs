@@ -13,7 +13,6 @@ use cqs::normalize_slashes;
 use cqs::Store;
 
 /// Check result origins for staleness and print warning to stderr.
-///
 /// Returns the set of stale origins for callers that want to annotate results.
 /// Errors are logged and swallowed — staleness check should never break a query.
 pub fn warn_stale_results(store: &Store, origins: &[&str], root: &Path) -> HashSet<String> {

@@ -30,7 +30,6 @@ const MAX_INJECTION_RANGES: usize = 1000;
 const MAX_INJECTION_DEPTH: usize = 3;
 
 /// Result of scanning an outer tree for injection regions.
-///
 /// Groups byte ranges by target language, plus tracks which outer chunk
 /// line ranges correspond to injection containers (for removal).
 pub(crate) struct InjectionGroup {
@@ -44,7 +43,6 @@ pub(crate) struct InjectionGroup {
 }
 
 /// Scan an outer parse tree for injection regions defined by the given rules.
-///
 /// Returns injection groups — each group has a target language, byte ranges
 /// for inner parsing, and line ranges of the container nodes to replace.
 pub(crate) fn find_injection_ranges(
@@ -123,7 +121,6 @@ pub(crate) fn find_injection_ranges(
 }
 
 /// Advance a tree cursor to the next sibling, walking up parents as needed.
-///
 /// Returns `false` if the entire tree has been exhausted.
 fn advance_cursor(cursor: &mut tree_sitter::TreeCursor) -> bool {
     if cursor.goto_next_sibling() {
@@ -140,7 +137,6 @@ fn advance_cursor(cursor: &mut tree_sitter::TreeCursor) -> bool {
 }
 
 /// Calculate a `tree_sitter::Point` (row, column) from a byte offset in source text.
-///
 /// Used by `_inner` content mode where we compute content ranges from source text
 /// rather than from tree-sitter node positions.
 fn byte_offset_to_point(source: &str, byte: usize) -> tree_sitter::Point {
@@ -153,9 +149,7 @@ fn byte_offset_to_point(source: &str, byte: usize) -> tree_sitter::Point {
 }
 
 /// Walk the tree using a cursor to find all nodes matching an injection rule's container_kind.
-///
 /// Creates and manages its own cursor — callers don't need to handle cursor state.
-///
 /// Supports two content extraction modes:
 /// - **Named children** (`content_kind` is a node kind string): finds child nodes matching
 ///   the kind, e.g., `raw_text` inside `script_element`.
@@ -267,12 +261,10 @@ fn walk_for_containers(
 }
 
 /// Build an inner tree-sitter parse tree for injection ranges.
-///
 /// Allocates a fresh `tree_sitter::Parser` per call. This is intentional:
 /// `Parser::new()` is cheap (~32 bytes on stack), and parsers are not `Send`
 /// so they can't be shared across rayon threads. The real allocation cost is
 /// in `parser.parse()` which builds the syntax tree.
-///
 /// Returns `None` on any failure (with warnings logged).
 fn build_injection_tree(
     language: Language,
@@ -308,10 +300,8 @@ fn build_injection_tree(
 
 impl Parser {
     /// Parse injected chunks from byte ranges using an inner language grammar.
-    ///
     /// Creates a new tree-sitter parser, sets included ranges, parses the source,
     /// and extracts chunks using the inner language's query.
-    ///
     /// Supports recursive injection: if the inner language has its own injection
     /// rules and `depth < MAX_INJECTION_DEPTH`, nested injections are processed.
     /// For example, PHP→HTML→JS requires depth 2.
@@ -446,7 +436,6 @@ impl Parser {
     }
 
     /// Parse injected relationships (calls + types) from byte ranges.
-    ///
     /// Supports recursive injection via `depth` parameter.
     pub(crate) fn parse_injected_relationships(
         &self,
@@ -613,11 +602,9 @@ impl Parser {
     }
 
     /// Combined injection: extract chunks + calls + types in a single inner parse.
-    ///
     /// Builds one inner tree-sitter tree and runs two query cursor passes:
     /// 1. Chunk extraction (same as `parse_injected_chunks`)
     /// 2. Relationship extraction (same as `parse_injected_relationships`)
-    ///
     /// Supports recursive injection via `depth` parameter.
     /// Used by `parse_file_all()` to avoid double-parsing injection regions.
     pub(crate) fn parse_injected_all(
@@ -853,11 +840,9 @@ impl Parser {
 }
 
 /// Check if an outer chunk is fully contained within any injection container.
-///
 /// Returns `true` if the chunk's line range `[chunk_start, chunk_end]` is
 /// entirely within some container's `[start, end]`. This is strict containment,
 /// not overlap — a chunk that partially overlaps a container is NOT matched.
-///
 /// Used to identify outer chunks (e.g., HTML Module chunks for script/style)
 /// that should be replaced by inner chunks when injection parsing succeeds.
 pub(crate) fn chunk_within_container(
@@ -877,17 +862,11 @@ mod tests {
     mod chunk_within_container_tests {
         use super::*;
         /// Tests that a chunk fully contained within a container range is correctly identified.
-        ///
         /// # Arguments
-        ///
         /// This function takes no arguments. It tests the internal logic of `chunk_within_container`.
-        ///
         /// # Returns
-        ///
         /// Returns nothing. This is a test function that asserts expected behavior.
-        ///
         /// # Panics
-        ///
         /// Panics if the assertion fails, indicating that `chunk_within_container` did not correctly identify that lines 5-10 are fully contained within the container range 3-15.
 
         #[test]
@@ -896,17 +875,11 @@ mod tests {
             assert!(chunk_within_container(5, 10, &[(3, 15)]));
         }
         /// Tests that a chunk is correctly identified as being within a container when the chunk boundaries exactly match the container boundaries.
-        ///
         /// # Arguments
-        ///
         /// This is a test function with no parameters.
-        ///
         /// # Returns
-        ///
         /// Returns nothing. Panics if the assertion fails.
-        ///
         /// # Panics
-        ///
         /// Panics if `chunk_within_container(3, 15, &[(3, 15)])` returns false, indicating the function failed to recognize an exact boundary match.
 
         #[test]
@@ -915,13 +888,9 @@ mod tests {
             assert!(chunk_within_container(3, 15, &[(3, 15)]));
         }
         /// Verifies that a chunk positioned at the exact start boundary of a container is correctly identified as being within that container.
-        ///
         /// # Arguments
-        ///
         /// None. This is a test helper function that uses hardcoded values.
-        ///
         /// # Panics
-        ///
         /// Panics if the assertion fails, indicating that a chunk at position 3 with size 10 is not recognized as being within the container range (3, 15).
 
         #[test]
@@ -930,13 +899,9 @@ mod tests {
             assert!(chunk_within_container(3, 10, &[(3, 15)]));
         }
         /// Verifies that a chunk is correctly identified as being within a container when the chunk's end boundary aligns with the container's end boundary.
-        ///
         /// # Arguments
-        ///
         /// No parameters. This is a test assertion function.
-        ///
         /// # Panics
-        ///
         /// Panics if the assertion fails, indicating that a chunk from position 10 to 15 is not correctly recognized as being within a container spanning from position 3 to 15.
 
         #[test]
@@ -945,12 +910,10 @@ mod tests {
             assert!(chunk_within_container(10, 15, &[(3, 15)]));
         }
         /// Tests that a chunk positioned entirely before a container is correctly identified as not contained within it.
-        ///
         /// # Arguments
         /// * `1` - chunk start position
         /// * `2` - chunk end position
         /// * `&[(3, 15)]` - container ranges to check against
-        ///
         /// # Returns
         /// Asserts that `chunk_within_container` returns `false` when the chunk (1-2) ends before the container (3-15) begins.
 
@@ -960,13 +923,9 @@ mod tests {
             assert!(!chunk_within_container(1, 2, &[(3, 15)]));
         }
         /// Tests that a chunk positioned entirely after a container is correctly identified as not contained within it.
-        ///
         /// # Arguments
-        ///
         /// This is a test function with no parameters.
-        ///
         /// # Returns
-        ///
         /// This test function returns nothing. It asserts that `chunk_within_container(16, 20, &[(3, 15)])` returns `false`, indicating that a chunk from position 16-20 is not contained within a container spanning positions 3-15.
 
         #[test]
@@ -975,12 +934,10 @@ mod tests {
             assert!(!chunk_within_container(16, 20, &[(3, 15)]));
         }
         /// Verifies that a chunk is not considered contained within a container when the chunk's start position precedes the container's start position, even if their ranges overlap.
-        ///
         /// # Arguments
         /// * `1` - The start position of the chunk
         /// * `5` - The end position of the chunk
         /// * `&[(3, 15)]` - A slice containing one container with start position 3 and end position 15
-        ///
         /// # Returns
         /// Asserts that `chunk_within_container` returns `false`, indicating the chunk (1-5) is not strictly contained within the container (3-15).
 
@@ -990,20 +947,14 @@ mod tests {
             assert!(!chunk_within_container(1, 5, &[(3, 15)]));
         }
         /// Verifies that a chunk is not considered contained within a container when the chunk partially overlaps the end of a container range.
-        ///
         /// # Arguments
-        ///
         /// This function takes no arguments. It is a test that internally uses hardcoded values:
         /// - Chunk start position: 10
         /// - Chunk end position: 20
         /// - Container range: (3, 15)
-        ///
         /// # Returns
-        ///
         /// This function returns nothing. It asserts that `chunk_within_container(10, 20, &[(3, 15)])` returns `false`.
-        ///
         /// # Panics
-        ///
         /// Panics if the assertion fails, indicating the `chunk_within_container` function incorrectly identified a partially overlapping chunk as contained.
 
         #[test]
@@ -1012,16 +963,12 @@ mod tests {
             assert!(!chunk_within_container(10, 20, &[(3, 15)]));
         }
         /// Tests that `chunk_within_container` returns `false` when given an empty container list.
-        ///
         /// # Arguments
-        ///
         /// * `chunk_within_container` - The function being tested
         /// * `5` - A chunk identifier
         /// * `10` - A size or offset value
         /// * `&[]` - An empty slice of containers
-        ///
         /// # Returns
-        ///
         /// `false` - Confirms that no chunk can exist within an empty container collection
 
         #[test]
@@ -1029,15 +976,11 @@ mod tests {
             assert!(!chunk_within_container(5, 10, &[]));
         }
         /// Verifies that the `chunk_within_container` function correctly identifies whether a chunk range is contained within any of multiple containers.
-        ///
         /// # Arguments
-        ///
         /// This is a test function with no parameters. It uses hardcoded test data including:
         /// - A vector of container ranges as tuples of (start, end)
         /// - Chunk ranges to test against the containers
-        ///
         /// # Returns
-        ///
         /// Returns nothing. Assertions validate that chunks fully contained within a container return true, and chunks not contained in any container return false.
 
         #[test]
@@ -1049,13 +992,10 @@ mod tests {
             assert!(!chunk_within_container(5, 8, &containers));
         }
         /// This function tests the `chunk_within_container` function's behavior when checking if a single-line chunk (where start equals end) falls within a container's line range. It verifies that a chunk at line 5 is correctly identified as within a container spanning lines 3-15, and that a chunk at line 2 is correctly identified as outside that range.
-        ///
         /// # Arguments
         /// None
-        ///
         /// # Returns
         /// None (test function that uses assertions)
-        ///
         /// # Panics
         /// Panics if either assertion fails, indicating the `chunk_within_container` function does not correctly handle single-line chunks.
 

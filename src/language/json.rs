@@ -19,13 +19,9 @@ const DOC_NODES: &[&str] = &["comment"];
 const STOPWORDS: &[&str] = &["true", "false", "null"];
 
 /// Extracts the return type from a function signature.
-/// 
 /// # Arguments
-/// 
 /// * `_signature` - A function signature string to parse
-/// 
 /// # Returns
-/// 
 /// Returns `None` if no return type is found or the signature format is not supported. This function currently always returns `None` as it's designed for formats like JSON that do not have function return types.
 fn extract_return(_signature: &str) -> Option<String> {
     // JSON has no functions or return types
@@ -102,13 +98,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Verifies that the parser correctly extracts top-level keys from a JSON file while filtering out nested keys.
-    /// 
-    /// This is a test function that validates the parser's ability to identify and extract only the top-level keys from a JSON document structure, specifically testing against a package.json-like format. It creates a temporary JSON file, parses it, and asserts that top-level keys ("name", "version", "dependencies") are present in the parsed chunks while nested keys ("lodash") are excluded.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if any of the assertions fail, indicating the parser did not correctly identify top-level keys or failed to filter nested keys.
 
     #[test]
     fn parse_json_top_level_keys() {
@@ -146,19 +135,6 @@ mod tests {
             names
         );
     }
-    /// Verifies that the parser correctly identifies and classifies JSON object properties as Property chunk types.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function asserts test conditions and panics on failure.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to create an instance, fails to parse the temporary JSON file, fails to find a chunk named "key", or if the identified chunk is not of type ChunkType::Property.
 
     #[test]
     fn parse_json_chunk_type() {
@@ -170,13 +146,6 @@ mod tests {
         assert!(key.is_some(), "Expected 'key' chunk");
         assert_eq!(key.unwrap().chunk_type, ChunkType::Property);
     }
-    /// Verifies that parsing a JSON file produces chunks with no extracted function calls.
-    /// 
-    /// Creates a temporary JSON file with simple key-value data, parses it into chunks using the Parser, and asserts that no function calls are extracted from any chunk. This is a test function that validates the parser correctly handles JSON content that contains no callable functions.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser initialization fails, file writing fails, file parsing fails, or if any chunk unexpectedly contains extracted calls.
 
     #[test]
     fn parse_json_no_calls() {

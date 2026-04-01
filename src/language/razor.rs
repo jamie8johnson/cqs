@@ -11,10 +11,8 @@
 use super::{ChunkType, FieldStyle, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Razor/C# chunks.
-///
 /// The grammar produces standard C# nodes (method_declaration, class_declaration, etc.)
 /// inside `razor_block` containers. Tree-sitter queries find them anywhere in the tree.
-///
 /// Also captures:
 /// - `razor_inject_directive` — DI service injections as Property
 /// - `razor_block` — @code/@functions blocks as Module (name assigned by post-process)
@@ -119,7 +117,6 @@ const COMMON_TYPES: &[&str] = &[
 ];
 
 /// Detect language for `<script>` and `<style>` elements.
-///
 /// Fires for every `element` node — returns `_skip` for non-script/style elements.
 /// Checks for TypeScript via `lang="ts"` or `type="text/typescript"` attributes.
 fn detect_razor_element_language(node: tree_sitter::Node, source: &str) -> Option<&'static str> {
@@ -143,7 +140,6 @@ fn detect_razor_element_language(node: tree_sitter::Node, source: &str) -> Optio
 }
 
 /// Extract the HTML tag name from an element node's source text.
-///
 /// Returns the tag name (lowercase) from `<tagname ...>`.
 fn extract_tag_name(node: tree_sitter::Node, source: &str) -> Option<String> {
     let text = &source[node.byte_range()];
@@ -162,7 +158,6 @@ fn extract_tag_name(node: tree_sitter::Node, source: &str) -> Option<String> {
 }
 
 /// Extract text content from an element, skipping nested child elements.
-///
 /// Used for heading elements (h1-h6) to get the visible text.
 fn extract_text_content(node: tree_sitter::Node, source: &str) -> String {
     let full = &source[node.byte_range()];
@@ -280,15 +275,10 @@ fn post_process_razor(
 }
 
 /// Extracts the return type from a C# method signature and formats it as documentation text.
-/// 
 /// Parses a C# method signature to identify the return type, which appears before the method name in C#. Filters out common C# modifiers and keywords to isolate the actual return type. The return type is then tokenized and formatted into a documentation string.
-/// 
 /// # Arguments
-/// 
 /// `signature` - A C# method signature string to parse for the return type.
-/// 
 /// # Returns
-/// 
 /// `Some(String)` containing the formatted return type documentation if a valid non-void return type is found, or `None` if the signature does not contain a recognizable return type.
 fn extract_return(signature: &str) -> Option<String> {
     // C#: return type before method name
@@ -398,26 +388,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Verifies that the parser correctly extracts and classifies methods from a Razor component's @code block.
-    /// 
-    /// This test parses a Razor (.cshtml) file containing a @code block with multiple methods (both synchronous and asynchronous), then validates that the parser identifies and categorizes these methods as individual chunks with the correct ChunkType::Method classification.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. Returns unit type `()`.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be created
-    /// - The parser fails to initialize
-    /// - The parser fails to parse the file
-    /// - The expected methods "IncrementCount" or "ResetCount" are not found in the parsed chunks
-    /// - The "IncrementCount" method chunk does not have ChunkType::Method classification
 
     #[test]
     fn parse_razor_code_block() {
@@ -456,24 +426,6 @@ mod tests {
         // Methods inside razor_block (a method container) are reclassified as Method
         assert_eq!(inc.chunk_type, ChunkType::Method);
     }
-    /// Parses Razor component @inject directives and verifies they are correctly identified as properties.
-    /// 
-    /// This is a test function that validates the parser's ability to extract and categorize @inject directives from Razor component files. It creates a temporary Cshtml file containing multiple @inject statements, parses it, and asserts that the injected dependencies are recognized by name and classified with the correct chunk type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a self-contained test function.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and returns nothing.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if any of the following assertions fail:
-    /// - The parsed chunks do not contain an entry named "Logger"
-    /// - The parsed chunks do not contain an entry named "NavManager"
-    /// - The "Logger" chunk does not have chunk_type equal to ChunkType::Property
 
     #[test]
     fn parse_razor_inject_directives() {
@@ -505,21 +457,6 @@ mod tests {
         let logger = chunks.iter().find(|c| c.name == "Logger").unwrap();
         assert_eq!(logger.chunk_type, ChunkType::Property);
     }
-    /// Parses a Razor file containing a C# class definition within an @code block and verifies that the class is correctly identified.
-    /// 
-    /// This test function creates a temporary Razor file with a WeatherForecast class defined in a @code block, parses it using the Parser, and asserts that the class is found with the correct chunk type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and panics on test failure.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the Parser fails to initialize, if file parsing fails, if the WeatherForecast class is not found in the parsed chunks, or if the found chunk's type is not ChunkType::Class.
 
     #[test]
     fn parse_razor_class_in_code() {
@@ -543,21 +480,6 @@ mod tests {
         );
         assert_eq!(wf.unwrap().chunk_type, ChunkType::Class);
     }
-    /// Verifies that the parser correctly identifies and extracts field declarations from a Razor code block.
-    /// 
-    /// This is a test function that creates a temporary Razor (.cshtml) file containing a @code block with field declarations, parses it, and asserts that the declared fields are correctly recognized as properties with their proper names.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a standalone test function.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and panics on failure.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to find the "currentCount" field or if the field's chunk_type is not ChunkType::Property.
 
     #[test]
     fn parse_razor_field_declaration() {
@@ -578,13 +500,6 @@ mod tests {
         let field = chunks.iter().find(|c| c.name == "currentCount").unwrap();
         assert_eq!(field.chunk_type, ChunkType::Property);
     }
-    /// Verifies that a constructor defined within a Razor code block is correctly parsed and classified as a Method chunk type.
-    /// 
-    /// This is a test function that creates a temporary Razor (.cshtml) file containing a C# class with a constructor, parses it using the Parser, and asserts that the constructor is identified and reclassified as a Method chunk rather than a Constructor chunk.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to create a new instance, fails to parse the file, or if the expected 'MyService' constructor is not found in the parsed chunks with ChunkType::Method classification.
 
     #[test]
     fn parse_razor_constructor() {
@@ -611,13 +526,6 @@ mod tests {
             chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>()
         );
     }
-    /// Verifies that the parser correctly extracts function calls from Razor (.cshtml) files within @code blocks.
-    /// 
-    /// This test creates a temporary Razor file containing a `HandleClick` method that calls `IncrementCount` and `StateHasChanged`, then parses it to validate that the call graph accurately identifies both callee functions. It demonstrates that `parse_file_calls` (rather than `extract_calls_from_chunk`) must be used for Razor files due to grammar requirements.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the 'HandleClick' function is not found in the parsed call graph, or if either the 'IncrementCount' or 'StateHasChanged' calls are missing from its callees.
 
     #[test]
     fn parse_razor_call_graph() {
@@ -657,24 +565,6 @@ mod tests {
             callee_names
         );
     }
-    /// Parses a Razor HTML (.cshtml) file containing headings and verifies that HTML heading elements are correctly extracted as document chunks.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if any of the following conditions are not met:
-    /// - The temporary file is successfully created and written
-    /// - The parser successfully parses the file
-    /// - The parsed chunks contain a heading named "About Us"
-    /// - The parsed chunks contain a heading named "Our Team"
-    /// - The "About Us" chunk has `ChunkType::Section`
 
     #[test]
     fn parse_razor_html_headings() {
@@ -705,21 +595,6 @@ mod tests {
         let h1 = chunks.iter().find(|c| c.name == "About Us").unwrap();
         assert_eq!(h1.chunk_type, ChunkType::Section);
     }
-    /// Verifies that a Razor page containing only HTML markup and no @code block produces no C# code chunks.
-    /// 
-    /// This test function writes a temporary Razor (.cshtml) file with pure HTML content and no code block, then parses it to ensure the parser correctly identifies that there are no C# functions or classes to extract. The test asserts that filtering the parsed chunks for Function or Class types yields an empty result.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and returns unit type.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, if the parser fails to initialize, if file parsing fails, or if any C# code chunks (functions or classes) are found in the parsed output.
 
     #[test]
     fn parse_razor_no_code_block() {
@@ -743,19 +618,6 @@ mod tests {
             c_sharp_chunks.iter().map(|c| &c.name).collect::<Vec<_>>()
         );
     }
-    /// Parses a complete Razor component file containing directives, HTML markup, and C# code blocks, then validates that all expected code elements (injected properties, sections, and methods) are correctly identified and categorized.
-    /// 
-    /// # Arguments
-    /// 
-    /// None
-    /// 
-    /// # Returns
-    /// 
-    /// None (void function)
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to initialize, if file parsing fails, or if any of the three assertions fail when expected code elements are not found with their correct chunk types in the parsed output.
 
     #[test]
     fn parse_razor_mixed() {
@@ -804,19 +666,6 @@ mod tests {
             names
         );
     }
-    /// Parses a Razor component file and verifies that type references in C# code blocks are correctly identified.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data internally.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to initialize, the file cannot be parsed, or the expected 'GetItems' function is not found in the parsed chunks.
 
     #[test]
     fn parse_razor_type_refs() {
@@ -835,19 +684,6 @@ mod tests {
     }
 
     // --- Injection tests ---
-    /// Verifies that the parser correctly extracts JavaScript code blocks from Razor template files containing injected script tags.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to extract the JavaScript function `greet` from the `<script>` block in the Razor template, or if file operations fail.
 
     #[test]
     fn parse_razor_script_injection() {
@@ -882,13 +718,6 @@ function add(a, b) {
                 .collect::<Vec<_>>()
         );
     }
-    /// Verifies that the parser correctly extracts CSS code blocks from Razor-style `.cshtml` files containing `<style>` tags.
-    /// 
-    /// This integration test writes a temporary Razor template file with embedded CSS styling, parses it using the Parser, and asserts that at least one CSS language chunk is extracted from the `<style>` block.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to initialize, fails to parse the file, or if no CSS chunks are found in the parsed output.
 
     #[test]
     fn parse_razor_style_injection() {
@@ -926,15 +755,6 @@ function add(a, b) {
                 .collect::<Vec<_>>()
         );
     }
-    /// Verifies that a Razor file without separate script or style blocks parses as Razor-only chunks without triggering language injection.
-    /// 
-    /// # Arguments
-    /// 
-    /// This is a test function with no parameters.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the parser fails to initialize, if file parsing fails, or if any parsed chunk has a language type other than `Language::Razor`.
 
     #[test]
     fn parse_razor_no_script_unchanged() {
@@ -961,21 +781,6 @@ function add(a, b) {
             );
         }
     }
-    /// Verifies that the Razor parser correctly identifies fields with no method calls in a Cshtml file.
-    /// 
-    /// This test parses a Razor component file containing a field declaration and validates that the parser's `extract_calls_from_chunk` method returns an empty call list for fields that have no associated method calls.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions and panics if validation fails.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if a field named "value" is found to contain method calls, or if file parsing or chunk extraction operations fail unexpectedly.
 
     #[test]
     fn parse_razor_no_calls() {

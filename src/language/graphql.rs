@@ -3,7 +3,6 @@
 use super::{FieldStyle, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting GraphQL definitions.
-///
 /// Object/Input types → Struct, Interfaces → Interface, Enums → Enum,
 /// Unions/Scalars → TypeAlias, Directives → Macro, Operations/Fragments → Function.
 const CHUNK_QUERY: &str = r#"
@@ -46,7 +45,6 @@ const CHUNK_QUERY: &str = r#"
 "#;
 
 /// Tree-sitter query for extracting type references in GraphQL.
-///
 /// `named_type` appears in field types, argument types, and type conditions.
 const CALL_QUERY: &str = r#"
 ;; Named type references
@@ -118,21 +116,6 @@ mod tests {
         f.flush().unwrap();
         f
     }
-    /// Parses a GraphQL object type definition and verifies it is correctly identified as a struct chunk.
-    /// 
-    /// This test function writes a GraphQL type definition to a temporary file, parses it using the Parser, and asserts that the resulting chunk for the "User" type is recognized as a struct chunk type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates independently.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This is a test function that asserts expectations.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to initialize, the file cannot be parsed, the "User" chunk is not found in the parsed results, or the chunk type is not `ChunkType::Struct`.
 
     #[test]
     fn parse_graphql_object_type() {
@@ -148,19 +131,6 @@ type User {
         let user = chunks.iter().find(|c| c.name == "User").unwrap();
         assert_eq!(user.chunk_type, ChunkType::Struct);
     }
-    /// Parses a GraphQL interface definition from a temporary file and verifies the parser correctly identifies it as an Interface chunk type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This function is a self-contained test that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This is a test function that uses assertions to verify parser behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, if the parser fails to parse the file, if a chunk named "Node" is not found in the parsed results, or if the parsed chunk's type is not `ChunkType::Interface`.
 
     #[test]
     fn parse_graphql_interface() {
@@ -175,21 +145,6 @@ interface Node {
         let node = chunks.iter().find(|c| c.name == "Node").unwrap();
         assert_eq!(node.chunk_type, ChunkType::Interface);
     }
-    /// Parses a GraphQL enum definition and verifies the parser correctly identifies it as an enum type.
-    /// 
-    /// This test function writes a GraphQL enum definition to a temporary file, parses it using the Parser, and asserts that the resulting chunk has the name "Status" and type ChunkType::Enum.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that operates on hardcoded GraphQL content.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be written
-    /// - The parser fails to initialize or parse the file
-    /// - No chunk named "Status" is found in the parsed results
-    /// - The chunk type is not ChunkType::Enum
 
     #[test]
     fn parse_graphql_enum() {
@@ -205,19 +160,6 @@ enum Status {
         let e = chunks.iter().find(|c| c.name == "Status").unwrap();
         assert_eq!(e.chunk_type, ChunkType::Enum);
     }
-    /// Parses a GraphQL union type definition and verifies it is correctly identified as a type alias chunk.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that creates its own test data.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function performs assertions to validate the parsing behavior.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, the "SearchResult" chunk is not found in the parsed results, or the chunk type assertion fails.
 
     #[test]
     fn parse_graphql_union() {
@@ -228,25 +170,6 @@ enum Status {
         let u = chunks.iter().find(|c| c.name == "SearchResult").unwrap();
         assert_eq!(u.chunk_type, ChunkType::TypeAlias);
     }
-    /// Parses a GraphQL input type definition and verifies the parser correctly identifies it as a struct chunk.
-    /// 
-    /// This is a test function that creates a temporary GraphQL file containing an input type definition, parses it using the Parser, and asserts that the resulting chunk is properly identified with the correct name and type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This function takes no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This function returns unit type and is intended for testing purposes.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if:
-    /// - The temporary file cannot be created
-    /// - The parser fails to parse the file
-    /// - The "CreateUserInput" chunk is not found in the parsed results
-    /// - The chunk type is not `ChunkType::Struct`
 
     #[test]
     fn parse_graphql_input() {
@@ -262,21 +185,6 @@ input CreateUserInput {
         let input = chunks.iter().find(|c| c.name == "CreateUserInput").unwrap();
         assert_eq!(input.chunk_type, ChunkType::Struct);
     }
-    /// Parses a GraphQL scalar type definition and verifies it is correctly identified as a type alias.
-    /// 
-    /// This is a test function that writes a GraphQL scalar declaration to a temporary file, parses it using the Parser, and asserts that the resulting chunk has the name "DateTime" and chunk type of TypeAlias.
-    /// 
-    /// # Arguments
-    /// 
-    /// None
-    /// 
-    /// # Returns
-    /// 
-    /// None (unit type)
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the file cannot be parsed, the "DateTime" chunk is not found in the parsed results, or the chunk type is not TypeAlias.
 
     #[test]
     fn parse_graphql_scalar() {
@@ -287,25 +195,6 @@ input CreateUserInput {
         let s = chunks.iter().find(|c| c.name == "DateTime").unwrap();
         assert_eq!(s.chunk_type, ChunkType::TypeAlias);
     }
-    /// Parses a GraphQL directive definition and verifies it is correctly identified as a macro chunk.
-    /// 
-    /// This test function writes a GraphQL directive to a temporary file, parses it using the Parser, and asserts that the resulting chunk is named "auth" and has the type ChunkType::Macro.
-    /// 
-    /// # Arguments
-    /// 
-    /// None - this is a standalone test function with no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// None - this is a test function that asserts conditions but does not return a value.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if any of the following conditions fail:
-    /// - Creating the temporary file fails
-    /// - Parsing the file fails
-    /// - Finding a chunk named "auth" fails
-    /// - The chunk type is not ChunkType::Macro
 
     #[test]
     fn parse_graphql_directive() {
@@ -316,25 +205,6 @@ input CreateUserInput {
         let d = chunks.iter().find(|c| c.name == "auth").unwrap();
         assert_eq!(d.chunk_type, ChunkType::Macro);
     }
-    /// Parses a GraphQL query operation from a temporary file and verifies the parser correctly identifies it as a function chunk.
-    /// 
-    /// This is a test function that writes a GraphQL query named "GetUser" to a temporary file, parses it using the Parser, and asserts that the resulting chunk has the correct name and type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This function takes no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// Nothing. This function returns unit type `()`.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if any of the following operations fail:
-    /// - Creating a new Parser instance
-    /// - Parsing the temporary file
-    /// - Finding a chunk named "GetUser" in the parsed results
-    /// - The assertion that the chunk type equals `ChunkType::Function`
 
     #[test]
     fn parse_graphql_operation() {
@@ -351,21 +221,6 @@ query GetUser($id: ID!) {
         let op = chunks.iter().find(|c| c.name == "GetUser").unwrap();
         assert_eq!(op.chunk_type, ChunkType::Function);
     }
-    /// Parses a GraphQL fragment definition from a temporary file and verifies it is correctly identified as a function chunk.
-    /// 
-    /// This test function creates a temporary file containing a GraphQL fragment definition, parses it using the Parser, and asserts that the resulting chunk has the correct name and type.
-    /// 
-    /// # Arguments
-    /// 
-    /// None. This is a test function that uses no parameters.
-    /// 
-    /// # Returns
-    /// 
-    /// None. This is a test function with no return value.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be written, if the parser fails to initialize, if parsing the file fails, if the "UserFields" fragment is not found in the parsed chunks, or if the chunk type is not `ChunkType::Function`.
 
     #[test]
     fn parse_graphql_fragment() {
@@ -381,17 +236,6 @@ fragment UserFields on User {
         let frag = chunks.iter().find(|c| c.name == "UserFields").unwrap();
         assert_eq!(frag.chunk_type, ChunkType::Function);
     }
-    /// Parses a GraphQL type definition and extracts type references from its fields.
-    /// 
-    /// This function creates a temporary GraphQL file containing a User type definition with nested type references, parses it using the Parser, and verifies that type references (Post and Address) are correctly extracted from the User chunk's fields.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns nothing; validates extracted type references through assertions.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the temporary file cannot be created, the parser fails to initialize, the GraphQL file cannot be parsed, the User chunk is not found, or if the expected type references (Post and Address) are not extracted from the User type's fields.
 
     #[test]
     fn parse_graphql_calls() {

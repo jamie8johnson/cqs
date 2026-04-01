@@ -11,7 +11,6 @@ use super::Parser;
 
 impl Parser {
     /// Extract function calls from a chunk's source code
-    ///
     /// Returns call sites found within the given byte range of the source.
     pub fn extract_calls(
         &self,
@@ -93,7 +92,6 @@ impl Parser {
     }
 
     /// Extract function calls from a parsed chunk
-    ///
     /// Convenience method that extracts calls from the chunk's content.
     pub fn extract_calls_from_chunk(&self, chunk: &super::types::Chunk) -> Vec<CallSite> {
         // Markdown chunks use custom reference extraction
@@ -111,7 +109,6 @@ impl Parser {
     }
 
     /// Extract type references from a chunk's byte range
-    ///
     /// Returns classified type references with merge logic: if a type name
     /// was captured by any classified pattern (Param/Return/Field/Impl/Bound/Alias),
     /// the catch-all duplicate is dropped. Types found ONLY by the catch-all
@@ -201,7 +198,6 @@ impl Parser {
     }
 
     /// Extract all function calls from a file, ignoring size limits
-    ///
     /// Returns calls for every function in the file, including those >100 lines
     /// that would normally be skipped during chunk extraction.
     /// Thin wrapper around `parse_file_relationships()`.
@@ -211,10 +207,8 @@ impl Parser {
     }
 
     /// Extract all function calls AND type references from a file in a single parse pass
-    ///
     /// Returns `(calls, type_refs)` for every chunk in the file. Single file read,
     /// single tree-sitter parse, two query cursors on the same tree.
-    ///
     /// **Coupling note:** This function and `parse_file()` must agree on line numbering
     /// (`node.start_position().row as u32 + 1`) and chunk identity (same query, same
     /// post-process hooks). If either changes, the other must be updated to keep
@@ -441,12 +435,10 @@ impl Parser {
 }
 
 /// Check if a callee name should be skipped (common noise)
-///
 /// These are filtered because they don't provide meaningful call graph information:
 /// - `self`, `this`, `Self`, `super`: Object references, not real function calls
 /// - `new`: Constructor pattern, not a named function
 /// - `toString`, `valueOf`: Ubiquitous JS/TS methods that add noise
-///
 /// Case-sensitive to avoid false positives (e.g., "This" as a variable name).
 pub(crate) fn should_skip_callee(name: &str) -> bool {
     matches!(
@@ -497,18 +489,12 @@ mod tests {
     }
 
     /// Creates a temporary file with the specified content and file extension.
-    ///
     /// # Arguments
-    ///
     /// * `content` - The string content to write to the temporary file
     /// * `ext` - The file extension (without the leading dot) to append to the temporary filename
-    ///
     /// # Returns
-    ///
     /// A `NamedTempFile` representing the created temporary file with the content written and flushed to disk.
-    ///
     /// # Panics
-    ///
     /// Panics if the temporary file cannot be created or if writing/flushing the content fails.
     fn write_temp_file(content: &str, ext: &str) -> NamedTempFile {
         let mut file = tempfile::Builder::new()

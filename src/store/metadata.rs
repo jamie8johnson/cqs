@@ -10,19 +10,12 @@ use super::{NoteSummary, Store, StoreError, CURRENT_SCHEMA_VERSION};
 
 impl Store {
     /// Validates and optionally migrates the database schema version to match the current expected version.
-    ///
     /// Queries the metadata table for the stored schema version and compares it against the current version. If the stored version is older, attempts to migrate the schema. Returns an error if the stored version is newer than the current version (indicating the database is incompatible), if the schema is corrupted, or if migration fails without a supported migration path.
-    ///
     /// # Arguments
-    ///
     /// `path` - The file path to the database, used for error reporting.
-    ///
     /// # Returns
-    ///
     /// Returns `Ok(())` if the schema version is valid and matches the current version, or if migration succeeds. Returns `Err(StoreError)` if the schema is newer than supported, corrupted, or migration fails.
-    ///
     /// # Errors
-    ///
     /// - `StoreError::SchemaNewerThanCq` - The stored schema version is newer than the current version.
     /// - `StoreError::Corruption` - The stored schema version is not a valid integer.
     /// - `StoreError::SchemaMismatch` - Schema migration is not supported for the version difference.
@@ -80,17 +73,12 @@ impl Store {
     }
 
     /// Validates that the stored model name matches the expected default.
-    ///
     /// Checks model_name metadata against `DEFAULT_MODEL_NAME`. Does NOT check
     /// dimensions here -- dimension is read into `Store::dim` during construction
     /// and validated by the embedder at index time.
-    ///
     /// # Returns
-    ///
     /// Returns `Ok(())` if validation passes or if the metadata table doesn't exist yet.
-    ///
     /// # Errors
-    ///
     /// Returns `StoreError::ModelMismatch` if the stored model name differs from `DEFAULT_MODEL_NAME`.
     #[cfg(test)]
     pub(crate) fn check_model_version(&self) -> Result<(), StoreError> {
@@ -98,7 +86,6 @@ impl Store {
     }
 
     /// Validates that the stored model name matches `expected_model`.
-    ///
     /// Separated from `check_model_version()` so callers can supply a runtime
     /// model name without changing the open() signature.
     #[cfg(test)]
@@ -130,7 +117,6 @@ impl Store {
     }
 
     /// Read the stored model name from metadata, if set.
-    ///
     /// Returns `None` for fresh databases or pre-model indexes.
     pub fn stored_model_name(&self) -> Option<String> {
         match self.get_metadata_opt("model_name") {
@@ -143,15 +129,10 @@ impl Store {
     }
 
     /// Checks if the stored CQL version in the metadata table matches the current application version.
-    ///
     /// Retrieves the `cq_version` value from the metadata table and compares it against the current package version. If versions differ, logs an informational message. Errors during version retrieval are logged at debug level but do not propagate, allowing the application to continue.
-    ///
     /// # Arguments
-    ///
     /// `&self` - Reference to the store instance with access to the database pool and runtime.
-    ///
     /// # Errors
-    ///
     /// Errors are caught and logged but not propagated. Database query failures are logged at debug level.
     pub(crate) fn check_cq_version(&self) {
         if let Err(e) = self.rt.block_on(async {
@@ -184,7 +165,6 @@ impl Store {
     }
 
     /// Update the `updated_at` metadata timestamp to now.
-    ///
     /// Call after indexing operations complete (pipeline, watch reindex, note sync)
     /// to track when the index was last modified.
     pub fn touch_updated_at(&self) -> Result<(), StoreError> {
@@ -199,7 +179,6 @@ impl Store {
     }
 
     /// Mark the HNSW index as dirty (out of sync with SQLite).
-    ///
     /// Call before writing chunks to SQLite. Clear after successful HNSW save.
     /// On load, a dirty flag means a crash occurred between SQLite commit and
     /// HNSW save — the HNSW index should not be trusted.
@@ -215,7 +194,6 @@ impl Store {
     }
 
     /// Check if the HNSW index is marked as dirty (potentially stale).
-    ///
     /// Returns `false` if the key doesn't exist (pre-v13 indexes).
     pub fn is_hnsw_dirty(&self) -> Result<bool, StoreError> {
         self.rt.block_on(async {
@@ -296,7 +274,6 @@ impl Store {
     }
 
     /// Get cached notes summaries (loaded on first call, invalidated on mutation).
-    ///
     /// Returns `Arc<Vec<NoteSummary>>` — the warm-cache path is an `Arc::clone()`
     /// (pointer bump) instead of deep-cloning all note strings. Notes are read-only
     /// during search, so shared ownership is safe and avoids O(notes * string_len)
@@ -324,7 +301,6 @@ impl Store {
     }
 
     /// Invalidate the cached notes summaries.
-    ///
     /// Must be called after any operation that modifies notes (upsert, replace, delete)
     /// so subsequent reads see fresh data.
     pub(crate) fn invalidate_notes_cache(&self) {

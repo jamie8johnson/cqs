@@ -27,7 +27,6 @@ pub struct RelatedResult {
 }
 
 /// Find functions related to `target_name` by co-occurrence.
-///
 /// Three dimensions:
 /// 1. Shared callers — called by the same functions as target
 /// 2. Shared callees — calls the same functions as target
@@ -74,7 +73,6 @@ pub fn find_related(
 }
 
 /// Resolve (name, overlap_count) pairs to RelatedFunction by batch-looking up chunks.
-///
 /// Uses a single batch query instead of N individual `get_chunks_by_name` calls.
 fn resolve_to_related(store: &Store, pairs: &[(String, u32)]) -> Vec<RelatedFunction> {
     if pairs.is_empty() {
@@ -107,7 +105,6 @@ fn resolve_to_related(store: &Store, pairs: &[(String, u32)]) -> Vec<RelatedFunc
 }
 
 /// Find functions that share types with the target via type_edges.
-///
 /// Uses batch type-edge queries instead of LIKE-based signature scanning.
 fn find_type_overlap(
     store: &Store,
@@ -177,17 +174,12 @@ mod tests {
     use crate::test_helpers::{mock_embedding, setup_store};
 
     /// Creates a mock Rust function chunk for testing purposes.
-    ///
     /// This function generates a `Chunk` struct representing a Rust function with placeholder content and a blake3 hash-based identifier. It's useful for creating test data without parsing actual source files.
-    ///
     /// # Arguments
-    ///
     /// * `name` - The name of the function
     /// * `file` - The file path where the function is located
     /// * `chunk_type` - The type classification of this chunk
-    ///
     /// # Returns
-    ///
     /// A `crate::parser::Chunk` struct with all fields populated, including a generated function signature, placeholder content, and a hash-based ID.
     fn make_chunk(name: &str, file: &str, chunk_type: ChunkType) -> crate::parser::Chunk {
         let content = format!("fn {}() {{ /* body */ }}", name);
@@ -511,7 +503,6 @@ mod tests {
     // ===== Shared callers/callees via store =====
 
     /// find_related returns shared_callers when two functions are called by the same caller.
-    ///
     /// Tests the call-graph dimension of find_related end-to-end with real Store data.
     /// Because find_related calls resolve_target (which needs a chunk), we insert chunks first.
     #[test]

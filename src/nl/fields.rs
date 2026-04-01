@@ -5,7 +5,6 @@ use crate::parser::{FieldStyle, Language};
 use super::fts::tokenize_identifier;
 
 /// Returns true if a trimmed line should be skipped during field extraction.
-///
 /// Universal skips (comments, braces) apply to all languages. Language-specific
 /// skips (struct/class/enum headers, decorators) come from `LanguageDef::skip_line_prefixes`.
 fn should_skip_line(trimmed: &str, lang: Language) -> bool {
@@ -46,7 +45,6 @@ fn validate_field_name(name: Option<&str>) -> Option<&str> {
 }
 
 /// Strip space-separated prefixes from a line.
-///
 /// Each prefix in `prefixes` (split on whitespace) is tried with a trailing
 /// space. Longer prefixes are tried first to avoid partial matches (e.g.,
 /// "pub" matching inside "pub(crate)").
@@ -76,7 +74,6 @@ fn strip_prefixes<'a>(line: &'a str, prefixes: &str) -> &'a str {
 }
 
 /// Extract field/variant names from struct, enum, or class content.
-///
 /// Uses `FieldStyle` from the language definition to determine extraction
 /// strategy. Supports `NameFirst` (name before separator) and `TypeFirst`
 /// (type before name) patterns across all 51 languages.
@@ -145,7 +142,6 @@ pub(super) fn extract_field_names(content: &str, language: Language) -> Vec<Stri
 }
 
 /// Extract member method/function names from class/struct/interface content.
-///
 /// Scans lines for common method declaration patterns across languages.
 /// Returns raw method names (not tokenized) — caller tokenizes for NL.
 pub(super) fn extract_member_method_names(content: &str, language: Language) -> Vec<String> {
@@ -291,7 +287,6 @@ fn extract_method_name_from_line(line: &str, language: Language) -> Option<Strin
 }
 
 /// Extract meaningful keywords from function body, filtering language noise.
-///
 /// Returns up to 10 unique keywords sorted by frequency (descending).
 pub fn extract_body_keywords(content: &str, language: Language) -> Vec<String> {
     use std::collections::HashMap;

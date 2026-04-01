@@ -104,7 +104,6 @@ static ALL_RULES: &[CleaningRule] = &[
 ];
 
 /// Run all enabled cleaning rules in order.
-///
 /// If `tags` is empty, all rules are applied. Otherwise only rules
 /// matching at least one of the given tags are applied.
 pub fn clean_markdown(input: &str, tags: &[&str]) -> String {
@@ -155,7 +154,6 @@ fn extract_doc_title(lines: &[String]) -> String {
 // ============ Rule Implementations ============
 
 /// Rule 1: Remove AVEVA copyright boilerplate from the start of the file.
-///
 /// Detects `© YYYY-YYYY ... AVEVA Group Limited` (any year range) in the first 80 lines,
 /// removes everything up to and including the `softwaresupport.aveva.com` line.
 fn rule_copyright_boilerplate(lines: &mut Vec<String>, _ctx: &CleaningContext) -> usize {
@@ -183,7 +181,6 @@ fn rule_copyright_boilerplate(lines: &mut Vec<String>, _ctx: &CleaningContext) -
 }
 
 /// Rule 2: Remove page boundary blocks.
-///
 /// Pattern: `©` footer → blank lines → `Page N` → blank lines → doc title echo → section echo
 fn rule_page_boundaries(lines: &mut Vec<String>, ctx: &CleaningContext) -> usize {
     // Find all Page N line indices
@@ -281,7 +278,6 @@ fn rule_page_boundaries(lines: &mut Vec<String>, ctx: &CleaningContext) -> usize
 }
 
 /// Rule 3: Remove table of contents section.
-///
 /// Finds `# Contents` and removes everything until the next H1 heading.
 fn rule_toc_section(lines: &mut Vec<String>, _ctx: &CleaningContext) -> usize {
     let mut toc_start: Option<usize> = None;
@@ -316,7 +312,6 @@ fn rule_toc_section(lines: &mut Vec<String>, _ctx: &CleaningContext) -> usize {
 }
 
 /// Rule 4: Strip bare `Chapter N` headings.
-///
 /// Removes lines matching `#{1,6} Chapter \d+` with nothing else.
 fn rule_chapter_headings(lines: &mut Vec<String>, _ctx: &CleaningContext) -> usize {
     let before = lines.len();
@@ -399,9 +394,7 @@ mod tests {
     use super::*;
 
     /// Creates a new CleaningContext with default values.
-    ///
     /// # Returns
-    ///
     /// A CleaningContext instance with an empty document title.
     fn ctx() -> CleaningContext {
         CleaningContext {

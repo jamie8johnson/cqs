@@ -11,7 +11,6 @@ use crate::store::helpers::{ChunkSummary, SearchResult};
 use crate::store::{Store, StoreError};
 
 /// Result of resolving a target name to a concrete chunk.
-///
 /// Contains the best-matching chunk and any alternative matches
 /// found during resolution (useful for disambiguation UIs).
 #[derive(Debug, Clone)]
@@ -25,7 +24,6 @@ pub struct ResolvedTarget {
 // ============ Target Resolution ============
 
 /// Parse a target string into (optional_file_filter, function_name).
-///
 /// Supports formats:
 /// - `"function_name"` -> (None, "function_name")
 /// - `"path/to/file.rs:function_name"` -> (Some("path/to/file.rs"), "function_name")
@@ -41,7 +39,6 @@ pub fn parse_target(target: &str) -> (Option<&str>, &str) {
 }
 
 /// Resolve a target string to a [`ResolvedTarget`].
-///
 /// Uses search_by_name with optional file filtering.
 /// Returns the best-matching chunk and alternatives, or an error if none found.
 pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget, StoreError> {

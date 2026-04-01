@@ -42,7 +42,6 @@ pub struct DriftResult {
 }
 
 /// Detect semantic drift between a reference and the project.
-///
 /// Uses `semantic_diff()` internally, filtering to only the "modified" entries
 /// and presenting them as drift (1.0 - similarity).
 pub fn detect_drift(
@@ -112,15 +111,11 @@ mod tests {
     use tempfile::TempDir;
 
     /// Creates a new in-memory Store instance with a temporary database for testing purposes.
-    ///
     /// # Returns
-    ///
     /// A tuple containing:
     /// - `Store`: A newly initialized store instance
     /// - `TempDir`: The temporary directory containing the database file, kept alive for the store's lifetime
-    ///
     /// # Panics
-    ///
     /// Panics if temporary directory creation, database opening, or store initialization fails.
     fn make_store() -> (Store, TempDir) {
         let dir = TempDir::new().unwrap();
@@ -220,12 +215,10 @@ mod tests {
     use std::path::PathBuf;
 
     /// Creates a mock Chunk representing a function with a generated blake3 content hash.
-    ///
     /// # Arguments
     /// * `name` - The name of the function for the chunk
     /// * `file` - The file path where the chunk is located
     /// * `lang` - The programming language of the chunk
-    ///
     /// # Returns
     /// A fully initialized Chunk struct with synthetic function content, a computed blake3 hash, and default metadata. The chunk spans lines 1-5 with a placeholder function body.
     fn make_chunk(name: &str, file: &str, lang: Language) -> Chunk {
@@ -250,7 +243,6 @@ mod tests {
     }
 
     /// Create an embedding with a distinct direction based on `seed`.
-    ///
     /// Uses `seed` as the index of a "hot" dimension (set to 1.0) while the
     /// rest are 0.0, ensuring different seeds produce orthogonal vectors
     /// (cosine similarity ≈ 0). The seed is taken modulo 768.

@@ -85,7 +85,6 @@ impl Store {
     }
 
     /// Replace all notes for a source file in a single transaction.
-    ///
     /// Atomically deletes existing notes and inserts new ones, preventing
     /// data loss if the process crashes mid-operation.
     pub fn replace_notes_for_file(
@@ -133,7 +132,6 @@ impl Store {
     }
 
     /// Check if notes file needs reindexing based on mtime.
-    ///
     /// Returns `Ok(Some(mtime))` if reindex needed (with the file's current mtime),
     /// or `Ok(None)` if no reindex needed. This avoids reading file metadata twice.
     pub fn notes_need_reindex(&self, source_file: &Path) -> Result<Option<i64>, StoreError> {
@@ -161,15 +159,10 @@ impl Store {
     }
 
     /// Retrieves the total count of notes stored in the database.
-    ///
     /// This method executes a SQL COUNT query against the notes table and returns the total number of notes. If no notes exist, it returns 0.
-    ///
     /// # Returns
-    ///
     /// Returns a `Result` containing the count of notes as a `u64`, or a `StoreError` if the database query fails.
-    ///
     /// # Errors
-    ///
     /// Returns `StoreError` if the database query encounters an error or the connection fails.
     pub fn note_count(&self) -> Result<u64, StoreError> {
         let _span = tracing::debug_span!("note_count").entered();
@@ -182,7 +175,6 @@ impl Store {
     }
 
     /// Get note statistics (total, warnings, patterns).
-    ///
     /// Uses `SENTIMENT_NEGATIVE_THRESHOLD` (-0.3) and `SENTIMENT_POSITIVE_THRESHOLD` (0.3)
     /// to classify notes. These thresholds work with discrete sentiment values
     /// (-1, -0.5, 0, 0.5, 1) -- negative values (-1, -0.5) count as warnings,
@@ -210,7 +202,6 @@ impl Store {
     }
 
     /// List all notes with metadata (no embeddings).
-    ///
     /// Returns `NoteSummary` for each note, useful for mention-based filtering
     /// without the cost of loading embeddings.
     pub fn list_notes_summaries(&self) -> Result<Vec<NoteSummary>, StoreError> {
@@ -252,15 +243,11 @@ mod tests {
     use std::path::Path;
 
     /// Creates a new Note with the specified id, text, and sentiment.
-    ///
     /// # Arguments
-    ///
     /// * `id` - A string slice representing the unique identifier for the note
     /// * `text` - A string slice containing the note's content
     /// * `sentiment` - A floating-point value representing the sentiment score of the note
-    ///
     /// # Returns
-    ///
     /// A new `Note` struct initialized with the provided id, text, and sentiment, and an empty mentions vector.
     fn make_note(id: &str, text: &str, sentiment: f32) -> Note {
         Note {
@@ -271,11 +258,8 @@ mod tests {
         }
     }
     /// Verifies that sentiment thresholds are positioned correctly between discrete sentiment values to ensure proper classification boundaries.
-    ///
     /// This test function asserts that the negative sentiment threshold falls strictly between -0.5 and 0, and the positive sentiment threshold falls strictly between 0 and 0.5. This positioning ensures that discrete sentiment values are classified into their intended categories (negative, neutral, or positive) without ambiguity.
-    ///
     /// # Panics
-    ///
     /// Panics if either threshold assertion fails, indicating that sentiment thresholds are not properly configured for the discrete sentiment value system.
 
     #[test]

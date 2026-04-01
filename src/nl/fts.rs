@@ -16,16 +16,12 @@ fn is_cjk(c: char) -> bool {
 }
 
 /// Split identifier on snake_case and camelCase boundaries.
-///
 /// Note: This function splits on every uppercase letter, so acronyms like
 /// "XMLParser" become individual letters. This is intentional for search
 /// tokenization where "xml parser" is more useful than preserving "XML".
-///
 /// # Examples
-///
 /// ```ignore
 /// use cqs::nl::tokenize_identifier;
-///
 /// assert_eq!(tokenize_identifier("parseConfigFile"), vec!["parse", "config", "file"]);
 /// assert_eq!(tokenize_identifier("get_user_name"), vec!["get", "user", "name"]);
 /// assert_eq!(tokenize_identifier("XMLParser"), vec!["x", "m", "l", "parser"]); // acronyms split per-letter
@@ -54,11 +50,8 @@ impl<'a> Iterator for TokenizeIdentifierIter<'a> {
     type Item = String;
 
     /// Retrieves the next token from the input string.
-    ///
     /// Splits the input into tokens by treating underscores, hyphens, and spaces as delimiters. CJK (Chinese, Japanese, Korean) characters are emitted as individual tokens. Uppercase letters trigger token boundaries and are converted to lowercase. All other characters are converted to lowercase and accumulated into the current token.
-    ///
     /// # Returns
-    ///
     /// `Some(String)` containing the next token, or `None` if no more tokens are available.
     fn next(&mut self) -> Option<Self::Item> {
         if self.done {
@@ -112,25 +105,19 @@ impl<'a> Iterator for TokenizeIdentifierIter<'a> {
 const MAX_FTS_OUTPUT_LEN: usize = 16384;
 
 /// Normalize code text for FTS5 indexing.
-///
 /// Splits identifiers on camelCase/snake_case boundaries and joins with spaces.
 /// Used to make code searchable with natural language queries.
 /// Output is capped at 16KB to prevent memory issues with pathological inputs.
-///
 /// # Security: FTS5 Injection Protection
-///
 /// This function provides implicit protection against FTS5 injection attacks.
 /// By only emitting alphanumeric tokens joined by spaces, special FTS5 operators
 /// like `OR`, `AND`, `NOT`, `NEAR`, `*`, `"`, `(`, `)` are neutralized:
 /// - Operators in the input become separate tokens (e.g., "foo OR bar" -> "foo or bar")
 /// - Quotes and parentheses are stripped entirely (only alphanumeric + underscore pass)
 /// - The resulting output is safe for direct use in FTS5 MATCH queries
-///
 /// # Example
-///
 /// ```
 /// use cqs::normalize_for_fts;
-///
 /// assert_eq!(normalize_for_fts("parseConfigFile"), "parse config file");
 /// assert_eq!(normalize_for_fts("fn get_user() {}"), "fn get user");
 /// ```

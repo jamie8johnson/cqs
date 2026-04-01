@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// Typed error for config file operations (EH-15).
-///
 /// Used by `add_reference_to_config` and `remove_reference_from_config`.
 /// CLI callers convert to `anyhow::Error` at the boundary via the blanket `From`.
 #[derive(Debug, thiserror::Error)]
@@ -68,18 +67,14 @@ pub struct ReferenceConfig {
 }
 
 /// Returns the default reference weight used for normalization calculations.
-///
 /// # Returns
-///
 /// A floating-point value of 0.8 representing the standard reference weight.
 fn default_ref_weight() -> f32 {
     0.8
 }
 
 /// Configuration options loaded from config files
-///
 /// # Example
-///
 /// ```toml
 /// # ~/.config/cqs/config.toml or .cqs.toml
 /// limit = 10          # Default result limit
@@ -88,7 +83,6 @@ fn default_ref_weight() -> f32 {
 /// quiet = false       # Suppress progress output
 /// verbose = false     # Enable verbose logging
 /// stale_check = false # Disable per-file staleness checks
-///
 /// [[reference]]
 /// name = "tokio"
 /// path = "/home/user/.local/share/cqs/refs/tokio"
@@ -129,7 +123,6 @@ pub struct Config {
 }
 
 /// Clamp f32 config value to valid range and warn if out of bounds.
-///
 /// TC-48: Also catches NaN (which silently passes all comparisons as false)
 /// and clamps it to `min`, preventing silent data loss in downstream filters.
 fn clamp_config_f32(value: &mut f32, name: &str, min: f32, max: f32) {
@@ -195,7 +188,6 @@ impl Config {
     }
 
     /// Clamp all fields to valid ranges and enforce invariants.
-    ///
     /// Called once from `load()` after merging user + project configs.
     /// Adding a new field? Add its clamping here — this is the single
     /// validation choke point.
