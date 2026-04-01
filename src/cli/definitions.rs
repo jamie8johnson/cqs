@@ -178,6 +178,10 @@ pub struct Cli {
     #[arg(long)]
     pub rrf: bool,
 
+    /// Include documentation, markdown, and config chunks in search results. Default: code only.
+    #[arg(long)]
+    pub include_docs: bool,
+
     /// Re-rank results with cross-encoder (slower, more accurate)
     #[arg(long)]
     pub rerank: bool,
