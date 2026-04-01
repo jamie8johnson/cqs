@@ -29,14 +29,17 @@ const TOKENIZER_BLAKE3: &str = "";
 /// # Returns
 ///
 /// A string containing the model repository path. If the `CQS_RERANKER_MODEL` environment variable is set, returns its value; otherwise returns the default model repository.
-fn model_repo() -> String {
-    match std::env::var("CQS_RERANKER_MODEL") {
-        Ok(repo) => {
-            tracing::info!(model = %repo, "Using custom reranker model");
-            repo
-        }
-        Err(_) => DEFAULT_MODEL_REPO.to_string(),
+fn model_repo(config_model: Option<&str>) -> String {
+    // Priority: env var > config file > default
+    if let Ok(repo) = std::env::var("CQS_RERANKER_MODEL") {
+        tracing::info!(model = %repo, "Using custom reranker model (env)");
+        return repo;
     }
+    if let Some(repo) = config_model {
+        tracing::info!(model = %repo, "Using custom reranker model (config)");
+        return repo.to_string();
+    }
+    DEFAULT_MODEL_REPO.to_string()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -72,16 +75,28 @@ pub struct Reranker {
     model_paths: OnceCell<(PathBuf, PathBuf)>,
     provider: ExecutionProvider,
     max_length: usize,
+    config_model: Option<String>,
 }
 
 impl Reranker {
-    /// Create a new reranker with lazy model loading
+    /// Create a new reranker with lazy model loading.
+    /// Config values are lower priority than env vars.
     pub fn new() -> Result<Self, RerankerError> {
+        Self::new_with_config(None, None)
+    }
+
+    /// Create a new reranker with optional config overrides.
+    /// Priority: env var > config file > default.
+    pub fn new_with_config(
+        config_model: Option<&str>,
+        config_max_length: Option<usize>,
+    ) -> Result<Self, RerankerError> {
+        let _model_repo = model_repo(config_model); // validate early, used lazily
         let provider = select_provider();
         let max_length = match std::env::var("CQS_RERANKER_MAX_LENGTH") {
             Ok(val) => match val.parse::<usize>() {
                 Ok(len) => {
-                    tracing::info!(max_length = len, "Using custom reranker max_length");
+                    tracing::info!(max_length = len, "Using custom reranker max_length (env)");
                     len
                 }
                 Err(e) => {
@@ -93,7 +108,7 @@ impl Reranker {
                     512
                 }
             },
-            Err(_) => 512,
+            Err(_) => config_max_length.unwrap_or(512),
         };
         Ok(Self {
             session: Mutex::new(None),
@@ -101,6 +116,7 @@ impl Reranker {
             model_paths: OnceCell::new(),
             provider,
             max_length,
+            config_model: config_model.map(String::from),
         })
     }
 
@@ -251,7 +267,7 @@ impl Reranker {
             use hf_hub::api::sync::Api;
 
             let api = Api::new().map_err(|e| RerankerError::ModelDownload(e.to_string()))?;
-            let repo = api.model(model_repo());
+            let repo = api.model(model_repo(self.config_model.as_deref()));
 
             let model_path = repo
                 .get(MODEL_FILE)

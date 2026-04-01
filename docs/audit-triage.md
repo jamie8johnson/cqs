@@ -130,3 +130,43 @@
 | SHL-5 | embedder comment "[batch, seq_len, 768]" | ✅ PR #737 |
 | SHL-13 | RRF K=60 not tuned for code search | |
 | SHL-14 | DEFAULT_THRESHOLD=0.3 not documented as model-specific | |
+
+## Untriaged Batch (OB-6 + RX-1 through RX-22) — Triaged 2026-04-01
+
+### Already Fixed (6)
+
+| # | Finding | Status |
+|---|---------|--------|
+| OB-6 | Carryover OB-28–32 resolved | ✅ verified |
+| RX-5 | No per-query diagnostics | ✅ PR #740 |
+| RX-6 | No enrichment ablation | ✅ PR #740 |
+| RX-11 | Enrichment layers not togglable | ✅ same as RX-6 |
+| RX-15 | Reranker max_length hardcoded | ✅ CQS_RERANKER_MAX_LENGTH |
+| RX-22 | No structured eval output | ✅ PR #740 |
+
+### P3: Easy + Low Impact (7)
+
+| # | Finding | Status |
+|---|---------|--------|
+| RX-3 | Reranker model not in config file | ✅ PR #743 |
+| RX-7 | fixture_path requires match arm per language | ✅ PR #743 |
+| RX-13 | NL char budget env var read not cached | ✅ PR #743 |
+| RX-14 | Windowing overlap fixed at 64 tokens | ✅ PR #743 |
+| RX-19 | Enrichment assembly order not configurable | |
+| RX-20 | No hook for custom eval metrics | |
+| RX-21 | Triplet lacks metadata for filtering | ✅ PR #743 |
+
+### P4: Hard or Low Impact — Research Infra (10)
+
+| # | Finding | Status |
+|---|---------|--------|
+| RX-1 | No A/B test infra for model comparison | |
+| RX-2 | ScoringConfig not runtime-overridable | |
+| RX-4 | Eval cases hardcoded in Rust (partially: JSON real eval exists) | |
+| RX-8 | Training data lacks enriched variants | |
+| RX-9 | BM25 hard neg selection not pluggable | |
+| RX-10 | No call-graph contrastive pair generation | |
+| RX-12 | Enrichment hash couples all layers | |
+| RX-16 | Reference system lacks A/B comparison | |
+| RX-17 | Different-dim models can't share HNSW | |
+| RX-18 | No trait abstraction for scoring | |

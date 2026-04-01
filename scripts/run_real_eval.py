@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Real codebase eval — runs manual, call graph, git blame, function lookup,
-and conceptual queries against cqs index.
+Real codebase eval — runs manual, call graph, and git blame queries against cqs index.
 Outputs structured JSON with per-query results and aggregate metrics.
 
 Usage:
@@ -47,56 +46,6 @@ def eval_manual(queries_file, binary, env=None):
         results.append({"type": "manual", "query": q["query"], "expected": q["expected"],
                        "rank": rank, "status": status, "top5": top5})
         print(f"  {status} [manual] \"{q['query'][:50]}\" -> rank={rank or 'miss'}")
-
-    return results
-
-
-def eval_function_lookup(queries, binary, env=None):
-    """Evaluate function lookup queries (expected function name, same as manual)."""
-    results = []
-
-    for q in queries:
-        all_valid = [q["expected"]] + q.get("also_accept", [])
-        top5 = run_search(q["query"], binary, env=env)
-
-        rank = None
-        for i, r in enumerate(top5):
-            if rank is None and r["name"] in all_valid:
-                rank = i + 1
-
-        status = "+" if rank == 1 else ("~" if rank and rank <= 5 else "-")
-        results.append({"type": "function_lookup", "query": q["query"], "expected": q["expected"],
-                       "rank": rank, "status": status, "top5": top5})
-        print(f"  {status} [lookup] \"{q['query'][:50]}\" -> rank={rank or 'miss'}")
-
-    return results
-
-
-def eval_conceptual(queries, binary, env=None):
-    """Evaluate conceptual queries (any expected function in top-10 is a hit)."""
-    results = []
-
-    for q in queries:
-        expected = set(q["expected_functions"])
-        top10 = run_search(q["query"], binary, limit=10, env=env)
-        top_names = [r["name"] for r in top10]
-
-        found = [n for n in top_names if n in expected]
-        found_count = len(found)
-        precision = found_count / len(top_names) if top_names else 0
-        recall = found_count / len(expected) if expected else 0
-
-        # Good if we find at least 2 expected functions (or 1 if only 2-3 expected)
-        threshold = min(2, max(1, len(expected) // 3))
-        status = "+" if found_count >= threshold else ("~" if found_count > 0 else "-")
-
-        results.append({"type": "conceptual", "query": q["query"],
-                       "category": q.get("category", ""),
-                       "expected_count": len(expected), "found": found_count,
-                       "found_names": found,
-                       "precision": round(precision, 3), "recall": round(recall, 3),
-                       "status": status, "top5_names": top_names[:5]})
-        print(f"  {status} [concept] \"{q['query'][:50]}\" -> {found_count}/{len(expected)} functions found")
 
     return results
 
@@ -163,68 +112,39 @@ def main():
     binary = args.cqs_binary
     all_results = []
 
-    # Manual queries (original 50)
+    # Manual queries
     if os.path.exists("tests/real_eval_cqs.json"):
-        print("\n=== Manual Queries (50) ===")
+        print("\n=== Manual Queries ===")
         all_results.extend(eval_manual("tests/real_eval_cqs.json", binary))
-
-    # Expanded queries (function lookup + conceptual)
-    if os.path.exists("tests/real_eval_expanded.json"):
-        data = json.load(open("tests/real_eval_expanded.json"))
-
-        if "function_lookup" in data:
-            print(f"\n=== Function Lookup ({len(data['function_lookup'])}) ===")
-            all_results.extend(eval_function_lookup(data["function_lookup"], binary))
-
-        if "conceptual" in data:
-            print(f"\n=== Conceptual ({len(data['conceptual'])}) ===")
-            all_results.extend(eval_conceptual(data["conceptual"], binary))
 
     # Call graph queries
     if os.path.exists("tests/real_eval_callgraph.json"):
-        print("\n=== Call Graph Queries (20) ===")
+        print("\n=== Call Graph Queries ===")
         all_results.extend(eval_callgraph("tests/real_eval_callgraph.json", binary))
 
     # Git blame queries
     if os.path.exists("tests/real_eval_gitblame.json"):
-        print("\n=== Git Blame Queries (27) ===")
+        print("\n=== Git Blame Queries ===")
         all_results.extend(eval_gitblame("tests/real_eval_gitblame.json", binary))
 
     # Aggregate
     manual = [r for r in all_results if r["type"] == "manual"]
-    lookup = [r for r in all_results if r["type"] == "function_lookup"]
-    conceptual = [r for r in all_results if r["type"] == "conceptual"]
     cg = [r for r in all_results if r["type"] == "callgraph"]
     git = [r for r in all_results if r["type"] == "gitblame"]
-
-    all_lookup = manual + lookup  # combined function lookup metrics
 
     print(f"\n{'='*60}")
     print(f"Real Codebase Eval Summary ({len(all_results)} queries)")
     if manual:
         hits = sum(1 for r in manual if r["status"] == "+")
         r5 = sum(1 for r in manual if r["status"] in ("+", "~"))
-        print(f"  Manual:      R@1={hits/len(manual)*100:.1f}% R@5={r5/len(manual)*100:.1f}% ({len(manual)}q)")
-    if lookup:
-        hits = sum(1 for r in lookup if r["status"] == "+")
-        r5 = sum(1 for r in lookup if r["status"] in ("+", "~"))
-        print(f"  Fn Lookup:   R@1={hits/len(lookup)*100:.1f}% R@5={r5/len(lookup)*100:.1f}% ({len(lookup)}q)")
-    if all_lookup:
-        hits = sum(1 for r in all_lookup if r["status"] == "+")
-        r5 = sum(1 for r in all_lookup if r["status"] in ("+", "~"))
-        print(f"  All Lookup:  R@1={hits/len(all_lookup)*100:.1f}% R@5={r5/len(all_lookup)*100:.1f}% ({len(all_lookup)}q)")
-    if conceptual:
-        good = sum(1 for r in conceptual if r["status"] == "+")
-        partial = sum(1 for r in conceptual if r["status"] == "~")
-        avg_recall = sum(r["recall"] for r in conceptual) / len(conceptual)
-        print(f"  Conceptual:  {good}/{len(conceptual)} good, {partial} partial, avg_recall={avg_recall:.2f} ({len(conceptual)}q)")
+        print(f"  Manual:    R@1={hits/len(manual)*100:.1f}% R@5={r5/len(manual)*100:.1f}% ({len(manual)}q)")
     if cg:
         good = sum(1 for r in cg if r["status"] == "+")
         avg_recall = sum(r["recall"] for r in cg) / len(cg)
-        print(f"  CallGraph:   {good}/{len(cg)} good (≥40% recall), avg_recall={avg_recall:.2f}")
+        print(f"  CallGraph: {good}/{len(cg)} good (≥40% recall), avg_recall={avg_recall:.2f}")
     if git:
         found = sum(1 for r in git if r["status"] == "+")
-        print(f"  GitBlame:    {found}/{len(git)} file matches ({found/len(git)*100:.1f}%)")
+        print(f"  GitBlame:  {found}/{len(git)} file matches ({found/len(git)*100:.1f}%)")
 
     if args.json:
         with open(args.json, "w") as f:

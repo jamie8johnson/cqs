@@ -965,14 +965,7 @@ mod tests {
             name_boost: Some(0.5),
             quiet: Some(true),
             verbose: Some(true),
-            references: vec![],
-            stale_check: None,
-            ef_search: None,
-            llm_model: None,
-            llm_api_base: None,
-            llm_max_tokens: None,
-            llm_hyde_max_tokens: None,
-            embedding: None,
+            ..Default::default()
         };
         config::apply_config_defaults(&mut cli, &config);
 
@@ -992,14 +985,7 @@ mod tests {
             name_boost: Some(0.4),
             quiet: Some(true),
             verbose: Some(true),
-            references: vec![],
-            stale_check: None,
-            ef_search: None,
-            llm_model: None,
-            llm_api_base: None,
-            llm_max_tokens: None,
-            embedding: None,
-            llm_hyde_max_tokens: None,
+            ..Default::default()
         };
         config::apply_config_defaults(&mut cli, &config);
 
