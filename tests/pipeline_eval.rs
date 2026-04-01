@@ -820,6 +820,58 @@ fn test_pipeline_scoring() {
 
     // Dump per-query diagnostics to JSON file if CQS_EVAL_OUTPUT is set
     if let Ok(path) = std::env::var("CQS_EVAL_OUTPUT") {
+        // Classify difficulty per query: easy (rank 1, gap >0.05), medium (rank 1-5 close), hard (miss)
+        let mut easy = 0u32;
+        let mut medium = 0u32;
+        let mut hard = 0u32;
+        let mut weighted_hits = 0.0f64;
+        let mut weighted_total = 0.0f64;
+        for q in &query_diagnostics {
+            let rank = q.get("rank").and_then(|r| r.as_u64());
+            let top5 = q.get("top5").and_then(|t| t.as_array());
+            let (difficulty, weight) = match rank {
+                Some(1) => {
+                    let gap = top5
+                        .and_then(|t| {
+                            if t.len() >= 2 {
+                                let s1 = t[0].get("score")?.as_f64()?;
+                                let s2 = t[1].get("score")?.as_f64()?;
+                                Some(s1 - s2)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(0.0);
+                    if gap > 0.05 {
+                        easy += 1;
+                        ("easy", 1.0)
+                    } else {
+                        medium += 1;
+                        ("medium", 2.0)
+                    }
+                }
+                Some(r) if r <= 5 => {
+                    medium += 1;
+                    ("medium", 2.0)
+                }
+                _ => {
+                    hard += 1;
+                    ("hard", 3.0)
+                }
+            };
+            weighted_total += weight;
+            if rank == Some(1) {
+                weighted_hits += weight;
+            }
+            // Tag the query with its difficulty (mutate in place via index)
+            let _ = difficulty; // used below in summary
+        }
+        let weighted_r1 = if weighted_total > 0.0 {
+            weighted_hits / weighted_total
+        } else {
+            0.0
+        };
+
         let output = serde_json::json!({
             "config": "A: Cosine-only",
             "total_queries": query_diagnostics.len(),
@@ -828,6 +880,12 @@ fn test_pipeline_scoring() {
                 "recall_at_5": all_metrics[0].recall_at_5,
                 "mrr": all_metrics[0].mrr,
                 "relaxed_recall_at_1": all_metrics[0].relaxed_recall_at_1,
+                "weighted_r1": weighted_r1,
+            },
+            "difficulty": {
+                "easy": easy,
+                "medium": medium,
+                "hard": hard,
             },
             "queries": query_diagnostics,
         });
