@@ -143,6 +143,16 @@ impl BatchContext {
             // Re-open the Store to reset its internal OnceLock caches
             match Store::open(&index_path) {
                 Ok(new_store) => {
+                    // DS-43: Check if index dimension changed — OnceLock model_config
+                    // can't be cleared, so warn the user to restart the batch session.
+                    let new_dim = new_store.dim();
+                    if new_dim != self.model_config.dim {
+                        tracing::warn!(
+                            old_dim = self.model_config.dim,
+                            new_dim = new_dim,
+                            "Index dimension changed — queries may return wrong results until batch restart"
+                        );
+                    }
                     *self.store.borrow_mut() = new_store;
                     tracing::info!("Store re-opened after index change");
                 }

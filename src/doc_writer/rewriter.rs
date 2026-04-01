@@ -233,10 +233,24 @@ pub fn rewrite_file(
         return Ok(0);
     }
 
-    // RB-33: Exclusive lock prevents concurrent modifications during
-    // the read->parse->edit->write cycle. Uses std file locking (Rust 1.89+).
+    // RB-33 / PB-7: Exclusive lock prevents concurrent modifications during
+    // the read->parse->edit->write cycle. Uses a separate .cqs-lock file
+    // (same pattern as notes.rs) so the source file isn't held open, which
+    // would conflict with the atomic-write (temp + rename) below.
     // Advisory lock: other cqs processes cooperate, external editors may not.
-    let lock_file = std::fs::File::open(path)?;
+    let lock_path = path.with_extension("cqs-lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| {
+            DocWriterError::Io(std::io::Error::new(
+                e.kind(),
+                format!("{}: {}", lock_path.display(), e),
+            ))
+        })?;
     lock_file.lock()?;
 
     // Read current file content

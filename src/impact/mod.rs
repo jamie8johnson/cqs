@@ -8,6 +8,7 @@ mod bfs;
 mod diff;
 mod format;
 mod hints;
+mod test_map;
 mod types;
 
 // Re-export types used by lib.rs and other crate modules
@@ -26,6 +27,7 @@ pub use hints::{
     compute_hints, compute_hints_batch, compute_hints_with_graph, compute_risk_and_tests,
     compute_risk_batch, find_hotspots,
 };
+pub use test_map::{find_test_matches, TestMatch};
 
 /// Default maximum depth for test search BFS.
 /// Exposed via `max_test_depth` parameters on analysis functions.

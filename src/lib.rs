@@ -130,10 +130,10 @@ pub use gather::{
 pub use impact::{
     analyze_diff_impact, analyze_impact, compute_hints, compute_hints_with_graph,
     compute_risk_and_tests, compute_risk_batch, diff_impact_to_json, find_hotspots,
-    format_test_suggestions, impact_to_json, impact_to_mermaid, map_hunks_to_functions,
-    suggest_tests, CallerDetail, ChangedFunction, DiffImpactResult, DiffImpactSummary,
-    DiffTestInfo, FunctionHints, ImpactResult, RiskLevel, RiskScore, TestInfo, TestSuggestion,
-    TransitiveCaller, TypeImpacted, DEFAULT_MAX_TEST_SEARCH_DEPTH,
+    find_test_matches, format_test_suggestions, impact_to_json, impact_to_mermaid,
+    map_hunks_to_functions, suggest_tests, CallerDetail, ChangedFunction, DiffImpactResult,
+    DiffImpactSummary, DiffTestInfo, FunctionHints, ImpactResult, RiskLevel, RiskScore, TestInfo,
+    TestMatch, TestSuggestion, TransitiveCaller, TypeImpacted, DEFAULT_MAX_TEST_SEARCH_DEPTH,
 };
 pub use nl::{
     generate_nl_description, generate_nl_with_call_context,

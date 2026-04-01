@@ -260,7 +260,21 @@ pub fn search_across_projects(
             .collect()
     });
 
-    let mut all_results: Vec<CrossProjectResult> = project_results.into_iter().flatten().collect();
+    // Normalize per-project scores so cross-project comparison is valid.
+    // RRF scores are rank-relative and not comparable across projects with
+    // different result distributions. Dividing by each project's max score
+    // puts every project's best result at 1.0 so they compete fairly.
+    let mut all_results: Vec<CrossProjectResult> = Vec::new();
+    for mut project in project_results {
+        if let Some(max_score) = project.iter().map(|r| r.score).reduce(f32::max) {
+            if max_score > 0.0 {
+                for r in &mut project {
+                    r.score /= max_score;
+                }
+            }
+        }
+        all_results.extend(project);
+    }
 
     // Sort by score descending, take top N
     all_results.sort_by(|a, b| b.score.total_cmp(&a.score));
