@@ -1,334 +1,97 @@
 {
-  "queries": [
-    {
-      "type": "conceptual",
-      "query": "functions that handle error handling",
-      "category": "error handling"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that parse parsing",
-      "category": "parsing"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that validate validation",
-      "category": "validation"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that format formatting",
-      "category": "formatting"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that serialize serialization",
-      "category": "serialization"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that compute computation",
-      "category": "computation"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that extract extraction",
-      "category": "extraction"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that build construction",
-      "category": "construction"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that load loading",
-      "category": "loading"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that save saving",
-      "category": "saving"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that check checking",
-      "category": "checking"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that convert conversion",
-      "category": "conversion"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that merge merging",
-      "category": "merging"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that filter filtering",
-      "category": "filtering"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions that sort sorting",
-      "category": "sorting"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to embedding",
-      "category": "embeddings"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to HNSW index",
-      "category": "hnsw"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to SQLite store",
-      "category": "store"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to tree-sitter parsing",
-      "category": "parsing"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to CLI commands",
-      "category": "cli"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to search scoring",
-      "category": "scoring"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to call graph",
-      "category": "callgraph"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to batch mode",
-      "category": "batch"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to file watching",
-      "category": "watch"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to LLM integration",
-      "category": "llm"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to notes",
-      "category": "notes"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to type edges",
-      "category": "types"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to impact analysis",
-      "category": "impact"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to diff parsing",
-      "category": "diff"
-    },
-    {
-      "type": "conceptual",
-      "query": "functions related to configuration",
-      "category": "config"
-    },
-    {
-      "type": "function_lookup",
-      "query": "search by raw embedding cosine without filters",
-      "expected": "search_embedding_only",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "construct SQL WHERE clause from search filters",
-      "expected": "build_filter_sql",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "split long chunks into overlapping windows",
-      "expected": "apply_windowing",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "add caller callee names to NL description",
-      "expected": "enrich_with_call_context",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "parse glob pattern for path filtering",
-      "expected": "compile_glob_filter",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "handle Ctrl-C interruption during indexing",
-      "expected": "check_interrupted",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "extract important keywords from function body",
-      "expected": "extract_body_keywords",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "score how well a name matches the query",
-      "expected": "score_name_match_pre_lower",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "allocate token budget across sections",
-      "expected": "waterfall_pack",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "guided tour of unfamiliar code",
-      "expected": "cmd_onboard",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "compare two index snapshots semantically",
-      "expected": "semantic_diff",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "analyze diff for CI gating",
-      "expected": "run_ci_analysis",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "suggest where to add new code",
-      "expected": "suggest_placement",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "find similar functions for LLM summary",
-      "expected": "find_contrastive_neighbors",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "resolve function name to actual chunk",
-      "expected": "resolve_target",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "find chunks that need LLM summaries",
-      "expected": "collect_eligible_chunks",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "detect camelCase vs snake_case",
-      "expected": "detect_naming_convention",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "score chunk importance for search demotion",
-      "expected": "chunk_importance",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "build module context from file path",
-      "expected": "extract_file_context",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "prepare text for FTS5 full text search",
-      "expected": "normalize_for_fts",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "atomically rewrite notes.toml",
-      "expected": "rewrite_notes_file",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "handle file change events in watch mode",
-      "expected": "process_file_changes",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "find tests affected by changed functions",
-      "expected": "find_affected_tests",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "compute caller hints using call graph",
-      "expected": "compute_hints_with_graph",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "verify HNSW index file integrity",
-      "expected": "verify_hnsw_checksums",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "release ONNX session memory",
-      "expected": "clear_session",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "handle search query in batch mode",
-      "expected": "dispatch_query",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "show module overview for a file",
-      "expected": "cmd_context",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "show function card with callers callees similar",
-      "expected": "cmd_explain",
-      "also_accept": []
-    },
-    {
-      "type": "function_lookup",
-      "query": "show codebase quality snapshot",
-      "expected": "cmd_health",
-      "also_accept": []
-    }
+  "description": "Expanded real eval — function lookup + conceptual queries against cqs itself",
+  "function_lookup": [
+    {"query": "find functions with similar implementations by embedding distance", "expected": "find_related", "also_accept": ["cmd_similar", "cmd_neighbors"]},
+    {"query": "determine if a function is reachable from any test", "expected": "find_test_chunks", "also_accept": ["cmd_test_map"]},
+    {"query": "list all functions that nobody calls", "expected": "find_dead_code", "also_accept": ["cmd_dead"]},
+    {"query": "detect which files changed since the index was last built", "expected": "count_stale_files", "also_accept": ["list_stale_files"]},
+    {"query": "run a full codebase health assessment", "expected": "health_check", "also_accept": ["cmd_health"]},
+    {"query": "convert an ePub document to indexable markdown", "expected": "epub_to_markdown", "also_accept": ["cmd_convert"]},
+    {"query": "convert a CHM help archive to markdown text", "expected": "chm_to_markdown", "also_accept": ["cmd_convert"]},
+    {"query": "strip noise tags and boilerplate from converted markdown", "expected": "clean_markdown", "also_accept": ["strip_markdown_noise"]},
+    {"query": "suggest where in the codebase a new feature should be placed", "expected": "suggest_placement", "also_accept": ["suggest_placement_with_options"]},
+    {"query": "create an implementation plan from a task description", "expected": "plan", "also_accept": ["cmd_plan", "plan_to_json"]},
+    {"query": "guided onboarding tour through unfamiliar code", "expected": "onboard", "also_accept": ["onboard_to_json"]},
+    {"query": "BFS expansion of search results through call graph neighbors", "expected": "gather", "also_accept": ["gather_with_graph", "gather_cross_index"]},
+    {"query": "compute a risk score for each function based on callers and coverage", "expected": "compute_risk_batch", "also_accept": ["compute_hints_batch"]},
+    {"query": "find functions that share callers or callees with a target", "expected": "find_related", "also_accept": ["find_shared_callers", "find_shared_callees"]},
+    {"query": "map git diff hunks to the functions they modify", "expected": "map_hunks_to_functions", "also_accept": ["find_changed_functions"]},
+    {"query": "review uncommitted changes with risk scoring", "expected": "review_diff", "also_accept": ["cmd_review"]},
+    {"query": "run CI gating analysis on a pull request diff", "expected": "run_ci_analysis", "also_accept": ["cmd_ci"]},
+    {"query": "detect semantic drift between two index snapshots", "expected": "detect_drift", "also_accept": ["semantic_diff"]},
+    {"query": "parse a unified diff into hunks and file paths", "expected": "parse_unified_diff", "also_accept": ["parse_diff_output"]},
+    {"query": "enumerate all source files matching language filters", "expected": "enumerate_files", "also_accept": []},
+    {"query": "detect file format from extension and content", "expected": "detect_format", "also_accept": ["detect_language", "from_extension"]},
+    {"query": "batch embed multiple documents in a single pass", "expected": "embed_documents", "also_accept": ["embedding_batches"]},
+    {"query": "count tokens in a text string using the model tokenizer", "expected": "token_count", "also_accept": ["token_counts_batch"]},
+    {"query": "open a store in read-only mode for search queries", "expected": "open_readonly", "also_accept": ["open_light"]},
+    {"query": "delete index entries for files that were removed from disk", "expected": "prune_missing", "also_accept": ["prune_all", "delete_by_origin"]},
+    {"query": "clean up orphaned LLM summaries that no longer match any chunk", "expected": "prune_orphan_summaries", "also_accept": []},
+    {"query": "remove stale call graph edges after file reparse", "expected": "prune_stale_calls", "also_accept": ["prune_stale_type_edges"]},
+    {"query": "get callers of a function with call site context", "expected": "get_callers_with_context", "also_accept": ["get_callers_with_context_batch", "get_callers_full"]},
+    {"query": "get all callees of a function with their signatures", "expected": "get_callees_full", "also_accept": ["get_callees_full_batch"]},
+    {"query": "build the full bidirectional call graph from the store", "expected": "get_call_graph", "also_accept": []},
+    {"query": "find what types a function uses in its signature and body", "expected": "get_types_used_by", "also_accept": ["get_types_used_by_batch", "extract_types"]},
+    {"query": "find all functions that reference a given type", "expected": "get_type_users", "also_accept": ["get_type_users_batch"]},
+    {"query": "generate training data pairs from git history", "expected": "generate_training_data", "also_accept": ["cmd_train_data"]},
+    {"query": "submit a batch of functions to Claude API for LLM summaries", "expected": "submit_or_resume", "also_accept": ["submit_batch", "llm_summary_pass"]},
+    {"query": "generate HyDE predicted search queries for functions", "expected": "hyde_query_pass", "also_accept": []},
+    {"query": "write doc comments back to source files", "expected": "doc_comment_pass", "also_accept": ["rewrite_file"]},
+    {"query": "check if a function needs a doc comment generated", "expected": "needs_doc_comment", "also_accept": []},
+    {"query": "resolve which ONNX model to use from presets and env vars", "expected": "resolve", "also_accept": ["from_preset", "apply_env_overrides"]},
+    {"query": "warm up the embedding model by running a dummy inference", "expected": "warm", "also_accept": []},
+    {"query": "load reference indexes from project configuration", "expected": "load_references", "also_accept": ["get_ref"]},
+    {"query": "validate a reference index name for safe filesystem use", "expected": "validate_ref_name", "also_accept": []},
+    {"query": "search a reference index by function name", "expected": "search_reference_by_name", "also_accept": ["search_reference"]},
+    {"query": "store and retrieve audit mode state across sessions", "expected": "load_audit_state", "also_accept": ["save_audit_state"]},
+    {"query": "suggest new notes based on codebase patterns", "expected": "suggest_notes", "also_accept": ["cmd_suggest"]},
+    {"query": "check if stored notes reference files that still exist", "expected": "check_note_staleness", "also_accept": ["notes_need_reindex"]},
+    {"query": "find hotspot functions with the most callers", "expected": "find_hotspots", "also_accept": []},
+    {"query": "determine if a chunk represents callable code vs documentation", "expected": "is_callable", "also_accept": []},
+    {"query": "set up signal handler for graceful interrupt during indexing", "expected": "setup_signal_handler", "also_accept": ["check_interrupted"]},
+    {"query": "convert impact analysis results to mermaid diagram format", "expected": "impact_to_mermaid", "also_accept": ["impact_to_json"]},
+    {"query": "extract body keywords from function source for search boosting", "expected": "extract_body_keywords", "also_accept": []}
+  ],
+  "conceptual": [
+    {"query": "how does the search pipeline combine keyword and vector results", "expected_functions": ["search_filtered", "search_fts", "search_unified_with_index", "rrf_fuse", "finalize_results"], "category": "search_pipeline"},
+    {"query": "what happens when you index a file for the first time", "expected_functions": ["parse_file", "generate_nl_description", "embed_documents", "upsert_chunks_batch", "upsert_calls_batch"], "category": "indexing"},
+    {"query": "how does the enrichment pipeline transform code before embedding", "expected_functions": ["generate_nl_description", "generate_nl_with_call_context", "generate_nl_with_template", "embedding_text"], "category": "enrichment"},
+    {"query": "what is the complete flow for analyzing the impact of a code change", "expected_functions": ["analyze_impact", "analyze_diff_impact", "compute_risk_batch", "find_test_chunks", "reverse_bfs"], "category": "impact"},
+    {"query": "how does cqs handle multiple projects with separate indexes", "expected_functions": ["load_references", "search_across_projects", "merge_results", "gather_cross_index"], "category": "multi_project"},
+    {"query": "what code handles converting documents to indexable text", "expected_functions": ["pdf_to_markdown", "html_to_markdown", "chm_to_markdown", "epub_to_markdown", "clean_markdown"], "category": "conversion"},
+    {"query": "how does the call graph get built during indexing", "expected_functions": ["extract_calls_from_chunk", "upsert_calls_batch", "parse_file_calls", "parse_file_relationships"], "category": "callgraph"},
+    {"query": "what determines which embedding model is used", "expected_functions": ["resolve", "from_preset", "apply_env_overrides", "bge_large", "e5_base", "v9_200k"], "category": "model_config"},
+    {"query": "how does the file watcher detect and process changes", "expected_functions": ["cmd_watch", "enumerate_files", "count_stale_files", "list_stale_files"], "category": "watching"},
+    {"query": "what is the scoring formula for search result ranking", "expected_functions": ["score_candidate", "score_name_match", "boost", "cosine_similarity"], "category": "scoring"},
+    {"query": "how do notes affect search result ordering", "expected_functions": ["parse_notes", "NoteBoostIndex", "boost", "index_notes"], "category": "notes"},
+    {"query": "what happens during schema migration between versions", "expected_functions": ["migrate", "open", "setup_store"], "category": "migration"},
+    {"query": "how does the HNSW index persist to disk with integrity checks", "expected_functions": ["save", "try_load_with_ef", "load_with_dim", "build_batched_with_dim"], "category": "hnsw_persistence"},
+    {"query": "what code handles the scout multi-step investigation", "expected_functions": ["scout", "scout_with_options", "search_filtered", "get_callers_full", "find_test_chunks"], "category": "scout"},
+    {"query": "how does the gather command expand search results through the call graph", "expected_functions": ["gather", "gather_with_graph", "reverse_bfs", "search_filtered"], "category": "gather"},
+    {"query": "what is the flow for generating LLM summaries of functions", "expected_functions": ["llm_summary_pass", "submit_or_resume", "find_contrastive_neighbors", "create_client"], "category": "llm_summaries"},
+    {"query": "how does cqs pack search results into a token budget", "expected_functions": ["token_pack", "token_count", "token_counts_batch"], "category": "token_packing"},
+    {"query": "what code parses tree-sitter output into chunks for each language", "expected_functions": ["parse_file", "definition", "capture_name_to_chunk_type", "detect_language"], "category": "parsing"},
+    {"query": "how does the batch pipeline handle multi-command sessions", "expected_functions": ["clear_session", "process", "run", "warm"], "category": "batch"},
+    {"query": "what determines the natural language description template for a chunk", "expected_functions": ["get_template", "generate_nl_with_template", "effective_format", "template_names"], "category": "templates"},
+    {"query": "how does cqs detect and handle GPU vs CPU execution", "expected_functions": ["gpu_available", "ensure_ort_provider_libs", "new_cpu", "provider"], "category": "gpu_detection"},
+    {"query": "what code manages the type graph and type edge relationships", "expected_functions": ["upsert_type_edges", "upsert_type_edges_for_files", "get_type_graph", "extract_types"], "category": "type_graph"},
+    {"query": "how does diff-aware impact analysis work for pull requests", "expected_functions": ["analyze_diff_impact", "map_hunks_to_functions", "parse_unified_diff", "run_ci_analysis"], "category": "diff_impact"},
+    {"query": "what is the complete planning workflow from task description to implementation brief", "expected_functions": ["plan", "scout", "gather", "suggest_placement", "analyze_impact"], "category": "planning"},
+    {"query": "how does cqs handle windowing for long functions that exceed model context", "expected_functions": ["split_into_windows", "embed_documents", "token_count"], "category": "windowing"},
+    {"query": "what code normalizes file paths for cross-platform consistency", "expected_functions": ["normalize_path", "normalize_slashes", "convert_path"], "category": "path_normalization"},
+    {"query": "how does the FTS5 query expansion handle synonym groups", "expected_functions": ["expand_query_for_fts", "sanitize_fts_query", "normalize_for_fts", "normalize_query"], "category": "fts"},
+    {"query": "what happens when you search across multiple reference indexes", "expected_functions": ["search_across_projects", "merge_results", "search_reference", "load_references"], "category": "cross_index"},
+    {"query": "how does cqs identify which tests exercise a given function", "expected_functions": ["find_test_chunks", "is_test_chunk", "reverse_bfs"], "category": "test_mapping"},
+    {"query": "what code handles tokenizing identifiers into searchable words", "expected_functions": ["tokenize_identifier", "extract_body_keywords", "normalize_for_fts"], "category": "tokenization"},
+    {"query": "how does the onboarding tour guide users through unfamiliar code", "expected_functions": ["onboard", "search_filtered", "get_callers_full", "get_callees_full"], "category": "onboarding"},
+    {"query": "what determines the risk level of a function in impact analysis", "expected_functions": ["compute_risk_batch", "compute_hints_batch", "callee_caller_counts", "find_test_chunks"], "category": "risk_scoring"},
+    {"query": "how does cqs reconstruct a source file from stored chunks", "expected_functions": ["cmd_reconstruct", "get_chunks_by_origin", "assemble"], "category": "reconstruction"},
+    {"query": "what code handles the training data extraction pipeline", "expected_functions": ["generate_training_data", "cmd_train_data", "git_log", "git_show"], "category": "training_data"},
+    {"query": "how does related function discovery work through co-occurrence", "expected_functions": ["find_related", "find_shared_callers", "find_shared_callees", "find_shared_type_users"], "category": "related"},
+    {"query": "what is the flow for generating and writing doc comments to source", "expected_functions": ["doc_comment_pass", "needs_doc_comment", "format_doc_comment", "rewrite_file"], "category": "doc_generation"},
+    {"query": "how does cqs handle concurrent access to the index database", "expected_functions": ["acquire_index_lock", "try_acquire_index_lock", "open", "setup_store"], "category": "concurrency"},
+    {"query": "what code manages embedding storage and retrieval in SQLite", "expected_functions": ["update_embeddings_batch", "get_embeddings_by_ids", "get_embeddings_by_hashes", "embedding_to_bytes", "bytes_to_embedding"], "category": "embedding_storage"},
+    {"query": "how does the brief command summarize a file with caller and test counts", "expected_functions": ["cmd_brief", "callee_caller_counts", "find_test_chunks", "get_chunks_by_origin"], "category": "brief"},
+    {"query": "what happens when the semantic diff compares two index snapshots", "expected_functions": ["semantic_diff", "detect_drift", "search_filtered"], "category": "semantic_diff"}
   ]
 }

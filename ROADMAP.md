@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v1.12.0
+## Current: v1.13.0
 
-v1.12.0: 8th audit (80/88 fixed), 6 new commands, query expansion, markdown split, batch=64 restored. v9-200k published to HuggingFace. ~1540 tests.
+v1.13.0: 52 languages (IEC 61131-3), `cqs reconstruct`, 14 env vars, code-only search default, enrichment ablation, 187-query real eval framework. v9-200k published to HuggingFace. ~1540 tests.
 
 ### Expanded Pipeline Eval (296 queries, 7 languages, 2026-03-31)
 
@@ -145,6 +145,31 @@ Known (expanded eval, 296 queries): v9-mini (50K, 11K/lang) → basin, v9-175k (
 
 - [ ] Spike: fork, implement simsimd Metric, benchmark vs current
 - [ ] If comparable: full migration, delete self_cell + UnsafeCell machinery
+
+### Eval Infrastructure (research platform) — Done
+
+| # | Item | Status |
+|---|------|--------|
+| 1 | Per-query diagnostics (CQS_EVAL_OUTPUT) | Done (PR #740) |
+| 2 | Cross-run stability script | Done (PR #740) |
+| 3 | Enrichment ablation (CQS_SKIP_ENRICHMENT) | Done (PR #740) |
+| 4 | Difficulty tiers + weighted R@1 | Done (PR #740) |
+| 5 | Multi-answer queries (also_accept) | Done (PR #740) |
+| 6 | Real codebase eval | Done — 187 queries (100 fn lookup + 40 conceptual + 20 callgraph + 27 gitblame) |
+
+**187-query real eval (2026-04-01):** 100 function lookup, 40 conceptual, 20 callgraph, 27 gitblame. All 3 models evaluated.
+
+| Model | Lookup R@1 (100q) | Lookup R@5 (100q) | Conceptual Good (40q) |
+|-------|-------------------|-------------------|-----------------------|
+| **v9-200k** | **49%** | **71%** | 24/40 (60%) |
+| BGE-large | 48% | 71% | 24/40 (60%) |
+| nomic | 32% | 56% | 17/40 (43%) |
+
+**Key finding:** R@5 of 71% is the agent-relevant metric. Fixture inflation is 42-54pp. v9-200k and BGE-large virtually tied on real code.
+
+**Enrichment ablation:** doc +6.8pp > filecontext +4.1pp >> signatures +1.4pp >> callgraph ≈ parent +0.4pp.
+
+**Fixture inflation:** 45-61pp depending on model and corpus size. The eval was too easy, not search too bad.
 
 ### Next — Agent Adoption
 Telemetry update (2026-03-29, 72 events since v1.9.0 reset): test-map 37%, notes 15%, health 7%, search 6%. Structural commands dominate (49%). Orchestrators (task, review, plan, impact-diff) still 0%.

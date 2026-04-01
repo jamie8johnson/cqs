@@ -2,61 +2,44 @@
 
 ## Right Now
 
-**Eval infrastructure 4/6 done. Enrichment ablation complete. (2026-03-31 22:52 CDT)**
+**187-query real eval complete. All files updated. (2026-04-01 12:30 CDT)**
 
-Branch: `feat/eval-diagnostics` (PR #740)
+### 187-Query Real Eval Results (authoritative)
 
-### Enrichment ablation results (major finding)
-| Layer Skipped | R@1 | Delta |
-|---------------|-----|-------|
-| None (full) | 91.6% | — |
-| doc | 84.8% | **-6.8pp** |
-| filecontext | 87.5% | -4.1pp |
-| signatures | 90.2% | -1.4pp |
-| callgraph | 91.2% | -0.4pp |
-| parent | 91.2% | -0.4pp |
+| Model | Lookup R@1 (100q) | Lookup R@5 (100q) | Conceptual (40q) | GitBlame (27q) |
+|-------|-------------------|-------------------|-------------------|----------------|
+| **v9-200k** | **49.0%** | **71.0%** | 24/40 | 6/27 |
+| BGE-large | 48.0% | 71.0% | 24/40 | 6/27 |
+| nomic | 32.0% | 56.0% | 17/40 | 2/27 |
 
-Doc comments are the #1 enrichment layer. Call graph is nearly irrelevant.
+v9-200k and BGE-large virtually tied. Fixture inflation 42-54pp. R@5 of 71% is the agent-relevant metric.
 
-### Eval infrastructure status
-1. [x] Per-query diagnostics (CQS_EVAL_OUTPUT)
-2. [x] Cross-run stability script
-3. [x] Enrichment ablation (CQS_SKIP_ENRICHMENT)
-4. [x] Difficulty tiers + weighted R@1
-5. [ ] Multi-answer queries (also_accept) — next
-6. [ ] Real codebase eval
+### Results log gaps (remaining)
+1. BGE-large CoIR (headline model, no benchmark)
+2. v5/v7/v7b/v8 on 296q expanded fixture eval
+3. v5 real eval (dimension mismatch — needs CQS_EMBEDDING_DIM=768)
+4. Enrichment ablation on v9-200k (only BGE-large tested)
+5. Other fine-tunings (v7/v7b/v8) on 187q real eval
 
-### Session totals
-- 12 PRs (#728-740), v1.13.0 released
-- 132 audit findings, ~55 fixed, 3-phase agent plan executed
-- IEC 61131-3 (52nd language), `cqs reconstruct`, 12 env var overrides
-- Paper v0.9, enrichment ceiling confirmed (per-query v9 vs v5 diff)
-- RRF off by default, embedder pre-warm, 5,445 lines doc bloat stripped
-- Claude Code source analyzed (19K chunks)
+### This session
+- 187-query real eval framework built + run (50 fn lookup + 40 conceptual queries added)
+- Updated: RESULTS.md, research_log.md, paper v0.10, ROADMAP.md, PROJECT_CONTINUITY.md
+- Index restored to BGE-large (default)
 
-### Next
-1. Item 5: multi-answer queries (populate also_accept)
-2. Merge PR #740
-3. Update paper with ablation data
-4. Re-eval nomic/GTE-Qwen2 with correct windowing
-5. Real codebase eval (tokio/axum)
+### Pending
+- Update paper with real eval findings — done (Section 6.6, finding #8)
+- Commit new eval files to main (real_eval_expanded.json, updated run_real_eval.py)
 
 ## Parked
-- Dart language support
-- hnswlib-rs migration
-- DXF Phase 1
-- Openclaw variant for PLC process control
-- BGE-large fine-tuning + CoIR
-- Publish 500K/1M datasets to HF
+- Dart, hnswlib-rs, DXF, Openclaw PLC, Blackwell
+- BGE-large fine-tuning + CoIR, GTE-Qwen2 (OOM risk)
+- Publish datasets to HF
 
-## Open Issues (cqs)
-- #717 RM-40 (HNSW fully in RAM, no mmap)
-- #389 (upstream cuVS CAGRA memory)
-- #255, #106, #63 (upstream deps)
+## Open Issues
+- #717, #389, #255, #106, #63
 
 ## Architecture
-- Version: 1.13.0
-- Languages: 52
-- Commands: 52+
-- Env overrides: 14 (added CQS_SKIP_ENRICHMENT, CQS_EVAL_OUTPUT)
-- Enrichment hierarchy: doc (+6.8pp) > filecontext (+4.1pp) >> signatures (+1.4pp) >> callgraph ≈ parent (+0.4pp)
+- Version: 1.13.0, Languages: 52, Commands: 52+
+- Search: code-only default, RRF off, 14 env vars
+- Real eval (187q): v9-200k 49% > BGE-large 48% >> nomic 32% (R@1), 71%/71%/56% (R@5)
+- Fixture eval (296q): 90.5% / 90.9% / 85.5% (inflated by 42-54pp)
