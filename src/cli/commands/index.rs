@@ -155,7 +155,9 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     // to brute-force search until a full rebuild. (RT-DATA-6)
     // DS-41: The dirty flag is a crash-safety invariant — if we can't set it,
     // abort rather than risk a stale index on crash.
-    store.set_hnsw_dirty(true).context("Failed to mark HNSW dirty before indexing")?;
+    store
+        .set_hnsw_dirty(true)
+        .context("Failed to mark HNSW dirty before indexing")?;
 
     // Run the 3-stage pipeline: parse → embed → write
     // Pipeline shares the same Store via Arc (no duplicate DB connections)

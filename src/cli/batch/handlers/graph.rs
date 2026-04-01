@@ -1,5 +1,7 @@
 //! Call graph dispatch handlers: callers, callees, deps, impact, test-map, trace, related, impact-diff.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 
 use super::super::BatchContext;
@@ -194,9 +196,67 @@ pub(in crate::cli::batch) fn dispatch_test_map(
     let graph = ctx.call_graph()?;
     let test_chunks = ctx.store().find_test_chunks()?;
 
-    let matches = cqs::find_test_matches(&graph, &test_chunks, &target_name, max_depth, |test| {
-        cqs::rel_display(&test.file, &ctx.root)
-    });
+    // Reverse BFS from target
+    let mut ancestors: HashMap<String, (usize, String)> = HashMap::new();
+    let mut queue: std::collections::VecDeque<(String, usize)> = std::collections::VecDeque::new();
+    ancestors.insert(target_name.clone(), (0, String::new()));
+    queue.push_back((target_name.clone(), 0));
+
+    while let Some((current, depth)) = queue.pop_front() {
+        if depth >= max_depth {
+            continue;
+        }
+        if let Some(callers) = graph.reverse.get(current.as_str()) {
+            for caller in callers {
+                if !ancestors.contains_key(caller.as_ref()) {
+                    ancestors.insert(caller.to_string(), (depth + 1, current.clone()));
+                    queue.push_back((caller.to_string(), depth + 1));
+                }
+            }
+        }
+    }
+
+    struct TestMatch {
+        name: String,
+        file: String,
+        line: u32,
+        depth: usize,
+        chain: Vec<String>,
+    }
+
+    let mut matches: Vec<TestMatch> = Vec::new();
+    for test in test_chunks.iter() {
+        if let Some((depth, _)) = ancestors.get(&test.name) {
+            if *depth > 0 {
+                let mut chain = Vec::new();
+                let mut current = test.name.clone();
+                let chain_limit = max_depth + 1;
+                while !current.is_empty() && chain.len() < chain_limit {
+                    chain.push(current.clone());
+                    if current == target_name {
+                        break;
+                    }
+                    current = match ancestors.get(&current) {
+                        Some((_, p)) if !p.is_empty() => p.clone(),
+                        _ => {
+                            tracing::debug!(node = %current, "Chain walk hit dead end");
+                            break;
+                        }
+                    };
+                }
+                let rel_file = cqs::rel_display(&test.file, &ctx.root);
+                matches.push(TestMatch {
+                    name: test.name.clone(),
+                    file: rel_file,
+                    line: test.line_start,
+                    depth: *depth,
+                    chain,
+                });
+            }
+        }
+    }
+
+    matches.sort_by(|a, b| a.depth.cmp(&b.depth).then_with(|| a.name.cmp(&b.name)));
 
     let tests_json: Vec<_> = matches
         .iter()

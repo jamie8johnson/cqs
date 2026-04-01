@@ -713,7 +713,7 @@ mod tests {
         *ctx.call_graph.borrow_mut() = Some(std::sync::Arc::new(
             cqs::store::CallGraph::from_string_maps(Default::default(), Default::default()),
         ));
-        *ctx.test_chunks.borrow_mut() = Some(vec![]);
+        *ctx.test_chunks.borrow_mut() = Some(std::sync::Arc::new(vec![]));
 
         // Verify caches are populated
         assert!(ctx.file_set.borrow().is_some());

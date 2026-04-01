@@ -2,7 +2,7 @@
 
 132 findings across 16 categories. 2026-03-31 (updated 2026-04-01).
 
-**Status: 67 fixed, 2 wontfix, 63 unfixed (6 P2, 27 P3, 30 P4).** Verified 2026-04-01.
+**Status: 80 fixed, 4 wontfix/verified, 48 unfixed (5 P2, 15 P3, 28 P4).** Verified 2026-04-01.
 
 ## P1: Easy + High Impact — Fix Immediately
 
@@ -54,10 +54,10 @@
 | DOC-8 | Migration doc comment says "768-dim E5-base-v2" | ✅ PR #737 |
 | DOC-9 | CHANGELOG missing IEC 61131-3 entry | ✅ PR #737 |
 | DOC-10 | Cargo.toml description: "51 languages", stale eval metrics | ✅ PR #737 |
-| EH-1 | serde_json::to_value().ok() drops errors in 7 locations | partial (3 remain) |
-| EH-4 | build_brief_data degrades silently on failure | |
-| EH-5 | set_permissions failures silently ignored in 6 locations | |
-| EH-6 | index_notes parse error → Ok((0, false)) | |
+| EH-1 | serde_json::to_value().ok() drops errors in 7 locations | ✅ PR #744 (all 3 remaining fixed) |
+| EH-4 | build_brief_data degrades silently on failure | ✅ verified correct (degrades with warn) |
+| EH-5 | set_permissions failures silently ignored in 6 locations | ✅ PR #744 (10 sites) |
+| EH-6 | index_notes parse error → Ok((0, false)) | ✅ PR #744 (eprintln added) |
 | CQ-1 | dispatch_trace re-implements BFS instead of calling bfs_shortest_path | |
 | CQ-3 | Impact test-suggestion JSON duplicated between cmd and batch | ✅ format_test_suggestions shared (impact/format.rs) |
 | CQ-4 | cmd_test_map computes unused _test_names HashSet | ✅ PR #737 |
@@ -75,8 +75,8 @@
 | RB-6 | enrichment_hash unstable under LLM whitespace variation | |
 | PB-1 | HNSW save lock truncates, load lock doesn't | ✅ PR #737 |
 | PB-2 | collect_events non-canonicalized path comparison | |
-| PB-3 | find_7z hardcodes Windows path | |
-| PB-4 | Duplicate find_python in export_model and pdf | |
+| PB-3 | find_7z hardcodes Windows path | ✅ PR #744 (env var lookup) |
+| PB-4 | Duplicate find_python in export_model and pdf | ✅ PR #744 (shared convert::find_python) |
 | PB-6 | ort_runtime_search_dir reads /proc/self/cmdline — no macOS fallback | |
 | PERF-1 | find_test_chunks cache clones Vec<ChunkSummary> per call | |
 | PERF-3 | Watch mode per-file upsert_type_edges instead of batched | ✅ PR #737 |
@@ -84,17 +84,17 @@
 | PERF-5 | upsert_chunks_and_calls individual DELETE per caller | ✅ PR #737 |
 | SEC-5 | expand_query_for_fts no debug_assert on pre-sanitized input | ✅ debug_assert added |
 | SEC-6 | search_by_name FTS query via format! with quotes | |
-| TC-1 | Reranker: NaN passthrough, only 6 tests | |
+| TC-1 | Reranker: NaN passthrough, only 6 tests | ✅ PR #744 (NaN/Inf tests) |
 | TC-2 | structured_text.rs: untested method/action/type queries | ✅ 8 tests exist |
 | TC-3 | rerank_with_passages assert panics (same as RB-2) | ✅ same fix as RB-2 (PR #737) |
-| TC-4 | score_candidate: no NaN embedding test | |
+| TC-4 | score_candidate: no NaN embedding test | ✅ PR #744 |
 | DS-40 | Migration v15→v16 not idempotent on partial rollback | ✅ PR #737 |
 | DS-41 | set_hnsw_dirty failure skips reindex permanently | |
 | DS-42 | prune_all TOCTOU with concurrent file creation | |
 | RM-1 | train_data dedup HashMap unbounded | |
 | RM-3 | webhelp merged string no size limit | |
 | RM-4 | Watch mtime pruning only at >10K entries | |
-| RM-6 | Watch embedder retry clones ModelConfig per attempt | |
+| RM-6 | Watch embedder retry clones ModelConfig per attempt | ✅ verified (clone only on retry, not per-attempt) |
 | SHL-2 | Reranker max_length=512 hardcoded | ✅ CQS_RERANKER_MAX_LENGTH env var |
 | SHL-8 | gather BFS 200-node cap regardless of codebase size | ✅ CQS_GATHER_MAX_NODES env var |
 | SHL-9 | impact BFS 10K cap no relation to graph density | ✅ CQS_IMPACT_MAX_NODES env var |
@@ -102,8 +102,8 @@
 | SHL-11 | Rayon 4 threads hardcoded | ✅ CQS_RAYON_THREADS env var |
 | SHL-15 | Query cache 32 entries small for batch mode | |
 | EX-4 | DEFAULT_NAME_BOOST etc scattered across 3 modules | |
-| EX-5 | Watch mode constants not configurable | |
-| EX-6 | Markdown section size limits hardcoded | |
+| EX-5 | Watch mode constants not configurable | ✅ PR #744 (CQS_WATCH_* env vars) |
+| EX-6 | Markdown section size limits hardcoded | ✅ PR #744 (CQS_MD_* env vars) |
 
 ## P4: Hard or Low Impact — Issues for Hard, Fix Trivials
 
@@ -130,8 +130,8 @@
 | TC-5 | suggest_placement_with_options zero direct tests | |
 | SHL-4 | diff.rs comment "768 dims" | ✅ PR #737 |
 | SHL-5 | embedder comment "[batch, seq_len, 768]" | ✅ PR #737 |
-| SHL-13 | RRF K=60 not tuned for code search | |
-| SHL-14 | DEFAULT_THRESHOLD=0.3 not documented as model-specific | |
+| SHL-13 | RRF K=60 not tuned for code search | ✅ PR #744 (documented + CQS_RRF_K env var) |
+| SHL-14 | DEFAULT_THRESHOLD=0.3 not documented as model-specific | ✅ PR #744 (documented) |
 
 ## Untriaged Batch (OB-6 + RX-1 through RX-22) — Triaged 2026-04-01
 

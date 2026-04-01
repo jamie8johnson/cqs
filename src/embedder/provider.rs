@@ -194,7 +194,9 @@ fn ensure_ort_provider_libs() {
     // No-op: Windows and other platforms find CUDA/TensorRT provider libraries
     // via PATH, so no symlinking is needed. The Unix version symlinks .so files
     // into ort's search directory because LD_LIBRARY_PATH may not include them.
-    tracing::debug!("Provider library setup not implemented for this platform — GPU may not activate");
+    tracing::debug!(
+        "Provider library setup not implemented for this platform — GPU may not activate"
+    );
 }
 
 /// Cached GPU provider detection result
