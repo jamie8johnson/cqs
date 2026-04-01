@@ -1,6 +1,6 @@
 //! JSON and Mermaid serialization for impact results
 
-use super::types::{DiffImpactResult, ImpactResult};
+use super::types::{DiffImpactResult, ImpactResult, TestSuggestion};
 
 /// Serialize impact result to JSON.
 ///
@@ -89,6 +89,26 @@ pub fn impact_to_json(result: &ImpactResult) -> serde_json::Value {
     }
 
     output
+}
+
+/// Format test suggestions as JSON values.
+///
+/// Shared by CLI `cmd_impact` and batch `dispatch_impact` to avoid
+/// duplicating the field-mapping logic.
+pub fn format_test_suggestions(suggestions: &[TestSuggestion]) -> Vec<serde_json::Value> {
+    let _span = tracing::info_span!("format_test_suggestions", count = suggestions.len()).entered();
+    suggestions
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "test_name": s.test_name,
+                "suggested_file": crate::normalize_path(&s.suggested_file),
+                "for_function": s.for_function,
+                "pattern_source": s.pattern_source,
+                "inline": s.inline,
+            })
+        })
+        .collect()
 }
 
 /// Generate a mermaid diagram from impact result.

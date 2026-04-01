@@ -2,7 +2,9 @@
 
 use anyhow::Result;
 
-use cqs::{analyze_impact, impact_to_json, impact_to_mermaid, suggest_tests};
+use cqs::{
+    analyze_impact, format_test_suggestions, impact_to_json, impact_to_mermaid, suggest_tests,
+};
 
 use super::resolve::resolve_target;
 use crate::cli::OutputFormat;
@@ -40,18 +42,7 @@ pub(crate) fn cmd_impact(
     if matches!(format, OutputFormat::Json) {
         let mut json = impact_to_json(&result);
         if do_suggest_tests {
-            let suggestions_json: Vec<_> = suggestions
-                .iter()
-                .map(|s| {
-                    serde_json::json!({
-                        "test_name": s.test_name,
-                        "suggested_file": cqs::normalize_path(&s.suggested_file),
-                        "for_function": s.for_function,
-                        "pattern_source": s.pattern_source,
-                        "inline": s.inline,
-                    })
-                })
-                .collect();
+            let suggestions_json = format_test_suggestions(&suggestions);
             if let Some(obj) = json.as_object_mut() {
                 obj.insert(
                     "test_suggestions".into(),

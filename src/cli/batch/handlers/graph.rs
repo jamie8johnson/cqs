@@ -156,18 +156,7 @@ pub(in crate::cli::batch) fn dispatch_impact(
 
     if do_suggest_tests {
         let suggestions = cqs::suggest_tests(&ctx.store(), &result, &ctx.root);
-        let suggestions_json: Vec<_> = suggestions
-            .iter()
-            .map(|s| {
-                serde_json::json!({
-                    "test_name": s.test_name,
-                    "suggested_file": normalize_path(&s.suggested_file),
-                    "for_function": s.for_function,
-                    "pattern_source": s.pattern_source,
-                    "inline": s.inline,
-                })
-            })
-            .collect();
+        let suggestions_json = cqs::format_test_suggestions(&suggestions);
         if let Some(obj) = json.as_object_mut() {
             obj.insert(
                 "test_suggestions".into(),
@@ -334,41 +323,12 @@ pub(in crate::cli::batch) fn dispatch_trace(
     }
 
     let graph = ctx.call_graph()?;
-
-    // BFS shortest path
-    let mut visited: HashMap<String, String> = HashMap::new();
-    let mut queue: std::collections::VecDeque<(String, usize)> = std::collections::VecDeque::new();
-    visited.insert(source_name.clone(), String::new());
-    queue.push_back((source_name.clone(), 0));
-    let mut found_path: Option<Vec<String>> = None;
-
-    while let Some((current, depth)) = queue.pop_front() {
-        if current == target_name {
-            let mut path = vec![current.clone()];
-            let mut node = &current;
-            while let Some(pred) = visited.get(node) {
-                if pred.is_empty() {
-                    break;
-                }
-                path.push(pred.clone());
-                node = pred;
-            }
-            path.reverse();
-            found_path = Some(path);
-            break;
-        }
-        if depth >= max_depth {
-            continue;
-        }
-        if let Some(callees) = graph.forward.get(current.as_str()) {
-            for callee in callees {
-                if !visited.contains_key(callee.as_ref()) {
-                    visited.insert(callee.to_string(), current.clone());
-                    queue.push_back((callee.to_string(), depth + 1));
-                }
-            }
-        }
-    }
+    let found_path = crate::cli::commands::trace::bfs_shortest_path(
+        &graph.forward,
+        &source_name,
+        &target_name,
+        max_depth,
+    );
 
     match found_path {
         Some(names) => {

@@ -44,7 +44,7 @@ mod stats;
 mod suggest;
 pub(crate) mod task;
 mod test_map;
-mod trace;
+pub(crate) mod trace;
 mod train_data;
 mod train_pairs;
 mod where_cmd;
