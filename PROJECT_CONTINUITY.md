@@ -2,57 +2,52 @@
 
 ## Right Now
 
-**Phase 1 agents running (4/7 done). PR #738 open. (2026-03-31 18:53 CDT)**
+**Eval infrastructure 4/6 done. Enrichment ablation complete. (2026-03-31 22:52 CDT)**
 
-Branch: `fix/v1.13-audit-p2-batch2`
+Branch: `feat/eval-diagnostics` (PR #740)
 
-### Phase 1 status (configurable constants)
-| Agent | Finding | File | Status |
-|-------|---------|------|--------|
-| A1 | SHL-6 HNSW params | hnsw/mod.rs | Running |
-| A2 | SHL-12 embed batch | cli/pipeline.rs | Running |
-| A3 | SHL-2 reranker max_length | reranker.rs | Done |
-| A4 | SHL-8 gather BFS cap | gather.rs | Done |
-| A5 | SHL-9 impact BFS cap | impact/bfs.rs | Running |
-| A6 | SHL-11 rayon threads | reference.rs + project.rs | Done |
-| A7 | SHL-15 query cache | embedder/mod.rs | Done |
+### Enrichment ablation results (major finding)
+| Layer Skipped | R@1 | Delta |
+|---------------|-----|-------|
+| None (full) | 91.6% | — |
+| doc | 84.8% | **-6.8pp** |
+| filecontext | 87.5% | -4.1pp |
+| signatures | 90.2% | -1.4pp |
+| callgraph | 91.2% | -0.4pp |
+| parent | 91.2% | -0.4pp |
 
-### After Phase 1 completes
-1. Build check all 7 changes together
-2. Quality audit: tracing, error handling, robustness (invalid env values)
-3. Commit + push to PR #738
-4. Phase 2: tests (TC-2, TC-4) + nits (PB-2, SEC-5, EH-1)
-5. Phase 3: shared serialization (CQ-1/3/5)
+Doc comments are the #1 enrichment layer. Call graph is nearly irrelevant.
 
-### PR #738 contents so far
-- PERF-6: finalize_results remove() vs clone()
-- PERF-2: batch FTS upsert (22K→batched)
-- RM-5: contrastive neighbor buffer reuse
-- SEC-3: ONNX_DIR symlink containment
-- CQS_MAX_SEQ_LENGTH + CQS_EMBEDDING_DIM env overrides
-- `cqs reconstruct <file>` command (source from index)
-- Phase 1 changes incoming (7 configurable constants)
+### Eval infrastructure status
+1. [x] Per-query diagnostics (CQS_EVAL_OUTPUT)
+2. [x] Cross-run stability script
+3. [x] Enrichment ablation (CQS_SKIP_ENRICHMENT)
+4. [x] Difficulty tiers + weighted R@1
+5. [ ] Multi-answer queries (also_accept) — next
+6. [ ] Real codebase eval
 
 ### Session totals
-- v1.13.0 released, 9 PRs merged (#728-737)
-- IEC 61131-3 (52nd language)
-- Paper v0.9
-- 132 audit findings, 47 fixed + Phase 1 in progress
-- 153GB disk freed
-- `cqs reconstruct` new command
-- Coordinated 3-phase plan in docs/plans/
+- 12 PRs (#728-740), v1.13.0 released
+- 132 audit findings, ~55 fixed, 3-phase agent plan executed
+- IEC 61131-3 (52nd language), `cqs reconstruct`, 12 env var overrides
+- Paper v0.9, enrichment ceiling confirmed (per-query v9 vs v5 diff)
+- RRF off by default, embedder pre-warm, 5,445 lines doc bloat stripped
+- Claude Code source analyzed (19K chunks)
 
-### OpenClaw — 7 PRs, 6 issues
+### Next
+1. Item 5: multi-answer queries (populate also_accept)
+2. Merge PR #740
+3. Update paper with ablation data
+4. Re-eval nomic/GTE-Qwen2 with correct windowing
+5. Real codebase eval (tokio/axum)
 
 ## Parked
 - Dart language support
 - hnswlib-rs migration
-- DXF Phase 1 (P&ID → PLC function block mapping)
+- DXF Phase 1
 - Openclaw variant for PLC process control
-- Blackwell GPU upgrade
+- BGE-large fine-tuning + CoIR
 - Publish 500K/1M datasets to HF
-- Re-eval GTE-Qwen2 + nomic with correct windowing
-- BGE-large CoIR run
 
 ## Open Issues (cqs)
 - #717 RM-40 (HNSW fully in RAM, no mmap)
@@ -62,8 +57,6 @@ Branch: `fix/v1.13-audit-p2-batch2`
 ## Architecture
 - Version: 1.13.0
 - Languages: 52
-- Presets: BGE-large (default, 1024d), E5-base (768d), v9-200k (768d)
-- Env overrides: CQS_MAX_SEQ_LENGTH, CQS_EMBEDDING_DIM, CQS_MAX_CONTRASTIVE_CHUNKS, CQS_HNSW_M/EF_CONSTRUCTION/EF_SEARCH (Phase 1), CQS_EMBED_BATCH_SIZE, CQS_GATHER_MAX_NODES, CQS_IMPACT_MAX_NODES, CQS_RAYON_THREADS, CQS_QUERY_CACHE_SIZE, CQS_RERANKER_MAX_LENGTH
-- Commands: 51+ (added reconstruct)
-- Tests: ~1540
-- Hooks: Pre-Edit (module context), Pre-Bash (git commit → cqs review)
+- Commands: 52+
+- Env overrides: 14 (added CQS_SKIP_ENRICHMENT, CQS_EVAL_OUTPUT)
+- Enrichment hierarchy: doc (+6.8pp) > filecontext (+4.1pp) >> signatures (+1.4pp) >> callgraph ≈ parent (+0.4pp)
