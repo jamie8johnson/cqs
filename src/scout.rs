@@ -186,7 +186,7 @@ pub(crate) fn scout_core(
 
     // 1. Search
     let filter = SearchFilter {
-        enable_rrf: true,
+        enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval
         query_text: task.to_string(),
         ..SearchFilter::default()
     };

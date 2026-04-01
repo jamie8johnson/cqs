@@ -103,7 +103,17 @@ fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
 pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
     let _span = tracing::debug_span!("load_references", count = configs.len()).entered();
     // RM-29: Cap concurrency — each ref loads Store (~64MB) + HNSW (~50-200MB)
-    let pool = match rayon::ThreadPoolBuilder::new().num_threads(4).build() {
+    let threads = std::env::var("CQS_RAYON_THREADS")
+        .ok()
+        .and_then(|v| {
+            let parsed = v.parse();
+            if parsed.is_err() {
+                tracing::warn!(value = %v, "Invalid CQS_RAYON_THREADS, using default");
+            }
+            parsed.ok()
+        })
+        .unwrap_or(4);
+    let pool = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to create reference loading thread pool, loading sequentially");

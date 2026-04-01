@@ -2,57 +2,57 @@
 
 ## Right Now
 
-**9th audit: 43/110 fixed, PR #737 CI running. (2026-03-31 17:30 CDT)**
+**Phase 1 agents running (4/7 done). PR #738 open. (2026-03-31 18:53 CDT)**
 
-Branch: `fix/v1.13-audit-p1-p3`
+Branch: `fix/v1.13-audit-p2-batch2`
 
-### Session summary
-- v1.13.0 released (crates.io + GitHub) — 8 PRs merged (#728-736), 4 issues closed
-- IEC 61131-3 Structured Text (52nd language) — grammar forked, extended, merged
-- Paper v0.9 — thesis revised: enrichment dominates, model differences compress
-- 13-model expanded eval (296q, 7 langs) — v5 ties top tier, GPU variance discovery
-- v9-200k full CoIR: 45.02 (10 tasks), testq CSN: 0.622, all raw MRRs filled
-- 9th audit: 110 findings across 15 categories, 43 fixed (all 15 P1s)
-- Windowing artifact: MAX_TOKENS_PER_WINDOW now uses ModelConfig::max_seq_length
-- Contrastive cap: 15K→30K + CQS_MAX_CONTRASTIVE_CHUNKS env override
-- NL char budget: scales with CQS_MAX_SEQ_LENGTH env var
-- 153GB disk freed (debug artifacts + unused HF models)
-- Claude Code source indexed (19,648 chunks) — explored feature flags, memory system
-- Audit skill updated: 2 batches of 8, TC split into happy/adversarial
-- CLAUDE.md: "never suggest ending a session"
+### Phase 1 status (configurable constants)
+| Agent | Finding | File | Status |
+|-------|---------|------|--------|
+| A1 | SHL-6 HNSW params | hnsw/mod.rs | Running |
+| A2 | SHL-12 embed batch | cli/pipeline.rs | Running |
+| A3 | SHL-2 reranker max_length | reranker.rs | Done |
+| A4 | SHL-8 gather BFS cap | gather.rs | Done |
+| A5 | SHL-9 impact BFS cap | impact/bfs.rs | Running |
+| A6 | SHL-11 rayon threads | reference.rs + project.rs | Done |
+| A7 | SHL-15 query cache | embedder/mod.rs | Done |
 
-### PR #737 — audit fixes (CI running)
-All P1s fixed (15): panics, correctness, scaling, security, docs
-P2 fixes (6): NL budget, PERF-3 batch type edges, PB-1 lock, PERF-5 batch delete, PERF-4 HashMap
-P3 fixes (22): spans, dead code, docs, migration idempotency, token_pack cap
+### After Phase 1 completes
+1. Build check all 7 changes together
+2. Quality audit: tracing, error handling, robustness (invalid env values)
+3. Commit + push to PR #738
+4. Phase 2: tests (TC-2, TC-4) + nits (PB-2, SEC-5, EH-1)
+5. Phase 3: shared serialization (CQ-1/3/5)
 
-### Remaining unfixed (67)
-- 8 P2s: DS-38 (process lock), SEC-3 (ONNX symlink), PERF-2 (FTS batch), PERF-6 (clone), RM-5 (1.6GB alloc), CQ-2 (test-map duplication), RB-5 (ONNX shape panic), EX-3 (duplicate of SHL-1, already fixed)
-- 36 P3s: mostly easy but low impact
-- 23 P4s: hard refactors or cosmetic
+### PR #738 contents so far
+- PERF-6: finalize_results remove() vs clone()
+- PERF-2: batch FTS upsert (22K→batched)
+- RM-5: contrastive neighbor buffer reuse
+- SEC-3: ONNX_DIR symlink containment
+- CQS_MAX_SEQ_LENGTH + CQS_EMBEDDING_DIM env overrides
+- `cqs reconstruct <file>` command (source from index)
+- Phase 1 changes incoming (7 configurable constants)
 
-### Key discoveries
-- **Enrichment compresses model differences** — BGE-large 90.5%, v9-200k 90.2%, v5 89.5% all within GPU noise (~1.4pp) on 296-query eval
-- **Windowing artifact** — MAX_TOKENS_PER_WINDOW=480 handicapped all large-context model evals (GTE-Qwen2, nomic, E5-mistral). Prior results invalid. Fixed.
-- **v9-200k CoIR 45.02** — sharpest benchmark-product split: best pipeline, worst CoIR among non-KeyDAC LoRAs
-
-### Next session
-1. Merge PR #737 after CI
-2. Fix remaining P2s (DS-38 process lock, SEC-3, PERF-2)
-3. Re-eval GTE-Qwen2 and nomic with correct windowing
-4. BGE-large full CoIR run
-5. Fine-tune BGE-large on 200K CG-filtered data
+### Session totals
+- v1.13.0 released, 9 PRs merged (#728-737)
+- IEC 61131-3 (52nd language)
+- Paper v0.9
+- 132 audit findings, 47 fixed + Phase 1 in progress
+- 153GB disk freed
+- `cqs reconstruct` new command
+- Coordinated 3-phase plan in docs/plans/
 
 ### OpenClaw — 7 PRs, 6 issues
-Tracker: `docs/openclaw-contributions.md`.
 
 ## Parked
 - Dart language support
 - hnswlib-rs migration
 - DXF Phase 1 (P&ID → PLC function block mapping)
-- Openclaw variant for PLC process control (long horizon)
+- Openclaw variant for PLC process control
 - Blackwell GPU upgrade
 - Publish 500K/1M datasets to HF
+- Re-eval GTE-Qwen2 + nomic with correct windowing
+- BGE-large CoIR run
 
 ## Open Issues (cqs)
 - #717 RM-40 (HNSW fully in RAM, no mmap)
@@ -61,10 +61,9 @@ Tracker: `docs/openclaw-contributions.md`.
 
 ## Architecture
 - Version: 1.13.0
-- Languages: 52 (IEC 61131-3 ST)
+- Languages: 52
 - Presets: BGE-large (default, 1024d), E5-base (768d), v9-200k (768d)
-- Metrics: 90.5% R@1 BGE-large, 90.2% v9-200k, 89.5% v5 (same-session, 296q)
-- CoIR: v9-200k 45.02, v7 49.19, base E5 49.47
+- Env overrides: CQS_MAX_SEQ_LENGTH, CQS_EMBEDDING_DIM, CQS_MAX_CONTRASTIVE_CHUNKS, CQS_HNSW_M/EF_CONSTRUCTION/EF_SEARCH (Phase 1), CQS_EMBED_BATCH_SIZE, CQS_GATHER_MAX_NODES, CQS_IMPACT_MAX_NODES, CQS_RAYON_THREADS, CQS_QUERY_CACHE_SIZE, CQS_RERANKER_MAX_LENGTH
+- Commands: 51+ (added reconstruct)
 - Tests: ~1540
 - Hooks: Pre-Edit (module context), Pre-Bash (git commit → cqs review)
-- 9 audits, 43/110 findings fixed in latest

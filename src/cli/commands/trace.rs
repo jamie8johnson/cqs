@@ -196,7 +196,7 @@ fn mermaid_escape(s: &str) -> String {
 
 /// BFS shortest path through forward adjacency list.
 /// Capped at 10,000 visited nodes to prevent OOM on dense graphs.
-fn bfs_shortest_path(
+pub(crate) fn bfs_shortest_path(
     forward: &HashMap<std::sync::Arc<str>, Vec<std::sync::Arc<str>>>,
     source: &str,
     target: &str,

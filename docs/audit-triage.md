@@ -32,10 +32,10 @@
 | AC-1 | Cross-project RRF scores compared as absolute — invalid | |
 | DS-38 | DEFERRED transactions + no process lock = SQLITE_BUSY on concurrent index | |
 | DS-43 | Batch mode doesn't reload HNSW dim after config change | |
-| SEC-3 | ensure_model doesn't verify joined paths stay inside CQS_ONNX_DIR | |
-| PERF-2 | upsert_fts_conditional: 2 SQL per chunk instead of batching (22K round trips) | |
-| PERF-6 | finalize_results clones ChunkRow for every search result | |
-| RM-5 | Contrastive neighbors allocates N*(N-1) pairs — 1.6GB intermediate | |
+| SEC-3 | ensure_model doesn't verify joined paths stay inside CQS_ONNX_DIR | ✅ PR #738 |
+| PERF-2 | upsert_fts_conditional: 2 SQL per chunk instead of batching (22K round trips) | ✅ PR #738 |
+| PERF-6 | finalize_results clones ChunkRow for every search result | ✅ PR #738 |
+| RM-5 | Contrastive neighbors allocates N*(N-1) pairs — 1.6GB intermediate | ✅ PR #738 |
 | CQ-2 | dispatch_test_map duplicates 80-line reverse-BFS with divergent guard | |
 | RB-5 | embed_batched panics on unexpected ONNX output shape | |
 | EX-3 | Windowing pinned to 512 tokens — thread ModelConfig::max_seq_length | |

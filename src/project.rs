@@ -217,7 +217,17 @@ pub fn search_across_projects(
     // RM-25: Cap concurrency to 4 threads — each project opens Store + HNSW (~200MB).
     // RB-16: Fall back to sequential execution if thread pool creation fails,
     // rather than panicking on a double-unwrap.
-    let pool = match rayon::ThreadPoolBuilder::new().num_threads(4).build() {
+    let threads = std::env::var("CQS_RAYON_THREADS")
+        .ok()
+        .and_then(|v| {
+            let parsed = v.parse();
+            if parsed.is_err() {
+                tracing::warn!(value = %v, "Invalid CQS_RAYON_THREADS, using default");
+            }
+            parsed.ok()
+        })
+        .unwrap_or(4);
+    let pool = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to build rayon thread pool, falling back to sequential");
@@ -298,7 +308,7 @@ fn search_single_project(
             let index = crate::hnsw::HnswIndex::try_load_with_ef(cqs_dir, None, None);
             let filter = crate::store::helpers::SearchFilter {
                 query_text: query_text.to_string(),
-                enable_rrf: true,
+                enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval
                 ..Default::default()
             };
             match store.search_filtered_with_index(
@@ -508,7 +518,7 @@ mod tests {
         let store = crate::Store::open_readonly(&db_path).unwrap();
         let filter = crate::store::helpers::SearchFilter {
             query_text: "test function".to_string(),
-            enable_rrf: true,
+            enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval
             ..Default::default()
         };
         let results = store.search_filtered_with_index(

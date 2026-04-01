@@ -207,13 +207,34 @@ impl ModelConfig {
             );
         }
 
-        // 4. Default — BGE-large since v1.9.0 (94.5% pipeline R@1 vs 83.6% E5-base)
+        // 4. Default — BGE-large since v1.9.0
         tracing::info!(
             model = "bge-large",
             source = "default",
             "Resolved model config"
         );
         Self::default_model()
+    }
+
+    /// Apply env var overrides to a resolved ModelConfig.
+    /// CQS_MAX_SEQ_LENGTH overrides max_seq_length (for large-context models via CQS_ONNX_DIR).
+    /// CQS_EMBEDDING_DIM overrides dim (for custom models where dim detection isn't automatic).
+    pub fn apply_env_overrides(mut self) -> Self {
+        if let Ok(val) = std::env::var("CQS_MAX_SEQ_LENGTH") {
+            if let Ok(seq) = val.parse::<usize>() {
+                tracing::info!(max_seq_length = seq, "CQS_MAX_SEQ_LENGTH override active");
+                self.max_seq_length = seq;
+            }
+        }
+        if let Ok(val) = std::env::var("CQS_EMBEDDING_DIM") {
+            if let Ok(dim) = val.parse::<usize>() {
+                if dim > 0 {
+                    tracing::info!(dim, "CQS_EMBEDDING_DIM override active");
+                    self.dim = dim;
+                }
+            }
+        }
+        self
     }
 }
 

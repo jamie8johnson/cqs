@@ -102,7 +102,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         path_pattern: cli.path.clone(),
         name_boost: cli.name_boost,
         query_text: query.to_string(),
-        enable_rrf: !cli.semantic_only, // RRF on by default, disable with --semantic-only
+        enable_rrf: cli.rrf, // RRF off by default (pure cosine is faster + higher R@1), enable with --rrf
         enable_demotion: !cli.no_demote,
         ..Default::default()
     };

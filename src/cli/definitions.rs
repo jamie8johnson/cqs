@@ -170,9 +170,13 @@ pub struct Cli {
     #[arg(long)]
     pub name_only: bool,
 
-    /// Pure semantic similarity, disable RRF hybrid search
+    /// Pure semantic similarity, disable RRF hybrid search (deprecated — RRF now off by default)
     #[arg(long)]
     pub semantic_only: bool,
+
+    /// Enable RRF hybrid search (keyword + semantic fusion). Off by default — pure cosine is faster and scores higher on expanded eval.
+    #[arg(long)]
+    pub rrf: bool,
 
     /// Re-rank results with cross-encoder (slower, more accurate)
     #[arg(long)]
@@ -595,6 +599,14 @@ pub(super) enum Commands {
         /// Focus on a specific function (returns only that function + type deps)
         #[arg(long)]
         focus: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Reconstruct source file from index (works without source on disk)
+    Reconstruct {
+        /// File path (as indexed)
+        path: String,
         /// Output as JSON
         #[arg(long)]
         json: bool,

@@ -14,8 +14,9 @@ use super::commands::{
     cmd_context, cmd_dead, cmd_deps, cmd_diff, cmd_doctor, cmd_drift, cmd_explain,
     cmd_export_model, cmd_gather, cmd_gc, cmd_health, cmd_impact, cmd_impact_diff, cmd_index,
     cmd_init, cmd_neighbors, cmd_notes, cmd_onboard, cmd_plan, cmd_project, cmd_query, cmd_read,
-    cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats, cmd_suggest,
-    cmd_task, cmd_test_map, cmd_trace, cmd_train_data, cmd_train_pairs, cmd_where,
+    cmd_reconstruct, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale,
+    cmd_stats, cmd_suggest, cmd_task, cmd_test_map, cmd_trace, cmd_train_data, cmd_train_pairs,
+    cmd_where,
 };
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -30,11 +31,12 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     let config = cqs::config::Config::load(&find_project_root());
     apply_config_defaults(&mut cli, &config);
 
-    // Resolve embedding model config once (CLI > env > config > default)
-    cli.resolved_model = Some(cqs::embedder::ModelConfig::resolve(
-        cli.model.as_deref(),
-        config.embedding.as_ref(),
-    ));
+    // Resolve embedding model config once (CLI > env > config > default),
+    // then apply env var overrides (CQS_MAX_SEQ_LENGTH, CQS_EMBEDDING_DIM)
+    cli.resolved_model = Some(
+        cqs::embedder::ModelConfig::resolve(cli.model.as_deref(), config.embedding.as_ref())
+            .apply_env_overrides(),
+    );
 
     // Clamp limit to prevent usize::MAX wrapping to -1 in SQLite queries
     cli.limit = cli.limit.clamp(1, 100);
@@ -203,6 +205,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref focus,
             json,
         }) => cmd_read(path, focus.as_deref(), json),
+        Some(Commands::Reconstruct { ref path, json }) => cmd_reconstruct(path, json),
         Some(Commands::Related {
             ref name,
             limit,

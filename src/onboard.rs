@@ -104,7 +104,7 @@ pub fn onboard(
     let query_embedding = embedder.embed_query(concept)?;
     let filter = crate::store::SearchFilter {
         query_text: concept.to_string(),
-        enable_rrf: true,
+        enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval
         ..crate::store::SearchFilter::default()
     };
     let results = store.search_filtered(&query_embedding, &filter, 10, 0.0)?;

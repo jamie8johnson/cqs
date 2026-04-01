@@ -232,7 +232,8 @@ pub struct Embedder {
 }
 
 /// Default query cache size (entries). Each entry is ~4KB (1024 floats + key).
-const DEFAULT_QUERY_CACHE_SIZE: usize = 32;
+/// Override with `CQS_QUERY_CACHE_SIZE` environment variable.
+const DEFAULT_QUERY_CACHE_SIZE: usize = 128;
 
 impl Embedder {
     /// Create a new embedder with lazy model loading.
@@ -264,9 +265,27 @@ impl Embedder {
     ) -> Result<Self, EmbedderError> {
         let max_length = model_config.max_seq_length;
 
+        let cache_size = match std::env::var("CQS_QUERY_CACHE_SIZE") {
+            Ok(val) => match val.parse::<usize>() {
+                Ok(n) if n > 0 => {
+                    tracing::info!(
+                        size = n,
+                        "Query cache size override from CQS_QUERY_CACHE_SIZE"
+                    );
+                    n
+                }
+                _ => {
+                    tracing::warn!(
+                        value = %val,
+                        "Invalid CQS_QUERY_CACHE_SIZE (must be positive integer), using default {DEFAULT_QUERY_CACHE_SIZE}"
+                    );
+                    DEFAULT_QUERY_CACHE_SIZE
+                }
+            },
+            Err(_) => DEFAULT_QUERY_CACHE_SIZE,
+        };
         let query_cache = Mutex::new(LruCache::new(
-            NonZeroUsize::new(DEFAULT_QUERY_CACHE_SIZE)
-                .expect("DEFAULT_QUERY_CACHE_SIZE is non-zero"),
+            NonZeroUsize::new(cache_size).expect("cache_size is non-zero"),
         ));
 
         Ok(Self {
@@ -701,6 +720,19 @@ fn ensure_model(config: &ModelConfig) -> Result<(PathBuf, PathBuf), EmbedderErro
         let dir = dunce::canonicalize(PathBuf::from(&dir)).unwrap_or_else(|_| PathBuf::from(dir));
         let model_path = dir.join(&config.onnx_path);
         let tokenizer_path = dir.join(&config.tokenizer_path);
+        // SEC-3: Verify joined paths stay inside CQS_ONNX_DIR (symlink/traversal defense)
+        for (label, path) in [("model", &model_path), ("tokenizer", &tokenizer_path)] {
+            if let Ok(canonical) = dunce::canonicalize(path) {
+                if !canonical.starts_with(&dir) {
+                    return Err(EmbedderError::ModelNotFound(format!(
+                        "SEC-3: {} path escapes CQS_ONNX_DIR: {} resolves to {}",
+                        label,
+                        path.display(),
+                        canonical.display()
+                    )));
+                }
+            }
+        }
         if model_path.exists() && tokenizer_path.exists() {
             tracing::info!(dir = %dir.display(), "Using local ONNX model directory");
             return Ok((model_path, tokenizer_path));

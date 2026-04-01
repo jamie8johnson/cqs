@@ -154,6 +154,28 @@ impl Default for GatherOptions {
     ///
     /// A new `Self` instance initialized with sensible defaults for graph expansion operations.
     fn default() -> Self {
+        let max_expanded_nodes = match std::env::var("CQS_GATHER_MAX_NODES") {
+            Ok(val) => match val.parse::<usize>() {
+                Ok(n) => {
+                    tracing::info!(
+                        max_nodes = n,
+                        "BFS node cap overridden via CQS_GATHER_MAX_NODES"
+                    );
+                    n
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        value = %val,
+                        error = %e,
+                        "Invalid CQS_GATHER_MAX_NODES, using default {}",
+                        DEFAULT_MAX_EXPANDED_NODES
+                    );
+                    DEFAULT_MAX_EXPANDED_NODES
+                }
+            },
+            Err(_) => DEFAULT_MAX_EXPANDED_NODES,
+        };
+
         Self {
             expand_depth: 1,
             direction: GatherDirection::Both,
@@ -161,7 +183,7 @@ impl Default for GatherOptions {
             seed_limit: 5,
             seed_threshold: 0.3,
             decay_factor: 0.8,
-            max_expanded_nodes: DEFAULT_MAX_EXPANDED_NODES,
+            max_expanded_nodes,
         }
     }
 }
@@ -426,7 +448,7 @@ pub fn gather_with_graph(
     // 1. Seed with hybrid RRF search (not raw embedding-only)
     let filter = SearchFilter {
         query_text: query_text.to_string(),
-        enable_rrf: true,
+        enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval
         ..SearchFilter::default()
     };
     let seed_results = store.search_filtered(
@@ -537,7 +559,7 @@ pub fn gather_cross_index_with_index(
     // 1. Seed search against reference index (unweighted — user explicitly targets this ref)
     let filter = crate::store::helpers::SearchFilter {
         query_text: query_text.to_string(),
-        enable_rrf: true,
+        enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval
         ..SearchFilter::default()
     };
     let ref_seeds = crate::reference::search_reference(
@@ -588,7 +610,7 @@ pub fn gather_cross_index_with_index(
     //    Parallelized with rayon — Store is Send+Sync (SqlitePool + Runtime + AtomicBool).
     let bridge_filter = SearchFilter {
         query_text: query_text.to_string(),
-        enable_rrf: true,
+        enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval
         ..SearchFilter::default()
     };
 
