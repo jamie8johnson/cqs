@@ -787,6 +787,32 @@ mod tests {
     }
 
     #[test]
+    fn score_candidate_nan_embedding_filtered() {
+        let query = test_embedding(1.0);
+        let mut nan_emb = vec![f32::NAN; crate::EMBEDDING_DIM];
+        // Mix in some valid values to be thorough — even partial NaN should fail
+        nan_emb[0] = 0.5;
+        nan_emb[1] = 0.3;
+        let filter = SearchFilter::default();
+        let note_index = NoteBoostIndex::new(&[]);
+        let ctx = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.0,
+        };
+
+        let result = score_candidate(&nan_emb, Some("nan_fn"), "src/lib.rs", &ctx);
+        assert!(
+            result.is_none(),
+            "NaN embedding should be filtered out (return None), got {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn score_candidate_zero_embedding() {
         let zero_query = vec![0.0f32; crate::EMBEDDING_DIM];
         let normal_emb = test_embedding(1.0);

@@ -25,7 +25,14 @@ pub fn impact_to_json(result: &ImpactResult) -> serde_json::Value {
     let tests_json: Vec<_> = result
         .tests
         .iter()
-        .filter_map(|t| serde_json::to_value(t).ok())
+        .filter_map(|t| {
+            serde_json::to_value(t)
+                .map_err(|e| {
+                    tracing::debug!(error = %e, "Serialization failed");
+                    e
+                })
+                .ok()
+        })
         .collect();
 
     let mut output = serde_json::json!({

@@ -261,4 +261,61 @@ END_PROGRAM
         // PID1 call should be in the chunk content
         assert!(main.content.contains("PID1"));
     }
+
+    #[test]
+    fn parse_method_definition() {
+        let content = r#"
+FUNCTION_BLOCK Motor
+METHOD PUBLIC Start : BOOL
+VAR_INPUT
+    Speed : REAL;
+END_VAR
+    Start := Speed > 0.0;
+END_METHOD
+END_FUNCTION_BLOCK
+"#;
+        let file = write_temp_file(content, "st");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let method = chunks.iter().find(|c| c.name == "Start").unwrap();
+        assert_eq!(method.chunk_type, ChunkType::Method);
+    }
+
+    #[test]
+    fn parse_action_definition() {
+        let content = r#"
+FUNCTION_BLOCK Controller
+ACTION ResetCounters
+    Counter1 := 0;
+    Counter2 := 0;
+END_ACTION
+END_FUNCTION_BLOCK
+"#;
+        let file = write_temp_file(content, "st");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let action = chunks.iter().find(|c| c.name == "ResetCounters").unwrap();
+        // ACTION inside FUNCTION_BLOCK is treated as a method (parent container inference)
+        assert_eq!(action.chunk_type, ChunkType::Method);
+    }
+
+    #[test]
+    fn parse_type_references_in_var_input() {
+        let content = r#"
+FUNCTION_BLOCK Conveyor
+VAR_INPUT
+    Speed : REAL;
+    Sensor : ProximitySensor;
+END_VAR
+    (* control logic *)
+END_FUNCTION_BLOCK
+"#;
+        let file = write_temp_file(content, "st");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let fb = chunks.iter().find(|c| c.name == "Conveyor").unwrap();
+        assert_eq!(fb.chunk_type, ChunkType::Class);
+        // Typed VAR_INPUT declarations should be in chunk content
+        assert!(fb.content.contains("ProximitySensor"));
+    }
 }

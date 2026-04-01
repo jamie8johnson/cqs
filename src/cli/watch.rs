@@ -369,12 +369,17 @@ fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchSta
             path.clone()
         };
         // Skip .cqs directory
-        if path.starts_with(cfg.cqs_dir) {
+        // PB-2: Deleted files can't be canonicalized (they don't exist), so
+        // compare normalized string forms to handle slash differences on WSL.
+        let norm_path = cqs::normalize_path(&path);
+        let norm_cqs = cqs::normalize_path(cfg.cqs_dir);
+        if norm_path.starts_with(&norm_cqs) {
             continue;
         }
 
         // Check if it's notes.toml
-        if path == cfg.notes_path {
+        let norm_notes = cqs::normalize_path(cfg.notes_path);
+        if norm_path == norm_notes {
             state.pending_notes = true;
             state.last_event = std::time::Instant::now();
             continue;

@@ -288,17 +288,38 @@ pub fn task_to_json(result: &TaskResult) -> serde_json::Value {
     let risk_json: Vec<serde_json::Value> = result
         .risk
         .iter()
-        .filter_map(|fr| serde_json::to_value(fr).ok())
+        .filter_map(|fr| {
+            serde_json::to_value(fr)
+                .map_err(|e| {
+                    tracing::debug!(error = %e, "Serialization failed");
+                    e
+                })
+                .ok()
+        })
         .collect();
     let tests_json: Vec<serde_json::Value> = result
         .tests
         .iter()
-        .filter_map(|t| serde_json::to_value(t).ok())
+        .filter_map(|t| {
+            serde_json::to_value(t)
+                .map_err(|e| {
+                    tracing::debug!(error = %e, "Serialization failed");
+                    e
+                })
+                .ok()
+        })
         .collect();
     let placement_json: Vec<serde_json::Value> = result
         .placement
         .iter()
-        .filter_map(|s| serde_json::to_value(s).ok())
+        .filter_map(|s| {
+            serde_json::to_value(s)
+                .map_err(|e| {
+                    tracing::debug!(error = %e, "Serialization failed");
+                    e
+                })
+                .ok()
+        })
         .collect();
 
     serde_json::json!({

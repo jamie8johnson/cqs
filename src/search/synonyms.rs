@@ -54,6 +54,12 @@ static SYNONYMS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = Lazy
 /// Input must already be FTS-sanitized (no special chars). Output is safe for
 /// FTS5 MATCH because we only inject known-safe alpha tokens inside OR groups.
 pub fn expand_query_for_fts(sanitized_query: &str) -> String {
+    debug_assert!(
+        !sanitized_query.contains('"')
+            && !sanitized_query.contains('(')
+            && !sanitized_query.contains(')'),
+        "expand_query_for_fts requires pre-sanitized input"
+    );
     let tokens: Vec<&str> = sanitized_query.split_whitespace().collect();
     if tokens.is_empty() {
         return String::new();
