@@ -131,6 +131,7 @@ pub(crate) fn cmd_chat() -> Result<()> {
     let _span = tracing::info_span!("cmd_chat").entered();
 
     let ctx = batch::create_context()?;
+    ctx.warm(); // Pre-warm embedder so first query doesn't pay ~500ms ONNX init
     let history_path = ctx.cqs_dir.join("chat_history");
 
     let helper = ChatHelper {

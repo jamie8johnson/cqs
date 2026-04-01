@@ -448,7 +448,7 @@ pub fn gather_with_graph(
     // 1. Seed with hybrid RRF search (not raw embedding-only)
     let filter = SearchFilter {
         query_text: query_text.to_string(),
-        enable_rrf: true,
+        enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval
         ..SearchFilter::default()
     };
     let seed_results = store.search_filtered(
@@ -559,7 +559,7 @@ pub fn gather_cross_index_with_index(
     // 1. Seed search against reference index (unweighted — user explicitly targets this ref)
     let filter = crate::store::helpers::SearchFilter {
         query_text: query_text.to_string(),
-        enable_rrf: true,
+        enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval
         ..SearchFilter::default()
     };
     let ref_seeds = crate::reference::search_reference(
@@ -610,7 +610,7 @@ pub fn gather_cross_index_with_index(
     //    Parallelized with rayon — Store is Send+Sync (SqlitePool + Runtime + AtomicBool).
     let bridge_filter = SearchFilter {
         query_text: query_text.to_string(),
-        enable_rrf: true,
+        enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval
         ..SearchFilter::default()
     };
 

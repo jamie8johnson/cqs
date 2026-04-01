@@ -688,7 +688,7 @@ mod tests {
             .unwrap();
 
         let filter = SearchFilter {
-            enable_rrf: true,
+            enable_rrf: true, // Test needs RRF on
             query_text: "error handling".to_string(),
             ..Default::default()
         };
@@ -771,7 +771,7 @@ mod tests {
         // for the query text "error handling"
         let candidate_ids: Vec<&str> = vec![&c_error.id, &c_parse.id];
         let filter = SearchFilter {
-            enable_rrf: true,
+            enable_rrf: true, // Test needs RRF on
             query_text: "error handling".to_string(),
             ..Default::default()
         };

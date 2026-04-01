@@ -191,6 +191,24 @@ impl BatchContext {
         self.store.borrow()
     }
 
+    /// Pre-warm the embedder so the first query doesn't pay the ~500ms ONNX init.
+    /// Called once at session start. Errors are logged but non-fatal.
+    pub fn warm(&self) {
+        if self.embedder.get().is_some() {
+            return;
+        }
+        let _span = tracing::info_span!("batch_warm").entered();
+        match Embedder::new(self.model_config.clone()) {
+            Ok(e) => {
+                let _ = self.embedder.set(e);
+                tracing::info!("Embedder pre-warmed");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Embedder warm failed — will retry on first query");
+            }
+        }
+    }
+
     /// Get or create the embedder (~500ms first call).
     pub fn embedder(&self) -> Result<&Embedder> {
         if let Some(e) = self.embedder.get() {
@@ -522,6 +540,7 @@ pub(crate) fn cmd_batch() -> Result<()> {
     let _span = tracing::info_span!("cmd_batch").entered();
 
     let ctx = create_context()?;
+    ctx.warm(); // Pre-warm embedder so first query doesn't pay ~500ms ONNX init
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
