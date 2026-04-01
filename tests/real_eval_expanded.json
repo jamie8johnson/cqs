@@ -1,0 +1,334 @@
+{
+  "queries": [
+    {
+      "type": "conceptual",
+      "query": "functions that handle error handling",
+      "category": "error handling"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that parse parsing",
+      "category": "parsing"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that validate validation",
+      "category": "validation"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that format formatting",
+      "category": "formatting"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that serialize serialization",
+      "category": "serialization"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that compute computation",
+      "category": "computation"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that extract extraction",
+      "category": "extraction"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that build construction",
+      "category": "construction"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that load loading",
+      "category": "loading"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that save saving",
+      "category": "saving"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that check checking",
+      "category": "checking"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that convert conversion",
+      "category": "conversion"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that merge merging",
+      "category": "merging"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that filter filtering",
+      "category": "filtering"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions that sort sorting",
+      "category": "sorting"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to embedding",
+      "category": "embeddings"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to HNSW index",
+      "category": "hnsw"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to SQLite store",
+      "category": "store"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to tree-sitter parsing",
+      "category": "parsing"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to CLI commands",
+      "category": "cli"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to search scoring",
+      "category": "scoring"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to call graph",
+      "category": "callgraph"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to batch mode",
+      "category": "batch"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to file watching",
+      "category": "watch"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to LLM integration",
+      "category": "llm"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to notes",
+      "category": "notes"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to type edges",
+      "category": "types"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to impact analysis",
+      "category": "impact"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to diff parsing",
+      "category": "diff"
+    },
+    {
+      "type": "conceptual",
+      "query": "functions related to configuration",
+      "category": "config"
+    },
+    {
+      "type": "function_lookup",
+      "query": "search by raw embedding cosine without filters",
+      "expected": "search_embedding_only",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "construct SQL WHERE clause from search filters",
+      "expected": "build_filter_sql",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "split long chunks into overlapping windows",
+      "expected": "apply_windowing",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "add caller callee names to NL description",
+      "expected": "enrich_with_call_context",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "parse glob pattern for path filtering",
+      "expected": "compile_glob_filter",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "handle Ctrl-C interruption during indexing",
+      "expected": "check_interrupted",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "extract important keywords from function body",
+      "expected": "extract_body_keywords",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "score how well a name matches the query",
+      "expected": "score_name_match_pre_lower",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "allocate token budget across sections",
+      "expected": "waterfall_pack",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "guided tour of unfamiliar code",
+      "expected": "cmd_onboard",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "compare two index snapshots semantically",
+      "expected": "semantic_diff",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "analyze diff for CI gating",
+      "expected": "run_ci_analysis",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "suggest where to add new code",
+      "expected": "suggest_placement",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "find similar functions for LLM summary",
+      "expected": "find_contrastive_neighbors",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "resolve function name to actual chunk",
+      "expected": "resolve_target",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "find chunks that need LLM summaries",
+      "expected": "collect_eligible_chunks",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "detect camelCase vs snake_case",
+      "expected": "detect_naming_convention",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "score chunk importance for search demotion",
+      "expected": "chunk_importance",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "build module context from file path",
+      "expected": "extract_file_context",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "prepare text for FTS5 full text search",
+      "expected": "normalize_for_fts",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "atomically rewrite notes.toml",
+      "expected": "rewrite_notes_file",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "handle file change events in watch mode",
+      "expected": "process_file_changes",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "find tests affected by changed functions",
+      "expected": "find_affected_tests",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "compute caller hints using call graph",
+      "expected": "compute_hints_with_graph",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "verify HNSW index file integrity",
+      "expected": "verify_hnsw_checksums",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "release ONNX session memory",
+      "expected": "clear_session",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "handle search query in batch mode",
+      "expected": "dispatch_query",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "show module overview for a file",
+      "expected": "cmd_context",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "show function card with callers callees similar",
+      "expected": "cmd_explain",
+      "also_accept": []
+    },
+    {
+      "type": "function_lookup",
+      "query": "show codebase quality snapshot",
+      "expected": "cmd_health",
+      "also_accept": []
+    }
+  ]
+}
