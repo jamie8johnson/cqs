@@ -361,6 +361,9 @@ fn test_pipeline_scoring() {
 
     let mut all_metrics: Vec<ConfigMetrics> = Vec::new();
 
+    // Per-query diagnostics: collect structured results for JSON dump
+    let mut query_diagnostics: Vec<serde_json::Value> = Vec::new();
+
     // Config A: Cosine-only (brute-force, baseline)
     {
         eprintln!("--- Config A: Cosine-only ---");
@@ -379,6 +382,12 @@ fn test_pipeline_scoring() {
                         case.language, case.query, e
                     );
                     results_per_case.push((i, None, None));
+                    query_diagnostics.push(serde_json::json!({
+                        "query": case.query,
+                        "language": format!("{:?}", case.language),
+                        "expected": case.expected_name,
+                        "error": e.to_string(),
+                    }));
                     continue;
                 }
             };
@@ -390,7 +399,18 @@ fn test_pipeline_scoring() {
                 Some(r) if r <= 5 => "~",
                 _ => "-",
             };
-            let top3: Vec<&str> = results
+            let top5: Vec<serde_json::Value> = results
+                .iter()
+                .take(5)
+                .map(|r| {
+                    serde_json::json!({
+                        "name": r.chunk.name,
+                        "score": (r.score * 10000.0).round() / 10000.0,
+                        "file": r.chunk.file.display().to_string(),
+                    })
+                })
+                .collect();
+            let top3_names: Vec<&str> = results
                 .iter()
                 .take(3)
                 .map(|r| r.chunk.name.as_str())
@@ -402,8 +422,18 @@ fn test_pipeline_scoring() {
                 case.query,
                 case.expected_name,
                 rank.map(|r| r.to_string()).unwrap_or("miss".to_string()),
-                top3
+                top3_names
             );
+
+            query_diagnostics.push(serde_json::json!({
+                "query": case.query,
+                "language": format!("{:?}", case.language),
+                "expected": case.expected_name,
+                "rank": rank,
+                "relaxed_rank": relaxed_rank,
+                "status": status,
+                "top5": top5,
+            }));
 
             results_per_case.push((i, rank, relaxed_rank));
         }
@@ -786,6 +816,24 @@ fn test_pipeline_scoring() {
                 m.name, m.mrr, baseline_mrr,
             );
         }
+    }
+
+    // Dump per-query diagnostics to JSON file if CQS_EVAL_OUTPUT is set
+    if let Ok(path) = std::env::var("CQS_EVAL_OUTPUT") {
+        let output = serde_json::json!({
+            "config": "A: Cosine-only",
+            "total_queries": query_diagnostics.len(),
+            "metrics": {
+                "recall_at_1": all_metrics[0].recall_at_1,
+                "recall_at_5": all_metrics[0].recall_at_5,
+                "mrr": all_metrics[0].mrr,
+                "relaxed_recall_at_1": all_metrics[0].relaxed_recall_at_1,
+            },
+            "queries": query_diagnostics,
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&output).unwrap())
+            .unwrap_or_else(|e| eprintln!("Failed to write eval output to {}: {}", path, e));
+        eprintln!("\nPer-query diagnostics written to {}", path);
     }
 }
 
