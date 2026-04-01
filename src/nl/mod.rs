@@ -83,7 +83,7 @@ pub fn generate_nl_with_call_context_and_summary(
     let mut extras = Vec::new();
 
     // Callers: most discriminating signal. Tokenize names for embedding.
-    if !ctx.callers.is_empty() {
+    if !ctx.callers.is_empty() && !is_enrichment_skipped("callgraph") {
         let caller_words: Vec<String> = ctx
             .callers
             .iter()
@@ -98,7 +98,7 @@ pub fn generate_nl_with_call_context_and_summary(
     // Callees: filter high-frequency utilities (IDF threshold).
     // A callee appearing in >10% of chunks is likely a utility (log, unwrap, etc.).
     // DS-22: Cast to f64 for boundary comparison to avoid f32 non-determinism.
-    if !ctx.callees.is_empty() {
+    if !ctx.callees.is_empty() && !is_enrichment_skipped("callgraph") {
         let callee_words: Vec<String> = ctx
             .callees
             .iter()
@@ -122,12 +122,19 @@ pub fn generate_nl_with_call_context_and_summary(
     };
 
     // Prepend LLM summary if available (SQ-6)
-    let nl = match summary {
-        Some(s) if !s.is_empty() => format!("{} {}", s, nl),
-        _ => nl,
+    let nl = if !is_enrichment_skipped("summary") {
+        match summary {
+            Some(s) if !s.is_empty() => format!("{} {}", s, nl),
+            _ => nl,
+        }
+    } else {
+        nl
     };
 
     // Append hyde query predictions (SQ-12)
+    if is_enrichment_skipped("hyde") {
+        return nl;
+    }
     match hyde {
         Some(h) if !h.is_empty() => {
             let queries: String = h
@@ -183,6 +190,21 @@ pub fn generate_nl_description(chunk: &Chunk) -> String {
 }
 
 /// Generate NL description using a specific template variant.
+/// Check if an enrichment layer is skipped via CQS_SKIP_ENRICHMENT env var.
+/// Value is comma-separated: "signatures,callgraph,parent,filecontext,doc,summary,hyde"
+fn is_enrichment_skipped(layer: &str) -> bool {
+    static SKIP: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let skipped = SKIP.get_or_init(|| {
+        std::env::var("CQS_SKIP_ENRICHMENT")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
+    skipped.iter().any(|s| s == layer)
+}
+
 pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String {
     // Section chunks (markdown): breadcrumb + name + content preview.
     // Markdown IS natural language, so we embed more content than code chunks.
@@ -222,9 +244,7 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
     let mut parts = Vec::new();
 
     // Compact enrichment: file path + module context for discrimination.
-    // Includes directory components and filename stem (SQ-5).
-    // Generic stems (mod, index, lib, utils) are filtered.
-    if template == NlTemplate::Compact {
+    if template == NlTemplate::Compact && !is_enrichment_skipped("filecontext") {
         let file_context = extract_file_context(&chunk.file);
         if !file_context.is_empty() {
             parts.push(file_context);
@@ -232,11 +252,15 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
     }
 
     // Shared: doc comment
-    let has_doc = if let Some(ref doc) = chunk.doc {
-        let doc_trimmed = doc.trim();
-        if !doc_trimmed.is_empty() {
-            parts.push(doc_trimmed.to_string());
-            true
+    let has_doc = if !is_enrichment_skipped("doc") {
+        if let Some(ref doc) = chunk.doc {
+            let doc_trimmed = doc.trim();
+            if !doc_trimmed.is_empty() {
+                parts.push(doc_trimmed.to_string());
+                true
+            } else {
+                false
+            }
         } else {
             false
         }
@@ -254,7 +278,7 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
     }
 
     // Parent type context for methods (e.g., "circuit breaker method")
-    if chunk.chunk_type == ChunkType::Method {
+    if chunk.chunk_type == ChunkType::Method && !is_enrichment_skipped("parent") {
         if let Some(ref parent_name) = chunk.parent_type_name {
             let parent_words = tokenize_identifier(parent_name).join(" ");
             parts.push(format!("{} method", parent_words));
@@ -315,26 +339,28 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         None
     };
 
-    if let Some(params_desc) = extract_params_nl(&chunk.signature) {
-        parts.push(params_desc);
-    } else if let Some(ref info) = jsdoc_info {
-        if !info.params.is_empty() {
-            let param_strs: Vec<String> = info
-                .params
-                .iter()
-                .map(|(name, ty)| format!("{} ({})", name, ty))
-                .collect();
-            parts.push(format!("Takes parameters: {}", param_strs.join(", ")));
+    if !is_enrichment_skipped("signatures") {
+        if let Some(params_desc) = extract_params_nl(&chunk.signature) {
+            parts.push(params_desc);
+        } else if let Some(ref info) = jsdoc_info {
+            if !info.params.is_empty() {
+                let param_strs: Vec<String> = info
+                    .params
+                    .iter()
+                    .map(|(name, ty)| format!("{} ({})", name, ty))
+                    .collect();
+                parts.push(format!("Takes parameters: {}", param_strs.join(", ")));
+            }
         }
-    }
 
-    if let Some(return_desc) = extract_return_nl(&chunk.signature, chunk.language) {
-        parts.push(return_desc);
-    } else if let Some(ref info) = jsdoc_info {
-        if let Some(ref ret) = info.returns {
-            parts.push(format!("Returns {}", ret));
+        if let Some(return_desc) = extract_return_nl(&chunk.signature, chunk.language) {
+            parts.push(return_desc);
+        } else if let Some(ref info) = jsdoc_info {
+            if let Some(ref ret) = info.returns {
+                parts.push(format!("Returns {}", ret));
+            }
         }
-    }
+    } // close signatures gate
 
     // Body keywords
     {
@@ -346,10 +372,7 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
     }
 
     // Type-aware: append full signature for richer type discrimination (SQ-11).
-    // Placed last so doc/name tokens retain positional priority in embedding.
-    // The full signature captures generic bounds (T: Ord), lifetimes, and
-    // complete parameter types that the extracted params/return lose.
-    if !chunk.signature.is_empty() {
+    if !chunk.signature.is_empty() && !is_enrichment_skipped("signatures") {
         parts.push(format!("Signature: {}", chunk.signature));
     }
 

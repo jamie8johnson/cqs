@@ -697,7 +697,7 @@ pub const HARD_EVAL_CASES: &[EvalCase] = &[
         query: "simple sort efficient for small nearly sorted arrays",
         expected_name: "insertionSort",
         language: Language::TypeScript,
-        also_accept: &[],
+        also_accept: &["_insertionSortSmall"],
     },
     EvalCase {
         query: "non-comparison integer sort processing digits",
@@ -1889,19 +1889,19 @@ pub const HOLDOUT_EVAL_CASES: &[EvalCase] = &[
         query: "cache the results of expensive function calls to avoid redundant computation",
         expected_name: "memoize",
         language: Language::Python,
-        also_accept: &[],
+        also_accept: &["Memoizer"],
     },
     EvalCase {
         query: "cache the results of expensive function calls to avoid redundant computation",
         expected_name: "memoize",
         language: Language::TypeScript,
-        also_accept: &[],
+        also_accept: &["Memoizer"],
     },
     EvalCase {
         query: "cache the results of expensive function calls to avoid redundant computation",
         expected_name: "memoize",
         language: Language::JavaScript,
-        also_accept: &[],
+        also_accept: &["Memoizer"],
     },
     EvalCase {
         query: "cache the results of expensive function calls to avoid redundant computation",

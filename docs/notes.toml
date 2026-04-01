@@ -996,3 +996,11 @@ mentions = [
     "audit",
     "agents",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "Enrichment ablation: doc comments +6.8pp R@1, file context +4.1pp, signatures +1.4pp, call graph +0.4pp, parent type +0.4pp. Doc comments dominate. Call graph is nearly irrelevant for search quality despite being emphasized in the paper."
+mentions = [
+    "nl/mod.rs",
+    "enrichment",
+]

@@ -361,6 +361,9 @@ fn test_pipeline_scoring() {
 
     let mut all_metrics: Vec<ConfigMetrics> = Vec::new();
 
+    // Per-query diagnostics: collect structured results for JSON dump
+    let mut query_diagnostics: Vec<serde_json::Value> = Vec::new();
+
     // Config A: Cosine-only (brute-force, baseline)
     {
         eprintln!("--- Config A: Cosine-only ---");
@@ -379,6 +382,12 @@ fn test_pipeline_scoring() {
                         case.language, case.query, e
                     );
                     results_per_case.push((i, None, None));
+                    query_diagnostics.push(serde_json::json!({
+                        "query": case.query,
+                        "language": format!("{:?}", case.language),
+                        "expected": case.expected_name,
+                        "error": e.to_string(),
+                    }));
                     continue;
                 }
             };
@@ -390,7 +399,18 @@ fn test_pipeline_scoring() {
                 Some(r) if r <= 5 => "~",
                 _ => "-",
             };
-            let top3: Vec<&str> = results
+            let top5: Vec<serde_json::Value> = results
+                .iter()
+                .take(5)
+                .map(|r| {
+                    serde_json::json!({
+                        "name": r.chunk.name,
+                        "score": (r.score * 10000.0).round() / 10000.0,
+                        "file": r.chunk.file.display().to_string(),
+                    })
+                })
+                .collect();
+            let top3_names: Vec<&str> = results
                 .iter()
                 .take(3)
                 .map(|r| r.chunk.name.as_str())
@@ -402,8 +422,18 @@ fn test_pipeline_scoring() {
                 case.query,
                 case.expected_name,
                 rank.map(|r| r.to_string()).unwrap_or("miss".to_string()),
-                top3
+                top3_names
             );
+
+            query_diagnostics.push(serde_json::json!({
+                "query": case.query,
+                "language": format!("{:?}", case.language),
+                "expected": case.expected_name,
+                "rank": rank,
+                "relaxed_rank": relaxed_rank,
+                "status": status,
+                "top5": top5,
+            }));
 
             results_per_case.push((i, rank, relaxed_rank));
         }
@@ -786,6 +816,82 @@ fn test_pipeline_scoring() {
                 m.name, m.mrr, baseline_mrr,
             );
         }
+    }
+
+    // Dump per-query diagnostics to JSON file if CQS_EVAL_OUTPUT is set
+    if let Ok(path) = std::env::var("CQS_EVAL_OUTPUT") {
+        // Classify difficulty per query: easy (rank 1, gap >0.05), medium (rank 1-5 close), hard (miss)
+        let mut easy = 0u32;
+        let mut medium = 0u32;
+        let mut hard = 0u32;
+        let mut weighted_hits = 0.0f64;
+        let mut weighted_total = 0.0f64;
+        for q in &query_diagnostics {
+            let rank = q.get("rank").and_then(|r| r.as_u64());
+            let top5 = q.get("top5").and_then(|t| t.as_array());
+            let (difficulty, weight) = match rank {
+                Some(1) => {
+                    let gap = top5
+                        .and_then(|t| {
+                            if t.len() >= 2 {
+                                let s1 = t[0].get("score")?.as_f64()?;
+                                let s2 = t[1].get("score")?.as_f64()?;
+                                Some(s1 - s2)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(0.0);
+                    if gap > 0.05 {
+                        easy += 1;
+                        ("easy", 1.0)
+                    } else {
+                        medium += 1;
+                        ("medium", 2.0)
+                    }
+                }
+                Some(r) if r <= 5 => {
+                    medium += 1;
+                    ("medium", 2.0)
+                }
+                _ => {
+                    hard += 1;
+                    ("hard", 3.0)
+                }
+            };
+            weighted_total += weight;
+            if rank == Some(1) {
+                weighted_hits += weight;
+            }
+            // Tag the query with its difficulty (mutate in place via index)
+            let _ = difficulty; // used below in summary
+        }
+        let weighted_r1 = if weighted_total > 0.0 {
+            weighted_hits / weighted_total
+        } else {
+            0.0
+        };
+
+        let output = serde_json::json!({
+            "config": "A: Cosine-only",
+            "total_queries": query_diagnostics.len(),
+            "metrics": {
+                "recall_at_1": all_metrics[0].recall_at_1,
+                "recall_at_5": all_metrics[0].recall_at_5,
+                "mrr": all_metrics[0].mrr,
+                "relaxed_recall_at_1": all_metrics[0].relaxed_recall_at_1,
+                "weighted_r1": weighted_r1,
+            },
+            "difficulty": {
+                "easy": easy,
+                "medium": medium,
+                "hard": hard,
+            },
+            "queries": query_diagnostics,
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&output).unwrap())
+            .unwrap_or_else(|e| eprintln!("Failed to write eval output to {}: {}", path, e));
+        eprintln!("\nPer-query diagnostics written to {}", path);
     }
 }
 
