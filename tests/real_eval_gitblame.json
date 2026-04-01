@@ -1,0 +1,261 @@
+{
+  "type": "git_blame",
+  "queries": [
+    {
+      "type": "git_blame",
+      "query": "default search filters to code-only (--include-docs for everything) (#741)",
+      "commit": "1d6fea5",
+      "files": [
+        "src/cli/commands/query.rs",
+        "src/cli/definitions.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "per-query eval diagnostics (CQS_EVAL_OUTPUT) (#740)",
+      "commit": "61e3dec",
+      "files": [
+        "src/nl/mod.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "strip 5,445 lines of boilerplate doc comments + fix --improve-docs prompt (#739)",
+      "commit": "e81bb03",
+      "files": [
+        "src/cagra.rs",
+        "src/cli/batch/commands.rs",
+        "src/cli/batch/handlers/analysis.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "PERF-6 finalize_results remove() vs clone() (#738)",
+      "commit": "3a587ab",
+      "files": [
+        "src/ci.rs",
+        "src/cli/batch/handlers/graph.rs",
+        "src/cli/batch/mod.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "v1.13.0 audit \u2014 28 fixes across P1/P2/P3 (110 findings, 15 categories) (#737)",
+      "commit": "1aec479",
+      "files": [
+        "src/ci.rs",
+        "src/cli/batch/mod.rs",
+        "src/cli/commands/index.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "IEC 61131-3 Structured Text support (52nd language) (#736)",
+      "commit": "4416593",
+      "files": [
+        "src/doc_writer/formats.rs",
+        "src/language/mod.rs",
+        "src/language/structured_text.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "v9-200k LoRA preset + `cqs task --brief` compact output (#733)",
+      "commit": "eb49a44",
+      "files": [
+        "src/cli/commands/task.rs",
+        "src/cli/definitions.rs",
+        "src/cli/dispatch.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "FTS5 synonym expansion syntax error + expanded eval (296 queries, 7 langs) (#731)",
+      "commit": "43802d8",
+      "files": [
+        "src/search/query.rs",
+        "src/search/synonyms.rs",
+        "src/store/chunks/crud.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "6 issues + markdown split + pipeline batch=64 (closes #711, #695, #694, #697, #718, #716) (#722)",
+      "commit": "6f8e1c1",
+      "files": [
+        "src/cli/commands/affected.rs",
+        "src/cli/commands/export_model.rs",
+        "src/cli/definitions.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "6 new commands + query expansion (v1.11.0) (#720)",
+      "commit": "eaee320",
+      "files": [
+        "src/cli/commands/affected.rs",
+        "src/cli/commands/brief.rs",
+        "src/cli/commands/doctor.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "8th audit (v1.9.0+) \u2014 23 of 88 findings fixed (P1 + P2) (#715)",
+      "commit": "d46c8cf",
+      "files": [
+        "src/audit.rs",
+        "src/cagra.rs",
+        "src/cli/commands/export_model.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "/cqs-verify skill + read-before-acting (#714)",
+      "commit": "51cc638",
+      "files": [
+        "src/embedder/models.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "RT-DATA-7/8 \u2014 watch mode deletes chunks for deleted files, writes function_calls (#713)",
+      "commit": "7cf4e3b",
+      "files": [
+        "src/cli/watch.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "red team v1.9.0 \u2014 8 findings fixed (#712)",
+      "commit": "5b24f3c",
+      "files": [
+        "src/cli/batch/mod.rs",
+        "src/cli/batch/pipeline.rs",
+        "src/cli/commands/query.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "BGE-large as default model \u2014 94.5% pipeline R@1 (+10.9pp over E5-base) (#707)",
+      "commit": "afb053c",
+      "files": [
+        "src/cli/commands/init.rs",
+        "src/cli/pipeline.rs",
+        "src/config.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "init dim, metric corrections, CQS_ONNX_DIR, convenience wrappers removed (#705)",
+      "commit": "1e656a1",
+      "files": [
+        "src/cli/commands/reference.rs",
+        "src/embedder/mod.rs",
+        "src/hnsw/build.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "init with non-default model uses correct dim + set_dim after init (#704)",
+      "commit": "d32d388",
+      "files": [
+        "src/cli/commands/index.rs",
+        "src/store/mod.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "7th audit \u2014 85 findings fixed, multi-model support, nl.rs split, 24 new tests (#701)",
+      "commit": "a476246",
+      "files": [
+        "src/cagra.rs",
+        "src/cli/batch/handlers/info.rs",
+        "src/cli/batch/mod.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "Release v1.7.0 (#691)",
+      "commit": "6a1e287",
+      "files": [
+        "src/lib.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "configurable embedding models \u2014 E5-base + BGE-large + custom ONNX (#690)",
+      "commit": "b9c81f5",
+      "files": [
+        "src/cagra.rs",
+        "src/cli/batch/mod.rs",
+        "src/cli/commands/context.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "post-audit cleanup \u2014 store split, method keywords, enrichment tests (#688)",
+      "commit": "32ce2e8",
+      "files": [
+        "src/cli/enrichment.rs",
+        "src/nl.rs",
+        "src/store/metadata.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "runtime embedding dimension detection (#682, #683) (#687)",
+      "commit": "67a824e",
+      "files": [
+        "src/cli/batch/handlers/misc.rs",
+        "src/cli/commands/audit_mode.rs",
+        "src/cli/commands/blame.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "FieldStyle enum \u2014 field extraction for 28 languages (#680) (#686)",
+      "commit": "0abd34a",
+      "files": [
+        "src/language/aspx.rs",
+        "src/language/bash.rs",
+        "src/language/c.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "v1.5.0 audit \u2014 74 findings fixed across 14 categories (#685)",
+      "commit": "4d7e875",
+      "files": [
+        "src/cli/batch/commands.rs",
+        "src/cli/batch/handlers/graph.rs",
+        "src/cli/batch/mod.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "Release v1.5.0 (#678)",
+      "commit": "8d765d3",
+      "files": [
+        "src/llm/mod.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "switch default model to base E5 (#677)",
+      "commit": "e83169d",
+      "files": [
+        "src/embedder/mod.rs"
+      ]
+    },
+    {
+      "type": "git_blame",
+      "query": "adversarial test hardening \u2014 34 edge-case tests across 5 areas (#670)",
+      "commit": "8550f6e",
+      "files": [
+        "src/llm/mod.rs",
+        "src/llm/summary.rs",
+        "src/math.rs"
+      ]
+    }
+  ]
+}

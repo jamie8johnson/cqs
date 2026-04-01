@@ -1,0 +1,264 @@
+{
+  "type": "callgraph",
+  "queries": [
+    {
+      "type": "callgraph",
+      "query": "functions that call search_filtered",
+      "target": "search_filtered",
+      "expected_callers": [
+        "Changed",
+        "1c. Note-boosted search ranking \u2014 DONE",
+        "`cqs task \"description\"` \u2014 single-call implementation brief",
+        "TC4: search_filtered() and search_by_candidate_ids() have no direct unit tests",
+        "PERF-23: `list_notes_summaries()` called redundantly in `search_filtered` and `search_by_candidate_ids`"
+      ],
+      "total_callers": 36
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call cosine_similarity",
+      "target": "cosine_similarity",
+      "expected_callers": [
+        "CQ-6: Duplicate cosine_similarity in diff.rs (see also A5)",
+        "EH14: cosine_similarity returns 0.0 for mismatched dimensions with no warning",
+        "RT-DATA-7: Verified protections -- no findings",
+        "RT-DATA-7: Verified protections -- no findings",
+        "RT-DATA-7: Verified protections -- no findings"
+      ],
+      "total_callers": 22
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call normalize_path",
+      "target": "normalize_path",
+      "expected_callers": [
+        "Changed",
+        "PB-8: `is_test_chunk` hardcodes both `/` and `\\\\` separators but `file` is always forward-slash normalized",
+        "from_search_result",
+        "cmd_gather",
+        "cmd_reconstruct"
+      ],
+      "total_callers": 24
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call tokenize_identifier",
+      "target": "tokenize_identifier",
+      "expected_callers": [
+        "Added",
+        "CQ-9: Duplicated tokenization implementations in nl.rs",
+        "6. `extract_body_keywords` creates unbounded HashMap from entire function body",
+        "2. `extract_body_keywords` tokenizes entire function content for keyword extraction",
+        "extract_return"
+      ],
+      "total_callers": 35
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call generate_nl_description",
+      "target": "generate_nl_description",
+      "expected_callers": [
+        "Added",
+        "reindex_files",
+        "generate_nl_with_call_context_and_summary",
+        "test_generate_nl_description",
+        "test_generate_nl_with_jsdoc"
+      ],
+      "total_callers": 21
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call upsert_chunks_batch",
+      "target": "upsert_chunks_batch",
+      "expected_callers": [
+        "PB2: upsert_chunks_batch stores chunk.file with native separators",
+        "P6: normalize_for_fts called 4 times per chunk during upsert",
+        "DS2: Pipeline chunks and call graph stored in separate transactions",
+        "DS14: FTS index and chunks table consistency (informational \u2014 confirmed sound)",
+        "OB-1: Store module has zero tracing spans on performance-critical operations"
+      ],
+      "total_callers": 58
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call embed_query",
+      "target": "embed_query",
+      "expected_callers": [
+        "Search",
+        "O11: Embedding cache hit/miss ratio not observable",
+        "TC6: embed_documents() has no tests",
+        "EH-31: Missing `.context()` on `Embedder::new()` and `embed_query()` in batch handlers",
+        "RT-RES-11: Empty query string handled cleanly \u2014 no panic"
+      ],
+      "total_callers": 38
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call parse_file",
+      "target": "parse_file",
+      "expected_callers": [
+        "Fixed",
+        "TC-6: Fenced code block call-graph relationships untested",
+        "Task 2: Fix #563/RM-5 \u2014 Eliminate double I/O in indexing pipeline",
+        "parse_bash_function",
+        "parse_bash_function_short"
+      ],
+      "total_callers": 432
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call get_call_graph",
+      "target": "get_call_graph",
+      "expected_callers": [
+        "Added",
+        "TC-7: `suggest_tests()` has zero test coverage (only dead-code test for empty callers)",
+        "TC-8: `analyze_impact()` integration-level function has no direct tests",
+        "PERF-11: `get_call_graph()` clones every caller and callee string twice",
+        "PERF-22: `get_call_graph()` not cached in BatchContext \u2014 reloaded per command"
+      ],
+      "total_callers": 36
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call find_test_chunks",
+      "target": "find_test_chunks",
+      "expected_callers": [
+        "Added",
+        "TC-7: `suggest_tests()` has zero test coverage (only dead-code test for empty callers)",
+        "RM-5: `find_test_chunks()` loads full `content` column for all test functions",
+        "EH-1: `scout_with_options` hard-fails on `find_test_chunks`, `task()` gracefully degrades \u2014 inconsistent",
+        "CQ-3: `dispatch_task` bypasses `BatchContext` call graph cache"
+      ],
+      "total_callers": 27
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call compute_risk_batch",
+      "target": "compute_risk_batch",
+      "expected_callers": [
+        "Added",
+        "CQ-1: `review_diff()` double-loads call graph and test chunks",
+        "TC-7: `compute_risk_batch()` boundary thresholds not exercised",
+        "health_check",
+        "test_risk_high_many_callers_no_tests"
+      ],
+      "total_callers": 19
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call analyze_impact",
+      "target": "analyze_impact",
+      "expected_callers": [
+        "`cqs task \"description\"` \u2014 single-call implementation brief",
+        "OB-4: `analyze_impact()` does BFS + test discovery with no tracing span",
+        "EXT-4: `MAX_TEST_SEARCH_DEPTH` hardcoded at 5 in impact analysis",
+        "TC-8: `analyze_impact()` integration-level function has no direct tests",
+        "PERF-1: `suggest_tests()` runs per-caller reverse BFS \u2014 O(callers * graph_size)"
+      ],
+      "total_callers": 18
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call bfs_shortest_path",
+      "target": "bfs_shortest_path",
+      "expected_callers": [
+        "RT-RES-5: Graph cycle handling in all BFS traversals \u2014 verified safe",
+        "RT-RES-5: Graph cycle handling in all BFS traversals \u2014 verified safe",
+        "RT-RES-5: Graph cycle handling in all BFS traversals \u2014 verified safe",
+        "RT-RES-5: Graph cycle handling in all BFS traversals \u2014 verified safe",
+        "dispatch_trace"
+      ],
+      "total_callers": 10
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call rrf_fuse",
+      "target": "rrf_fuse",
+      "expected_callers": [
+        "AC-1: `search_by_candidate_ids` silently skips RRF fusion when HNSW index is available",
+        "PF-2: `search_filtered` clones all semantic IDs to `Vec<String>` solely to pass to `rrf_fuse`",
+        "RT-DATA-7: Verified protections -- no findings",
+        "RT-DATA-7: Verified protections -- no findings",
+        "RT-DATA-7: Verified protections -- no findings"
+      ],
+      "total_callers": 8
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call prune_missing",
+      "target": "prune_missing",
+      "expected_callers": [
+        "OB-1: Store module has zero tracing spans on performance-critical operations",
+        "DS-4: GC prune operations not atomic \u2014 partial prune on crash",
+        "DS-6: `prune_missing` uses per-batch transactions \u2014 incomplete prune on crash",
+        "DS-5: `run_index_pipeline` opens a second `Store` on the same database file simultaneously with `cmd_index`'s store",
+        "PB-5: `prune_missing` and `check_origins_stale` macOS case-fold uses `to_lowercase()` which diverges from APFS Unicode normalization"
+      ],
+      "total_callers": 8
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call acquire_index_lock",
+      "target": "acquire_index_lock",
+      "expected_callers": [
+        "DS-1: Watch mode never acquired index lock (DS-1/DS-6 fix never applied)",
+        "P2 Fixes (9 items by parallel agents)",
+        "cmd_gc",
+        "cmd_index"
+      ],
+      "total_callers": 4
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call score_candidate",
+      "target": "score_candidate",
+      "expected_callers": [
+        "Changed",
+        "AD-34: `score_candidate` takes 9 positional parameters with `#[allow(clippy::too_many_arguments)]`",
+        "search_filtered_with_notes",
+        "search_by_candidate_ids_with_notes",
+        "test_score_candidate_basic"
+      ],
+      "total_callers": 12
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call build_batched_with_dim",
+      "target": "build_batched_with_dim",
+      "expected_callers": [
+        "Completion Checklist",
+        "DS-26: HNSW build and load hardcode `EMBEDDING_DIM` (768) -- broken for non-default models",
+        "P4: Hard or Low Impact \u2014 Create Issues",
+        "P3: Fix if Time",
+        "build_hnsw_index_owned"
+      ],
+      "total_callers": 22
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call merge_results",
+      "target": "merge_results",
+      "expected_callers": [
+        "RM-5: `merge_results()` hashes all results before truncating to limit",
+        "7. `search_reference()` and `search_reference_by_name()` have zero tests",
+        "P1: Easy + High Impact \u2014 Fix Immediately",
+        "cmd_query_project",
+        "test_merge_results_empty_refs"
+      ],
+      "total_callers": 16
+    },
+    {
+      "type": "callgraph",
+      "query": "functions that call gather",
+      "target": "gather",
+      "expected_callers": [
+        "Changed",
+        "Fixed",
+        "2b. `cqs onboard \"concept\"` \u2014 guided codebase tour",
+        "O1: gather() has no logging or tracing spans",
+        "EH4: gather() silently falls back to empty on batch search failure"
+      ],
+      "total_callers": 35
+    }
+  ]
+}
