@@ -25,9 +25,8 @@ use super::check_interrupted;
 // Windowing constants
 //
 // WINDOW_OVERHEAD: reserved tokens for query/passage prefix and special tokens
-// WINDOW_OVERLAP_TOKENS: context continuity between windows
+// WINDOW_OVERHEAD: reserved tokens for query/passage prefix and special tokens
 const WINDOW_OVERHEAD: usize = 32;
-pub(crate) const WINDOW_OVERLAP_TOKENS: usize = 64;
 
 /// Compute max tokens per window from the model's max_seq_length.
 /// Falls back to 480 (safe for 512-token models) if model config unavailable.
@@ -37,6 +36,12 @@ pub(crate) fn max_tokens_per_window(model_max_seq: usize) -> usize {
     } else {
         model_max_seq.saturating_sub(WINDOW_OVERHEAD).max(128)
     }
+}
+
+/// Compute overlap tokens scaled to window size (~12.5% overlap).
+/// Floor of 64 for small models, scales up for large-context models.
+pub(crate) fn window_overlap_tokens(max_tokens: usize) -> usize {
+    64.max(max_tokens / 8)
 }
 
 // Pipeline tuning constants
@@ -77,7 +82,8 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
 
     for chunk in chunks {
         let max_tokens = max_tokens_per_window(embedder.model_config().max_seq_length);
-        match embedder.split_into_windows(&chunk.content, max_tokens, WINDOW_OVERLAP_TOKENS) {
+        let overlap = window_overlap_tokens(max_tokens);
+        match embedder.split_into_windows(&chunk.content, max_tokens, overlap) {
             Ok(windows) if windows.len() == 1 => {
                 // Fits in one window - pass through unchanged
                 result.push(chunk);
@@ -1147,7 +1153,12 @@ mod tests {
         assert_eq!(max_tokens_per_window(32768), 32736); // GTE-Qwen2
         assert_eq!(max_tokens_per_window(0), 480); // fallback
         assert!(max_tokens_per_window(64) >= 128); // floor
-        const { assert!(WINDOW_OVERLAP_TOKENS > 0) };
+
+        // Overlap scales with window size
+        assert_eq!(window_overlap_tokens(480), 64); // 512-token model: floor of 64
+        assert_eq!(window_overlap_tokens(8160), 1020); // 8K model: ~12.5%
+        assert_eq!(window_overlap_tokens(32736), 4092); // 32K model: ~12.5%
+        assert!(window_overlap_tokens(0) >= 64); // always at least 64
     }
 
     #[test]

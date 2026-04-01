@@ -52,6 +52,14 @@ pub struct Triplet {
     pub diff_lines: usize,
     pub function_size: usize,
     pub commit_date: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callee_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_doc_comment: Option<bool>,
 }
 
 /// Configuration for training data generation.
@@ -284,6 +292,10 @@ pub fn generate_training_data(config: &TrainDataConfig) -> Result<TrainDataStats
                         diff_lines,
                         function_size: func.content.len(),
                         commit_date: commit.date.clone(),
+                        chunk_type: None,
+                        caller_count: None,
+                        callee_count: None,
+                        has_doc_comment: None,
                     };
 
                     serde_json::to_writer(&mut writer, &triplet)?;

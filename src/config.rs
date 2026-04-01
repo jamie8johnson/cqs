@@ -117,6 +117,10 @@ pub struct Config {
     /// Embedding model configuration
     #[serde(default)]
     pub embedding: Option<crate::embedder::EmbeddingConfig>,
+    /// Reranker model repository (overridden by CQS_RERANKER_MODEL env var)
+    pub reranker_model: Option<String>,
+    /// Reranker max input length in tokens (overridden by CQS_RERANKER_MAX_LENGTH env var)
+    pub reranker_max_length: Option<usize>,
     /// Reference indexes for multi-index search
     #[serde(default, rename = "reference")]
     pub references: Vec<ReferenceConfig>,
@@ -320,6 +324,8 @@ impl Config {
             llm_max_tokens: other.llm_max_tokens.or(self.llm_max_tokens),
             llm_hyde_max_tokens: other.llm_hyde_max_tokens.or(self.llm_hyde_max_tokens),
             embedding: other.embedding.or(self.embedding),
+            reranker_model: other.reranker_model.or(self.reranker_model),
+            reranker_max_length: other.reranker_max_length.or(self.reranker_max_length),
             references: refs,
         }
     }
