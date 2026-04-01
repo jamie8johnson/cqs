@@ -152,7 +152,7 @@ pub fn scout_with_options(
         Ok(tc) => tc,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to load test chunks, scout will skip test analysis");
-            Vec::new()
+            std::sync::Arc::new(Vec::new())
         }
     };
     scout_core(

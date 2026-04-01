@@ -98,7 +98,9 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&ref_dir, std::fs::Permissions::from_mode(0o700));
+        if let Err(e) = std::fs::set_permissions(&ref_dir, std::fs::Permissions::from_mode(0o700)) {
+            tracing::debug!(path = %ref_dir.display(), error = %e, "Failed to set file permissions");
+        }
     }
     let db_path = ref_dir.join("index.db");
 

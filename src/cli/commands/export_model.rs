@@ -2,25 +2,9 @@
 
 use std::path::Path;
 
-/// Find a working Python interpreter.
-/// Tries `python3`, `python`, `py` in order. Validates with `--version`.
+/// Find a working Python interpreter (delegates to shared `convert::find_python`).
 fn find_python() -> anyhow::Result<String> {
-    for name in &["python3", "python", "py"] {
-        match std::process::Command::new(name)
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-        {
-            Ok(status) if status.success() => {
-                return Ok(name.to_string());
-            }
-            _ => continue,
-        }
-    }
-    anyhow::bail!(
-        "Python not found. Install `python3` (Linux: `sudo apt install python3`, macOS: `brew install python`)"
-    )
+    cqs::convert::find_python()
 }
 
 pub(crate) fn cmd_export_model(
@@ -150,7 +134,10 @@ tokenizer_path = "tokenizer.json"
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&toml_path, std::fs::Permissions::from_mode(0o600));
+        if let Err(e) = std::fs::set_permissions(&toml_path, std::fs::Permissions::from_mode(0o600))
+        {
+            tracing::debug!(path = %toml_path.display(), error = %e, "Failed to set file permissions");
+        }
     }
 
     Ok(())

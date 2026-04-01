@@ -79,7 +79,7 @@ pub(crate) struct BatchContext {
     // Mutable caches — RefCell<Option<T>> for invalidation on index change
     hnsw: RefCell<Option<std::sync::Arc<dyn VectorIndex>>>,
     call_graph: RefCell<Option<std::sync::Arc<cqs::store::CallGraph>>>,
-    test_chunks: RefCell<Option<Vec<cqs::store::ChunkSummary>>>,
+    test_chunks: RefCell<Option<std::sync::Arc<Vec<cqs::store::ChunkSummary>>>>,
     file_set: RefCell<Option<HashSet<PathBuf>>>,
     notes_cache: RefCell<Option<Vec<cqs::note::Note>>>,
     // Single-threaded by design — RefCell is correct, no Mutex needed
@@ -379,18 +379,19 @@ impl BatchContext {
     }
 
     /// Get or load test chunks (cached, invalidated on index change).
-    pub(super) fn test_chunks(&self) -> Result<Vec<cqs::store::ChunkSummary>> {
+    /// PERF-1: Returns Arc<Vec<ChunkSummary>> — O(1) clone.
+    pub(super) fn test_chunks(&self) -> Result<std::sync::Arc<Vec<cqs::store::ChunkSummary>>> {
         self.check_index_staleness();
         {
             let cached = self.test_chunks.borrow();
             if let Some(tc) = cached.as_ref() {
-                return Ok(tc.clone());
+                return Ok(std::sync::Arc::clone(tc));
             }
         }
         let _span = tracing::info_span!("batch_test_chunks_init").entered();
         let store = self.store.borrow();
         let tc = store.find_test_chunks()?;
-        let result = tc.clone();
+        let result = std::sync::Arc::clone(&tc);
         *self.test_chunks.borrow_mut() = Some(tc);
         Ok(result)
     }

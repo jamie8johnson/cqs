@@ -16,6 +16,11 @@ use super::Cli;
 // default value, so apply_config_defaults compares against these to detect
 // "user didn't set this, apply config file value".
 pub(crate) const DEFAULT_LIMIT: usize = 5;
+/// Minimum cosine similarity threshold for search results.
+/// Tuned for BGE-large and E5-base with enrichment. Different embedding models
+/// produce different score distributions (BGE-large scores higher than E5-base
+/// for the same query-document pair). If using a custom model, you may need to
+/// adjust this via the config file `threshold` field or `--threshold` CLI flag.
 pub(crate) const DEFAULT_THRESHOLD: f32 = 0.3;
 // DEFAULT_NAME_BOOST lives in cqs::store (single source of truth).
 pub(crate) use cqs::store::DEFAULT_NAME_BOOST;

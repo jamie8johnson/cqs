@@ -210,7 +210,7 @@ pub struct Store {
     /// Same no-invalidation contract as `call_graph_cache` above: intentionally
     /// write-once for the per-command `Store` lifetime. Re-open the `Store` if the
     /// underlying index has been updated (e.g., after `cqs index` in watch mode).
-    test_chunks_cache: std::sync::OnceLock<Vec<ChunkSummary>>,
+    test_chunks_cache: std::sync::OnceLock<std::sync::Arc<Vec<ChunkSummary>>>,
 }
 
 /// Internal configuration for [`Store::open_with_config`].

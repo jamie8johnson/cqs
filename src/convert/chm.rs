@@ -180,13 +180,16 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
 /// recognizable help output). This prevents accidentally running an unrelated
 /// binary that happens to share the name.
 fn find_7z() -> Result<String> {
-    // Check common names first, then Windows default install path
-    let candidates: Vec<String> = vec![
-        "7z".to_string(),
-        "7za".to_string(),
-        "p7zip".to_string(),
-        r"C:\Program Files\7-Zip\7z.exe".to_string(),
-    ];
+    // Check common names first, then env-based Windows install paths
+    let mut candidates: Vec<String> =
+        vec!["7z".to_string(), "7za".to_string(), "p7zip".to_string()];
+    // Check env-based Windows paths (handles non-standard install dirs)
+    if let Ok(pf) = std::env::var("ProgramFiles") {
+        candidates.push(format!(r"{}\7-Zip\7z.exe", pf));
+    }
+    if let Ok(pf) = std::env::var("ProgramFiles(x86)") {
+        candidates.push(format!(r"{}\7-Zip\7z.exe", pf));
+    }
     for name in &candidates {
         match std::process::Command::new(name)
             .arg("--help")

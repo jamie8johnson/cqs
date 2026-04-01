@@ -31,10 +31,29 @@ static LINK_RE: LazyLock<Regex> =
 static FUNC_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"`([\w.:]+)\([^)]*\)`").expect("valid regex"));
 
-/// Minimum section size (lines) -- smaller sections merge with next
-const MIN_SECTION_LINES: usize = 30;
-/// Maximum section size (lines) before attempting overflow split
-const MAX_SECTION_LINES: usize = 150;
+/// Minimum section size (lines) -- smaller sections merge with next.
+/// Override with CQS_MD_MIN_SECTION_LINES env var.
+fn min_section_lines() -> usize {
+    static CACHE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("CQS_MD_MIN_SECTION_LINES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30)
+    })
+}
+
+/// Maximum section size (lines) before attempting overflow split.
+/// Override with CQS_MD_MAX_SECTION_LINES env var.
+fn max_section_lines() -> usize {
+    static CACHE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("CQS_MD_MAX_SECTION_LINES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(150)
+    })
+}
 
 /// Context for building a markdown chunk, replacing 9 positional arguments.
 struct ChunkFields<'a> {
@@ -405,7 +424,7 @@ fn overflow_split(
 
     for section in sections {
         let section_lines = section.line_end - section.line_start;
-        if section_lines <= MAX_SECTION_LINES {
+        if section_lines <= max_section_lines() {
             result.push(section);
             continue;
         }
@@ -471,7 +490,7 @@ fn merge_small_sections(sections: Vec<Section>) -> Vec<Section> {
     for section in sections {
         let section_lines = section.line_end - section.line_start;
 
-        if section_lines < MIN_SECTION_LINES {
+        if section_lines < min_section_lines() {
             if pending_start.is_none() {
                 pending_start = Some(section.line_start);
             }

@@ -333,6 +333,15 @@ pub fn generate_training_data(config: &TrainDataConfig) -> Result<TrainDataStats
             }
         }
 
+        // RM-1: Warn if dedup map grows excessively large (memory guard)
+        if dedup.len() > 100_000 {
+            tracing::warn!(
+                entries = dedup.len(),
+                repo = %repo_str,
+                "dedup map exceeds 100K entries — high memory usage"
+            );
+        }
+
         stats.repos_processed += 1;
         tracing::info!(
             repo = %repo_str,

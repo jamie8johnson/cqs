@@ -267,24 +267,7 @@ mod tests {
     }
 }
 
-/// Find a working Python interpreter.
-/// Tries `python3` first, falls back to `python`. Validates that the candidate
-/// exits cleanly with `--version` to avoid running unrelated binaries.
+/// Find a working Python interpreter (delegates to shared `convert::find_python`).
 fn find_python() -> Result<String> {
-    for name in &["python3", "python", "py"] {
-        match std::process::Command::new(name)
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-        {
-            Ok(status) if status.success() => {
-                return Ok(name.to_string());
-            }
-            _ => continue,
-        }
-    }
-    anyhow::bail!(
-        "Python not found. Install `python3` (Linux: `sudo apt install python3`, macOS: `brew install python`)"
-    )
+    super::find_python()
 }

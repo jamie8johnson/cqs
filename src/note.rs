@@ -293,7 +293,10 @@ pub fn rewrite_notes_file(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+        if let Err(e) = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))
+        {
+            tracing::debug!(path = %tmp_path.display(), error = %e, "Failed to set file permissions");
+        }
     }
 
     if let Err(rename_err) = std::fs::rename(&tmp_path, notes_path) {

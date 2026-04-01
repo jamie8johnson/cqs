@@ -64,13 +64,16 @@ impl Store {
     /// intentionally write-once for the `Store` lifetime. Long-lived modes (batch, watch)
     /// must re-open the `Store` to see updated test discovery — do not add a `clear()`.
     /// ~14 call sites benefit from this single-scan caching.
-    pub fn find_test_chunks(&self) -> Result<Vec<ChunkSummary>, StoreError> {
+    /// PERF-1: Returns `Arc<Vec<ChunkSummary>>` — Arc::clone is O(1) vs cloning
+    /// the full Vec on every call (~14 call sites benefit).
+    pub fn find_test_chunks(&self) -> Result<std::sync::Arc<Vec<ChunkSummary>>, StoreError> {
         if let Some(cached) = self.test_chunks_cache.get() {
-            return Ok(cached.clone());
+            return Ok(std::sync::Arc::clone(cached));
         }
         let _span = tracing::info_span!("find_test_chunks").entered();
         let chunks = self.rt.block_on(self.find_test_chunks_async())?;
-        let _ = self.test_chunks_cache.set(chunks.clone());
-        Ok(chunks)
+        let arc = std::sync::Arc::new(chunks);
+        let _ = self.test_chunks_cache.set(std::sync::Arc::clone(&arc));
+        Ok(arc)
     }
 }

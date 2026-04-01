@@ -38,6 +38,30 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "convert")]
 use anyhow::Context;
 
+/// Find a working Python interpreter.
+/// Tries `python3`, `python`, `py` in order. Validates that the candidate
+/// exits cleanly with `--version` to avoid running unrelated binaries.
+///
+/// Shared by PDF conversion and model export (PB-4).
+pub fn find_python() -> anyhow::Result<String> {
+    for name in &["python3", "python", "py"] {
+        match std::process::Command::new(name)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Ok(status) if status.success() => {
+                return Ok(name.to_string());
+            }
+            _ => continue,
+        }
+    }
+    anyhow::bail!(
+        "Python not found. Install `python3` (Linux: `sudo apt install python3`, macOS: `brew install python`)"
+    )
+}
+
 /// Document format detected from file extension.
 #[cfg(feature = "convert")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -73,7 +73,11 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&cqs_dir, std::fs::Permissions::from_mode(0o700));
+            if let Err(e) =
+                std::fs::set_permissions(&cqs_dir, std::fs::Permissions::from_mode(0o700))
+            {
+                tracing::debug!(path = %cqs_dir.display(), error = %e, "Failed to set file permissions");
+            }
         }
     }
 
@@ -149,9 +153,9 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     // Mark HNSW as dirty before writing chunks — if we crash between SQLite
     // commit and HNSW save, the dirty flag tells the next load to fall back
     // to brute-force search until a full rebuild. (RT-DATA-6)
-    if let Err(e) = store.set_hnsw_dirty(true) {
-        tracing::warn!(error = %e, "Failed to mark HNSW dirty before indexing");
-    }
+    // DS-41: The dirty flag is a crash-safety invariant — if we can't set it,
+    // abort rather than risk a stale index on crash.
+    store.set_hnsw_dirty(true).context("Failed to mark HNSW dirty before indexing")?;
 
     // Run the 3-stage pipeline: parse → embed → write
     // Pipeline shares the same Store via Arc (no duplicate DB connections)
@@ -394,6 +398,7 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
         }
         Err(e) => {
             tracing::warn!(error = %e, "Failed to parse notes");
+            eprintln!("Warning: notes.toml parse error — notes not indexed: {}", e);
             Ok((0, false))
         }
     }

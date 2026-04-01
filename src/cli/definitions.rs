@@ -241,6 +241,9 @@ pub struct Cli {
 
 impl Cli {
     /// Get the resolved model config. Panics if called before dispatch resolves it.
+    ///
+    // SAFETY: dispatch() sets resolved_model before any command runs.
+    // All 20+ callers are in the dispatch path.
     pub fn model_config(&self) -> &cqs::embedder::ModelConfig {
         self.resolved_model
             .as_ref()

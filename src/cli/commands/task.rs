@@ -463,7 +463,13 @@ fn build_code_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_jso
 fn build_risk_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_json::Value> {
     indices
         .iter()
-        .filter_map(|&i| serde_json::to_value(&result.risk[i]).ok())
+        .filter_map(|&i| match serde_json::to_value(&result.risk[i]) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(index = i, error = %e, "Failed to serialize risk entry");
+                None
+            }
+        })
         .collect()
 }
 
@@ -472,7 +478,13 @@ fn build_risk_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_jso
 fn build_tests_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_json::Value> {
     indices
         .iter()
-        .filter_map(|&i| serde_json::to_value(&result.tests[i]).ok())
+        .filter_map(|&i| match serde_json::to_value(&result.tests[i]) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(index = i, error = %e, "Failed to serialize test entry");
+                None
+            }
+        })
         .collect()
 }
 
@@ -481,7 +493,13 @@ fn build_tests_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_js
 fn build_placement_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_json::Value> {
     indices
         .iter()
-        .filter_map(|&i| serde_json::to_value(&result.placement[i]).ok())
+        .filter_map(|&i| match serde_json::to_value(&result.placement[i]) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(index = i, error = %e, "Failed to serialize placement entry");
+                None
+            }
+        })
         .collect()
 }
 

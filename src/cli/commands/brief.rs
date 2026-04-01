@@ -63,7 +63,7 @@ fn build_brief_data(store: &Store, path: &str) -> Result<BriefData> {
     });
     let test_chunks = store.find_test_chunks().unwrap_or_else(|e| {
         tracing::warn!(error = %e, "Failed to find test chunks");
-        Vec::new()
+        std::sync::Arc::new(Vec::new())
     });
 
     let mut test_counts: HashMap<String, u64> = HashMap::new();

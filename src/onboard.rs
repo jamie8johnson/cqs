@@ -137,7 +137,7 @@ pub fn onboard(
         Ok(tc) => tc,
         Err(e) => {
             tracing::warn!(error = %e, "Test chunk loading failed, skipping tests");
-            Vec::new()
+            std::sync::Arc::new(Vec::new())
         }
     };
 

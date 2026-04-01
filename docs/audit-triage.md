@@ -1,6 +1,8 @@
 # Audit Triage — v1.13.0
 
-110 findings across 15 categories. 2026-03-31.
+132 findings across 16 categories. 2026-03-31 (updated 2026-04-01).
+
+**Status: 67 fixed, 2 wontfix, 63 unfixed (6 P2, 27 P3, 30 P4).** Verified 2026-04-01.
 
 ## P1: Easy + High Impact — Fix Immediately
 
@@ -27,8 +29,8 @@
 | # | Finding | Status |
 |---|---------|--------|
 | SHL-3 | NL description .take(1800) char budget assumes 512-token model | ✅ PR #737 |
-| SHL-6 | HNSW params (M=24, ef=200) hardcoded for 10k-100k — no config override | |
-| SHL-12 | EMBED_BATCH_SIZE=64 fixed regardless of GPU VRAM | |
+| SHL-6 | HNSW params (M=24, ef=200) hardcoded for 10k-100k — no config override | ✅ CQS_HNSW_M/EF_CONSTRUCTION/EF_SEARCH env vars |
+| SHL-12 | EMBED_BATCH_SIZE=64 fixed regardless of GPU VRAM | ✅ CQS_EMBED_BATCH_SIZE env var |
 | AC-1 | Cross-project RRF scores compared as absolute — invalid | |
 | DS-38 | DEFERRED transactions + no process lock = SQLITE_BUSY on concurrent index | |
 | DS-43 | Batch mode doesn't reload HNSW dim after config change | |
@@ -38,7 +40,7 @@
 | RM-5 | Contrastive neighbors allocates N*(N-1) pairs — 1.6GB intermediate | ✅ PR #738 |
 | CQ-2 | dispatch_test_map duplicates 80-line reverse-BFS with divergent guard | |
 | RB-5 | embed_batched panics on unexpected ONNX output shape | |
-| EX-3 | Windowing pinned to 512 tokens — thread ModelConfig::max_seq_length | |
+| EX-3 | Windowing pinned to 512 tokens — thread ModelConfig::max_seq_length | ✅ max_tokens_per_window(model_max_seq) |
 | PB-7 | rewrite_file locks source file — Windows mandatory lock hazard | |
 
 ## P3: Easy + Low Impact — Fix If Time
@@ -52,12 +54,12 @@
 | DOC-8 | Migration doc comment says "768-dim E5-base-v2" | ✅ PR #737 |
 | DOC-9 | CHANGELOG missing IEC 61131-3 entry | ✅ PR #737 |
 | DOC-10 | Cargo.toml description: "51 languages", stale eval metrics | ✅ PR #737 |
-| EH-1 | serde_json::to_value().ok() drops errors in 7 locations | |
+| EH-1 | serde_json::to_value().ok() drops errors in 7 locations | partial (3 remain) |
 | EH-4 | build_brief_data degrades silently on failure | |
 | EH-5 | set_permissions failures silently ignored in 6 locations | |
 | EH-6 | index_notes parse error → Ok((0, false)) | |
 | CQ-1 | dispatch_trace re-implements BFS instead of calling bfs_shortest_path | |
-| CQ-3 | Impact test-suggestion JSON duplicated between cmd and batch | |
+| CQ-3 | Impact test-suggestion JSON duplicated between cmd and batch | ✅ format_test_suggestions shared (impact/format.rs) |
 | CQ-4 | cmd_test_map computes unused _test_names HashSet | ✅ PR #737 |
 | CQ-5 | cmd_trace uses N queries vs batch handler's batched query | |
 | CQ-6 | filter_by_pattern dead code with #[allow(dead_code)] | ✅ PR #737 |
@@ -80,11 +82,11 @@
 | PERF-3 | Watch mode per-file upsert_type_edges instead of batched | ✅ PR #737 |
 | PERF-4 | Watch all_calls linear scan per file | ✅ PR #737 |
 | PERF-5 | upsert_chunks_and_calls individual DELETE per caller | ✅ PR #737 |
-| SEC-5 | expand_query_for_fts no debug_assert on pre-sanitized input | |
+| SEC-5 | expand_query_for_fts no debug_assert on pre-sanitized input | ✅ debug_assert added |
 | SEC-6 | search_by_name FTS query via format! with quotes | |
 | TC-1 | Reranker: NaN passthrough, only 6 tests | |
-| TC-2 | structured_text.rs: untested method/action/type queries | |
-| TC-3 | rerank_with_passages assert panics (same as RB-2) | |
+| TC-2 | structured_text.rs: untested method/action/type queries | ✅ 8 tests exist |
+| TC-3 | rerank_with_passages assert panics (same as RB-2) | ✅ same fix as RB-2 (PR #737) |
 | TC-4 | score_candidate: no NaN embedding test | |
 | DS-40 | Migration v15→v16 not idempotent on partial rollback | ✅ PR #737 |
 | DS-41 | set_hnsw_dirty failure skips reindex permanently | |
@@ -93,11 +95,11 @@
 | RM-3 | webhelp merged string no size limit | |
 | RM-4 | Watch mtime pruning only at >10K entries | |
 | RM-6 | Watch embedder retry clones ModelConfig per attempt | |
-| SHL-2 | Reranker max_length=512 hardcoded | |
-| SHL-8 | gather BFS 200-node cap regardless of codebase size | |
-| SHL-9 | impact BFS 10K cap no relation to graph density | |
+| SHL-2 | Reranker max_length=512 hardcoded | ✅ CQS_RERANKER_MAX_LENGTH env var |
+| SHL-8 | gather BFS 200-node cap regardless of codebase size | ✅ CQS_GATHER_MAX_NODES env var |
+| SHL-9 | impact BFS 10K cap no relation to graph density | ✅ CQS_IMPACT_MAX_NODES env var |
 | SHL-10 | CAGRA 2GB RAM cap ignores actual available RAM | |
-| SHL-11 | Rayon 4 threads hardcoded | |
+| SHL-11 | Rayon 4 threads hardcoded | ✅ CQS_RAYON_THREADS env var |
 | SHL-15 | Query cache 32 entries small for batch mode | |
 | EX-4 | DEFAULT_NAME_BOOST etc scattered across 3 modules | |
 | EX-5 | Watch mode constants not configurable | |
@@ -108,10 +110,10 @@
 | # | Finding | Status |
 |---|---------|--------|
 | CQ-7 | cmd/batch 2128-line duplication — systemic, needs shared serialization layer | |
-| CQ-8 | Four clippy::too_many_arguments suppressions remain | |
+| CQ-8 | Four clippy::too_many_arguments suppressions remain | worse (5 now) |
 | CQ-9 | lib.rs re-exports ~70 items | |
 | EX-1 | New CLI command requires 5+ file changes | |
-| EX-2 | HNSW build params not configurable (M, ef_construction) | |
+| EX-2 | HNSW build params not configurable (M, ef_construction) | ✅ same as SHL-6 |
 | AD-1 | cmd_blame parameter ordering inconsistent | |
 | AD-2 | name vs target inconsistent across 10+ commands | |
 | AD-3 | root vs project_root naming split | |
@@ -133,7 +135,7 @@
 
 ## Untriaged Batch (OB-6 + RX-1 through RX-22) — Triaged 2026-04-01
 
-### Already Fixed (6)
+### Already Fixed (11)
 
 | # | Finding | Status |
 |---|---------|--------|
@@ -143,20 +145,20 @@
 | RX-11 | Enrichment layers not togglable | ✅ same as RX-6 |
 | RX-15 | Reranker max_length hardcoded | ✅ CQS_RERANKER_MAX_LENGTH |
 | RX-22 | No structured eval output | ✅ PR #740 |
-
-### P3: Easy + Low Impact (7)
-
-| # | Finding | Status |
-|---|---------|--------|
 | RX-3 | Reranker model not in config file | ✅ PR #743 |
 | RX-7 | fixture_path requires match arm per language | ✅ PR #743 |
 | RX-13 | NL char budget env var read not cached | ✅ PR #743 |
 | RX-14 | Windowing overlap fixed at 64 tokens | ✅ PR #743 |
-| RX-19 | Enrichment assembly order not configurable | |
-| RX-20 | No hook for custom eval metrics | |
 | RX-21 | Triplet lacks metadata for filtering | ✅ PR #743 |
 
-### P4: Hard or Low Impact — Research Infra (10)
+### P3 (2)
+
+| # | Finding | Status |
+|---|---------|--------|
+| RX-19 | Enrichment assembly order not configurable | wontfix (validated order) |
+| RX-20 | No hook for custom eval metrics | wontfix (5 metrics sufficient) |
+
+### P4: Research Infra (10)
 
 | # | Finding | Status |
 |---|---------|--------|

@@ -1,0 +1,1342 @@
+{
+  "total": 50,
+  "r1": 36.0,
+  "r5": 62.0,
+  "hits": 18,
+  "near": 13,
+  "misses": 19,
+  "queries": [
+    {
+      "query": "search for code by natural language query with optional filters",
+      "expected": "search_filtered",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "HnswIndex",
+          "score": 0.7956
+        },
+        {
+          "name": "HnswIndex",
+          "score": 0.7956
+        },
+        {
+          "name": "is_name_like_query",
+          "score": 0.7355
+        },
+        {
+          "name": "is_name_like_query",
+          "score": 0.7355
+        },
+        {
+          "name": "Documentation",
+          "score": 0.7329
+        }
+      ]
+    },
+    {
+      "query": "build HNSW index from stored embeddings",
+      "expected": "build_batched_with_dim",
+      "rank": 2,
+      "status": "~",
+      "top5": [
+        {
+          "name": "HnswIndex",
+          "score": 0.9991
+        },
+        {
+          "name": "build_with_dim",
+          "score": 0.9527
+        },
+        {
+          "name": "build_with_dim",
+          "score": 0.9527
+        },
+        {
+          "name": "build_hnsw_index",
+          "score": 0.9526
+        },
+        {
+          "name": "build_hnsw_index",
+          "score": 0.9526
+        }
+      ]
+    },
+    {
+      "query": "find functions that have zero callers in the codebase",
+      "expected": "find_dead_code",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "find_transitive_callers",
+          "score": 0.8043
+        },
+        {
+          "name": "find_transitive_callers",
+          "score": 0.8043
+        },
+        {
+          "name": "find_hotspots",
+          "score": 0.7845
+        },
+        {
+          "name": "find_hotspots",
+          "score": 0.7845
+        },
+        {
+          "name": "Performance",
+          "score": 0.7579
+        }
+      ]
+    },
+    {
+      "query": "trace the shortest call path between two functions",
+      "expected": "bfs_shortest_path",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "bfs_shortest_path",
+          "score": 0.7996
+        },
+        {
+          "name": "bfs_shortest_path",
+          "score": 0.7996
+        },
+        {
+          "name": "Code Quality",
+          "score": 0.7768
+        },
+        {
+          "name": "Code Quality",
+          "score": 0.7768
+        },
+        {
+          "name": "compute_hints",
+          "score": 0.7613
+        }
+      ]
+    },
+    {
+      "query": "compute cosine similarity between two embedding vectors",
+      "expected": "cosine_similarity",
+      "rank": 2,
+      "status": "~",
+      "top5": [
+        {
+          "name": "Batch 2: Algorithm Correctness",
+          "score": 0.8239
+        },
+        {
+          "name": "full_cosine_similarity",
+          "score": 0.8216
+        },
+        {
+          "name": "full_cosine_similarity",
+          "score": 0.8216
+        },
+        {
+          "name": "Components",
+          "score": 0.8202
+        },
+        {
+          "name": "cosine_similarity",
+          "score": 0.8169
+        }
+      ]
+    },
+    {
+      "query": "generate natural language description from code chunk",
+      "expected": "generate_nl_description",
+      "rank": 4,
+      "status": "~",
+      "top5": [
+        {
+          "name": "extract_chunk",
+          "score": 0.857
+        },
+        {
+          "name": "extract_chunk",
+          "score": 0.857
+        },
+        {
+          "name": "generate_nl_with_call_context",
+          "score": 0.8518
+        },
+        {
+          "name": "generate_nl_with_template",
+          "score": 0.846
+        }
+      ]
+    },
+    {
+      "query": "parse source file into functions and classes using tree-sitter",
+      "expected": "parse_file",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "extract_chunk",
+          "score": 0.9156
+        },
+        {
+          "name": "extract_chunk",
+          "score": 0.9156
+        },
+        {
+          "name": "infer_chunk_type",
+          "score": 0.8467
+        },
+        {
+          "name": "infer_chunk_type",
+          "score": 0.8467
+        },
+        {
+          "name": "package",
+          "score": 0.8445
+        }
+      ]
+    },
+    {
+      "query": "expand search query with synonym OR groups for FTS5",
+      "expected": "expand_query_for_fts",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "search_fts",
+          "score": 0.8275
+        },
+        {
+          "name": "search_fts",
+          "score": 0.8275
+        },
+        {
+          "name": "note",
+          "score": 0.7836
+        },
+        {
+          "name": "note",
+          "score": 0.7836
+        },
+        {
+          "name": "note",
+          "score": 0.7781
+        }
+      ]
+    },
+    {
+      "query": "strip FTS5 special characters from search query",
+      "expected": "sanitize_fts_query",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "Security",
+          "score": 0.8023
+        },
+        {
+          "name": "Robustness",
+          "score": 0.8012
+        },
+        {
+          "name": "note",
+          "score": 0.7959
+        },
+        {
+          "name": "note",
+          "score": 0.7959
+        },
+        {
+          "name": "search_fts",
+          "score": 0.7868
+        }
+      ]
+    },
+    {
+      "query": "find which tests exercise a given function via call graph",
+      "expected": "find_test_chunks",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "find_affected_tests_with_chunks",
+          "score": 0.8172
+        },
+        {
+          "name": "find_affected_tests_with_chunks",
+          "score": 0.8172
+        },
+        {
+          "name": "compute_hints_with_graph",
+          "score": 0.789
+        },
+        {
+          "name": "compute_hints_with_graph",
+          "score": 0.789
+        },
+        {
+          "name": "find_hotspots",
+          "score": 0.7857
+        }
+      ]
+    },
+    {
+      "query": "compute risk score based on caller count and test coverage",
+      "expected": "compute_risk_batch",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "compute_risk_batch",
+          "score": 0.8693
+        },
+        {
+          "name": "compute_risk_batch",
+          "score": 0.8693
+        },
+        {
+          "name": "compute_risk_and_tests",
+          "score": 0.805
+        }
+      ]
+    },
+    {
+      "query": "save HNSW index to disk with blake3 checksums",
+      "expected": "save",
+      "rank": 3,
+      "status": "~",
+      "top5": [
+        {
+          "name": "verify_hnsw_checksums",
+          "score": 0.9203
+        },
+        {
+          "name": "verify_hnsw_checksums",
+          "score": 0.9203
+        },
+        {
+          "name": "save",
+          "score": 0.9164
+        },
+        {
+          "name": "save",
+          "score": 0.9164
+        },
+        {
+          "name": "load_with_dim",
+          "score": 0.9038
+        }
+      ]
+    },
+    {
+      "query": "load HNSW index from disk and verify checksums",
+      "expected": "try_load",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "load_with_dim",
+          "score": 0.9137
+        },
+        {
+          "name": "load_with_dim",
+          "score": 0.9137
+        },
+        {
+          "name": "verify_hnsw_checksums",
+          "score": 0.9118
+        },
+        {
+          "name": "verify_hnsw_checksums",
+          "score": 0.9118
+        },
+        {
+          "name": "prepare_index_data",
+          "score": 0.8832
+        }
+      ]
+    },
+    {
+      "query": "find contrastive nearest neighbors for LLM summary generation",
+      "expected": "find_contrastive_neighbors",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "find_contrastive_neighbors",
+          "score": 0.9354
+        },
+        {
+          "name": "find_contrastive_neighbors",
+          "score": 0.9354
+        },
+        {
+          "name": "find_contrastive_neighbors",
+          "score": 0.9184
+        }
+      ]
+    },
+    {
+      "query": "upsert chunks and call graph edges in a single transaction",
+      "expected": "upsert_chunks_and_calls",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "upsert_chunks_and_calls",
+          "score": 0.8407
+        },
+        {
+          "name": "upsert_chunks_and_calls",
+          "score": 0.8407
+        },
+        {
+          "name": "Data Safety",
+          "score": 0.8303
+        },
+        {
+          "name": "Performance",
+          "score": 0.8173
+        },
+        {
+          "name": "Data Safety",
+          "score": 0.8124
+        }
+      ]
+    },
+    {
+      "query": "delete stale chunks from files that no longer exist",
+      "expected": "prune_missing",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "prune_missing",
+          "score": 0.8238
+        },
+        {
+          "name": "prune_missing",
+          "score": 0.8238
+        },
+        {
+          "name": "delete_phantom_chunks_removes_stale",
+          "score": 0.8116
+        },
+        {
+          "name": "delete_phantom_chunks_removes_stale",
+          "score": 0.8116
+        },
+        {
+          "name": "list_stale_files",
+          "score": 0.7933
+        }
+      ]
+    },
+    {
+      "query": "migrate SQLite schema from one version to the next",
+      "expected": "migrate",
+      "rank": 2,
+      "status": "~",
+      "top5": [
+        {
+          "name": "Data Safety",
+          "score": 0.8246
+        },
+        {
+          "name": "migrate",
+          "score": 0.8087
+        },
+        {
+          "name": "migrate",
+          "score": 0.8087
+        },
+        {
+          "name": "Batch 3: Data Safety",
+          "score": 0.8024
+        },
+        {
+          "name": "Silent Data Corruption (RT-DATA)",
+          "score": 0.7655
+        }
+      ]
+    },
+    {
+      "query": "embed text into a vector using the ONNX model",
+      "expected": "embed_query",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "embed_batch",
+          "score": 0.9569
+        },
+        {
+          "name": "embed_batch",
+          "score": 0.9569
+        },
+        {
+          "name": "new",
+          "score": 0.8611
+        }
+      ]
+    },
+    {
+      "query": "merge search results from multiple reference indexes",
+      "expected": "merge_results",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "merge_results",
+          "score": 0.8411
+        },
+        {
+          "name": "merge_results",
+          "score": 0.8411
+        },
+        {
+          "name": "search_reference",
+          "score": 0.8159
+        },
+        {
+          "name": "search_reference",
+          "score": 0.8159
+        },
+        {
+          "name": "search_reference_by_name",
+          "score": 0.7853
+        }
+      ]
+    },
+    {
+      "query": "extract caller and callee relationships from parsed chunks",
+      "expected": "extract_calls_from_chunk",
+      "rank": 3,
+      "status": "~",
+      "top5": [
+        {
+          "name": "call_query_pattern",
+          "score": 0.8517
+        },
+        {
+          "name": "call_query_pattern",
+          "score": 0.8517
+        },
+        {
+          "name": "extract_calls_from_chunk",
+          "score": 0.8485
+        },
+        {
+          "name": "extract_calls_from_chunk",
+          "score": 0.8485
+        },
+        {
+          "name": "parse_file_relationships",
+          "score": 0.8452
+        }
+      ]
+    },
+    {
+      "query": "gather expanded context via BFS from seed search results",
+      "expected": "gather",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "Extensibility",
+          "score": 0.7738
+        },
+        {
+          "name": "Algorithm Correctness",
+          "score": 0.7549
+        },
+        {
+          "name": "Performance",
+          "score": 0.7507
+        },
+        {
+          "name": "Performance",
+          "score": 0.7507
+        },
+        {
+          "name": "[1.4.1] - 2026-03-24",
+          "score": 0.75
+        }
+      ]
+    },
+    {
+      "query": "analyze impact of changing a function on callers and tests",
+      "expected": "analyze_impact",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "analyze_impact",
+          "score": 0.8402
+        },
+        {
+          "name": "analyze_impact",
+          "score": 0.8402
+        },
+        {
+          "name": "extract_call_snippet_from_cache",
+          "score": 0.8057
+        },
+        {
+          "name": "extract_call_snippet_from_cache",
+          "score": 0.8057
+        },
+        {
+          "name": "compute_hints",
+          "score": 0.8054
+        }
+      ]
+    },
+    {
+      "query": "suggest where to add new code based on semantic similarity",
+      "expected": "suggest_placement",
+      "rank": 3,
+      "status": "~",
+      "top5": [
+        {
+          "name": "HnswIndex",
+          "score": 0.7938
+        },
+        {
+          "name": "HnswIndex",
+          "score": 0.7938
+        },
+        {
+          "name": "suggest_placement_with_options",
+          "score": 0.7868
+        },
+        {
+          "name": "suggest_placement_with_options",
+          "score": 0.7868
+        },
+        {
+          "name": "Steps",
+          "score": 0.7626
+        }
+      ]
+    },
+    {
+      "query": "generate implementation plan from task description",
+      "expected": "plan",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "plan",
+          "score": 0.7594
+        },
+        {
+          "name": "plan",
+          "score": 0.7594
+        },
+        {
+          "name": "Configurable Embedding Models Implementation Plan",
+          "score": 0.7513
+        },
+        {
+          "name": "Task 1: Harvest existing HyDE + summary training pairs",
+          "score": 0.7461
+        },
+        {
+          "name": "task",
+          "score": 0.7412
+        }
+      ]
+    },
+    {
+      "query": "run all scout phases: search callers tests staleness notes",
+      "expected": "scout",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "Performance",
+          "score": 0.8267
+        },
+        {
+          "name": "Observability",
+          "score": 0.797
+        },
+        {
+          "name": "[0.9.8] - 2026-02-11",
+          "score": 0.7953
+        },
+        {
+          "name": "[0.9.8] - 2026-02-11",
+          "score": 0.7953
+        },
+        {
+          "name": "Observability",
+          "score": 0.79
+        }
+      ]
+    },
+    {
+      "query": "check if index is stale by comparing file mtimes",
+      "expected": "count_stale_files",
+      "rank": 5,
+      "status": "~",
+      "top5": [
+        {
+          "name": "check_index_staleness",
+          "score": 0.911
+        },
+        {
+          "name": "check_index_staleness",
+          "score": 0.911
+        },
+        {
+          "name": "index_notes_from_file",
+          "score": 0.8414
+        },
+        {
+          "name": "index_notes_from_file",
+          "score": 0.8414
+        },
+        {
+          "name": "list_stale_files",
+          "score": 0.8035
+        }
+      ]
+    },
+    {
+      "query": "fuse semantic and keyword search results via reciprocal rank fusion",
+      "expected": "rrf_fuse",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "rrf_fuse",
+          "score": 0.7891
+        },
+        {
+          "name": "rrf_fuse",
+          "score": 0.7891
+        },
+        {
+          "name": "Architecture Overview",
+          "score": 0.7412
+        },
+        {
+          "name": "Architecture Overview",
+          "score": 0.7412
+        },
+        {
+          "name": "search",
+          "score": 0.7402
+        }
+      ]
+    },
+    {
+      "query": "tokenize camelCase and snake_case identifiers into words",
+      "expected": "tokenize_identifier",
+      "rank": 2,
+      "status": "~",
+      "top5": [
+        {
+          "name": "split_identifier",
+          "score": 0.8163
+        },
+        {
+          "name": "tokenize_identifier",
+          "score": 0.8049
+        },
+        {
+          "name": "tokenize_identifier",
+          "score": 0.8049
+        },
+        {
+          "name": "extract_name_fallback_with_unicode_before_keyword",
+          "score": 0.8036
+        },
+        {
+          "name": "extract_name_fallback_with_unicode_before_keyword",
+          "score": 0.8036
+        }
+      ]
+    },
+    {
+      "query": "resolve model configuration from CLI flags env vars and config file",
+      "expected": "resolve",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "ENV_MUTEX",
+          "score": 0.8415
+        },
+        {
+          "name": "ENV_MUTEX",
+          "score": 0.8415
+        },
+        {
+          "name": "Extensibility",
+          "score": 0.8318
+        },
+        {
+          "name": "API Design",
+          "score": 0.8206
+        },
+        {
+          "name": "model_config",
+          "score": 0.8091
+        }
+      ]
+    },
+    {
+      "query": "watch filesystem for changes and reindex modified files",
+      "expected": "cmd_watch",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "Resource Management",
+          "score": 0.7551
+        },
+        {
+          "name": "Resource Management",
+          "score": 0.755
+        },
+        {
+          "name": "Performance",
+          "score": 0.7539
+        },
+        {
+          "name": "Data Safety",
+          "score": 0.7536
+        },
+        {
+          "name": "reindex_files",
+          "score": 0.7532
+        }
+      ]
+    },
+    {
+      "query": "pack search results into a token budget using greedy knapsack",
+      "expected": "token_pack",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "token_pack",
+          "score": 0.8704
+        },
+        {
+          "name": "token_pack",
+          "score": 0.8704
+        },
+        {
+          "name": "index_pack",
+          "score": 0.8571
+        },
+        {
+          "name": "index_pack",
+          "score": 0.8571
+        },
+        {
+          "name": "search",
+          "score": 0.822
+        }
+      ]
+    },
+    {
+      "query": "reconstruct source file from indexed chunks",
+      "expected": "cmd_reconstruct",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "prepare_index_data",
+          "score": 0.8206
+        },
+        {
+          "name": "prepare_index_data",
+          "score": 0.8206
+        },
+        {
+          "name": "Batch 4: I/O Efficiency",
+          "score": 0.7684
+        },
+        {
+          "name": "Task 2: Fix #563/RM-5 \u2014 Eliminate double I/O in indexing pipeline",
+          "score": 0.7634
+        },
+        {
+          "name": "Performance",
+          "score": 0.7585
+        }
+      ]
+    },
+    {
+      "query": "extract type references from function signatures and bodies",
+      "expected": "extract_type_refs",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "extract_signature",
+          "score": 0.8733
+        },
+        {
+          "name": "extract_signature",
+          "score": 0.8733
+        },
+        {
+          "name": "extract_types",
+          "score": 0.8438
+        },
+        {
+          "name": "extract_types",
+          "score": 0.8438
+        }
+      ]
+    },
+    {
+      "query": "compute BFS reverse transitive callers of a function",
+      "expected": "reverse_bfs",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "find_transitive_callers",
+          "score": 0.8913
+        },
+        {
+          "name": "find_transitive_callers",
+          "score": 0.8913
+        },
+        {
+          "name": "compute_hints_batch",
+          "score": 0.8128
+        },
+        {
+          "name": "compute_hints_batch",
+          "score": 0.8128
+        },
+        {
+          "name": "Performance",
+          "score": 0.7893
+        }
+      ]
+    },
+    {
+      "query": "normalize file path separators for cross-platform consistency",
+      "expected": "normalize_path",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "Platform Behavior",
+          "score": 0.8228
+        },
+        {
+          "name": "Platform Behavior",
+          "score": 0.8174
+        },
+        {
+          "name": "Platform Behavior",
+          "score": 0.8132
+        },
+        {
+          "name": "Batch 3: Platform Behavior",
+          "score": 0.7996
+        }
+      ]
+    },
+    {
+      "query": "score a candidate chunk against query embedding with boosts",
+      "expected": "score_candidate",
+      "rank": 3,
+      "status": "~",
+      "top5": [
+        {
+          "name": "fetch_candidates_by_ids_async",
+          "score": 0.8362
+        },
+        {
+          "name": "fetch_candidates_by_ids_async",
+          "score": 0.8362
+        },
+        {
+          "name": "score_candidate",
+          "score": 0.8257
+        },
+        {
+          "name": "score_candidate",
+          "score": 0.8257
+        },
+        {
+          "name": "Algorithm Correctness",
+          "score": 0.8077
+        }
+      ]
+    },
+    {
+      "query": "parse notes from TOML file",
+      "expected": "parse_notes",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "parse_notes",
+          "score": 0.9958
+        },
+        {
+          "name": "parse_notes",
+          "score": 0.9958
+        },
+        {
+          "name": "parse_notes_str",
+          "score": 0.9143
+        },
+        {
+          "name": "parse_notes_str",
+          "score": 0.9143
+        }
+      ]
+    },
+    {
+      "query": "apply note sentiment boost to search result scores",
+      "expected": "NoteBoostIndex",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "note",
+          "score": 0.8872
+        },
+        {
+          "name": "note",
+          "score": 0.8872
+        },
+        {
+          "name": "note",
+          "score": 0.8784
+        },
+        {
+          "name": "note",
+          "score": 0.8784
+        },
+        {
+          "name": "note_boost",
+          "score": 0.8761
+        }
+      ]
+    },
+    {
+      "query": "split long text into overlapping windows for embedding",
+      "expected": "split_into_windows",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "split_into_windows",
+          "score": 0.9372
+        },
+        {
+          "name": "split_into_windows",
+          "score": 0.9372
+        },
+        {
+          "name": "embed_batch",
+          "score": 0.7956
+        }
+      ]
+    },
+    {
+      "query": "run CI analysis with diff impact and risk gating",
+      "expected": "run_ci_analysis",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "run_ci_analysis",
+          "score": 0.8256
+        },
+        {
+          "name": "run_ci_analysis",
+          "score": 0.8256
+        },
+        {
+          "name": "analyze_impact",
+          "score": 0.7832
+        }
+      ]
+    },
+    {
+      "query": "extract file context for NL description enrichment",
+      "expected": "extract_file_context",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "extract_file_context",
+          "score": 0.9387
+        },
+        {
+          "name": "enrichment_nl_with_summary_and_call_context",
+          "score": 0.9118
+        },
+        {
+          "name": "generate_nl_with_call_context",
+          "score": 0.8712
+        },
+        {
+          "name": "is_enrichment_skipped",
+          "score": 0.8535
+        }
+      ]
+    },
+    {
+      "query": "check if a chunk is a test function by name and path",
+      "expected": "is_test_chunk",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "Platform Behavior",
+          "score": 0.7721
+        },
+        {
+          "name": "Extensibility",
+          "score": 0.7652
+        },
+        {
+          "name": "Task 16: Unify test detection logic (CQ-8)",
+          "score": 0.758
+        },
+        {
+          "name": "Platform Behavior",
+          "score": 0.7495
+        },
+        {
+          "name": "Algorithm Correctness",
+          "score": 0.7416
+        }
+      ]
+    },
+    {
+      "query": "find functions similar to a given function by embedding distance",
+      "expected": "cmd_similar",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "search",
+          "score": 0.8065
+        },
+        {
+          "name": "search",
+          "score": 0.8065
+        },
+        {
+          "name": "find_contrastive_neighbors",
+          "score": 0.7764
+        },
+        {
+          "name": "find_contrastive_neighbors",
+          "score": 0.7764
+        }
+      ]
+    },
+    {
+      "query": "generate semantic diff between two index snapshots",
+      "expected": "semantic_diff",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "Batch 3: Performance",
+          "score": 0.7722
+        },
+        {
+          "name": "[0.5.1] - 2026-02-05",
+          "score": 0.7499
+        },
+        {
+          "name": "[0.5.1] - 2026-02-05",
+          "score": 0.7499
+        },
+        {
+          "name": "Resource Management",
+          "score": 0.7299
+        },
+        {
+          "name": "check_index_staleness",
+          "score": 0.7284
+        }
+      ]
+    },
+    {
+      "query": "build compact task output with files risk and tests",
+      "expected": "output_brief",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "output_brief",
+          "score": 0.8056
+        },
+        {
+          "name": "output_brief",
+          "score": 0.8056
+        },
+        {
+          "name": "build_risk_json",
+          "score": 0.7881
+        },
+        {
+          "name": "build_risk_json",
+          "score": 0.7881
+        },
+        {
+          "name": "compute_risk_and_tests",
+          "score": 0.7833
+        }
+      ]
+    },
+    {
+      "query": "register a new programming language in the parser",
+      "expected": "define_languages",
+      "rank": null,
+      "status": "-",
+      "top5": [
+        {
+          "name": "register",
+          "score": 0.8605
+        },
+        {
+          "name": "register",
+          "score": 0.8605
+        },
+        {
+          "name": "Steps",
+          "score": 0.8379
+        },
+        {
+          "name": "Steps",
+          "score": 0.8379
+        },
+        {
+          "name": "REGISTRY",
+          "score": 0.8212
+        }
+      ]
+    },
+    {
+      "query": "convert PDF document to markdown for indexing",
+      "expected": "pdf_to_markdown",
+      "rank": 3,
+      "status": "~",
+      "top5": [
+        {
+          "name": "Architecture Overview",
+          "score": 0.7931
+        },
+        {
+          "name": "Architecture Overview",
+          "score": 0.7931
+        },
+        {
+          "name": "pdf_to_markdown",
+          "score": 0.7771
+        },
+        {
+          "name": "pdf_to_markdown",
+          "score": 0.7771
+        },
+        {
+          "name": "Design",
+          "score": 0.7709
+        }
+      ]
+    },
+    {
+      "query": "acquire file lock to prevent concurrent indexing",
+      "expected": "acquire_index_lock",
+      "rank": 1,
+      "status": "+",
+      "top5": [
+        {
+          "name": "acquire_index_lock",
+          "score": 0.8518
+        },
+        {
+          "name": "acquire_index_lock",
+          "score": 0.8518
+        },
+        {
+          "name": "Batch 3: Concurrency Safety",
+          "score": 0.8191
+        },
+        {
+          "name": "try_acquire_index_lock",
+          "score": 0.792
+        }
+      ]
+    },
+    {
+      "query": "submit LLM batch request for function summaries",
+      "expected": "submit_batch",
+      "rank": 3,
+      "status": "~",
+      "top5": [
+        {
+          "name": "submit_doc_batch",
+          "score": 0.9225
+        },
+        {
+          "name": "submit_doc_batch",
+          "score": 0.9225
+        },
+        {
+          "name": "submit_batch",
+          "score": 0.9158
+        },
+        {
+          "name": "submit_batch",
+          "score": 0.9158
+        },
+        {
+          "name": "submit_doc_batch",
+          "score": 0.9043
+        }
+      ]
+    },
+    {
+      "query": "detect GPU availability and configure CUDA execution provider",
+      "expected": "ensure_ort_provider_libs",
+      "rank": 5,
+      "status": "~",
+      "top5": [
+        {
+          "name": "CACHED_PROVIDER",
+          "score": 0.7041
+        },
+        {
+          "name": "CACHED_PROVIDER",
+          "score": 0.7041
+        },
+        {
+          "name": "ExecutionProvider",
+          "score": 0.6868
+        },
+        {
+          "name": "ExecutionProvider",
+          "score": 0.6868
+        },
+        {
+          "name": "new_with_provider",
+          "score": 0.6761
+        }
+      ]
+    }
+  ]
+}

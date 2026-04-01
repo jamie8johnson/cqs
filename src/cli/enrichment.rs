@@ -261,12 +261,16 @@ fn compute_enrichment_hash_with_summary(
         let _ = write!(input, "e:{c}|");
     }
 
+    // RB-6: Normalize whitespace before hashing to avoid cache misses
+    // from LLM non-deterministic whitespace (leading/trailing, double spaces, etc.)
     if let Some(s) = summary {
-        let _ = write!(input, "s:{s}");
+        let norm: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let _ = write!(input, "s:{norm}");
     }
 
     if let Some(h) = hyde {
-        let _ = write!(input, "h:{h}");
+        let norm: String = h.split_whitespace().collect::<Vec<_>>().join(" ");
+        let _ = write!(input, "h:{norm}");
     }
 
     let hash = blake3::hash(input.as_bytes());

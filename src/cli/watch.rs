@@ -35,10 +35,28 @@ use cqs::store::Store;
 use super::{check_interrupted, find_project_root, try_acquire_index_lock, Cli};
 
 /// Full HNSW rebuild after this many incremental inserts to clean orphaned vectors.
-const HNSW_REBUILD_THRESHOLD: usize = 100;
+/// Override with CQS_WATCH_REBUILD_THRESHOLD env var.
+fn hnsw_rebuild_threshold() -> usize {
+    static CACHE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("CQS_WATCH_REBUILD_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100)
+    })
+}
 
-/// Maximum pending files to prevent unbounded memory growth
-const MAX_PENDING_FILES: usize = 10_000;
+/// Maximum pending files to prevent unbounded memory growth.
+/// Override with CQS_WATCH_MAX_PENDING env var.
+fn max_pending_files() -> usize {
+    static CACHE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("CQS_WATCH_MAX_PENDING")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10_000)
+    })
+}
 
 /// Immutable references shared across the watch loop.
 ///
@@ -238,7 +256,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
     // Persistent HNSW state for incremental updates.
     // On first file change, does a full build and keeps the Owned index in memory.
     // Subsequent changes insert only changed chunks via insert_batch.
-    // Full rebuild every HNSW_REBUILD_THRESHOLD incremental inserts to clean orphans.
+    // Full rebuild every hnsw_rebuild_threshold() incremental inserts to clean orphans.
     //
     // DS-35: Load existing HNSW index from disk if present, to avoid orphan accumulation
     // across restarts. Start incremental_count at threshold/2 so the first rebuild
@@ -247,7 +265,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
         match HnswIndex::load_with_dim(cqs_dir.as_ref(), "index", store.dim()) {
             Ok(index) => {
                 info!(vectors = index.len(), "Loaded existing HNSW index");
-                (Some(index), HNSW_REBUILD_THRESHOLD / 2)
+                (Some(index), hnsw_rebuild_threshold() / 2)
             }
             Err(_) => (None, 0),
         };
@@ -404,7 +422,7 @@ fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchSta
                     continue;
                 }
             }
-            if state.pending_files.len() < MAX_PENDING_FILES {
+            if state.pending_files.len() < max_pending_files() {
                 state.pending_files.insert(rel.to_path_buf());
             }
             state.last_event = std::time::Instant::now();
@@ -415,7 +433,7 @@ fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchSta
 /// Process pending file changes: parse, embed, store atomically, then update HNSW.
 ///
 /// Uses incremental HNSW insertion when an Owned index is available in memory.
-/// Falls back to full rebuild on first run or after `HNSW_REBUILD_THRESHOLD` incremental inserts.
+/// Falls back to full rebuild on first run or after `hnsw_rebuild_threshold()` incremental inserts.
 fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState) {
     let files: Vec<PathBuf> = state.pending_files.drain().collect();
     let _span = info_span!("process_file_changes", file_count = files.len()).entered();
@@ -459,9 +477,11 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
             for (file, mtime) in pre_mtimes {
                 state.last_indexed_mtime.insert(file, mtime);
             }
-            // RM-17: Prune entries for deleted files when >1,000 entries regardless
-            // of batch size. The files.len() == 1 guard was overly conservative.
-            if state.last_indexed_mtime.len() > 10_000 {
+            // RM-17: Prune entries for deleted files when mtime map grows large.
+            // RM-4: Lowered from 10K to 5K — the map tracks every file we've ever
+            // indexed in this session, so pruning earlier bounds memory without
+            // affecting correctness (retain only keeps files that still exist).
+            if state.last_indexed_mtime.len() > 5_000 {
                 state
                     .last_indexed_mtime
                     .retain(|f, _| cfg.root.join(f).exists());
@@ -471,9 +491,9 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
             }
 
             // Incremental HNSW update: insert changed chunks into existing Owned index.
-            // Falls back to full rebuild on first run or after HNSW_REBUILD_THRESHOLD inserts.
+            // Falls back to full rebuild on first run or after hnsw_rebuild_threshold() inserts.
             let needs_full_rebuild =
-                state.hnsw_index.is_none() || state.incremental_count >= HNSW_REBUILD_THRESHOLD;
+                state.hnsw_index.is_none() || state.incremental_count >= hnsw_rebuild_threshold();
 
             // During full rebuild the old index and new batch coexist briefly,
             // but `build_batched` streams one batch at a time so peak memory is
@@ -511,7 +531,7 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                 // Modified chunks get new IDs, so old vectors become orphans in
                 // the HNSW graph (hnsw_rs has no deletion). Orphans are harmless:
                 // search post-filters against live SQLite chunk IDs. They're
-                // cleaned on the next full rebuild (every HNSW_REBUILD_THRESHOLD).
+                // cleaned on the next full rebuild (every hnsw_rebuild_threshold()).
                 let hash_refs: Vec<&str> = content_hashes.iter().map(|s| s.as_str()).collect();
                 match store.get_chunk_ids_and_embeddings_by_hashes(&hash_refs) {
                     Ok(pairs) if !pairs.is_empty() => {
@@ -1001,8 +1021,8 @@ mod tests {
         let cfg = test_watch_config(&root, &cqs_dir, &notes_path, &supported);
         let mut state = test_watch_state();
 
-        // Pre-fill pending_files to MAX_PENDING_FILES
-        for i in 0..MAX_PENDING_FILES {
+        // Pre-fill pending_files to max_pending_files()
+        for i in 0..max_pending_files() {
             state
                 .pending_files
                 .insert(PathBuf::from(format!("f{}.rs", i)));
@@ -1021,8 +1041,8 @@ mod tests {
 
         assert_eq!(
             state.pending_files.len(),
-            MAX_PENDING_FILES,
-            "Should not exceed MAX_PENDING_FILES"
+            max_pending_files(),
+            "Should not exceed max_pending_files()"
         );
     }
 
@@ -1064,13 +1084,13 @@ mod tests {
 
     #[test]
     fn hnsw_rebuild_threshold_is_reasonable() {
-        assert!(HNSW_REBUILD_THRESHOLD > 0);
-        assert!(HNSW_REBUILD_THRESHOLD <= 1000);
+        assert!(hnsw_rebuild_threshold() > 0);
+        assert!(hnsw_rebuild_threshold() <= 1000);
     }
 
     #[test]
     fn max_pending_files_is_bounded() {
-        assert!(MAX_PENDING_FILES > 0);
-        assert!(MAX_PENDING_FILES <= 100_000);
+        assert!(max_pending_files() > 0);
+        assert!(max_pending_files() <= 100_000);
     }
 }

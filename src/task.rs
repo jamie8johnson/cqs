@@ -79,7 +79,7 @@ pub fn task(
         Ok(tc) => tc,
         Err(e) => {
             tracing::warn!(error = %e, "Test chunk loading failed, continuing without tests");
-            Vec::new()
+            std::sync::Arc::new(Vec::new())
         }
     };
     task_with_resources(

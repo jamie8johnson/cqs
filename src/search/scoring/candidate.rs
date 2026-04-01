@@ -813,6 +813,54 @@ mod tests {
     }
 
     #[test]
+    fn score_candidate_nan_query_filtered() {
+        // TC-4: All-NaN query vector should not panic, should return None.
+        let nan_query = vec![f32::NAN; crate::EMBEDDING_DIM];
+        let normal_emb = test_embedding(1.0);
+        let filter = SearchFilter::default();
+        let note_index = NoteBoostIndex::new(&[]);
+        let ctx = ScoringContext {
+            query: &nan_query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.0,
+        };
+
+        let result = score_candidate(&normal_emb, Some("my_fn"), "src/lib.rs", &ctx);
+        assert!(
+            result.is_none(),
+            "NaN query should be filtered out (return None), got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn score_candidate_nan_both_filtered() {
+        // TC-4: Both query and embedding NaN — must not panic.
+        let nan_query = vec![f32::NAN; crate::EMBEDDING_DIM];
+        let nan_emb = vec![f32::NAN; crate::EMBEDDING_DIM];
+        let filter = SearchFilter::default();
+        let note_index = NoteBoostIndex::new(&[]);
+        let ctx = ScoringContext {
+            query: &nan_query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.0,
+        };
+
+        let result = score_candidate(&nan_emb, Some("fn"), "src/lib.rs", &ctx);
+        assert!(
+            result.is_none(),
+            "All-NaN inputs should be filtered out, got {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn score_candidate_zero_embedding() {
         let zero_query = vec![0.0f32; crate::EMBEDDING_DIM];
         let normal_emb = test_embedding(1.0);

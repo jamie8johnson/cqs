@@ -1004,3 +1004,20 @@ mentions = [
     "nl/mod.rs",
     "enrichment",
 ]
+
+[[note]]
+sentiment = -1.0
+text = "Real codebase eval: fixtures inflate R@1 by 45-61pp. cqs 46% R@1 on own 15K codebase, 30% on Claude Code 20K. Code-only filter adds +10pp. Doc comments are the key differentiator between codebases. The 91% fixture number is not representative."
+mentions = [
+    "pipeline_eval",
+    "search",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Real codebase eval hierarchy: training signal (CG filter) > embedding quality (BGE-large) > context length (nomic 8K). v9-200k 48%, BGE-large 46%, nomic 32% on 50-query real eval. Fixture convergence at 90% was artifact — models separate on harder evals."
+mentions = [
+    "pipeline_eval",
+    "search",
+    "research",
+]

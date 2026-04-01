@@ -64,9 +64,13 @@ pub(crate) fn cmd_trace(
     match path {
         Some(names) => {
             if matches!(format, OutputFormat::Json) {
+                // CQ-5: Batch lookup instead of N individual search_by_name calls
+                let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+                let batch_results = store.search_by_names_batch(&name_refs, 1)?;
+
                 let mut path_json = Vec::new();
                 for name in &names {
-                    let entry = match store.search_by_name(name, 1)?.into_iter().next() {
+                    let entry = match batch_results.get(name.as_str()).and_then(|v| v.first()) {
                         Some(r) => {
                             let rel = cqs::rel_display(&r.chunk.file, &root);
                             serde_json::json!({

@@ -114,6 +114,7 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
 
     let mut merged = String::new();
     let mut page_count = 0usize;
+    const MAX_WEBHELP_BYTES: usize = 50 * 1024 * 1024; // 50MB
 
     for entry in &pages {
         let bytes = match std::fs::read(entry.path()) {
@@ -136,6 +137,15 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
                 }
                 merged.push_str(&md);
                 page_count += 1;
+                // RM-3: Guard against unbounded concatenation
+                if merged.len() > MAX_WEBHELP_BYTES {
+                    tracing::warn!(
+                        bytes = merged.len(),
+                        pages = page_count,
+                        "Webhelp output exceeds 50MB limit, truncating"
+                    );
+                    break;
+                }
             }
             Ok(_) => {} // skip empty pages
             Err(e) => {

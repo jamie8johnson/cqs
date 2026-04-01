@@ -111,6 +111,9 @@ impl Store {
     /// are deleted but orphan call graph / type edge / summary entries remain.
     /// Without this, the window between `prune_missing` and `prune_stale_calls`
     /// exposes stale `function_calls` rows referencing deleted chunks.
+    // Note: This has a theoretical TOCTOU race between the Phase 1 file-existence
+    // check and the Phase 2 transaction, but acquire_index_lock in cmd_index
+    // prevents concurrent writers in practice.
     pub fn prune_all(
         &self,
         existing_files: &HashSet<PathBuf>,
