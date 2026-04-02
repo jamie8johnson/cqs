@@ -19,8 +19,22 @@ pub fn cmd_convert(
     }
 
     // Default output dir: same directory as input (or input dir itself)
+    // SEC-4: Canonicalize to normalize symlinks and warn if outside source tree
     let output_dir = match output {
-        Some(dir) => PathBuf::from(dir),
+        Some(dir) => {
+            let raw = PathBuf::from(dir);
+            let canonical = dunce::canonicalize(&raw).unwrap_or(raw);
+            if let Ok(source_parent) = dunce::canonicalize(source.parent().unwrap_or(&source)) {
+                if !canonical.starts_with(&source_parent) {
+                    tracing::warn!(
+                        output = %canonical.display(),
+                        source = %source_parent.display(),
+                        "Output directory is outside source tree"
+                    );
+                }
+            }
+            canonical
+        }
         None => {
             if source.is_dir() {
                 source.clone()

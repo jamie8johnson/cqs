@@ -9,8 +9,9 @@ mod common;
 use common::TestStore;
 use cqs::embedder::ModelConfig;
 use cqs::parser::{Chunk, ChunkType, Language};
-use cqs::suggest_placement;
 use cqs::Embedder;
+use cqs::PlacementOptions;
+use cqs::{suggest_placement, suggest_placement_with_options};
 use std::path::PathBuf;
 
 /// Create a chunk with a specific file, name, and content
@@ -88,5 +89,52 @@ fn test_suggest_placement_returns_results_for_similar_code() {
         top_file.contains("config"),
         "Top suggestion should be config.rs for config-related query, got: {}",
         top_file
+    );
+}
+
+#[test]
+fn test_suggest_placement_with_options_reuses_embedding() {
+    let store = TestStore::new();
+    let embedder = Embedder::new(ModelConfig::resolve(None, None)).unwrap();
+
+    let chunks = vec![
+        placement_chunk(
+            "save_data",
+            "src/storage.rs",
+            "fn save_data(db: &Database, key: &str, value: &[u8]) -> Result<()> { db.put(key, value) }",
+            1,
+        ),
+        placement_chunk(
+            "load_data",
+            "src/storage.rs",
+            "fn load_data(db: &Database, key: &str) -> Result<Vec<u8>> { db.get(key).ok_or(NotFound) }",
+            10,
+        ),
+    ];
+
+    let contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+    let embeddings = embedder.embed_documents(&contents).unwrap();
+    let pairs: Vec<_> = chunks.iter().cloned().zip(embeddings).collect();
+    store.upsert_chunks_batch(&pairs, Some(12345)).unwrap();
+
+    // Pre-compute embedding and pass via options (avoids redundant inference)
+    let query = "persist data to database";
+    let query_embedding = embedder.embed_query(query).unwrap();
+    let opts = PlacementOptions {
+        query_embedding: Some(query_embedding),
+        ..Default::default()
+    };
+
+    let result = suggest_placement_with_options(&store, &embedder, query, 3, &opts).unwrap();
+    assert!(
+        !result.suggestions.is_empty(),
+        "suggest_placement_with_options should return results with pre-computed embedding"
+    );
+    assert!(
+        result.suggestions[0]
+            .file
+            .to_string_lossy()
+            .contains("storage"),
+        "Should suggest storage.rs for database query"
     );
 }
