@@ -21,19 +21,40 @@ fn rel_path(path: &Path, root: &Path) -> std::path::PathBuf {
     path.strip_prefix(root).unwrap_or(path).to_path_buf()
 }
 
+/// Options for impact analysis.
+pub struct ImpactOptions {
+    /// Maximum depth for transitive caller discovery (default: 3).
+    pub depth: usize,
+    /// Whether to include type-impacted functions (default: true).
+    pub include_types: bool,
+}
+
+impl Default for ImpactOptions {
+    fn default() -> Self {
+        Self {
+            depth: 3,
+            include_types: true,
+        }
+    }
+}
+
 /// Run impact analysis: find callers, affected tests, and transitive callers.
 /// Paths in the returned result are relative to `root`.
-/// When `include_types` is true, also performs one-hop type expansion: finds
+/// When `opts.include_types` is true, also performs one-hop type expansion: finds
 /// other functions that share type dependencies with the target via `type_edges`.
 pub fn analyze_impact(
     store: &Store,
     target_name: &str,
-    depth: usize,
-    include_types: bool,
     root: &Path,
+    opts: &ImpactOptions,
 ) -> Result<ImpactResult, AnalysisError> {
-    let _span =
-        tracing::info_span!("analyze_impact", target = target_name, depth, include_types).entered();
+    let _span = tracing::info_span!(
+        "analyze_impact",
+        target = target_name,
+        depth = opts.depth,
+        include_types = opts.include_types
+    )
+    .entered();
     let (callers, mut degraded) = build_caller_info(store, target_name, root)?;
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
@@ -49,13 +70,13 @@ pub fn analyze_impact(
         ..t
     })
     .collect();
-    let transitive_callers = if depth > 1 {
-        find_transitive_callers(store, &graph, target_name, depth, root)?
+    let transitive_callers = if opts.depth > 1 {
+        find_transitive_callers(store, &graph, target_name, opts.depth, root)?
     } else {
         Vec::new()
     };
 
-    let type_impacted = if include_types {
+    let type_impacted = if opts.include_types {
         match find_type_impacted(store, target_name, root) {
             Ok(ti) => ti,
             Err(e) => {

@@ -242,7 +242,7 @@ fn print_blame_terminal(data: &BlameData, root: &Path) {
 
 // ─── CLI command ─────────────────────────────────────────────────────────────
 
-pub(crate) fn cmd_blame(target: &str, json: bool, depth: usize, show_callers: bool) -> Result<()> {
+pub(crate) fn cmd_blame(target: &str, depth: usize, show_callers: bool, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_blame", target).entered();
 
     let (store, root, _cqs_dir) = crate::cli::open_project_store_readonly()?;

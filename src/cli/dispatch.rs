@@ -45,7 +45,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Affected { ref base, json }) => cmd_affected(base.as_deref(), json),
         Some(Commands::Batch) => batch::cmd_batch(),
         Some(Commands::Blame { ref args, json }) => {
-            cmd_blame(&args.name, json, args.depth, args.callers)
+            cmd_blame(&args.name, args.depth, args.callers, json)
         }
         Some(Commands::Brief { ref path, json }) => cmd_brief(path, json),
         Some(Commands::Chat) => chat::cmd_chat(),

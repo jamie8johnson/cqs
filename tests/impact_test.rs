@@ -101,8 +101,16 @@ fn test_analyze_impact_with_callers() {
         &[("caller_b", 1, &[("target_fn", 10)])],
     );
 
-    let result =
-        analyze_impact(&store, "target_fn", 1, false, std::path::Path::new("/test")).unwrap();
+    let result = analyze_impact(
+        &store,
+        "target_fn",
+        std::path::Path::new("/test"),
+        &cqs::ImpactOptions {
+            depth: 1,
+            include_types: false,
+        },
+    )
+    .unwrap();
     assert_eq!(result.function_name, "target_fn");
     assert!(
         result.callers.len() >= 2,
@@ -137,8 +145,16 @@ fn test_analyze_impact_with_tests() {
         &[("test_caller", 1, &[("caller_fn", 3)])],
     );
 
-    let result =
-        analyze_impact(&store, "target_fn", 1, false, std::path::Path::new("/test")).unwrap();
+    let result = analyze_impact(
+        &store,
+        "target_fn",
+        std::path::Path::new("/test"),
+        &cqs::ImpactOptions {
+            depth: 1,
+            include_types: false,
+        },
+    )
+    .unwrap();
     assert!(
         result.tests.iter().any(|t| t.name == "test_caller"),
         "test_caller should be found via BFS: test_caller -> caller_fn -> target_fn"
@@ -155,9 +171,11 @@ fn test_analyze_impact_no_callers() {
     let result = analyze_impact(
         &store,
         "isolated_fn",
-        1,
-        false,
         std::path::Path::new("/test"),
+        &cqs::ImpactOptions {
+            depth: 1,
+            include_types: false,
+        },
     )
     .unwrap();
     assert_eq!(result.function_name, "isolated_fn");
@@ -185,8 +203,16 @@ fn test_analyze_impact_transitive_callers() {
     insert_calls(&store, "src/app.rs", &[("indirect", 1, &[("direct", 5)])]);
 
     // depth=2 should find transitive callers
-    let result =
-        analyze_impact(&store, "target_fn", 2, false, std::path::Path::new("/test")).unwrap();
+    let result = analyze_impact(
+        &store,
+        "target_fn",
+        std::path::Path::new("/test"),
+        &cqs::ImpactOptions {
+            depth: 2,
+            include_types: false,
+        },
+    )
+    .unwrap();
     let trans_names: Vec<&str> = result
         .transitive_callers
         .iter()
@@ -221,8 +247,16 @@ fn test_analyze_impact_depth_1_no_transitive() {
     insert_calls(&store, "src/app.rs", &[("indirect", 1, &[("direct", 5)])]);
 
     // depth=1 should NOT include transitive callers
-    let result =
-        analyze_impact(&store, "target_fn", 1, false, std::path::Path::new("/test")).unwrap();
+    let result = analyze_impact(
+        &store,
+        "target_fn",
+        std::path::Path::new("/test"),
+        &cqs::ImpactOptions {
+            depth: 1,
+            include_types: false,
+        },
+    )
+    .unwrap();
     assert!(
         result.transitive_callers.is_empty(),
         "depth=1 should not include transitive callers"
@@ -248,8 +282,16 @@ fn test_suggest_tests_for_untested_caller() {
         &[("untested_caller", 1, &[("target_fn", 5)])],
     );
 
-    let impact =
-        analyze_impact(&store, "target_fn", 1, false, std::path::Path::new("/test")).unwrap();
+    let impact = analyze_impact(
+        &store,
+        "target_fn",
+        std::path::Path::new("/test"),
+        &cqs::ImpactOptions {
+            depth: 1,
+            include_types: false,
+        },
+    )
+    .unwrap();
     let suggestions = suggest_tests(&store, &impact, std::path::Path::new("/test"));
 
     // untested_caller has no tests reaching it, should get a suggestion
@@ -288,8 +330,16 @@ fn test_suggest_tests_no_suggestions_when_tested() {
         &[("test_caller", 1, &[("caller_fn", 3)])],
     );
 
-    let impact =
-        analyze_impact(&store, "target_fn", 1, false, std::path::Path::new("/test")).unwrap();
+    let impact = analyze_impact(
+        &store,
+        "target_fn",
+        std::path::Path::new("/test"),
+        &cqs::ImpactOptions {
+            depth: 1,
+            include_types: false,
+        },
+    )
+    .unwrap();
     let suggestions = suggest_tests(&store, &impact, std::path::Path::new("/test"));
 
     // caller_fn is tested via test_caller — no suggestion needed
@@ -334,8 +384,16 @@ fn test_suggest_tests_generates_correct_name() {
         &[("process_data", 1, &[("target_fn", 5)])],
     );
 
-    let impact =
-        analyze_impact(&store, "target_fn", 1, false, std::path::Path::new("/test")).unwrap();
+    let impact = analyze_impact(
+        &store,
+        "target_fn",
+        std::path::Path::new("/test"),
+        &cqs::ImpactOptions {
+            depth: 1,
+            include_types: false,
+        },
+    )
+    .unwrap();
     let suggestions = suggest_tests(&store, &impact, std::path::Path::new("/test"));
 
     if let Some(suggestion) = suggestions

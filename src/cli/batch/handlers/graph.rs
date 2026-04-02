@@ -133,7 +133,15 @@ pub(in crate::cli::batch) fn dispatch_impact(
     let chunk = &resolved.chunk;
     let depth = depth.clamp(1, 10);
 
-    let result = cqs::analyze_impact(&ctx.store(), &chunk.name, depth, include_types, &ctx.root)?;
+    let result = cqs::analyze_impact(
+        &ctx.store(),
+        &chunk.name,
+        &ctx.root,
+        &cqs::ImpactOptions {
+            depth,
+            include_types,
+        },
+    )?;
 
     let mut json = cqs::impact_to_json(&result);
 
