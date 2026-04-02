@@ -1,3 +1,5 @@
+Remain calm. There is no rush.
+
 # CLAUDE.md
 
 Read the tears. You just woke up.
@@ -12,6 +14,12 @@ cqs - semantic code search with local embeddings
 - Efficiency over ceremony.
 - **Never suggest ending a session.** We have 1M context. Keep working until the user stops. Don't offer to "wrap up", "call it", or "save for next session." If context runs low, update tears and keep going.
 - **Read files before acting on them.** Don't work from memory of what a file "probably" contains. Open it, read the relevant section, then act. This applies to source code, configs, scripts, docs, and especially function signatures. The cost of a Read is negligible; the cost of guessing wrong is a wasted round trip or a subtle bug. If you last read a file more than a few tool calls ago, read it again.
+
+## When Stuck
+
+- Three failed attempts at the same fix → stop, reassess approach
+- Dispatch an agent for hard tasks (fresh context, no accumulated frustration)
+- Don't iterate blindly — diagnose first
 
 ## On Resume
 
