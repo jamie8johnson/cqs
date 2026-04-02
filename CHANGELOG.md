@@ -7,8 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-04-02
+
 ### Added
-- **IEC 61131-3 Structured Text** — 52nd language. FUNCTION_BLOCK, FUNCTION, PROGRAM, METHOD, TYPE, ACTION. Grammar: `jamie8johnson/tree-sitter-structured-text`.
+- **187-query real codebase eval** — 100 function lookup, 40 conceptual, 20 callgraph, 27 gitblame queries against cqs itself. v9-200k 49% R@1, BGE-large 48%, nomic 32%.
+- **`--format text|json`** on all 26 remaining commands via `TextJsonArgs` migration (#751).
+- **`[scoring]` config section** — runtime override of all 9 scoring parameters via `.cqs.toml` (#750).
+- **`ImpactOptions`** struct replaces 5 positional params in `analyze_impact` (#749).
+- **`GatherContext`**, **`QueryContext`**, **`ScoutResources`** option structs — eliminates all `clippy::too_many_arguments` (#747).
+- **Shared cmd/batch JSON builders** — `callers_to_json`, `callees_to_json`, `dead_to_json`, `stale_to_json`, `similar_to_json` (#747).
+- **`load_eval_cases_from_json()`** — load eval queries from external JSON files (#750).
+- **`StoreError::EmbeddingBlobMismatch`** — typed errors for dimension mismatches (#750).
+- **`CQS_CAGRA_MAX_BYTES`** env var — configurable GPU staging memory limit (#746).
+- **`CQS_RRF_K`**, **`CQS_WATCH_*`**, **`CQS_MD_*`** env var overrides (#744).
+- **`CQS_QUERY_CACHE_SIZE`** env var for batch/REPL cache tuning (#744).
+- **Per-query eval diagnostics** (`CQS_EVAL_OUTPUT`) + enrichment ablation (`CQS_SKIP_ENRICHMENT`) (#740).
+
+### Fixed
+- **~40 audit findings** resolved across P1-P4 (PRs #737-751). Zero P1/P2/P3 remaining.
+- **SEC-4**: Canonicalize convert `--output` directory, warn if outside source tree.
+- **RB-5/AC-1/DS-43/CQ-2/PB-7**: P2 fixes — cross-project score normalization, batch dim warning, shared test_map, .cqs-lock for doc writer.
+- **EH-1/5/6**: Error handling — `to_value().ok()` replaced with tracing, `set_permissions` failures logged, notes parse error visible to user.
+- **TC-1/4/5**: Added NaN/Inf tests for reranker and score_candidate, placement test.
+
+### Changed
+- **Code-only search default** — `--include-docs` flag for documentation chunks (#741).
+- **`gather()`** takes `&Embedder` instead of pre-computed embedding (#751).
+- **lib.rs re-exports** — wildcard `pub use module::*` replaces ~70 itemized imports (#747).
+- **`DeadArgs`**, **`StaleArgs`** shared between CLI and batch via `#[command(flatten)]` (#747).
+- **Windowing overlap** scales with model context: `max(64, window/8)` (#743).
+- **Reranker config** wired into `.cqs.toml` (`reranker_model`, `reranker_max_length`) (#743).
+- 5,445 lines of boilerplate doc comments stripped (#739).
+
+### Removed
+- 5 `clippy::too_many_arguments` suppressions (replaced with option structs).
+- Duplicate `find_python` (shared in `convert::find_python`).
+- Dead `display_similar_results_json`, `display_dead_json`.
 
 ## [1.13.0] - 2026-03-31
 
