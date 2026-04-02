@@ -50,14 +50,14 @@ const DETECTORS: &[(&str, Detector)] = &[
 
 /// Scan the index for anti-patterns and suggest notes.
 /// Each detector runs independently — if one fails, the others still produce results.
-pub fn suggest_notes(store: &Store, project_root: &Path) -> Result<Vec<SuggestedNote>, StoreError> {
+pub fn suggest_notes(store: &Store, root: &Path) -> Result<Vec<SuggestedNote>, StoreError> {
     let _span = tracing::info_span!("suggest_notes").entered();
 
     let mut suggestions = Vec::new();
 
     for (name, detector) in DETECTORS {
         let _span = tracing::info_span!("detector", name).entered();
-        match detector(store, project_root) {
+        match detector(store, root) {
             Ok(mut s) => suggestions.append(&mut s),
             Err(e) => tracing::warn!(error = %e, detector = name, "Detector failed"),
         }
@@ -186,7 +186,7 @@ pub(crate) fn is_pascal_case(s: &str) -> bool {
 /// stale mention. Shared by `detect_stale_mentions` and `check_note_staleness`.
 fn find_stale_mentions(
     store: &Store,
-    project_root: &Path,
+    root: &Path,
 ) -> Result<Vec<(String, Vec<String>)>, StoreError> {
     let notes = store.list_notes_summaries()?;
 
@@ -217,7 +217,7 @@ fn find_stale_mentions(
                 MentionKind::File => {
                     // Normalize backslashes to forward slashes for cross-platform path joining
                     let normalized = normalize_slashes(mention);
-                    if !project_root.join(&normalized).exists() {
+                    if !root.join(&normalized).exists() {
                         stale.push(mention.clone());
                     }
                 }
@@ -241,11 +241,8 @@ fn find_stale_mentions(
 }
 
 /// Detect notes with stale mentions (deleted files, removed functions).
-fn detect_stale_mentions(
-    store: &Store,
-    project_root: &Path,
-) -> Result<Vec<SuggestedNote>, StoreError> {
-    let stale_pairs = find_stale_mentions(store, project_root)?;
+fn detect_stale_mentions(store: &Store, root: &Path) -> Result<Vec<SuggestedNote>, StoreError> {
+    let stale_pairs = find_stale_mentions(store, root)?;
 
     Ok(stale_pairs
         .into_iter()
@@ -274,10 +271,10 @@ fn detect_stale_mentions(
 /// one stale mention. Reusable by `notes list --check` and future `health` integration.
 pub fn check_note_staleness(
     store: &Store,
-    project_root: &Path,
+    root: &Path,
 ) -> Result<Vec<(String, Vec<String>)>, StoreError> {
     let _span = tracing::info_span!("check_note_staleness").entered();
-    let result = find_stale_mentions(store, project_root)?;
+    let result = find_stale_mentions(store, root)?;
     tracing::info!(stale_notes = result.len(), "Note staleness check complete");
     Ok(result)
 }

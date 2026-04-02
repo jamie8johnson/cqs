@@ -354,7 +354,7 @@ pub(crate) fn bfs_expand(
 pub(crate) fn fetch_and_assemble(
     store: &Store,
     name_scores: &HashMap<String, (f32, usize)>,
-    project_root: &Path,
+    root: &Path,
 ) -> (Vec<GatheredChunk>, bool) {
     let all_names: Vec<&str> = name_scores.keys().map(|s| s.as_str()).collect();
     let (batch_results, search_degraded) = match store.search_by_names_batch(&all_names, 1) {
@@ -376,13 +376,7 @@ pub(crate) fn fetch_and_assemble(
                 }
                 seen_ids.insert(r.chunk.id.clone());
 
-                chunks.push(GatheredChunk::from_search(
-                    r,
-                    project_root,
-                    *score,
-                    *depth,
-                    None,
-                ));
+                chunks.push(GatheredChunk::from_search(r, root, *score, *depth, None));
             }
         }
     }
@@ -412,17 +406,10 @@ pub fn gather(
     query_embedding: &crate::Embedding,
     query_text: &str,
     opts: &GatherOptions,
-    project_root: &Path,
+    root: &Path,
 ) -> Result<GatherResult, AnalysisError> {
     let graph = store.get_call_graph()?;
-    gather_with_graph(
-        store,
-        query_embedding,
-        query_text,
-        opts,
-        project_root,
-        &graph,
-    )
+    gather_with_graph(store, query_embedding, query_text, opts, root, &graph)
 }
 
 /// Like [`gather`] but accepts a pre-loaded call graph.
@@ -434,7 +421,7 @@ pub fn gather_with_graph(
     query_embedding: &crate::Embedding,
     query_text: &str,
     opts: &GatherOptions,
-    project_root: &Path,
+    root: &Path,
     graph: &CallGraph,
 ) -> Result<GatherResult, AnalysisError> {
     let _span = tracing::info_span!(
@@ -481,7 +468,7 @@ pub fn gather_with_graph(
     );
 
     // 3. Batch-fetch chunks, deduplicate
-    let (mut chunks, search_degraded) = fetch_and_assemble(store, &name_scores, project_root);
+    let (mut chunks, search_degraded) = fetch_and_assemble(store, &name_scores, root);
 
     // 4. Sort by score desc, truncate to limit, re-sort to reading order
     sort_and_truncate(&mut chunks, opts.limit);
@@ -509,7 +496,7 @@ pub fn gather_cross_index(
     query_embedding: &crate::Embedding,
     query_text: &str,
     opts: &GatherOptions,
-    project_root: &Path,
+    root: &Path,
 ) -> Result<GatherResult, AnalysisError> {
     gather_cross_index_with_index(
         project_store,
@@ -517,7 +504,7 @@ pub fn gather_cross_index(
         query_embedding,
         query_text,
         opts,
-        project_root,
+        root,
         None,
     )
 }
@@ -530,7 +517,7 @@ pub fn gather_cross_index_with_index(
     query_embedding: &crate::Embedding,
     query_text: &str,
     opts: &GatherOptions,
-    project_root: &Path,
+    root: &Path,
     project_index: Option<&dyn crate::index::VectorIndex>,
 ) -> Result<GatherResult, AnalysisError> {
     let _span = tracing::info_span!(
@@ -706,8 +693,7 @@ pub fn gather_cross_index_with_index(
     );
 
     // 5. Batch-fetch project chunks
-    let (project_chunks, search_degraded) =
-        fetch_and_assemble(project_store, &name_scores, project_root);
+    let (project_chunks, search_degraded) = fetch_and_assemble(project_store, &name_scores, root);
 
     // 6. Combine ref seeds + project chunks, sort by score, truncate, re-sort to reading order
     let mut all_chunks = ref_chunks;

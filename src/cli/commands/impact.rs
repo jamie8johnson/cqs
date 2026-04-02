@@ -4,6 +4,7 @@ use anyhow::Result;
 
 use cqs::{
     analyze_impact, format_test_suggestions, impact_to_json, impact_to_mermaid, suggest_tests,
+    ImpactOptions,
 };
 
 use super::resolve::resolve_target;
@@ -25,7 +26,15 @@ pub(crate) fn cmd_impact(
     let chunk = resolved.chunk;
 
     // Run shared impact analysis
-    let result = analyze_impact(&store, &chunk.name, depth, include_types, &root)?;
+    let result = analyze_impact(
+        &store,
+        &chunk.name,
+        &root,
+        &ImpactOptions {
+            depth,
+            include_types,
+        },
+    )?;
 
     // Compute test suggestions if requested
     let suggestions = if do_suggest_tests {

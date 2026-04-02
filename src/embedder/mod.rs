@@ -92,6 +92,7 @@ impl std::fmt::Display for EmbeddingDimensionError {
 
 impl std::error::Error for EmbeddingDimensionError {}
 
+// NOTE: new() is the common path (internal, known-good data). try_new() is for untrusted input.
 impl Embedding {
     /// Create a new embedding from raw vector data (unchecked).
     ///
