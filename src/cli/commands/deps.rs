@@ -9,9 +9,15 @@ use colored::Colorize;
 ///
 /// Forward (default): `cqs deps Config` — who uses this type?
 /// Reverse: `cqs deps --reverse func_name` — what types does this function use?
-pub(crate) fn cmd_deps(name: &str, reverse: bool, json: bool) -> Result<()> {
+pub(crate) fn cmd_deps(
+    ctx: &crate::cli::CommandContext,
+    name: &str,
+    reverse: bool,
+    json: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_deps", name, reverse).entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
 
     if reverse {
         let types = store
@@ -53,7 +59,7 @@ pub(crate) fn cmd_deps(name: &str, reverse: bool, json: bool) -> Result<()> {
                 .map(|c| {
                     serde_json::json!({
                         "name": c.name,
-                        "file": cqs::rel_display(&c.file, &root),
+                        "file": cqs::rel_display(&c.file, root),
                         "line_start": c.line_start,
                         "chunk_type": c.chunk_type.to_string(),
                     })
@@ -69,7 +75,7 @@ pub(crate) fn cmd_deps(name: &str, reverse: bool, json: bool) -> Result<()> {
                 println!(
                     "  {} ({}:{})",
                     user.name.cyan(),
-                    cqs::rel_display(&user.file, &root),
+                    cqs::rel_display(&user.file, root),
                     user.line_start
                 );
             }

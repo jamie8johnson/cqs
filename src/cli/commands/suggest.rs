@@ -3,11 +3,12 @@
 use anyhow::Result;
 use colored::Colorize;
 
-pub(crate) fn cmd_suggest(json: bool, apply: bool) -> Result<()> {
+pub(crate) fn cmd_suggest(ctx: &crate::cli::CommandContext, json: bool, apply: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_suggest", apply).entered();
 
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
-    let suggestions = cqs::suggest::suggest_notes(&store, &root)?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let suggestions = cqs::suggest::suggest_notes(store, root)?;
 
     if suggestions.is_empty() {
         if json {
@@ -33,10 +34,10 @@ pub(crate) fn cmd_suggest(json: bool, apply: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&json_val)?);
 
         if apply {
-            apply_suggestions(&suggestions, &root, &store)?;
+            apply_suggestions(&suggestions, root, store)?;
         }
     } else if apply {
-        apply_suggestions(&suggestions, &root, &store)?;
+        apply_suggestions(&suggestions, root, store)?;
         println!(
             "Applied {} suggestion{}.",
             suggestions.len(),

@@ -17,8 +17,6 @@ use cqs::parser::ChunkType;
 use cqs::store::Store;
 use cqs::{compute_hints, FunctionHints, COMMON_TYPES};
 
-use crate::cli::find_project_root;
-
 // ─── Shared core functions ──────────────────────────────────────────────────
 
 /// Validate path (traversal, size) and read file contents.
@@ -262,20 +260,25 @@ pub(crate) fn build_focused_output(
 
 // ─── CLI commands ───────────────────────────────────────────────────────────
 
-pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()> {
+pub(crate) fn cmd_read(
+    ctx: &crate::cli::CommandContext,
+    path: &str,
+    focus: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_read", path).entered();
 
     // Focused read mode
     if let Some(focus) = focus {
-        return cmd_read_focused(focus, json);
+        return cmd_read_focused(ctx, focus, json);
     }
 
-    let root = find_project_root();
-    let (file_path, content) = validate_and_read_file(&root, path)?;
+    let root = &ctx.root;
+    let (file_path, content) = validate_and_read_file(root, path)?;
 
     // Build note header
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let audit_mode = load_audit_state(&cqs_dir);
+    let cqs_dir = &ctx.cqs_dir;
+    let audit_mode = load_audit_state(cqs_dir);
     let notes_path = root.join("docs/notes.toml");
     let notes = if notes_path.exists() {
         parse_notes(&notes_path).unwrap_or_else(|e| {
@@ -307,12 +310,14 @@ pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()
     Ok(())
 }
 
-fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
+fn cmd_read_focused(ctx: &crate::cli::CommandContext, focus: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_read_focused", %focus).entered();
 
-    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let cqs_dir = &ctx.cqs_dir;
 
-    let audit_mode = load_audit_state(&cqs_dir);
+    let audit_mode = load_audit_state(cqs_dir);
     let notes_path = root.join("docs/notes.toml");
     let notes = if notes_path.exists() {
         parse_notes(&notes_path).unwrap_or_else(|e| {
@@ -323,7 +328,7 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
         vec![]
     };
 
-    let result = build_focused_output(&store, focus, &root, &audit_mode, &notes)?;
+    let result = build_focused_output(store, focus, root, &audit_mode, &notes)?;
 
     if json {
         let mut json_val = serde_json::json!({

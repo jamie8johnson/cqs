@@ -11,6 +11,7 @@ use super::resolve::resolve_target;
 use crate::cli::OutputFormat;
 
 pub(crate) fn cmd_impact(
+    ctx: &crate::cli::CommandContext,
     name: &str,
     depth: usize,
     format: &OutputFormat,
@@ -18,18 +19,19 @@ pub(crate) fn cmd_impact(
     include_types: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_impact", name).entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
     let depth = depth.clamp(1, 10);
 
     // Resolve target
-    let resolved = resolve_target(&store, name)?;
+    let resolved = resolve_target(store, name)?;
     let chunk = resolved.chunk;
 
     // Run shared impact analysis
     let result = analyze_impact(
-        &store,
+        store,
         &chunk.name,
-        &root,
+        root,
         &ImpactOptions {
             depth,
             include_types,
@@ -38,7 +40,7 @@ pub(crate) fn cmd_impact(
 
     // Compute test suggestions if requested
     let suggestions = if do_suggest_tests {
-        suggest_tests(&store, &result, &root)
+        suggest_tests(store, &result, root)
     } else {
         Vec::new()
     };
@@ -61,8 +63,8 @@ pub(crate) fn cmd_impact(
         }
         println!("{}", serde_json::to_string_pretty(&json)?);
     } else {
-        let rel_file = cqs::rel_display(&chunk.file, &root);
-        display_impact_text(&result, &root, &rel_file);
+        let rel_file = cqs::rel_display(&chunk.file, root);
+        display_impact_text(&result, root, &rel_file);
 
         if do_suggest_tests && !suggestions.is_empty() {
             display_test_suggestions(&suggestions);

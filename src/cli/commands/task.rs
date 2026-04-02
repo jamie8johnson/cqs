@@ -16,7 +16,7 @@ const WATERFALL_PLACEMENT: f64 = 0.10;
 // Notes section takes whatever budget remains (no explicit constant needed).
 
 pub(crate) fn cmd_task(
-    cli: &crate::cli::Cli,
+    ctx: &crate::cli::CommandContext,
     description: &str,
     limit: usize,
     json: bool,
@@ -24,21 +24,22 @@ pub(crate) fn cmd_task(
     brief: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_task", ?max_tokens, brief).entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
-    let embedder = Embedder::new(cli.model_config().clone())?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let embedder = Embedder::new(ctx.model_config().clone())?;
     let limit = limit.clamp(1, 10);
 
-    let result = task(&store, &embedder, description, &root, limit)?;
+    let result = task(store, &embedder, description, root, limit)?;
 
     if brief {
-        output_brief(&result, &root, json)?;
+        output_brief(&result, root, json)?;
     } else if let Some(budget) = max_tokens {
-        output_with_budget(&result, &root, &embedder, budget, json)?;
+        output_with_budget(&result, root, &embedder, budget, json)?;
     } else if json {
         let output = task_to_json(&result);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        output_text(&result, &root);
+        output_text(&result, root);
     }
 
     Ok(())

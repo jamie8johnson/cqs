@@ -22,9 +22,14 @@ fn risk_label(level: &RiskLevel) -> colored::ColoredString {
     }
 }
 
-pub(crate) fn cmd_affected(base: Option<&str>, json: bool) -> Result<()> {
+pub(crate) fn cmd_affected(
+    ctx: &crate::cli::CommandContext,
+    base: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_affected").entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
 
     // 1. Get diff text
     let diff_text = super::run_git_diff(base)?;
@@ -41,7 +46,7 @@ pub(crate) fn cmd_affected(base: Option<&str>, json: bool) -> Result<()> {
     }
 
     // 3. Map hunks to functions
-    let changed = map_hunks_to_functions(&store, &hunks);
+    let changed = map_hunks_to_functions(store, &hunks);
     if changed.is_empty() {
         if json {
             println!("{}", serde_json::to_string_pretty(&empty_affected_json())?);
@@ -52,7 +57,7 @@ pub(crate) fn cmd_affected(base: Option<&str>, json: bool) -> Result<()> {
     }
 
     // 4. Analyze impact (callers + tests + risk)
-    let result = analyze_diff_impact(&store, changed, &root)?;
+    let result = analyze_diff_impact(store, changed, root)?;
 
     // 5. Display
     if json {
@@ -61,7 +66,7 @@ pub(crate) fn cmd_affected(base: Option<&str>, json: bool) -> Result<()> {
         json_val["overall_risk"] = serde_json::json!(overall_risk_label(&result));
         println!("{}", serde_json::to_string_pretty(&json_val)?);
     } else {
-        display_affected_text(&result, &root);
+        display_affected_text(&result, root);
     }
 
     Ok(())

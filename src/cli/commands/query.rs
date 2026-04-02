@@ -37,7 +37,7 @@ fn emit_empty_results(query: &str, json: bool, context: Option<&str>) -> ! {
 }
 
 /// Execute a semantic search query and display results
-pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
+pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result<()> {
     let query_preview = if query.len() > 200 {
         // Find a valid UTF-8 boundary near 200 bytes
         let mut end = 200;
@@ -51,7 +51,10 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let _span =
         tracing::info_span!("cmd_query", query_len = query.len(), query = %query_preview).entered();
 
-    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
+    let cli = ctx.cli;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let cqs_dir = &ctx.cqs_dir;
 
     // Name-only mode: search by function/struct name, skip embedding entirely
     if cli.name_only {
@@ -59,9 +62,9 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
             bail!("--rerank requires embedding search, incompatible with --name-only");
         }
         if let Some(ref ref_name) = cli.ref_name {
-            return cmd_query_ref_name_only(cli, ref_name, query, &root);
+            return cmd_query_ref_name_only(cli, ref_name, query, root);
         }
-        return cmd_query_name_only(cli, &store, query, &root);
+        return cmd_query_name_only(cli, store, query, root);
     }
 
     // Over-retrieve when reranking to give the cross-encoder more candidates
@@ -139,7 +142,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
             query,
             &query_embedding,
             &filter,
-            &root,
+            root,
             &embedder,
         );
     }
@@ -149,9 +152,9 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         query,
         query_embedding: &query_embedding,
         filter: &filter,
-        store: &store,
-        cqs_dir: &cqs_dir,
-        root: &root,
+        store,
+        cqs_dir,
+        root,
         embedder: &embedder,
         effective_limit,
     })

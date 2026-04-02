@@ -6,18 +6,19 @@ use colored::Colorize;
 use cqs::{scout, scout_to_json, Embedder};
 
 pub(crate) fn cmd_scout(
-    cli: &crate::cli::Cli,
+    ctx: &crate::cli::CommandContext,
     task: &str,
     limit: usize,
     json: bool,
     max_tokens: Option<usize>,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_scout", task, ?max_tokens).entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
-    let embedder = Embedder::new(cli.model_config().clone())?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let embedder = Embedder::new(ctx.model_config().clone())?;
     let limit = limit.clamp(1, 10);
 
-    let result = scout(&store, &embedder, task, &root, limit)?;
+    let result = scout(store, &embedder, task, root, limit)?;
 
     // Token-budgeted content: fetch chunk content and pack into budget
     let (content_map, token_info) = if let Some(budget) = max_tokens {
@@ -114,7 +115,7 @@ pub(crate) fn cmd_scout(
             println!("{}", "No relevant code found.".dimmed());
         } else {
             for group in &result.file_groups {
-                let rel = cqs::rel_display(&group.file, &root);
+                let rel = cqs::rel_display(&group.file, root);
 
                 println!();
                 print!(

@@ -6,7 +6,7 @@ use cqs::plan::{plan, plan_to_json};
 use cqs::Embedder;
 
 pub(crate) fn cmd_plan(
-    cli: &crate::cli::Cli,
+    ctx: &crate::cli::CommandContext,
     description: &str,
     limit: usize,
     json: bool,
@@ -14,12 +14,13 @@ pub(crate) fn cmd_plan(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_plan", description).entered();
 
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
     let embedder =
-        Embedder::new(cli.model_config().clone()).context("Failed to create embedder")?;
+        Embedder::new(ctx.model_config().clone()).context("Failed to create embedder")?;
 
     let result =
-        plan(&store, &embedder, description, &root, limit).context("Plan generation failed")?;
+        plan(store, &embedder, description, root, limit).context("Plan generation failed")?;
 
     if json {
         let mut json_val = plan_to_json(&result);
@@ -28,7 +29,7 @@ pub(crate) fn cmd_plan(
         }
         println!("{}", serde_json::to_string_pretty(&json_val)?);
     } else {
-        display_plan_text(&result, &root, tokens);
+        display_plan_text(&result, root, tokens);
     }
 
     Ok(())

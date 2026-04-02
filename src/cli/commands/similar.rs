@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 
 use cqs::{HnswIndex, SearchFilter, Store};
 
-use crate::cli::{display, Cli};
+use crate::cli::display;
 
 use super::resolve::parse_target;
 
@@ -35,7 +35,7 @@ fn resolve_target(store: &Store, name: &str) -> Result<(String, String)> {
 }
 
 pub(crate) fn cmd_similar(
-    cli: &Cli,
+    ctx: &crate::cli::CommandContext,
     name: &str,
     limit: usize,
     threshold: f32,
@@ -43,10 +43,12 @@ pub(crate) fn cmd_similar(
 ) -> Result<()> {
     crate::cli::validate_finite_f32(threshold, "threshold")?;
     let _span = tracing::info_span!("cmd_similar", name).entered();
-    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let cqs_dir = &ctx.cqs_dir;
 
     // Resolve name to chunk
-    let (chunk_id, chunk_name) = resolve_target(&store, name)?;
+    let (chunk_id, chunk_name) = resolve_target(store, name)?;
 
     // Fetch embedding for the target chunk
     let (source_chunk, embedding) =
@@ -60,7 +62,7 @@ pub(crate) fn cmd_similar(
             })?;
 
     // Build search filter (code only, no notes)
-    let languages = match &cli.lang {
+    let languages = match &ctx.cli.lang {
         Some(l) => Some(vec![l.parse().context(format!(
             "Invalid language. Valid: {}",
             cqs::parser::Language::valid_names_display()
@@ -70,12 +72,12 @@ pub(crate) fn cmd_similar(
 
     let filter = SearchFilter {
         languages,
-        path_pattern: cli.path.clone(),
+        path_pattern: ctx.cli.path.clone(),
         ..Default::default()
     };
 
     // Load vector index
-    let index = HnswIndex::try_load_with_ef(&cqs_dir, None, Some(store.dim()));
+    let index = HnswIndex::try_load_with_ef(cqs_dir, None, Some(store.dim()));
 
     // Search with the chunk's embedding as query (request one extra to exclude self)
     let results = store.search_filtered_with_index(
@@ -106,7 +108,7 @@ pub(crate) fn cmd_similar(
     if json {
         display::display_similar_results_json(&filtered, &chunk_name)?;
     } else {
-        if !cli.quiet {
+        if !ctx.cli.quiet {
             println!(
                 "Similar to '{}' ({}):",
                 chunk_name,
@@ -118,7 +120,13 @@ pub(crate) fn cmd_similar(
             .into_iter()
             .map(cqs::store::UnifiedResult::Code)
             .collect();
-        display::display_unified_results(&unified, &root, cli.no_content, cli.context, None)?;
+        display::display_unified_results(
+            &unified,
+            root,
+            ctx.cli.no_content,
+            ctx.cli.context,
+            None,
+        )?;
     }
 
     Ok(())

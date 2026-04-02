@@ -254,36 +254,38 @@ pub(crate) fn explain_to_json(data: &ExplainData, root: &Path) -> serde_json::Va
 // ─── CLI command ────────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_explain(
-    cli: &crate::cli::Cli,
+    ctx: &crate::cli::CommandContext,
     target: &str,
     json: bool,
     max_tokens: Option<usize>,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_explain", target).entered();
-    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let cqs_dir = &ctx.cqs_dir;
 
     let data = build_explain_data(
-        &store,
-        &cqs_dir,
+        store,
+        cqs_dir,
         target,
         max_tokens,
         None,
         None,
-        cli.model_config(),
+        ctx.model_config(),
     )?;
 
     // Proactive staleness warning
-    if !cli.quiet && !cli.no_stale_check {
+    if !ctx.cli.quiet && !ctx.cli.no_stale_check {
         if let Some(file_str) = data.chunk.file.to_str() {
-            staleness::warn_stale_results(&store, &[file_str], &root);
+            staleness::warn_stale_results(store, &[file_str], root);
         }
     }
 
     if json {
-        let output = explain_to_json(&data, &root);
+        let output = explain_to_json(&data, root);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        print_explain_terminal(&data, &root);
+        print_explain_terminal(&data, root);
     }
 
     Ok(())

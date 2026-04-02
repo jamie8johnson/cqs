@@ -5,10 +5,16 @@ use std::collections::{HashMap, VecDeque};
 
 use super::resolve::resolve_target;
 
-pub(crate) fn cmd_test_map(name: &str, max_depth: usize, json: bool) -> Result<()> {
+pub(crate) fn cmd_test_map(
+    ctx: &crate::cli::CommandContext,
+    name: &str,
+    max_depth: usize,
+    json: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_test_map", name).entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
-    let resolved = resolve_target(&store, name)?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let resolved = resolve_target(store, name)?;
     let target_name = resolved.chunk.name.clone();
 
     let graph = store
@@ -62,7 +68,7 @@ pub(crate) fn cmd_test_map(name: &str, max_depth: usize, json: bool) -> Result<(
                         .map(|(_, p)| p.clone())
                         .unwrap_or_default();
                 }
-                let rel_file = cqs::rel_display(&test.file, &root);
+                let rel_file = cqs::rel_display(&test.file, root);
                 matches.push(TestMatch {
                     name: test.name.clone(),
                     file: rel_file,

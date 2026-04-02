@@ -5,17 +5,16 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 use cqs::store::{DeadConfidence, DeadFunction};
 
-use crate::cli::Cli;
-
 /// Find functions/methods with no callers in the indexed codebase
 pub(crate) fn cmd_dead(
-    cli: &Cli,
+    ctx: &crate::cli::CommandContext,
     json: bool,
     include_pub: bool,
     min_level: DeadConfidence,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_dead").entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
     let (confident, possibly_pub) = store
         .find_dead_code(include_pub)
         .context("Failed to detect dead code")?;
@@ -31,9 +30,9 @@ pub(crate) fn cmd_dead(
         .collect();
 
     if json {
-        display_dead_json(&confident, &possibly_pub, &root)?;
+        display_dead_json(&confident, &possibly_pub, root)?;
     } else {
-        display_dead_text(&confident, &possibly_pub, &root, cli.quiet);
+        display_dead_text(&confident, &possibly_pub, root, ctx.cli.quiet);
     }
 
     Ok(())

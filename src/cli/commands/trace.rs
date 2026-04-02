@@ -11,6 +11,7 @@ use super::resolve::resolve_target;
 use crate::cli::OutputFormat;
 
 pub(crate) fn cmd_trace(
+    ctx: &crate::cli::CommandContext,
     source: &str,
     target: &str,
     max_depth: usize,
@@ -18,12 +19,13 @@ pub(crate) fn cmd_trace(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_trace", source, target).entered();
 
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
 
     // Resolve source and target to chunk names
-    let source_resolved = resolve_target(&store, source)?;
+    let source_resolved = resolve_target(store, source)?;
     let source_chunk = source_resolved.chunk;
-    let target_resolved = resolve_target(&store, target)?;
+    let target_resolved = resolve_target(store, target)?;
     let target_chunk = target_resolved.chunk;
 
     let source_name = source_chunk.name.clone();
@@ -32,7 +34,7 @@ pub(crate) fn cmd_trace(
     // Trivial case: source == target
     if source_name == target_name {
         if matches!(format, OutputFormat::Json) {
-            let rel_file = cqs::rel_display(&source_chunk.file, &root);
+            let rel_file = cqs::rel_display(&source_chunk.file, root);
             let result = serde_json::json!({
                 "source": source_name,
                 "target": target_name,
@@ -41,7 +43,7 @@ pub(crate) fn cmd_trace(
             });
             println!("{}", serde_json::to_string_pretty(&result)?);
         } else if matches!(format, OutputFormat::Mermaid) {
-            let rel_file = cqs::rel_display(&source_chunk.file, &root);
+            let rel_file = cqs::rel_display(&source_chunk.file, root);
             println!("graph TD");
             println!(
                 "    A[\"{} ({}:{})\"]",
@@ -72,7 +74,7 @@ pub(crate) fn cmd_trace(
                 for name in &names {
                     let entry = match batch_results.get(name.as_str()).and_then(|v| v.first()) {
                         Some(r) => {
-                            let rel = cqs::rel_display(&r.chunk.file, &root);
+                            let rel = cqs::rel_display(&r.chunk.file, root);
                             serde_json::json!({
                                 "name": name,
                                 "file": rel,
@@ -93,7 +95,7 @@ pub(crate) fn cmd_trace(
                 });
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else if matches!(format, OutputFormat::Mermaid) {
-                format_mermaid(&store, &root, &names)?;
+                format_mermaid(store, root, &names)?;
             } else {
                 println!(
                     "Call path from {} to {} ({} hop{}):",
@@ -116,7 +118,7 @@ pub(crate) fn cmd_trace(
                     };
                     match batch_results.get(name.as_str()).and_then(|v| v.first()) {
                         Some(r) => {
-                            let rel = cqs::rel_display(&r.chunk.file, &root);
+                            let rel = cqs::rel_display(&r.chunk.file, root);
                             println!("{}{} ({}:{})", prefix, name.cyan(), rel, r.chunk.line_start);
                         }
                         None => {

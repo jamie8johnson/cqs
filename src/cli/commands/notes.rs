@@ -68,15 +68,16 @@ pub(crate) enum NotesCommand {
     },
 }
 
-pub(crate) fn cmd_notes(cli: &Cli, subcmd: &NotesCommand) -> Result<()> {
+pub(crate) fn cmd_notes(ctx: &crate::cli::CommandContext, subcmd: &NotesCommand) -> Result<()> {
     let _span = tracing::info_span!("cmd_notes").entered();
+    let cli = ctx.cli;
     match subcmd {
         NotesCommand::List {
             warnings,
             patterns,
             json,
             check,
-        } => cmd_notes_list(cli, *warnings, *patterns, *json, *check),
+        } => cmd_notes_list(ctx, *warnings, *patterns, *json, *check),
         NotesCommand::Add {
             text,
             sentiment,
@@ -393,13 +394,13 @@ fn cmd_notes_remove(cli: &Cli, text: &str, no_reindex: bool) -> Result<()> {
 
 /// List notes from docs/notes.toml
 fn cmd_notes_list(
-    cli: &Cli,
+    ctx: &crate::cli::CommandContext,
     warnings_only: bool,
     patterns_only: bool,
     json: bool,
     check: bool,
 ) -> Result<()> {
-    let root = find_project_root();
+    let root = &ctx.root;
     let notes_path = root.join("docs/notes.toml");
 
     if !notes_path.exists() {
@@ -415,8 +416,7 @@ fn cmd_notes_list(
 
     // Staleness check (requires store)
     let staleness: std::collections::HashMap<String, Vec<String>> = if check {
-        let (store, _, _) = crate::cli::open_project_store_readonly()?;
-        cqs::suggest::check_note_staleness(&store, &root)?
+        cqs::suggest::check_note_staleness(&ctx.store, root)?
             .into_iter()
             .collect()
     } else {
@@ -437,7 +437,7 @@ fn cmd_notes_list(
         })
         .collect();
 
-    if json || cli.json {
+    if json || ctx.cli.json {
         let json_notes: Vec<_> = filtered
             .iter()
             .map(|n| {

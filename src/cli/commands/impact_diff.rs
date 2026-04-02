@@ -19,13 +19,14 @@ fn empty_impact_json() -> serde_json::Value {
 }
 
 pub(crate) fn cmd_impact_diff(
-    _cli: &crate::cli::Cli,
+    ctx: &crate::cli::CommandContext,
     base: Option<&str>,
     from_stdin: bool,
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_impact_diff").entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
 
     // 1. Get diff text
     let diff_text = if from_stdin {
@@ -46,7 +47,7 @@ pub(crate) fn cmd_impact_diff(
     }
 
     // 3. Map hunks to functions
-    let changed = map_hunks_to_functions(&store, &hunks);
+    let changed = map_hunks_to_functions(store, &hunks);
 
     if changed.is_empty() {
         if json {
@@ -58,14 +59,14 @@ pub(crate) fn cmd_impact_diff(
     }
 
     // 4. Analyze impact
-    let result = analyze_diff_impact(&store, changed, &root)?;
+    let result = analyze_diff_impact(store, changed, root)?;
 
     // 5. Display
     if json {
         let json_val = diff_impact_to_json(&result);
         println!("{}", serde_json::to_string_pretty(&json_val)?);
     } else {
-        display_diff_impact_text(&result, &root);
+        display_diff_impact_text(&result, root);
     }
 
     Ok(())
