@@ -42,17 +42,24 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     cli.limit = cli.limit.clamp(1, 100);
 
     match cli.command {
-        Some(Commands::Affected { ref base, json }) => cmd_affected(base.as_deref(), json),
+        Some(Commands::Affected {
+            ref base,
+            ref output,
+        }) => cmd_affected(base.as_deref(), output.json),
         Some(Commands::Batch) => batch::cmd_batch(),
-        Some(Commands::Blame { ref args, json }) => {
-            cmd_blame(&args.name, args.depth, args.callers, json)
-        }
-        Some(Commands::Brief { ref path, json }) => cmd_brief(path, json),
+        Some(Commands::Blame {
+            ref args,
+            ref output,
+        }) => cmd_blame(&args.name, args.depth, args.callers, output.json),
+        Some(Commands::Brief {
+            ref path,
+            ref output,
+        }) => cmd_brief(path, output.json),
         Some(Commands::Chat) => chat::cmd_chat(),
         Some(Commands::Init) => cmd_init(&cli),
         Some(Commands::Doctor { fix }) => cmd_doctor(cli.model.as_deref(), fix),
         Some(Commands::Index { ref args }) => cmd_index(&cli, args),
-        Some(Commands::Stats { json }) => cmd_stats(&cli, json),
+        Some(Commands::Stats { ref output }) => cmd_stats(&cli, output.json),
         Some(Commands::Watch {
             debounce,
             no_ignore,
@@ -65,21 +72,27 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Deps {
             ref name,
             reverse,
-            json,
-        }) => cmd_deps(name, reverse, json),
-        Some(Commands::Callers { ref name, json }) => cmd_callers(name, json),
-        Some(Commands::Callees { ref name, json }) => cmd_callees(name, json),
+            ref output,
+        }) => cmd_deps(name, reverse, output.json),
+        Some(Commands::Callers {
+            ref name,
+            ref output,
+        }) => cmd_callers(name, output.json),
+        Some(Commands::Callees {
+            ref name,
+            ref output,
+        }) => cmd_callees(name, output.json),
         Some(Commands::Onboard {
             ref query,
             depth,
-            json,
+            ref output,
             tokens,
-        }) => cmd_onboard(&cli, query, depth, json, tokens),
+        }) => cmd_onboard(&cli, query, depth, output.json, tokens),
         Some(Commands::Neighbors {
             ref name,
             limit,
-            json,
-        }) => cmd_neighbors(name, limit, json),
+            ref output,
+        }) => cmd_neighbors(name, limit, output.json),
         Some(Commands::Notes { ref subcmd }) => cmd_notes(&cli, subcmd),
         Some(Commands::Ref { ref subcmd }) => cmd_ref(&cli, subcmd),
         Some(Commands::Diff {
@@ -87,31 +100,38 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref target,
             threshold,
             ref lang,
-            json,
-        }) => cmd_diff(source, target.as_deref(), threshold, lang.as_deref(), json),
+            ref output,
+        }) => cmd_diff(
+            source,
+            target.as_deref(),
+            threshold,
+            lang.as_deref(),
+            output.json,
+        ),
         Some(Commands::Drift {
             ref reference,
             threshold,
             min_drift,
             ref lang,
             limit,
-            json,
+            ref output,
         }) => cmd_drift(
             reference,
             threshold,
             min_drift,
             lang.as_deref(),
             limit,
-            json,
+            output.json,
         ),
         Some(Commands::Explain {
             ref name,
-            json,
+            ref output,
             tokens,
-        }) => cmd_explain(&cli, name, json, tokens),
-        Some(Commands::Similar { ref args, json }) => {
-            cmd_similar(&cli, &args.name, args.limit, args.threshold, json)
-        }
+        }) => cmd_explain(&cli, name, output.json, tokens),
+        Some(Commands::Similar {
+            ref args,
+            ref output,
+        }) => cmd_similar(&cli, &args.name, args.limit, args.threshold, output.json),
         Some(Commands::Impact {
             ref args,
             ref output,
@@ -128,8 +148,8 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::ImpactDiff {
             ref base,
             stdin,
-            json,
-        }) => cmd_impact_diff(&cli, base.as_deref(), stdin, json),
+            ref output,
+        }) => cmd_impact_diff(&cli, base.as_deref(), stdin, output.json),
         Some(Commands::Review {
             ref base,
             stdin,
@@ -159,20 +179,27 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::TestMap {
             ref name,
             depth,
-            json,
-        }) => cmd_test_map(name, depth, json),
-        Some(Commands::Context { ref args, json }) => cmd_context(
+            ref output,
+        }) => cmd_test_map(name, depth, output.json),
+        Some(Commands::Context {
+            ref args,
+            ref output,
+        }) => cmd_context(
             &cli,
             &args.path,
-            json,
+            output.json,
             args.summary,
             args.compact,
             args.tokens,
         ),
-        Some(Commands::Dead { ref args, json }) => {
-            cmd_dead(&cli, json, args.include_pub, args.min_confidence)
-        }
-        Some(Commands::Gather { ref args, json }) => cmd_gather(&super::commands::GatherContext {
+        Some(Commands::Dead {
+            ref args,
+            ref output,
+        }) => cmd_dead(&cli, output.json, args.include_pub, args.min_confidence),
+        Some(Commands::Gather {
+            ref args,
+            ref output,
+        }) => cmd_gather(&super::commands::GatherContext {
             cli: &cli,
             query: &args.query,
             expand: args.expand,
@@ -180,50 +207,57 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             limit: args.limit,
             max_tokens: args.tokens,
             ref_name: args.ref_name.as_deref(),
-            json,
+            json: output.json,
         }),
         Some(Commands::Project { ref subcmd }) => cmd_project(subcmd, cli.model_config()),
-        Some(Commands::Gc { json }) => cmd_gc(json),
-        Some(Commands::Health { json }) => cmd_health(json),
+        Some(Commands::Gc { ref output }) => cmd_gc(output.json),
+        Some(Commands::Health { ref output }) => cmd_health(output.json),
         Some(Commands::AuditMode {
             ref state,
             ref expires,
-            json,
-        }) => cmd_audit_mode(state.as_ref(), expires, json),
-        Some(Commands::Stale { json, count_only }) => cmd_stale(&cli, json, count_only),
-        Some(Commands::Suggest { json, apply }) => cmd_suggest(json, apply),
+            ref output,
+        }) => cmd_audit_mode(state.as_ref(), expires, output.json),
+        Some(Commands::Stale {
+            ref output,
+            count_only,
+        }) => cmd_stale(&cli, output.json, count_only),
+        Some(Commands::Suggest { ref output, apply }) => cmd_suggest(output.json, apply),
         Some(Commands::Read {
             ref path,
             ref focus,
-            json,
-        }) => cmd_read(path, focus.as_deref(), json),
-        Some(Commands::Reconstruct { ref path, json }) => cmd_reconstruct(path, json),
+            ref output,
+        }) => cmd_read(path, focus.as_deref(), output.json),
+        Some(Commands::Reconstruct {
+            ref path,
+            ref output,
+        }) => cmd_reconstruct(path, output.json),
         Some(Commands::Related {
             ref name,
             limit,
-            json,
-        }) => cmd_related(&cli, name, limit, json),
+            ref output,
+        }) => cmd_related(&cli, name, limit, output.json),
         Some(Commands::Where {
             ref description,
             limit,
-            json,
-        }) => cmd_where(description, limit, json, cli.model_config()),
-        Some(Commands::Scout { ref args, json }) => {
-            cmd_scout(&cli, &args.query, args.limit, json, args.tokens)
-        }
+            ref output,
+        }) => cmd_where(description, limit, output.json, cli.model_config()),
+        Some(Commands::Scout {
+            ref args,
+            ref output,
+        }) => cmd_scout(&cli, &args.query, args.limit, output.json, args.tokens),
         Some(Commands::Plan {
             ref description,
             limit,
-            json,
+            ref output,
             tokens,
-        }) => cmd_plan(&cli, description, limit, json, tokens),
+        }) => cmd_plan(&cli, description, limit, output.json, tokens),
         Some(Commands::Task {
             ref description,
             limit,
-            json,
+            ref output,
             tokens,
             brief,
-        }) => cmd_task(&cli, description, limit, json, tokens, brief),
+        }) => cmd_task(&cli, description, limit, output.json, tokens, brief),
         #[cfg(feature = "convert")]
         Some(Commands::Convert {
             ref path,
