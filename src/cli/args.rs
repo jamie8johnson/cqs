@@ -84,6 +84,44 @@ pub(crate) struct DeadArgs {
     pub min_confidence: DeadConfidence,
 }
 
+/// Arguments shared between CLI `similar` and batch `similar`.
+#[derive(Args, Debug, Clone)]
+pub(crate) struct SimilarArgs {
+    /// Function name or file:function (e.g., "search_filtered" or "src/search.rs:search_filtered")
+    pub target: String,
+    /// Max results
+    #[arg(short = 'n', long, default_value = "5")]
+    pub limit: usize,
+    /// Min similarity threshold
+    #[arg(short = 't', long, default_value = "0.3")]
+    pub threshold: f32,
+}
+
+/// Arguments shared between CLI `blame` and batch `blame`.
+#[derive(Args, Debug, Clone)]
+pub(crate) struct BlameArgs {
+    /// Function name or file:function
+    pub name: String,
+    /// Max commits to show
+    #[arg(short = 'd', long, default_value = "10")]
+    pub depth: usize,
+    /// Also show callers of the function
+    #[arg(long)]
+    pub callers: bool,
+}
+
+/// Arguments shared between CLI `trace` and batch `trace`.
+#[derive(Args, Debug, Clone)]
+pub(crate) struct TraceArgs {
+    /// Source function name or file:function
+    pub source: String,
+    /// Target function name or file:function
+    pub target: String,
+    /// Max search depth (1-50)
+    #[arg(long, default_value = "10", value_parser = clap::value_parser!(u16).range(1..=50))]
+    pub max_depth: u16,
+}
+
 /// Arguments for the `index` command.
 #[derive(Args, Debug, Clone)]
 pub(crate) struct IndexArgs {

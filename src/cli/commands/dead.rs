@@ -102,11 +102,12 @@ fn display_dead_text(
     }
 }
 
-fn display_dead_json(
+/// Build JSON for dead code results — shared between CLI and batch.
+pub(crate) fn dead_to_json(
     confident: &[DeadFunction],
     possibly_pub: &[DeadFunction],
     root: &Path,
-) -> Result<()> {
+) -> serde_json::Value {
     let format_dead = |dead: &DeadFunction| {
         serde_json::json!({
             "name": dead.chunk.name,
@@ -120,13 +121,22 @@ fn display_dead_json(
         })
     };
 
-    let result = serde_json::json!({
+    serde_json::json!({
         "dead": confident.iter().map(&format_dead).collect::<Vec<_>>(),
         "possibly_dead_pub": possibly_pub.iter().map(&format_dead).collect::<Vec<_>>(),
         "total_dead": confident.len(),
         "total_possibly_dead_pub": possibly_pub.len(),
-    });
+    })
+}
 
-    println!("{}", serde_json::to_string_pretty(&result)?);
+fn display_dead_json(
+    confident: &[DeadFunction],
+    possibly_pub: &[DeadFunction],
+    root: &Path,
+) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&dead_to_json(confident, possibly_pub, root))?
+    );
     Ok(())
 }

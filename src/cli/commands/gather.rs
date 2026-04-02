@@ -7,17 +7,28 @@ use cqs::Embedder;
 use cqs::{gather, gather_cross_index_with_index, normalize_path, GatherDirection, GatherOptions};
 
 use crate::cli::staleness;
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn cmd_gather(
-    cli: &crate::cli::Cli,
-    query: &str,
-    expand: usize,
-    direction: GatherDirection,
-    limit: usize,
-    max_tokens: Option<usize>,
-    ref_name: Option<&str>,
-    json: bool,
-) -> Result<()> {
+
+/// Infrastructure context for gather commands.
+pub(crate) struct GatherContext<'a> {
+    pub cli: &'a crate::cli::Cli,
+    pub query: &'a str,
+    pub expand: usize,
+    pub direction: GatherDirection,
+    pub limit: usize,
+    pub max_tokens: Option<usize>,
+    pub ref_name: Option<&'a str>,
+    pub json: bool,
+}
+
+pub(crate) fn cmd_gather(ctx: &GatherContext<'_>) -> Result<()> {
+    let cli = ctx.cli;
+    let query = ctx.query;
+    let expand = ctx.expand;
+    let direction = ctx.direction;
+    let limit = ctx.limit;
+    let max_tokens = ctx.max_tokens;
+    let ref_name = ctx.ref_name;
+    let json = ctx.json;
     let _span = tracing::info_span!(
         "cmd_gather",
         query_len = query.len(),

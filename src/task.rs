@@ -11,7 +11,7 @@ use crate::gather::{
     GatheredChunk,
 };
 use crate::impact::{compute_risk_and_tests, RiskLevel, RiskScore, TestInfo};
-use crate::scout::{scout_core, ChunkRole, ScoutOptions, ScoutResult};
+use crate::scout::{scout_core, ChunkRole, ScoutOptions, ScoutResources, ScoutResult};
 use crate::where_to_add::FileSuggestion;
 use crate::{AnalysisError, Embedder, Store};
 
@@ -112,16 +112,16 @@ pub fn task_with_resources(
     let query_embedding = embedder.embed_query(description)?;
 
     // 2. Scout phase
-    let scout = scout_core(
+    let scout = scout_core(&ScoutResources {
         store,
-        &query_embedding,
-        description,
+        query_embedding: &query_embedding,
+        task: description,
         root,
         limit,
-        &ScoutOptions::default(),
+        opts: &ScoutOptions::default(),
         graph,
         test_chunks,
-    )?;
+    })?;
     tracing::debug!(
         file_groups = scout.file_groups.len(),
         functions = scout.summary.total_functions,
