@@ -41,7 +41,6 @@ pub(crate) fn cmd_gather(ctx: &GatherContext<'_>) -> Result<()> {
 
     let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
     let embedder = Embedder::new(cli.model_config().clone())?;
-    let query_embedding = embedder.embed_query(query)?;
 
     // When token-budgeted, fetch more chunks than limit so we have candidates to pack
     let fetch_limit = if max_tokens.is_some() {
@@ -59,6 +58,7 @@ pub(crate) fn cmd_gather(ctx: &GatherContext<'_>) -> Result<()> {
 
     // Cross-index gather: seed from reference, bridge into project code
     let mut result = if let Some(rn) = ref_name {
+        let query_embedding = embedder.embed_query(query)?;
         let ref_idx = super::resolve::find_reference(&root, rn)?;
         let index = crate::cli::build_vector_index(&store, &cqs_dir)?;
         gather_cross_index_with_index(
@@ -71,7 +71,7 @@ pub(crate) fn cmd_gather(ctx: &GatherContext<'_>) -> Result<()> {
             index.as_deref(),
         )?
     } else {
-        gather(&store, &query_embedding, query, &opts, &root)?
+        gather(&store, &embedder, query, &opts, &root)?
     };
 
     // Token-budgeted packing: keep highest-scoring chunks within token budget

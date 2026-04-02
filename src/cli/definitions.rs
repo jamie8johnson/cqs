@@ -263,9 +263,8 @@ pub(super) enum Commands {
     Brief {
         /// File path (as stored in index, e.g. src/lib.rs)
         path: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Check model, index, hardware
     Doctor {
@@ -280,9 +279,8 @@ pub(super) enum Commands {
     },
     /// Show index statistics
     Stats {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Watch for changes and reindex
     Watch {
@@ -301,9 +299,8 @@ pub(super) enum Commands {
         /// Git ref to diff against (default: unstaged changes)
         #[arg(long)]
         base: Option<String>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Batch mode: read commands from stdin, output JSONL
     Batch,
@@ -311,9 +308,8 @@ pub(super) enum Commands {
     Blame {
         #[command(flatten)]
         args: args::BlameArgs,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Interactive REPL for cqs commands
     Chat,
@@ -330,25 +326,22 @@ pub(super) enum Commands {
         /// Reverse: show types used by a function instead of type users
         #[arg(long)]
         reverse: bool,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Find functions that call a given function
     Callers {
         /// Function name to search for
         name: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Find functions called by a given function
     Callees {
         /// Function name to search for
         name: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Guided codebase tour: entry point → call chain → types → tests
     Onboard {
@@ -357,9 +350,8 @@ pub(super) enum Commands {
         /// Callee expansion depth
         #[arg(short = 'd', long, default_value = "3")]
         depth: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
         /// Maximum token budget
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
@@ -371,9 +363,8 @@ pub(super) enum Commands {
         /// Max neighbors to return
         #[arg(short = 'n', long, default_value = "5")]
         limit: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// List and manage notes
     Notes {
@@ -401,9 +392,8 @@ pub(super) enum Commands {
         /// Filter by language
         #[arg(short = 'l', long)]
         lang: Option<String>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Detect semantic drift between a reference and the project
     Drift {
@@ -423,17 +413,15 @@ pub(super) enum Commands {
         /// Maximum entries to show
         #[arg(short = 'n', long)]
         limit: Option<usize>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Generate a function card (signature, callers, callees, similar)
     Explain {
         /// Function name or file:function
         name: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
         /// Maximum token budget (includes source content within budget)
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
@@ -442,9 +430,8 @@ pub(super) enum Commands {
     Similar {
         #[command(flatten)]
         args: args::SimilarArgs,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Impact analysis: what breaks if you change a function
     Impact {
@@ -462,9 +449,8 @@ pub(super) enum Commands {
         /// Read diff from stdin instead of running git
         #[arg(long)]
         stdin: bool,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Comprehensive diff review: impact + notes + risk scoring
     Review {
@@ -511,33 +497,29 @@ pub(super) enum Commands {
         /// Max call chain depth to search
         #[arg(long, default_value = "5")]
         depth: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// What do I need to know to work on this file
     Context {
         #[command(flatten)]
         args: args::ContextArgs,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Find functions with no callers (dead code detection)
     Dead {
         #[command(flatten)]
         args: args::DeadArgs,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Gather minimal code context to answer a question
     Gather {
         #[command(flatten)]
         args: args::GatherArgs,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Manage cross-project search registry
     Project {
@@ -546,15 +528,13 @@ pub(super) enum Commands {
     },
     /// Remove stale chunks and rebuild index
     Gc {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Codebase quality snapshot — dead code, staleness, hotspots, coverage
     Health {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Toggle audit mode (exclude notes from search/read)
     #[command(name = "audit-mode")]
@@ -564,24 +544,21 @@ pub(super) enum Commands {
         /// Expiry duration (e.g., "30m", "1h", "2h30m")
         #[arg(long, default_value = "30m")]
         expires: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Check index freshness — list stale and missing files
     Stale {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
         /// Show counts only, skip file list
         #[arg(long)]
         count_only: bool,
     },
     /// Auto-suggest notes from codebase patterns (dead code, untested hotspots)
     Suggest {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
         /// Apply suggestions (add notes to docs/notes.toml)
         #[arg(long)]
         apply: bool,
@@ -593,17 +570,15 @@ pub(super) enum Commands {
         /// Focus on a specific function (returns only that function + type deps)
         #[arg(long)]
         focus: Option<String>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Reconstruct source file from index (works without source on disk)
     Reconstruct {
         /// File path (as indexed)
         path: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Find functions related by shared callers, callees, or types
     Related {
@@ -612,9 +587,8 @@ pub(super) enum Commands {
         /// Max results per category
         #[arg(short = 'n', long, default_value = "5")]
         limit: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Suggest where to add new code matching a description
     Where {
@@ -623,17 +597,15 @@ pub(super) enum Commands {
         /// Max file suggestions
         #[arg(short = 'n', long, default_value = "3")]
         limit: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Pre-investigation dashboard: search, group, count callers/tests, check staleness
     Scout {
         #[command(flatten)]
         args: args::ScoutArgs,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Task planning with template classification: classify + scout + checklist
     Plan {
@@ -642,9 +614,8 @@ pub(super) enum Commands {
         /// Max scout file groups
         #[arg(short = 'n', long, default_value = "5")]
         limit: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
         /// Maximum token budget
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
@@ -656,9 +627,8 @@ pub(super) enum Commands {
         /// Max file groups to return
         #[arg(short = 'n', long, default_value = "5")]
         limit: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
         /// Maximum token budget (waterfall across sections)
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,

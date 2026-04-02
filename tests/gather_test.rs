@@ -49,19 +49,21 @@ fn test_gather_basic() {
         .unwrap();
 
     // Run gather with basic options
+    let query = mock_embedding(1.0);
     let opts = GatherOptions {
         expand_depth: 1,
         direction: GatherDirection::Both,
         limit: 10,
         ..GatherOptions::default()
     };
-    let query = mock_embedding(1.0);
-    let result = cqs::gather(
+    let graph = store.store.get_call_graph().unwrap();
+    let result = cqs::gather_with_graph(
         &store.store,
         &query,
         "test query",
         &opts,
         &PathBuf::from("/tmp"),
+        &graph,
     );
 
     assert!(result.is_ok(), "Gather should execute without error");
@@ -103,12 +105,14 @@ fn test_gather_no_expansion() {
         ..GatherOptions::default()
     };
     let query = mock_embedding(1.0);
-    let result = cqs::gather(
+    let graph = store.store.get_call_graph().unwrap();
+    let result = cqs::gather_with_graph(
         &store.store,
         &query,
         "test query",
         &opts,
         &PathBuf::from("/tmp"),
+        &graph,
     )
     .unwrap();
 
@@ -168,12 +172,14 @@ fn test_gather_callers_only() {
         ..GatherOptions::default()
     };
     let query = mock_embedding(1.0);
-    let result = cqs::gather(
+    let graph = store.store.get_call_graph().unwrap();
+    let result = cqs::gather_with_graph(
         &store.store,
         &query,
         "test query",
         &opts,
         &PathBuf::from("/tmp"),
+        &graph,
     );
 
     assert!(result.is_ok(), "Gather with callers direction should work");
@@ -212,12 +218,14 @@ fn test_gather_callees_only() {
         ..GatherOptions::default()
     };
     let query = mock_embedding(1.0);
-    let result = cqs::gather(
+    let graph = store.store.get_call_graph().unwrap();
+    let result = cqs::gather_with_graph(
         &store.store,
         &query,
         "test query",
         &opts,
         &PathBuf::from("/tmp"),
+        &graph,
     );
 
     assert!(result.is_ok(), "Gather with callees direction should work");

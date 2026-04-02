@@ -36,9 +36,6 @@ pub(in crate::cli::batch) fn dispatch_gather(
     let _span = tracing::info_span!("batch_gather", query, ?ref_name).entered();
 
     let embedder = ctx.embedder()?;
-    let query_embedding = embedder
-        .embed_query(query)
-        .context("Failed to embed query")?;
 
     let opts = cqs::GatherOptions {
         expand_depth: expand.clamp(0, 5),
@@ -48,6 +45,9 @@ pub(in crate::cli::batch) fn dispatch_gather(
     };
 
     let result = if let Some(rn) = ref_name {
+        let query_embedding = embedder
+            .embed_query(query)
+            .context("Failed to embed query")?;
         ctx.get_ref(rn)?;
         let ref_idx = ctx
             .borrow_ref(rn)
@@ -64,7 +64,7 @@ pub(in crate::cli::batch) fn dispatch_gather(
             index,
         )?
     } else {
-        cqs::gather(&ctx.store(), &query_embedding, query, &opts, &ctx.root)?
+        cqs::gather(&ctx.store(), embedder, query, &opts, &ctx.root)?
     };
 
     // Token-budget packing

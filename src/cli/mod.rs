@@ -304,9 +304,9 @@ mod tests {
     fn test_cmd_callers() {
         let cli = Cli::try_parse_from(["cqs", "callers", "my_function"]).unwrap();
         match cli.command {
-            Some(Commands::Callers { name, json }) => {
+            Some(Commands::Callers { name, output }) => {
                 assert_eq!(name, "my_function");
-                assert!(!json);
+                assert!(!output.json);
             }
             _ => panic!("Expected Callers command"),
         }
@@ -316,9 +316,9 @@ mod tests {
     fn test_cmd_callees_json() {
         let cli = Cli::try_parse_from(["cqs", "callees", "my_function", "--json"]).unwrap();
         match cli.command {
-            Some(Commands::Callees { name, json }) => {
+            Some(Commands::Callees { name, output }) => {
                 assert_eq!(name, "my_function");
-                assert!(json);
+                assert!(output.json);
             }
             _ => panic!("Expected Callees command"),
         }
@@ -621,10 +621,14 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            Some(Commands::Gather { ref args, json, .. }) => {
+            Some(Commands::Gather {
+                ref args,
+                ref output,
+                ..
+            }) => {
                 assert_eq!(args.tokens, Some(8000));
                 assert_eq!(args.limit, 20);
-                assert!(json);
+                assert!(output.json);
             }
             _ => panic!("Expected Gather command"),
         }
@@ -668,10 +672,14 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            Some(Commands::Gather { ref args, json, .. }) => {
+            Some(Commands::Gather {
+                ref args,
+                ref output,
+                ..
+            }) => {
                 assert_eq!(args.ref_name, Some("aveva".to_string()));
                 assert_eq!(args.tokens, Some(4000));
-                assert!(json);
+                assert!(output.json);
             }
             _ => panic!("Expected Gather command"),
         }

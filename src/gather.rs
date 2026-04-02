@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::parser::{ChunkType, Language};
-use crate::AnalysisError;
+use crate::{AnalysisError, Embedder, Embedding};
 
 use crate::store::helpers::{CallGraph, SearchFilter};
 use crate::store::SearchResult;
@@ -34,6 +34,10 @@ pub struct GatherOptions {
     /// Maximum nodes in BFS expansion (default: 200).
     /// Prevents blowup on hub functions with many callers/callees.
     pub max_expanded_nodes: usize,
+    /// Pre-computed query embedding. When set, `gather()` uses this instead
+    /// of calling `embedder.embed_query()`. Useful when the caller shares one
+    /// embedding across multiple phases (e.g., `task()` reuses it for scout + gather).
+    pub query_embedding: Option<Embedding>,
 }
 
 impl GatherOptions {
@@ -184,6 +188,7 @@ impl Default for GatherOptions {
             seed_threshold: 0.3,
             decay_factor: 0.8,
             max_expanded_nodes,
+            query_embedding: None,
         }
     }
 }
@@ -400,16 +405,21 @@ pub(crate) fn sort_and_truncate(chunks: &mut Vec<GatheredChunk>, limit: usize) {
 
 /// Gather relevant code chunks for a query.
 ///
+/// Embeds the query internally (or uses `opts.query_embedding` if pre-computed).
 /// Loads the call graph internally. For pre-loaded graph, use [`gather_with_graph`].
 pub fn gather(
     store: &Store,
-    query_embedding: &crate::Embedding,
-    query_text: &str,
+    embedder: &Embedder,
+    description: &str,
     opts: &GatherOptions,
     root: &Path,
 ) -> Result<GatherResult, AnalysisError> {
+    let query_embedding = match &opts.query_embedding {
+        Some(emb) => emb.clone(),
+        None => embedder.embed_query(description)?,
+    };
     let graph = store.get_call_graph()?;
-    gather_with_graph(store, query_embedding, query_text, opts, root, &graph)
+    gather_with_graph(store, &query_embedding, description, opts, root, &graph)
 }
 
 /// Like [`gather`] but accepts a pre-loaded call graph.
