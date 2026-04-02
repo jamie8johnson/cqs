@@ -247,7 +247,7 @@ pub(crate) fn pack_by_relevance(
 // ─── CLI command ────────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_context(
-    cli: &crate::cli::Cli,
+    ctx: &crate::cli::CommandContext,
     path: &str,
     json: bool,
     summary: bool,
@@ -255,7 +255,8 @@ pub(crate) fn cmd_context(
     max_tokens: Option<usize>,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_context", path, ?max_tokens).entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
 
     // --tokens is incompatible with --compact and --summary (those modes are deliberately minimal)
     if max_tokens.is_some() && (compact || summary) {
@@ -264,11 +265,11 @@ pub(crate) fn cmd_context(
 
     // Compact mode: signatures-only TOC with caller/callee counts
     if compact {
-        let data = build_compact_data(&store, path)?;
+        let data = build_compact_data(store, path)?;
 
         // Proactive staleness warning
-        if !cli.quiet && !cli.no_stale_check {
-            staleness::warn_stale_results(&store, &[path], &root);
+        if !ctx.cli.quiet && !ctx.cli.no_stale_check {
+            staleness::warn_stale_results(store, &[path], root);
         }
 
         if json {
@@ -281,11 +282,11 @@ pub(crate) fn cmd_context(
     }
 
     // Summary and full modes need external caller/callee data
-    let data = build_full_data(&store, path, &root)?;
+    let data = build_full_data(store, path, root)?;
 
     // Proactive staleness warning
-    if !cli.quiet && !cli.no_stale_check {
-        staleness::warn_stale_results(&store, &[path], &root);
+    if !ctx.cli.quiet && !ctx.cli.no_stale_check {
+        staleness::warn_stale_results(store, &[path], root);
     }
 
     if summary {
@@ -297,12 +298,12 @@ pub(crate) fn cmd_context(
         }
     } else if json {
         let (content_set, token_info) =
-            build_token_pack(&store, &data.chunks, max_tokens, cli.model_config())?;
+            build_token_pack(store, &data.chunks, max_tokens, ctx.model_config())?;
         let output = full_to_json(&data, path, content_set.as_ref(), token_info);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         let (content_set, token_info) =
-            build_token_pack(&store, &data.chunks, max_tokens, cli.model_config())?;
+            build_token_pack(store, &data.chunks, max_tokens, ctx.model_config())?;
         print_full_terminal(&data, path, content_set.as_ref(), token_info);
     }
 

@@ -7,17 +7,19 @@ use colored::Colorize;
 
 use cqs::Parser;
 
-pub(crate) fn cmd_health(json: bool) -> Result<()> {
+pub(crate) fn cmd_health(ctx: &crate::cli::CommandContext, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_health").entered();
 
-    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let cqs_dir = &ctx.cqs_dir;
 
     // Enumerate current files for staleness check
     let parser = Parser::new()?;
-    let files = crate::cli::enumerate_files(&root, &parser, false)?;
+    let files = crate::cli::enumerate_files(root, &parser, false)?;
     let file_set: HashSet<_> = files.into_iter().collect();
 
-    let report = cqs::health::health_check(&store, &file_set, &cqs_dir)?;
+    let report = cqs::health::health_check(store, &file_set, cqs_dir)?;
 
     if json {
         let json_val = serde_json::to_value(&report)?;

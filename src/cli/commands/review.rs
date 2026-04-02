@@ -6,6 +6,7 @@ use cqs::ReviewResult;
 use cqs::RiskLevel;
 
 pub(crate) fn cmd_review(
+    ctx: &crate::cli::CommandContext,
     base: Option<&str>,
     from_stdin: bool,
     format: &crate::cli::OutputFormat,
@@ -18,7 +19,8 @@ pub(crate) fn cmd_review(
     }
 
     let json = matches!(format, crate::cli::OutputFormat::Json);
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
 
     // 1. Get diff text
     let diff_text = if from_stdin {
@@ -28,7 +30,7 @@ pub(crate) fn cmd_review(
     };
 
     // 2. Run review
-    let result = cqs::review_diff(&store, &diff_text, &root)?;
+    let result = cqs::review_diff(store, &diff_text, root)?;
 
     match result {
         None => {
@@ -51,7 +53,7 @@ pub(crate) fn cmd_review(
                 }
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
-                display_review_text(&review, &root, token_count_used, max_tokens);
+                display_review_text(&review, root, token_count_used, max_tokens);
             }
         }
     }

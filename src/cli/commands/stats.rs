@@ -8,24 +8,24 @@ use anyhow::{Context as _, Result};
 
 use cqs::{HnswIndex, Parser};
 
-use crate::cli::Cli;
-
 /// Display index statistics (chunk counts, languages, types)
-pub(crate) fn cmd_stats(cli: &Cli, json: bool) -> Result<()> {
+pub(crate) fn cmd_stats(ctx: &crate::cli::CommandContext, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_stats").entered();
-    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let cqs_dir = &ctx.cqs_dir;
     let stats = store.stats().context("Failed to read index statistics")?;
 
     // Check staleness by scanning filesystem
     let parser = Parser::new()?;
-    let files = crate::cli::enumerate_files(&root, &parser, false)?;
+    let files = crate::cli::enumerate_files(root, &parser, false)?;
     let file_set: HashSet<_> = files.into_iter().collect();
     let (stale_count, missing_count) = store
         .count_stale_files(&file_set)
         .context("Failed to count stale files")?;
 
     // Use count_vectors to avoid loading full HNSW index just for stats
-    let hnsw_vectors = HnswIndex::count_vectors(&cqs_dir, "index");
+    let hnsw_vectors = HnswIndex::count_vectors(cqs_dir, "index");
     let note_count = store.note_count()?;
     let fc_stats = store.function_call_stats()?;
     let (call_count, caller_count, callee_count) = (
@@ -35,7 +35,7 @@ pub(crate) fn cmd_stats(cli: &Cli, json: bool) -> Result<()> {
     );
     let te_stats = store.type_edge_stats()?;
 
-    if json || cli.json {
+    if json || ctx.cli.json {
         let json = serde_json::json!({
             "total_chunks": stats.total_chunks,
             "total_files": stats.total_files,

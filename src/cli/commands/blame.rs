@@ -242,20 +242,27 @@ fn print_blame_terminal(data: &BlameData, root: &Path) {
 
 // ─── CLI command ─────────────────────────────────────────────────────────────
 
-pub(crate) fn cmd_blame(target: &str, depth: usize, show_callers: bool, json: bool) -> Result<()> {
+pub(crate) fn cmd_blame(
+    ctx: &crate::cli::CommandContext,
+    target: &str,
+    depth: usize,
+    show_callers: bool,
+    json: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_blame", target).entered();
 
-    let (store, root, _cqs_dir) = crate::cli::open_project_store_readonly()?;
-    let data = build_blame_data(&store, &root, target, depth, show_callers)?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let data = build_blame_data(store, root, target, depth, show_callers)?;
 
     if json {
-        let value = blame_to_json(&data, &root);
+        let value = blame_to_json(&data, root);
         println!(
             "{}",
             serde_json::to_string_pretty(&value).context("Failed to serialize blame output")?
         );
     } else {
-        print_blame_terminal(&data, &root);
+        print_blame_terminal(&data, root);
     }
 
     Ok(())

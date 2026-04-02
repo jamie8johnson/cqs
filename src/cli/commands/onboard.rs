@@ -6,18 +6,19 @@ use colored::Colorize;
 use cqs::{onboard, onboard_to_json, Embedder};
 
 pub(crate) fn cmd_onboard(
-    cli: &crate::cli::Cli,
+    ctx: &crate::cli::CommandContext,
     concept: &str,
     depth: usize,
     json: bool,
     max_tokens: Option<usize>,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_onboard", concept, depth, ?max_tokens).entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
-    let embedder = Embedder::new(cli.model_config().clone())?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let embedder = Embedder::new(ctx.model_config().clone())?;
     let depth = depth.clamp(1, 5);
 
-    let result = onboard(&store, &embedder, concept, &root, depth)?;
+    let result = onboard(store, &embedder, concept, root, depth)?;
 
     if json {
         let mut output = onboard_to_json(&result).context("Failed to serialize onboard result")?;
@@ -104,7 +105,7 @@ pub(crate) fn cmd_onboard(
         // Entry point
         println!();
         println!("{}", "── Entry Point ──".cyan().bold());
-        print_entry(&result.entry_point, &root);
+        print_entry(&result.entry_point, root);
 
         // Call chain by depth
         if !result.call_chain.is_empty() {
@@ -116,7 +117,7 @@ pub(crate) fn cmd_onboard(
                     println!();
                     println!("{}", format!("── Call Chain (depth {d}) ──").cyan().bold());
                     for entry in at_depth {
-                        print_entry(entry, &root);
+                        print_entry(entry, root);
                     }
                 }
             }
@@ -127,7 +128,7 @@ pub(crate) fn cmd_onboard(
             println!();
             println!("{}", "── Callers ──".cyan().bold());
             for entry in &result.callers {
-                let rel = cqs::rel_display(&entry.file, &root);
+                let rel = cqs::rel_display(&entry.file, root);
                 println!(
                     "  {}:{}  {}",
                     rel,
@@ -154,7 +155,7 @@ pub(crate) fn cmd_onboard(
             println!();
             println!("{}", "── Tests ──".cyan().bold());
             for test in &result.tests {
-                let rel = cqs::rel_display(&test.file, &root);
+                let rel = cqs::rel_display(&test.file, root);
                 println!(
                     "  {}:{}  {} {}",
                     rel,

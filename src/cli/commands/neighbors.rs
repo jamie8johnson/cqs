@@ -95,20 +95,26 @@ fn fetch_chunk_summaries(
     Ok(map)
 }
 
-pub(crate) fn cmd_neighbors(name: &str, limit: usize, json: bool) -> Result<()> {
+pub(crate) fn cmd_neighbors(
+    ctx: &crate::cli::CommandContext,
+    name: &str,
+    limit: usize,
+    json: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_neighbors", name, limit).entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
 
-    let resolved = resolve_target(&store, name).context("Failed to resolve target")?;
+    let resolved = resolve_target(store, name).context("Failed to resolve target")?;
     let target = &resolved.chunk;
 
-    let neighbors = find_neighbors(&store, target, limit)?;
+    let neighbors = find_neighbors(store, target, limit)?;
 
     let entries: Vec<NeighborEntry> = neighbors
         .iter()
         .map(|(chunk, sim)| NeighborEntry {
             name: chunk.name.clone(),
-            file: rel_display(&chunk.file, &root),
+            file: rel_display(&chunk.file, root),
             line_start: chunk.line_start,
             chunk_type: chunk.chunk_type.to_string(),
             similarity: *sim,
@@ -128,7 +134,7 @@ pub(crate) fn cmd_neighbors(name: &str, limit: usize, json: bool) -> Result<()> 
             "{} {} ({})",
             "Neighbors of".cyan(),
             target.name.bold(),
-            rel_display(&target.file, &root).dimmed()
+            rel_display(&target.file, root).dimmed()
         );
         if entries.is_empty() {
             println!("  No neighbors found.");

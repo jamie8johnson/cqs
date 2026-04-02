@@ -84,13 +84,15 @@ fn build_contrastive_prefix(store: &Store, chunk: &ChunkSummary) -> Option<Strin
 }
 
 pub(crate) fn cmd_train_pairs(
+    ctx: &crate::cli::CommandContext,
     output: &str,
     limit: Option<usize>,
     language: Option<&str>,
     contrastive: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_train_pairs", output, contrastive).entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
 
     // Get all chunks, optionally filtered by language.
     // Use chunk identities to get unique file origins, then batch-fetch full summaries.
@@ -140,7 +142,7 @@ pub(crate) fn cmd_train_pairs(
         }
 
         let contrastive_prefix = if contrastive {
-            build_contrastive_prefix(&store, chunk)
+            build_contrastive_prefix(store, chunk)
         } else {
             None
         };
@@ -149,7 +151,7 @@ pub(crate) fn cmd_train_pairs(
             query: build_nl_description(chunk, contrastive_prefix.as_deref()),
             code: chunk.content.clone(),
             name: chunk.name.clone(),
-            file: cqs::rel_display(&chunk.file, &root),
+            file: cqs::rel_display(&chunk.file, root),
             language: chunk.language.to_string(),
         };
 

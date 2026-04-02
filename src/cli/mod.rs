@@ -65,6 +65,34 @@ pub(crate) fn open_project_store_readonly(
     open_store_with(cqs::Store::open_light)
 }
 
+/// Shared context for CLI commands that need an open store.
+/// Created once in dispatch, passed to all store-using handlers.
+/// Eliminates per-handler `open_project_store_readonly()` calls.
+pub(crate) struct CommandContext<'a> {
+    pub cli: &'a definitions::Cli,
+    pub store: cqs::Store,
+    pub root: std::path::PathBuf,
+    pub cqs_dir: std::path::PathBuf,
+}
+
+impl<'a> CommandContext<'a> {
+    /// Open the project store in read-only mode and build a command context.
+    pub fn open_readonly(cli: &'a definitions::Cli) -> anyhow::Result<Self> {
+        let (store, root, cqs_dir) = open_project_store_readonly()?;
+        Ok(Self {
+            cli,
+            store,
+            root,
+            cqs_dir,
+        })
+    }
+
+    /// Get the resolved model config from the CLI.
+    pub fn model_config(&self) -> &cqs::embedder::ModelConfig {
+        self.cli.model_config()
+    }
+}
+
 /// Build the best available vector index for the store.
 /// Priority: CAGRA (GPU, large indexes) > HNSW (CPU) > brute-force (None).
 /// CAGRA rebuilds index each CLI invocation (~1s for 474 vectors).

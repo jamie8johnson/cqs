@@ -8,18 +8,21 @@ use anyhow::Result;
 
 use cqs::Parser;
 
-use crate::cli::Cli;
-
 /// Report stale (modified) and missing files in the index
-pub(crate) fn cmd_stale(cli: &Cli, json: bool, count_only: bool) -> Result<()> {
+pub(crate) fn cmd_stale(
+    ctx: &crate::cli::CommandContext,
+    json: bool,
+    count_only: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_stale").entered();
 
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
 
     // Enumerate current files on disk
     let parser = Parser::new()?;
     let exts = parser.supported_extensions();
-    let files = cqs::enumerate_files(&root, &exts, false)?;
+    let files = cqs::enumerate_files(root, &exts, false)?;
     let file_set: HashSet<_> = files.into_iter().collect();
 
     let report = store.list_stale_files(&file_set)?;
@@ -56,7 +59,7 @@ pub(crate) fn cmd_stale(cli: &Cli, json: bool, count_only: bool) -> Result<()> {
         let missing_count = report.missing.len();
 
         if stale_count == 0 && missing_count == 0 {
-            if !cli.quiet {
+            if !ctx.cli.quiet {
                 println!(
                     "Index is fresh. {} file{} indexed.",
                     report.total_indexed,
@@ -67,7 +70,7 @@ pub(crate) fn cmd_stale(cli: &Cli, json: bool, count_only: bool) -> Result<()> {
         }
 
         // Summary line
-        if !cli.quiet {
+        if !ctx.cli.quiet {
             println!(
                 "{} stale, {} missing (of {} indexed file{})",
                 stale_count,
@@ -78,7 +81,7 @@ pub(crate) fn cmd_stale(cli: &Cli, json: bool, count_only: bool) -> Result<()> {
         }
 
         // File list (unless --count-only)
-        if !count_only && !cli.quiet {
+        if !count_only && !ctx.cli.quiet {
             if !report.stale.is_empty() {
                 println!("\nStale:");
                 for f in &report.stale {

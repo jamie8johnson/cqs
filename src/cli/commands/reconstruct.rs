@@ -6,13 +6,18 @@
 
 use anyhow::{bail, Result};
 
-pub(crate) fn cmd_reconstruct(path: &str, json: bool) -> Result<()> {
+pub(crate) fn cmd_reconstruct(
+    ctx: &crate::cli::CommandContext,
+    path: &str,
+    json: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_reconstruct", %path).entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
 
     // Normalize the path relative to project root
     let rel_path = if std::path::Path::new(path).is_absolute() {
-        match std::path::Path::new(path).strip_prefix(&root) {
+        match std::path::Path::new(path).strip_prefix(root) {
             Ok(rel) => cqs::normalize_path(rel),
             Err(_) => cqs::normalize_path(std::path::Path::new(path)),
         }

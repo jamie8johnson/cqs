@@ -35,9 +35,9 @@ pub(crate) fn callees_to_json(name: &str, callees: &[(String, u32)]) -> serde_js
 }
 
 /// Find functions that call the specified function
-pub(crate) fn cmd_callers(name: &str, json: bool) -> Result<()> {
+pub(crate) fn cmd_callers(ctx: &crate::cli::CommandContext, name: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_callers", name).entered();
-    let (store, _, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
     // Use full call graph (includes large functions)
     let callers = store
         .get_callers_full(name)
@@ -76,9 +76,9 @@ pub(crate) fn cmd_callers(name: &str, json: bool) -> Result<()> {
 }
 
 /// Find functions called by the specified function
-pub(crate) fn cmd_callees(name: &str, json: bool) -> Result<()> {
+pub(crate) fn cmd_callees(ctx: &crate::cli::CommandContext, name: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_callees", name).entered();
-    let (store, _, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
     // Use full call graph (includes large functions)
     // No file context available from CLI input — pass None
     let callees = store

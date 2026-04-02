@@ -101,12 +101,13 @@ fn build_brief_data(store: &Store, path: &str) -> Result<BriefData> {
     })
 }
 
-pub(crate) fn cmd_brief(path: &str, json: bool) -> Result<()> {
+pub(crate) fn cmd_brief(ctx: &crate::cli::CommandContext, path: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_brief", path).entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
 
-    let data = build_brief_data(&store, path)?;
-    let rel = rel_display(&std::path::PathBuf::from(path), &root);
+    let data = build_brief_data(store, path)?;
+    let rel = rel_display(&std::path::PathBuf::from(path), root);
 
     let entries: Vec<BriefEntry> = data
         .chunks

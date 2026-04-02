@@ -7,6 +7,7 @@ use cqs::ReviewResult;
 use cqs::RiskLevel;
 
 pub(crate) fn cmd_ci(
+    ctx: &crate::cli::CommandContext,
     base: Option<&str>,
     from_stdin: bool,
     format: &crate::cli::OutputFormat,
@@ -20,7 +21,8 @@ pub(crate) fn cmd_ci(
     }
 
     let json = matches!(format, crate::cli::OutputFormat::Json);
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
 
     // Get diff text
     let diff_text = if from_stdin {
@@ -30,7 +32,7 @@ pub(crate) fn cmd_ci(
     };
 
     // Run CI analysis
-    let mut report = run_ci_analysis(&store, &diff_text, &root, *gate)?;
+    let mut report = run_ci_analysis(store, &diff_text, root, *gate)?;
 
     // Apply token budget
     let token_count_used =
@@ -44,7 +46,7 @@ pub(crate) fn cmd_ci(
         }
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        display_ci_text(&report, &root, token_count_used, max_tokens);
+        display_ci_text(&report, root, token_count_used, max_tokens);
     }
 
     // Exit with gate code if failed

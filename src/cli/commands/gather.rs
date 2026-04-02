@@ -10,7 +10,7 @@ use crate::cli::staleness;
 
 /// Infrastructure context for gather commands.
 pub(crate) struct GatherContext<'a> {
-    pub cli: &'a crate::cli::Cli,
+    pub ctx: &'a crate::cli::CommandContext<'a>,
     pub query: &'a str,
     pub expand: usize,
     pub direction: GatherDirection,
@@ -20,15 +20,15 @@ pub(crate) struct GatherContext<'a> {
     pub json: bool,
 }
 
-pub(crate) fn cmd_gather(ctx: &GatherContext<'_>) -> Result<()> {
-    let cli = ctx.cli;
-    let query = ctx.query;
-    let expand = ctx.expand;
-    let direction = ctx.direction;
-    let limit = ctx.limit;
-    let max_tokens = ctx.max_tokens;
-    let ref_name = ctx.ref_name;
-    let json = ctx.json;
+pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
+    let ctx = gctx.ctx;
+    let query = gctx.query;
+    let expand = gctx.expand;
+    let direction = gctx.direction;
+    let limit = gctx.limit;
+    let max_tokens = gctx.max_tokens;
+    let ref_name = gctx.ref_name;
+    let json = gctx.json;
     let _span = tracing::info_span!(
         "cmd_gather",
         query_len = query.len(),
@@ -39,8 +39,10 @@ pub(crate) fn cmd_gather(ctx: &GatherContext<'_>) -> Result<()> {
     )
     .entered();
 
-    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
-    let embedder = Embedder::new(cli.model_config().clone())?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let cqs_dir = &ctx.cqs_dir;
+    let embedder = Embedder::new(ctx.model_config().clone())?;
 
     // When token-budgeted, fetch more chunks than limit so we have candidates to pack
     let fetch_limit = if max_tokens.is_some() {
@@ -59,19 +61,19 @@ pub(crate) fn cmd_gather(ctx: &GatherContext<'_>) -> Result<()> {
     // Cross-index gather: seed from reference, bridge into project code
     let mut result = if let Some(rn) = ref_name {
         let query_embedding = embedder.embed_query(query)?;
-        let ref_idx = super::resolve::find_reference(&root, rn)?;
-        let index = crate::cli::build_vector_index(&store, &cqs_dir)?;
+        let ref_idx = super::resolve::find_reference(root, rn)?;
+        let index = crate::cli::build_vector_index(store, cqs_dir)?;
         gather_cross_index_with_index(
-            &store,
+            store,
             &ref_idx,
             &query_embedding,
             query,
             &opts,
-            &root,
+            root,
             index.as_deref(),
         )?
     } else {
-        gather(&store, &embedder, query, &opts, &root)?
+        gather(store, &embedder, query, &opts, root)?
     };
 
     // Token-budgeted packing: keep highest-scoring chunks within token budget
@@ -114,7 +116,7 @@ pub(crate) fn cmd_gather(ctx: &GatherContext<'_>) -> Result<()> {
     };
 
     // Proactive staleness warning (only for project chunks)
-    if !cli.quiet && !cli.no_stale_check && !result.chunks.is_empty() {
+    if !ctx.cli.quiet && !ctx.cli.no_stale_check && !result.chunks.is_empty() {
         let origins: Vec<&str> = result
             .chunks
             .iter()
@@ -124,7 +126,7 @@ pub(crate) fn cmd_gather(ctx: &GatherContext<'_>) -> Result<()> {
             .into_iter()
             .collect();
         if !origins.is_empty() {
-            staleness::warn_stale_results(&store, &origins, &root);
+            staleness::warn_stale_results(store, &origins, root);
         }
     }
 

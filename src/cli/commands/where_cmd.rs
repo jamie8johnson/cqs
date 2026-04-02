@@ -2,28 +2,28 @@
 
 use anyhow::Result;
 
-use cqs::embedder::ModelConfig;
 use cqs::{suggest_placement, Embedder};
 
 pub(crate) fn cmd_where(
+    ctx: &crate::cli::CommandContext,
     description: &str,
     limit: usize,
     json: bool,
-    model_config: &ModelConfig,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_where", description).entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
-    let embedder = Embedder::new(model_config.clone())?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let embedder = Embedder::new(ctx.model_config().clone())?;
     let limit = limit.clamp(1, 10);
 
-    let result = suggest_placement(&store, &embedder, description, limit)?;
+    let result = suggest_placement(store, &embedder, description, limit)?;
 
     if json {
         let suggestions_json: Vec<_> = result
             .suggestions
             .iter()
             .map(|s| {
-                let rel = cqs::rel_display(&s.file, &root);
+                let rel = cqs::rel_display(&s.file, root);
                 serde_json::json!({
                     "file": rel,
                     "score": s.score,
@@ -55,7 +55,7 @@ pub(crate) fn cmd_where(
             println!("{}", "No placement suggestions found.".dimmed());
         } else {
             for (i, s) in result.suggestions.iter().enumerate() {
-                let rel = cqs::rel_display(&s.file, &root);
+                let rel = cqs::rel_display(&s.file, root);
                 println!();
                 println!(
                     "{}. {} {}",

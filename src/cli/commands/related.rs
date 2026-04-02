@@ -21,20 +21,21 @@ fn related_to_json(
 }
 
 pub(crate) fn cmd_related(
-    _cli: &crate::cli::Cli,
+    ctx: &crate::cli::CommandContext,
     name: &str,
     limit: usize,
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_related", name).entered();
-    let (store, root, _) = crate::cli::open_project_store_readonly()?;
+    let store = &ctx.store;
+    let root = &ctx.root;
 
-    let result = cqs::find_related(&store, name, limit)?;
+    let result = cqs::find_related(store, name, limit)?;
 
     if json {
-        let shared_callers = related_to_json(&result.shared_callers, &root);
-        let shared_callees = related_to_json(&result.shared_callees, &root);
-        let shared_types = related_to_json(&result.shared_types, &root);
+        let shared_callers = related_to_json(&result.shared_callers, root);
+        let shared_callees = related_to_json(&result.shared_callees, root);
+        let shared_types = related_to_json(&result.shared_types, root);
 
         let output = serde_json::json!({
             "target": result.target,
@@ -51,7 +52,7 @@ pub(crate) fn cmd_related(
             println!();
             println!("{}", "Shared callers (called by same functions):".cyan());
             for r in &result.shared_callers {
-                let rel = cqs::rel_display(&r.file, &root);
+                let rel = cqs::rel_display(&r.file, root);
                 println!(
                     "  {} {} ({} shared)",
                     r.name.bold(),
@@ -65,7 +66,7 @@ pub(crate) fn cmd_related(
             println!();
             println!("{}", "Shared callees (call same functions):".cyan());
             for r in &result.shared_callees {
-                let rel = cqs::rel_display(&r.file, &root);
+                let rel = cqs::rel_display(&r.file, root);
                 println!(
                     "  {} {} ({} shared)",
                     r.name.bold(),
@@ -79,7 +80,7 @@ pub(crate) fn cmd_related(
             println!();
             println!("{}", "Shared types (use same custom types):".cyan());
             for r in &result.shared_types {
-                let rel = cqs::rel_display(&r.file, &root);
+                let rel = cqs::rel_display(&r.file, root);
                 println!(
                     "  {} {} ({} shared)",
                     r.name.bold(),
