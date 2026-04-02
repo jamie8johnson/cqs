@@ -102,6 +102,15 @@ None.
    - `pr` — WSL-safe PR creation (always --body-file)
    - `release` — version bump, changelog, publish, GitHub release
 
+6. Create `.claude/agents/` directory
+7. Copy all agent definitions from `/mnt/c/Projects/cqs/.claude/agents/`:
+   - `investigator` — pre-implementation investigation (scout + gather → brief)
+   - `code-reviewer` — diff review (review + impact → risk report)
+   - `test-finder` — test coverage lookup (test-map + impact → coverage report)
+   - `implementer` — implementation with cqs checkpoints (scout before, review after)
+   - `explorer` — codebase exploration via cqs semantic search
+   - `auditor` — code audit agent with cqs tools built in
+
 ### Phase 3: cqs Init & Index
 
 6. Run `cqs init` (creates `.cqs/` directory with database)
