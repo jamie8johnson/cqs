@@ -12,6 +12,7 @@ pub mod aspx;
 mod calls;
 mod chunk;
 pub(crate) mod injection;
+pub mod l5x;
 pub mod markdown;
 pub mod types;
 
@@ -200,6 +201,11 @@ impl Parser {
 
         let ext_raw = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let ext = ext_raw.to_ascii_lowercase();
+
+        // L5X files are XML but need custom ST extraction
+        if ext == "l5x" {
+            return l5x::parse_l5x_chunks(&source, path, self);
+        }
 
         let language = Language::from_extension(&ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;

@@ -76,7 +76,7 @@ fn post_process_xml(
 static DEFINITION: LanguageDef = LanguageDef {
     name: "xml",
     grammar: Some(|| tree_sitter_xml::LANGUAGE_XML.into()),
-    extensions: &["xml", "xsl", "xslt", "xsd", "svg", "wsdl", "rss", "plist"],
+    extensions: &["xml", "xsl", "xslt", "xsd", "svg", "wsdl", "rss", "plist", "l5x"],
     chunk_query: CHUNK_QUERY,
     call_query: None,
     signature_style: SignatureStyle::FirstLine,
