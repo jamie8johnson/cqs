@@ -44,12 +44,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     match cli.command {
         Some(Commands::Affected { ref base, json }) => cmd_affected(base.as_deref(), json),
         Some(Commands::Batch) => batch::cmd_batch(),
-        Some(Commands::Blame {
-            ref name,
-            depth,
-            callers,
-            json,
-        }) => cmd_blame(name, json, depth, callers),
+        Some(Commands::Blame { ref args, json }) => {
+            cmd_blame(&args.name, json, args.depth, args.callers)
+        }
         Some(Commands::Brief { ref path, json }) => cmd_brief(path, json),
         Some(Commands::Chat) => chat::cmd_chat(),
         Some(Commands::Init) => cmd_init(&cli),
@@ -112,12 +109,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             json,
             tokens,
         }) => cmd_explain(&cli, name, json, tokens),
-        Some(Commands::Similar {
-            ref target,
-            limit,
-            threshold,
-            json,
-        }) => cmd_similar(&cli, target, limit, threshold, json),
+        Some(Commands::Similar { ref args, json }) => {
+            cmd_similar(&cli, &args.target, args.limit, args.threshold, json)
+        }
         Some(Commands::Impact {
             ref args,
             ref output,
@@ -156,13 +150,11 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             cmd_ci(base.as_deref(), stdin, &format, gate, tokens)
         }
         Some(Commands::Trace {
-            ref source,
-            ref target,
-            max_depth,
+            ref args,
             ref output,
         }) => {
             let format = output.effective_format();
-            cmd_trace(source, target, max_depth as usize, &format)
+            cmd_trace(&args.source, &args.target, args.max_depth as usize, &format)
         }
         Some(Commands::TestMap {
             ref name,
@@ -180,16 +172,16 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Dead { ref args, json }) => {
             cmd_dead(&cli, json, args.include_pub, args.min_confidence)
         }
-        Some(Commands::Gather { ref args, json }) => cmd_gather(
-            &cli,
-            &args.query,
-            args.expand,
-            args.direction,
-            args.limit,
-            args.tokens,
-            args.ref_name.as_deref(),
+        Some(Commands::Gather { ref args, json }) => cmd_gather(&super::commands::GatherContext {
+            cli: &cli,
+            query: &args.query,
+            expand: args.expand,
+            direction: args.direction,
+            limit: args.limit,
+            max_tokens: args.tokens,
+            ref_name: args.ref_name.as_deref(),
             json,
-        ),
+        }),
         Some(Commands::Project { ref subcmd }) => cmd_project(subcmd, cli.model_config()),
         Some(Commands::Gc { json }) => cmd_gc(json),
         Some(Commands::Health { json }) => cmd_health(json),

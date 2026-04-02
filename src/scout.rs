@@ -155,33 +155,43 @@ pub fn scout_with_options(
             std::sync::Arc::new(Vec::new())
         }
     };
-    scout_core(
+    scout_core(&ScoutResources {
         store,
-        &query_embedding,
+        query_embedding: &query_embedding,
         task,
         root,
         limit,
         opts,
-        &graph,
-        &test_chunks,
-    )
+        graph: &graph,
+        test_chunks: &test_chunks,
+    })
+}
+
+/// Pre-loaded resources for scout_core, avoiding repeated lookups.
+pub(crate) struct ScoutResources<'a> {
+    pub store: &'a Store,
+    pub query_embedding: &'a crate::Embedding,
+    pub task: &'a str,
+    pub root: &'a Path,
+    pub limit: usize,
+    pub opts: &'a ScoutOptions,
+    pub graph: &'a crate::store::CallGraph,
+    pub test_chunks: &'a [ChunkSummary],
 }
 
 /// Core scout implementation accepting pre-loaded resources.
 ///
 /// Use this when you already have the call graph and test chunks loaded
 /// (e.g., from `cqs task` which shares them across phases).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn scout_core(
-    store: &Store,
-    query_embedding: &crate::Embedding,
-    task: &str,
-    root: &Path,
-    limit: usize,
-    opts: &ScoutOptions,
-    graph: &crate::store::CallGraph,
-    test_chunks: &[ChunkSummary],
-) -> Result<ScoutResult, AnalysisError> {
+pub(crate) fn scout_core(res: &ScoutResources<'_>) -> Result<ScoutResult, AnalysisError> {
+    let store = res.store;
+    let query_embedding = res.query_embedding;
+    let task = res.task;
+    let root = res.root;
+    let limit = res.limit;
+    let opts = res.opts;
+    let graph = res.graph;
+    let test_chunks = res.test_chunks;
     let _span = tracing::info_span!("scout_core", %task, limit).entered();
 
     // 1. Search

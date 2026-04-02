@@ -6,6 +6,33 @@ use anyhow::{Context as _, Result};
 use colored::Colorize;
 
 use cqs::normalize_path;
+use cqs::store::CallerInfo;
+
+/// Build JSON array from caller info — shared between CLI and batch.
+pub(crate) fn callers_to_json(callers: &[CallerInfo]) -> serde_json::Value {
+    let arr: Vec<serde_json::Value> = callers
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "file": normalize_path(&c.file),
+                "line": c.line,
+            })
+        })
+        .collect();
+    serde_json::json!(arr)
+}
+
+/// Build JSON object from callees — shared between CLI and batch.
+pub(crate) fn callees_to_json(name: &str, callees: &[(String, u32)]) -> serde_json::Value {
+    serde_json::json!({
+        "function": name,
+        "calls": callees.iter().map(|(n, line)| {
+            serde_json::json!({"name": n, "line": line})
+        }).collect::<Vec<_>>(),
+        "count": callees.len(),
+    })
+}
 
 /// Find functions that call the specified function
 pub(crate) fn cmd_callers(name: &str, json: bool) -> Result<()> {
@@ -26,17 +53,10 @@ pub(crate) fn cmd_callers(name: &str, json: bool) -> Result<()> {
     }
 
     if json {
-        let json_output: Vec<serde_json::Value> = callers
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "name": c.name,
-                    "file": normalize_path(&c.file),
-                    "line": c.line,
-                })
-            })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&json_output)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&callers_to_json(&callers))?
+        );
     } else {
         println!("Functions that call '{}':", name);
         println!();
@@ -66,14 +86,10 @@ pub(crate) fn cmd_callees(name: &str, json: bool) -> Result<()> {
         .context("Failed to load callees")?;
 
     if json {
-        let json_output = serde_json::json!({
-            "function": name,
-            "calls": callees.iter().map(|(n, line)| {
-                serde_json::json!({"name": n, "line": line})
-            }).collect::<Vec<_>>(),
-            "count": callees.len(),
-        });
-        println!("{}", serde_json::to_string_pretty(&json_output)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&callees_to_json(name, &callees))?
+        );
     } else {
         println!("Functions called by '{}':", name.cyan());
         println!();

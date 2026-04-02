@@ -8,29 +8,31 @@ use super::super::commands::BatchInput;
 use super::super::BatchContext;
 use crate::cli::validate_finite_f32;
 
+/// Parameters for the gather dispatch operation.
+pub(in crate::cli::batch) struct GatherParams<'a> {
+    pub query: &'a str,
+    pub expand: usize,
+    pub direction: cqs::GatherDirection,
+    pub limit: usize,
+    pub tokens: Option<usize>,
+    pub ref_name: Option<&'a str>,
+}
+
 /// Performs a semantic search gather operation with optional cross-index querying and token budget constraints.
-/// # Arguments
-/// * `ctx` - The batch execution context containing store, embedder, and vector index
-/// * `query` - The search query string to embed and match against
-/// * `expand` - Depth of expansion (clamped 0-5) for gathering related chunks
-/// * `direction` - The direction to gather results (forward, backward, or bidirectional)
-/// * `limit` - Maximum number of results to return (clamped 1-100)
-/// * `tokens` - Optional token budget to limit response size
-/// * `ref_name` - Optional reference index name for cross-index search
-/// # Returns
-/// Returns a JSON value containing the gathered results and optional token usage information.
-/// # Errors
-/// Returns an error if embedding fails, the reference index is not loaded, vector index access fails, or the gather operation fails.
-#[allow(clippy::too_many_arguments)]
 pub(in crate::cli::batch) fn dispatch_gather(
     ctx: &BatchContext,
-    query: &str,
-    expand: usize,
-    direction: cqs::GatherDirection,
-    limit: usize,
-    tokens: Option<usize>,
-    ref_name: Option<&str>,
+    params: &GatherParams<'_>,
 ) -> Result<serde_json::Value> {
+    let GatherParams {
+        query,
+        expand,
+        direction,
+        limit,
+        tokens,
+        ref_name,
+    } = params;
+    let (expand, direction, limit, tokens, ref_name) =
+        (*expand, *direction, *limit, *tokens, *ref_name);
     let _span = tracing::info_span!("batch_gather", query, ?ref_name).entered();
 
     let embedder = ctx.embedder()?;

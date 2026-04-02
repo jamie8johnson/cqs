@@ -144,32 +144,43 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         );
     }
 
-    cmd_query_project(
+    cmd_query_project(&QueryContext {
         cli,
         query,
-        &query_embedding,
-        &filter,
-        &store,
-        &cqs_dir,
-        &root,
-        &embedder,
+        query_embedding: &query_embedding,
+        filter: &filter,
+        store: &store,
+        cqs_dir: &cqs_dir,
+        root: &root,
+        embedder: &embedder,
         effective_limit,
-    )
+    })
+}
+
+/// Infrastructure context for project queries.
+struct QueryContext<'a> {
+    cli: &'a Cli,
+    query: &'a str,
+    query_embedding: &'a Embedding,
+    filter: &'a SearchFilter,
+    store: &'a Store,
+    cqs_dir: &'a std::path::Path,
+    root: &'a std::path::Path,
+    embedder: &'a Embedder,
+    effective_limit: usize,
 }
 
 /// Project search: search project index, optionally include references (--include-refs).
-#[allow(clippy::too_many_arguments)]
-fn cmd_query_project(
-    cli: &Cli,
-    query: &str,
-    query_embedding: &Embedding,
-    filter: &SearchFilter,
-    store: &Store,
-    cqs_dir: &std::path::Path,
-    root: &std::path::Path,
-    embedder: &Embedder,
-    effective_limit: usize,
-) -> Result<()> {
+fn cmd_query_project(ctx: &QueryContext<'_>) -> Result<()> {
+    let cli = ctx.cli;
+    let query = ctx.query;
+    let query_embedding = ctx.query_embedding;
+    let filter = ctx.filter;
+    let store = ctx.store;
+    let cqs_dir = ctx.cqs_dir;
+    let root = ctx.root;
+    let embedder = ctx.embedder;
+    let effective_limit = ctx.effective_limit;
     let index = crate::cli::build_vector_index(store, cqs_dir)?;
 
     let audit_mode = cqs::audit::load_audit_state(cqs_dir);

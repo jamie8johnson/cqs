@@ -5,7 +5,9 @@ use clap::{Parser, Subcommand};
 
 use super::BatchContext;
 
-use crate::cli::args::{ContextArgs, DeadArgs, GatherArgs, ImpactArgs, ScoutArgs};
+use crate::cli::args::{
+    BlameArgs, ContextArgs, DeadArgs, GatherArgs, ImpactArgs, ScoutArgs, SimilarArgs, TraceArgs,
+};
 use crate::cli::parse_nonzero_usize;
 use crate::cli::GateThreshold;
 
@@ -54,14 +56,8 @@ pub(crate) enum BatchCmd {
     },
     /// Semantic git blame: who changed a function, when, and why
     Blame {
-        /// Function name or file:function
-        name: String,
-        /// Max commits to show
-        #[arg(short = 'd', long, default_value = "10")]
-        depth: usize,
-        /// Also show callers of the function
-        #[arg(long)]
-        callers: bool,
+        #[command(flatten)]
+        args: BlameArgs,
     },
     /// Type dependencies: who uses a type, or what types a function uses
     Deps {
@@ -91,14 +87,8 @@ pub(crate) enum BatchCmd {
     },
     /// Find similar code
     Similar {
-        /// Function name or file:function
-        target: String,
-        /// Max results
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
-        /// Min similarity threshold
-        #[arg(short = 't', long, default_value = "0.3")]
-        threshold: f32,
+        #[command(flatten)]
+        args: SimilarArgs,
     },
     /// Smart context assembly
     Gather {
@@ -121,13 +111,8 @@ pub(crate) enum BatchCmd {
     },
     /// Trace call path between two functions
     Trace {
-        /// Source function
-        source: String,
-        /// Target function
-        target: String,
-        /// Max search depth
-        #[arg(long, default_value = "10", value_parser = clap::value_parser!(u16).range(1..=50))]
-        max_depth: u16,
+        #[command(flatten)]
+        args: TraceArgs,
     },
     /// Find dead code
     Dead {
@@ -318,11 +303,9 @@ impl BatchCmd {
 /// with readline.
 pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::Value> {
     match cmd {
-        BatchCmd::Blame {
-            name,
-            depth,
-            callers,
-        } => handlers::dispatch_blame(ctx, &name, depth, callers),
+        BatchCmd::Blame { args } => {
+            handlers::dispatch_blame(ctx, &args.name, args.depth, args.callers)
+        }
         BatchCmd::Search {
             query,
             limit,
@@ -349,19 +332,19 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
         BatchCmd::Callers { name } => handlers::dispatch_callers(ctx, &name),
         BatchCmd::Callees { name } => handlers::dispatch_callees(ctx, &name),
         BatchCmd::Explain { name, tokens } => handlers::dispatch_explain(ctx, &name, tokens),
-        BatchCmd::Similar {
-            target,
-            limit,
-            threshold,
-        } => handlers::dispatch_similar(ctx, &target, limit, threshold),
+        BatchCmd::Similar { args } => {
+            handlers::dispatch_similar(ctx, &args.target, args.limit, args.threshold)
+        }
         BatchCmd::Gather { args } => handlers::dispatch_gather(
             ctx,
-            &args.query,
-            args.expand,
-            args.direction,
-            args.limit,
-            args.tokens,
-            args.ref_name.as_deref(),
+            &handlers::GatherParams {
+                query: &args.query,
+                expand: args.expand,
+                direction: args.direction,
+                limit: args.limit,
+                tokens: args.tokens,
+                ref_name: args.ref_name.as_deref(),
+            },
         ),
         BatchCmd::Impact { args } => handlers::dispatch_impact(
             ctx,
@@ -371,11 +354,9 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             args.include_types,
         ),
         BatchCmd::TestMap { name, depth } => handlers::dispatch_test_map(ctx, &name, depth),
-        BatchCmd::Trace {
-            source,
-            target,
-            max_depth,
-        } => handlers::dispatch_trace(ctx, &source, &target, max_depth as usize),
+        BatchCmd::Trace { args } => {
+            handlers::dispatch_trace(ctx, &args.source, &args.target, args.max_depth as usize)
+        }
         BatchCmd::Dead { args } => {
             handlers::dispatch_dead(ctx, args.include_pub, &args.min_confidence)
         }
@@ -532,14 +513,10 @@ mod tests {
     fn test_parse_trace() {
         let input = BatchInput::try_parse_from(["trace", "main", "validate"]).unwrap();
         match input.cmd {
-            BatchCmd::Trace {
-                ref source,
-                ref target,
-                max_depth,
-            } => {
-                assert_eq!(source, "main");
-                assert_eq!(target, "validate");
-                assert_eq!(max_depth, 10); // default
+            BatchCmd::Trace { ref args } => {
+                assert_eq!(args.source, "main");
+                assert_eq!(args.target, "validate");
+                assert_eq!(args.max_depth, 10); // default
             }
             _ => panic!("Expected Trace command"),
         }
@@ -712,14 +689,10 @@ mod tests {
     fn test_parse_blame() {
         let input = BatchInput::try_parse_from(["blame", "my_func"]).unwrap();
         match input.cmd {
-            BatchCmd::Blame {
-                ref name,
-                depth,
-                callers,
-            } => {
-                assert_eq!(name, "my_func");
-                assert_eq!(depth, 10); // default
-                assert!(!callers);
+            BatchCmd::Blame { ref args } => {
+                assert_eq!(args.name, "my_func");
+                assert_eq!(args.depth, 10); // default
+                assert!(!args.callers);
             }
             _ => panic!("Expected Blame command"),
         }
@@ -730,14 +703,10 @@ mod tests {
         let input =
             BatchInput::try_parse_from(["blame", "my_func", "-d", "5", "--callers"]).unwrap();
         match input.cmd {
-            BatchCmd::Blame {
-                ref name,
-                depth,
-                callers,
-            } => {
-                assert_eq!(name, "my_func");
-                assert_eq!(depth, 5);
-                assert!(callers);
+            BatchCmd::Blame { ref args } => {
+                assert_eq!(args.name, "my_func");
+                assert_eq!(args.depth, 5);
+                assert!(args.callers);
             }
             _ => panic!("Expected Blame command"),
         }

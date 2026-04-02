@@ -305,14 +305,8 @@ pub(super) enum Commands {
     Batch,
     /// Semantic git blame: who changed a function, when, and why
     Blame {
-        /// Function name or file:function
-        name: String,
-        /// Max commits to show
-        #[arg(short = 'd', long, default_value = "10")]
-        depth: usize,
-        /// Also show callers of the function
-        #[arg(long)]
-        callers: bool,
+        #[command(flatten)]
+        args: args::BlameArgs,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -442,14 +436,8 @@ pub(super) enum Commands {
     },
     /// Find code similar to a given function
     Similar {
-        /// Function name or file:function (e.g., "search_filtered" or "src/search.rs:search_filtered")
-        target: String,
-        /// Max results
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
-        /// Min similarity threshold
-        #[arg(short = 't', long, default_value = "0.3")]
-        threshold: f32,
+        #[command(flatten)]
+        args: args::SimilarArgs,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -507,13 +495,8 @@ pub(super) enum Commands {
     },
     /// Trace call chain between two functions
     Trace {
-        /// Source function name or file:function
-        source: String,
-        /// Target function name or file:function
-        target: String,
-        /// Max search depth (1-50)
-        #[arg(long, default_value = "10", value_parser = clap::value_parser!(u16).range(1..=50))]
-        max_depth: u16,
+        #[command(flatten)]
+        args: args::TraceArgs,
         #[command(flatten)]
         output: OutputArgs,
     },

@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use anyhow::Result;
 
 use super::super::BatchContext;
-use cqs::normalize_path;
 
 /// Dispatches a dependency query for a given name, returning either the types used by it or the code locations that use it.
 ///
@@ -75,17 +74,7 @@ pub(in crate::cli::batch) fn dispatch_callers(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_callers", name).entered();
     let callers = ctx.store().get_callers_full(name)?;
-    let json_callers: Vec<serde_json::Value> = callers
-        .iter()
-        .map(|c| {
-            serde_json::json!({
-                "name": c.name,
-                "file": normalize_path(&c.file),
-                "line": c.line,
-            })
-        })
-        .collect();
-    Ok(serde_json::json!(json_callers))
+    Ok(crate::cli::commands::callers_to_json(&callers))
 }
 
 /// Dispatches a request to retrieve all functions called by a specified function.
@@ -111,13 +100,7 @@ pub(in crate::cli::batch) fn dispatch_callees(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_callees", name).entered();
     let callees = ctx.store().get_callees_full(name, None)?;
-    Ok(serde_json::json!({
-        "function": name,
-        "calls": callees.iter().map(|(n, line)| {
-            serde_json::json!({"name": n, "line": line})
-        }).collect::<Vec<_>>(),
-        "count": callees.len(),
-    }))
+    Ok(crate::cli::commands::callees_to_json(name, &callees))
 }
 
 /// Analyzes the impact of changes to a target and returns the results as JSON.

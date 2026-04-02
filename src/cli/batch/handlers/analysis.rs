@@ -39,26 +39,11 @@ pub(in crate::cli::batch) fn dispatch_dead(
         .filter(|d| d.confidence >= *min_confidence)
         .collect();
 
-    let format_dead = |dead: &cqs::store::DeadFunction| {
-        let confidence = dead.confidence.as_str();
-        serde_json::json!({
-            "name": dead.chunk.name,
-            "file": cqs::rel_display(&dead.chunk.file, &ctx.root),
-            "line_start": dead.chunk.line_start,
-            "line_end": dead.chunk.line_end,
-            "chunk_type": dead.chunk.chunk_type.to_string(),
-            "signature": dead.chunk.signature,
-            "language": dead.chunk.language.to_string(),
-            "confidence": confidence,
-        })
-    };
-
-    Ok(serde_json::json!({
-        "dead": confident.iter().map(&format_dead).collect::<Vec<_>>(),
-        "possibly_dead_pub": possibly_pub.iter().map(&format_dead).collect::<Vec<_>>(),
-        "total_dead": confident.len(),
-        "total_possibly_dead_pub": possibly_pub.len(),
-    }))
+    Ok(crate::cli::commands::dead_to_json(
+        &confident,
+        &possibly_pub,
+        &ctx.root,
+    ))
 }
 
 /// Dispatches a request to identify stale and missing files in the batch store.
