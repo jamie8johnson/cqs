@@ -15,8 +15,8 @@ use super::commands::{
     cmd_export_model, cmd_gather, cmd_gc, cmd_health, cmd_impact, cmd_impact_diff, cmd_index,
     cmd_init, cmd_neighbors, cmd_notes, cmd_onboard, cmd_plan, cmd_project, cmd_query, cmd_read,
     cmd_reconstruct, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale,
-    cmd_stats, cmd_suggest, cmd_task, cmd_test_map, cmd_trace, cmd_train_data, cmd_train_pairs,
-    cmd_where,
+    cmd_stats, cmd_suggest, cmd_task, cmd_telemetry, cmd_telemetry_reset, cmd_test_map, cmd_trace,
+    cmd_train_data, cmd_train_pairs, cmd_where,
 };
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -217,6 +217,18 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref expires,
             ref output,
         }) => cmd_audit_mode(state.as_ref(), expires, output.json),
+        Some(Commands::Telemetry {
+            reset,
+            ref reason,
+            all,
+            ref output,
+        }) => {
+            if reset {
+                cmd_telemetry_reset(&cqs_dir, reason.as_deref())
+            } else {
+                cmd_telemetry(&cqs_dir, output.json, all)
+            }
+        }
         Some(Commands::Stale {
             ref output,
             count_only,

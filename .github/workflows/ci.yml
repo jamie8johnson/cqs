@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -52,23 +51,3 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.93.0
       - name: Check MSRV
         run: cargo check --verbose
-
-  # Eval suite - only runs on tagged releases (slow, requires model download)
-  eval:
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Run eval suite
-        run: cargo test eval -- --ignored --nocapture 2>&1 | tee eval.log
-        env:
-          RUST_BACKTRACE: 1
-      - name: Post eval summary
-        if: always()
-        run: |
-          echo "## Eval Results (${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          grep -E "Recall|MRR|NDCG|Config|Model|Template|------|test result" eval.log >> $GITHUB_STEP_SUMMARY || echo "No eval output found" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY

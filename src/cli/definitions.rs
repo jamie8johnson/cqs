@@ -547,6 +547,20 @@ pub(super) enum Commands {
         #[command(flatten)]
         output: TextJsonArgs,
     },
+    /// Usage telemetry dashboard — command frequency, categories, sessions
+    Telemetry {
+        /// Reset: archive current telemetry and start fresh
+        #[arg(long)]
+        reset: bool,
+        /// Reason for reset (used in the reset event)
+        #[arg(long, requires = "reset")]
+        reason: Option<String>,
+        /// Include archived telemetry files
+        #[arg(long)]
+        all: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
+    },
     /// Check index freshness — list stale and missing files
     Stale {
         #[command(flatten)]

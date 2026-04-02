@@ -185,7 +185,7 @@ Telemetry update (2026-03-29, 72 events since v1.9.0 reset): test-map 37%, notes
 
 **Next:**
 - [ ] **Fewer commands in prompts** — only mention `scout` and `task` (highest value, fewest choices)
-- [ ] **Telemetry dashboard** — `cqs telemetry` command showing usage patterns, adoption gaps
+- [x] **Telemetry dashboard** — `cqs telemetry` command: frequency, categories, sessions, top queries. `--reset`, `--all`, `--json`.
 
 ### 1.0.x Highlights
 
@@ -195,6 +195,14 @@ Telemetry update (2026-03-29, 72 events since v1.9.0 reset): test-map 37%, notes
 - v1.0.8: 14-category audit — 14 findings fixed
 - v1.0.9: SQ-5 module-level context (filename stems with generic filter)
 - v1.0.10: Red team audit — 7 findings fixed (HNSW ID desync, PDF script injection, path traversal)
+
+### Next — Refactoring
+
+- [ ] **CommandContext struct** — eliminate 32 copies of `open_project_store_readonly()`. Shared struct holds store + embedder + root + cqs_dir, passed to all handlers. Widest impact.
+- [ ] **`cli/mod.rs` split** (1161 lines) — extract `cli/store.rs` (openers + index), promote existing private submodules. Cheapest win.
+- [ ] **`pipeline.rs` split** (1303 lines) — break index pipeline into parse/embed/upsert/enrich submodules.
+- [ ] **`store/helpers.rs` split** (1222 lines) — separate row helpers from SQL builders.
+- [ ] **`language/mod.rs`** (1998 lines) — pure data, low priority. Could group by language family.
 
 ### Next — Commands
 

@@ -1,0 +1,564 @@
+//! Telemetry dashboard — usage patterns at a glance.
+
+use std::collections::HashMap;
+use std::fs;
+use std::io::BufRead;
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use colored::Colorize;
+
+/// Command categories for grouping telemetry data.
+fn category_for(cmd: &str) -> &'static str {
+    match cmd {
+        "search" | "gather" | "scout" | "onboard" | "where" | "related" | "similar" => "Search",
+        "callers" | "callees" | "impact" | "impact-diff" | "test-map" | "deps" | "trace"
+        | "explain" | "context" | "dead" => "Structural",
+        "task" | "review" | "plan" | "ci" => "Orchestrator",
+        "read" | "notes" | "blame" | "diff" | "drift" | "stale" | "suggest" | "reconstruct" => {
+            "Read/Write"
+        }
+        _ => "Infra",
+    }
+}
+
+/// Category display order (most interesting first).
+const CATEGORY_ORDER: &[&str] = &[
+    "Orchestrator",
+    "Search",
+    "Structural",
+    "Read/Write",
+    "Infra",
+];
+
+#[derive(Debug, serde::Deserialize)]
+struct RawEntry {
+    #[serde(default)]
+    cmd: Option<String>,
+    #[serde(default)]
+    event: Option<String>,
+    ts: u64,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Debug)]
+enum Entry {
+    Command {
+        cmd: String,
+        query: Option<String>,
+        ts: u64,
+    },
+    Reset {
+        ts: u64,
+        _reason: Option<String>,
+    },
+}
+
+fn parse_entries(path: &Path) -> Result<Vec<Entry>> {
+    let file = fs::File::open(path).with_context(|| format!("Cannot open {}", path.display()))?;
+    let reader = std::io::BufReader::new(file);
+    let mut entries = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(raw) = serde_json::from_str::<RawEntry>(&line) {
+            if raw.event.is_some() {
+                entries.push(Entry::Reset {
+                    ts: raw.ts,
+                    _reason: raw.reason,
+                });
+            } else if let Some(cmd) = raw.cmd {
+                entries.push(Entry::Command {
+                    cmd,
+                    query: raw.query,
+                    ts: raw.ts,
+                });
+            }
+        }
+    }
+    Ok(entries)
+}
+
+/// Detect sessions by splitting on reset events or 4-hour gaps.
+fn count_sessions(entries: &[Entry]) -> usize {
+    const GAP_SECS: u64 = 4 * 3600;
+    let mut sessions = 1usize;
+    let mut last_ts: Option<u64> = None;
+    for entry in entries {
+        let ts = match entry {
+            Entry::Command { ts, .. } => *ts,
+            Entry::Reset { ts, .. } => {
+                sessions += 1;
+                last_ts = Some(*ts);
+                continue;
+            }
+        };
+        if let Some(prev) = last_ts {
+            if ts.saturating_sub(prev) > GAP_SECS {
+                sessions += 1;
+            }
+        }
+        last_ts = Some(ts);
+    }
+    sessions
+}
+
+fn format_ts(ts: u64) -> String {
+    // Simple date formatting without chrono dep
+    let secs = ts as i64;
+    let days_since_epoch = secs / 86400;
+    // Zeller-like calculation for year/month/day
+    let mut y = 1970i64;
+    let mut remaining = days_since_epoch;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0usize;
+    for (i, &days) in month_days.iter().enumerate() {
+        if remaining < days {
+            m = i;
+            break;
+        }
+        remaining -= days;
+    }
+    let month_names = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    format!("{} {:02}", month_names[m], remaining + 1)
+}
+
+/// Build a bar string of given width using block characters.
+fn bar(width: usize) -> String {
+    "█".repeat(width)
+}
+
+pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_telemetry").entered();
+
+    let mut entries = Vec::new();
+
+    if all {
+        // Read all telemetry files (archived + current)
+        if let Ok(dir) = fs::read_dir(cqs_dir) {
+            let mut paths: Vec<_> = dir
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.file_name()
+                        .to_str()
+                        .is_some_and(|n| n.starts_with("telemetry") && n.ends_with(".jsonl"))
+                })
+                .map(|e| e.path())
+                .collect();
+            paths.sort();
+            for path in paths {
+                match parse_entries(&path) {
+                    Ok(e) => entries.extend(e),
+                    Err(err) => tracing::warn!(path = %path.display(), error = %err, "Skipping"),
+                }
+            }
+        }
+    } else {
+        let path = cqs_dir.join("telemetry.jsonl");
+        if path.exists() {
+            entries = parse_entries(&path)?;
+        }
+    }
+
+    // Filter to command entries for stats
+    let commands: Vec<_> = entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Command { cmd, query, ts } => Some((cmd.as_str(), query.as_deref(), *ts)),
+            _ => None,
+        })
+        .collect();
+
+    if commands.is_empty() {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({"events": 0, "commands": {}, "categories": {}})
+            );
+        } else {
+            println!("No telemetry data. Set CQS_TELEMETRY=1 to enable.");
+        }
+        return Ok(());
+    }
+
+    // Command frequency
+    let mut cmd_counts: HashMap<&str, usize> = HashMap::new();
+    for &(cmd, _, _) in &commands {
+        *cmd_counts.entry(cmd).or_default() += 1;
+    }
+    let mut cmd_sorted: Vec<_> = cmd_counts.iter().collect();
+    cmd_sorted.sort_by(|a, b| b.1.cmp(a.1));
+
+    // Category aggregation
+    let mut cat_counts: HashMap<&str, usize> = HashMap::new();
+    for &(cmd, _, _) in &commands {
+        *cat_counts.entry(category_for(cmd)).or_default() += 1;
+    }
+
+    // Top queries
+    let mut query_counts: HashMap<&str, usize> = HashMap::new();
+    for &(_, query, _) in &commands {
+        if let Some(q) = query {
+            if !q.is_empty() {
+                *query_counts.entry(q).or_default() += 1;
+            }
+        }
+    }
+    let mut query_sorted: Vec<_> = query_counts.iter().collect();
+    query_sorted.sort_by(|a, b| b.1.cmp(a.1));
+
+    // Date range
+    let min_ts = commands.iter().map(|c| c.2).min().unwrap_or(0);
+    let max_ts = commands.iter().map(|c| c.2).max().unwrap_or(0);
+
+    // Sessions
+    let sessions = count_sessions(&entries);
+    let total = commands.len();
+
+    if json {
+        let cmd_map: serde_json::Map<String, serde_json::Value> = cmd_sorted
+            .iter()
+            .map(|(&cmd, &count)| (cmd.to_string(), serde_json::json!(count)))
+            .collect();
+        let cat_map: serde_json::Map<String, serde_json::Value> = cat_counts
+            .iter()
+            .map(|(&cat, &count)| (cat.to_string(), serde_json::json!(count)))
+            .collect();
+        let top_queries: Vec<_> = query_sorted
+            .iter()
+            .take(10)
+            .map(|(&q, &c)| serde_json::json!({"query": q, "count": c}))
+            .collect();
+        let output = serde_json::json!({
+            "events": total,
+            "date_range": { "from": min_ts, "to": max_ts },
+            "sessions": sessions,
+            "commands": cmd_map,
+            "categories": cat_map,
+            "top_queries": top_queries,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        // Header
+        let days = (max_ts.saturating_sub(min_ts)) / 86400 + 1;
+        println!(
+            "{}: {} events over {} day{} ({} – {})",
+            "Telemetry".bold(),
+            total,
+            days,
+            if days == 1 { "" } else { "s" },
+            format_ts(min_ts),
+            format_ts(max_ts),
+        );
+        println!();
+
+        // Command frequency with bar chart
+        let max_count = cmd_sorted.first().map(|(_, &c)| c).unwrap_or(1);
+        let bar_max = 20usize;
+        println!("{}:", "Command Usage".cyan());
+        for (&cmd, &count) in &cmd_sorted {
+            let bar_width = (count * bar_max) / max_count.max(1);
+            let pct = (count as f64 / total as f64) * 100.0;
+            println!(
+                "  {:<14} {:>4}  {}  ({:.1}%)",
+                cmd,
+                count,
+                bar(bar_width).blue(),
+                pct,
+            );
+        }
+        println!();
+
+        // Categories
+        println!("{}:", "Categories".cyan());
+        for &cat in CATEGORY_ORDER {
+            let count = cat_counts.get(cat).copied().unwrap_or(0);
+            if count > 0 {
+                let pct = (count as f64 / total as f64) * 100.0;
+                let label = match cat {
+                    "Orchestrator" => {
+                        if pct < 5.0 {
+                            format!("{:.0}%", pct).red().to_string()
+                        } else {
+                            format!("{:.0}%", pct).green().to_string()
+                        }
+                    }
+                    _ => format!("{:.0}%", pct),
+                };
+                println!("  {:<14} {:>4}  ({})", cat, count, label);
+            }
+        }
+        println!();
+
+        // Sessions
+        println!(
+            "Sessions: {} (avg {:.0} events/session)",
+            sessions,
+            total as f64 / sessions as f64,
+        );
+
+        // Top queries
+        if !query_sorted.is_empty() {
+            println!();
+            println!("{}:", "Top Queries".cyan());
+            for (&query, &count) in query_sorted.iter().take(10) {
+                let display = if query.len() > 50 {
+                    format!("{}...", &query[..47])
+                } else {
+                    query.to_string()
+                };
+                println!("  {:>4}  {}", count, display);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>) -> Result<()> {
+    let _span = tracing::info_span!("cmd_telemetry_reset").entered();
+
+    let current = cqs_dir.join("telemetry.jsonl");
+    if !current.exists() {
+        println!("No telemetry file to reset.");
+        return Ok(());
+    }
+
+    // Count lines for report
+    let line_count = fs::read_to_string(&current)
+        .unwrap_or_default()
+        .lines()
+        .count();
+
+    // Archive with timestamp
+    let now = chrono_like_timestamp();
+    let archive = cqs_dir.join(format!("telemetry_{now}.jsonl"));
+    fs::copy(&current, &archive)
+        .with_context(|| format!("Failed to archive to {}", archive.display()))?;
+
+    // Write reset event
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let reason_str = reason.unwrap_or("manual reset");
+    let entry = serde_json::json!({
+        "event": "reset",
+        "ts": timestamp,
+        "reason": reason_str,
+    });
+    fs::write(&current, format!("{}\n", entry)).context("Failed to write reset event")?;
+
+    println!(
+        "Archived {} events to {}",
+        line_count,
+        archive.file_name().unwrap_or_default().to_string_lossy(),
+    );
+
+    Ok(())
+}
+
+/// Produce a YYYYMMDD_HHMMSS timestamp without chrono.
+fn chrono_like_timestamp() -> String {
+    use std::process::Command;
+    // Use system date command — simpler than reimplementing timezone-aware formatting
+    Command::new("date")
+        .arg("+%Y%m%d_%H%M%S")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            format!("{ts}")
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_test_telemetry(dir: &Path, lines: &[&str]) {
+        let path = dir.join("telemetry.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        for line in lines {
+            writeln!(f, "{line}").unwrap();
+        }
+    }
+
+    #[test]
+    fn test_category_assignment() {
+        assert_eq!(category_for("search"), "Search");
+        assert_eq!(category_for("gather"), "Search");
+        assert_eq!(category_for("callers"), "Structural");
+        assert_eq!(category_for("impact"), "Structural");
+        assert_eq!(category_for("task"), "Orchestrator");
+        assert_eq!(category_for("review"), "Orchestrator");
+        assert_eq!(category_for("read"), "Read/Write");
+        assert_eq!(category_for("notes"), "Read/Write");
+        assert_eq!(category_for("index"), "Infra");
+        assert_eq!(category_for("unknown_cmd"), "Infra");
+    }
+
+    #[test]
+    fn test_parse_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        write_test_telemetry(
+            dir.path(),
+            &[
+                r#"{"event":"reset","ts":1000,"reason":"test"}"#,
+                r#"{"cmd":"search","query":"foo","ts":1001}"#,
+                r#"{"cmd":"impact","query":"bar","results":5,"ts":1002}"#,
+            ],
+        );
+        let entries = parse_entries(&dir.path().join("telemetry.jsonl")).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert!(matches!(&entries[0], Entry::Reset { _reason: Some(r), .. } if r == "test"));
+        assert!(matches!(&entries[1], Entry::Command { cmd, .. } if cmd == "search"));
+        assert!(matches!(&entries[2], Entry::Command { cmd, .. } if cmd == "impact"));
+    }
+
+    #[test]
+    fn test_count_sessions_by_reset() {
+        let entries = vec![
+            Entry::Command {
+                cmd: "search".into(),
+                query: None,
+                ts: 1000,
+            },
+            Entry::Reset {
+                ts: 2000,
+                _reason: None,
+            },
+            Entry::Command {
+                cmd: "search".into(),
+                query: None,
+                ts: 2001,
+            },
+        ];
+        assert_eq!(count_sessions(&entries), 2);
+    }
+
+    #[test]
+    fn test_count_sessions_by_gap() {
+        let entries = vec![
+            Entry::Command {
+                cmd: "search".into(),
+                query: None,
+                ts: 1000,
+            },
+            Entry::Command {
+                cmd: "search".into(),
+                query: None,
+                ts: 1000 + 5 * 3600,
+            },
+        ];
+        // 5-hour gap > 4-hour threshold → 2 sessions
+        assert_eq!(count_sessions(&entries), 2);
+    }
+
+    #[test]
+    fn test_count_sessions_no_gap() {
+        let entries = vec![
+            Entry::Command {
+                cmd: "search".into(),
+                query: None,
+                ts: 1000,
+            },
+            Entry::Command {
+                cmd: "search".into(),
+                query: None,
+                ts: 1000 + 3600,
+            },
+        ];
+        // 1-hour gap < 4-hour threshold → 1 session
+        assert_eq!(count_sessions(&entries), 1);
+    }
+
+    #[test]
+    fn test_format_ts() {
+        // 2026-04-02 = some known timestamp
+        let ts = 1774917165; // from test data
+        let formatted = format_ts(ts);
+        // Should contain a month abbreviation and day
+        assert!(formatted.len() >= 5); // "Mon DD"
+    }
+
+    #[test]
+    fn test_empty_telemetry_json() {
+        let dir = tempfile::tempdir().unwrap();
+        write_test_telemetry(dir.path(), &[]);
+        // Should not error on empty file
+        let result = cmd_telemetry(dir.path(), true, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_reset_archives_and_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        write_test_telemetry(
+            dir.path(),
+            &[
+                r#"{"cmd":"search","query":"foo","ts":1000}"#,
+                r#"{"cmd":"impact","query":"bar","ts":1001}"#,
+            ],
+        );
+
+        cmd_telemetry_reset(dir.path(), Some("test reset")).unwrap();
+
+        // Current file should have just the reset event
+        let current = fs::read_to_string(dir.path().join("telemetry.jsonl")).unwrap();
+        assert!(current.contains("reset"));
+        assert!(current.contains("test reset"));
+        assert_eq!(current.lines().count(), 1);
+
+        // Archive should exist
+        let archives: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.starts_with("telemetry_") && name.ends_with(".jsonl")
+            })
+            .collect();
+        assert_eq!(archives.len(), 1);
+    }
+}

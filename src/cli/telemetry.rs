@@ -101,6 +101,7 @@ pub fn describe_command(args: &[String]) -> (String, Option<String>) {
             "scout",
             "plan",
             "task",
+            "telemetry",
             "convert",
             "train-data",
             "help",
