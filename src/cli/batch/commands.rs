@@ -333,7 +333,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
         BatchCmd::Callees { name } => handlers::dispatch_callees(ctx, &name),
         BatchCmd::Explain { name, tokens } => handlers::dispatch_explain(ctx, &name, tokens),
         BatchCmd::Similar { args } => {
-            handlers::dispatch_similar(ctx, &args.target, args.limit, args.threshold)
+            handlers::dispatch_similar(ctx, &args.name, args.limit, args.threshold)
         }
         BatchCmd::Gather { args } => handlers::dispatch_gather(
             ctx,

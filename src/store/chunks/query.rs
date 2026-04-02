@@ -258,9 +258,9 @@ impl Store {
                 .await?;
             Ok(results.into_iter().next().and_then(|(row, bytes)| {
                 match bytes_to_embedding(&bytes, dim) {
-                    Some(emb) => Some((ChunkSummary::from(row), Embedding::new(emb))),
-                    None => {
-                        tracing::warn!(chunk_id = %row.id, "Corrupt embedding for chunk, skipping");
+                    Ok(emb) => Some((ChunkSummary::from(row), Embedding::new(emb))),
+                    Err(e) => {
+                        tracing::warn!(chunk_id = %row.id, error = %e, "Corrupt embedding for chunk, skipping");
                         None
                     }
                 }
@@ -322,8 +322,13 @@ impl Store {
                 for row in rows {
                     let id: String = row.get(0);
                     let bytes: Vec<u8> = row.get(1);
-                    if let Some(emb) = bytes_to_embedding(&bytes, dim) {
-                        result.insert(id, Embedding::new(emb));
+                    match bytes_to_embedding(&bytes, dim) {
+                        Ok(emb) => {
+                            result.insert(id, Embedding::new(emb));
+                        }
+                        Err(e) => {
+                            tracing::trace!(chunk_id = %id, error = %e, "Skipping embedding");
+                        }
                     }
                 }
             }

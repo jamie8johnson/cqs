@@ -88,7 +88,7 @@ pub(crate) struct DeadArgs {
 #[derive(Args, Debug, Clone)]
 pub(crate) struct SimilarArgs {
     /// Function name or file:function (e.g., "search_filtered" or "src/search.rs:search_filtered")
-    pub target: String,
+    pub name: String,
     /// Max results
     #[arg(short = 'n', long, default_value = "5")]
     pub limit: usize,

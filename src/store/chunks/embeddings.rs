@@ -44,8 +44,13 @@ impl Store {
                 for row in rows {
                     let hash: String = row.get(0);
                     let bytes: Vec<u8> = row.get(1);
-                    if let Some(embedding) = bytes_to_embedding(&bytes, dim) {
-                        result.insert(hash, Embedding::new(embedding));
+                    match bytes_to_embedding(&bytes, dim) {
+                        Ok(embedding) => {
+                            result.insert(hash, Embedding::new(embedding));
+                        }
+                        Err(e) => {
+                            tracing::trace!(hash = %hash, error = %e, "Skipping embedding");
+                        }
                     }
                 }
             }
@@ -93,8 +98,13 @@ impl Store {
                 for row in rows {
                     let id: String = row.get(0);
                     let bytes: Vec<u8> = row.get(1);
-                    if let Some(embedding) = bytes_to_embedding(&bytes, dim) {
-                        result.push((id, Embedding::new(embedding)));
+                    match bytes_to_embedding(&bytes, dim) {
+                        Ok(embedding) => {
+                            result.push((id, Embedding::new(embedding)));
+                        }
+                        Err(e) => {
+                            tracing::trace!(chunk_id = %id, error = %e, "Skipping embedding");
+                        }
                     }
                 }
             }

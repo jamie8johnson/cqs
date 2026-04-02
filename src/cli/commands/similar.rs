@@ -8,15 +8,15 @@ use crate::cli::{display, Cli};
 
 use super::resolve::parse_target;
 
-/// Resolve a target to a chunk ID by searching by name and optionally filtering by file
-fn resolve_target(store: &Store, target: &str) -> Result<(String, String)> {
-    let (file_filter, name) = parse_target(target);
+/// Resolve a name to a chunk ID by searching by name and optionally filtering by file
+fn resolve_target(store: &Store, name: &str) -> Result<(String, String)> {
+    let (file_filter, func_name) = parse_target(name);
 
-    let results = store.search_by_name(name, 20)?;
+    let results = store.search_by_name(func_name, 20)?;
     if results.is_empty() {
         bail!(
             "No function found matching '{}'. Check the name and try again.",
-            name
+            func_name
         );
     }
 
@@ -36,17 +36,17 @@ fn resolve_target(store: &Store, target: &str) -> Result<(String, String)> {
 
 pub(crate) fn cmd_similar(
     cli: &Cli,
-    target: &str,
+    name: &str,
     limit: usize,
     threshold: f32,
     json: bool,
 ) -> Result<()> {
     crate::cli::validate_finite_f32(threshold, "threshold")?;
-    let _span = tracing::info_span!("cmd_similar", target).entered();
+    let _span = tracing::info_span!("cmd_similar", name).entered();
     let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
 
-    // Resolve target to chunk
-    let (chunk_id, chunk_name) = resolve_target(&store, target)?;
+    // Resolve name to chunk
+    let (chunk_id, chunk_name) = resolve_target(&store, name)?;
 
     // Fetch embedding for the target chunk
     let (source_chunk, embedding) =

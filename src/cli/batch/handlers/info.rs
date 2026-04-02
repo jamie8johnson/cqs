@@ -90,20 +90,20 @@ pub(in crate::cli::batch) fn dispatch_explain(
 /// # Errors
 /// Returns an error if:
 /// * The threshold is not a finite number
-/// * The target chunk cannot be resolved
+/// * The named chunk cannot be resolved
 /// * The chunk embedding cannot be loaded
 /// * The vector index is unavailable or search fails
 pub(in crate::cli::batch) fn dispatch_similar(
     ctx: &BatchContext,
-    target: &str,
+    name: &str,
     limit: usize,
     threshold: f32,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_similar", target).entered();
+    let _span = tracing::info_span!("batch_similar", name).entered();
     let threshold = validate_finite_f32(threshold, "threshold")?;
     let limit = limit.clamp(1, 100);
 
-    let resolved = cqs::resolve_target(&ctx.store(), target)?;
+    let resolved = cqs::resolve_target(&ctx.store(), name)?;
     let chunk = &resolved.chunk;
 
     let (source_chunk, embedding) = ctx

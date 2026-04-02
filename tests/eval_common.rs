@@ -17,6 +17,50 @@ pub struct EvalCase {
     pub also_accept: &'static [&'static str],
 }
 
+/// Owned variant of `EvalCase` for JSON-loaded evaluation cases.
+/// Same semantics, but owns its strings so it can be deserialized from files.
+#[derive(serde::Deserialize)]
+pub struct OwnedEvalCase {
+    pub query: String,
+    #[serde(alias = "expected_name")]
+    pub expected: String,
+    #[serde(default = "default_language")]
+    pub language: String,
+    #[serde(default)]
+    pub also_accept: Vec<String>,
+}
+
+fn default_language() -> String {
+    "rust".to_string()
+}
+
+/// Load evaluation cases from a JSON file.
+///
+/// Expected format: array of objects with fields:
+/// - `query` (string): semantic search query
+/// - `expected` or `expected_name` (string): expected function name
+/// - `language` (string, optional): language name, defaults to "rust"
+/// - `also_accept` (array of strings, optional): alternative acceptable names
+///
+/// # Panics
+/// Panics if the file cannot be read or contains invalid JSON.
+pub fn load_eval_cases_from_json(path: &std::path::Path) -> Vec<OwnedEvalCase> {
+    let data = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("Failed to read eval file {}: {}", path.display(), e));
+    serde_json::from_str(&data)
+        .unwrap_or_else(|e| panic!("Invalid JSON in {}: {}", path.display(), e))
+}
+
+impl OwnedEvalCase {
+    /// Parse the language string into a `Language` enum.
+    /// Panics on unrecognized language names.
+    pub fn parsed_language(&self) -> Language {
+        self.language
+            .parse()
+            .unwrap_or_else(|_| panic!("Unknown language '{}' in eval case", self.language))
+    }
+}
+
 /// Get fixture path for a language (original fixtures for basic eval)
 pub fn fixture_path(lang: Language) -> PathBuf {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
@@ -2271,3 +2315,58 @@ pub const HOLDOUT_EVAL_CASES: &[EvalCase] = &[
         also_accept: &[],
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fixture_dir() -> PathBuf {
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
+        PathBuf::from(manifest).join("tests").join("fixtures")
+    }
+
+    #[test]
+    fn test_load_eval_cases_from_json() {
+        let cases = load_eval_cases_from_json(&fixture_dir().join("eval_sample.json"));
+        assert_eq!(cases.len(), 3);
+
+        assert_eq!(cases[0].query, "retry with exponential backoff");
+        assert_eq!(cases[0].expected, "retry_with_backoff");
+        assert_eq!(cases[0].language, "rust");
+        assert!(cases[0].also_accept.is_empty());
+
+        // expected_name alias works
+        assert_eq!(cases[1].expected, "validate_email");
+
+        // language defaults to "rust" when omitted
+        assert_eq!(cases[2].language, "rust");
+        assert!(cases[2].also_accept.is_empty());
+    }
+
+    #[test]
+    fn test_owned_eval_case_parsed_language() {
+        let case = OwnedEvalCase {
+            query: "test".into(),
+            expected: "test_fn".into(),
+            language: "rust".into(),
+            also_accept: vec![],
+        };
+        assert_eq!(case.parsed_language(), Language::Rust);
+    }
+
+    #[test]
+    #[should_panic(expected = "Failed to read eval file")]
+    fn test_load_eval_cases_missing_file() {
+        load_eval_cases_from_json(std::path::Path::new("/nonexistent/path.json"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid JSON")]
+    fn test_load_eval_cases_invalid_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("bad.json");
+        std::fs::write(&path, "not json").unwrap();
+        load_eval_cases_from_json(&path);
+    }
+}

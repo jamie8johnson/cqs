@@ -28,4 +28,74 @@ impl ScoringConfig {
         parent_boost_per_child: 0.05,
         parent_boost_cap: 1.15,
     };
+
+    /// Build a `ScoringConfig` by layering optional overrides on top of defaults.
+    /// Callers: currently test-only; wiring into scoring pipeline is a follow-up.
+    #[allow(dead_code)]
+    pub fn with_overrides(overrides: &crate::config::ScoringOverrides) -> Self {
+        Self {
+            name_exact: overrides.name_exact.unwrap_or(Self::DEFAULT.name_exact),
+            name_contains: overrides
+                .name_contains
+                .unwrap_or(Self::DEFAULT.name_contains),
+            name_contained_by: overrides
+                .name_contained_by
+                .unwrap_or(Self::DEFAULT.name_contained_by),
+            name_max_overlap: overrides
+                .name_max_overlap
+                .unwrap_or(Self::DEFAULT.name_max_overlap),
+            note_boost_factor: overrides
+                .note_boost_factor
+                .unwrap_or(Self::DEFAULT.note_boost_factor),
+            importance_test: overrides
+                .importance_test
+                .unwrap_or(Self::DEFAULT.importance_test),
+            importance_private: overrides
+                .importance_private
+                .unwrap_or(Self::DEFAULT.importance_private),
+            parent_boost_per_child: overrides
+                .parent_boost_per_child
+                .unwrap_or(Self::DEFAULT.parent_boost_per_child),
+            parent_boost_cap: overrides
+                .parent_boost_cap
+                .unwrap_or(Self::DEFAULT.parent_boost_cap),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ScoringOverrides;
+
+    #[test]
+    fn with_overrides_uses_defaults_when_empty() {
+        let overrides = ScoringOverrides::default();
+        let cfg = ScoringConfig::with_overrides(&overrides);
+        assert!((cfg.name_exact - ScoringConfig::DEFAULT.name_exact).abs() < f32::EPSILON);
+        assert!(
+            (cfg.note_boost_factor - ScoringConfig::DEFAULT.note_boost_factor).abs() < f32::EPSILON
+        );
+        assert!(
+            (cfg.importance_test - ScoringConfig::DEFAULT.importance_test).abs() < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn with_overrides_applies_partial_overrides() {
+        let overrides = ScoringOverrides {
+            name_exact: Some(0.9),
+            note_boost_factor: Some(0.25),
+            ..Default::default()
+        };
+        let cfg = ScoringConfig::with_overrides(&overrides);
+        assert!((cfg.name_exact - 0.9).abs() < f32::EPSILON);
+        assert!((cfg.note_boost_factor - 0.25).abs() < f32::EPSILON);
+        // Untouched fields keep defaults
+        assert!((cfg.name_contains - ScoringConfig::DEFAULT.name_contains).abs() < f32::EPSILON);
+        assert!(
+            (cfg.importance_private - ScoringConfig::DEFAULT.importance_private).abs()
+                < f32::EPSILON
+        );
+    }
 }

@@ -61,6 +61,12 @@ pub enum StoreError {
     DimensionMismatch(u32, u32),
     #[error("Database integrity check failed: {0}")]
     Corruption(String),
+    #[error("Embedding blob dimension mismatch: expected {expected}-dim ({expected_bytes} bytes), got {actual_bytes} bytes")]
+    EmbeddingBlobMismatch {
+        expected: usize,
+        expected_bytes: usize,
+        actual_bytes: usize,
+    },
 }
 
 /// Lightweight candidate row for scoring (PF-5).
@@ -879,38 +885,33 @@ pub fn embedding_to_bytes(
 
 /// Zero-copy view of embedding bytes as f32 slice (for hot paths)
 ///
-/// Returns None if byte length doesn't match `expected_dim * 4`.
-/// Uses trace level logging to avoid impacting search performance.
-pub fn embedding_slice(bytes: &[u8], expected_dim: usize) -> Option<&[f32]> {
+/// Returns `Err(StoreError::EmbeddingBlobMismatch)` if byte length doesn't match `expected_dim * 4`.
+pub fn embedding_slice(bytes: &[u8], expected_dim: usize) -> Result<&[f32], StoreError> {
     let expected_bytes = expected_dim * 4;
     if bytes.len() != expected_bytes {
-        tracing::trace!(
-            expected = expected_bytes,
-            actual = bytes.len(),
-            "Embedding byte length mismatch, skipping"
-        );
-        return None;
+        return Err(StoreError::EmbeddingBlobMismatch {
+            expected: expected_dim,
+            expected_bytes,
+            actual_bytes: bytes.len(),
+        });
     }
-    Some(bytemuck::cast_slice(bytes))
+    Ok(bytemuck::cast_slice(bytes))
 }
 
 /// Convert embedding bytes to owned Vec (when ownership needed)
 ///
-/// Returns None if byte length doesn't match `expected_dim * 4` bytes.
+/// Returns `Err(StoreError::EmbeddingBlobMismatch)` if byte length doesn't match `expected_dim * 4` bytes.
 /// This prevents silently using corrupted/truncated embeddings.
-/// Uses trace level logging consistent with embedding_slice() since both are called on hot paths.
-pub fn bytes_to_embedding(bytes: &[u8], expected_dim: usize) -> Option<Vec<f32>> {
+pub fn bytes_to_embedding(bytes: &[u8], expected_dim: usize) -> Result<Vec<f32>, StoreError> {
     let expected_bytes = expected_dim * 4;
     if bytes.len() != expected_bytes {
-        tracing::warn!(
-            expected_dim = expected_dim,
-            expected_bytes = expected_bytes,
-            actual_bytes = bytes.len(),
-            "Embedding dimension mismatch — index may need rebuilding after model change"
-        );
-        return None;
+        return Err(StoreError::EmbeddingBlobMismatch {
+            expected: expected_dim,
+            expected_bytes,
+            actual_bytes: bytes.len(),
+        });
     }
-    Some(bytemuck::cast_slice::<u8, f32>(bytes).to_vec())
+    Ok(bytemuck::cast_slice::<u8, f32>(bytes).to_vec())
 }
 
 #[cfg(test)]
@@ -1159,7 +1160,7 @@ mod tests {
         let data = vec![0.0f32; crate::EMBEDDING_DIM];
         let bytes = bytemuck::cast_slice::<f32, u8>(&data);
         let result = embedding_slice(bytes, crate::EMBEDDING_DIM);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), crate::EMBEDDING_DIM);
     }
 
@@ -1168,12 +1169,12 @@ mod tests {
         let data = vec![1.0f32; 1024];
         let bytes = bytemuck::cast_slice::<f32, u8>(&data);
         let result = embedding_slice(bytes, 1024);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 1024);
     }
 
     #[test]
-    fn test_embedding_slice_wrong_dim_returns_none() {
+    fn test_embedding_slice_wrong_dim_returns_err() {
         let data = vec![0.0f32; crate::EMBEDDING_DIM];
         let bytes = bytemuck::cast_slice::<f32, u8>(&data);
         // Ask for a different dim than what was stored
@@ -1183,7 +1184,9 @@ mod tests {
             1024
         };
         let result = embedding_slice(bytes, wrong_dim);
-        assert!(result.is_none());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, StoreError::EmbeddingBlobMismatch { .. }));
     }
 
     #[test]
@@ -1203,7 +1206,17 @@ mod tests {
         let data = vec![0.5f32; 1024];
         let bytes: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&data).to_vec();
         let result = bytes_to_embedding(&bytes, 1024);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 1024);
+    }
+
+    #[test]
+    fn test_bytes_to_embedding_wrong_dim_returns_err() {
+        let data = vec![0.5f32; 1024];
+        let bytes: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&data).to_vec();
+        let result = bytes_to_embedding(&bytes, 768);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, StoreError::EmbeddingBlobMismatch { .. }));
     }
 }

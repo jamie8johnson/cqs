@@ -1,0 +1,17 @@
+[
+  {
+    "query": "retry with exponential backoff",
+    "expected": "retry_with_backoff",
+    "language": "rust",
+    "also_accept": []
+  },
+  {
+    "query": "validate email address format",
+    "expected_name": "validate_email",
+    "language": "rust"
+  },
+  {
+    "query": "parse configuration file",
+    "expected": "parse_json_config"
+  }
+]

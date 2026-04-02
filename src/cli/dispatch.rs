@@ -110,7 +110,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             tokens,
         }) => cmd_explain(&cli, name, json, tokens),
         Some(Commands::Similar { ref args, json }) => {
-            cmd_similar(&cli, &args.target, args.limit, args.threshold, json)
+            cmd_similar(&cli, &args.name, args.limit, args.threshold, json)
         }
         Some(Commands::Impact {
             ref args,

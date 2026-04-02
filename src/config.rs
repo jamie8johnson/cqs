@@ -73,6 +73,23 @@ fn default_ref_weight() -> f32 {
     0.8
 }
 
+/// Optional overrides for search scoring parameters.
+/// All fields are optional — unset fields fall through to `ScoringConfig::DEFAULT`.
+/// Loaded from the `[scoring]` section of `.cqs.toml` or `~/.config/cqs/config.toml`.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct ScoringOverrides {
+    pub name_exact: Option<f32>,
+    pub name_contains: Option<f32>,
+    pub name_contained_by: Option<f32>,
+    pub name_max_overlap: Option<f32>,
+    pub note_boost_factor: Option<f32>,
+    pub importance_test: Option<f32>,
+    pub importance_private: Option<f32>,
+    pub parent_boost_per_child: Option<f32>,
+    pub parent_boost_cap: Option<f32>,
+}
+
 /// Configuration options loaded from config files
 /// # Example
 /// ```toml
@@ -121,6 +138,9 @@ pub struct Config {
     pub reranker_model: Option<String>,
     /// Reranker max input length in tokens (overridden by CQS_RERANKER_MAX_LENGTH env var)
     pub reranker_max_length: Option<usize>,
+    /// Scoring parameter overrides (optional `[scoring]` section)
+    #[serde(default)]
+    pub scoring: Option<ScoringOverrides>,
     /// Reference indexes for multi-index search
     #[serde(default, rename = "reference")]
     pub references: Vec<ReferenceConfig>,
@@ -233,6 +253,35 @@ impl Config {
                 *mt = (*mt).clamp(1, 4096);
             }
         }
+        if let Some(ref mut s) = self.scoring {
+            if let Some(ref mut v) = s.name_exact {
+                clamp_config_f32(v, "scoring.name_exact", 0.0, 2.0);
+            }
+            if let Some(ref mut v) = s.name_contains {
+                clamp_config_f32(v, "scoring.name_contains", 0.0, 2.0);
+            }
+            if let Some(ref mut v) = s.name_contained_by {
+                clamp_config_f32(v, "scoring.name_contained_by", 0.0, 2.0);
+            }
+            if let Some(ref mut v) = s.name_max_overlap {
+                clamp_config_f32(v, "scoring.name_max_overlap", 0.0, 2.0);
+            }
+            if let Some(ref mut v) = s.note_boost_factor {
+                clamp_config_f32(v, "scoring.note_boost_factor", 0.0, 1.0);
+            }
+            if let Some(ref mut v) = s.importance_test {
+                clamp_config_f32(v, "scoring.importance_test", 0.0, 1.0);
+            }
+            if let Some(ref mut v) = s.importance_private {
+                clamp_config_f32(v, "scoring.importance_private", 0.0, 1.0);
+            }
+            if let Some(ref mut v) = s.parent_boost_per_child {
+                clamp_config_f32(v, "scoring.parent_boost_per_child", 0.0, 0.5);
+            }
+            if let Some(ref mut v) = s.parent_boost_cap {
+                clamp_config_f32(v, "scoring.parent_boost_cap", 1.0, 2.0);
+            }
+        }
     }
 
     /// Load configuration from a specific file
@@ -326,6 +375,7 @@ impl Config {
             embedding: other.embedding.or(self.embedding),
             reranker_model: other.reranker_model.or(self.reranker_model),
             reranker_max_length: other.reranker_max_length.or(self.reranker_max_length),
+            scoring: other.scoring.or(self.scoring),
             references: refs,
         }
     }
@@ -1114,5 +1164,73 @@ llm_max_tokens = 200
             emb.tokenizer_path.is_none(),
             "tokenizer_path should be None when not specified"
         );
+    }
+
+    // ===== RX-2: ScoringOverrides config parsing =====
+
+    #[test]
+    fn test_scoring_overrides_parsed() {
+        let toml = r#"
+        [scoring]
+        name_exact = 0.9
+        note_boost_factor = 0.25
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let s = config.scoring.as_ref().unwrap();
+        assert!((s.name_exact.unwrap() - 0.9).abs() < f32::EPSILON);
+        assert!((s.note_boost_factor.unwrap() - 0.25).abs() < f32::EPSILON);
+        assert!(s.name_contains.is_none());
+    }
+
+    #[test]
+    fn test_scoring_overrides_absent() {
+        let toml = "limit = 5\n";
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.scoring.is_none());
+    }
+
+    #[test]
+    fn test_scoring_overrides_clamped() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".cqs.toml");
+        std::fs::write(
+            &config_path,
+            "[scoring]\nname_exact = 5.0\nimportance_test = -1.0\n",
+        )
+        .unwrap();
+        let config = Config::load(dir.path());
+        let s = config.scoring.as_ref().unwrap();
+        assert!(
+            (s.name_exact.unwrap() - 2.0).abs() < f32::EPSILON,
+            "name_exact clamped to 2.0"
+        );
+        assert!(
+            (s.importance_test.unwrap() - 0.0).abs() < f32::EPSILON,
+            "importance_test clamped to 0.0"
+        );
+    }
+
+    #[test]
+    fn test_scoring_overrides_merge() {
+        let base = Config {
+            scoring: Some(ScoringOverrides {
+                name_exact: Some(0.9),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let over = Config {
+            scoring: Some(ScoringOverrides {
+                note_boost_factor: Some(0.3),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Project overrides user — whole scoring section replaced
+        let merged = base.override_with(over);
+        let s = merged.scoring.unwrap();
+        assert!((s.note_boost_factor.unwrap() - 0.3).abs() < f32::EPSILON);
+        // base scoring was replaced, not field-merged
+        assert!(s.name_exact.is_none());
     }
 }
