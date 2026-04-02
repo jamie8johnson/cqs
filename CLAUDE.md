@@ -123,42 +123,7 @@ cqs read --focus <function>          # Function + type dependencies only
 
 ### Full command reference
 
-`--json` works on all commands. `--format mermaid` on impact/trace. `--ref <name>` for cross-index search.
-
-- `cqs explain <fn>` — function card: signature, callers, callees, similar
-- `cqs callers <fn>` / `cqs callees <fn>` — call graph navigation
-- `cqs deps <type>` — type dependencies
-- `cqs similar <fn>` — find duplicate/similar code
-- `cqs related <fn>` — co-occurrence: shared callers, callees, types
-- `cqs where "description"` — placement suggestion with local patterns
-- `cqs trace <source> <target>` — shortest call path
-- `cqs context <file>` — module overview
-- `cqs impact-diff [--base REF]` — diff-aware impact analysis
-- `cqs review` — diff review with risk scoring
-- `cqs ci [--base REF] [--gate high|medium|off]` — CI gate
-- `cqs blame <fn>` — semantic git blame
-- `cqs stale` — check index freshness
-- `cqs diff <ref>` / `cqs drift <ref>` — semantic diff/drift between snapshots
-- `cqs suggest` — auto-suggest notes from patterns
-- `cqs notes add/update/remove/list` — manage project notes
-- `cqs gc` — clean stale index entries
-- `cqs batch` — batch mode with pipeline syntax
-- `cqs chat` — interactive REPL
-- `cqs audit-mode on/off` — toggle audit mode
-- `cqs convert <path>` — convert PDF/HTML/CHM/MD to Markdown
-- `cqs train-data` — generate training data from git history
-- `cqs train-pairs` — extract (NL, code) training pairs as JSONL
-- `cqs stats` — index statistics
-- `cqs brief <file>` — one-line-per-function summary with caller/test counts
-- `cqs affected [--base REF]` — diff -> changed functions -> callers -> tests -> risk
-- `cqs neighbors <fn>` — embedding-space nearest neighbors with cosine scores
-- `cqs plan "description"` — task planning with template classification
-- `cqs test-map <fn>` — find tests that exercise a function
-- `cqs doctor [--fix]` — check model, index, hardware; auto-fix with --fix
-- `cqs export-model --repo <id>` — export HuggingFace model to ONNX
-- `cqs completions <shell>` — generate shell completions
-
-**Token budgeting** — `--tokens N` on `query`, `gather`, `context`, `explain`, `scout`, `onboard`, and `task` packs results into a token budget (greedy knapsack by score). Commands that don't normally output content (`context`, `explain`, `scout`) include source code within the budget. `task` uses waterfall budgeting across sections (scout 15%, code 50%, impact 15%, placement 10%, notes 10%). JSON output adds `token_count` and `token_budget` fields.
+Run `cqs --help` for all commands. Key commands: `search`, `impact`, `scout`, `gather`, `task`, `callers/callees`, `test-map`, `review`, `health`, `dead`, `explain`, `context`, `trace`, `where`, `onboard`, `notes`. All support `--json` and `--tokens N` for budget packing.
 
 Run `cqs watch` in a separate terminal to keep the index fresh, or `cqs index` for one-time refresh.
 
@@ -197,35 +162,24 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 5. `shutdown_request` each teammate when done
 6. `Teammate cleanup` to tear down
 
-**Teammate prompts must be self-contained.** Include file paths, context, and acceptance criteria. Teammates start with zero context — they can't see your conversation.
+**Teammate prompts must be self-contained.** Include file paths, context, and acceptance criteria.
 
-**Every agent prompt MUST include cqs tool instructions.** Agents can't use cqs unless told how. Include the key commands: `search, read, read --focus, callers, callees, explain, similar, gather, impact, impact-diff, test-map, trace, context, dead, scout, task, plan, onboard, where, deps, related, diff, drift, batch, review, ci, health, suggest, stale, gc, convert, ref, notes, blame, doctor, index, stats, brief, affected, neighbors, train-data, train-pairs, export-model`.
+## Custom Agents
+
+`.claude/agents/` has reusable agent definitions with cqs baked in:
+
+- **investigator** — dispatch before implementation: runs `cqs scout` + `cqs gather`, returns brief
+- **code-reviewer** — dispatch before commit/PR: runs `cqs review` + `cqs impact`, flags risk
+- **test-finder** — dispatch before modifying a function: runs `cqs test-map` + `cqs impact`
+- **implementer** — implementation with cqs checkpoints: scout before, review after
+- **explorer** — codebase exploration via cqs (replaces raw grep/glob for conceptual queries)
+- **auditor** — code audit for a single category, appends to audit-findings.md
+
+**Use these agents.** Dispatch `investigator` before starting any non-trivial implementation. Dispatch `code-reviewer` before any commit or PR. These replace the need to manually include cqs instructions in every agent prompt.
 
 ## Code Audit
 
-Full design: `docs/plans/2026-02-04-20-category-audit-design.md`
-
-**Quick reference:**
-- 14 categories in 3 batches (5, 5, 4) — consolidated from 20/4 after v0.5.3 audit found 38% duplication
-- Collect all findings first, then fix by impact × effort
-- Stop at diminishing returns during discovery
-- Once triaged, complete the tier. Don't suggest stopping mid-priority.
-
-**Batches:**
-1. Code Quality: Code Quality, Documentation, API Design, Error Handling, Observability
-2. Behavior: Test Coverage, Robustness, Algorithm Correctness, Extensibility, Platform Behavior
-3. Infrastructure: Security, Data Safety, Performance, Resource Management
-
-**Execution:**
-1. Enable audit mode before each batch (`cqs audit-mode on --expires 2h`)
-2. `TeamCreate` per batch, agents per category (sonnet for judgment, haiku for mechanical)
-3. Each agent writes findings to `docs/audit-findings.md` (append, don't overwrite)
-4. Shutdown team, cleanup before next batch
-5. After all batches: triage into `docs/audit-triage.md` (fresh file with P1-P4 tables), then fix
-
-**Archive workflow:** Before each audit, rename existing `audit-findings.md` and `audit-triage.md` with version suffix (e.g., `audit-findings-v0.9.1.md`). Each audit starts fresh.
-
-**Why:** Findings get lost when context compacts. Issues make work visible to future sessions.
+Use `/audit` skill. Full design: `docs/plans/2026-02-04-20-category-audit-design.md`.
 
 ## Completion Checklist
 
@@ -314,66 +268,6 @@ Do NOT use values like 0.7 or 0.8. Pick the closest discrete value.
 
 Don't log activity - git history has that.
 
-*Etymology: PIE \*teks- (weave/construct), collapses with \*der- (rip) and \*dakru- (crying). Portuguese "tear" = loom. Context is woven, then cut—Clotho spins, Lachesis measures, Atropos snips. Construction, destruction, loss.*
-
----
-
 ## Bootstrap (New Project)
 
-Create these files if missing:
-
-**docs/notes.toml:**
-```toml
-# Notes - unified memory for AI collaborators
-# sentiment: DISCRETE values only: -1, -0.5, 0, 0.5, 1
-
-[[note]]
-sentiment = -1
-text = "Example warning - something that seriously hurt"
-mentions = ["file.rs", "function_name"]
-
-[[note]]
-sentiment = 0.5
-text = "Example pattern - something that worked well"
-mentions = ["other_file.rs"]
-```
-
-**PROJECT_CONTINUITY.md:**
-```markdown
-# Project Continuity
-
-## Right Now
-
-(active task - update when starting something)
-
-## Parked
-
-(threads to revisit later)
-
-## Open Questions
-
-(decisions being weighed, with options)
-
-## Blockers
-
-None.
-
-## Pending Changes
-
-(uncommitted work)
-```
-
-**ROADMAP.md:**
-```markdown
-# Roadmap
-
-## Current Phase
-
-### Done
-- [ ] ...
-
-### Next
-- [ ] ...
-```
-
-Also set up `.claude/skills/` with portable skills. Use `/cqs-bootstrap` if available, or copy from an existing cqs project. Skills are auto-discovered from `.claude/skills/*/SKILL.md`.
+Use `/cqs-bootstrap` to set up tears infrastructure, skills, and CLAUDE.md for a new project.
