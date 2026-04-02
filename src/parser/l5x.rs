@@ -1,13 +1,12 @@
-//! L5X (Rockwell/Allen-Bradley Logix Designer) parser
+//! Rockwell/Allen-Bradley PLC export parser (L5X and L5K formats)
 //!
-//! Extracts Structured Text (IEC 61131-3 ST) code from L5X XML export files.
-//! L5X files contain ST code inside CDATA sections within `<STContent>` elements.
+//! Extracts Structured Text (IEC 61131-3 ST) code from Logix Designer exports.
+//! - L5X: XML format. ST code in CDATA sections within `<STContent>` elements.
+//! - L5K: Legacy ASCII format. ST code in keyword-delimited blocks (`ROUTINE...END_ROUTINE`).
 //!
-//! Strategy: regex-based extraction of CDATA content from STContent blocks,
-//! then delegation to the ST tree-sitter grammar for chunk/call/type extraction.
-//! Similar to the ASPX parser pattern (regex regions → tree-sitter parse).
+//! Both formats share the same ST parsing and chunk generation logic.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -16,57 +15,20 @@ use tree_sitter::StreamingIterator;
 use super::types::{capture_name_to_chunk_type, Chunk, ChunkType, Language, ParserError};
 use super::Parser;
 
-// ---------------------------------------------------------------------------
-// Regexes
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Shared types and helpers
+// ===========================================================================
 
-/// Match `<Routine Name="..." Type="ST">` to get routine names.
-/// Group 1: routine name.
-static ROUTINE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)<Routine\s+Name\s*=\s*"([^"]+)"[^>]*\bType\s*=\s*"ST"[^>]*>"#)
-        .expect("valid regex")
-});
-
-/// Match `<Program Name="...">` for program names.
-/// Group 1: program name.
-static PROGRAM_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)<Program\s+Name\s*=\s*"([^"]+)""#).expect("valid regex"));
-
-/// Match `<STContent>...</STContent>` blocks (possibly spanning many lines).
-/// Group 1: everything between the tags.
-static ST_CONTENT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?s)<STContent>(.*?)</STContent>"#).expect("valid regex"));
-
-/// Extract text from CDATA sections: `<![CDATA[...]]>`
-/// Group 1: the content inside CDATA.
-static CDATA_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"<!\[CDATA\[(.*?)]]>"#).expect("valid regex"));
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/// An ST code region extracted from the L5X file.
+/// An ST code region extracted from either L5X or L5K files.
 struct StRegion {
-    /// The extracted ST source (CDATA lines concatenated with newlines)
+    /// The extracted ST source (lines concatenated with newlines)
     source: String,
-    /// Line number (1-indexed) where the STContent starts in the original file
+    /// Line number (1-indexed) where the region starts in the original file
     line_start: u32,
     /// Context: parent routine name (if known)
     routine_name: Option<String>,
     /// Context: parent program name (if known)
     program_name: Option<String>,
-}
-
-/// Find the nearest preceding regex match before `byte_offset` in `source`.
-fn find_nearest_before<'a>(re: &Regex, source: &'a str, byte_offset: usize) -> Option<&'a str> {
-    let mut best: Option<regex::Match<'a>> = None;
-    for m in re.find_iter(&source[..byte_offset]) {
-        best = Some(m);
-    }
-    best.and_then(|m| re.captures(&source[m.start()..]))
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str())
 }
 
 /// Count newlines in `source[..byte_offset]` to get 1-indexed line number.
@@ -78,65 +40,25 @@ fn line_of(source: &str, byte_offset: usize) -> u32 {
         + 1
 }
 
-/// Extract all ST regions from an L5X file.
-fn extract_st_regions(source: &str) -> Vec<StRegion> {
-    let mut regions = Vec::new();
-
-    for st_match in ST_CONTENT_RE.captures_iter(source) {
-        let full = st_match.get(0).unwrap();
-        let inner = st_match.get(1).unwrap();
-        let start_byte = full.start();
-        let line_start = line_of(source, start_byte);
-
-        // Extract CDATA lines and join with newlines
-        let mut lines = Vec::new();
-        for cdata in CDATA_RE.captures_iter(inner.as_str()) {
-            if let Some(content) = cdata.get(1) {
-                lines.push(content.as_str().to_string());
-            }
-        }
-
-        if lines.is_empty() {
-            continue;
-        }
-
-        let st_source = lines.join("\n");
-
-        // Find context: nearest Routine and Program names before this STContent
-        let routine_name =
-            find_nearest_before(&ROUTINE_RE, source, start_byte).map(|s| s.to_string());
-        let program_name =
-            find_nearest_before(&PROGRAM_RE, source, start_byte).map(|s| s.to_string());
-
-        regions.push(StRegion {
-            source: st_source,
-            line_start,
-            routine_name,
-            program_name,
-        });
+/// Find the nearest preceding regex capture group 1 before `byte_offset`.
+fn find_nearest_before<'a>(re: &Regex, source: &'a str, byte_offset: usize) -> Option<&'a str> {
+    let mut best: Option<regex::Match<'a>> = None;
+    for m in re.find_iter(&source[..byte_offset]) {
+        best = Some(m);
     }
-
-    regions
+    best.and_then(|m| re.captures(&source[m.start()..]))
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/// Parse an L5X file and extract ST code chunks.
-///
-/// Extracts CDATA content from STContent blocks, parses each as Structured Text,
-/// and maps chunks back to original file coordinates.
-pub(crate) fn parse_l5x_chunks(
-    source: &str,
+/// Parse ST regions into chunks using the tree-sitter ST grammar.
+/// Shared by both L5X and L5K parsers.
+fn parse_st_regions(
+    regions: &[StRegion],
     path: &Path,
     parser: &Parser,
 ) -> Result<Vec<Chunk>, ParserError> {
-    let _span = tracing::info_span!("parse_l5x", path = %path.display()).entered();
-
-    let regions = extract_st_regions(source);
     if regions.is_empty() {
-        tracing::debug!("No ST content found in L5X file");
         return Ok(vec![]);
     }
 
@@ -147,9 +69,8 @@ pub(crate) fn parse_l5x_chunks(
     let query = parser.get_query(st_lang)?;
 
     let mut all_chunks = Vec::new();
-    let file_path: PathBuf = path.into();
 
-    for region in &regions {
+    for region in regions {
         let region_chunk_start = all_chunks.len();
 
         let mut ts_parser = tree_sitter::Parser::new();
@@ -172,15 +93,15 @@ pub(crate) fn parse_l5x_chunks(
         let mut matches = cursor.matches(query, tree.root_node(), region.source.as_bytes());
 
         while let Some(m) = matches.next() {
-            match extract_st_chunk(&region.source, m, query, st_lang, &file_path, region) {
+            match extract_st_chunk(&region.source, m, query, st_lang, path, region) {
                 Ok(chunk) => all_chunks.push(chunk),
                 Err(e) => {
-                    tracing::debug!(error = %e, "Failed to extract ST chunk from L5X");
+                    tracing::debug!(error = %e, "Failed to extract ST chunk");
                 }
             }
         }
 
-        // If no chunks were extracted from this region but we have a routine name,
+        // If no chunks were extracted but we have a routine name,
         // create a synthetic chunk for the whole routine
         if all_chunks.len() == region_chunk_start {
             if let Some(ref name) = region.routine_name {
@@ -198,7 +119,7 @@ pub(crate) fn parse_l5x_chunks(
                     name: name.clone(),
                     chunk_type: ChunkType::Function,
                     content,
-                    file: file_path.to_path_buf(),
+                    file: path.to_path_buf(),
                     line_start: region.line_start,
                     line_end: region.line_start + line_count,
                     language: st_lang,
@@ -213,16 +134,11 @@ pub(crate) fn parse_l5x_chunks(
         }
     }
 
-    tracing::info!(
-        chunks = all_chunks.len(),
-        regions = regions.len(),
-        "L5X parse complete"
-    );
     Ok(all_chunks)
 }
 
 /// Extract a single chunk from an ST tree-sitter match, adjusting coordinates
-/// for the L5X file's original line numbers.
+/// for the original file's line numbers.
 fn extract_st_chunk(
     source: &str,
     m: &tree_sitter::QueryMatch,
@@ -260,7 +176,6 @@ fn extract_st_chunk(
         .unwrap_or("")
         .to_string();
 
-    // Apply post-process hook if the ST language has one
     let mut mutable_name = name.clone();
     let mut mutable_type = chunk_type;
     if let Some(post_process) = def.post_process_chunk {
@@ -294,9 +209,231 @@ fn extract_st_chunk(
     })
 }
 
+// ===========================================================================
+// L5X format (XML with CDATA)
+// ===========================================================================
+
+/// Match `<Routine Name="..." Type="ST">` to get routine names.
+static L5X_ROUTINE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)<Routine\s+Name\s*=\s*"([^"]+)"[^>]*\bType\s*=\s*"ST"[^>]*>"#)
+        .expect("valid regex")
+});
+
+/// Match `<Program Name="...">` for program names.
+static L5X_PROGRAM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)<Program\s+Name\s*=\s*"([^"]+)""#).expect("valid regex"));
+
+/// Match `<STContent>...</STContent>` blocks.
+static L5X_ST_CONTENT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?s)<STContent>(.*?)</STContent>"#).expect("valid regex"));
+
+/// Extract text from CDATA sections: `<![CDATA[...]]>`
+static CDATA_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"<!\[CDATA\[(.*?)]]>"#).expect("valid regex"));
+
+/// Extract ST regions from an L5X (XML) file.
+fn extract_l5x_regions(source: &str) -> Vec<StRegion> {
+    let mut regions = Vec::new();
+
+    for st_match in L5X_ST_CONTENT_RE.captures_iter(source) {
+        let full = st_match.get(0).unwrap();
+        let inner = st_match.get(1).unwrap();
+        let start_byte = full.start();
+        let line_start = line_of(source, start_byte);
+
+        let mut lines = Vec::new();
+        for cdata in CDATA_RE.captures_iter(inner.as_str()) {
+            if let Some(content) = cdata.get(1) {
+                lines.push(content.as_str().to_string());
+            }
+        }
+
+        if lines.is_empty() {
+            continue;
+        }
+
+        let routine_name =
+            find_nearest_before(&L5X_ROUTINE_RE, source, start_byte).map(|s| s.to_string());
+        let program_name =
+            find_nearest_before(&L5X_PROGRAM_RE, source, start_byte).map(|s| s.to_string());
+
+        regions.push(StRegion {
+            source: lines.join("\n"),
+            line_start,
+            routine_name,
+            program_name,
+        });
+    }
+
+    regions
+}
+
+/// Parse an L5X file and extract ST code chunks.
+pub(crate) fn parse_l5x_chunks(
+    source: &str,
+    path: &Path,
+    parser: &Parser,
+) -> Result<Vec<Chunk>, ParserError> {
+    let _span = tracing::info_span!("parse_l5x", path = %path.display()).entered();
+    let regions = extract_l5x_regions(source);
+    if regions.is_empty() {
+        tracing::debug!("No ST content found in L5X file");
+    }
+    let chunks = parse_st_regions(&regions, path, parser)?;
+    tracing::info!(
+        chunks = chunks.len(),
+        regions = regions.len(),
+        "L5X parse complete"
+    );
+    Ok(chunks)
+}
+
+// ===========================================================================
+// L5K format (ASCII keyword-delimited)
+// ===========================================================================
+
+// L5K format uses keyword-delimited blocks. The exact syntax varies by
+// RSLogix version, but the general structure is:
+//
+//   ROUTINE <name>
+//     ...routine attributes...
+//     ST_CONTENT := [
+//       <line>;
+//       <line>;
+//     ];
+//     ...or for some versions...
+//     N:0 <st_code>;
+//     N:1 <st_code>;
+//   END_ROUTINE
+//
+// The ROUTINE line includes type info. We match ST routines and extract
+// the content lines, stripping line number prefixes.
+
+/// Match ROUTINE blocks: from `ROUTINE <name>` to `END_ROUTINE`.
+/// Group 1: routine name. Group 2: block content.
+static L5K_ROUTINE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?msi)^\s*ROUTINE\s+(\w+)\b([^\x00]*?)^\s*END_ROUTINE\b"#).expect("valid regex")
+});
+
+/// Match `PROGRAM <name>` declarations.
+static L5K_PROGRAM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?mi)^\s*PROGRAM\s+(\w+)\b"#).expect("valid regex"));
+
+/// Match line-numbered content: `N:0 code;` or `N:123 code;`
+static L5K_NUMBERED_LINE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?m)^\s*N:\d+\s+(.+)$"#).expect("valid regex"));
+
+/// Match ST_CONTENT block: `ST_CONTENT := [ ... ];`
+static L5K_ST_CONTENT_BLOCK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?ms)ST_CONTENT\s*:=\s*\[(.*?)\]\s*;"#).expect("valid regex"));
+
+/// Extract ST regions from an L5K (ASCII) file.
+fn extract_l5k_regions(source: &str) -> Vec<StRegion> {
+    let mut regions = Vec::new();
+
+    for block in L5K_ROUTINE_BLOCK_RE.captures_iter(source) {
+        let routine_name = block.get(1).unwrap().as_str().to_string();
+        let block_content = block.get(2).unwrap().as_str();
+        let block_start = block.get(0).unwrap().start();
+
+        // Check if this routine is type ST
+        let is_st = block_content
+            .lines()
+            .take(5) // Type declaration is near the top
+            .any(|line| {
+                let upper = line.to_uppercase();
+                upper.contains("TYPE") && upper.contains(":=") && upper.contains("ST")
+            });
+
+        if !is_st {
+            continue;
+        }
+
+        let line_start = line_of(source, block_start);
+
+        // Try ST_CONTENT := [ ... ]; block first
+        let st_source = if let Some(st_block) = L5K_ST_CONTENT_BLOCK_RE.captures(block_content) {
+            let inner = st_block.get(1).unwrap().as_str();
+            // Lines inside the bracket block, trimmed
+            inner
+                .lines()
+                .map(|l| l.trim().trim_end_matches(','))
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            // Fall back to N:0 numbered lines
+            let lines: Vec<String> = L5K_NUMBERED_LINE_RE
+                .captures_iter(block_content)
+                .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+                .collect();
+            if lines.is_empty() {
+                // Last resort: take all non-attribute lines as content
+                block_content
+                    .lines()
+                    .filter(|l| {
+                        let trimmed = l.trim();
+                        !trimmed.is_empty()
+                            && !trimmed.starts_with("DESCRIPTION")
+                            && !trimmed.starts_with("TYPE")
+                            && !trimmed.starts_with("ROUTINE")
+                            && !trimmed.starts_with("END_ROUTINE")
+                    })
+                    .map(|l| l.trim())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                lines.join("\n")
+            }
+        };
+
+        if st_source.trim().is_empty() {
+            continue;
+        }
+
+        let program_name =
+            find_nearest_before(&L5K_PROGRAM_RE, source, block_start).map(|s| s.to_string());
+
+        regions.push(StRegion {
+            source: st_source,
+            line_start,
+            routine_name: Some(routine_name),
+            program_name,
+        });
+    }
+
+    regions
+}
+
+/// Parse an L5K file and extract ST code chunks.
+pub(crate) fn parse_l5k_chunks(
+    source: &str,
+    path: &Path,
+    parser: &Parser,
+) -> Result<Vec<Chunk>, ParserError> {
+    let _span = tracing::info_span!("parse_l5k", path = %path.display()).entered();
+    let regions = extract_l5k_regions(source);
+    if regions.is_empty() {
+        tracing::debug!("No ST content found in L5K file");
+    }
+    let chunks = parse_st_regions(&regions, path, parser)?;
+    tracing::info!(
+        chunks = chunks.len(),
+        regions = regions.len(),
+        "L5K parse complete"
+    );
+    Ok(chunks)
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- L5X tests ---
 
     const SAMPLE_L5X: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <RSLogix5000Content>
@@ -327,19 +464,18 @@ mod tests {
 </RSLogix5000Content>"#;
 
     #[test]
-    fn test_extract_st_regions() {
-        let regions = extract_st_regions(SAMPLE_L5X);
-        assert_eq!(regions.len(), 1, "Should find exactly one STContent block");
+    fn test_l5x_extract_st_regions() {
+        let regions = extract_l5x_regions(SAMPLE_L5X);
+        assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].routine_name.as_deref(), Some("MainRoutine"));
         assert_eq!(regions[0].program_name.as_deref(), Some("MainProgram"));
         assert!(regions[0].source.contains("myTimer"));
         assert!(regions[0].source.contains("END_IF"));
-        // Should NOT contain ladder logic CDATA
         assert!(!regions[0].source.contains("XIC"));
     }
 
     #[test]
-    fn test_cdata_extraction() {
+    fn test_l5x_cdata_extraction() {
         let inner = r#"
               <Line Number="0"><![CDATA[line_one;]]></Line>
               <Line Number="1"><![CDATA[line_two;]]></Line>
@@ -352,40 +488,25 @@ mod tests {
     }
 
     #[test]
-    fn test_find_nearest_before() {
-        let source = r#"<Program Name="Prog1"><Program Name="Prog2"><STContent>"#;
-        let name = find_nearest_before(&PROGRAM_RE, source, source.len());
-        assert_eq!(name, Some("Prog2"));
-    }
-
-    #[test]
-    fn test_parse_l5x_finds_chunks() {
+    fn test_l5x_parse_finds_chunks() {
         let parser = Parser::new().unwrap();
-        let path = Path::new("test.l5x");
-        let chunks = parse_l5x_chunks(SAMPLE_L5X, path, &parser).unwrap();
-        // Should find at least the MainRoutine (either via ST grammar or fallback)
+        let chunks = parse_l5x_chunks(SAMPLE_L5X, Path::new("test.l5x"), &parser).unwrap();
         assert!(!chunks.is_empty(), "Expected at least one chunk from L5X");
-        // All chunks should reference ST language
         for chunk in &chunks {
             assert_eq!(chunk.language, Language::StructuredText);
         }
     }
 
     #[test]
-    fn test_no_st_content() {
-        let source = r#"<?xml version="1.0"?>
-<RSLogix5000Content>
-  <Controller Name="Empty">
-    <Programs/>
-  </Controller>
-</RSLogix5000Content>"#;
+    fn test_l5x_no_st_content() {
+        let source = r#"<?xml version="1.0"?><RSLogix5000Content><Controller Name="Empty"><Programs/></Controller></RSLogix5000Content>"#;
         let parser = Parser::new().unwrap();
         let chunks = parse_l5x_chunks(source, Path::new("empty.l5x"), &parser).unwrap();
         assert!(chunks.is_empty());
     }
 
     #[test]
-    fn test_ladder_only_skipped() {
+    fn test_l5x_ladder_only_skipped() {
         let source = r#"<?xml version="1.0"?>
 <RSLogix5000Content>
   <Controller Name="Test">
@@ -402,10 +523,105 @@ mod tests {
     </Programs>
   </Controller>
 </RSLogix5000Content>"#;
-        let regions = extract_st_regions(source);
-        assert!(
-            regions.is_empty(),
-            "Ladder-only files should have no ST regions"
-        );
+        let regions = extract_l5x_regions(source);
+        assert!(regions.is_empty());
+    }
+
+    #[test]
+    fn test_find_nearest_before() {
+        let source = r#"<Program Name="Prog1"><Program Name="Prog2"><STContent>"#;
+        let name = find_nearest_before(&L5X_PROGRAM_RE, source, source.len());
+        assert_eq!(name, Some("Prog2"));
+    }
+
+    // --- L5K tests ---
+
+    const SAMPLE_L5K: &str = r#"
+CONTROLLER TestController
+
+PROGRAM MainProgram
+
+  ROUTINE MainRoutine
+    DESCRIPTION := "Main control logic"
+    Type := ST
+    ST_CONTENT := [
+      myTimer(IN := startButton, PT := T#5s);
+      IF myTimer.Q THEN
+        output := TRUE;
+      END_IF;
+    ];
+  END_ROUTINE
+
+  ROUTINE LadderRoutine
+    Type := RLL
+    RLL_CONTENT := [
+      XIC(startButton)OTE(motorRun);
+    ];
+  END_ROUTINE
+
+END_PROGRAM
+"#;
+
+    #[test]
+    fn test_l5k_extract_st_regions() {
+        let regions = extract_l5k_regions(SAMPLE_L5K);
+        assert_eq!(regions.len(), 1, "Should find exactly one ST routine");
+        assert_eq!(regions[0].routine_name.as_deref(), Some("MainRoutine"));
+        assert_eq!(regions[0].program_name.as_deref(), Some("MainProgram"));
+        assert!(regions[0].source.contains("myTimer"));
+        assert!(regions[0].source.contains("END_IF"));
+        assert!(!regions[0].source.contains("XIC"));
+    }
+
+    #[test]
+    fn test_l5k_ladder_only_skipped() {
+        let source = r#"
+PROGRAM LadderOnly
+  ROUTINE Rung1
+    Type := RLL
+    RLL_CONTENT := [
+      XIC(btn)OTE(out);
+    ];
+  END_ROUTINE
+END_PROGRAM
+"#;
+        let regions = extract_l5k_regions(source);
+        assert!(regions.is_empty());
+    }
+
+    #[test]
+    fn test_l5k_parse_finds_chunks() {
+        let parser = Parser::new().unwrap();
+        let chunks = parse_l5k_chunks(SAMPLE_L5K, Path::new("test.l5k"), &parser).unwrap();
+        assert!(!chunks.is_empty(), "Expected at least one chunk from L5K");
+        for chunk in &chunks {
+            assert_eq!(chunk.language, Language::StructuredText);
+        }
+    }
+
+    #[test]
+    fn test_l5k_empty_file() {
+        let parser = Parser::new().unwrap();
+        let chunks = parse_l5k_chunks("", Path::new("empty.l5k"), &parser).unwrap();
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_l5k_numbered_lines() {
+        let source = r#"
+PROGRAM Prog1
+  ROUTINE NumberedRoutine
+    Type := ST
+    N:0 x := 1;
+    N:1 y := x + 2;
+    N:2 z := y * 3;
+  END_ROUTINE
+END_PROGRAM
+"#;
+        let regions = extract_l5k_regions(source);
+        assert_eq!(regions.len(), 1);
+        assert!(regions[0].source.contains("x := 1;"));
+        assert!(regions[0].source.contains("y := x + 2;"));
+        assert!(regions[0].source.contains("z := y * 3;"));
     }
 }

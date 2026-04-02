@@ -202,9 +202,12 @@ impl Parser {
         let ext_raw = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let ext = ext_raw.to_ascii_lowercase();
 
-        // L5X files are XML but need custom ST extraction
+        // Rockwell PLC exports need custom ST extraction
         if ext == "l5x" {
             return l5x::parse_l5x_chunks(&source, path, self);
+        }
+        if ext == "l5k" {
+            return l5x::parse_l5k_chunks(&source, path, self);
         }
 
         let language = Language::from_extension(&ext)
