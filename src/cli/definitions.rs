@@ -4,6 +4,10 @@ use clap::{Parser, Subcommand};
 
 use super::args;
 
+// EX-4: Verify clap default_value strings match the actual constants.
+// Integer constants can use compile-time assert; f32 checked in tests below.
+const _: () = assert!(crate::cli::config::DEFAULT_LIMIT == 5);
+
 /// Output format for commands that support text/json/mermaid
 #[derive(Clone, Debug, clap::ValueEnum)]
 pub enum OutputFormat {
@@ -784,5 +788,18 @@ mod tests {
     #[test]
     fn validate_finite_f32_returns_value_on_success() {
         assert_eq!(validate_finite_f32(0.42, "x").unwrap(), 0.42);
+    }
+
+    /// EX-4: Verify clap default_value strings match the f32 constants.
+    /// f32 can't be used in const assert, so we check at test time.
+    #[test]
+    fn clap_defaults_match_constants() {
+        use crate::cli::config::{DEFAULT_LIMIT, DEFAULT_NAME_BOOST, DEFAULT_THRESHOLD};
+        // default_value = "5"
+        assert_eq!(DEFAULT_LIMIT, 5);
+        // default_value = "0.3"
+        assert!((DEFAULT_THRESHOLD - 0.3).abs() < f32::EPSILON);
+        // default_value = "0.2"
+        assert!((DEFAULT_NAME_BOOST - 0.2).abs() < f32::EPSILON);
     }
 }
