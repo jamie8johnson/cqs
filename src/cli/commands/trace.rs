@@ -103,13 +103,18 @@ pub(crate) fn cmd_trace(
                     if names.len() - 1 == 1 { "" } else { "s" }
                 );
                 println!();
+
+                // CQ-5: Batch lookup instead of N individual search_by_name calls
+                let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+                let batch_results = store.search_by_names_batch(&name_refs, 1)?;
+
                 for (i, name) in names.iter().enumerate() {
                     let prefix = if i == 0 {
                         "  ".to_string()
                     } else {
                         "  \u{2192} ".to_string()
                     };
-                    match store.search_by_name(name, 1)?.into_iter().next() {
+                    match batch_results.get(name.as_str()).and_then(|v| v.first()) {
                         Some(r) => {
                             let rel = cqs::rel_display(&r.chunk.file, &root);
                             println!("{}{} ({}:{})", prefix, name.cyan(), rel, r.chunk.line_start);
@@ -155,9 +160,13 @@ pub(crate) fn cmd_trace(
 fn format_mermaid(store: &Store, root: &std::path::Path, names: &[String]) -> Result<()> {
     println!("graph TD");
 
+    // CQ-5: Batch lookup instead of N individual search_by_name calls
+    let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let batch_results = store.search_by_names_batch(&name_refs, 1)?;
+
     // Generate node definitions with labels
     for (i, name) in names.iter().enumerate() {
-        let label = match store.search_by_name(name, 1)?.into_iter().next() {
+        let label = match batch_results.get(name.as_str()).and_then(|v| v.first()) {
             Some(r) => {
                 let rel = cqs::rel_display(&r.chunk.file, root);
                 format!(

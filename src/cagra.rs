@@ -43,6 +43,19 @@ pub enum CagraError {
     NotBuilt,
 }
 
+/// SHL-10: Configurable CAGRA CPU memory cap via `CQS_CAGRA_MAX_BYTES` env var.
+/// Defaults to 2GB. Cached in OnceLock for single parse.
+#[cfg(feature = "gpu-index")]
+fn cagra_max_bytes() -> usize {
+    static MAX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| {
+        std::env::var("CQS_CAGRA_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2 * 1024 * 1024 * 1024)
+    })
+}
+
 /// CAGRA GPU index for vector search
 /// Wraps cuVS CAGRA with interior mutability to handle the consuming `search()` API.
 /// The index is rebuilt from cached data when needed.
@@ -427,13 +440,13 @@ impl CagraIndex {
         tracing::info!("Building CAGRA index from {} chunk embeddings", chunk_count,);
 
         // Guard against OOM: estimate CPU memory needed for flat data + id map
-        const MAX_CAGRA_CPU_BYTES: usize = 2 * 1024 * 1024 * 1024; // 2GB
+        let max_bytes = cagra_max_bytes();
         let estimated_bytes = chunk_count.saturating_mul(dim).saturating_mul(4); // f32 = 4 bytes
-        if estimated_bytes > MAX_CAGRA_CPU_BYTES {
+        if estimated_bytes > max_bytes {
             return Err(CagraError::Cuvs(format!(
                 "Dataset too large for GPU indexing: {}MB estimated (limit {}MB)",
                 estimated_bytes / (1024 * 1024),
-                MAX_CAGRA_CPU_BYTES / (1024 * 1024)
+                max_bytes / (1024 * 1024)
             )));
         }
 
@@ -789,23 +802,23 @@ mod tests {
 
     #[test]
     fn test_oom_guard_arithmetic() {
-        // Verify the OOM guard threshold: 2GB limit / (768 dims * 4 bytes) ≈ 699K chunks
-        const MAX_CAGRA_CPU_BYTES: usize = 2 * 1024 * 1024 * 1024;
-        let max_chunks = MAX_CAGRA_CPU_BYTES / (EMBEDDING_DIM * 4);
+        // Verify the OOM guard threshold via cagra_max_bytes() (default 2GB)
+        let max_bytes = super::cagra_max_bytes();
+        let max_chunks = max_bytes / (EMBEDDING_DIM * 4);
 
         // Just under the limit should pass
         let under = max_chunks.saturating_mul(EMBEDDING_DIM).saturating_mul(4);
-        assert!(under <= MAX_CAGRA_CPU_BYTES);
+        assert!(under <= max_bytes);
 
         // One more chunk should exceed
         let over = (max_chunks + 1)
             .saturating_mul(EMBEDDING_DIM)
             .saturating_mul(4);
-        assert!(over > MAX_CAGRA_CPU_BYTES);
+        assert!(over > max_bytes);
 
         // Extreme value shouldn't overflow (saturating_mul)
         let extreme = usize::MAX.saturating_mul(EMBEDDING_DIM).saturating_mul(4);
-        assert!(extreme > MAX_CAGRA_CPU_BYTES);
+        assert!(extreme > max_bytes);
     }
 
     #[test]
