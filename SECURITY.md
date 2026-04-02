@@ -84,6 +84,7 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 | `.cqs/index.hnsw.*` | Vector index + checksums | `cqs index` |
 | `.cqs/index.lock` | Process lock file | `cqs watch` |
 | `.cqs/audit-mode.json` | Audit mode state (on/off, expiry) | `cqs audit-mode on`, `cqs audit-mode off` |
+| `.cqs/telemetry*.jsonl` | Command usage logs (opt-in) | `CQS_TELEMETRY=1`, `cqs telemetry --reset` |
 | `docs/notes.toml` | Developer notes | `cqs notes add`, `cqs notes update`, `cqs notes remove` |
 | `.cqs.toml` | Reference configuration | `cqs ref add`, `cqs ref remove` |
 | `~/.config/cqs/projects.toml` | Project registry | `cqs project register`, `cqs project remove` |
