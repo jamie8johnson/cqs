@@ -53,67 +53,29 @@ pub fn log_command(
 }
 
 /// Extract command name and query from CLI args for telemetry.
+///
+/// Derives known subcommands from `Cli`'s clap definition at runtime,
+/// so new commands are recognized automatically without maintaining a list.
 pub fn describe_command(args: &[String]) -> (String, Option<String>) {
+    use clap::CommandFactory;
+
     // args[0] is the binary name
     let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("unknown");
 
     // If it's a bare query (no subcommand), it's a search
     if !cmd.starts_with('-') && !cmd.is_empty() {
-        // Check if it's a known subcommand
-        let subcommands = [
-            "init",
-            "doctor",
-            "index",
-            "stats",
-            "watch",
-            "batch",
-            "blame",
-            "chat",
-            "completions",
-            "deps",
-            "callers",
-            "callees",
-            "onboard",
-            "notes",
-            "ref",
-            "diff",
-            "drift",
-            "explain",
-            "similar",
-            "impact",
-            "impact-diff",
-            "review",
-            "ci",
-            "trace",
-            "test-map",
-            "context",
-            "dead",
-            "gather",
-            "project",
-            "gc",
-            "health",
-            "audit-mode",
-            "stale",
-            "suggest",
-            "read",
-            "related",
-            "where",
-            "scout",
-            "plan",
-            "task",
-            "telemetry",
-            "convert",
-            "train-data",
-            "help",
-        ];
+        // Check if it's a known subcommand by querying clap's registry.
+        // Also recognizes "help" which clap adds automatically.
+        let clap_app = super::definitions::Cli::command();
+        let is_subcommand = clap_app.get_subcommands().any(|sc| sc.get_name() == cmd);
 
-        if subcommands.contains(&cmd) {
-            // It's a subcommand — look for query in remaining args
+        if is_subcommand {
+            // It's a subcommand -- look for query in remaining args
             let query = args.iter().skip(2).find(|a| !a.starts_with('-')).cloned();
             return (cmd.to_string(), query);
         }
 
-        // Bare query — it's a search
+        // Bare query -- it's a search
         return ("search".to_string(), Some(cmd.to_string()));
     }
 
