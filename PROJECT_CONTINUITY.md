@@ -2,58 +2,68 @@
 
 ## Right Now
 
-**v1.15.0 released. BGE-large training ~59%. Clean repo. (2026-04-02 21:30 CDT)**
+**Refactoring wave planned. PR #763 in CI. v1.15.0 released. (2026-04-03 16:43 CDT)**
 
-### BGE-large LoRA training (detached)
-Service: `bge-training`. Step 3500/5938 (58.9%). Train loss 0.165, eval loss 0.078. ~8.6s/step. ETA ~03:15 CDT Apr 3.
-Fixed `PeftResumableTrainer` in `train_lora.py` for sentence-transformers 5.3.0 + peft 0.18.1 checkpoint resume bug.
-Output: `~/training-data/bge-large-lora-v1/`
+### Next: Refactoring wave (waiting on PR #763)
 
-**After training completes:**
-1. Check `ls ~/training-data/bge-large-lora-v1/onnx/model.onnx`
-2. Copy tokenizer: `cp ~/training-data/bge-large-lora-v1/merged/tokenizer.json ~/training-data/bge-large-lora-v1/onnx/`
-3. Test: `CQS_ONNX_DIR=~/training-data/bge-large-lora-v1/onnx CQS_EMBEDDING_DIM=1024 cqs index --force`
-4. Run 296q fixture eval + 187q real eval
-5. Compare to BGE-large baseline (90.9% fixture, 48% real, 55.71 CoIR)
+**Wave 1 — 4 parallel agents in worktrees (no file overlap):**
+1. `cli/mod.rs` split (1161 lines) → `cli/store.rs`, `cli/signal.rs`, `cli/files.rs`
+2. `pipeline.rs` split (1303 lines) → `cli/pipeline/parse.rs`, `embed.rs`, `upsert.rs`, `enrich.rs`
+3. `store/helpers.rs` split (1222 lines) → by responsibility
+4. Telemetry subcommand list → derive from clap `Commands` enum instead of hardcoded strings
 
-### This session (9 PRs, v1.15.0 released)
-- #753: 6 custom agents (.claude/agents/), all tested
-- #754: `cqs telemetry` dashboard
-- #755: L5X parser (Rockwell PLC exports)
-- #756: CLAUDE.md "Remain calm. There is no rush." + "When Stuck" section
-- #757: CommandContext refactor (32 handlers)
-- #758: L5K parser (legacy Rockwell format)
-- #759: Docs audit (stale R@1 numbers, missing refs)
-- #760: Commands subdirectory restructure (46 files → 7 subdirectories)
-- #761: Release v1.15.0
+**Wave 2 — after wave 1 merges:**
+5. Reranker session → lazy field in CommandContext (overlaps cli/mod.rs)
+6. Batch/CLI handler unification → shared handlers, different formatters (biggest, ~2000 lines saved)
 
-### Key decisions this session
-- "Remain calm. There is no rush." — based on Anthropic emotion concepts research showing desperate vector drives hacky solutions
-- Three-strike rule for failed fixes — stop, reassess, dispatch agent
-- CommandContext pattern for shared CLI state
-- Commands grouped by theme (search/graph/review/index/io/infra/train) for agent navigability
-- L5X/L5K use regex extraction → ST tree-sitter, not XML injection (CDATA per-line prevents set_included_ranges)
+### BGE-large fine-tuning — complete
 
-### Crates.io publish blocked
-`tree-sitter-structured-text` is a git dependency without version — blocks `cargo publish`. Need to publish that crate first or pin a version. Existing issue, not new.
+| Eval | FT | Baseline | v9-200k |
+|------|-----|---------|---------|
+| Fixture R@1 (296q) | **91.6%** | 90.9% | 90.5% |
+| Raw R@1 (55q) | **66.2%** | 61.8% | **70.9%** |
+| Real R@1 (100q) | **50.0%** | **50.0%** | 26.0% |
+| Real R@5 (100q) | **73.0%** | 72.0% | 51.0% |
+| CoIR (19-subtask) | **57.5** | 55.7 | 52.7 |
+| CoIR CSN | **0.779** | 0.721 | 0.615 |
+
+Published: [jamie8johnson/bge-large-v1.5-code-search](https://huggingface.co/jamie8johnson/bge-large-v1.5-code-search)
+v9-200k model card also updated with corrected numbers.
+
+### Data integrity fixes this session
+- Real eval script couldn't read expanded queries (schema mismatch) — fixed, all models re-run
+- CoIR "Overall" used mixed averaging (19-subtask for BGE, 9-task for E5 models) — corrected all
+- v9-200k collapsed from 49% to 26% R@1 on post-restructure codebase
+- RESULTS.md, research_log.md, paper draft all corrected
+
+### Uncommitted changes
+- `CLAUDE.md` — preamble simplified to "Remain calm. There is no rush."
+- `scripts/run_real_eval.py` — fixed expanded eval format
+- `PROJECT_CONTINUITY.md`, `ROADMAP.md` — updated with results
+
+### This session summary
+- BGE-large training completed (12.75h), ONNX exported, all evals run
+- 10 PRs merged (#753-762), v1.15.0 released
+- Model published to HuggingFace
+- Cleaned 50 stale remote branches, removed cu11 pip packages
 
 ## Parked
 - Dart, hnswlib-rs, DXF, Openclaw PLC
-- Blackwell RTX 6000 (96GB) — fits current board (Z590, PCIe 4.0 x16, Seasonic GX-1300 has 12VHPWR cable)
+- Blackwell RTX 6000 (96GB) — fits current board (Z590/i9-11900K, PCIe 4.0 x16, Seasonic GX-1300 has 12VHPWR)
 - Publish datasets to HF
-- Ladder logic (RLL) tree-sitter grammar (~50-80 lines, textual DSL in L5X CDATA)
-- cli/mod.rs split (1161 lines), pipeline.rs split, store/helpers.rs split
-- Batch/CLI handler unification
+- Ladder logic (RLL) tree-sitter grammar
+- Batch/CLI handler unification (wave 2, after splits land)
 - v9-200k deep analysis (5 experiments in ROADMAP + research_log)
+- Crates.io publish blocked by tree-sitter-structured-text git dep
+- Consider FT BGE-large as new default model
 
 ## Open Issues
 - #717, #389, #255, #106, #63
 
 ## Architecture
 - Version: 1.15.0, Languages: 52 + L5X/L5K, Commands: 54+, Tests: ~2196
-- 6 custom agents in .claude/agents/
-- `cqs telemetry` command
-- CommandContext struct in dispatch
-- Commands in 7 subdirectories (search/graph/review/index/io/infra/train)
-- Schema v16, HNSW 11,398 vectors
-- Binary rebuilt and installed at v1.15.0
+- Best model: BGE-large FT (91.6% R@1, 57.5 CoIR)
+- Production default: BGE-large baseline (identical on real code)
+- Published models: jamie8johnson/bge-large-v1.5-code-search, jamie8johnson/e5-base-v2-code-search
+- 6 custom agents, CommandContext struct, 7 command subdirectories
+- Schema v16

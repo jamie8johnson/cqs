@@ -103,6 +103,30 @@ def eval_gitblame(queries_file, binary, env=None):
     return results
 
 
+def eval_conceptual(queries, binary, env=None):
+    """Evaluate conceptual queries (multiple expected functions, any match is good)."""
+    results = []
+
+    for q in queries:
+        top5 = run_search(q["query"], binary, env=env)
+        top_names = [r["name"] for r in top5]
+        expected = set(q["expected_functions"])
+
+        found = [n for n in top_names if n in expected]
+        coverage = len(found) / len(expected) if expected else 0
+
+        # "good" = at least one expected function in top 5
+        status = "+" if found else "-"
+        results.append({"type": "conceptual", "query": q["query"],
+                       "category": q.get("category", ""),
+                       "expected_count": len(expected), "found": found,
+                       "coverage": round(coverage, 3), "status": status,
+                       "top5": top_names})
+        print(f"  {status} [concept] \"{q['query'][:50]}\" -> {len(found)}/{len(expected)} ({','.join(found[:3]) or 'miss'})")
+
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description="Real codebase eval")
     parser.add_argument("--json", default=None, help="Output JSON file")
@@ -112,10 +136,37 @@ def main():
     binary = args.cqs_binary
     all_results = []
 
-    # Manual queries
+    # Manual queries (original format)
     if os.path.exists("tests/real_eval_cqs.json"):
-        print("\n=== Manual Queries ===")
+        print("\n=== Manual Queries (50q) ===")
         all_results.extend(eval_manual("tests/real_eval_cqs.json", binary))
+
+    # Expanded eval — function lookup + conceptual
+    expanded_path = "tests/real_eval_expanded.json"
+    if os.path.exists(expanded_path):
+        data = json.load(open(expanded_path))
+
+        # Function lookup (same schema as manual)
+        fn_queries = data.get("function_lookup", [])
+        if fn_queries:
+            print(f"\n=== Function Lookup ({len(fn_queries)}q) ===")
+            # Wrap in {"queries": [...]} format for eval_manual
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+                json.dump({"queries": fn_queries}, tmp)
+                tmp_path = tmp.name
+            fn_results = eval_manual(tmp_path, binary)
+            # Retype to distinguish from original manual
+            for r in fn_results:
+                r["type"] = "function_lookup"
+            all_results.extend(fn_results)
+            os.unlink(tmp_path)
+
+        # Conceptual queries
+        concept_queries = data.get("conceptual", [])
+        if concept_queries:
+            print(f"\n=== Conceptual Queries ({len(concept_queries)}q) ===")
+            all_results.extend(eval_conceptual(concept_queries, binary))
 
     # Call graph queries
     if os.path.exists("tests/real_eval_callgraph.json"):
@@ -129,22 +180,36 @@ def main():
 
     # Aggregate
     manual = [r for r in all_results if r["type"] == "manual"]
+    fn_lookup = [r for r in all_results if r["type"] == "function_lookup"]
+    conceptual = [r for r in all_results if r["type"] == "conceptual"]
     cg = [r for r in all_results if r["type"] == "callgraph"]
     git = [r for r in all_results if r["type"] == "gitblame"]
 
     print(f"\n{'='*60}")
     print(f"Real Codebase Eval Summary ({len(all_results)} queries)")
-    if manual:
-        hits = sum(1 for r in manual if r["status"] == "+")
-        r5 = sum(1 for r in manual if r["status"] in ("+", "~"))
-        print(f"  Manual:    R@1={hits/len(manual)*100:.1f}% R@5={r5/len(manual)*100:.1f}% ({len(manual)}q)")
+    for label, group in [("Manual", manual), ("Fn Lookup", fn_lookup)]:
+        if group:
+            hits = sum(1 for r in group if r["status"] == "+")
+            r5 = sum(1 for r in group if r["status"] in ("+", "~"))
+            print(f"  {label:12s} R@1={hits/len(group)*100:.1f}%  R@5={r5/len(group)*100:.1f}%  ({len(group)}q)")
+    if conceptual:
+        good = sum(1 for r in conceptual if r["status"] == "+")
+        avg_cov = sum(r["coverage"] for r in conceptual) / len(conceptual)
+        print(f"  {'Conceptual':12s} {good}/{len(conceptual)} good (≥1 match), avg_coverage={avg_cov:.2f}")
     if cg:
         good = sum(1 for r in cg if r["status"] == "+")
         avg_recall = sum(r["recall"] for r in cg) / len(cg)
-        print(f"  CallGraph: {good}/{len(cg)} good (≥40% recall), avg_recall={avg_recall:.2f}")
+        print(f"  {'CallGraph':12s} {good}/{len(cg)} good (≥40% recall), avg_recall={avg_recall:.2f}")
     if git:
         found = sum(1 for r in git if r["status"] == "+")
-        print(f"  GitBlame:  {found}/{len(git)} file matches ({found/len(git)*100:.1f}%)")
+        print(f"  {'GitBlame':12s} {found}/{len(git)} file matches ({found/len(git)*100:.1f}%)")
+
+    # Combined lookup R@1 (manual + fn_lookup)
+    all_lookup = manual + fn_lookup
+    if all_lookup:
+        hits = sum(1 for r in all_lookup if r["status"] == "+")
+        r5 = sum(1 for r in all_lookup if r["status"] in ("+", "~"))
+        print(f"\n  Combined lookup: R@1={hits/len(all_lookup)*100:.1f}%  R@5={r5/len(all_lookup)*100:.1f}%  ({len(all_lookup)}q)")
 
     if args.json:
         with open(args.json, "w") as f:

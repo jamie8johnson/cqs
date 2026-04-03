@@ -1021,3 +1021,18 @@ mentions = [
     "search",
     "research",
 ]
+
+[[note]]
+sentiment = -1.0
+text = "Real eval script had schema mismatch — real_eval_expanded.json uses function_lookup/conceptual keys, script expected queries. Prior 187q/100q claims were inflated. Only 50 manual queries actually ran. Fixed 2026-04-03."
+mentions = ["run_real_eval.py"]
+
+[[note]]
+sentiment = -0.5
+text = "v9-200k collapsed from 49% to 26% R@1 after commands subdirectory restructure. 768-dim model less robust to file path changes than 1024-dim BGE-large. Path-dependent embeddings are fragile."
+mentions = ["search"]
+
+[[note]]
+sentiment = 0.0
+text = "Fine-tuned BGE-large: +5.8pp CSN on CoIR (0.779 vs 0.721 baseline), +4.4pp raw R@1 (66.2% vs 61.8%), but 0pp on real code R@1 (50% vs 50%). Enrichment compresses training gains on real code."
+mentions = ["train_lora.py"]

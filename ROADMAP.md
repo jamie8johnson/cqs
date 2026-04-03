@@ -1,17 +1,18 @@
 # Roadmap
 
-## Current: v1.13.0
+## Current: v1.15.0
 
-v1.13.0: 52 languages (IEC 61131-3), `cqs reconstruct`, 14 env vars, code-only search default, enrichment ablation, 187-query real eval framework. v9-200k published to HuggingFace. ~1540 tests.
+v1.15.0: 52 languages + L5X/L5K PLC exports, `cqs telemetry`, CommandContext refactor, commands subdirectories, 6 custom agents, BGE-large fine-tuned (91.6% R@1). ~2196 tests.
 
 ### Expanded Pipeline Eval (296 queries, 7 languages, 2026-03-31)
 
 Config A (Cosine-only, best config). A6000. 77 hard + 219 holdout queries across Rust, Python, TypeScript, JavaScript, Go, Java, PHP.
 
-| Model | Params | R@1 | R@5 | MRR | Raw R@1 | CSN |
-|-------|--------|-----|-----|-----|---------|-----|
-| **BGE-large** | 335M | **90.9%** | 99.3% | **0.9493** | 61.8% | **0.770** |
-| **v9-200k** | 110M | **90.5%** | 99.3% | 0.9482 | **70.9%** | 0.615 |
+| Model | Params | R@1 | R@5 | MRR | Raw R@1 | CoIR |
+|-------|--------|-----|-----|-----|---------|------|
+| **BGE-large FT** | 335M | **91.6%** | 99.3% | **0.9521** | 66.2% | **57.5** |
+| **BGE-large** | 335M | 90.9% | 99.3% | 0.9493 | 61.8% | 55.7 |
+| **v9-200k** | 110M | 90.5% | 99.3% | 0.9482 | **70.9%** | 52.7 |
 | v9-200k-hn | 110M | 82.4% | 99.3% | 0.9033 | 70.9% | 0.614 |
 | v9-200k-testq | 110M | 82.1% | 99.3% | 0.9025 | 70.9% | — |
 | v9-175k | 110M | 82.1% | 99.0% | 0.9010 | 70.9% | 0.619 |
@@ -79,15 +80,21 @@ Known (expanded eval, 296 queries): v9-mini (50K, 11K/lang) → basin, v9-175k (
 
 **New direction: improve the enrichment stack or eval, not training data.**
 
-### Future — Fine-Tune BGE-large on 200K CG-Filtered Data
+### Done — Fine-Tune BGE-large on 200K CG-Filtered Data (Exp 27, 2026-04-03)
 
-**Hypothesis:** BGE-large (335M, 1024d) already ties v9-200k at 90.9% without fine-tuning. Fine-tuning on the same 200K CG-filtered dataset that produced v9-200k could push it higher — or hit the same basin. Either result is informative.
+**Result: Outcome 1 — model capacity + training signal is additive. Did not basin.**
 
-**Effort:** ~3-4 hours training on A6000 (3× E5-base due to model size). Requires adapting `train_lora.py` for BGE architecture (different tokenizer, query instruction prefix).
+| Eval | FT | Baseline | Delta |
+|------|-----|---------|-------|
+| Fixture R@1 (296q) | **91.6%** | 90.9% | +0.7pp |
+| Raw R@1 (55q) | **66.2%** | 61.8% | +4.4pp |
+| Real R@1 (100q) | 50.0% | 50.0% | 0pp |
+| CoIR (19-subtask) | **57.5** | 55.7 | +1.8pp |
+| CoIR CSN | **0.779** | 0.721 | +5.8pp |
 
-**Risk:** Diminishing returns — the expanded eval shows enrichment is the dominant factor. BGE-large may already be near the ceiling. Basin effect may recur.
+Training: 200K CG-filtered + GIST + Matryoshka, 1 epoch, 12.75h on A6000. Published: [jamie8johnson/bge-large-v1.5-code-search](https://huggingface.co/jamie8johnson/bge-large-v1.5-code-search).
 
-**Value:** If fine-tuned BGE-large breaks past 91%, it proves model capacity + training signal is additive. If it plateaus, it confirms enrichment is the ceiling.
+Enrichment dependency slightly increased vs baseline (doc -7.5pp vs -6.8pp) but nowhere near v9-200k's 2-3×. The dramatic enrichment synergy is E5-base architecture-specific.
 
 - [ ] **Better TypeScript sort enrichment** — the 3 missing queries are all TypeScript sort/string functions. More discriminating contrastive summaries specifically for sorting algorithms might recover them.
 - [x] **Expand eval fixtures** — Done (296 queries, 7 languages). See expanded eval table at top of file. The 3-query effect is diluted; BGE-large and v9-200k are virtually tied (90.9% vs 90.5%).
@@ -203,6 +210,19 @@ Telemetry update (2026-03-29, 72 events since v1.9.0 reset): test-map 37%, notes
 - [ ] **`pipeline.rs` split** (1303 lines) — break index pipeline into parse/embed/upsert/enrich submodules.
 - [ ] **`store/helpers.rs` split** (1222 lines) — separate row helpers from SQL builders.
 - [ ] **`language/mod.rs`** (1998 lines) — pure data, low priority. Could group by language family.
+
+### Next — Ladder Logic (RLL) Parser
+
+- [ ] **Tree-sitter grammar for Rockwell ladder logic textual DSL** — L5X/L5K exports contain ladder as text in CDATA: `XIC(tag)OTE(tag);` with bracket branches `[OTE(a),OTE(b)]`. Small regular grammar (~50-80 lines). Instructions: XIC, XIO, OTE, OTU, OTL, TON, TOF, CTU, CTD, JSR, MSG, etc. Call graph via `JSR` (jump to subroutine). Same CDATA extraction pattern as ST parser. Generalizable to other vendors (Siemens STL, Mitsubishi IL) via configurable mnemonic tables.
+- [ ] **Integrate into L5X/L5K parser** — extract `RLLContent` CDATA alongside `STContent`. Full-plant indexing: ST routines + ladder routines + cross-routine JSR call graph.
+
+### Next — Cross-Project Call Graph
+
+- [ ] **Cross-project call graph traversal** — trace calls from project A into project B's API. Currently `cqs ref` does multi-project search with weighted merge, but call graph is single-project only. Needs: cross-project edge storage, reference-aware BFS in `store/calls/`, updated `callers`/`callees`/`impact`/`trace` commands. Directly useful for PLC project (20 controllers calling shared AOIs across L5X files).
+
+### Next — Embedding Cache (Fast Model Switching)
+
+- [ ] **Embedding cache by content_hash + model_name** — store embeddings keyed by `(content_hash, model_name)` so switching models doesn't require recomputing embeddings. First index per model is slow, subsequent switches are instant lookups. Eliminates the reindex-on-model-switch pain for research workflows. Schema change: new `embedding_cache` table, lookup before embed, store after.
 
 ### Next — Commands
 
