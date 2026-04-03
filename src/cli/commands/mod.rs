@@ -1,101 +1,102 @@
 //! CLI command handlers
 //!
-//! Each submodule handles one CLI subcommand.
+//! Commands are organized into thematic subdirectories:
+//! - `search/` — semantic search, context assembly, exploration
+//! - `graph/` — call graph analysis, impact, tracing, type dependencies
+//! - `review/` — diff review, CI analysis, dead code, health checks
+//! - `index/` — indexing, stats, staleness, garbage collection
+//! - `io/` — file reading, reconstruction, blame, context, notes, diffs
+//! - `infra/` — init, doctor, audit mode, telemetry, projects, references
+//! - `train/` — planning, task context, training data, model export
 
-mod affected;
-mod audit_mode;
-pub(crate) mod blame;
-mod brief;
-pub(crate) mod ci;
-pub(crate) mod context;
-#[cfg(feature = "convert")]
-mod convert;
-pub(crate) mod dead;
-mod deps;
-mod diff;
-mod doctor;
-mod drift;
-pub(crate) mod explain;
-mod export_model;
-pub(crate) mod gather;
-mod gc;
 mod graph;
-mod health;
-mod impact;
-mod impact_diff;
 mod index;
-mod init;
-mod neighbors;
-mod notes;
-mod onboard;
-mod plan;
-mod project;
-mod query;
-pub(crate) mod read;
-mod reconstruct;
-mod reference;
-mod related;
+mod infra;
+mod io;
 pub(crate) mod resolve;
 pub(crate) mod review;
-mod scout;
-mod similar;
-mod stale;
-mod stats;
-mod suggest;
-pub(crate) mod task;
-mod telemetry_cmd;
-mod test_map;
-pub(crate) mod trace;
-mod train_data;
-mod train_pairs;
-mod where_cmd;
+mod search;
+mod train;
 
-pub(crate) use affected::cmd_affected;
-pub(crate) use audit_mode::cmd_audit_mode;
-pub(crate) use blame::cmd_blame;
-pub(crate) use brief::cmd_brief;
-pub(crate) use ci::cmd_ci;
-pub(crate) use context::cmd_context;
-#[cfg(feature = "convert")]
-pub(crate) use convert::cmd_convert;
-pub(crate) use dead::{cmd_dead, dead_to_json};
-pub(crate) use deps::cmd_deps;
-pub(crate) use diff::cmd_diff;
-pub(crate) use doctor::cmd_doctor;
-pub(crate) use drift::cmd_drift;
-pub(crate) use explain::cmd_explain;
-pub(crate) use export_model::cmd_export_model;
-pub(crate) use gather::{cmd_gather, GatherContext};
-pub(crate) use gc::cmd_gc;
-pub(crate) use graph::{callees_to_json, callers_to_json, cmd_callees, cmd_callers};
-pub(crate) use health::cmd_health;
-pub(crate) use impact::cmd_impact;
-pub(crate) use impact_diff::cmd_impact_diff;
-pub(crate) use index::{build_hnsw_index, build_hnsw_index_owned, cmd_index};
-pub(crate) use init::cmd_init;
-pub(crate) use neighbors::cmd_neighbors;
-pub(crate) use notes::{cmd_notes, NotesCommand};
-pub(crate) use onboard::cmd_onboard;
-pub(crate) use plan::cmd_plan;
-pub(crate) use project::{cmd_project, ProjectCommand};
-pub(crate) use query::cmd_query;
-pub(crate) use read::cmd_read;
-pub(crate) use reconstruct::cmd_reconstruct;
-pub(crate) use reference::{cmd_ref, RefCommand};
-pub(crate) use related::cmd_related;
+// Re-export inner modules accessed directly by batch handlers via
+// crate::cli::commands::{module}::{function} paths.
+pub(crate) use graph::explain;
+pub(crate) use graph::trace;
+pub(crate) use io::blame;
+pub(crate) use io::context;
+pub(crate) use io::read;
+pub(crate) use review::ci;
+pub(crate) use train::task;
+
+// -- search --
+pub(crate) use search::cmd_gather;
+pub(crate) use search::cmd_neighbors;
+pub(crate) use search::cmd_onboard;
+pub(crate) use search::cmd_query;
+pub(crate) use search::cmd_related;
+pub(crate) use search::cmd_scout;
+pub(crate) use search::cmd_similar;
+pub(crate) use search::cmd_where;
+pub(crate) use search::GatherContext;
+
+// -- graph --
+pub(crate) use graph::callees_to_json;
+pub(crate) use graph::callers_to_json;
+pub(crate) use graph::cmd_callees;
+pub(crate) use graph::cmd_callers;
+pub(crate) use graph::cmd_deps;
+pub(crate) use graph::cmd_explain;
+pub(crate) use graph::cmd_impact;
+pub(crate) use graph::cmd_impact_diff;
+pub(crate) use graph::cmd_test_map;
+pub(crate) use graph::cmd_trace;
+
+// -- review --
+pub(crate) use review::cmd_affected;
+pub(crate) use review::cmd_ci;
+pub(crate) use review::cmd_dead;
+pub(crate) use review::cmd_health;
 pub(crate) use review::cmd_review;
-pub(crate) use scout::cmd_scout;
-pub(crate) use similar::cmd_similar;
-pub(crate) use stale::cmd_stale;
-pub(crate) use stats::cmd_stats;
-pub(crate) use suggest::cmd_suggest;
-pub(crate) use task::cmd_task;
-pub(crate) use telemetry_cmd::{cmd_telemetry, cmd_telemetry_reset};
-pub(crate) use test_map::cmd_test_map;
-pub(crate) use trace::cmd_trace;
-pub(crate) use train_data::cmd_train_data;
-pub(crate) use train_pairs::cmd_train_pairs;
-pub(crate) use where_cmd::cmd_where;
+pub(crate) use review::cmd_suggest;
+pub(crate) use review::dead_to_json;
+
+// -- index --
+pub(crate) use index::build_hnsw_index_owned;
+pub(crate) use index::cmd_gc;
+pub(crate) use index::cmd_index;
+pub(crate) use index::cmd_stale;
+pub(crate) use index::cmd_stats;
+
+// -- io --
+pub(crate) use io::cmd_blame;
+pub(crate) use io::cmd_brief;
+pub(crate) use io::cmd_context;
+pub(crate) use io::cmd_diff;
+pub(crate) use io::cmd_drift;
+pub(crate) use io::cmd_notes;
+pub(crate) use io::cmd_read;
+pub(crate) use io::cmd_reconstruct;
+pub(crate) use io::NotesCommand;
+
+// -- infra --
+pub(crate) use infra::cmd_audit_mode;
+#[cfg(feature = "convert")]
+pub(crate) use infra::cmd_convert;
+pub(crate) use infra::cmd_doctor;
+pub(crate) use infra::cmd_init;
+pub(crate) use infra::cmd_project;
+pub(crate) use infra::cmd_ref;
+pub(crate) use infra::cmd_telemetry;
+pub(crate) use infra::cmd_telemetry_reset;
+pub(crate) use infra::ProjectCommand;
+pub(crate) use infra::RefCommand;
+
+// -- train --
+pub(crate) use train::cmd_export_model;
+pub(crate) use train::cmd_plan;
+pub(crate) use train::cmd_task;
+pub(crate) use train::cmd_train_data;
+pub(crate) use train::cmd_train_pairs;
 
 /// Count tokens for text, with fallback estimation on error.
 ///

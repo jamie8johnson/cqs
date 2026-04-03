@@ -124,7 +124,7 @@ pub(crate) fn build_explain_data(
         let _pack_span = tracing::info_span!("token_pack_explain", budget).entered();
 
         // Priority 1: target chunk content (always included)
-        let target_tokens = super::count_tokens(emb, &chunk.content, &chunk.name);
+        let target_tokens = crate::cli::commands::count_tokens(emb, &chunk.content, &chunk.name);
 
         // Priority 2: similar chunks' content — pack remaining budget
         let remaining = budget.saturating_sub(target_tokens);
@@ -137,9 +137,14 @@ pub(crate) fn build_explain_data(
             .iter()
             .map(|&(i, _)| similar[i].chunk.content.as_str())
             .collect();
-        let token_counts = super::count_tokens_batch(emb, &texts);
-        let (packed, sim_used) =
-            super::token_pack(indexed, &token_counts, remaining, 0, |&(_, score)| score);
+        let token_counts = crate::cli::commands::count_tokens_batch(emb, &texts);
+        let (packed, sim_used) = crate::cli::commands::token_pack(
+            indexed,
+            &token_counts,
+            remaining,
+            0,
+            |&(_, score)| score,
+        );
         let sim_included: HashSet<String> = packed
             .into_iter()
             .map(|(i, _)| similar[i].chunk.id.clone())

@@ -3,7 +3,7 @@
 use anyhow::{Context as _, Result};
 use std::collections::{HashMap, VecDeque};
 
-use super::resolve::resolve_target;
+use crate::cli::commands::resolve::resolve_target;
 
 pub(crate) fn cmd_test_map(
     ctx: &crate::cli::CommandContext,

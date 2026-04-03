@@ -24,9 +24,9 @@ pub(crate) fn cmd_review(
 
     // 1. Get diff text
     let diff_text = if from_stdin {
-        super::read_stdin()?
+        crate::cli::commands::read_stdin()?
     } else {
-        super::run_git_diff(base)?
+        crate::cli::commands::run_git_diff(base)?
     };
 
     // 2. Run review
@@ -80,7 +80,7 @@ fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> u
 
     // JSON wrapping adds ~35 tokens per item (field names, paths, metadata)
     let json_per_item = if json {
-        super::JSON_OVERHEAD_PER_RESULT
+        crate::cli::commands::JSON_OVERHEAD_PER_RESULT
     } else {
         0
     };

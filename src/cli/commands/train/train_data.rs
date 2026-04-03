@@ -1,3 +1,5 @@
+//! Train-data command — generate training data from indexed code
+
 use anyhow::Result;
 
 use cqs::train_data::TrainDataConfig;

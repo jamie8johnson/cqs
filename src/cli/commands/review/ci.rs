@@ -26,9 +26,9 @@ pub(crate) fn cmd_ci(
 
     // Get diff text
     let diff_text = if from_stdin {
-        super::read_stdin()?
+        crate::cli::commands::read_stdin()?
     } else {
-        super::run_git_diff(base)?
+        crate::cli::commands::run_git_diff(base)?
     };
 
     // Run CI analysis
@@ -69,7 +69,7 @@ fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> u
     let _span = tracing::info_span!("ci_token_budget", budget, json).entered();
 
     let json_per_item = if json {
-        super::JSON_OVERHEAD_PER_RESULT
+        crate::cli::commands::JSON_OVERHEAD_PER_RESULT
     } else {
         0
     };

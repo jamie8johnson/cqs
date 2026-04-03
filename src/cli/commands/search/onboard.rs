@@ -46,7 +46,7 @@ pub(crate) fn cmd_onboard(
             .collect();
 
             let texts: Vec<&str> = all_content.iter().map(|(_, c, _)| *c).collect();
-            let token_counts = super::count_tokens_batch(&embedder, &texts);
+            let token_counts = crate::cli::commands::count_tokens_batch(&embedder, &texts);
             let total_tokens: usize = token_counts.iter().sum();
 
             if total_tokens > budget {
@@ -55,8 +55,13 @@ pub(crate) fn cmd_onboard(
                     .iter()
                     .map(|(name, _, score)| (name.to_string(), *score))
                     .collect();
-                let (packed, used) =
-                    super::token_pack(items, &token_counts, budget, 0, |&(_, score)| score);
+                let (packed, used) = crate::cli::commands::token_pack(
+                    items,
+                    &token_counts,
+                    budget,
+                    0,
+                    |&(_, score)| score,
+                );
                 let included: std::collections::HashSet<String> =
                     packed.into_iter().map(|(name, _)| name).collect();
 

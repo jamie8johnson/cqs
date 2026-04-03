@@ -32,7 +32,7 @@ pub(crate) fn cmd_affected(
     let root = &ctx.root;
 
     // 1. Get diff text
-    let diff_text = super::run_git_diff(base)?;
+    let diff_text = crate::cli::commands::run_git_diff(base)?;
 
     // 2. Parse hunks
     let hunks = parse_unified_diff(&diff_text);

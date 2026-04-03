@@ -20,7 +20,7 @@ pub(crate) fn cmd_diff(
     let cqs_dir = cqs::resolve_index_dir(&root);
 
     // Resolve source store (must be a reference)
-    let source_store = super::resolve::resolve_reference_store(&root, source)?;
+    let source_store = crate::cli::commands::resolve::resolve_reference_store(&root, source)?;
 
     // Resolve target store
     let target_label = target.unwrap_or("project");
@@ -32,7 +32,7 @@ pub(crate) fn cmd_diff(
         Store::open(&index_path)
             .with_context(|| format!("Failed to open project store at {}", index_path.display()))?
     } else {
-        super::resolve::resolve_reference_store(&root, target_label)?
+        crate::cli::commands::resolve::resolve_reference_store(&root, target_label)?
     };
 
     let result = semantic_diff(

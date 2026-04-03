@@ -7,7 +7,7 @@ use colored::Colorize;
 
 use cqs::Store;
 
-use super::resolve::resolve_target;
+use crate::cli::commands::resolve::resolve_target;
 use crate::cli::OutputFormat;
 
 pub(crate) fn cmd_trace(

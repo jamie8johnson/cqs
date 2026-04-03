@@ -154,7 +154,7 @@ fn output_with_budget(
     json: bool,
 ) -> Result<()> {
     let overhead = if json {
-        super::JSON_OVERHEAD_PER_RESULT
+        crate::cli::commands::JSON_OVERHEAD_PER_RESULT
     } else {
         0
     };
@@ -191,8 +191,8 @@ fn pack_section(
     overhead: usize,
     score_fn: impl Fn(usize) -> f32,
 ) -> (Vec<usize>, usize) {
-    let counts = super::count_tokens_batch(embedder, texts);
-    super::index_pack(&counts, section_budget, overhead, score_fn)
+    let counts = crate::cli::commands::count_tokens_batch(embedder, texts);
+    crate::cli::commands::index_pack(&counts, section_budget, overhead, score_fn)
 }
 
 /// Compute waterfall token budgeting across all task sections.
@@ -368,7 +368,12 @@ pub(crate) fn task_to_budgeted_json(
     embedder: &Embedder,
     budget: usize,
 ) -> serde_json::Value {
-    let packed = waterfall_pack(result, embedder, budget, super::JSON_OVERHEAD_PER_RESULT);
+    let packed = waterfall_pack(
+        result,
+        embedder,
+        budget,
+        crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
+    );
     budgeted_json(result, &packed)
 }
 
@@ -792,8 +797,8 @@ fn print_notes_section_idx(notes: &[cqs::store::NoteSummary], indices: &[usize],
 
 #[cfg(test)]
 mod tests {
-    use super::super::index_pack;
     use super::*;
+    use crate::cli::commands::index_pack;
 
     #[test]
     fn test_waterfall_allocation_percentages() {

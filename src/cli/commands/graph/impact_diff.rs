@@ -30,9 +30,9 @@ pub(crate) fn cmd_impact_diff(
 
     // 1. Get diff text
     let diff_text = if from_stdin {
-        super::read_stdin()?
+        crate::cli::commands::read_stdin()?
     } else {
-        super::run_git_diff(base)?
+        crate::cli::commands::run_git_diff(base)?
     };
 
     // 2. Parse hunks

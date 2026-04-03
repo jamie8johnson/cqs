@@ -6,7 +6,7 @@ use cqs::{HnswIndex, SearchFilter, Store};
 
 use crate::cli::display;
 
-use super::resolve::parse_target;
+use crate::cli::commands::resolve::parse_target;
 
 /// Resolve a name to a chunk ID by searching by name and optionally filtering by file
 fn resolve_target(store: &Store, name: &str) -> Result<(String, String)> {

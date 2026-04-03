@@ -60,9 +60,11 @@ pub(crate) fn cmd_scout(
             .iter()
             .map(|(_, content, _)| content.as_str())
             .collect();
-        let token_counts = super::count_tokens_batch(&embedder, &texts);
+        let token_counts = crate::cli::commands::count_tokens_batch(&embedder, &texts);
         let (packed, used) =
-            super::token_pack(items, &token_counts, budget, 0, |&(_, _, score)| score);
+            crate::cli::commands::token_pack(items, &token_counts, budget, 0, |&(_, _, score)| {
+                score
+            });
 
         let included: std::collections::HashMap<String, String> = packed
             .into_iter()

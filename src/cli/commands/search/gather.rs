@@ -61,7 +61,7 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
     // Cross-index gather: seed from reference, bridge into project code
     let mut result = if let Some(rn) = ref_name {
         let query_embedding = embedder.embed_query(query)?;
-        let ref_idx = super::resolve::find_reference(root, rn)?;
+        let ref_idx = crate::cli::commands::resolve::find_reference(root, rn)?;
         let index = crate::cli::build_vector_index(store, cqs_dir)?;
         gather_cross_index_with_index(
             store,
@@ -82,14 +82,14 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
 
         let chunks = std::mem::take(&mut result.chunks);
         let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-        let token_counts = super::count_tokens_batch(&embedder, &texts);
+        let token_counts = crate::cli::commands::count_tokens_batch(&embedder, &texts);
         let overhead = if json {
-            super::JSON_OVERHEAD_PER_RESULT
+            crate::cli::commands::JSON_OVERHEAD_PER_RESULT
         } else {
             0
         };
         let (mut packed, used) =
-            super::token_pack(chunks, &token_counts, budget, overhead, |c| c.score);
+            crate::cli::commands::token_pack(chunks, &token_counts, budget, overhead, |c| c.score);
         tracing::info!(
             chunks = packed.len(),
             tokens = used,
