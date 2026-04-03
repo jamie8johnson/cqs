@@ -4711,7 +4711,8 @@ dependencies = [
 [[package]]
 name = "tree-sitter-structured-text"
 version = "0.1.0"
-source = "git+https://github.com/jamie8johnson/tree-sitter-structured-text#a90aa0cdd04d1328533ff4cdbe4f960684567df7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "060cd0922caf6fcc4a59a138cfe5ab86e702c58dd6831664c9be6c8012423881"
 dependencies = [
  "cc",
  "tree-sitter-language",
