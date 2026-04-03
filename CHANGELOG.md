@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-04-02
+
+### Added
+- **L5X parser** — extract Structured Text from Rockwell/Allen-Bradley Logix Designer XML exports. Regex CDATA extraction → ST tree-sitter grammar. Programs, routines, AOIs (#755).
+- **L5K parser** — legacy ASCII format support alongside L5X. Keyword-delimited blocks (`ROUTINE...END_ROUTINE`), `ST_CONTENT := [...]` and `N:0` numbered line formats (#758).
+- **`cqs telemetry`** — usage dashboard with command frequency, category breakdown (Search/Structural/Orchestrator/Read-Write/Infra), session detection, top queries. `--reset` for archival, `--all` for history, `--json` output (#754).
+- **6 custom agent definitions** in `.claude/agents/` — investigator, code-reviewer, test-finder, implementer, explorer, auditor. Agents have cqs commands built in (#753).
+- **CLAUDE.md stability guidance** — "Remain calm. There is no rush." preamble and "When Stuck" section (3-strike rule, agent dispatch, diagnose-first) based on Anthropic emotion concepts research (#756).
+
+### Changed
+- **CommandContext refactor** — shared `CommandContext` struct replaces 32 independent `open_project_store_readonly()` calls. Constructed once in dispatch, passed to all store-using handlers (#757).
+- **Commands subdirectory restructure** — 45 command files organized into 7 thematic subdirectories: search/, graph/, review/, index/, io/, infra/, train/. File history preserved via `git mv` (#760).
+- **CLAUDE.md tightened** — 379 → 273 lines. Agent instructions moved to `.claude/agents/` (#753).
+
+### Removed
+- **CI eval job** — was tag-only, CPU-only (different path than shipped GPU), redundant with local evals (#754).
+
+### Fixed
+- **Docs audit** — README R@1 94.5% → 90.9% (expanded eval), added telemetry command, L5X/L5K refs. CONTRIBUTING.md architecture updated. SECURITY.md/PRIVACY.md telemetry mentions added. GitHub repo description updated (#759).
+
 ## [1.14.0] - 2026-04-02
 
 ### Added
