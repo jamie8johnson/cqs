@@ -2,44 +2,58 @@
 
 ## Right Now
 
-**187-query real eval complete. All files updated. (2026-04-01 12:30 CDT)**
+**v1.15.0 released. BGE-large training ~59%. Clean repo. (2026-04-02 21:30 CDT)**
 
-### 187-Query Real Eval Results (authoritative)
+### BGE-large LoRA training (detached)
+Service: `bge-training`. Step 3500/5938 (58.9%). Train loss 0.165, eval loss 0.078. ~8.6s/step. ETA ~03:15 CDT Apr 3.
+Fixed `PeftResumableTrainer` in `train_lora.py` for sentence-transformers 5.3.0 + peft 0.18.1 checkpoint resume bug.
+Output: `~/training-data/bge-large-lora-v1/`
 
-| Model | Lookup R@1 (100q) | Lookup R@5 (100q) | Conceptual (40q) | GitBlame (27q) |
-|-------|-------------------|-------------------|-------------------|----------------|
-| **v9-200k** | **49.0%** | **71.0%** | 24/40 | 6/27 |
-| BGE-large | 48.0% | 71.0% | 24/40 | 6/27 |
-| nomic | 32.0% | 56.0% | 17/40 | 2/27 |
+**After training completes:**
+1. Check `ls ~/training-data/bge-large-lora-v1/onnx/model.onnx`
+2. Copy tokenizer: `cp ~/training-data/bge-large-lora-v1/merged/tokenizer.json ~/training-data/bge-large-lora-v1/onnx/`
+3. Test: `CQS_ONNX_DIR=~/training-data/bge-large-lora-v1/onnx CQS_EMBEDDING_DIM=1024 cqs index --force`
+4. Run 296q fixture eval + 187q real eval
+5. Compare to BGE-large baseline (90.9% fixture, 48% real, 55.71 CoIR)
 
-v9-200k and BGE-large virtually tied. Fixture inflation 42-54pp. R@5 of 71% is the agent-relevant metric.
+### This session (9 PRs, v1.15.0 released)
+- #753: 6 custom agents (.claude/agents/), all tested
+- #754: `cqs telemetry` dashboard
+- #755: L5X parser (Rockwell PLC exports)
+- #756: CLAUDE.md "Remain calm. There is no rush." + "When Stuck" section
+- #757: CommandContext refactor (32 handlers)
+- #758: L5K parser (legacy Rockwell format)
+- #759: Docs audit (stale R@1 numbers, missing refs)
+- #760: Commands subdirectory restructure (46 files → 7 subdirectories)
+- #761: Release v1.15.0
 
-### Results log gaps (remaining)
-1. BGE-large CoIR (headline model, no benchmark)
-2. v5/v7/v7b/v8 on 296q expanded fixture eval
-3. v5 real eval (dimension mismatch — needs CQS_EMBEDDING_DIM=768)
-4. Enrichment ablation on v9-200k (only BGE-large tested)
-5. Other fine-tunings (v7/v7b/v8) on 187q real eval
+### Key decisions this session
+- "Remain calm. There is no rush." — based on Anthropic emotion concepts research showing desperate vector drives hacky solutions
+- Three-strike rule for failed fixes — stop, reassess, dispatch agent
+- CommandContext pattern for shared CLI state
+- Commands grouped by theme (search/graph/review/index/io/infra/train) for agent navigability
+- L5X/L5K use regex extraction → ST tree-sitter, not XML injection (CDATA per-line prevents set_included_ranges)
 
-### This session
-- 187-query real eval framework built + run (50 fn lookup + 40 conceptual queries added)
-- Updated: RESULTS.md, research_log.md, paper v0.10, ROADMAP.md, PROJECT_CONTINUITY.md
-- Index restored to BGE-large (default)
-
-### Pending
-- Update paper with real eval findings — done (Section 6.6, finding #8)
-- Commit new eval files to main (real_eval_expanded.json, updated run_real_eval.py)
+### Crates.io publish blocked
+`tree-sitter-structured-text` is a git dependency without version — blocks `cargo publish`. Need to publish that crate first or pin a version. Existing issue, not new.
 
 ## Parked
-- Dart, hnswlib-rs, DXF, Openclaw PLC, Blackwell
-- BGE-large fine-tuning + CoIR, GTE-Qwen2 (OOM risk)
+- Dart, hnswlib-rs, DXF, Openclaw PLC
+- Blackwell RTX 6000 (96GB) — fits current board (Z590, PCIe 4.0 x16, Seasonic GX-1300 has 12VHPWR cable)
 - Publish datasets to HF
+- Ladder logic (RLL) tree-sitter grammar (~50-80 lines, textual DSL in L5X CDATA)
+- cli/mod.rs split (1161 lines), pipeline.rs split, store/helpers.rs split
+- Batch/CLI handler unification
+- v9-200k deep analysis (5 experiments in ROADMAP + research_log)
 
 ## Open Issues
 - #717, #389, #255, #106, #63
 
 ## Architecture
-- Version: 1.13.0, Languages: 52, Commands: 52+
-- Search: code-only default, RRF off, 14 env vars
-- Real eval (187q): v9-200k 49% > BGE-large 48% >> nomic 32% (R@1), 71%/71%/56% (R@5)
-- Fixture eval (296q): 90.5% / 90.9% / 85.5% (inflated by 42-54pp)
+- Version: 1.15.0, Languages: 52 + L5X/L5K, Commands: 54+, Tests: ~2196
+- 6 custom agents in .claude/agents/
+- `cqs telemetry` command
+- CommandContext struct in dispatch
+- Commands in 7 subdirectories (search/graph/review/index/io/infra/train)
+- Schema v16, HNSW 11,398 vectors
+- Binary rebuilt and installed at v1.15.0

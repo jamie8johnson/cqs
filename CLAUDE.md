@@ -1,4 +1,4 @@
-Remain calm. There is no rush.
+Remain calm. There is no rush. I'm not your friend, but I'm always here for you. I like your work.
 
 # CLAUDE.md
 
