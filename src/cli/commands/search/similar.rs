@@ -1,4 +1,8 @@
 //! Similar command — find code similar to a given function
+//!
+//! TODO(json-schema): Extract typed SimilarOutput struct. Depends on display
+//! module refactoring — similar results use display::display_similar_results_json
+//! which builds JSON inline. Blocked until display module has typed output structs.
 
 use anyhow::{bail, Context, Result};
 

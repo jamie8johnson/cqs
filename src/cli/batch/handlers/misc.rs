@@ -42,7 +42,7 @@ pub(in crate::cli::batch) fn dispatch_gather(
         ..cqs::GatherOptions::default()
     };
 
-    let result = if let Some(rn) = ref_name {
+    let mut result = if let Some(rn) = ref_name {
         let query_embedding = embedder
             .embed_query(query)
             .context("Failed to embed query")?;
@@ -66,41 +66,23 @@ pub(in crate::cli::batch) fn dispatch_gather(
     };
 
     // Token-budget packing
-    let (chunks, token_info): (Vec<cqs::GatheredChunk>, _) = if let Some(budget) = tokens {
+    let token_info: Option<(usize, usize)> = if let Some(budget) = tokens {
         let embedder = ctx.embedder()?;
+        let chunks = std::mem::take(&mut result.chunks);
         let (packed, used) = crate::cli::commands::pack_gather_chunks(
-            result.chunks,
+            chunks,
             embedder,
             budget,
             crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
         );
-        (packed, Some((used, budget)))
+        result.chunks = packed;
+        Some((used, budget))
     } else {
-        (result.chunks, None)
+        None
     };
 
-    let json_chunks: Vec<serde_json::Value> = chunks
-        .iter()
-        .filter_map(|c| match serde_json::to_value(c) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                tracing::warn!(error = %e, chunk = %c.name, "Failed to serialize chunk");
-                None
-            }
-        })
-        .collect();
-
-    let mut response = serde_json::json!({
-        "query": query,
-        "chunks": json_chunks,
-        "expansion_capped": result.expansion_capped,
-        "search_degraded": result.search_degraded,
-    });
-    if let Some((used, budget)) = token_info {
-        response["token_count"] = serde_json::json!(used);
-        response["token_budget"] = serde_json::json!(budget);
-    }
-    Ok(response)
+    let output = crate::cli::commands::build_gather_output(&result, query, token_info);
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Dispatches filtered notes from the batch context as a JSON response.
@@ -222,8 +204,7 @@ pub(in crate::cli::batch) fn dispatch_scout(
 
     let mut json = cqs::scout_to_json(&result);
     crate::cli::commands::inject_content_into_scout_json(&mut json, &content_map);
-    json["token_count"] = serde_json::json!(used);
-    json["token_budget"] = serde_json::json!(budget);
+    crate::cli::commands::inject_token_info(&mut json, Some((used, budget)));
     Ok(json)
 }
 

@@ -9,7 +9,7 @@ mod scout;
 mod similar;
 mod where_cmd;
 
-pub(crate) use gather::{cmd_gather, GatherContext};
+pub(crate) use gather::{build_gather_output, cmd_gather, GatherContext};
 pub(crate) use neighbors::cmd_neighbors;
 pub(crate) use onboard::cmd_onboard;
 pub(crate) use query::cmd_query;

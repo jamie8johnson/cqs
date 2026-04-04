@@ -29,6 +29,7 @@ pub(crate) use review::ci;
 pub(crate) use train::task;
 
 // -- search --
+pub(crate) use search::build_gather_output;
 pub(crate) use search::cmd_gather;
 pub(crate) use search::cmd_neighbors;
 pub(crate) use search::cmd_onboard;
@@ -279,6 +280,17 @@ pub(crate) fn pack_gather_chunks(
 
 /// Token info for display: `(used, budget)`.
 pub(crate) type TokenInfo = Option<(usize, usize)>;
+
+/// Inject `token_count` and `token_budget` fields into a JSON value.
+///
+/// No-op when `token_info` is `None`. Used by scout, onboard, and batch
+/// handlers that build JSON via lib functions and then append token metadata.
+pub(crate) fn inject_token_info(json: &mut serde_json::Value, token_info: TokenInfo) {
+    if let Some((used, budget)) = token_info {
+        json["token_count"] = serde_json::json!(used);
+        json["token_budget"] = serde_json::json!(budget);
+    }
+}
 
 /// Pack results into a token budget, keeping highest-scoring results.
 ///
