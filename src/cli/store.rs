@@ -3,6 +3,7 @@
 //! Extracted from `mod.rs` to keep the CLI module hub lean.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::Result;
 
@@ -48,6 +49,7 @@ pub(crate) struct CommandContext<'a> {
     pub store: cqs::Store,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
+    reranker: OnceLock<cqs::Reranker>,
 }
 
 impl<'a> CommandContext<'a> {
@@ -59,12 +61,30 @@ impl<'a> CommandContext<'a> {
             store,
             root,
             cqs_dir,
+            reranker: OnceLock::new(),
         })
     }
 
     /// Get the resolved model config from the CLI.
     pub fn model_config(&self) -> &cqs::embedder::ModelConfig {
         self.cli.model_config()
+    }
+
+    /// Get or lazily create the cross-encoder reranker.
+    ///
+    /// The ONNX session (~91MB) is created on first call and reused for
+    /// all subsequent reranking within this CLI invocation.
+    pub fn reranker(&self) -> Result<&cqs::Reranker> {
+        if let Some(r) = self.reranker.get() {
+            return Ok(r);
+        }
+        let _span = tracing::info_span!("command_context_reranker_init").entered();
+        let r = cqs::Reranker::new().map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
+        let _ = self.reranker.set(r);
+        Ok(self
+            .reranker
+            .get()
+            .expect("reranker OnceLock populated by set() above"))
     }
 }
 
