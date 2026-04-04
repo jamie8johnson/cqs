@@ -14,6 +14,6 @@ pub(crate) use brief::cmd_brief;
 pub(crate) use context::cmd_context;
 pub(crate) use diff::cmd_diff;
 pub(crate) use drift::cmd_drift;
-pub(crate) use notes::{cmd_notes, NotesCommand};
+pub(crate) use notes::{cmd_notes, cmd_notes_mutate, NotesCommand};
 pub(crate) use read::cmd_read;
 pub(crate) use reconstruct::cmd_reconstruct;

@@ -345,11 +345,16 @@ mod tests {
         assert_eq!(max_tokens_per_window(0), 480); // fallback
         assert!(max_tokens_per_window(64) >= 128); // floor
 
-        // Overlap scales with window size
+        // Overlap scales with window size, clamped below max_tokens/2
         assert_eq!(window_overlap_tokens(480), 64); // 512-token model: floor of 64
         assert_eq!(window_overlap_tokens(8160), 1020); // 8K model: ~12.5%
         assert_eq!(window_overlap_tokens(32736), 4092); // 32K model: ~12.5%
-        assert!(window_overlap_tokens(0) >= 64); // always at least 64
+        assert_eq!(window_overlap_tokens(0), 0); // degenerate: no tokens, no overlap
+
+        // AC-8: overlap must stay below max_tokens/2 for split_into_windows
+        assert_eq!(window_overlap_tokens(128), 63); // min window from max_tokens_per_window
+        assert!(window_overlap_tokens(128) < 128 / 2);
+        assert!(window_overlap_tokens(200) < 200 / 2);
     }
 
     #[test]
