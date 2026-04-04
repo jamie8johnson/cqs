@@ -126,7 +126,15 @@ fn run_git_log_line_range(
             return Ok(String::new());
         }
 
-        anyhow::bail!("git log failed: {}", stderr);
+        // SEC-9: Truncate git stderr to prevent user-controlled path content
+        // from leaking into error messages at arbitrary length.
+        const MAX_STDERR_LEN: usize = 256;
+        let sanitized = if stderr.len() > MAX_STDERR_LEN {
+            format!("{}... (truncated)", &stderr[..MAX_STDERR_LEN])
+        } else {
+            stderr.to_string()
+        };
+        anyhow::bail!("git log failed: {}", sanitized);
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())

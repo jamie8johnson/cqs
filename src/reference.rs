@@ -231,11 +231,17 @@ pub fn merge_results(
     // Deduplicate code results by content hash (keeps highest-scoring occurrence).
     // Dedup must happen before truncation for correctness — otherwise duplicates
     // from different sources could occupy result slots, pushing out unique results.
+    // PF-4: Use stored content_hash when available instead of recomputing blake3.
     let mut seen_hashes = std::collections::HashSet::new();
     tagged.retain(|t| match &t.result {
         UnifiedResult::Code(r) => {
-            let hash = blake3::hash(r.chunk.content.as_bytes());
-            seen_hashes.insert(hash)
+            if r.chunk.content_hash.is_empty() {
+                // Fallback for test data or legacy chunks without stored hash
+                let hash = blake3::hash(r.chunk.content.as_bytes()).to_string();
+                seen_hashes.insert(hash)
+            } else {
+                seen_hashes.insert(r.chunk.content_hash.clone())
+            }
         }
     });
 
