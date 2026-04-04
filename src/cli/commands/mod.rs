@@ -103,6 +103,211 @@ pub(crate) use train::cmd_task;
 pub(crate) use train::cmd_train_data;
 pub(crate) use train::cmd_train_pairs;
 
+// ---------------------------------------------------------------------------
+// Shared token-packing utilities (used by both CLI commands and batch handlers)
+// ---------------------------------------------------------------------------
+
+/// Fetch content for named chunks from store, pack into token budget, return content map.
+///
+/// Shared by scout and onboard (both CLI and batch) -- the "fetch by name, build triples,
+/// pack into budget" pattern. Returns `(content_map, tokens_used)`.
+///
+/// `named_items` is a list of `(name, score)` pairs. Content is fetched from `store` via
+/// `get_chunks_by_names_batch`. Items without content in the store are silently dropped.
+pub(crate) fn fetch_and_pack_content(
+    store: &cqs::Store,
+    embedder: &cqs::Embedder,
+    named_items: &[(String, f32)],
+    budget: usize,
+) -> (std::collections::HashMap<String, String>, usize) {
+    let _span =
+        tracing::info_span!("fetch_and_pack_content", budget, items = named_items.len()).entered();
+
+    let all_names: Vec<&str> = named_items.iter().map(|(n, _)| n.as_str()).collect();
+    let chunks_by_name = match store.get_chunks_by_names_batch(&all_names) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to batch-fetch chunks for token packing");
+            std::collections::HashMap::new()
+        }
+    };
+
+    // Build (name, content, score) triples for items with available content
+    let items: Vec<(String, String, f32)> = named_items
+        .iter()
+        .filter_map(|(name, score)| {
+            let content = chunks_by_name.get(name.as_str())?.first()?.content.clone();
+            Some((name.clone(), content, *score))
+        })
+        .collect();
+
+    let texts: Vec<&str> = items
+        .iter()
+        .map(|(_, content, _)| content.as_str())
+        .collect();
+    let counts = count_tokens_batch(embedder, &texts);
+    let (packed, used) = token_pack(items, &counts, budget, 0, |&(_, _, score)| score);
+
+    let content_map: std::collections::HashMap<String, String> = packed
+        .into_iter()
+        .map(|(name, content, _)| (name, content))
+        .collect();
+
+    tracing::info!(
+        packed = content_map.len(),
+        tokens = used,
+        budget,
+        "Content packed"
+    );
+    (content_map, used)
+}
+
+/// Inject packed content into scout-style JSON (`file_groups[].chunks[].content`).
+///
+/// Mutates `json` in place, adding a `content` field to chunks whose names
+/// appear in `content_map`.
+pub(crate) fn inject_content_into_scout_json(
+    json: &mut serde_json::Value,
+    content_map: &std::collections::HashMap<String, String>,
+) {
+    if let Some(groups) = json.get_mut("file_groups").and_then(|v| v.as_array_mut()) {
+        for group in groups.iter_mut() {
+            if let Some(chunks) = group.get_mut("chunks").and_then(|v| v.as_array_mut()) {
+                for chunk in chunks.iter_mut() {
+                    if let Some(name) = chunk.get("name").and_then(|v| v.as_str()) {
+                        if let Some(content) = content_map.get(name) {
+                            chunk["content"] = serde_json::json!(content);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Inject packed content into onboard-style JSON (`entry_point`, `call_chain[]`, `callers[]`).
+///
+/// Replaces content fields for entries whose names appear in `content_map`.
+pub(crate) fn inject_content_into_onboard_json(
+    json: &mut serde_json::Value,
+    content_map: &std::collections::HashMap<String, String>,
+    result: &cqs::OnboardResult,
+) {
+    // entry_point
+    if let Some(ep) = json.get_mut("entry_point") {
+        if let Some(content) = content_map.get(&result.entry_point.name) {
+            ep["content"] = serde_json::json!(content);
+        }
+    }
+    // call_chain
+    if let Some(chain) = json.get_mut("call_chain").and_then(|v| v.as_array_mut()) {
+        for (i, entry) in chain.iter_mut().enumerate() {
+            if let Some(c) = result.call_chain.get(i) {
+                if let Some(content) = content_map.get(&c.name) {
+                    entry["content"] = serde_json::json!(content);
+                }
+            }
+        }
+    }
+    // callers
+    if let Some(callers) = json.get_mut("callers").and_then(|v| v.as_array_mut()) {
+        for (i, entry) in callers.iter_mut().enumerate() {
+            if let Some(c) = result.callers.get(i) {
+                if let Some(content) = content_map.get(&c.name) {
+                    entry["content"] = serde_json::json!(content);
+                }
+            }
+        }
+    }
+}
+
+/// Build scored `(name, score)` pairs for onboard entries (entry_point + call_chain + callers).
+///
+/// Entry point gets score 1.0, call chain entries get `1/(depth+1)`, callers get 0.3.
+pub(crate) fn onboard_scored_names(result: &cqs::OnboardResult) -> Vec<(String, f32)> {
+    let mut items: Vec<(String, f32)> = Vec::new();
+    items.push((result.entry_point.name.clone(), 1.0));
+    for e in &result.call_chain {
+        items.push((e.name.clone(), 1.0 / (e.depth as f32 + 1.0)));
+    }
+    for c in &result.callers {
+        items.push((c.name.clone(), 0.3));
+    }
+    items
+}
+
+/// Build scored `(name, score)` pairs from scout file groups.
+///
+/// Score for each chunk is `relevance_score * search_score`.
+pub(crate) fn scout_scored_names(result: &cqs::ScoutResult) -> Vec<(String, f32)> {
+    result
+        .file_groups
+        .iter()
+        .flat_map(|g| {
+            g.chunks
+                .iter()
+                .map(move |c| (c.name.clone(), g.relevance_score * c.search_score))
+        })
+        .collect()
+}
+
+/// Token-pack gather chunks by score within a token budget.
+///
+/// Shared by CLI gather and batch gather. Returns `(packed_chunks, tokens_used)`.
+pub(crate) fn pack_gather_chunks(
+    chunks: Vec<cqs::GatheredChunk>,
+    embedder: &cqs::Embedder,
+    budget: usize,
+    json_overhead: usize,
+) -> (Vec<cqs::GatheredChunk>, usize) {
+    let _span = tracing::info_span!("pack_gather_chunks", budget, count = chunks.len()).entered();
+    let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+    let counts = count_tokens_batch(embedder, &texts);
+    let (packed, used) = token_pack(chunks, &counts, budget, json_overhead, |c| c.score);
+    tracing::info!(
+        packed = packed.len(),
+        tokens = used,
+        budget,
+        "Gather chunks packed"
+    );
+    (packed, used)
+}
+
+/// Token info for display: `(used, budget)`.
+pub(crate) type TokenInfo = Option<(usize, usize)>;
+
+/// Pack results into a token budget, keeping highest-scoring results.
+///
+/// Generic over result type -- works for `UnifiedResult`, `TaggedResult`, etc.
+/// Both CLI search and batch search use this.
+pub(crate) fn token_pack_results<T>(
+    results: Vec<T>,
+    budget: usize,
+    json_overhead: usize,
+    embedder: &cqs::Embedder,
+    text_fn: impl Fn(&T) -> &str,
+    score_fn: impl Fn(&T) -> f32,
+    label: &str,
+) -> (Vec<T>, TokenInfo) {
+    let _span = tracing::info_span!("token_pack_results", budget, label).entered();
+
+    let texts: Vec<&str> = results.iter().map(&text_fn).collect();
+    let token_counts = count_tokens_batch(embedder, &texts);
+    let (packed, used) = token_pack(results, &token_counts, budget, json_overhead, score_fn);
+    tracing::info!(
+        chunks = packed.len(),
+        tokens = used,
+        budget,
+        label,
+        "Token-budgeted results"
+    );
+    (packed, Some((used, budget)))
+}
+
+// ---------------------------------------------------------------------------
+// Core token utilities
+// ---------------------------------------------------------------------------
+
 /// Count tokens for text, with fallback estimation on error.
 ///
 /// Used by `--tokens` token-budgeted output across multiple commands.
@@ -312,7 +517,7 @@ mod tests {
         // 5 items, budget fits 3: should pick highest-scored
         let items = vec!["a", "b", "c", "d", "e"];
         let counts = vec![10, 10, 10, 10, 10];
-        // Scores: a=1, b=5, c=3, d=4, e=2 → picks b,d,c (top 3 by score)
+        // Scores: a=1, b=5, c=3, d=4, e=2 -> picks b,d,c (top 3 by score)
         let (packed, used) = token_pack(items, &counts, 30, 0, |item| match *item {
             "a" => 1.0,
             "b" => 5.0,

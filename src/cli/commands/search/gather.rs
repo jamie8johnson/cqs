@@ -3,8 +3,9 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use cqs::Embedder;
-use cqs::{gather, gather_cross_index_with_index, normalize_path, GatherDirection, GatherOptions};
+use cqs::{
+    gather, gather_cross_index_with_index, normalize_path, Embedder, GatherDirection, GatherOptions,
+};
 
 use crate::cli::staleness;
 
@@ -78,24 +79,14 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
 
     // Token-budgeted packing: keep highest-scoring chunks within token budget
     let token_count_used = if let Some(budget) = max_tokens {
-        let _pack_span = tracing::info_span!("token_pack", budget).entered();
-
-        let chunks = std::mem::take(&mut result.chunks);
-        let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-        let token_counts = crate::cli::commands::count_tokens_batch(&embedder, &texts);
         let overhead = if json {
             crate::cli::commands::JSON_OVERHEAD_PER_RESULT
         } else {
             0
         };
+        let chunks = std::mem::take(&mut result.chunks);
         let (mut packed, used) =
-            crate::cli::commands::token_pack(chunks, &token_counts, budget, overhead, |c| c.score);
-        tracing::info!(
-            chunks = packed.len(),
-            tokens = used,
-            budget,
-            "Token-budgeted gather"
-        );
+            crate::cli::commands::pack_gather_chunks(chunks, &embedder, budget, overhead);
 
         // Re-sort to reading order (ref first, then project, each in file/line order)
         packed.sort_by(|a, b| {

@@ -139,26 +139,22 @@ pub(in crate::cli::batch) fn dispatch_search(
         results
     };
 
-    // Token-budget packing
+    // Token-budget packing (shared with CLI search)
     let (results, token_info) = if let Some(budget) = params.tokens {
         let embedder = ctx.embedder()?;
-        let texts: Vec<&str> = results
-            .iter()
-            .map(|r| match r {
-                cqs::store::UnifiedResult::Code(sr) => sr.chunk.content.as_str(),
-            })
-            .collect();
-        let counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
-        let (packed, used) = crate::cli::commands::token_pack(
+        crate::cli::commands::token_pack_results(
             results,
-            &counts,
             budget,
             crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
+            embedder,
+            |r| match r {
+                cqs::store::UnifiedResult::Code(sr) => sr.chunk.content.as_str(),
+            },
             |r| match r {
                 cqs::store::UnifiedResult::Code(sr) => sr.score,
             },
-        );
-        (packed, Some((used, budget)))
+            "batch_search",
+        )
     } else {
         (results, None)
     };
