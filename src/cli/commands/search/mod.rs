@@ -16,4 +16,4 @@ pub(crate) use query::cmd_query;
 pub(crate) use related::{cmd_related, related_result_to_json};
 pub(crate) use scout::cmd_scout;
 pub(crate) use similar::cmd_similar;
-pub(crate) use where_cmd::cmd_where;
+pub(crate) use where_cmd::{cmd_where, where_to_json};

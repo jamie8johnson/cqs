@@ -3,7 +3,6 @@
 use anyhow::Result;
 
 use super::super::BatchContext;
-use cqs::normalize_path;
 use cqs::store::DeadConfidence;
 
 /// Identifies and reports dead code in a codebase.
@@ -65,31 +64,7 @@ pub(in crate::cli::batch) fn dispatch_stale(ctx: &BatchContext) -> Result<serde_
     let file_set = ctx.file_set()?;
     let report = ctx.store().list_stale_files(&file_set)?;
 
-    let stale_json: Vec<_> = report
-        .stale
-        .iter()
-        .map(|f| {
-            serde_json::json!({
-                "origin": normalize_path(&f.file),
-                "stored_mtime": f.stored_mtime,
-                "current_mtime": f.current_mtime,
-            })
-        })
-        .collect();
-
-    let missing_json: Vec<_> = report
-        .missing
-        .iter()
-        .map(|path| serde_json::json!(normalize_path(path)))
-        .collect();
-
-    Ok(serde_json::json!({
-        "stale": stale_json,
-        "missing": missing_json,
-        "total_indexed": report.total_indexed,
-        "stale_count": report.stale.len(),
-        "missing_count": report.missing.len(),
-    }))
+    Ok(crate::cli::commands::stale_to_json(&report))
 }
 
 /// Performs a health check on the batch processing system and returns the results as JSON.

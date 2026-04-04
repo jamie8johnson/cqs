@@ -1,8 +1,50 @@
 //! Where command — suggest placement for new code
+//!
+//! Core JSON construction is in [`where_to_json`] so batch mode can reuse it.
+
+use std::path::Path;
 
 use anyhow::Result;
 
 use cqs::{suggest_placement, Embedder};
+
+/// Build JSON for placement suggestions.
+///
+/// Shared between CLI (`cmd_where --json`) and batch (`dispatch_where`).
+pub(crate) fn where_to_json(
+    result: &cqs::PlacementResult,
+    description: &str,
+    root: &Path,
+) -> serde_json::Value {
+    let _span = tracing::info_span!("where_to_json").entered();
+
+    let suggestions_json: Vec<_> = result
+        .suggestions
+        .iter()
+        .map(|s| {
+            let rel = cqs::rel_display(&s.file, root);
+            serde_json::json!({
+                "file": rel,
+                "score": s.score,
+                "insertion_line": s.insertion_line,
+                "near_function": s.near_function,
+                "reason": s.reason,
+                "patterns": {
+                    "imports": s.patterns.imports,
+                    "error_handling": s.patterns.error_handling,
+                    "naming_convention": s.patterns.naming_convention,
+                    "visibility": s.patterns.visibility,
+                    "has_inline_tests": s.patterns.has_inline_tests,
+                }
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "description": description,
+        "suggestions": suggestions_json,
+    })
+}
 
 pub(crate) fn cmd_where(
     ctx: &crate::cli::CommandContext,
@@ -19,31 +61,7 @@ pub(crate) fn cmd_where(
     let result = suggest_placement(store, &embedder, description, limit)?;
 
     if json {
-        let suggestions_json: Vec<_> = result
-            .suggestions
-            .iter()
-            .map(|s| {
-                let rel = cqs::rel_display(&s.file, root);
-                serde_json::json!({
-                    "file": rel,
-                    "score": s.score,
-                    "insertion_line": s.insertion_line,
-                    "near_function": s.near_function,
-                    "reason": s.reason,
-                    "patterns": {
-                        "imports": s.patterns.imports,
-                        "error_handling": s.patterns.error_handling,
-                        "naming_convention": s.patterns.naming_convention,
-                        "visibility": s.patterns.visibility,
-                        "has_inline_tests": s.patterns.has_inline_tests,
-                    }
-                })
-            })
-            .collect();
-        let output = serde_json::json!({
-            "description": description,
-            "suggestions": suggestions_json,
-        });
+        let output = where_to_json(&result, description, root);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         use colored::Colorize;

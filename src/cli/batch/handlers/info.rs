@@ -259,35 +259,12 @@ pub(in crate::cli::batch) fn dispatch_context(
 /// Returns an error if any of the store queries fail (stats, note_count, function_call_stats, or type_edge_stats).
 pub(in crate::cli::batch) fn dispatch_stats(ctx: &BatchContext) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_stats").entered();
-    let stats = ctx.store().stats()?;
-    let note_count = ctx.store().note_count()?;
-    let fc_stats = ctx.store().function_call_stats()?;
-    let te_stats = ctx.store().type_edge_stats()?;
     let errors = ctx.error_count.load(std::sync::atomic::Ordering::Relaxed);
 
-    Ok(serde_json::json!({
-        "total_chunks": stats.total_chunks,
-        "total_files": stats.total_files,
-        "notes": note_count,
-        "errors": errors,
-        "call_graph": {
-            "total_calls": fc_stats.total_calls,
-            "unique_callers": fc_stats.unique_callers,
-            "unique_callees": fc_stats.unique_callees,
-        },
-        "type_graph": {
-            "total_edges": te_stats.total_edges,
-            "unique_types": te_stats.unique_types,
-        },
-        "by_language": stats.chunks_by_language.iter()
-            .map(|(l, c)| (l.to_string(), c))
-            .collect::<HashMap<String, _>>(),
-        "by_type": stats.chunks_by_type.iter()
-            .map(|(t, c)| (t.to_string(), c))
-            .collect::<HashMap<String, _>>(),
-        "model": stats.model_name,
-        "schema_version": stats.schema_version,
-    }))
+    let mut json = crate::cli::commands::stats_to_json(&ctx.store())?;
+    // Batch-specific field
+    json["errors"] = serde_json::json!(errors);
+    Ok(json)
 }
 
 /// Dispatches an onboarding request that identifies relevant code entry points and their relationships, with optional token-based budget limiting.

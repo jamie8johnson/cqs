@@ -303,32 +303,11 @@ pub(in crate::cli::batch) fn dispatch_where(
     let limit = limit.clamp(1, 10);
     let result = cqs::suggest_placement(&ctx.store(), embedder, description, limit)?;
 
-    let suggestions_json: Vec<_> = result
-        .suggestions
-        .iter()
-        .map(|s| {
-            let rel = cqs::rel_display(&s.file, &ctx.root);
-            serde_json::json!({
-                "file": rel,
-                "score": s.score,
-                "insertion_line": s.insertion_line,
-                "near_function": s.near_function,
-                "reason": s.reason,
-                "patterns": {
-                    "imports": s.patterns.imports,
-                    "error_handling": s.patterns.error_handling,
-                    "naming_convention": s.patterns.naming_convention,
-                    "visibility": s.patterns.visibility,
-                    "has_inline_tests": s.patterns.has_inline_tests,
-                }
-            })
-        })
-        .collect();
-
-    Ok(serde_json::json!({
-        "description": description,
-        "suggestions": suggestions_json,
-    }))
+    Ok(crate::cli::commands::where_to_json(
+        &result,
+        description,
+        &ctx.root,
+    ))
 }
 
 /// Detects content drift between a reference dataset and the current dataset by comparing similarity scores.

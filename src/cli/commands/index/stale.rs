@@ -1,12 +1,48 @@
 //! Stale command for cqs
 //!
 //! Reports files that have changed since last index.
+//!
+//! Core JSON construction is in [`stale_to_json`] so batch mode can reuse it.
 
 use std::collections::HashSet;
 
 use anyhow::Result;
 
+use cqs::store::StaleReport;
 use cqs::Parser;
+
+/// Build the JSON representation of a stale report.
+///
+/// Shared between CLI (`cmd_stale --json`) and batch (`dispatch_stale`).
+pub(crate) fn stale_to_json(report: &StaleReport) -> serde_json::Value {
+    let _span = tracing::info_span!("stale_to_json").entered();
+
+    let stale_json: Vec<_> = report
+        .stale
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "file": cqs::normalize_path(&f.file),
+                "stored_mtime": f.stored_mtime,
+                "current_mtime": f.current_mtime,
+            })
+        })
+        .collect();
+
+    let missing_json: Vec<_> = report
+        .missing
+        .iter()
+        .map(|f| cqs::normalize_path(f))
+        .collect();
+
+    serde_json::json!({
+        "stale": stale_json,
+        "missing": missing_json,
+        "stale_count": report.stale.len(),
+        "missing_count": report.missing.len(),
+        "total_indexed": report.total_indexed,
+    })
+}
 
 /// Report stale (modified) and missing files in the index
 pub(crate) fn cmd_stale(
@@ -28,31 +64,7 @@ pub(crate) fn cmd_stale(
     let report = store.list_stale_files(&file_set)?;
 
     if json {
-        let stale_json: Vec<_> = report
-            .stale
-            .iter()
-            .map(|f| {
-                serde_json::json!({
-                    "file": cqs::normalize_path(&f.file),
-                    "stored_mtime": f.stored_mtime,
-                    "current_mtime": f.current_mtime,
-                })
-            })
-            .collect();
-
-        let missing_json: Vec<_> = report
-            .missing
-            .iter()
-            .map(|f| cqs::normalize_path(f))
-            .collect();
-
-        let result = serde_json::json!({
-            "stale": stale_json,
-            "missing": missing_json,
-            "stale_count": report.stale.len(),
-            "missing_count": report.missing.len(),
-            "total_indexed": report.total_indexed,
-        });
+        let result = stale_to_json(&report);
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         let stale_count = report.stale.len();

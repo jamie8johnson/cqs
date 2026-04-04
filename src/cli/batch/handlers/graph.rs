@@ -213,18 +213,15 @@ pub(in crate::cli::batch) fn dispatch_trace(
     let target_name = target_resolved.chunk.name.clone();
 
     if source_name == target_name {
-        let rel_file = cqs::rel_display(&source_resolved.chunk.file, &ctx.root);
-        return Ok(serde_json::json!({
-            "source": source_name,
-            "target": target_name,
-            "path": [{
-                "name": source_name,
-                "file": rel_file,
-                "line": source_resolved.chunk.line_start,
-                "signature": source_resolved.chunk.signature,
-            }],
-            "depth": 0,
-        }));
+        let trivial_path = vec![source_name.clone()];
+        return crate::cli::commands::trace::trace_to_json(
+            &ctx.store(),
+            &source_name,
+            &target_name,
+            Some(&trivial_path),
+            &ctx.root,
+            0,
+        );
     }
 
     let graph = ctx.call_graph()?;
@@ -235,43 +232,14 @@ pub(in crate::cli::batch) fn dispatch_trace(
         max_depth,
     );
 
-    match found_path {
-        Some(names) => {
-            // Batch lookup instead of N+1 queries (PERF-20)
-            let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-            let batch_results = ctx.store().search_by_names_batch(&name_refs, 1)?;
-
-            let mut path_json = Vec::new();
-            for name in &names {
-                let entry = match batch_results.get(name.as_str()).and_then(|v| v.first()) {
-                    Some(r) => {
-                        let rel = cqs::rel_display(&r.chunk.file, &ctx.root);
-                        serde_json::json!({
-                            "name": name,
-                            "file": rel,
-                            "line": r.chunk.line_start,
-                            "signature": r.chunk.signature,
-                        })
-                    }
-                    None => serde_json::json!({"name": name}),
-                };
-                path_json.push(entry);
-            }
-
-            Ok(serde_json::json!({
-                "source": source_name,
-                "target": target_name,
-                "path": path_json,
-                "depth": names.len() - 1,
-            }))
-        }
-        None => Ok(serde_json::json!({
-            "source": source_name,
-            "target": target_name,
-            "path": null,
-            "message": format!("No call path found within depth {}", max_depth),
-        })),
-    }
+    crate::cli::commands::trace::trace_to_json(
+        &ctx.store(),
+        &source_name,
+        &target_name,
+        found_path.as_deref(),
+        &ctx.root,
+        max_depth,
+    )
 }
 
 /// Dispatches a request to find functions related to a given function name based on shared callers, callees, and types.

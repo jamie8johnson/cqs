@@ -34,13 +34,15 @@ pub(crate) fn cmd_trace(
     // Trivial case: source == target
     if source_name == target_name {
         if matches!(format, OutputFormat::Json) {
-            let rel_file = cqs::rel_display(&source_chunk.file, root);
-            let result = serde_json::json!({
-                "source": source_name,
-                "target": target_name,
-                "path": [{"name": source_name, "file": rel_file, "line": source_chunk.line_start, "signature": source_chunk.signature}],
-                "depth": 0
-            });
+            let trivial_path = vec![source_name.clone()];
+            let result = trace_to_json(
+                store,
+                &source_name,
+                &target_name,
+                Some(&trivial_path),
+                root,
+                0,
+            )?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         } else if matches!(format, OutputFormat::Mermaid) {
             let rel_file = cqs::rel_display(&source_chunk.file, root);
@@ -66,33 +68,14 @@ pub(crate) fn cmd_trace(
     match path {
         Some(names) => {
             if matches!(format, OutputFormat::Json) {
-                // CQ-5: Batch lookup instead of N individual search_by_name calls
-                let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-                let batch_results = store.search_by_names_batch(&name_refs, 1)?;
-
-                let mut path_json = Vec::new();
-                for name in &names {
-                    let entry = match batch_results.get(name.as_str()).and_then(|v| v.first()) {
-                        Some(r) => {
-                            let rel = cqs::rel_display(&r.chunk.file, root);
-                            serde_json::json!({
-                                "name": name,
-                                "file": rel,
-                                "line": r.chunk.line_start,
-                                "signature": r.chunk.signature
-                            })
-                        }
-                        None => serde_json::json!({"name": name}),
-                    };
-                    path_json.push(entry);
-                }
-
-                let result = serde_json::json!({
-                    "source": source_name,
-                    "target": target_name,
-                    "path": path_json,
-                    "depth": names.len() - 1
-                });
+                let result = trace_to_json(
+                    store,
+                    &source_name,
+                    &target_name,
+                    Some(&names),
+                    root,
+                    max_depth,
+                )?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else if matches!(format, OutputFormat::Mermaid) {
                 format_mermaid(store, root, &names)?;
@@ -130,12 +113,8 @@ pub(crate) fn cmd_trace(
         }
         None => {
             if matches!(format, OutputFormat::Json) {
-                let result = serde_json::json!({
-                    "source": source_name,
-                    "target": target_name,
-                    "path": null,
-                    "message": format!("No call path found within depth {}", max_depth)
-                });
+                let result =
+                    trace_to_json(store, &source_name, &target_name, None, root, max_depth)?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else if matches!(format, OutputFormat::Mermaid) {
                 // Empty graph with comment
@@ -207,6 +186,58 @@ fn mermaid_escape(s: &str) -> String {
     s.replace('"', "&quot;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// Build the JSON representation of a trace result.
+///
+/// Shared between CLI (`cmd_trace --json`) and batch (`dispatch_trace`).
+/// Takes the BFS path (or None) and resolves chunk metadata via batch lookup.
+pub(crate) fn trace_to_json(
+    store: &Store,
+    source_name: &str,
+    target_name: &str,
+    path: Option<&[String]>,
+    root: &std::path::Path,
+    max_depth: usize,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("trace_to_json").entered();
+
+    match path {
+        Some(names) => {
+            let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+            let batch_results = store.search_by_names_batch(&name_refs, 1)?;
+
+            let mut path_json = Vec::new();
+            for name in names {
+                let entry = match batch_results.get(name.as_str()).and_then(|v| v.first()) {
+                    Some(r) => {
+                        let rel = cqs::rel_display(&r.chunk.file, root);
+                        serde_json::json!({
+                            "name": name,
+                            "file": rel,
+                            "line": r.chunk.line_start,
+                            "signature": r.chunk.signature
+                        })
+                    }
+                    None => serde_json::json!({"name": name}),
+                };
+                path_json.push(entry);
+            }
+
+            Ok(serde_json::json!({
+                "source": source_name,
+                "target": target_name,
+                "path": path_json,
+                "depth": names.len() - 1
+            }))
+        }
+        None => Ok(serde_json::json!({
+            "source": source_name,
+            "target": target_name,
+            "path": null,
+            "message": format!("No call path found within depth {}", max_depth)
+        })),
+    }
 }
 
 /// BFS shortest path through forward adjacency list.
