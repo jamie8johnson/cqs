@@ -242,7 +242,10 @@ pub(crate) fn cmd_doctor(model_override: Option<&str>, fix: bool) -> Result<()> 
             }
             match Store::open(&db_path) {
                 Ok(store) => {
-                    let chunks = store.chunk_count().unwrap_or(0);
+                    let chunks = store.chunk_count().unwrap_or_else(|e| {
+                        tracing::warn!(name = %r.name, error = %e, "Failed to count chunks in reference store");
+                        0
+                    });
                     let hnsw = if cqs::HnswIndex::exists(&r.path, "index") {
                         "HNSW loaded".to_string()
                     } else {

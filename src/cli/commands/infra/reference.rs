@@ -208,7 +208,11 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
                         e
                     })
                     .ok()
-                    .and_then(|s| s.chunk_count().ok())
+                    .and_then(|s| {
+                        s.chunk_count().map_err(|e| {
+                            tracing::warn!(name = %r.name, error = %e, "Failed to count chunks in reference store");
+                        }).ok()
+                    })
                     .unwrap_or(0);
                 RefListEntry {
                     name: r.name.clone(),
@@ -238,7 +242,11 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
                 e
             })
             .ok()
-            .and_then(|s| s.chunk_count().ok())
+            .and_then(|s| {
+                s.chunk_count().map_err(|e| {
+                    tracing::warn!(name = %r.name, error = %e, "Failed to count chunks in reference store");
+                }).ok()
+            })
             .unwrap_or(0);
         let source_str = r
             .source
@@ -320,8 +328,17 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
     // Get current chunk count before modifying anything
     let existing_chunks = if db_path.exists() {
         Store::open(&db_path)
+            .map_err(|e| {
+                tracing::warn!(error = %e, "Failed to open reference store for chunk count");
+            })
             .ok()
-            .and_then(|s| s.chunk_count().ok())
+            .and_then(|s| {
+                s.chunk_count()
+                    .map_err(|e| {
+                        tracing::warn!(error = %e, "Failed to count chunks in reference store");
+                    })
+                    .ok()
+            })
             .unwrap_or(0)
     } else {
         0
