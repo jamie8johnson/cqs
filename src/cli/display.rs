@@ -6,7 +6,6 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use cqs::normalize_path;
 use cqs::reference::TaggedResult;
 use cqs::store::{ParentContext, UnifiedResult};
 
@@ -225,30 +224,18 @@ pub fn display_unified_results_json(
 ) -> Result<()> {
     let json_results: Vec<_> = results
         .iter()
-        .map(|r| match r {
-            UnifiedResult::Code(r) => {
-                let mut obj = serde_json::json!({
-                    "type": "code",
-                    // Normalize to forward slashes for consistent JSON output across platforms
-                    "file": normalize_path(&r.chunk.file),
-                    "line_start": r.chunk.line_start,
-                    "line_end": r.chunk.line_end,
-                    "name": r.chunk.name,
-                    "signature": r.chunk.signature,
-                    "language": r.chunk.language.to_string(),
-                    "chunk_type": r.chunk.chunk_type.to_string(),
-                    "score": r.score,
-                    "content": r.chunk.content,
-                    "has_parent": r.chunk.parent_id.is_some(),
-                });
-                if let Some(parent) = parents.and_then(|p| p.get(&r.chunk.id)) {
-                    obj["parent_name"] = serde_json::json!(parent.name);
-                    obj["parent_content"] = serde_json::json!(parent.content);
-                    obj["parent_line_start"] = serde_json::json!(parent.line_start);
-                    obj["parent_line_end"] = serde_json::json!(parent.line_end);
-                }
-                obj
+        .map(|r| {
+            // Delegate to UnifiedResult::to_json() for the canonical base keys,
+            // then layer on parent context fields (CQ-NEW-3).
+            let mut obj = r.to_json();
+            let UnifiedResult::Code(sr) = r;
+            if let Some(parent) = parents.and_then(|p| p.get(&sr.chunk.id)) {
+                obj["parent_name"] = serde_json::json!(parent.name);
+                obj["parent_content"] = serde_json::json!(parent.content);
+                obj["parent_line_start"] = serde_json::json!(parent.line_start);
+                obj["parent_line_end"] = serde_json::json!(parent.line_end);
             }
+            obj
         })
         .collect();
 
@@ -404,22 +391,9 @@ pub fn display_similar_results_json(
     results: &[cqs::store::SearchResult],
     target: &str,
 ) -> Result<()> {
-    let json_results: Vec<_> = results
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "file": normalize_path(&r.chunk.file),
-                "line_start": r.chunk.line_start,
-                "line_end": r.chunk.line_end,
-                "name": r.chunk.name,
-                "signature": r.chunk.signature,
-                "language": r.chunk.language.to_string(),
-                "chunk_type": r.chunk.chunk_type.to_string(),
-                "score": r.score,
-                "content": r.chunk.content,
-            })
-        })
-        .collect();
+    // Delegate to SearchResult::to_json() for canonical base keys.
+    // Previously missing `type` and `has_parent` (CQ-NEW-5).
+    let json_results: Vec<_> = results.iter().map(|r| r.to_json()).collect();
 
     let output = serde_json::json!({
         "target": target,
@@ -441,30 +415,16 @@ pub fn display_tagged_results_json(
     let json_results: Vec<_> = results
         .iter()
         .map(|t| {
-            let mut json = match &t.result {
-                UnifiedResult::Code(r) => {
-                    let mut obj = serde_json::json!({
-                        "type": "code",
-                        "file": normalize_path(&r.chunk.file),
-                        "line_start": r.chunk.line_start,
-                        "line_end": r.chunk.line_end,
-                        "name": r.chunk.name,
-                        "signature": r.chunk.signature,
-                        "language": r.chunk.language.to_string(),
-                        "chunk_type": r.chunk.chunk_type.to_string(),
-                        "score": r.score,
-                        "content": r.chunk.content,
-                        "has_parent": r.chunk.parent_id.is_some(),
-                    });
-                    if let Some(parent) = parents.and_then(|p| p.get(&r.chunk.id)) {
-                        obj["parent_name"] = serde_json::json!(parent.name);
-                        obj["parent_content"] = serde_json::json!(parent.content);
-                        obj["parent_line_start"] = serde_json::json!(parent.line_start);
-                        obj["parent_line_end"] = serde_json::json!(parent.line_end);
-                    }
-                    obj
-                }
-            };
+            // Delegate to UnifiedResult::to_json() for canonical base keys,
+            // then layer on parent context and source fields (CQ-NEW-7).
+            let mut json = t.result.to_json();
+            let UnifiedResult::Code(sr) = &t.result;
+            if let Some(parent) = parents.and_then(|p| p.get(&sr.chunk.id)) {
+                json["parent_name"] = serde_json::json!(parent.name);
+                json["parent_content"] = serde_json::json!(parent.content);
+                json["parent_line_start"] = serde_json::json!(parent.line_start);
+                json["parent_line_end"] = serde_json::json!(parent.line_end);
+            }
             if let Some(source) = &t.source {
                 json["source"] = serde_json::json!(source);
             }
