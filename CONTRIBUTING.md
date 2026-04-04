@@ -66,12 +66,16 @@ All `--json` output uses consistent field names across commands:
 
 | Field | Not | Why |
 |-------|-----|-----|
-| `line_start` | `line` | Distinguishes from `line_end`; unambiguous |
-| `name` | `function` | Works for structs, enums, traits, not just functions |
+| `line_start` / `line_end` | `line`, `lines` | Separate scalars, not an array or ambiguous singular |
+| `name` | `function`, `identifier` | Works for structs, enums, traits, not just functions |
 | `score` | `similarity` | Generic — covers RRF, cosine, and risk scores |
-| `file` | `origin` | Matches user mental model; `origin` is too abstract |
+| `file` | `origin`, `path` | Matches user mental model; `origin` is too abstract |
 
-When adding `--json` to a new command, follow existing output structs (e.g., `ChunkSummary`, `CallerDetail`) rather than inventing new field names.
+Rules:
+- **snake_case** for all field names — no camelCase, no kebab-case.
+- All output structs use `#[derive(serde::Serialize)]` with serde's default snake_case renaming. Do not use `#[serde(rename = "...")]` unless matching an external schema.
+- Use `#[serde(skip_serializing_if = "Option::is_none")]` for optional fields so absent data is omitted (not `null`).
+- When adding `--json` to a new command, follow existing output structs (e.g., `ChunkSummary`, `CallerDetail`, `ExplainOutput`) rather than inventing new field names.
 
 ## Pull Request Process
 

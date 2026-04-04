@@ -224,4 +224,39 @@ mod tests {
         let json = serde_json::to_value(&output).unwrap();
         assert!(json.get("hnsw_vectors").is_none());
     }
+
+    // HP-6: assert ALL 8 fields of GcOutput are correctly named in JSON
+    #[test]
+    fn test_gc_output_all_fields() {
+        let output = GcOutput {
+            stale_files: 2,
+            missing_files: 1,
+            pruned_chunks: 15,
+            pruned_calls: 30,
+            pruned_type_edges: 5,
+            pruned_summaries: 3,
+            hnsw_rebuilt: true,
+            hnsw_vectors: Some(500),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+
+        // Assert every field name and value
+        assert_eq!(json["stale_files"], 2);
+        assert_eq!(json["missing_files"], 1);
+        assert_eq!(json["pruned_chunks"], 15);
+        assert_eq!(json["pruned_calls"], 30);
+        assert_eq!(json["pruned_type_edges"], 5);
+        assert_eq!(json["pruned_summaries"], 3);
+        assert_eq!(json["hnsw_rebuilt"], true);
+        assert_eq!(json["hnsw_vectors"], 500);
+
+        // Verify exact field count (no extra fields)
+        let obj = json.as_object().unwrap();
+        assert_eq!(
+            obj.len(),
+            8,
+            "GcOutput should serialize to exactly 8 fields, got: {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
+    }
 }

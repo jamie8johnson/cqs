@@ -518,4 +518,76 @@ mod output_tests {
         // similar entry should not have content (None)
         assert!(json["similar"][0].get("content").is_none());
     }
+
+    // TC-14: special characters in name/signature/doc survive serde round-trip
+    #[test]
+    fn test_explain_output_special_characters() {
+        let output = ExplainOutput {
+            name: "parse<T>".into(),
+            file: "src/parser.rs".into(),
+            line_start: 1,
+            line_end: 10,
+            chunk_type: "function".into(),
+            language: "rust".into(),
+            signature: "fn foo<T: Debug>(x: &T) -> Vec<T>".into(),
+            doc: Some("returns \"best\" result with <html> & entities".into()),
+            content: Some("fn foo<T>() { let x = \"hello\\nworld\"; }".into()),
+            callers: vec![CallerEntry {
+                name: "call<U>".into(),
+                file: "src/a.rs".into(),
+                line_start: 5,
+            }],
+            callees: vec![],
+            similar: vec![],
+            hints: None,
+            token_count: None,
+            token_budget: None,
+        };
+
+        // Serialize to JSON Value
+        let json = serde_json::to_value(&output).unwrap();
+
+        // Verify special characters survive
+        assert_eq!(json["name"], "parse<T>");
+        assert_eq!(json["signature"], "fn foo<T: Debug>(x: &T) -> Vec<T>");
+        assert_eq!(
+            json["doc"],
+            "returns \"best\" result with <html> & entities"
+        );
+        assert_eq!(json["callers"][0]["name"], "call<U>");
+
+        // Verify round-trip through string serialization
+        let json_str = serde_json::to_string(&output).unwrap();
+        let roundtrip: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(roundtrip["name"], "parse<T>");
+        assert_eq!(
+            roundtrip["doc"],
+            "returns \"best\" result with <html> & entities"
+        );
+    }
+
+    // TC-14: unicode in name and doc fields
+    #[test]
+    fn test_explain_output_unicode() {
+        let output = ExplainOutput {
+            name: "calculate_\u{03b1}\u{03b2}".into(),
+            file: "src/math.rs".into(),
+            line_start: 1,
+            line_end: 5,
+            chunk_type: "function".into(),
+            language: "rust".into(),
+            signature: "fn calculate_\u{03b1}\u{03b2}()".into(),
+            doc: Some("Computes \u{03b1} + \u{03b2} coefficient".into()),
+            content: None,
+            callers: vec![],
+            callees: vec![],
+            similar: vec![],
+            hints: None,
+            token_count: None,
+            token_budget: None,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["name"], "calculate_\u{03b1}\u{03b2}");
+        assert_eq!(json["doc"], "Computes \u{03b1} + \u{03b2} coefficient");
+    }
 }

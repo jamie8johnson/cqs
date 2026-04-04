@@ -921,4 +921,76 @@ mod tests {
         let scored = scout_scored_names(&result);
         assert!(scored.is_empty());
     }
+
+    // TC-12: token_pack with NaN scores — NaN sorts as highest via total_cmp,
+    // so NaN-scored items are treated as top priority (picked first).
+    // This documents the current behavior: NaN is NOT deprioritized.
+    #[test]
+    fn test_token_pack_nan_scores_sorted_first() {
+        let items = vec!["nan_item", "good_item"];
+        let counts = vec![10, 10];
+        // Budget fits only 1 item; NaN sorts above 1.0 via total_cmp
+        let (packed, used) = token_pack(items, &counts, 10, 0, |item| match *item {
+            "nan_item" => f32::NAN,
+            "good_item" => 1.0,
+            _ => 0.0,
+        });
+        assert_eq!(packed.len(), 1);
+        // NaN is picked first (total_cmp ranks NaN > all finite values)
+        assert_eq!(packed[0], "nan_item");
+        assert_eq!(used, 10);
+    }
+
+    // TC-12: token_pack with all NaN scores — at-least-one guarantee still holds
+    #[test]
+    fn test_token_pack_all_nan_includes_first() {
+        let items = vec!["a", "b"];
+        let counts = vec![10, 10];
+        let (packed, used) = token_pack(items, &counts, 10, 0, |_| f32::NAN);
+        // At-least-one guarantee: first item by sort order is included
+        assert_eq!(packed.len(), 1);
+        assert_eq!(used, 10);
+    }
+
+    // TC-12: token_pack with NaN and valid items when budget fits all — NaN items included
+    #[test]
+    fn test_token_pack_nan_mixed_all_fit() {
+        let items = vec!["a", "b", "c"];
+        let counts = vec![10, 10, 10];
+        let (packed, used) = token_pack(items, &counts, 100, 0, |item| match *item {
+            "a" => f32::NAN,
+            "b" => 2.0,
+            "c" => 1.0,
+            _ => 0.0,
+        });
+        // All fit in budget — NaN items are included
+        assert_eq!(packed.len(), 3);
+        assert_eq!(used, 30);
+    }
+
+    // HP-3: run_git_diff rejects base refs starting with '-' (flag injection)
+    #[test]
+    fn test_run_git_diff_rejects_dash_prefix() {
+        let result = run_git_diff(Some("--exec=whoami"));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("must not start with '-'"),
+            "Expected dash-prefix rejection, got: {}",
+            err
+        );
+    }
+
+    // HP-3: run_git_diff rejects base refs containing null bytes
+    #[test]
+    fn test_run_git_diff_rejects_null_bytes() {
+        let result = run_git_diff(Some("main\0--exec=whoami"));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("contain null bytes"),
+            "Expected null-byte rejection, got: {}",
+            err
+        );
+    }
 }

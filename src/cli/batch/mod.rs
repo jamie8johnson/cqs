@@ -815,4 +815,64 @@ mod tests {
         let stats = store_ref.stats();
         assert!(stats.is_ok(), "Store should be usable via store() accessor");
     }
+
+    // TC-7: sanitize_json_floats replaces NaN in nested objects
+    #[test]
+    fn test_sanitize_json_floats_nan_in_object() {
+        let mut val = serde_json::json!({
+            "score": f64::NAN,
+            "name": "foo",
+            "nested": {"inner_score": f64::NAN, "ok": 1.5}
+        });
+        sanitize_json_floats(&mut val);
+        assert!(val["score"].is_null(), "NaN should become null");
+        assert!(val["nested"]["inner_score"].is_null());
+        assert_eq!(val["nested"]["ok"], 1.5);
+        assert_eq!(val["name"], "foo");
+    }
+
+    // TC-7: sanitize_json_floats replaces NaN in nested arrays
+    #[test]
+    fn test_sanitize_json_floats_nan_in_array() {
+        let mut val = serde_json::json!([1.0, f64::NAN, [f64::INFINITY, 2.0]]);
+        sanitize_json_floats(&mut val);
+        assert_eq!(val[0], 1.0);
+        assert!(val[1].is_null(), "NaN should become null");
+        assert!(val[2][0].is_null(), "Infinity should become null");
+        assert_eq!(val[2][1], 2.0);
+    }
+
+    // TC-7: sanitize_json_floats is no-op on clean values
+    #[test]
+    fn test_sanitize_json_floats_clean_passthrough() {
+        let mut val = serde_json::json!({"a": 1, "b": "text", "c": [true, null, 3.14]});
+        let expected = val.clone();
+        sanitize_json_floats(&mut val);
+        assert_eq!(val, expected);
+    }
+
+    // TC-7: write_json_line outputs valid JSON for clean values
+    #[test]
+    fn test_write_json_line_clean() {
+        let val = serde_json::json!({"name": "foo", "score": 0.95});
+        let mut buf = Vec::new();
+        write_json_line(&mut buf, &val).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert_eq!(parsed["name"], "foo");
+        assert_eq!(parsed["score"], 0.95);
+    }
+
+    // TC-7: write_json_line sanitizes NaN via retry path and produces valid JSON
+    #[test]
+    fn test_write_json_line_nan_retry() {
+        let val = serde_json::json!({"score": f64::NAN, "name": "bar"});
+        let mut buf = Vec::new();
+        write_json_line(&mut buf, &val).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        // Must be valid JSON (no panic, no NaN literal)
+        let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert!(parsed["score"].is_null(), "NaN should be sanitized to null");
+        assert_eq!(parsed["name"], "bar");
+    }
 }
