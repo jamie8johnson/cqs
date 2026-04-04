@@ -311,6 +311,13 @@ pub(crate) fn parse_l5x_chunks(
 
 /// Match ROUTINE blocks: from `ROUTINE <name>` to `END_ROUTINE`.
 /// Group 1: routine name. Group 2: block content.
+///
+/// SEC-8 risk: `[^\x00]*?` is non-greedy but still scans forward through
+/// the entire remaining input when `END_ROUTINE` is missing. On malformed
+/// files with many unterminated ROUTINE blocks the cost is
+/// O(N * unterminated_blocks). The regex crate's linear-time guarantee
+/// prevents catastrophic backtracking, but the constant factor is high
+/// for large inputs. A streaming/line-based parser would avoid this.
 static L5K_ROUTINE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?msi)^\s*ROUTINE\s+(\w+)\b([^\x00]*?)^\s*END_ROUTINE\b"#).expect("valid regex")
 });
@@ -623,5 +630,214 @@ END_PROGRAM
         assert!(regions[0].source.contains("x := 1;"));
         assert!(regions[0].source.contains("y := x + 2;"));
         assert!(regions[0].source.contains("z := y * 3;"));
+    }
+
+    // --- Audit finding tests ---
+
+    /// TC-8: `<STContent>` present but empty (no CDATA inside).
+    /// extract_l5x_regions must produce zero regions, not panic or produce
+    /// an empty-source region.
+    #[test]
+    fn test_l5x_stcontent_present_but_empty() {
+        let source = r#"<?xml version="1.0" encoding="UTF-8"?>
+<RSLogix5000Content>
+  <Controller Name="C1">
+    <Programs>
+      <Program Name="P1">
+        <Routines>
+          <Routine Name="EmptyRoutine" Type="ST">
+            <STContent>
+            </STContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+  </Controller>
+</RSLogix5000Content>"#;
+        let regions = extract_l5x_regions(source);
+        assert!(
+            regions.is_empty(),
+            "STContent with no CDATA should produce zero regions, got {}",
+            regions.len()
+        );
+
+        // Also verify it does not panic when fed through the full parser
+        let parser = Parser::new().unwrap();
+        let chunks = parse_l5x_chunks(source, Path::new("empty_st.l5x"), &parser).unwrap();
+        assert!(chunks.is_empty());
+    }
+
+    /// TC-9: L5K ST type check only scans `.take(5)` lines of block content.
+    /// If the `Type := ST` declaration appears on line 6 or later (after
+    /// DESCRIPTION, tags, comments, etc.), the routine is silently skipped.
+    #[test]
+    fn test_l5k_type_declaration_beyond_line_5_is_missed() {
+        let source = "
+PROGRAM Prog1
+  ROUTINE DeepTypeDecl
+    DESCRIPTION := \"A routine with many preamble lines\"
+    TAG tag1 := DINT
+    TAG tag2 := BOOL
+    TAG tag3 := REAL
+    TAG tag4 := STRING
+    Type := ST
+    ST_CONTENT := [
+      x := 1;
+      y := x + 2;
+    ];
+  END_ROUTINE
+END_PROGRAM
+";
+        let regions = extract_l5k_regions(source);
+        // The current implementation only checks .take(5) lines for the type
+        // declaration. With 5 preamble lines before `Type := ST`, the routine
+        // is NOT detected as ST. This test documents the limitation.
+        assert!(
+            regions.is_empty(),
+            "Expected 0 regions because Type := ST is beyond the 5-line scan window, got {}",
+            regions.len()
+        );
+    }
+
+    /// TC-10: Malformed/unclosed CDATA blocks.
+    /// `<![CDATA[...` without a closing `]]>` should not match the CDATA regex,
+    /// so the content is silently dropped. Verify no panic and zero regions.
+    #[test]
+    fn test_l5x_malformed_unclosed_cdata() {
+        let source = r#"<?xml version="1.0"?>
+<RSLogix5000Content>
+  <Controller Name="C1">
+    <Programs>
+      <Program Name="P1">
+        <Routines>
+          <Routine Name="BadCdata" Type="ST">
+            <STContent>
+              <Line Number="0"><![CDATA[x := 1;</Line>
+              <Line Number="1"><![CDATA[y := 2;]]></Line>
+            </STContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+  </Controller>
+</RSLogix5000Content>"#;
+        let regions = extract_l5x_regions(source);
+        // Line 0 has unclosed CDATA (no `]]>`), so the CDATA regex skips it.
+        // Line 1 is well-formed, so we should get exactly one region with
+        // only the second line's content.
+        assert_eq!(
+            regions.len(),
+            1,
+            "Should still extract region from valid CDATA"
+        );
+        assert!(
+            !regions[0].source.contains("x := 1;"),
+            "Unclosed CDATA content should not appear in extracted source"
+        );
+        assert!(
+            regions[0].source.contains("y := 2;"),
+            "Valid CDATA on line 1 should be extracted"
+        );
+
+        // Full parser should not panic either
+        let parser = Parser::new().unwrap();
+        let result = parse_l5x_chunks(source, Path::new("bad_cdata.l5x"), &parser);
+        assert!(result.is_ok(), "Parser should not panic on malformed CDATA");
+    }
+
+    /// SEC-8: L5K_ROUTINE_BLOCK_RE uses `[^\x00]*?` which on malformed input
+    /// (unterminated ROUTINE blocks with no END_ROUTINE) causes the regex
+    /// engine to scan to the end of the input for each unmatched ROUTINE.
+    /// Worst case: O(N * unterminated_blocks).
+    ///
+    /// This test documents the behavior: with no END_ROUTINE, the regex
+    /// finds no matches (which is correct), but the time cost grows with
+    /// input size. The `[^\x00]*?` pattern is non-greedy but still must
+    /// attempt all positions before failing.
+    #[test]
+    fn test_l5k_unterminated_routine_no_panic() {
+        // Build a moderately-sized malformed input: many ROUTINE keywords
+        // with no matching END_ROUTINE
+        let mut source = String::from("PROGRAM MalformedProg\n");
+        for i in 0..20 {
+            source.push_str(&format!(
+                "  ROUTINE Orphan{i}\n    Type := ST\n    x := {i};\n"
+            ));
+            // Deliberately omit END_ROUTINE
+        }
+        source.push_str("END_PROGRAM\n");
+
+        // Should not panic and should produce no regions (no END_ROUTINE
+        // to close any block). The regex simply fails to match.
+        let regions = extract_l5k_regions(&source);
+        // NOTE: The regex requires END_ROUTINE to close a block. Without it,
+        // no captures are produced -- but the engine still scans the full
+        // input for each ROUTINE keyword. On very large malformed files this
+        // is O(N * unterminated_blocks). See SEC-8 audit finding.
+        assert!(
+            regions.is_empty(),
+            "Unterminated ROUTINE blocks should produce no regions"
+        );
+    }
+
+    /// PB-11: L5X CRLF ordering invariant.
+    /// Windows-originated L5X files use CRLF line endings. Verify that:
+    /// 1. CDATA extraction works with CRLF
+    /// 2. Line counting (`line_of`) handles CRLF correctly
+    /// 3. Extracted source is usable (ST parser doesn't choke on \r)
+    #[test]
+    fn test_l5x_crlf_line_endings() {
+        // Build the same L5X sample but with CRLF endings
+        let source = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
+            <RSLogix5000Content>\r\n\
+            <Controller Name=\"C1\">\r\n\
+            <Programs>\r\n\
+            <Program Name=\"CrlfProg\">\r\n\
+            <Routines>\r\n\
+            <Routine Name=\"CrlfRoutine\" Type=\"ST\">\r\n\
+            <STContent>\r\n\
+            <Line Number=\"0\"><![CDATA[myVar := 10;]]></Line>\r\n\
+            <Line Number=\"1\"><![CDATA[IF myVar > 5 THEN]]></Line>\r\n\
+            <Line Number=\"2\"><![CDATA[  output := TRUE;]]></Line>\r\n\
+            <Line Number=\"3\"><![CDATA[END_IF;]]></Line>\r\n\
+            </STContent>\r\n\
+            </Routine>\r\n\
+            </Routines>\r\n\
+            </Program>\r\n\
+            </Programs>\r\n\
+            </Controller>\r\n\
+            </RSLogix5000Content>\r\n";
+
+        let regions = extract_l5x_regions(source);
+        assert_eq!(regions.len(), 1, "CRLF source should produce one region");
+        assert_eq!(
+            regions[0].routine_name.as_deref(),
+            Some("CrlfRoutine"),
+            "Routine name extraction must work with CRLF"
+        );
+        assert_eq!(
+            regions[0].program_name.as_deref(),
+            Some("CrlfProg"),
+            "Program name extraction must work with CRLF"
+        );
+        assert!(
+            regions[0].source.contains("myVar := 10;"),
+            "CDATA content must be extracted with CRLF line endings"
+        );
+        assert!(
+            regions[0].source.contains("END_IF;"),
+            "Multi-line CDATA extraction must work with CRLF"
+        );
+
+        // Verify line_start is reasonable (CRLF has same \n count as LF)
+        assert!(regions[0].line_start > 0, "line_start should be positive");
+
+        // Full parser should handle CRLF source without error
+        let parser = Parser::new().unwrap();
+        let chunks = parse_l5x_chunks(source, Path::new("crlf.l5x"), &parser).unwrap();
+        assert!(!chunks.is_empty(), "CRLF L5X source should produce chunks");
+        for chunk in &chunks {
+            assert_eq!(chunk.language, Language::StructuredText);
+        }
     }
 }
