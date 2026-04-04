@@ -261,15 +261,44 @@ fn mermaid_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// Default maximum nodes in trace BFS traversal.
+const DEFAULT_TRACE_MAX_NODES: usize = 10_000;
+
+/// Returns the trace BFS node cap, reading `CQS_TRACE_MAX_NODES` once on first call.
+fn trace_max_nodes() -> usize {
+    use std::sync::OnceLock;
+    static CAP: OnceLock<usize> = OnceLock::new();
+    *CAP.get_or_init(|| match std::env::var("CQS_TRACE_MAX_NODES") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(n) if n > 0 => {
+                tracing::info!(
+                    cap = n,
+                    "Trace BFS node cap overridden via CQS_TRACE_MAX_NODES"
+                );
+                n
+            }
+            _ => {
+                tracing::warn!(
+                    val,
+                    "CQS_TRACE_MAX_NODES invalid, using default {DEFAULT_TRACE_MAX_NODES}"
+                );
+                DEFAULT_TRACE_MAX_NODES
+            }
+        },
+        Err(_) => DEFAULT_TRACE_MAX_NODES,
+    })
+}
+
 /// BFS shortest path through forward adjacency list.
-/// Capped at 10,000 visited nodes to prevent OOM on dense graphs.
+/// Capped at `CQS_TRACE_MAX_NODES` (default 10,000) visited nodes to prevent
+/// OOM on dense graphs.
 pub(crate) fn bfs_shortest_path(
     forward: &HashMap<std::sync::Arc<str>, Vec<std::sync::Arc<str>>>,
     source: &str,
     target: &str,
     max_depth: usize,
 ) -> Option<Vec<String>> {
-    const MAX_NODES: usize = 10_000;
+    let max_nodes = trace_max_nodes();
     let mut visited: HashMap<String, String> = HashMap::new();
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
 
@@ -290,8 +319,8 @@ pub(crate) fn bfs_shortest_path(
             path.reverse();
             return Some(path);
         }
-        if visited.len() >= MAX_NODES {
-            tracing::warn!(max_nodes = MAX_NODES, "BFS trace capped — graph too dense");
+        if visited.len() >= max_nodes {
+            tracing::warn!(max_nodes, "BFS trace capped — graph too dense");
             break;
         }
         if depth >= max_depth {

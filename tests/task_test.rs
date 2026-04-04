@@ -78,8 +78,8 @@ fn setup_task_store() -> TestStore {
 }
 
 #[test]
-fn test_task_to_json_integration() {
-    // Tests task_to_json with a realistic TaskResult structure
+fn test_task_result_serialization_integration() {
+    // Tests TaskResult serialization with a realistic structure
     use cqs::{ChunkRole, FileGroup, ScoutChunk, ScoutResult, ScoutSummary};
     use cqs::{RiskLevel, RiskScore, TestInfo};
 
@@ -140,7 +140,7 @@ fn test_task_to_json_integration() {
         },
     };
 
-    let json = cqs::task_to_json(&result);
+    let json = serde_json::to_value(&result).unwrap();
 
     // Verify structure
     assert_eq!(json["description"], "add fuzzy matching");

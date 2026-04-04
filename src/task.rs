@@ -267,17 +267,6 @@ pub(crate) fn compute_summary(
     }
 }
 
-/// Serialize task result to JSON.
-///
-/// Paths in the result are already relative to the project root (set at
-/// construction time). Uses typed `Serialize` on `TaskResult`.
-pub fn task_to_json(result: &TaskResult) -> serde_json::Value {
-    serde_json::to_value(result).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to serialize TaskResult");
-        serde_json::json!({})
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn test_task_to_json_structure() {
+    fn test_task_result_serialization_structure() {
         let scout = make_scout_result(vec![("fn_a", ChunkRole::ModifyTarget)]);
         let result = TaskResult {
             description: "test task".to_string(),
@@ -461,7 +450,7 @@ mod tests {
             },
         };
 
-        let json = task_to_json(&result);
+        let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["description"], "test task");
         assert!(json["scout"].is_object());
         assert!(json["code"].is_array());
@@ -475,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn test_task_to_json_empty() {
+    fn test_task_result_serialization_empty() {
         let result = TaskResult {
             description: "empty".to_string(),
             scout: ScoutResult {
@@ -502,7 +491,7 @@ mod tests {
             },
         };
 
-        let json = task_to_json(&result);
+        let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["code"].as_array().unwrap().len(), 0);
         assert_eq!(json["risk"].as_array().unwrap().len(), 0);
         assert_eq!(json["tests"].as_array().unwrap().len(), 0);
@@ -511,9 +500,9 @@ mod tests {
         assert_eq!(json["summary"]["total_files"], 0);
     }
 
-    // TC-3: task_to_json with populated code/risk/tests/placement
+    // TC-3: TaskResult serialization with populated code/risk/tests/placement
     #[test]
-    fn test_task_to_json_populated_values() {
+    fn test_task_result_serialization_populated_values() {
         use crate::gather::GatheredChunk;
         use crate::impact::TestInfo;
         use crate::language::{ChunkType, Language};
@@ -577,7 +566,7 @@ mod tests {
             },
         };
 
-        let json = task_to_json(&result);
+        let json = serde_json::to_value(&result).unwrap();
 
         // Verify code section values
         let code = json["code"].as_array().unwrap();

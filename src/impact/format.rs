@@ -5,25 +5,14 @@ use super::types::{DiffImpactResult, ImpactResult, TestSuggestion};
 /// Serialize impact result to JSON.
 ///
 /// Paths in the result are already relative to the project root (set at
-/// construction time by `analyze_impact`). Uses typed `Serialize` on
-/// `ImpactResult` and injects computed count fields.
+/// construction time by `analyze_impact`). Count fields (`caller_count`,
+/// `test_count`, `type_impacted_count`) are computed by the custom `Serialize`
+/// impl on `ImpactResult`.
 pub fn impact_to_json(result: &ImpactResult) -> serde_json::Value {
-    let mut output = serde_json::to_value(result).unwrap_or_else(|e| {
+    serde_json::to_value(result).unwrap_or_else(|e| {
         tracing::warn!(error = %e, "Failed to serialize ImpactResult");
         serde_json::json!({})
-    });
-    if let Some(obj) = output.as_object_mut() {
-        obj.insert(
-            "caller_count".into(),
-            serde_json::json!(result.callers.len()),
-        );
-        obj.insert("test_count".into(), serde_json::json!(result.tests.len()));
-        obj.insert(
-            "type_impacted_count".into(),
-            serde_json::json!(result.type_impacted.len()),
-        );
-    }
-    output
+    })
 }
 
 /// Format test suggestions as JSON values.

@@ -398,21 +398,6 @@ pub fn plan(
 }
 
 // ---------------------------------------------------------------------------
-// JSON
-// ---------------------------------------------------------------------------
-
-/// Convert a PlanResult to JSON, including scout data.
-///
-/// Paths in the result are already relative to the project root.
-/// Uses typed `Serialize` on `PlanResult`.
-pub fn plan_to_json(result: &PlanResult) -> serde_json::Value {
-    serde_json::to_value(result).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to serialize PlanResult");
-        serde_json::json!({})
-    })
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
