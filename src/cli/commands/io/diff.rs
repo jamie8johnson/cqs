@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use colored::Colorize;
 
 use cqs::Store;
-use cqs::{semantic_diff, DiffResult};
+use cqs::{normalize_path, semantic_diff, DiffResult};
 
 use crate::cli::find_project_root;
 
@@ -59,7 +59,7 @@ fn build_diff_output(result: &DiffResult) -> DiffOutput {
 
     let convert = |e: &cqs::DiffEntry, include_sim: bool| DiffEntryOutput {
         name: e.name.clone(),
-        file: e.file.display().to_string(),
+        file: normalize_path(&e.file),
         chunk_type: e.chunk_type.to_string(),
         similarity: if include_sim { e.similarity } else { None },
     };

@@ -3,7 +3,7 @@
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
 
-use cqs::Store;
+use cqs::{normalize_path, Store};
 
 use crate::cli::find_project_root;
 
@@ -50,7 +50,7 @@ fn build_drift_output(result: &cqs::drift::DriftResult, limit: Option<usize>) ->
         .iter()
         .map(|e| DriftEntryOutput {
             name: e.name.clone(),
-            file: e.file.display().to_string(),
+            file: normalize_path(&e.file),
             chunk_type: e.chunk_type.to_string(),
             similarity: e.similarity,
             drift: e.drift,
