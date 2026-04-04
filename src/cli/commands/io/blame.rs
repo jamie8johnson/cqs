@@ -165,6 +165,11 @@ pub(crate) fn parse_git_log_output(output: &str) -> Vec<BlameEntry> {
 
 // ─── JSON output ─────────────────────────────────────────────────────────────
 
+// TODO: blame_to_json should be replaced with typed BlameOutput struct.
+// Blocked on batch handler (src/cli/batch/handlers/info.rs) which calls this
+// and expects serde_json::Value. Migrate when batch handlers are updated.
+// Also normalize caller "line" → "line_start" at that time.
+
 /// Build JSON output from BlameData.
 pub(crate) fn blame_to_json(data: &BlameData, root: &Path) -> serde_json::Value {
     let mut result = serde_json::json!({

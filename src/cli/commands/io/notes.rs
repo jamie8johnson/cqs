@@ -9,6 +9,40 @@ use cqs::{parse_notes, rewrite_notes_file, NoteEntry, NOTES_HEADER};
 
 use crate::cli::{find_project_root, Cli};
 
+// ---------------------------------------------------------------------------
+// Output structs
+// ---------------------------------------------------------------------------
+
+/// JSON output for note mutation commands (add, update, remove).
+#[derive(Debug, serde::Serialize)]
+struct NoteMutationOutput {
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type")]
+    note_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sentiment: Option<f32>,
+    text_preview: String,
+    file: String,
+    indexed: bool,
+    total_notes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index_error: Option<String>,
+}
+
+/// A single note entry in the list output.
+#[derive(Debug, serde::Serialize)]
+struct NoteListEntry {
+    id: String,
+    sentiment: f32,
+    #[serde(rename = "type")]
+    note_type: String,
+    text: String,
+    mentions: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stale_mentions: Option<Vec<String>>,
+}
+
 /// Notes subcommands
 #[derive(clap::Subcommand)]
 pub(crate) enum NotesCommand {
@@ -202,18 +236,16 @@ fn cmd_notes_add(
     };
 
     if cli.json {
-        let mut result = serde_json::json!({
-            "status": "added",
-            "type": sentiment_label,
-            "sentiment": sentiment,
-            "text_preview": text_preview(text),
-            "file": "docs/notes.toml",
-            "indexed": indexed > 0,
-            "total_notes": indexed
-        });
-        if let Some(err) = index_error {
-            result["index_error"] = serde_json::json!(err);
-        }
+        let result = NoteMutationOutput {
+            status: "added".into(),
+            note_type: Some(sentiment_label.into()),
+            sentiment: Some(sentiment),
+            text_preview: text_preview(text),
+            file: "docs/notes.toml".into(),
+            indexed: indexed > 0,
+            total_notes: indexed,
+            index_error,
+        };
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         println!(
@@ -305,16 +337,16 @@ fn cmd_notes_update(
 
     let final_text = new_text.unwrap_or(text);
     if cli.json {
-        let mut result = serde_json::json!({
-            "status": "updated",
-            "text_preview": text_preview(final_text),
-            "file": "docs/notes.toml",
-            "indexed": indexed > 0,
-            "total_notes": indexed
-        });
-        if let Some(err) = index_error {
-            result["index_error"] = serde_json::json!(err);
-        }
+        let result = NoteMutationOutput {
+            status: "updated".into(),
+            note_type: None,
+            sentiment: None,
+            text_preview: text_preview(final_text),
+            file: "docs/notes.toml".into(),
+            indexed: indexed > 0,
+            total_notes: indexed,
+            index_error,
+        };
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         println!("Updated: {}", text_preview(final_text));
@@ -368,16 +400,16 @@ fn cmd_notes_remove(cli: &Cli, text: &str, no_reindex: bool) -> Result<()> {
     };
 
     if cli.json {
-        let mut result = serde_json::json!({
-            "status": "removed",
-            "text_preview": text_preview(&removed_text),
-            "file": "docs/notes.toml",
-            "indexed": indexed > 0,
-            "total_notes": indexed
-        });
-        if let Some(err) = index_error {
-            result["index_error"] = serde_json::json!(err);
-        }
+        let result = NoteMutationOutput {
+            status: "removed".into(),
+            note_type: None,
+            sentiment: None,
+            text_preview: text_preview(&removed_text),
+            file: "docs/notes.toml".into(),
+            indexed: indexed > 0,
+            total_notes: indexed,
+            index_error,
+        };
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         println!("Removed: {}", text_preview(&removed_text));
@@ -438,24 +470,29 @@ fn cmd_notes_list(
         .collect();
 
     if json || ctx.cli.json {
-        let json_notes: Vec<_> = filtered
+        let json_notes: Vec<NoteListEntry> = filtered
             .iter()
             .map(|n| {
-                let mut obj = serde_json::json!({
-                    "id": n.id,
-                    "sentiment": n.sentiment,
-                    "type": if n.is_warning() { "warning" } else if n.is_pattern() { "pattern" } else { "neutral" },
-                    "text": n.text,
-                    "mentions": n.mentions,
-                });
-                if check {
-                    if let Some(stale) = staleness.get(&n.text) {
-                        obj["stale_mentions"] = serde_json::json!(stale);
-                    } else {
-                        obj["stale_mentions"] = serde_json::json!([]);
-                    }
+                let note_type = if n.is_warning() {
+                    "warning"
+                } else if n.is_pattern() {
+                    "pattern"
+                } else {
+                    "neutral"
+                };
+                let stale_mentions = if check {
+                    Some(staleness.get(&n.text).cloned().unwrap_or_default())
+                } else {
+                    None
+                };
+                NoteListEntry {
+                    id: n.id.clone(),
+                    sentiment: n.sentiment,
+                    note_type: note_type.into(),
+                    text: n.text.clone(),
+                    mentions: n.mentions.clone(),
+                    stale_mentions,
                 }
-                obj
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&json_notes)?);
@@ -508,4 +545,86 @@ fn cmd_notes_list(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn note_mutation_output_add() {
+        let output = NoteMutationOutput {
+            status: "added".into(),
+            note_type: Some("warning".into()),
+            sentiment: Some(-0.5),
+            text_preview: "some note text".into(),
+            file: "docs/notes.toml".into(),
+            indexed: true,
+            total_notes: 5,
+            index_error: None,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["status"], "added");
+        assert_eq!(json["type"], "warning");
+        assert_eq!(json["sentiment"], -0.5);
+        assert_eq!(json["text_preview"], "some note text");
+        assert_eq!(json["indexed"], true);
+        assert_eq!(json["total_notes"], 5);
+        assert!(json.get("index_error").is_none());
+    }
+
+    #[test]
+    fn note_mutation_output_remove_no_type() {
+        let output = NoteMutationOutput {
+            status: "removed".into(),
+            note_type: None,
+            sentiment: None,
+            text_preview: "deleted note".into(),
+            file: "docs/notes.toml".into(),
+            indexed: false,
+            total_notes: 0,
+            index_error: Some("store not found".into()),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["status"], "removed");
+        assert!(json.get("type").is_none());
+        assert!(json.get("sentiment").is_none());
+        assert_eq!(json["index_error"], "store not found");
+    }
+
+    #[test]
+    fn note_list_entry_serialization() {
+        let entry = NoteListEntry {
+            id: "note:0".into(),
+            sentiment: -1.0,
+            note_type: "warning".into(),
+            text: "This is broken".into(),
+            mentions: vec!["search.rs".into()],
+            stale_mentions: Some(vec!["old_file.rs".into()]),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["id"], "note:0");
+        assert_eq!(json["type"], "warning");
+        assert_eq!(json["sentiment"], -1.0);
+        assert_eq!(json["mentions"][0], "search.rs");
+        assert_eq!(json["stale_mentions"][0], "old_file.rs");
+    }
+
+    #[test]
+    fn note_list_entry_no_stale() {
+        let entry = NoteListEntry {
+            id: "note:1".into(),
+            sentiment: 0.0,
+            note_type: "neutral".into(),
+            text: "just an observation".into(),
+            mentions: vec![],
+            stale_mentions: None,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(json.get("stale_mentions").is_none());
+    }
 }

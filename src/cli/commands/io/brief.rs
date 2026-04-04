@@ -8,13 +8,21 @@ use cqs::rel_display;
 use cqs::store::{ChunkSummary, Store};
 
 /// One-line summary entry for a function in the file.
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 struct BriefEntry {
     name: String,
     chunk_type: String,
     line_start: u32,
     callers: u64,
     tests: u64,
+}
+
+/// Top-level JSON output for the brief command.
+#[derive(Debug, serde::Serialize)]
+struct BriefOutput {
+    file: String,
+    functions: Vec<BriefEntry>,
+    total: usize,
 }
 
 /// Data returned by `build_brief_data`: chunks with caller and test counts.
@@ -122,11 +130,12 @@ pub(crate) fn cmd_brief(ctx: &crate::cli::CommandContext, path: &str, json: bool
         .collect();
 
     if json {
-        let result = serde_json::json!({
-            "file": rel,
-            "functions": entries,
-            "total": entries.len(),
-        });
+        let total = entries.len();
+        let result = BriefOutput {
+            file: rel.clone(),
+            functions: entries,
+            total,
+        };
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         use colored::Colorize;
@@ -169,30 +178,33 @@ mod tests {
     }
 
     #[test]
-    fn brief_json_output_shape() {
-        let entries = vec![
-            BriefEntry {
-                name: "foo".to_string(),
-                chunk_type: "Function".to_string(),
-                line_start: 1,
-                callers: 2,
-                tests: 0,
-            },
-            BriefEntry {
-                name: "bar".to_string(),
-                chunk_type: "Method".to_string(),
-                line_start: 10,
-                callers: 0,
-                tests: 1,
-            },
-        ];
-        let result = serde_json::json!({
-            "file": "src/lib.rs",
-            "functions": entries,
-            "total": entries.len(),
-        });
-        assert_eq!(result["total"], 2);
-        assert_eq!(result["functions"][0]["name"], "foo");
-        assert_eq!(result["functions"][1]["callers"], 0);
+    fn brief_output_serialization() {
+        let output = BriefOutput {
+            file: "src/lib.rs".to_string(),
+            functions: vec![
+                BriefEntry {
+                    name: "foo".to_string(),
+                    chunk_type: "Function".to_string(),
+                    line_start: 1,
+                    callers: 2,
+                    tests: 0,
+                },
+                BriefEntry {
+                    name: "bar".to_string(),
+                    chunk_type: "Method".to_string(),
+                    line_start: 10,
+                    callers: 0,
+                    tests: 1,
+                },
+            ],
+            total: 2,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["file"], "src/lib.rs");
+        assert_eq!(json["total"], 2);
+        assert_eq!(json["functions"][0]["name"], "foo");
+        assert_eq!(json["functions"][0]["callers"], 2);
+        assert_eq!(json["functions"][1]["callers"], 0);
+        assert_eq!(json["functions"][1]["tests"], 1);
     }
 }
