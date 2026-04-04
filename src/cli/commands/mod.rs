@@ -382,8 +382,10 @@ pub(crate) fn token_pack<T>(
         }
         if !kept_any && tokens > budget {
             // Always include at least one result, but cap at 10x budget to avoid
-            // pathological cases (e.g., 50K-token item with 300-token budget)
-            if tokens > budget * 10 {
+            // pathological cases (e.g., 50K-token item with 300-token budget).
+            // When budget == 0, skip the 10x guard (0 * 10 == 0, which would reject
+            // every item) and include the first item unconditionally.
+            if budget > 0 && tokens > budget * 10 {
                 tracing::debug!(tokens, budget, "First item exceeds 10x budget, skipping");
                 continue;
             }
@@ -437,6 +439,12 @@ pub(crate) fn index_pack(
         let cost = token_counts[idx] + overhead_per_item;
         if used + cost > budget && !kept.is_empty() {
             break;
+        }
+        // Mirror token_pack's 10x guard: skip items that vastly exceed budget
+        // to avoid pathological cases (e.g., 50K-token item with 300-token budget)
+        if kept.is_empty() && cost > budget * 10 {
+            tracing::debug!(cost, budget, idx, "First item exceeds 10x budget, skipping");
+            continue;
         }
         used += cost;
         kept.push(idx);
@@ -574,5 +582,343 @@ mod tests {
         let (packed, used) = token_pack(items, &counts, 100, 35, |_| 1.0);
         assert_eq!(packed.len(), 2);
         assert_eq!(used, 90); // 2 * (10 + 35)
+    }
+
+    // TC-6: token_pack zero budget includes first item unconditionally
+    #[test]
+    fn test_token_pack_zero_budget_includes_first() {
+        let items = vec!["a", "b"];
+        let counts = vec![10, 20];
+        let (packed, used) = token_pack(items, &counts, 0, 0, |_| 1.0);
+        // "Always includes at least one item" — even with budget=0
+        assert_eq!(packed.len(), 1);
+        assert_eq!(used, 10);
+    }
+
+    // TC-6: token_pack 10x guard still works when budget > 0
+    #[test]
+    fn test_token_pack_10x_guard_nonzero_budget() {
+        let items = vec!["huge", "small"];
+        let counts = vec![5000, 10];
+        // Budget 30, first item by score is "huge" (5000 tokens > 30*10=300) — skip it
+        let (packed, used) = token_pack(items, &counts, 30, 0, |item| match *item {
+            "huge" => 2.0,
+            "small" => 1.0,
+            _ => 0.0,
+        });
+        assert_eq!(packed, vec!["small"]);
+        assert_eq!(used, 10);
+    }
+
+    // AC-11: index_pack 10x guard skips pathologically large first item
+    #[test]
+    fn test_index_pack_10x_guard() {
+        let counts = vec![5000, 10];
+        // Budget 30: first by score is index 0 (5000 tokens > 30*10=300) — skip it
+        let (indices, used) = index_pack(&counts, 30, 0, |i| if i == 0 { 2.0 } else { 1.0 });
+        assert_eq!(indices, vec![1]);
+        assert_eq!(used, 10);
+    }
+
+    // AC-11: index_pack still includes moderately-over-budget first item (< 10x)
+    #[test]
+    fn test_index_pack_includes_moderate_overbudget() {
+        let counts = vec![100]; // 100 > budget 30, but 100 < 30*10=300
+        let (indices, used) = index_pack(&counts, 30, 0, |_| 1.0);
+        assert_eq!(indices, vec![0]);
+        assert_eq!(used, 100);
+    }
+
+    // HP-2: inject_token_info adds fields when Some
+    #[test]
+    fn test_inject_token_info_some() {
+        let mut json = serde_json::json!({"results": []});
+        inject_token_info(&mut json, Some((150, 300)));
+        assert_eq!(json["token_count"], 150);
+        assert_eq!(json["token_budget"], 300);
+    }
+
+    // HP-2: inject_token_info is no-op when None
+    #[test]
+    fn test_inject_token_info_none() {
+        let mut json = serde_json::json!({"results": []});
+        inject_token_info(&mut json, None);
+        assert!(json.get("token_count").is_none());
+        assert!(json.get("token_budget").is_none());
+    }
+
+    // HP-2: inject_content_into_scout_json injects content by chunk name
+    #[test]
+    fn test_inject_content_into_scout_json() {
+        let mut json = serde_json::json!({
+            "file_groups": [{
+                "file": "src/a.rs",
+                "chunks": [
+                    {"name": "foo", "signature": "fn foo()"},
+                    {"name": "bar", "signature": "fn bar()"}
+                ]
+            }]
+        });
+        let mut content_map = std::collections::HashMap::new();
+        content_map.insert("foo".to_string(), "fn foo() { 42 }".to_string());
+        // "bar" deliberately not in map
+
+        inject_content_into_scout_json(&mut json, &content_map);
+
+        let chunks = json["file_groups"][0]["chunks"].as_array().unwrap();
+        assert_eq!(chunks[0]["content"], "fn foo() { 42 }");
+        assert!(chunks[1].get("content").is_none());
+    }
+
+    // HP-2: inject_content_into_scout_json no-op on missing file_groups
+    #[test]
+    fn test_inject_content_into_scout_json_no_groups() {
+        let mut json = serde_json::json!({"other": 1});
+        let content_map = std::collections::HashMap::new();
+        inject_content_into_scout_json(&mut json, &content_map);
+        // Should not panic, json unchanged
+        assert_eq!(json, serde_json::json!({"other": 1}));
+    }
+
+    // HP-2: inject_content_into_onboard_json injects into entry_point, call_chain, callers
+    #[test]
+    fn test_inject_content_into_onboard_json() {
+        use std::path::PathBuf;
+        let result = cqs::OnboardResult {
+            concept: "test".into(),
+            entry_point: cqs::OnboardEntry {
+                name: "entry".into(),
+                file: PathBuf::from("a.rs"),
+                line_start: 1,
+                line_end: 10,
+                language: cqs::language::Language::Rust,
+                chunk_type: cqs::language::ChunkType::Function,
+                signature: "fn entry()".into(),
+                content: String::new(),
+                depth: 0,
+            },
+            call_chain: vec![cqs::OnboardEntry {
+                name: "callee".into(),
+                file: PathBuf::from("b.rs"),
+                line_start: 1,
+                line_end: 5,
+                language: cqs::language::Language::Rust,
+                chunk_type: cqs::language::ChunkType::Function,
+                signature: "fn callee()".into(),
+                content: String::new(),
+                depth: 1,
+            }],
+            callers: vec![cqs::OnboardEntry {
+                name: "caller".into(),
+                file: PathBuf::from("c.rs"),
+                line_start: 1,
+                line_end: 5,
+                language: cqs::language::Language::Rust,
+                chunk_type: cqs::language::ChunkType::Function,
+                signature: "fn caller()".into(),
+                content: String::new(),
+                depth: 0,
+            }],
+            key_types: vec![],
+            tests: vec![],
+            summary: cqs::OnboardSummary {
+                total_items: 3,
+                files_covered: 3,
+                callee_depth: 1,
+                tests_found: 0,
+            },
+        };
+
+        let mut json = serde_json::json!({
+            "entry_point": {"name": "entry"},
+            "call_chain": [{"name": "callee"}],
+            "callers": [{"name": "caller"}]
+        });
+        let mut content_map = std::collections::HashMap::new();
+        content_map.insert("entry".to_string(), "fn entry() {}".to_string());
+        content_map.insert("callee".to_string(), "fn callee() {}".to_string());
+        // "caller" not in map
+
+        inject_content_into_onboard_json(&mut json, &content_map, &result);
+
+        assert_eq!(json["entry_point"]["content"], "fn entry() {}");
+        assert_eq!(json["call_chain"][0]["content"], "fn callee() {}");
+        assert!(json["callers"][0].get("content").is_none());
+    }
+
+    // HP-9: onboard_scored_names scoring logic
+    #[test]
+    fn test_onboard_scored_names() {
+        use std::path::PathBuf;
+        let result = cqs::OnboardResult {
+            concept: "test".into(),
+            entry_point: cqs::OnboardEntry {
+                name: "entry".into(),
+                file: PathBuf::from("a.rs"),
+                line_start: 1,
+                line_end: 10,
+                language: cqs::language::Language::Rust,
+                chunk_type: cqs::language::ChunkType::Function,
+                signature: String::new(),
+                content: String::new(),
+                depth: 0,
+            },
+            call_chain: vec![
+                cqs::OnboardEntry {
+                    name: "depth0".into(),
+                    file: PathBuf::from("b.rs"),
+                    line_start: 1,
+                    line_end: 5,
+                    language: cqs::language::Language::Rust,
+                    chunk_type: cqs::language::ChunkType::Function,
+                    signature: String::new(),
+                    content: String::new(),
+                    depth: 0,
+                },
+                cqs::OnboardEntry {
+                    name: "depth1".into(),
+                    file: PathBuf::from("c.rs"),
+                    line_start: 1,
+                    line_end: 5,
+                    language: cqs::language::Language::Rust,
+                    chunk_type: cqs::language::ChunkType::Function,
+                    signature: String::new(),
+                    content: String::new(),
+                    depth: 1,
+                },
+                cqs::OnboardEntry {
+                    name: "depth3".into(),
+                    file: PathBuf::from("d.rs"),
+                    line_start: 1,
+                    line_end: 5,
+                    language: cqs::language::Language::Rust,
+                    chunk_type: cqs::language::ChunkType::Function,
+                    signature: String::new(),
+                    content: String::new(),
+                    depth: 3,
+                },
+            ],
+            callers: vec![cqs::OnboardEntry {
+                name: "caller".into(),
+                file: PathBuf::from("e.rs"),
+                line_start: 1,
+                line_end: 5,
+                language: cqs::language::Language::Rust,
+                chunk_type: cqs::language::ChunkType::Function,
+                signature: String::new(),
+                content: String::new(),
+                depth: 0,
+            }],
+            key_types: vec![],
+            tests: vec![],
+            summary: cqs::OnboardSummary {
+                total_items: 5,
+                files_covered: 5,
+                callee_depth: 3,
+                tests_found: 0,
+            },
+        };
+
+        let scored = onboard_scored_names(&result);
+        assert_eq!(scored.len(), 5);
+
+        // Entry point: score 1.0
+        assert_eq!(scored[0], ("entry".to_string(), 1.0));
+
+        // Call chain: 1/(depth+1)
+        assert_eq!(scored[1], ("depth0".to_string(), 1.0 / 1.0)); // depth 0 → 1.0
+        assert_eq!(scored[2], ("depth1".to_string(), 1.0 / 2.0)); // depth 1 → 0.5
+        assert_eq!(scored[3], ("depth3".to_string(), 1.0 / 4.0)); // depth 3 → 0.25
+
+        // Callers: score 0.3
+        assert_eq!(scored[4], ("caller".to_string(), 0.3));
+    }
+
+    // HP-9: scout_scored_names scoring logic
+    #[test]
+    fn test_scout_scored_names() {
+        let result = cqs::ScoutResult {
+            file_groups: vec![
+                cqs::FileGroup {
+                    file: std::path::PathBuf::from("a.rs"),
+                    relevance_score: 0.8,
+                    chunks: vec![
+                        cqs::ScoutChunk {
+                            name: "foo".into(),
+                            chunk_type: cqs::language::ChunkType::Function,
+                            signature: String::new(),
+                            line_start: 1,
+                            role: cqs::ChunkRole::ModifyTarget,
+                            caller_count: 3,
+                            test_count: 1,
+                            search_score: 0.9,
+                        },
+                        cqs::ScoutChunk {
+                            name: "bar".into(),
+                            chunk_type: cqs::language::ChunkType::Function,
+                            signature: String::new(),
+                            line_start: 10,
+                            role: cqs::ChunkRole::Dependency,
+                            caller_count: 0,
+                            test_count: 0,
+                            search_score: 0.5,
+                        },
+                    ],
+                    is_stale: false,
+                },
+                cqs::FileGroup {
+                    file: std::path::PathBuf::from("b.rs"),
+                    relevance_score: 0.4,
+                    chunks: vec![cqs::ScoutChunk {
+                        name: "baz".into(),
+                        chunk_type: cqs::language::ChunkType::Function,
+                        signature: String::new(),
+                        line_start: 1,
+                        role: cqs::ChunkRole::Dependency,
+                        caller_count: 1,
+                        test_count: 0,
+                        search_score: 0.7,
+                    }],
+                    is_stale: true,
+                },
+            ],
+            relevant_notes: vec![],
+            summary: cqs::ScoutSummary {
+                total_files: 2,
+                total_functions: 3,
+                untested_count: 1,
+                stale_count: 1,
+            },
+        };
+
+        let scored = scout_scored_names(&result);
+        assert_eq!(scored.len(), 3);
+
+        // Score = relevance_score * search_score
+        assert_eq!(scored[0].0, "foo");
+        assert!((scored[0].1 - 0.8 * 0.9).abs() < 1e-6); // 0.72
+
+        assert_eq!(scored[1].0, "bar");
+        assert!((scored[1].1 - 0.8 * 0.5).abs() < 1e-6); // 0.40
+
+        assert_eq!(scored[2].0, "baz");
+        assert!((scored[2].1 - 0.4 * 0.7).abs() < 1e-6); // 0.28
+    }
+
+    // HP-9: scout_scored_names with empty result
+    #[test]
+    fn test_scout_scored_names_empty() {
+        let result = cqs::ScoutResult {
+            file_groups: vec![],
+            relevant_notes: vec![],
+            summary: cqs::ScoutSummary {
+                total_files: 0,
+                total_functions: 0,
+                untested_count: 0,
+                stale_count: 0,
+            },
+        };
+        let scored = scout_scored_names(&result);
+        assert!(scored.is_empty());
     }
 }
