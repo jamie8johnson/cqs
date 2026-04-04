@@ -48,6 +48,7 @@ pub(crate) fn build_explain_data(
     embedder: Option<&cqs::Embedder>,
     model_config: &cqs::embedder::ModelConfig,
 ) -> Result<ExplainData> {
+    let _span = tracing::info_span!("build_explain_data", target).entered();
     // Resolve target
     let resolved = cqs::resolve_target(store, target)?;
     let chunk = resolved.chunk;

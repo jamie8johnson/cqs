@@ -658,6 +658,7 @@ impl BatchPhase2<'_> {
         set_pending: &PendingFn,
         submit: &SubmitFn,
     ) -> Result<String, LlmError> {
+        let _span = tracing::info_span!("submit_fresh", purpose = self.purpose).entered();
         tracing::info!(
             count = batch_items.len(),
             purpose = self.purpose,

@@ -135,6 +135,7 @@ pub(crate) fn build_vector_index_with_config(
     cqs_dir: &Path,
     ef_search: Option<usize>,
 ) -> Result<Option<Box<dyn cqs::index::VectorIndex>>> {
+    let _span = tracing::info_span!("build_vector_index_with_config").entered();
     let _ = store; // Used only with gpu-index feature
     #[cfg(feature = "gpu-index")]
     {

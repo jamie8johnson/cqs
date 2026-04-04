@@ -30,6 +30,7 @@ pub(super) fn parser_stage(
     ctx: ParserStageContext,
     parse_tx: Sender<ParsedBatch>,
 ) -> Result<()> {
+    let _span = tracing::info_span!("parser_stage").entered();
     let ParserStageContext {
         root,
         force,
