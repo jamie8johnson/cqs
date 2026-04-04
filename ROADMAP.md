@@ -203,13 +203,24 @@ Telemetry update (2026-03-29, 72 events since v1.9.0 reset): test-map 37%, notes
 - v1.0.9: SQ-5 module-level context (filename stems with generic filter)
 - v1.0.10: Red team audit — 7 findings fixed (HNSW ID desync, PDF script injection, path traversal)
 
-### Next — Refactoring
+### Refactoring — Done (v1.15.1–v1.15.2, PRs #757-783)
 
-- [ ] **CommandContext struct** — eliminate 32 copies of `open_project_store_readonly()`. Shared struct holds store + embedder + root + cqs_dir, passed to all handlers. Widest impact.
-- [ ] **`cli/mod.rs` split** (1161 lines) — extract `cli/store.rs` (openers + index), promote existing private submodules. Cheapest win.
-- [ ] **`pipeline.rs` split** (1303 lines) — break index pipeline into parse/embed/upsert/enrich submodules.
-- [ ] **`store/helpers.rs` split** (1222 lines) — separate row helpers from SQL builders.
-- [ ] **`language/mod.rs`** (1998 lines) — pure data, low priority. Could group by language family.
+- [x] **CommandContext struct** — 32 redundant store opens eliminated (#757)
+- [x] **`cli/mod.rs` split** → `cli/store.rs` (#765)
+- [x] **`pipeline.rs` split** → 6 submodules (#766)
+- [x] **`store/helpers.rs` split** → 7 submodules (#768)
+- [x] **Telemetry subcommands** — clap CommandFactory replaces hardcoded list (#767)
+- [x] **Lazy reranker + embedder** — OnceLock in CommandContext (#769, #774)
+- [x] **Commands subdirectories** — 46 files → 7 dirs (#760)
+- [x] **CI rust-cache** — clippy 2m→41s (#764)
+- [x] **Batch/CLI unification** — 3 phases, shared functions + token packing utilities (#771-773)
+- [x] **JSON schema migration** — typed Serialize structs for all 7 command groups + lib-level types (#776-783). ~60 new serialization tests. Field normalization (line→line_start, function→name). Spec: `docs/superpowers/specs/2026-04-03-json-schema-design.md`
+
+### Refactoring — Remaining
+
+- [ ] **Language definition code generation** — TOML data files + `build.rs` generator for 52 language defs. Spec: `docs/superpowers/specs/2026-04-03-language-macro-design.md`
+- [ ] **Docs fixes** — README CLAUDE.md block missing `reconstruct`/`brief`/`neighbors`/`affected`/`train-pairs`, language count 51→52+L5X/L5K, CONTRIBUTING.md architecture stale after file splits
+- [ ] **Reranker eval config** — add Config G (Cosine + rerank) to pipeline_eval.rs for 296q fixture eval
 
 ### Next — Ladder Logic (RLL) Parser
 
