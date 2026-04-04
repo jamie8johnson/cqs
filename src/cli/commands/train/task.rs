@@ -3,7 +3,7 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use cqs::{task, task_to_json, Embedder};
+use cqs::{task, Embedder};
 
 // ─── Output types ──────────────────────────────────────────────────────────
 
@@ -296,7 +296,7 @@ pub(crate) fn cmd_task(
     } else if let Some(budget) = max_tokens {
         output_with_budget(&result, root, embedder, budget, json)?;
     } else if json {
-        let output = task_to_json(&result);
+        let output = serde_json::to_value(&result)?;
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         output_text(&result, root);

@@ -281,7 +281,7 @@ pub(in crate::cli::batch) fn dispatch_onboard(
     let result = cqs::onboard(&ctx.store(), embedder, query, &ctx.root, depth)?;
 
     let Some(budget) = tokens else {
-        return cqs::onboard_to_json(&result)
+        return serde_json::to_value(&result)
             .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"));
     };
 
@@ -289,7 +289,7 @@ pub(in crate::cli::batch) fn dispatch_onboard(
     let (content_map, used) =
         crate::cli::commands::fetch_and_pack_content(&ctx.store(), embedder, &named_items, budget);
 
-    let mut json = cqs::onboard_to_json(&result)
+    let mut json = serde_json::to_value(&result)
         .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"))?;
     crate::cli::commands::inject_content_into_onboard_json(&mut json, &content_map, &result);
     crate::cli::commands::inject_token_info(&mut json, Some((used, budget)));

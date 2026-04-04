@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use cqs::{onboard, onboard_to_json};
+use cqs::onboard;
 
 pub(crate) fn cmd_onboard(
     ctx: &crate::cli::CommandContext,
@@ -21,7 +21,8 @@ pub(crate) fn cmd_onboard(
     let result = onboard(store, embedder, concept, root, depth)?;
 
     if json {
-        let mut output = onboard_to_json(&result).context("Failed to serialize onboard result")?;
+        let mut output =
+            serde_json::to_value(&result).context("Failed to serialize onboard result")?;
 
         // Token budgeting: pack entry content into budget
         if let Some(budget) = max_tokens {

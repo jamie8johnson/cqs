@@ -261,11 +261,6 @@ pub fn onboard(
     })
 }
 
-/// Convert OnboardResult to JSON.
-pub fn onboard_to_json(result: &OnboardResult) -> Result<serde_json::Value, serde_json::Error> {
-    serde_json::to_value(result)
-}
-
 // --- Internal helpers ---
 
 /// Truncate a score map to `max` entries, keeping those with the lowest `key_fn` values.

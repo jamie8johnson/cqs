@@ -454,17 +454,6 @@ fn note_mention_matches_file(mention: &str, file: &str) -> bool {
         && (file.len() == mention.len() || file.as_bytes()[file.len() - mention.len() - 1] == b'/')
 }
 
-/// Serialize scout result to JSON.
-///
-/// Paths in the result are already relative to the project root (set at
-/// construction time by `scout_core`). Uses typed `Serialize` on `ScoutResult`.
-pub fn scout_to_json(result: &ScoutResult) -> serde_json::Value {
-    serde_json::to_value(result).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to serialize ScoutResult");
-        serde_json::json!({})
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scout_to_json_empty() {
+    fn test_scout_result_serialization_empty() {
         let result = ScoutResult {
             file_groups: Vec::new(),
             relevant_notes: Vec::new(),
@@ -682,7 +671,7 @@ mod tests {
                 stale_count: 0,
             },
         };
-        let json = scout_to_json(&result);
+        let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["file_groups"].as_array().unwrap().len(), 0);
         assert_eq!(json["relevant_notes"].as_array().unwrap().len(), 0);
         assert_eq!(json["summary"]["total_files"], 0);

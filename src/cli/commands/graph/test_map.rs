@@ -42,8 +42,39 @@ pub(crate) struct TestMapOutput {
 
 // ─── Shared core ────────────────────────────────────────────────────────────
 
+/// Default maximum nodes in test-map reverse BFS traversal.
+const DEFAULT_TEST_MAP_MAX_NODES: usize = 10_000;
+
+/// Returns the test-map BFS node cap, reading `CQS_TEST_MAP_MAX_NODES` once on first call.
+fn test_map_max_nodes() -> usize {
+    use std::sync::OnceLock;
+    static CAP: OnceLock<usize> = OnceLock::new();
+    *CAP.get_or_init(|| match std::env::var("CQS_TEST_MAP_MAX_NODES") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(n) if n > 0 => {
+                tracing::info!(
+                    cap = n,
+                    "Test-map BFS node cap overridden via CQS_TEST_MAP_MAX_NODES"
+                );
+                n
+            }
+            _ => {
+                tracing::warn!(
+                    val,
+                    "CQS_TEST_MAP_MAX_NODES invalid, using default {DEFAULT_TEST_MAP_MAX_NODES}"
+                );
+                DEFAULT_TEST_MAP_MAX_NODES
+            }
+        },
+        Err(_) => DEFAULT_TEST_MAP_MAX_NODES,
+    })
+}
+
 /// Reverse BFS through the call graph to find all test chunks that call the
 /// target, up to `max_depth`. Returns sorted matches.
+///
+/// Capped at `CQS_TEST_MAP_MAX_NODES` (default 10,000) visited nodes to prevent
+/// OOM on dense graphs.
 ///
 /// Shared between CLI `cmd_test_map` and batch `dispatch_test_map`.
 pub(crate) fn build_test_map(
@@ -54,6 +85,7 @@ pub(crate) fn build_test_map(
     max_depth: usize,
 ) -> Vec<TestMatch> {
     let _span = tracing::info_span!("build_test_map", target_name, max_depth).entered();
+    let max_nodes = test_map_max_nodes();
 
     // Reverse BFS from target
     let mut ancestors: HashMap<String, (usize, String)> = HashMap::new();
@@ -65,8 +97,19 @@ pub(crate) fn build_test_map(
         if depth >= max_depth {
             continue;
         }
+        if ancestors.len() >= max_nodes {
+            tracing::warn!(
+                target_name,
+                max_nodes,
+                "test_map reverse BFS hit node cap, returning partial results"
+            );
+            break;
+        }
         if let Some(callers) = graph.reverse.get(current.as_str()) {
             for caller in callers {
+                if ancestors.len() >= max_nodes {
+                    break;
+                }
                 if !ancestors.contains_key(caller.as_ref()) {
                     ancestors.insert(caller.to_string(), (depth + 1, current.clone()));
                     queue.push_back((caller.to_string(), depth + 1));

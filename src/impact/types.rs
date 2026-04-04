@@ -50,20 +50,53 @@ pub struct TypeImpacted {
     pub shared_types: Vec<String>,
 }
 
-/// Complete impact analysis result
-#[derive(Debug, Clone, serde::Serialize)]
+/// Complete impact analysis result.
+///
+/// Serializes with computed `caller_count`, `test_count`, and `type_impacted_count`
+/// fields derived from vec lengths, so callers get counts natively without
+/// post-serialization mutation.
+#[derive(Debug, Clone)]
 pub struct ImpactResult {
-    #[serde(rename = "name")]
     pub function_name: String,
     pub callers: Vec<CallerDetail>,
     pub tests: Vec<TestInfo>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub transitive_callers: Vec<TransitiveCaller>,
     pub type_impacted: Vec<TypeImpacted>,
     /// True when batch name search failed and caller snippets may be incomplete.
     /// CLI handlers can display a warning when this is set.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub degraded: bool,
+}
+
+impl serde::Serialize for ImpactResult {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+
+        // Count non-empty optional fields to determine struct length
+        let mut field_count = 6; // name, callers, caller_count, tests, test_count, type_impacted, type_impacted_count
+        field_count += 1; // type_impacted_count
+        if !self.transitive_callers.is_empty() {
+            field_count += 1;
+        }
+        if self.degraded {
+            field_count += 1;
+        }
+
+        let mut state = serializer.serialize_struct("ImpactResult", field_count)?;
+        state.serialize_field("name", &self.function_name)?;
+        state.serialize_field("callers", &self.callers)?;
+        state.serialize_field("caller_count", &self.callers.len())?;
+        state.serialize_field("tests", &self.tests)?;
+        state.serialize_field("test_count", &self.tests.len())?;
+        if !self.transitive_callers.is_empty() {
+            state.serialize_field("transitive_callers", &self.transitive_callers)?;
+        }
+        state.serialize_field("type_impacted", &self.type_impacted)?;
+        state.serialize_field("type_impacted_count", &self.type_impacted.len())?;
+        if self.degraded {
+            state.serialize_field("degraded", &true)?;
+        }
+        state.end()
+    }
 }
 
 /// Lightweight caller + test coverage hints for a function.

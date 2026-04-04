@@ -166,7 +166,7 @@ pub(in crate::cli::batch) fn dispatch_task(
     let json = if let Some(budget) = tokens {
         crate::cli::commands::task::task_to_budgeted_json(&result, embedder, budget)
     } else {
-        cqs::task_to_json(&result)
+        serde_json::to_value(&result)?
     };
 
     Ok(json)
@@ -195,14 +195,14 @@ pub(in crate::cli::batch) fn dispatch_scout(
     let result = cqs::scout(&ctx.store(), embedder, query, &ctx.root, limit)?;
 
     let Some(budget) = tokens else {
-        return Ok(cqs::scout_to_json(&result));
+        return Ok(serde_json::to_value(&result)?);
     };
 
     let named_items = crate::cli::commands::scout_scored_names(&result);
     let (content_map, used) =
         crate::cli::commands::fetch_and_pack_content(&ctx.store(), embedder, &named_items, budget);
 
-    let mut json = cqs::scout_to_json(&result);
+    let mut json = serde_json::to_value(&result)?;
     crate::cli::commands::inject_content_into_scout_json(&mut json, &content_map);
     crate::cli::commands::inject_token_info(&mut json, Some((used, budget)));
     Ok(json)
@@ -424,7 +424,7 @@ pub(in crate::cli::batch) fn dispatch_plan(
     let result = cqs::plan::plan(&ctx.store(), embedder, description, &ctx.root, limit)
         .context("Plan generation failed")?;
 
-    let mut json = cqs::plan::plan_to_json(&result);
+    let mut json = serde_json::to_value(&result)?;
     if let Some(budget) = tokens {
         json["token_budget"] = serde_json::json!(budget);
     }

@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 
-use cqs::plan::{plan, plan_to_json};
+use cqs::plan::plan;
 
 pub(crate) fn cmd_plan(
     ctx: &crate::cli::CommandContext,
@@ -21,7 +21,7 @@ pub(crate) fn cmd_plan(
         plan(store, embedder, description, root, limit).context("Plan generation failed")?;
 
     if json {
-        let mut json_val = plan_to_json(&result);
+        let mut json_val = serde_json::to_value(&result)?;
         if let Some(budget) = tokens {
             json_val["token_budget"] = serde_json::json!(budget);
         }
