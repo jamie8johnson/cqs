@@ -246,4 +246,106 @@ mod tests {
         assert_eq!(json["neighbors"][0]["line_start"], 10);
         assert!(json["neighbors"][0].get("line").is_none());
     }
+
+    // ===== TC-13: NaN similarity serialization =====
+
+    #[test]
+    fn tc13_neighbor_entry_nan_score_becomes_null() {
+        // TC-13: serde_json silently converts NaN f32 to null in JSON output.
+        // This is the actual gap: if dot() returns NaN (from corrupt embeddings),
+        // the "score" field becomes null instead of a number. Agents parsing
+        // the JSON expect a numeric score and would get null without warning.
+        let entry = NeighborEntry {
+            name: "corrupt_fn".to_string(),
+            file: "src/lib.rs".to_string(),
+            line_start: 1,
+            chunk_type: "Function".to_string(),
+            score: f32::NAN,
+        };
+
+        // to_string_pretty (used by cmd_neighbors) silently converts NaN to null
+        let json_str = serde_json::to_string_pretty(&entry).unwrap();
+        assert!(
+            json_str.contains("null"),
+            "NaN f32 should serialize as null in JSON string, got: {}",
+            json_str
+        );
+        assert!(
+            !json_str.contains("NaN"),
+            "JSON should not contain literal 'NaN'"
+        );
+
+        // to_value also converts NaN to null
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(
+            json["score"].is_null(),
+            "to_value converts NaN f32 to null, got {:?}",
+            json["score"]
+        );
+    }
+
+    #[test]
+    fn tc13_neighbor_entry_infinity_score_becomes_null() {
+        // Inf also silently becomes null
+        let entry = NeighborEntry {
+            name: "inf_fn".to_string(),
+            file: "src/lib.rs".to_string(),
+            line_start: 1,
+            chunk_type: "Function".to_string(),
+            score: f32::INFINITY,
+        };
+        let json_str = serde_json::to_string_pretty(&entry).unwrap();
+        assert!(
+            json_str.contains("null"),
+            "Infinity f32 should serialize as null in JSON string"
+        );
+    }
+
+    #[test]
+    fn tc13_neighbors_output_nan_score_produces_null_in_json() {
+        // TC-13: Full NeighborsOutput with NaN — verify the output contains null
+        // where a numeric score is expected, documenting the silent data corruption
+        let output = NeighborsOutput {
+            target: "test_fn".to_string(),
+            neighbors: vec![
+                NeighborEntry {
+                    name: "good_fn".to_string(),
+                    file: "src/a.rs".to_string(),
+                    line_start: 1,
+                    chunk_type: "Function".to_string(),
+                    score: 0.95,
+                },
+                NeighborEntry {
+                    name: "corrupt_fn".to_string(),
+                    file: "src/b.rs".to_string(),
+                    line_start: 5,
+                    chunk_type: "Function".to_string(),
+                    score: f32::NAN,
+                },
+            ],
+            count: 2,
+        };
+        let json_str = serde_json::to_string_pretty(&output).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        // Good entry has numeric score
+        assert!(
+            parsed["neighbors"][0]["score"].is_f64(),
+            "Valid score should be a number"
+        );
+        // Corrupt entry has null score
+        assert!(
+            parsed["neighbors"][1]["score"].is_null(),
+            "NaN score should serialize as null"
+        );
+    }
+
+    #[test]
+    fn dot_product_with_nan_returns_nan() {
+        // TC-13: verify dot() propagates NaN from corrupt embedding vectors
+        let a = vec![1.0, f32::NAN, 0.0];
+        let b = vec![1.0, 1.0, 0.0];
+        let result = dot(&a, &b);
+        assert!(result.is_nan(), "dot() with NaN input should return NaN");
+    }
 }

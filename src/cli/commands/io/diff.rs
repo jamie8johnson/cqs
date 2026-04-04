@@ -259,4 +259,113 @@ mod tests {
         assert_eq!(json["summary"]["added"], 1);
         assert_eq!(json["summary"]["modified"], 1);
     }
+
+    // ===== TC-16: NaN similarity serialization =====
+
+    #[test]
+    fn tc16_diff_entry_nan_similarity_becomes_null() {
+        // TC-16: serde_json silently converts NaN f32 to null in JSON output.
+        // This is the actual gap: if semantic_diff produces a NaN similarity
+        // (e.g., identical-hash chunks with zero-norm embeddings), the "similarity"
+        // field becomes null instead of a number, which agents don't expect.
+        let entry = DiffEntryOutput {
+            name: "modified_fn".into(),
+            file: "src/lib.rs".into(),
+            chunk_type: "Function".into(),
+            similarity: Some(f32::NAN),
+        };
+
+        // to_string_pretty (used by cmd_diff) silently converts NaN to null
+        let json_str = serde_json::to_string_pretty(&entry).unwrap();
+        assert!(
+            json_str.contains("null"),
+            "NaN similarity should serialize as null in JSON string"
+        );
+
+        // to_value also converts NaN to null
+        let json = serde_json::to_value(&entry).unwrap();
+        // Option<f32> with Some(NaN) becomes present but null -- NOT omitted by skip_serializing_if
+        assert!(
+            json.get("similarity").is_some(),
+            "Some(NaN) should not be omitted by skip_serializing_if (Option::is_none is false)"
+        );
+        assert!(
+            json["similarity"].is_null(),
+            "NaN similarity should become null via to_value"
+        );
+    }
+
+    #[test]
+    fn tc16_diff_output_nan_modified_entry_produces_null() {
+        // TC-16: Full DiffOutput with NaN modified entry — verify silent null
+        let output = DiffOutput {
+            source: "v1.0".into(),
+            target: "v2.0".into(),
+            added: vec![],
+            removed: vec![],
+            modified: vec![DiffEntryOutput {
+                name: "changed_fn".into(),
+                file: "src/lib.rs".into(),
+                chunk_type: "Function".into(),
+                similarity: Some(f32::NAN),
+            }],
+            summary: DiffSummary {
+                added: 0,
+                removed: 0,
+                modified: 1,
+                unchanged: 5,
+            },
+        };
+        let json_str = serde_json::to_string_pretty(&output).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        // The modified entry's similarity should be null (not a number, not omitted)
+        assert!(
+            parsed["modified"][0]["similarity"].is_null(),
+            "NaN similarity in DiffOutput should serialize as null"
+        );
+    }
+
+    #[test]
+    fn tc16_diff_entry_none_similarity_serializes_ok() {
+        // Contrast: None similarity (added/removed entries) should serialize fine
+        let entry = DiffEntryOutput {
+            name: "new_fn".into(),
+            file: "src/lib.rs".into(),
+            chunk_type: "Function".into(),
+            similarity: None,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(
+            json.get("similarity").is_none(),
+            "None similarity should be omitted via skip_serializing_if"
+        );
+    }
+
+    #[test]
+    fn tc16_diff_entry_boundary_similarity_values() {
+        // Verify boundary values (0.0, 1.0) serialize correctly via both paths
+        for &val in &[0.0f32, 1.0, -0.0, f32::MIN_POSITIVE] {
+            let entry = DiffEntryOutput {
+                name: "fn".into(),
+                file: "f.rs".into(),
+                chunk_type: "Function".into(),
+                similarity: Some(val),
+            };
+            // to_string_pretty should succeed for valid floats
+            let string_result = serde_json::to_string_pretty(&entry);
+            assert!(
+                string_result.is_ok(),
+                "similarity {} should serialize via to_string_pretty",
+                val
+            );
+            // to_value should also succeed
+            let json = serde_json::to_value(&entry).unwrap();
+            assert!(
+                json["similarity"].is_number(),
+                "similarity {} should be a number in JSON",
+                val
+            );
+        }
+    }
 }

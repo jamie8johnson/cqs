@@ -641,3 +641,151 @@ fn test_notes_warnings_filter() {
         .success()
         .stdout(predicate::str::contains("this is a warning"));
 }
+
+// ===== HP-5: context JSON field completeness =====
+
+#[test]
+#[serial]
+fn hp5_context_json_chunk_fields() {
+    // HP-5: Verify that context --json output includes all expected chunk fields
+    // and that field names/types match the documented schema.
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    let output = cqs()
+        .args(["context", "src/lib.rs", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
+
+    // Top-level field
+    assert_eq!(parsed["file"], "src/lib.rs");
+
+    let chunks = parsed["chunks"]
+        .as_array()
+        .expect("Should have chunks array");
+    assert!(
+        chunks.len() >= 4,
+        "Expected at least 4 chunks (main, process, validate, transform), got {}",
+        chunks.len()
+    );
+
+    // Verify every chunk has the expected fields with correct types
+    for (i, chunk) in chunks.iter().enumerate() {
+        assert!(
+            chunk["name"].is_string(),
+            "chunks[{i}].name should be a string"
+        );
+        assert!(
+            chunk["chunk_type"].is_string(),
+            "chunks[{i}].chunk_type should be a string"
+        );
+        assert!(
+            chunk["signature"].is_string(),
+            "chunks[{i}].signature should be a string"
+        );
+        assert!(
+            chunk["line_start"].is_u64(),
+            "chunks[{i}].line_start should be a number"
+        );
+        assert!(
+            chunk["line_end"].is_u64(),
+            "chunks[{i}].line_end should be a number"
+        );
+        // line_start should be <= line_end
+        let ls = chunk["line_start"].as_u64().unwrap();
+        let le = chunk["line_end"].as_u64().unwrap();
+        assert!(
+            ls <= le,
+            "chunks[{i}].line_start ({ls}) should be <= line_end ({le})"
+        );
+        // doc is either a string or null (some chunks may lack doc comments)
+        assert!(
+            chunk["doc"].is_string() || chunk["doc"].is_null(),
+            "chunks[{i}].doc should be a string or null"
+        );
+    }
+
+    // Verify external_callers and external_callees arrays exist
+    assert!(
+        parsed["external_callers"].is_array(),
+        "Should have external_callers array"
+    );
+    assert!(
+        parsed["external_callees"].is_array(),
+        "Should have external_callees array"
+    );
+    assert!(
+        parsed["dependent_files"].is_array(),
+        "Should have dependent_files array"
+    );
+
+    // The "line" field should NOT exist (agents need "line_start" instead)
+    for chunk in chunks {
+        assert!(
+            chunk.get("line").is_none(),
+            "chunk should use 'line_start', not 'line'"
+        );
+    }
+}
+
+#[test]
+#[serial]
+fn hp5_context_compact_json_fields() {
+    // HP-5: Verify compact mode JSON includes caller_count and callee_count
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    let output = cqs()
+        .args(["context", "src/lib.rs", "--compact", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
+
+    assert_eq!(parsed["file"], "src/lib.rs");
+
+    // chunk_count should match chunks array length
+    let chunks = parsed["chunks"]
+        .as_array()
+        .expect("Should have chunks array");
+    let chunk_count = parsed["chunk_count"]
+        .as_u64()
+        .expect("Should have chunk_count field");
+    assert_eq!(
+        chunk_count,
+        chunks.len() as u64,
+        "chunk_count should match chunks array length"
+    );
+
+    // Every compact chunk should have caller_count and callee_count
+    for (i, chunk) in chunks.iter().enumerate() {
+        assert!(
+            chunk["name"].is_string(),
+            "chunks[{i}].name should be a string"
+        );
+        assert!(
+            chunk["caller_count"].is_u64(),
+            "chunks[{i}].caller_count should be a number"
+        );
+        assert!(
+            chunk["callee_count"].is_u64(),
+            "chunks[{i}].callee_count should be a number"
+        );
+        assert!(
+            chunk["line_start"].is_u64(),
+            "chunks[{i}].line_start should be a number"
+        );
+        assert!(
+            chunk["line_end"].is_u64(),
+            "chunks[{i}].line_end should be a number"
+        );
+    }
+}
