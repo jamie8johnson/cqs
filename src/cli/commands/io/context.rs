@@ -56,7 +56,8 @@ pub(crate) struct CompactChunkEntry {
     pub name: String,
     pub chunk_type: String,
     pub signature: String,
-    pub lines: [u32; 2],
+    pub line_start: u32,
+    pub line_end: u32,
     pub caller_count: u64,
     pub callee_count: u64,
 }
@@ -73,7 +74,8 @@ pub(crate) fn compact_to_json(data: &CompactData, path: &str) -> serde_json::Val
                 name: c.name.clone(),
                 chunk_type: c.chunk_type.to_string(),
                 signature: c.signature.clone(),
-                lines: [c.line_start, c.line_end],
+                line_start: c.line_start,
+                line_end: c.line_end,
                 caller_count: cc,
                 callee_count: ce,
             }
@@ -198,7 +200,8 @@ pub(crate) struct FullChunkEntry {
     pub name: String,
     pub chunk_type: String,
     pub signature: String,
-    pub lines: [u32; 2],
+    pub line_start: u32,
+    pub line_end: u32,
     pub doc: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
@@ -207,8 +210,8 @@ pub(crate) struct FullChunkEntry {
 /// An external caller in full context output.
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct ExternalCallerEntry {
-    pub caller: String,
-    pub caller_file: String,
+    pub name: String,
+    pub file: String,
     pub calls: String,
     pub line_start: u32,
 }
@@ -216,7 +219,7 @@ pub(crate) struct ExternalCallerEntry {
 /// An external callee in full context output.
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct ExternalCalleeEntry {
-    pub callee: String,
+    pub name: String,
     pub called_from: String,
 }
 
@@ -239,7 +242,8 @@ pub(crate) fn full_to_json(
                 name: c.name.clone(),
                 chunk_type: c.chunk_type.to_string(),
                 signature: c.signature.clone(),
-                lines: [c.line_start, c.line_end],
+                line_start: c.line_start,
+                line_end: c.line_end,
                 doc: c.doc.clone(),
                 content,
             }
@@ -248,9 +252,9 @@ pub(crate) fn full_to_json(
     let callers: Vec<_> = data
         .external_callers
         .iter()
-        .map(|(name, file, calls, line)| ExternalCallerEntry {
-            caller: name.clone(),
-            caller_file: file.clone(),
+        .map(|(caller_name, file, calls, line)| ExternalCallerEntry {
+            name: caller_name.clone(),
+            file: file.clone(),
             calls: calls.clone(),
             line_start: *line,
         })
@@ -258,8 +262,8 @@ pub(crate) fn full_to_json(
     let callees: Vec<_> = data
         .external_callees
         .iter()
-        .map(|(name, from)| ExternalCalleeEntry {
-            callee: name.clone(),
+        .map(|(callee_name, from)| ExternalCalleeEntry {
+            name: callee_name.clone(),
             called_from: from.clone(),
         })
         .collect();
@@ -423,7 +427,8 @@ struct SummaryOutput<'a> {
 struct SummaryChunkEntry {
     name: String,
     chunk_type: String,
-    lines: [u32; 2],
+    line_start: u32,
+    line_end: u32,
 }
 
 fn summary_to_json(data: &FullData, path: &str) -> serde_json::Value {
@@ -433,7 +438,8 @@ fn summary_to_json(data: &FullData, path: &str) -> serde_json::Value {
         .map(|c| SummaryChunkEntry {
             name: c.name.clone(),
             chunk_type: c.chunk_type.to_string(),
-            lines: [c.line_start, c.line_end],
+            line_start: c.line_start,
+            line_end: c.line_end,
         })
         .collect();
     let mut dep_files: Vec<String> = data.dependent_files.iter().cloned().collect();

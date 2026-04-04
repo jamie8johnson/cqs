@@ -170,7 +170,8 @@ pub(crate) fn parse_git_log_output(output: &str) -> Vec<BlameEntry> {
 pub(crate) struct BlameOutput<'a> {
     pub name: &'a str,
     pub file: String,
-    pub lines: [u32; 2],
+    pub line_start: u32,
+    pub line_end: u32,
     pub signature: &'a str,
     pub commits: &'a [BlameEntry],
     pub total_commits: usize,
@@ -191,7 +192,8 @@ pub(crate) fn blame_to_json(data: &BlameData, root: &Path) -> serde_json::Value 
     let output = BlameOutput {
         name: &data.chunk.name,
         file: normalize_path(&data.chunk.file),
-        lines: [data.chunk.line_start, data.chunk.line_end],
+        line_start: data.chunk.line_start,
+        line_end: data.chunk.line_end,
         signature: &data.chunk.signature,
         commits: &data.commits,
         total_commits: data.commits.len(),
@@ -378,8 +380,8 @@ mod tests {
 
         assert_eq!(json["name"], "resolve_target");
         assert_eq!(json["file"], "src/search.rs");
-        assert_eq!(json["lines"][0], 23);
-        assert_eq!(json["lines"][1], 96);
+        assert_eq!(json["line_start"], 23);
+        assert_eq!(json["line_end"], 96);
         assert_eq!(json["commits"].as_array().unwrap().len(), 1);
         assert_eq!(json["commits"][0]["hash"], "abc1234");
         assert_eq!(json["total_commits"], 1);

@@ -17,7 +17,7 @@ struct NeighborEntry {
     file: String,
     line_start: u32,
     chunk_type: String,
-    similarity: f32,
+    score: f32,
 }
 
 /// Typed JSON output for the neighbors command.
@@ -50,7 +50,7 @@ fn build_neighbors_output(
             file: rel_display(&chunk.file, root),
             line_start: chunk.line_start,
             chunk_type: chunk.chunk_type.to_string(),
-            similarity: *sim,
+            score: *sim,
         })
         .collect();
 
@@ -175,7 +175,7 @@ pub(crate) fn cmd_neighbors(
             for e in &output.neighbors {
                 println!(
                     "  {:.3}  {} [{}] ({}:{})",
-                    e.similarity, e.name, e.chunk_type, e.file, e.line_start
+                    e.score, e.name, e.chunk_type, e.file, e.line_start
                 );
             }
         }
@@ -209,13 +209,13 @@ mod tests {
             file: "src/lib.rs".to_string(),
             line_start: 5,
             chunk_type: "Function".to_string(),
-            similarity: 0.95,
+            score: 0.95,
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert_eq!(json["name"], "foo");
         assert!(json.get("line_start").is_some());
         assert!(json.get("line").is_none());
-        let sim = json["similarity"].as_f64().unwrap();
+        let sim = json["score"].as_f64().unwrap();
         assert!((sim - 0.95).abs() < 0.001);
     }
 
@@ -236,7 +236,7 @@ mod tests {
                 file: "src/lib.rs".to_string(),
                 line_start: 10,
                 chunk_type: "Function".to_string(),
-                similarity: 0.85,
+                score: 0.85,
             }],
             count: 1,
         };
