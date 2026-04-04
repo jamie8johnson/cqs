@@ -384,7 +384,7 @@ fn test_callees_json_output() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON output: {} — raw: {}", e, stdout));
     assert!(parsed.is_object(), "callees --json should return object");
-    assert!(parsed["function"].is_string(), "Should have function field");
+    assert!(parsed["name"].is_string(), "Should have name field");
 }
 
 // =============================================================================

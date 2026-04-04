@@ -12,6 +12,7 @@ use cqs::index::VectorIndex;
 use cqs::store::{CallerInfo, ChunkSummary, SearchResult, Store};
 use cqs::{compute_hints, normalize_path, FunctionHints, HnswIndex, SearchFilter};
 
+use super::callers::{CalleeEntry, CallerEntry};
 use crate::cli::staleness;
 
 // ─── Shared core ────────────────────────────────────────────────────────────
@@ -174,86 +175,126 @@ pub(crate) fn build_explain_data(
     })
 }
 
-/// Build JSON output from explain data.
+// ─── Output types ──────────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct SimilarEntry {
+    pub name: String,
+    pub file: String,
+    pub score: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct HintsOutput {
+    pub caller_count: usize,
+    pub test_count: usize,
+    pub no_callers: bool,
+    pub no_tests: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ExplainOutput {
+    pub name: String,
+    pub file: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub chunk_type: String,
+    pub language: String,
+    pub signature: String,
+    pub doc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    pub callers: Vec<CallerEntry>,
+    pub callees: Vec<CalleeEntry>,
+    pub similar: Vec<SimilarEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hints: Option<HintsOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<usize>,
+}
+
+/// Build typed explain output from explain data.
 /// Shared between CLI `cmd_explain --json` and batch `dispatch_explain`.
-pub(crate) fn explain_to_json(data: &ExplainData, root: &Path) -> serde_json::Value {
+pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOutput {
+    let _span = tracing::info_span!("build_explain_output", name = %data.chunk.name).entered();
     let chunk = &data.chunk;
 
-    let callers_json: Vec<_> = data
+    let callers: Vec<CallerEntry> = data
         .callers
         .iter()
-        .map(|c| {
-            serde_json::json!({
-                "name": c.name,
-                "file": normalize_path(&c.file),
-                "line": c.line,
-            })
+        .map(|c| CallerEntry {
+            name: c.name.clone(),
+            file: normalize_path(&c.file).to_string(),
+            line_start: c.line,
         })
         .collect();
 
-    let callees_json: Vec<_> = data
+    let callees: Vec<CalleeEntry> = data
         .callees
         .iter()
-        .map(|(name, line)| {
-            serde_json::json!({
-                "name": name,
-                "line": line,
-            })
+        .map(|(name, line)| CalleeEntry {
+            name: name.clone(),
+            line_start: *line,
         })
         .collect();
 
-    let similar_json: Vec<_> = data
+    let similar: Vec<SimilarEntry> = data
         .similar
         .iter()
         .map(|r| {
-            let mut obj = serde_json::json!({
-                "name": r.chunk.name,
-                "file": normalize_path(&r.chunk.file),
-                "score": r.score,
-            });
-            if let Some(ref set) = data.similar_content_ids {
+            let content = data.similar_content_ids.as_ref().and_then(|set| {
                 if set.contains(&r.chunk.id) {
-                    obj["content"] = serde_json::json!(r.chunk.content);
+                    Some(r.chunk.content.clone())
+                } else {
+                    None
                 }
+            });
+            SimilarEntry {
+                name: r.chunk.name.clone(),
+                file: normalize_path(&r.chunk.file).to_string(),
+                score: r.score,
+                content,
             }
-            obj
         })
         .collect();
 
-    let rel_file = cqs::rel_display(&chunk.file, root);
-
-    let mut output = serde_json::json!({
-        "name": chunk.name,
-        "file": rel_file,
-        "language": chunk.language.to_string(),
-        "chunk_type": chunk.chunk_type.to_string(),
-        "lines": [chunk.line_start, chunk.line_end],
-        "signature": chunk.signature,
-        "doc": chunk.doc,
-        "callers": callers_json,
-        "callees": callees_json,
-        "similar": similar_json,
+    let hints = data.hints.as_ref().map(|h| HintsOutput {
+        caller_count: h.caller_count,
+        test_count: h.test_count,
+        no_callers: h.caller_count == 0,
+        no_tests: h.test_count == 0,
     });
 
-    if data.include_target_content {
-        output["content"] = serde_json::json!(chunk.content);
-    }
+    let (token_count, token_budget) = match data.token_info {
+        Some((used, budget)) => (Some(used), Some(budget)),
+        None => (None, None),
+    };
 
-    if let Some(ref h) = data.hints {
-        output["hints"] = serde_json::json!({
-            "caller_count": h.caller_count,
-            "test_count": h.test_count,
-            "no_callers": h.caller_count == 0,
-            "no_tests": h.test_count == 0,
-        });
+    ExplainOutput {
+        name: chunk.name.clone(),
+        file: cqs::rel_display(&chunk.file, root).to_string(),
+        line_start: chunk.line_start,
+        line_end: chunk.line_end,
+        chunk_type: chunk.chunk_type.to_string(),
+        language: chunk.language.to_string(),
+        signature: chunk.signature.clone(),
+        doc: chunk.doc.clone(),
+        content: if data.include_target_content {
+            Some(chunk.content.clone())
+        } else {
+            None
+        },
+        callers,
+        callees,
+        similar,
+        hints,
+        token_count,
+        token_budget,
     }
-
-    if let Some((used, budget)) = data.token_info {
-        output["token_count"] = serde_json::json!(used);
-        output["token_budget"] = serde_json::json!(budget);
-    }
-
-    output
 }
 
 // ─── CLI command ────────────────────────────────────────────────────────────
@@ -293,7 +334,7 @@ pub(crate) fn cmd_explain(
     }
 
     if json {
-        let output = explain_to_json(&data, root);
+        let output = build_explain_output(&data, root);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         print_explain_terminal(&data, root);
@@ -390,5 +431,90 @@ fn print_explain_terminal(data: &ExplainData, root: &Path) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+
+    #[test]
+    fn test_explain_output_field_names() {
+        let output = ExplainOutput {
+            name: "foo".into(),
+            file: "src/lib.rs".into(),
+            line_start: 10,
+            line_end: 20,
+            chunk_type: "function".into(),
+            language: "rust".into(),
+            signature: "fn foo()".into(),
+            doc: None,
+            content: None,
+            callers: vec![],
+            callees: vec![],
+            similar: vec![],
+            hints: None,
+            token_count: None,
+            token_budget: None,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert!(json.get("line_start").is_some());
+        assert!(json.get("line_end").is_some());
+        assert!(json.get("line").is_none());
+        // None fields should be omitted
+        assert!(json.get("content").is_none());
+        assert!(json.get("hints").is_none());
+        assert!(json.get("token_count").is_none());
+        assert!(json.get("token_budget").is_none());
+    }
+
+    #[test]
+    fn test_explain_output_with_hints() {
+        let output = ExplainOutput {
+            name: "bar".into(),
+            file: "src/bar.rs".into(),
+            line_start: 1,
+            line_end: 5,
+            chunk_type: "function".into(),
+            language: "rust".into(),
+            signature: "fn bar()".into(),
+            doc: Some("A doc comment".into()),
+            content: Some("fn bar() {}".into()),
+            callers: vec![CallerEntry {
+                name: "caller_a".into(),
+                file: "src/a.rs".into(),
+                line_start: 42,
+            }],
+            callees: vec![CalleeEntry {
+                name: "callee_b".into(),
+                line_start: 3,
+            }],
+            similar: vec![SimilarEntry {
+                name: "baz".into(),
+                file: "src/baz.rs".into(),
+                score: 0.85,
+                content: None,
+            }],
+            hints: Some(HintsOutput {
+                caller_count: 1,
+                test_count: 0,
+                no_callers: false,
+                no_tests: true,
+            }),
+            token_count: Some(100),
+            token_budget: Some(500),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["name"], "bar");
+        assert_eq!(json["callers"][0]["line_start"], 42);
+        assert!(json["callers"][0].get("line").is_none());
+        assert_eq!(json["callees"][0]["line_start"], 3);
+        assert!(json["callees"][0].get("line").is_none());
+        assert_eq!(json["hints"]["no_tests"], true);
+        assert_eq!(json["token_count"], 100);
+        assert_eq!(json["token_budget"], 500);
+        assert!(json.get("content").is_some());
+        // similar entry should not have content (None)
+        assert!(json["similar"][0].get("content").is_none());
     }
 }

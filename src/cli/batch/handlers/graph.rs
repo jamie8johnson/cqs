@@ -30,12 +30,12 @@ pub(in crate::cli::batch) fn dispatch_deps(
 
     if reverse {
         let types = ctx.store().get_types_used_by(name)?;
-        Ok(crate::cli::commands::deps_reverse_to_json(name, &types))
+        let output = crate::cli::commands::build_deps_reverse(name, &types);
+        Ok(serde_json::to_value(&output)?)
     } else {
         let users = ctx.store().get_type_users(name)?;
-        Ok(crate::cli::commands::deps_forward_to_json(
-            &users, &ctx.root,
-        ))
+        let output = crate::cli::commands::build_deps_forward(&users, &ctx.root);
+        Ok(serde_json::to_value(&output)?)
     }
 }
 
@@ -57,7 +57,8 @@ pub(in crate::cli::batch) fn dispatch_callers(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_callers", name).entered();
     let callers = ctx.store().get_callers_full(name)?;
-    Ok(crate::cli::commands::callers_to_json(&callers))
+    let output = crate::cli::commands::build_callers(&callers);
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Dispatches a request to retrieve all functions called by a specified function.
@@ -83,7 +84,8 @@ pub(in crate::cli::batch) fn dispatch_callees(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_callees", name).entered();
     let callees = ctx.store().get_callees_full(name, None)?;
-    Ok(crate::cli::commands::callees_to_json(name, &callees))
+    let output = crate::cli::commands::build_callees(name, &callees);
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Analyzes the impact of changes to a target and returns the results as JSON.
@@ -177,10 +179,8 @@ pub(in crate::cli::batch) fn dispatch_test_map(
         &ctx.root,
         max_depth,
     );
-    Ok(crate::cli::commands::test_map_to_json(
-        &target_name,
-        &matches,
-    ))
+    let output = crate::cli::commands::build_test_map_output(&target_name, &matches);
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Traces a dependency path between two targets using breadth-first search through the call graph.
@@ -214,14 +214,14 @@ pub(in crate::cli::batch) fn dispatch_trace(
 
     if source_name == target_name {
         let trivial_path = vec![source_name.clone()];
-        return crate::cli::commands::trace::trace_to_json(
+        let output = crate::cli::commands::trace::build_trace_output(
             &ctx.store(),
             &source_name,
             &target_name,
             Some(&trivial_path),
             &ctx.root,
-            0,
-        );
+        )?;
+        return Ok(serde_json::to_value(&output)?);
     }
 
     let graph = ctx.call_graph()?;
@@ -232,14 +232,14 @@ pub(in crate::cli::batch) fn dispatch_trace(
         max_depth,
     );
 
-    crate::cli::commands::trace::trace_to_json(
+    let output = crate::cli::commands::trace::build_trace_output(
         &ctx.store(),
         &source_name,
         &target_name,
         found_path.as_deref(),
         &ctx.root,
-        max_depth,
-    )
+    )?;
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Dispatches a request to find functions related to a given function name based on shared callers, callees, and types.

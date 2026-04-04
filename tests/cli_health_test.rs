@@ -269,10 +269,10 @@ fn test_deps_reverse_cli_json() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
-    // Reverse deps output is an object with function, types, count
+    // Reverse deps output is an object with name, types, count
     assert!(
-        parsed["function"].is_string(),
-        "deps --reverse --json should have function field"
+        parsed["name"].is_string(),
+        "deps --reverse --json should have name field"
     );
     assert!(
         parsed["types"].is_array(),
