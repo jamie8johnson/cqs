@@ -6,6 +6,19 @@
 
 use anyhow::{bail, Result};
 
+// ---------------------------------------------------------------------------
+// Output structs
+// ---------------------------------------------------------------------------
+
+/// JSON output for the reconstruct command.
+#[derive(Debug, serde::Serialize)]
+struct ReconstructOutput {
+    file: String,
+    chunks: usize,
+    lines: u32,
+    content: String,
+}
+
 pub(crate) fn cmd_reconstruct(
     ctx: &crate::cli::CommandContext,
     path: &str,
@@ -34,12 +47,12 @@ pub(crate) fn cmd_reconstruct(
     }
 
     if json {
-        let output = serde_json::json!({
-            "file": rel_path,
-            "chunks": chunks.len(),
-            "lines": chunks.last().map(|c| c.line_end).unwrap_or(0),
-            "content": assemble(&chunks),
-        });
+        let output = ReconstructOutput {
+            file: rel_path.clone(),
+            chunks: chunks.len(),
+            lines: chunks.last().map(|c| c.line_end).unwrap_or(0),
+            content: assemble(&chunks),
+        };
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         print!("{}", assemble(&chunks));
@@ -124,5 +137,20 @@ mod tests {
     fn test_assemble_empty() {
         let result = assemble(&[]);
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn reconstruct_output_serialization() {
+        let output = ReconstructOutput {
+            file: "src/lib.rs".into(),
+            chunks: 3,
+            lines: 45,
+            content: "fn foo() {}\nfn bar() {}\n".into(),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["file"], "src/lib.rs");
+        assert_eq!(json["chunks"], 3);
+        assert_eq!(json["lines"], 45);
+        assert!(json["content"].as_str().unwrap().contains("fn foo()"));
     }
 }

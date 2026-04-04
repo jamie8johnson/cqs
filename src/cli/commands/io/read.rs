@@ -258,6 +258,35 @@ pub(crate) fn build_focused_output(
     Ok(FocusedReadResult { output, hints })
 }
 
+// ---------------------------------------------------------------------------
+// Output structs
+// ---------------------------------------------------------------------------
+
+/// JSON output for a full file read.
+#[derive(Debug, serde::Serialize)]
+struct ReadOutput {
+    path: String,
+    content: String,
+}
+
+/// Hints about caller/test coverage for a focused function.
+#[derive(Debug, serde::Serialize)]
+struct ReadHints {
+    caller_count: usize,
+    test_count: usize,
+    no_callers: bool,
+    no_tests: bool,
+}
+
+/// JSON output for a focused read.
+#[derive(Debug, serde::Serialize)]
+struct FocusedReadJsonOutput {
+    focus: String,
+    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hints: Option<ReadHints>,
+}
+
 // ─── CLI commands ───────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_read(
@@ -298,10 +327,10 @@ pub(crate) fn cmd_read(
     };
 
     if json {
-        let result = serde_json::json!({
-            "path": path,
-            "content": enriched,
-        });
+        let result = ReadOutput {
+            path: path.to_string(),
+            content: enriched,
+        };
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         print!("{}", enriched);
@@ -331,22 +360,73 @@ fn cmd_read_focused(ctx: &crate::cli::CommandContext, focus: &str, json: bool) -
     let result = build_focused_output(store, focus, root, &audit_mode, &notes)?;
 
     if json {
-        let mut json_val = serde_json::json!({
-            "focus": focus,
-            "content": result.output,
+        let hints = result.hints.as_ref().map(|h| ReadHints {
+            caller_count: h.caller_count,
+            test_count: h.test_count,
+            no_callers: h.caller_count == 0,
+            no_tests: h.test_count == 0,
         });
-        if let Some(ref h) = result.hints {
-            json_val["hints"] = serde_json::json!({
-                "caller_count": h.caller_count,
-                "test_count": h.test_count,
-                "no_callers": h.caller_count == 0,
-                "no_tests": h.test_count == 0,
-            });
-        }
-        println!("{}", serde_json::to_string_pretty(&json_val)?);
+        let output = FocusedReadJsonOutput {
+            focus: focus.to_string(),
+            content: result.output,
+            hints,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         print!("{}", result.output);
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_output_serialization() {
+        let output = ReadOutput {
+            path: "src/lib.rs".into(),
+            content: "fn main() {}".into(),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["path"], "src/lib.rs");
+        assert_eq!(json["content"], "fn main() {}");
+    }
+
+    #[test]
+    fn focused_read_output_with_hints() {
+        let output = FocusedReadJsonOutput {
+            focus: "search".into(),
+            content: "fn search() { ... }".into(),
+            hints: Some(ReadHints {
+                caller_count: 3,
+                test_count: 2,
+                no_callers: false,
+                no_tests: false,
+            }),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["focus"], "search");
+        assert_eq!(json["hints"]["caller_count"], 3);
+        assert_eq!(json["hints"]["test_count"], 2);
+        assert_eq!(json["hints"]["no_callers"], false);
+        assert_eq!(json["hints"]["no_tests"], false);
+    }
+
+    #[test]
+    fn focused_read_output_no_hints() {
+        let output = FocusedReadJsonOutput {
+            focus: "MyStruct".into(),
+            content: "struct MyStruct {}".into(),
+            hints: None,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["focus"], "MyStruct");
+        assert!(json.get("hints").is_none());
+    }
 }

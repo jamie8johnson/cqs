@@ -3,6 +3,12 @@
 //! Core logic is in shared functions (`build_compact_data`, `build_full_data`,
 //! `compact_to_json`, `full_to_json`) so batch mode can reuse them without
 //! duplicating ~120 lines.
+//!
+//! TODO: Replace 11 `json!` calls in `compact_to_json`, `full_to_json`, and
+//! `summary_to_json` with typed output structs (e.g. `CompactOutput`,
+//! `FullOutput`, `SummaryOutput`). Blocked on batch handler
+//! (src/cli/batch/handlers/info.rs) which calls `compact_to_json` / `full_to_json`
+//! and expects `serde_json::Value`. Migrate when batch handlers are updated.
 
 use anyhow::{bail, Context as _, Result};
 use std::collections::{HashMap, HashSet};
