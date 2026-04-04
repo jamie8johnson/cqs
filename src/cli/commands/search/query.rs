@@ -134,6 +134,13 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
 
+    // Lazily obtain reranker from CommandContext (shared across ref + project paths)
+    let reranker = if cli.rerank {
+        Some(ctx.reranker()?)
+    } else {
+        None
+    };
+
     // --ref scoped search: skip project index, search only the named reference
     if let Some(ref ref_name) = cli.ref_name {
         return cmd_query_ref_only(
@@ -144,6 +151,7 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
             &filter,
             root,
             &embedder,
+            reranker,
         );
     }
 
@@ -157,6 +165,7 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         root,
         embedder: &embedder,
         effective_limit,
+        reranker,
     })
 }
 
@@ -171,6 +180,7 @@ struct QueryContext<'a> {
     root: &'a std::path::Path,
     embedder: &'a Embedder,
     effective_limit: usize,
+    reranker: Option<&'a cqs::Reranker>,
 }
 
 /// Project search: search project index, optionally include references (--include-refs).
@@ -236,8 +246,8 @@ fn cmd_query_project(ctx: &QueryContext<'_>) -> Result<()> {
     };
 
     // Cross-encoder re-ranking
-    let results = if cli.rerank {
-        rerank_unified(query, results, cli.limit)?
+    let results = if let Some(reranker) = ctx.reranker {
+        rerank_unified(reranker, query, results, cli.limit)?
     } else {
         results
     };
@@ -411,6 +421,7 @@ fn unified_score(r: &UnifiedResult) -> f32 {
 
 /// Re-rank unified results using cross-encoder scoring.
 fn rerank_unified(
+    reranker: &cqs::Reranker,
     query: &str,
     results: Vec<UnifiedResult>,
     limit: usize,
@@ -423,8 +434,6 @@ fn rerank_unified(
         .collect();
 
     if code_results.len() > 1 {
-        let reranker =
-            cqs::Reranker::new().map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
         reranker
             .rerank(query, &mut code_results, limit)
             .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
@@ -487,6 +496,7 @@ fn cmd_query_name_only(
 }
 
 /// Ref-scoped semantic search: search only the named reference, no project index
+#[allow(clippy::too_many_arguments)]
 fn cmd_query_ref_only(
     cli: &Cli,
     ref_name: &str,
@@ -495,6 +505,7 @@ fn cmd_query_ref_only(
     filter: &SearchFilter,
     root: &std::path::Path,
     embedder: &Embedder,
+    reranker: Option<&cqs::Reranker>,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_query_ref_only", ref_name).entered();
 
@@ -515,12 +526,12 @@ fn cmd_query_ref_only(
     )?;
 
     // Cross-encoder re-ranking for ref-only path
-    if cli.rerank && results.len() > 1 {
-        let reranker =
-            cqs::Reranker::new().map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
-        reranker
-            .rerank(query, &mut results, cli.limit)
-            .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
+    if let Some(reranker) = reranker {
+        if results.len() > 1 {
+            reranker
+                .rerank(query, &mut results, cli.limit)
+                .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
+        }
     }
 
     let tagged: Vec<reference::TaggedResult> = results
