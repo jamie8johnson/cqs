@@ -15,8 +15,8 @@ use cqs::store::DeadConfidence;
 /// A JSON object with four fields:
 /// - `dead`: Array of confidently identified dead functions
 /// - `possibly_dead_pub`: Array of possibly dead public functions
-/// - `total_dead`: Count of confidently dead functions
-/// - `total_possibly_dead_pub`: Count of possibly dead public functions
+/// - `count`: Count of confidently dead functions
+/// - `possibly_pub_count`: Count of possibly dead public functions
 /// Each function entry includes name, file path, line range, type, signature, language, and confidence level.
 /// # Errors
 /// Returns an error if the code store query fails.
@@ -38,11 +38,8 @@ pub(in crate::cli::batch) fn dispatch_dead(
         .filter(|d| d.confidence >= *min_confidence)
         .collect();
 
-    Ok(crate::cli::commands::dead_to_json(
-        &confident,
-        &possibly_pub,
-        &ctx.root,
-    ))
+    let output = crate::cli::commands::build_dead_output(&confident, &possibly_pub, &ctx.root);
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Dispatches a request to identify stale and missing files in the batch store.
