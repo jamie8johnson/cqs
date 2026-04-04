@@ -415,25 +415,25 @@ fn build_token_pack(
 
 /// Typed output for summary context mode.
 #[derive(Debug, serde::Serialize)]
-struct SummaryOutput<'a> {
-    file: &'a str,
-    chunk_count: usize,
-    chunks: Vec<SummaryChunkEntry>,
-    external_caller_count: usize,
-    external_callee_count: usize,
-    dependent_files: Vec<String>,
+pub(crate) struct SummaryOutput<'a> {
+    pub file: &'a str,
+    pub chunk_count: usize,
+    pub chunks: Vec<SummaryChunkEntry>,
+    pub external_caller_count: usize,
+    pub external_callee_count: usize,
+    pub dependent_files: Vec<String>,
 }
 
 /// A chunk in summary context output.
 #[derive(Debug, serde::Serialize)]
-struct SummaryChunkEntry {
-    name: String,
-    chunk_type: String,
-    line_start: u32,
-    line_end: u32,
+pub(crate) struct SummaryChunkEntry {
+    pub name: String,
+    pub chunk_type: String,
+    pub line_start: u32,
+    pub line_end: u32,
 }
 
-fn summary_to_json(data: &FullData, path: &str) -> serde_json::Value {
+pub(crate) fn summary_to_json(data: &FullData, path: &str) -> serde_json::Value {
     let chunks: Vec<_> = data
         .chunks
         .iter()

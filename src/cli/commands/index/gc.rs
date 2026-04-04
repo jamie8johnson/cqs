@@ -37,18 +37,21 @@ pub(crate) struct GcOutput {
 // ---------------------------------------------------------------------------
 
 /// Run garbage collection on the index
-pub(crate) fn cmd_gc(json: bool) -> Result<()> {
+pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_gc").entered();
 
-    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
+    let ctx = crate::cli::CommandContext::open_readwrite(cli)?;
+    let store = &ctx.store;
+    let root = &ctx.root;
+    let cqs_dir = &ctx.cqs_dir;
 
     // Acquire lock to prevent race with watch/index
-    let _lock = acquire_index_lock(&cqs_dir)?;
+    let _lock = acquire_index_lock(cqs_dir)?;
 
     // Enumerate current files
     let parser = Parser::new()?;
     let exts = parser.supported_extensions();
-    let files = cqs::enumerate_files(&root, &exts, false)?;
+    let files = cqs::enumerate_files(root, &exts, false)?;
     let file_set: HashSet<_> = files.into_iter().collect();
 
     // Count what we'll clean before doing it
@@ -103,7 +106,7 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
             }
             tracing::debug!("Deleted stale HNSW before rebuild");
         }
-        let result = build_hnsw_index(&store, &cqs_dir)?;
+        let result = build_hnsw_index(store, cqs_dir)?;
         if result.is_some() {
             if let Err(e) = store.set_hnsw_dirty(false) {
                 tracing::warn!(error = %e, "Failed to clear HNSW dirty flag after rebuild");

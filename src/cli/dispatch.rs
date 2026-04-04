@@ -146,8 +146,8 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             )
         }
         Some(Commands::Ref { ref subcmd }) => return cmd_ref(&cli, subcmd),
-        // Special: uses read-write open_project_store()
-        Some(Commands::Gc { ref output }) => return cmd_gc(output.json),
+        // Special: uses read-write CommandContext::open_readwrite()
+        Some(Commands::Gc { ref output }) => return cmd_gc(&cli, output.json),
         // AuditMode doesn't use a store — uses find_project_root + resolve_index_dir
         Some(Commands::AuditMode {
             ref state,
