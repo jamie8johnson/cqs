@@ -489,7 +489,12 @@ Key commands (`--json` works on all commands; `--format mermaid` also accepted o
 - `cqs gc` - report/clean stale index entries
 - `cqs convert <path>` - convert PDF/HTML/CHM/Markdown to cleaned Markdown for indexing
 - `cqs telemetry` - usage dashboard: command frequency, categories, sessions, top queries. `--reset`, `--all`, `--json`
+- `cqs reconstruct <file>` - reassemble source file from indexed chunks (works without original file on disk)
+- `cqs brief <file>` - one-line-per-function summary for a file
+- `cqs neighbors <function>` - brute-force cosine nearest neighbors (exact top-K, unlike HNSW-based `similar`)
+- `cqs affected` - diff-aware impact: changed functions, callers, tests, risk scores. `--base`, `--json`
 - `cqs train-data` - generate fine-tuning training data from git history
+- `cqs train-pairs` - extract (NL description, code) pairs from index as JSONL for embedding fine-tuning
 - `cqs ref add/remove/list` - manage reference indexes for multi-index search
 - `cqs project register/remove/list/search` - cross-project search registry
 - `cqs export-model --repo <org/model>` - export a HuggingFace model to ONNX format for use with cqs
@@ -500,7 +505,7 @@ Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after
 ```
 
 <details>
-<summary><h2>Supported Languages (51)</h2></summary>
+<summary><h2>Supported Languages (52)</h2></summary>
 
 - ASP.NET Web Forms (ASPX/ASCX/ASMX — C#/VB.NET code-behind in server script blocks and `<% %>` expressions, delegates to C#/VB.NET grammars)
 - Bash (functions, command calls)
@@ -519,6 +524,7 @@ Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after
 - Haskell (functions, data types, newtypes, type synonyms, typeclasses, instances)
 - HCL (resources, data sources, variables, outputs, modules, providers with qualified naming)
 - HTML (headings, semantic landmarks, id'd elements; inline `<script>` extracts JS/TS functions, `<style>` extracts CSS rules via multi-grammar injection)
+- IEC 61131-3 Structured Text (function blocks, functions, programs, actions, methods, properties — also extracted from Rockwell L5X/L5K PLC exports)
 - INI (sections, settings)
 - Java (classes, interfaces, enums, methods)
 - JavaScript (JSDoc `@param`/`@returns` tags improve search quality)

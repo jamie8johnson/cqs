@@ -60,6 +60,19 @@ Rules:
 - Don't stack suffixes (`_with_graph_depth`). Add parameters to the existing `_with_*` function instead.
 - If the `_with_*` variant has no external callers, fold it into the base function.
 
+### JSON Output Field Naming Conventions
+
+All `--json` output uses consistent field names across commands:
+
+| Field | Not | Why |
+|-------|-----|-----|
+| `line_start` | `line` | Distinguishes from `line_end`; unambiguous |
+| `name` | `function` | Works for structs, enums, traits, not just functions |
+| `score` | `similarity` | Generic — covers RRF, cosine, and risk scores |
+| `file` | `origin` | Matches user mental model; `origin` is too abstract |
+
+When adding `--json` to a new command, follow existing output structs (e.g., `ChunkSummary`, `CallerDetail`) rather than inventing new field names.
+
 ## Pull Request Process
 
 1. Fork the repository and create a feature branch
@@ -105,8 +118,16 @@ src/
     mod.rs      - Top-level CLI module, re-exports
     definitions.rs - Clap argument definitions and command enum
     dispatch.rs - Command dispatch (match on command, call handlers)
-    commands/   - Command implementations
-      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, drift.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs, where_cmd.rs, scout.rs, onboard.rs, convert.rs, review.rs, ci.rs, health.rs, suggest.rs, deps.rs, task.rs, blame.rs, plan.rs, train_data.rs, export_model.rs, brief.rs, affected.rs, neighbors.rs, train_pairs.rs, reconstruct.rs, telemetry_cmd.rs
+    commands/   - Command implementations (organized by category)
+      mod.rs      - Top-level re-exports
+      resolve.rs  - Target resolution (function name → chunk)
+      search/     - query, gather, similar, related, where_cmd, scout, onboard, neighbors
+      graph/      - callers, deps, explain, impact, impact_diff, test_map, trace
+      review/     - diff_review, ci, dead, health, suggest, affected
+      index/      - build, gc, stale, stats
+      io/         - blame, brief, context, diff, drift, notes, read, reconstruct
+      infra/      - audit_mode, convert, doctor, init, project, reference, telemetry_cmd
+      train/      - export_model, plan, task, train_data, train_pairs
     chat.rs     - Interactive REPL (wraps batch mode with rustyline)
     batch/      - Batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
       mod.rs      - BatchContext, vector index builder, main loop
@@ -120,7 +141,8 @@ src/
     display.rs  - Output formatting, result display
     enrichment.rs - Enrichment pass (extracted from pipeline.rs)
     files.rs    - File enumeration, lock files, path utilities
-    pipeline.rs - Multi-threaded indexing pipeline
+    pipeline/   - Multi-threaded indexing pipeline
+      mod.rs, embedding.rs, parsing.rs, types.rs, upsert.rs, windowing.rs
     signal.rs   - Signal handling (Ctrl+C)
     staleness.rs - Proactive staleness warnings for search results
     telemetry.rs - Optional command usage logging (CQS_TELEMETRY=1)
@@ -139,7 +161,8 @@ src/
     calls/      - Call graph storage and queries
       mod.rs, crud.rs, dead_code.rs, query.rs, related.rs, test_map.rs
     types.rs    - Type edge storage and queries
-    helpers.rs  - Types, embedding conversion functions
+    helpers/    - Types, embedding conversion, scoring, SQL utilities
+      mod.rs, embeddings.rs, error.rs, rows.rs, scoring.rs, search_filter.rs, sql.rs, types.rs
     migrations.rs - Schema migration framework
   parser/       - Code parsing (tree-sitter + custom parsers, delegates to language/ registry)
     mod.rs      - Parser struct, parse_file(), parse_file_all(), supported_extensions()
@@ -149,11 +172,6 @@ src/
     injection.rs - Multi-grammar injection (HTML→JS/CSS via set_included_ranges)
     l5x.rs      - Rockwell PLC exports (L5X XML + L5K ASCII) → Structured Text extraction
     markdown.rs - Heading-based markdown parser, cross-reference extraction
-  search/       - Search algorithms, query expansion
-    mod.rs      - Module re-exports
-    query.rs    - search_filtered, search_by_candidate_ids, RRF fusion
-    synonyms.rs - Query expansion synonym map (31 programming abbreviations)
-    scoring/    - Scoring pipeline (candidate, note_boost)
   embedder/      - ONNX embedding models (configurable: BGE-large-en-v1.5 default, E5-base preset, custom ONNX)
     mod.rs      - Embedder struct, embed(), batch embedding, runtime dimension detection
     models.rs   - ModelConfig struct, built-in presets (e5-base, bge-large), resolution logic, EmbeddingConfig
@@ -263,18 +281,19 @@ src/
 
 Checklist for every new command:
 
-1. **Implementation** — `src/cli/commands/<name>.rs` with the core logic
-2. **CLI definition** — `Commands` enum variant in `src/cli/definitions.rs` with clap args
-3. **Dispatch** — match arm in `src/cli/dispatch.rs`
-4. **`--json` support** — serde serialization for programmatic output
-5. **Tracing** — `tracing::info_span!` at entry, `tracing::warn!` on error fallback
-6. **Error handling** — `Result` propagation, no bare `.unwrap_or_default()` in production
-7. **Tests** — happy path + empty input + error path + edge cases
-8. **CLAUDE.md** — add to the command reference section
-9. **Skills** — add to `.claude/skills/cqs/SKILL.md` and `.claude/skills/cqs-bootstrap/SKILL.md`
-10. **CHANGELOG** — entry in the next release section
+1. **Implementation** — `src/cli/commands/<category>/<name>.rs` with the core logic (pick category: search/, graph/, review/, index/, io/, infra/, train/)
+2. **Category mod.rs** — add `mod <name>;` + `pub(crate) use <name>::*;` in `src/cli/commands/<category>/mod.rs`
+3. **CLI definition** — `Commands` enum variant in `src/cli/definitions.rs` with clap args
+4. **Dispatch** — match arm in `src/cli/dispatch.rs`
+5. **`--json` support** — serde serialization for programmatic output
+6. **Tracing** — `tracing::info_span!` at entry, `tracing::warn!` on error fallback
+7. **Error handling** — `Result` propagation, no bare `.unwrap_or_default()` in production
+8. **Tests** — happy path + empty input + error path + edge cases
+9. **CLAUDE.md** — add to the command reference section
+10. **Skills** — add to `.claude/skills/cqs/SKILL.md` and `.claude/skills/cqs-bootstrap/SKILL.md`
+11. **CHANGELOG** — entry in the next release section
 
-Pattern to follow: look at `src/cli/commands/blame.rs` or `src/cli/commands/dead.rs` for a minimal example.
+Pattern to follow: look at `src/cli/commands/io/blame.rs` or `src/cli/commands/review/dead.rs` for a minimal example.
 
 ## Adding Injection Rules (Multi-Grammar)
 
