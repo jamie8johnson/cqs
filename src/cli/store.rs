@@ -167,7 +167,7 @@ pub(crate) fn build_vector_index_with_config(
         }
     }
     // Check for crash between SQLite commit and HNSW save (RT-DATA-6)
-    if store.is_hnsw_dirty().unwrap_or(false) {
+    if store.is_hnsw_dirty().unwrap_or(true) {
         tracing::warn!(
             "HNSW index may be stale (interrupted write detected). \
              Falling back to brute-force search. Run 'cqs index' to rebuild."

@@ -277,10 +277,6 @@ pub(crate) fn bfs_shortest_path(
     queue.push_back((source.to_string(), 0));
 
     while let Some((current, depth)) = queue.pop_front() {
-        if visited.len() >= MAX_NODES {
-            tracing::warn!(max_nodes = MAX_NODES, "BFS trace capped — graph too dense");
-            break;
-        }
         if current == target {
             let mut path = vec![current.clone()];
             let mut node = &current;
@@ -293,6 +289,10 @@ pub(crate) fn bfs_shortest_path(
             }
             path.reverse();
             return Some(path);
+        }
+        if visited.len() >= MAX_NODES {
+            tracing::warn!(max_nodes = MAX_NODES, "BFS trace capped — graph too dense");
+            break;
         }
         if depth >= max_depth {
             continue;
