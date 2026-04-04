@@ -1,10 +1,23 @@
 //! Search methods for the Store (FTS, name search, RRF fusion).
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use super::helpers::{self, ChunkRow, SearchResult};
 use super::{sanitize_fts_query, ChunkSummary, Store, StoreError};
 use crate::nl::normalize_for_fts;
+
+/// PF-2: RRF constant K, cached on first access. Defaults to 60.0.
+/// Override via `CQS_RRF_K` env var for eval experimentation.
+fn rrf_k() -> f32 {
+    static K: OnceLock<f32> = OnceLock::new();
+    *K.get_or_init(|| {
+        std::env::var("CQS_RRF_K")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60.0)
+    })
+}
 
 impl Store {
     /// Search FTS5 index for keyword matches.
@@ -72,14 +85,15 @@ impl Store {
 
         // Search name column specifically using FTS5 column filter
         // Use * for prefix matching (e.g., "parse" matches "parse_config")
-        debug_assert!(
-            !normalized.contains('"'),
-            "sanitized query must not contain double quotes"
-        );
+        // SEC-10: Runtime guard — sanitize_fts_query strips `"` but defense-in-depth
+        // prevents FTS5 injection if sanitization logic ever changes.
         if normalized.contains('"') {
+            tracing::warn!(
+                name = %name,
+                "FTS injection guard: double quote in sanitized name, returning empty"
+            );
             return Ok(vec![]);
         }
-        // SAFETY: sanitize_fts_query strips all double quotes (line 76 debug_assert + line 79 runtime guard)
         let fts_query = format!("name:\"{}\" OR name:\"{}\"*", normalized, normalized);
 
         self.rt.block_on(async {
@@ -125,12 +139,8 @@ impl Store {
         // K=60 is the standard RRF constant from the Cormack et al. (2009) paper,
         // originally tuned for web search. For code search with smaller corpora
         // (10k-100k chunks), the optimal K may differ. Empirically, K=60 performs
-        // well on our eval set (90.9% R@1). Override via CQS_RRF_K env var for
-        // experimentation during evals.
-        let k: f32 = std::env::var("CQS_RRF_K")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(60.0);
+        // well on our eval set (90.9% R@1). Override via CQS_RRF_K env var.
+        let k = rrf_k();
 
         let mut scores: HashMap<&str, f32> =
             HashMap::with_capacity(semantic_ids.len() + fts_ids.len());
@@ -148,7 +158,12 @@ impl Store {
             *scores.entry(id).or_insert(0.0) += contribution;
         }
 
+        // AC-9: Deduplicate fts_ids — symmetric with semantic_ids dedup above.
+        let mut seen_fts = std::collections::HashSet::with_capacity(fts_ids.len());
         for (rank, id) in fts_ids.iter().enumerate() {
+            if !seen_fts.insert(id.as_str()) {
+                continue; // skip duplicate
+            }
             // Same conversion: enumerate's 0-index -> RRF's 1-indexed rank
             let contribution = 1.0 / (k + rank as f32 + 1.0);
             *scores.entry(id.as_str()).or_insert(0.0) += contribution;
