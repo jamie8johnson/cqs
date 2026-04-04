@@ -1,9 +1,273 @@
 //! Task command — one-shot implementation context for a task description.
+//!
+// TODO: task_to_json lives in lib crate (src/task.rs) — normalize field names
+// there as part of the lib-level JSON schema migration. Also convert
+// scout_to_json (src/scout.rs) which task_to_json delegates to.
 
 use anyhow::Result;
 use colored::Colorize;
 
 use cqs::{task, task_to_json, Embedder};
+
+// ─── Output types ──────────────────────────────────────────────────────────
+
+/// Brief task output: files to touch, placements, at-risk functions, tests.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct TaskBriefOutput {
+    pub files: Vec<String>,
+    pub placements: Vec<String>,
+    pub risk: Vec<TaskBriefRisk>,
+    pub tests: Vec<String>,
+    pub summary: TaskBriefSummary,
+}
+
+/// Risk entry in the brief task output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct TaskBriefRisk {
+    pub name: String,
+    pub risk_level: String,
+}
+
+/// Summary counts in the brief task output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct TaskBriefSummary {
+    pub files: usize,
+    pub functions: usize,
+    pub high_risk: usize,
+    pub tests: usize,
+}
+
+/// A single scout chunk in the budgeted output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BudgetedScoutChunk {
+    pub name: String,
+    pub chunk_type: String,
+    pub signature: String,
+    pub line_start: u32,
+    pub role: String,
+    pub caller_count: usize,
+    pub test_count: usize,
+    pub search_score: f32,
+}
+
+/// A single file group in the budgeted scout output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BudgetedScoutGroup {
+    pub file: String,
+    pub relevance_score: f32,
+    pub is_stale: bool,
+    pub chunks: Vec<BudgetedScoutChunk>,
+}
+
+/// Summary for the budgeted scout section.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BudgetedScoutSummary {
+    pub total_files: usize,
+    pub total_functions: usize,
+    pub untested_count: usize,
+    pub stale_count: usize,
+}
+
+/// The scout section of the budgeted output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BudgetedScoutOutput {
+    pub file_groups: Vec<BudgetedScoutGroup>,
+    pub summary: BudgetedScoutSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relevant_notes: Option<Vec<BudgetedNoteEntry>>,
+}
+
+/// A note entry in the budgeted output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BudgetedNoteEntry {
+    pub text: String,
+    pub sentiment: f32,
+    pub mentions: Vec<String>,
+}
+
+/// Summary for the budgeted task output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BudgetedTaskSummary {
+    pub total_files: usize,
+    pub total_functions: usize,
+    pub modify_targets: usize,
+    pub high_risk_count: usize,
+    pub test_count: usize,
+    pub stale_count: usize,
+}
+
+/// Full budgeted task output combining all packed sections.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BudgetedTaskOutput {
+    pub description: String,
+    pub scout: BudgetedScoutOutput,
+    pub code: Vec<serde_json::Value>,
+    pub risk: Vec<serde_json::Value>,
+    pub tests: Vec<serde_json::Value>,
+    pub placement: Vec<serde_json::Value>,
+    pub summary: BudgetedTaskSummary,
+    pub token_count: usize,
+    pub token_budget: usize,
+}
+
+// ─── Typed builders ────────────────────────────────────────────────────────
+
+/// Build brief task output from a TaskResult.
+pub(crate) fn build_task_brief(
+    result: &cqs::TaskResult,
+    root: &std::path::Path,
+) -> TaskBriefOutput {
+    let _span = tracing::info_span!("build_task_brief").entered();
+
+    let files: Vec<String> = {
+        use std::collections::BTreeSet;
+        result
+            .scout
+            .file_groups
+            .iter()
+            .map(|g| {
+                g.file
+                    .strip_prefix(root)
+                    .unwrap_or(&g.file)
+                    .display()
+                    .to_string()
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    };
+
+    let placements: Vec<String> = result
+        .placement
+        .iter()
+        .take(3)
+        .map(|p| {
+            let path = p.file.strip_prefix(root).unwrap_or(&p.file);
+            format!(
+                "{}:{} (near {})",
+                path.display(),
+                p.insertion_line,
+                p.near_function
+            )
+        })
+        .collect();
+
+    let risk: Vec<TaskBriefRisk> = result
+        .risk
+        .iter()
+        .map(|r| TaskBriefRisk {
+            name: r.name.clone(),
+            risk_level: r.risk.risk_level.to_string(),
+        })
+        .collect();
+
+    let tests: Vec<String> = result.tests.iter().map(|t| t.name.clone()).collect();
+
+    TaskBriefOutput {
+        files,
+        placements,
+        risk,
+        tests,
+        summary: TaskBriefSummary {
+            files: result.summary.total_files,
+            functions: result.summary.total_functions,
+            high_risk: result.summary.high_risk_count,
+            tests: result.summary.test_count,
+        },
+    }
+}
+
+/// Build budgeted scout section from packed indices.
+fn build_budgeted_scout(result: &cqs::TaskResult, indices: &[usize]) -> BudgetedScoutOutput {
+    let _span = tracing::info_span!("build_budgeted_scout", count = indices.len()).entered();
+
+    let file_groups: Vec<BudgetedScoutGroup> = indices
+        .iter()
+        .map(|&i| {
+            let g = &result.scout.file_groups[i];
+            let chunks: Vec<BudgetedScoutChunk> = g
+                .chunks
+                .iter()
+                .map(|c| BudgetedScoutChunk {
+                    name: c.name.clone(),
+                    chunk_type: c.chunk_type.to_string(),
+                    signature: c.signature.clone(),
+                    line_start: c.line_start,
+                    role: c.role.as_str().to_string(),
+                    caller_count: c.caller_count,
+                    test_count: c.test_count,
+                    search_score: c.search_score,
+                })
+                .collect();
+            BudgetedScoutGroup {
+                file: cqs::normalize_path(&g.file).to_string(),
+                relevance_score: g.relevance_score,
+                is_stale: g.is_stale,
+                chunks,
+            }
+        })
+        .collect();
+
+    BudgetedScoutOutput {
+        file_groups,
+        summary: BudgetedScoutSummary {
+            total_files: result.scout.summary.total_files,
+            total_functions: result.scout.summary.total_functions,
+            untested_count: result.scout.summary.untested_count,
+            stale_count: result.scout.summary.stale_count,
+        },
+        relevant_notes: None,
+    }
+}
+
+/// Build budgeted notes from packed indices.
+fn build_budgeted_notes(result: &cqs::TaskResult, indices: &[usize]) -> Vec<BudgetedNoteEntry> {
+    let _span = tracing::info_span!("build_budgeted_notes", count = indices.len()).entered();
+    indices
+        .iter()
+        .map(|&i| {
+            let n = &result.scout.relevant_notes[i];
+            BudgetedNoteEntry {
+                text: n.text.clone(),
+                sentiment: n.sentiment,
+                mentions: n.mentions.clone(),
+            }
+        })
+        .collect()
+}
+
+/// Build the full budgeted task output combining all packed sections.
+pub(crate) fn build_budgeted_task(
+    result: &cqs::TaskResult,
+    packed: &PackedSections,
+) -> BudgetedTaskOutput {
+    let _span = tracing::info_span!("build_budgeted_task").entered();
+
+    let mut scout = build_budgeted_scout(result, &packed.scout);
+    let notes = build_budgeted_notes(result, &packed.notes);
+    if !notes.is_empty() {
+        scout.relevant_notes = Some(notes);
+    }
+
+    BudgetedTaskOutput {
+        description: result.description.clone(),
+        scout,
+        code: build_code_json(result, &packed.code),
+        risk: build_risk_json(result, &packed.risk),
+        tests: build_tests_json(result, &packed.tests),
+        placement: build_placement_json(result, &packed.placement),
+        summary: BudgetedTaskSummary {
+            total_files: result.summary.total_files,
+            total_functions: result.summary.total_functions,
+            modify_targets: result.summary.modify_targets,
+            high_risk_count: result.summary.high_risk_count,
+            test_count: result.summary.test_count,
+            stale_count: result.summary.stale_count,
+        },
+        token_count: packed.total_used,
+        token_budget: packed.budget,
+    }
+}
 
 /// Waterfall budget weight for the scout section (file groups, chunk roles).
 const WATERFALL_SCOUT: f64 = 0.15;
@@ -47,98 +311,40 @@ pub(crate) fn cmd_task(
 
 /// Compact output (~200 tokens): files to touch, at-risk functions, test coverage.
 fn output_brief(result: &cqs::TaskResult, root: &std::path::Path, json: bool) -> Result<()> {
-    use std::collections::BTreeSet;
-
-    // Collect unique files from scout file groups
-    let files: BTreeSet<String> = result
-        .scout
-        .file_groups
-        .iter()
-        .map(|g| {
-            g.file
-                .strip_prefix(root)
-                .unwrap_or(&g.file)
-                .display()
-                .to_string()
-        })
-        .collect();
-
-    // Collect placement suggestions
-    let placements: Vec<String> = result
-        .placement
-        .iter()
-        .take(3)
-        .map(|p| {
-            let path = p.file.strip_prefix(root).unwrap_or(&p.file);
-            format!(
-                "{}:{} (near {})",
-                path.display(),
-                p.insertion_line,
-                p.near_function
-            )
-        })
-        .collect();
-
-    // Collect at-risk functions
-    let risks: Vec<(&str, String)> = result
-        .risk
-        .iter()
-        .map(|r| (r.name.as_str(), r.risk.risk_level.to_string()))
-        .collect();
-
-    // Collect test names
-    let tests: Vec<&str> = result.tests.iter().map(|t| t.name.as_str()).collect();
+    let brief = build_task_brief(result, root);
 
     if json {
-        let mut obj = serde_json::Map::new();
-        obj.insert("files".into(), serde_json::json!(files));
-        obj.insert("placements".into(), serde_json::json!(placements));
-        obj.insert(
-            "risk".into(),
-            serde_json::json!(risks
-                .iter()
-                .map(|(n, l)| { serde_json::json!({"name": n, "risk_level": l}) })
-                .collect::<Vec<_>>()),
-        );
-        obj.insert("tests".into(), serde_json::json!(tests));
-        obj.insert(
-            "summary".into(),
-            serde_json::json!({
-                "files": result.summary.total_files,
-                "functions": result.summary.total_functions,
-                "high_risk": result.summary.high_risk_count,
-                "tests": result.summary.test_count,
-            }),
-        );
-        println!("{}", serde_json::to_string_pretty(&obj)?);
+        println!("{}", serde_json::to_string_pretty(&brief)?);
     } else {
         println!("{}", "Files:".bold());
-        for f in &files {
+        for f in &brief.files {
             println!("  {f}");
         }
-        if !placements.is_empty() {
+        if !brief.placements.is_empty() {
             println!("\n{}", "Add code at:".bold());
-            for p in &placements {
+            for p in &brief.placements {
                 println!("  {p}");
             }
         }
-        if !risks.is_empty() {
+        if !brief.risk.is_empty() {
             println!("\n{}", "At risk:".bold());
-            for (name, level) in &risks {
-                let styled = match level.as_str() {
-                    "High" => format!("{name} [{level}]").red().to_string(),
-                    "Medium" => format!("{name} [{level}]").yellow().to_string(),
-                    _ => format!("{name} [{level}]"),
+            for r in &brief.risk {
+                let styled = match r.risk_level.as_str() {
+                    "High" => format!("{} [{}]", r.name, r.risk_level).red().to_string(),
+                    "Medium" => format!("{} [{}]", r.name, r.risk_level)
+                        .yellow()
+                        .to_string(),
+                    _ => format!("{} [{}]", r.name, r.risk_level),
                 };
                 println!("  {styled}");
             }
         }
         println!(
             "\n{} files, {} functions, {} high-risk, {} tests",
-            result.summary.total_files,
-            result.summary.total_functions,
-            result.summary.high_risk_count,
-            result.summary.test_count,
+            brief.summary.files,
+            brief.summary.functions,
+            brief.summary.high_risk,
+            brief.summary.tests,
         );
     }
 
@@ -374,83 +580,20 @@ pub(crate) fn task_to_budgeted_json(
         budget,
         crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
     );
-    budgeted_json(result, &packed)
-}
-
-/// Build budgeted JSON combining all packed sections into a single output.
-fn budgeted_json(result: &cqs::TaskResult, packed: &PackedSections) -> serde_json::Value {
-    let mut scout_json = build_scout_json(result, &packed.scout);
-    let code_json = build_code_json(result, &packed.code);
-    let risk_json = build_risk_json(result, &packed.risk);
-    let tests_json = build_tests_json(result, &packed.tests);
-    let placement_json = build_placement_json(result, &packed.placement);
-    let notes_json = build_notes_json(result, &packed.notes);
-    scout_json["relevant_notes"] = serde_json::json!(notes_json);
-
-    serde_json::json!({
-        "description": result.description,
-        "scout": scout_json,
-        "code": code_json,
-        "risk": risk_json,
-        "tests": tests_json,
-        "placement": placement_json,
-        "summary": {
-            "total_files": result.summary.total_files,
-            "total_functions": result.summary.total_functions,
-            "modify_targets": result.summary.modify_targets,
-            "high_risk_count": result.summary.high_risk_count,
-            "test_count": result.summary.test_count,
-            "stale_count": result.summary.stale_count,
-        },
-        "token_count": packed.total_used,
-        "token_budget": packed.budget,
-    })
+    let output = build_budgeted_task(result, &packed);
+    match serde_json::to_value(&output) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to serialize budgeted task output");
+            serde_json::json!({"error": e.to_string()})
+        }
+    }
 }
 
 fn output_json_budgeted(result: &cqs::TaskResult, packed: &PackedSections) -> Result<()> {
-    let output = budgeted_json(result, packed);
+    let output = build_budgeted_task(result, packed);
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
-}
-
-fn build_scout_json(result: &cqs::TaskResult, indices: &[usize]) -> serde_json::Value {
-    let groups: Vec<serde_json::Value> = indices
-        .iter()
-        .map(|&i| {
-            let g = &result.scout.file_groups[i];
-            let chunks: Vec<serde_json::Value> = g
-                .chunks
-                .iter()
-                .map(|c| {
-                    serde_json::json!({
-                        "name": c.name,
-                        "chunk_type": c.chunk_type.to_string(),
-                        "signature": c.signature,
-                        "line_start": c.line_start,
-                        "role": c.role.as_str(),
-                        "caller_count": c.caller_count,
-                        "test_count": c.test_count,
-                        "search_score": c.search_score,
-                    })
-                })
-                .collect();
-            serde_json::json!({
-                "file": cqs::normalize_path(&g.file),
-                "relevance_score": g.relevance_score,
-                "is_stale": g.is_stale,
-                "chunks": chunks,
-            })
-        })
-        .collect();
-    serde_json::json!({
-        "file_groups": groups,
-        "summary": {
-            "total_files": result.scout.summary.total_files,
-            "total_functions": result.scout.summary.total_functions,
-            "untested_count": result.scout.summary.untested_count,
-            "stale_count": result.scout.summary.stale_count,
-        }
-    })
 }
 
 fn build_code_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_json::Value> {
@@ -509,19 +652,7 @@ fn build_placement_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serd
         .collect()
 }
 
-fn build_notes_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_json::Value> {
-    indices
-        .iter()
-        .map(|&i| {
-            let n = &result.scout.relevant_notes[i];
-            serde_json::json!({
-                "text": n.text,
-                "sentiment": n.sentiment,
-                "mentions": n.mentions,
-            })
-        })
-        .collect()
-}
+// build_notes_json replaced by build_budgeted_notes (typed BudgetedNoteEntry)
 
 fn output_text_budgeted(result: &cqs::TaskResult, root: &std::path::Path, packed: &PackedSections) {
     print_header(
@@ -938,5 +1069,251 @@ mod tests {
         let placement_used = 80;
         let notes_budget = budget - scout_used - code_used - impact_used - placement_used;
         assert_eq!(notes_budget, 240);
+    }
+
+    // ── Typed output struct serialization tests ─────────────────────────────
+
+    #[test]
+    fn test_task_brief_output_field_names() {
+        let output = TaskBriefOutput {
+            files: vec!["src/lib.rs".into()],
+            placements: vec!["src/lib.rs:10 (near foo)".into()],
+            risk: vec![TaskBriefRisk {
+                name: "bar".into(),
+                risk_level: "High".into(),
+            }],
+            tests: vec!["test_bar".into()],
+            summary: TaskBriefSummary {
+                files: 1,
+                functions: 2,
+                high_risk: 1,
+                tests: 1,
+            },
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert!(json.get("files").is_some());
+        assert!(json.get("placements").is_some());
+        assert!(json.get("risk").is_some());
+        assert!(json.get("tests").is_some());
+        assert!(json.get("summary").is_some());
+        assert_eq!(json["risk"][0]["name"], "bar");
+        assert_eq!(json["risk"][0]["risk_level"], "High");
+        assert_eq!(json["summary"]["files"], 1);
+        assert_eq!(json["summary"]["functions"], 2);
+        assert_eq!(json["summary"]["high_risk"], 1);
+    }
+
+    #[test]
+    fn test_task_brief_output_empty() {
+        let output = TaskBriefOutput {
+            files: vec![],
+            placements: vec![],
+            risk: vec![],
+            tests: vec![],
+            summary: TaskBriefSummary {
+                files: 0,
+                functions: 0,
+                high_risk: 0,
+                tests: 0,
+            },
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["files"].as_array().unwrap().len(), 0);
+        assert_eq!(json["risk"].as_array().unwrap().len(), 0);
+        assert_eq!(json["summary"]["files"], 0);
+    }
+
+    #[test]
+    fn test_budgeted_scout_chunk_field_names() {
+        let chunk = BudgetedScoutChunk {
+            name: "foo".into(),
+            chunk_type: "Function".into(),
+            signature: "fn foo()".into(),
+            line_start: 42,
+            role: "modify".into(),
+            caller_count: 3,
+            test_count: 2,
+            search_score: 0.95,
+        };
+        let json = serde_json::to_value(&chunk).unwrap();
+        assert_eq!(json["name"], "foo");
+        assert_eq!(json["line_start"], 42);
+        assert!(json.get("line").is_none()); // normalized away
+        assert_eq!(json["chunk_type"], "Function");
+        assert_eq!(json["role"], "modify");
+    }
+
+    #[test]
+    fn test_budgeted_scout_group_serialization() {
+        let group = BudgetedScoutGroup {
+            file: "src/lib.rs".into(),
+            relevance_score: 0.85,
+            is_stale: false,
+            chunks: vec![],
+        };
+        let json = serde_json::to_value(&group).unwrap();
+        assert_eq!(json["file"], "src/lib.rs");
+        assert_eq!(json["is_stale"], false);
+        assert!(json["chunks"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_budgeted_scout_output_notes_omitted_when_none() {
+        let output = BudgetedScoutOutput {
+            file_groups: vec![],
+            summary: BudgetedScoutSummary {
+                total_files: 0,
+                total_functions: 0,
+                untested_count: 0,
+                stale_count: 0,
+            },
+            relevant_notes: None,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert!(json.get("relevant_notes").is_none());
+    }
+
+    #[test]
+    fn test_budgeted_scout_output_notes_present_when_some() {
+        let output = BudgetedScoutOutput {
+            file_groups: vec![],
+            summary: BudgetedScoutSummary {
+                total_files: 0,
+                total_functions: 0,
+                untested_count: 0,
+                stale_count: 0,
+            },
+            relevant_notes: Some(vec![BudgetedNoteEntry {
+                text: "important note".into(),
+                sentiment: -0.5,
+                mentions: vec!["foo.rs".into()],
+            }]),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        let notes = json["relevant_notes"].as_array().unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0]["text"], "important note");
+        assert_eq!(notes[0]["sentiment"], -0.5);
+    }
+
+    #[test]
+    fn test_budgeted_note_entry_field_names() {
+        let entry = BudgetedNoteEntry {
+            text: "some note".into(),
+            sentiment: 0.5,
+            mentions: vec!["a.rs".into(), "b.rs".into()],
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["text"], "some note");
+        assert_eq!(json["sentiment"], 0.5);
+        assert_eq!(json["mentions"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_budgeted_task_output_field_names() {
+        let output = BudgetedTaskOutput {
+            description: "test task".into(),
+            scout: BudgetedScoutOutput {
+                file_groups: vec![],
+                summary: BudgetedScoutSummary {
+                    total_files: 1,
+                    total_functions: 2,
+                    untested_count: 0,
+                    stale_count: 0,
+                },
+                relevant_notes: None,
+            },
+            code: vec![],
+            risk: vec![],
+            tests: vec![],
+            placement: vec![],
+            summary: BudgetedTaskSummary {
+                total_files: 1,
+                total_functions: 2,
+                modify_targets: 1,
+                high_risk_count: 0,
+                test_count: 3,
+                stale_count: 0,
+            },
+            token_count: 150,
+            token_budget: 300,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["description"], "test task");
+        assert_eq!(json["token_count"], 150);
+        assert_eq!(json["token_budget"], 300);
+        assert_eq!(json["summary"]["modify_targets"], 1);
+        assert_eq!(json["summary"]["test_count"], 3);
+        assert!(json["code"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_budgeted_task_output_empty() {
+        let output = BudgetedTaskOutput {
+            description: String::new(),
+            scout: BudgetedScoutOutput {
+                file_groups: vec![],
+                summary: BudgetedScoutSummary {
+                    total_files: 0,
+                    total_functions: 0,
+                    untested_count: 0,
+                    stale_count: 0,
+                },
+                relevant_notes: None,
+            },
+            code: vec![],
+            risk: vec![],
+            tests: vec![],
+            placement: vec![],
+            summary: BudgetedTaskSummary {
+                total_files: 0,
+                total_functions: 0,
+                modify_targets: 0,
+                high_risk_count: 0,
+                test_count: 0,
+                stale_count: 0,
+            },
+            token_count: 0,
+            token_budget: 0,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["token_count"], 0);
+        assert!(json["scout"]["file_groups"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_build_task_brief_empty_result() {
+        use std::path::PathBuf;
+        let result = cqs::TaskResult {
+            description: "empty".into(),
+            scout: cqs::ScoutResult {
+                file_groups: vec![],
+                relevant_notes: vec![],
+                summary: cqs::ScoutSummary {
+                    total_files: 0,
+                    total_functions: 0,
+                    untested_count: 0,
+                    stale_count: 0,
+                },
+            },
+            code: vec![],
+            risk: vec![],
+            tests: vec![],
+            placement: vec![],
+            summary: cqs::TaskSummary {
+                total_files: 0,
+                total_functions: 0,
+                modify_targets: 0,
+                high_risk_count: 0,
+                test_count: 0,
+                stale_count: 0,
+            },
+        };
+        let root = PathBuf::from("/tmp");
+        let brief = build_task_brief(&result, &root);
+        assert!(brief.files.is_empty());
+        assert!(brief.risk.is_empty());
+        assert!(brief.tests.is_empty());
+        assert_eq!(brief.summary.files, 0);
     }
 }
