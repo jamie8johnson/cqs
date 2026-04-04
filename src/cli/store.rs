@@ -67,6 +67,23 @@ impl<'a> CommandContext<'a> {
         })
     }
 
+    /// Open the project store in read-write mode and build a command context.
+    ///
+    /// Used by write commands (gc, etc.) that need the lazy embedder/reranker
+    /// from `CommandContext` but also need a writable store.
+    pub fn open_readwrite(cli: &'a definitions::Cli) -> Result<Self> {
+        let _span = tracing::info_span!("CommandContext::open_readwrite").entered();
+        let (store, root, cqs_dir) = open_project_store()?;
+        Ok(Self {
+            cli,
+            store,
+            root,
+            cqs_dir,
+            reranker: OnceLock::new(),
+            embedder: OnceLock::new(),
+        })
+    }
+
     /// Get the resolved model config from the CLI.
     pub fn model_config(&self) -> &cqs::embedder::ModelConfig {
         self.cli.model_config()

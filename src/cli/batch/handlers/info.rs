@@ -170,26 +170,8 @@ pub(in crate::cli::batch) fn dispatch_context(
     }
 
     if summary {
-        // Batch summary is a simpler aggregation (total counts, no per-caller detail)
-        let chunks = ctx.store().get_chunks_by_origin(path)?;
-        if chunks.is_empty() {
-            anyhow::bail!(
-                "No indexed chunks found for '{}'. Is the file indexed?",
-                path
-            );
-        }
-        let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
-        let caller_counts = ctx.store().get_caller_counts_batch(&names)?;
-        let callee_counts = ctx.store().get_callee_counts_batch(&names)?;
-        let total_callers: u64 = caller_counts.values().sum();
-        let total_callees: u64 = callee_counts.values().sum();
-
-        return Ok(serde_json::json!({
-            "file": path,
-            "chunk_count": chunks.len(),
-            "total_callers": total_callers,
-            "total_callees": total_callees,
-        }));
+        let data = crate::cli::commands::context::build_full_data(&ctx.store(), path, &ctx.root)?;
+        return Ok(crate::cli::commands::context::summary_to_json(&data, path));
     }
 
     // Full context -- with optional token packing
