@@ -50,6 +50,7 @@ pub(crate) struct CommandContext<'a> {
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
     reranker: OnceLock<cqs::Reranker>,
+    embedder: OnceLock<cqs::Embedder>,
 }
 
 impl<'a> CommandContext<'a> {
@@ -62,6 +63,7 @@ impl<'a> CommandContext<'a> {
             root,
             cqs_dir,
             reranker: OnceLock::new(),
+            embedder: OnceLock::new(),
         })
     }
 
@@ -85,6 +87,24 @@ impl<'a> CommandContext<'a> {
             .reranker
             .get()
             .expect("reranker OnceLock populated by set() above"))
+    }
+
+    /// Get or lazily create the embedder.
+    ///
+    /// The ONNX session is created on first call and reused for
+    /// all subsequent embedding within this CLI invocation.
+    pub fn embedder(&self) -> Result<&cqs::Embedder> {
+        if let Some(e) = self.embedder.get() {
+            return Ok(e);
+        }
+        let _span = tracing::info_span!("command_context_embedder_init").entered();
+        let e = cqs::Embedder::new(self.model_config().clone())
+            .map_err(|e| anyhow::anyhow!("Embedder init failed: {e}"))?;
+        let _ = self.embedder.set(e);
+        Ok(self
+            .embedder
+            .get()
+            .expect("embedder OnceLock populated by set() above"))
     }
 }
 

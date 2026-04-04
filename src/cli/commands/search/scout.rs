@@ -3,7 +3,7 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use cqs::{scout, scout_to_json, Embedder};
+use cqs::{scout, scout_to_json};
 
 pub(crate) fn cmd_scout(
     ctx: &crate::cli::CommandContext,
@@ -15,16 +15,16 @@ pub(crate) fn cmd_scout(
     let _span = tracing::info_span!("cmd_scout", task, ?max_tokens).entered();
     let store = &ctx.store;
     let root = &ctx.root;
-    let embedder = Embedder::new(ctx.model_config().clone())?;
+    let embedder = ctx.embedder()?;
     let limit = limit.clamp(1, 10);
 
-    let result = scout(store, &embedder, task, root, limit)?;
+    let result = scout(store, embedder, task, root, limit)?;
 
     // Token-budgeted content: fetch chunk content and pack into budget
     let (content_map, token_info) = if let Some(budget) = max_tokens {
         let named_items = crate::cli::commands::scout_scored_names(&result);
         let (cmap, used) =
-            crate::cli::commands::fetch_and_pack_content(store, &embedder, &named_items, budget);
+            crate::cli::commands::fetch_and_pack_content(store, embedder, &named_items, budget);
         (Some(cmap), Some((used, budget)))
     } else {
         (None, None)

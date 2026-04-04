@@ -74,7 +74,7 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         cli.limit
     };
 
-    let embedder = Embedder::new(cli.model_config().clone())?;
+    let embedder = ctx.embedder()?;
     let query_embedding = embedder.embed_query(query)?;
 
     let languages = match &cli.lang {
@@ -150,7 +150,7 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
             &query_embedding,
             &filter,
             root,
-            &embedder,
+            embedder,
             reranker,
         );
     }
@@ -163,7 +163,7 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         store,
         cqs_dir,
         root,
-        embedder: &embedder,
+        embedder,
         effective_limit,
         reranker,
     })

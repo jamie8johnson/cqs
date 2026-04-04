@@ -3,7 +3,6 @@
 use anyhow::{Context, Result};
 
 use cqs::plan::{plan, plan_to_json};
-use cqs::Embedder;
 
 pub(crate) fn cmd_plan(
     ctx: &crate::cli::CommandContext,
@@ -16,11 +15,10 @@ pub(crate) fn cmd_plan(
 
     let store = &ctx.store;
     let root = &ctx.root;
-    let embedder =
-        Embedder::new(ctx.model_config().clone()).context("Failed to create embedder")?;
+    let embedder = ctx.embedder().context("Failed to access embedder")?;
 
     let result =
-        plan(store, &embedder, description, root, limit).context("Plan generation failed")?;
+        plan(store, embedder, description, root, limit).context("Plan generation failed")?;
 
     if json {
         let mut json_val = plan_to_json(&result);
