@@ -470,33 +470,27 @@ mod tests {
         }
     }
 
+    // These tests must run sequentially — they mutate CQS_EMBED_BATCH_SIZE env var.
+    // Combined into one test to avoid race conditions with parallel test execution.
     #[test]
-    fn test_embed_batch_size_default() {
+    fn test_embed_batch_size() {
         use super::types::embed_batch_size;
-        // Clear any existing override
+
+        // Default
         std::env::remove_var("CQS_EMBED_BATCH_SIZE");
         assert_eq!(embed_batch_size(), 64);
-    }
 
-    #[test]
-    fn test_embed_batch_size_env_override() {
-        use super::types::embed_batch_size;
+        // Override
         std::env::set_var("CQS_EMBED_BATCH_SIZE", "128");
         assert_eq!(embed_batch_size(), 128);
         std::env::remove_var("CQS_EMBED_BATCH_SIZE");
-    }
 
-    #[test]
-    fn test_embed_batch_size_invalid_env() {
-        use super::types::embed_batch_size;
+        // Invalid falls back to default
         std::env::set_var("CQS_EMBED_BATCH_SIZE", "not_a_number");
         assert_eq!(embed_batch_size(), 64);
         std::env::remove_var("CQS_EMBED_BATCH_SIZE");
-    }
 
-    #[test]
-    fn test_embed_batch_size_zero_env() {
-        use super::types::embed_batch_size;
+        // Zero falls back to default
         std::env::set_var("CQS_EMBED_BATCH_SIZE", "0");
         assert_eq!(embed_batch_size(), 64);
         std::env::remove_var("CQS_EMBED_BATCH_SIZE");
