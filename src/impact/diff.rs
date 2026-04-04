@@ -37,14 +37,25 @@ pub fn map_hunks_to_functions(
         by_file.entry(&hunk.file).or_default().push(hunk);
     }
 
+    // PF-1: Batch-fetch all file chunks in a single query instead of N queries
+    let normalized_paths: Vec<String> = by_file
+        .keys()
+        .map(|f| normalize_slashes(&f.to_string_lossy()))
+        .collect();
+    let origin_refs: Vec<&str> = normalized_paths.iter().map(|s| s.as_str()).collect();
+    let chunks_by_origin = match store.get_chunks_by_origins_batch(&origin_refs) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to batch-fetch chunks for diff hunks");
+            return functions;
+        }
+    };
+
     for (file, file_hunks) in &by_file {
         let normalized = normalize_slashes(&file.to_string_lossy());
-        let chunks = match store.get_chunks_by_origin(&normalized) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(file = %file.display(), error = %e, "Failed to get chunks for file");
-                continue;
-            }
+        let chunks = match chunks_by_origin.get(&normalized) {
+            Some(c) => c,
+            None => continue,
         };
         for hunk in file_hunks {
             // Skip zero-count hunks (insertion points with no changed lines)
@@ -63,7 +74,7 @@ pub fn map_hunks_to_functions(
                     continue;
                 }
             };
-            for chunk in &chunks {
+            for chunk in chunks {
                 // Overlap: hunk [start, start+count) vs chunk [line_start, line_end]
                 if hunk.start <= chunk.line_end
                     && hunk_end > chunk.line_start
