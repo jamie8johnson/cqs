@@ -1,7 +1,7 @@
 //! HyDE (Hypothetical Document Embeddings) query prediction pass.
 
 use super::batch::BatchPhase2;
-use super::{collect_eligible_chunks, LlmConfig, LlmError, MAX_BATCH_SIZE, MAX_CONTENT_CHARS};
+use super::{collect_eligible_chunks, max_content_chars, LlmConfig, LlmError, MAX_BATCH_SIZE};
 use crate::Store;
 
 /// Run the HyDE query prediction pass using the Batches API.
@@ -43,8 +43,8 @@ pub fn hyde_query_pass(
     let batch_items: Vec<super::provider::BatchSubmitItem> = eligible
         .into_iter()
         .map(|ec| {
-            let content = if ec.content.len() > MAX_CONTENT_CHARS {
-                ec.content[..ec.content.floor_char_boundary(MAX_CONTENT_CHARS)].to_string()
+            let content = if ec.content.len() > max_content_chars() {
+                ec.content[..ec.content.floor_char_boundary(max_content_chars())].to_string()
             } else {
                 ec.content
             };

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use super::batch::BatchPhase2;
-use super::{LlmConfig, LlmError, MAX_BATCH_SIZE, MAX_CONTENT_CHARS};
+use super::{max_content_chars, LlmConfig, LlmError, MAX_BATCH_SIZE};
 use crate::store::ChunkSummary;
 use crate::Store;
 
@@ -247,8 +247,8 @@ pub fn doc_comment_pass(
         let mut queued_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
         for cs in &uncached {
             if queued_hashes.insert(cs.content_hash.clone()) {
-                let content = if cs.content.len() > MAX_CONTENT_CHARS {
-                    cs.content[..cs.content.floor_char_boundary(MAX_CONTENT_CHARS)].to_string()
+                let content = if cs.content.len() > max_content_chars() {
+                    cs.content[..cs.content.floor_char_boundary(max_content_chars())].to_string()
                 } else {
                     cs.content.clone()
                 };
