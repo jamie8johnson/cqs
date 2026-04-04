@@ -1,10 +1,4 @@
 //! `cqs plan` — task planning with template classification
-//!
-// TODO: plan_to_json lives in lib crate (src/plan.rs) — normalize field names
-// there as part of the lib-level JSON schema migration. Fields affected:
-// scout.file_groups[].chunks[].line_start (already correct), plus any "function"
-// → "name" renames if present. Also convert scout_to_json (src/scout.rs) which
-// plan_to_json delegates to.
 
 use anyhow::{Context, Result};
 

@@ -1,8 +1,4 @@
 //! Task command — one-shot implementation context for a task description.
-//!
-// TODO: task_to_json lives in lib crate (src/task.rs) — normalize field names
-// there as part of the lib-level JSON schema migration. Also convert
-// scout_to_json (src/scout.rs) which task_to_json delegates to.
 
 use anyhow::Result;
 use colored::Colorize;

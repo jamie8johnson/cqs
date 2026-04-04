@@ -457,59 +457,11 @@ fn note_mention_matches_file(mention: &str, file: &str) -> bool {
 /// Serialize scout result to JSON.
 ///
 /// Paths in the result are already relative to the project root (set at
-/// construction time by `scout_core`).
+/// construction time by `scout_core`). Uses typed `Serialize` on `ScoutResult`.
 pub fn scout_to_json(result: &ScoutResult) -> serde_json::Value {
-    let groups_json: Vec<_> = result
-        .file_groups
-        .iter()
-        .map(|g| {
-            let chunks_json: Vec<_> = g
-                .chunks
-                .iter()
-                .map(|c| {
-                    serde_json::json!({
-                        "name": c.name,
-                        "chunk_type": c.chunk_type.to_string(),
-                        "signature": c.signature,
-                        "line_start": c.line_start,
-                        "role": c.role.as_str(),
-                        "caller_count": c.caller_count,
-                        "test_count": c.test_count,
-                        "search_score": c.search_score,
-                    })
-                })
-                .collect();
-
-            serde_json::json!({
-                "file": crate::normalize_path(&g.file),
-                "relevance_score": g.relevance_score,
-                "is_stale": g.is_stale,
-                "chunks": chunks_json,
-            })
-        })
-        .collect();
-
-    let notes_json: Vec<_> = result
-        .relevant_notes
-        .iter()
-        .map(|n| {
-            serde_json::json!({
-                "text": n.text,
-                "sentiment": n.sentiment,
-                "mentions": n.mentions,
-            })
-        })
-        .collect();
-
-    serde_json::json!({
-        "file_groups": groups_json,
-        "relevant_notes": notes_json,
-        "summary": {
-            "total_files": result.summary.total_files,
-            "total_functions": result.summary.total_functions,
-            "untested_count": result.summary.untested_count,
-            "stale_count": result.summary.stale_count,
-        }
+    serde_json::to_value(result).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to serialize ScoutResult");
+        serde_json::json!({})
     })
 }
 

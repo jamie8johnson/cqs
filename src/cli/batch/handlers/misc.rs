@@ -141,8 +141,6 @@ pub(in crate::cli::batch) fn dispatch_notes(
 /// A `Result` containing a JSON value representing the task execution results, with optional token-based budgeting applied.
 /// # Errors
 /// Returns an error if the embedder, call graph, test chunks cannot be retrieved from the context, or if task execution fails.
-// TODO: non-budgeted path uses task_to_json from lib crate (src/task.rs) — normalize
-// field names there as part of the lib-level JSON schema migration.
 pub(in crate::cli::batch) fn dispatch_task(
     ctx: &BatchContext,
     description: &str,
@@ -414,8 +412,6 @@ pub(in crate::cli::batch) fn dispatch_diff(
 }
 
 /// Runs task planning with template classification and returns results as JSON.
-// TODO: plan_to_json lives in lib crate (src/plan.rs) — normalize field names
-// there as part of the lib-level JSON schema migration.
 pub(in crate::cli::batch) fn dispatch_plan(
     ctx: &BatchContext,
     description: &str,

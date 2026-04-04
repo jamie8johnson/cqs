@@ -1,9 +1,4 @@
 //! Scout command — pre-investigation dashboard for task planning
-//!
-//! TODO(json-schema): Extract typed ScoutOutput struct. Depends on lib's
-//! `scout_to_json()` being replaced with a typed struct — the lib owns the
-//! ScoutResult serialization today. Once the lib has a `ScoutOutput`, the CLI
-//! wrapper just adds token_count/token_budget fields.
 
 use anyhow::Result;
 use colored::Colorize;

@@ -5,108 +5,43 @@ use super::types::{DiffImpactResult, ImpactResult, TestSuggestion};
 /// Serialize impact result to JSON.
 ///
 /// Paths in the result are already relative to the project root (set at
-/// construction time by `analyze_impact`). This function builds the JSON
-/// structure with computed count fields and conditional sections.
+/// construction time by `analyze_impact`). Uses typed `Serialize` on
+/// `ImpactResult` and injects computed count fields.
 pub fn impact_to_json(result: &ImpactResult) -> serde_json::Value {
-    let callers_json: Vec<_> = result
-        .callers
-        .iter()
-        .map(|c| {
-            serde_json::json!({
-                "name": c.name,
-                "file": crate::normalize_path(&c.file),
-                "line": c.line,
-                "call_line": c.call_line,
-                "snippet": c.snippet,
-            })
-        })
-        .collect();
-
-    let tests_json: Vec<_> = result
-        .tests
-        .iter()
-        .filter_map(|t| {
-            serde_json::to_value(t)
-                .map_err(|e| {
-                    tracing::debug!(error = %e, "Serialization failed");
-                    e
-                })
-                .ok()
-        })
-        .collect();
-
-    let mut output = serde_json::json!({
-        "function": result.function_name,
-        "callers": callers_json,
-        "tests": tests_json,
-        "caller_count": callers_json.len(),
-        "test_count": tests_json.len(),
+    let mut output = serde_json::to_value(result).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to serialize ImpactResult");
+        serde_json::json!({})
     });
-
-    if !result.transitive_callers.is_empty() {
-        let trans_json: Vec<_> = result
-            .transitive_callers
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "name": c.name,
-                    "file": crate::normalize_path(&c.file),
-                    "line": c.line,
-                    "depth": c.depth,
-                })
-            })
-            .collect();
-        if let Some(obj) = output.as_object_mut() {
-            obj.insert("transitive_callers".into(), serde_json::json!(trans_json));
-        }
-    }
-
-    if result.degraded {
-        if let Some(obj) = output.as_object_mut() {
-            obj.insert("degraded".into(), serde_json::json!(true));
-        }
-    }
-
-    // Always include type_impacted for consistent JSON structure
-    let type_json: Vec<_> = result
-        .type_impacted
-        .iter()
-        .map(|ti| {
-            serde_json::json!({
-                "name": ti.name,
-                "file": crate::normalize_path(&ti.file),
-                "line": ti.line,
-                "shared_types": ti.shared_types,
-            })
-        })
-        .collect();
     if let Some(obj) = output.as_object_mut() {
-        obj.insert("type_impacted".into(), serde_json::json!(type_json));
+        obj.insert(
+            "caller_count".into(),
+            serde_json::json!(result.callers.len()),
+        );
+        obj.insert("test_count".into(), serde_json::json!(result.tests.len()));
         obj.insert(
             "type_impacted_count".into(),
-            serde_json::json!(type_json.len()),
+            serde_json::json!(result.type_impacted.len()),
         );
     }
-
     output
 }
 
 /// Format test suggestions as JSON values.
 ///
 /// Shared by CLI `cmd_impact` and batch `dispatch_impact` to avoid
-/// duplicating the field-mapping logic.
+/// duplicating the field-mapping logic. Uses typed `Serialize` on
+/// `TestSuggestion`.
 pub fn format_test_suggestions(suggestions: &[TestSuggestion]) -> Vec<serde_json::Value> {
     let _span = tracing::info_span!("format_test_suggestions", count = suggestions.len()).entered();
     suggestions
         .iter()
-        .map(|s| {
-            serde_json::json!({
-                "test_name": s.test_name,
-                "suggested_file": crate::normalize_path(&s.suggested_file),
-                "for_function": s.for_function,
-                "pattern_source": s.pattern_source,
-                "inline": s.inline,
-            })
+        .filter_map(|s| {
+            serde_json::to_value(s)
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "Failed to serialize TestSuggestion");
+                    e
+                })
+                .ok()
         })
         .collect()
 }
@@ -173,55 +108,11 @@ pub fn impact_to_mermaid(result: &ImpactResult) -> String {
 /// Serialize diff impact result to JSON.
 ///
 /// Paths in the result are already relative to the project root.
+/// Uses typed `Serialize` on `DiffImpactResult`.
 pub fn diff_impact_to_json(result: &DiffImpactResult) -> serde_json::Value {
-    let changed_json: Vec<_> = result
-        .changed_functions
-        .iter()
-        .map(|f| {
-            serde_json::json!({
-                "name": f.name,
-                "file": crate::normalize_path(&f.file),
-                "line_start": f.line_start,
-            })
-        })
-        .collect();
-
-    let callers_json: Vec<_> = result
-        .all_callers
-        .iter()
-        .map(|c| {
-            serde_json::json!({
-                "name": c.name,
-                "file": crate::normalize_path(&c.file),
-                "line": c.line,
-                "call_line": c.call_line,
-            })
-        })
-        .collect();
-
-    let tests_json: Vec<_> = result
-        .all_tests
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "name": t.name,
-                "file": crate::normalize_path(&t.file),
-                "line": t.line,
-                "via": t.via,
-                "call_depth": t.call_depth,
-            })
-        })
-        .collect();
-
-    serde_json::json!({
-        "changed_functions": changed_json,
-        "callers": callers_json,
-        "tests": tests_json,
-        "summary": {
-            "changed_count": result.summary.changed_count,
-            "caller_count": result.summary.caller_count,
-            "test_count": result.summary.test_count,
-        }
+    serde_json::to_value(result).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to serialize DiffImpactResult");
+        serde_json::json!({})
     })
 }
 
@@ -323,14 +214,14 @@ mod tests {
         };
         let json = impact_to_json(&result);
 
-        assert_eq!(json["function"], "target_fn");
+        assert_eq!(json["name"], "target_fn");
         assert_eq!(json["caller_count"], 1);
         assert_eq!(json["test_count"], 1);
 
         let callers = json["callers"].as_array().unwrap();
         assert_eq!(callers[0]["name"], "caller_a");
         assert_eq!(callers[0]["file"], "src/lib.rs");
-        assert_eq!(callers[0]["line"], 10);
+        assert_eq!(callers[0]["line_start"], 10);
         assert_eq!(callers[0]["call_line"], 15);
         assert_eq!(callers[0]["snippet"], "target_fn()");
 
@@ -375,7 +266,7 @@ mod tests {
         };
         let json = impact_to_json(&result);
 
-        assert_eq!(json["function"], "lonely");
+        assert_eq!(json["name"], "lonely");
         assert_eq!(json["caller_count"], 0);
         assert_eq!(json["test_count"], 0);
         assert!(json.get("transitive_callers").is_none());
@@ -424,10 +315,12 @@ mod tests {
         let callers = json["callers"].as_array().unwrap();
         assert_eq!(callers.len(), 1);
         assert_eq!(callers[0]["name"], "caller_a");
+        assert_eq!(callers[0]["line_start"], 20);
 
         let tests = json["tests"].as_array().unwrap();
         assert_eq!(tests.len(), 1);
         assert_eq!(tests[0]["name"], "test_changed");
+        assert_eq!(tests[0]["line_start"], 1);
         assert_eq!(tests[0]["via"], "changed_fn");
         assert_eq!(tests[0]["call_depth"], 1);
 

@@ -1,10 +1,4 @@
 //! Impact command — what breaks if you change a function
-//!
-// TODO: impact_to_json lives in lib crate (src/impact/format.rs) — normalize
-// "line" → "line_start" and "function" → "name" there as part of the lib-level
-// JSON schema migration. Fields affected: callers[].line, transitive_callers[].line,
-// type_impacted[].line, diff_impact callers[].line, diff_impact tests[].line,
-// and top-level "function".
 
 use anyhow::Result;
 

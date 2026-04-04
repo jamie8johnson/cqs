@@ -11,6 +11,7 @@ pub struct CallerDetail {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
+    #[serde(rename = "line_start")]
     pub line: u32,
     pub call_line: u32,
     pub snippet: Option<String>,
@@ -22,6 +23,7 @@ pub struct TestInfo {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
+    #[serde(rename = "line_start")]
     pub line: u32,
     pub call_depth: usize,
 }
@@ -32,6 +34,7 @@ pub struct TransitiveCaller {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
+    #[serde(rename = "line_start")]
     pub line: u32,
     pub depth: usize,
 }
@@ -42,6 +45,7 @@ pub struct TypeImpacted {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
+    #[serde(rename = "line_start")]
     pub line: u32,
     pub shared_types: Vec<String>,
 }
@@ -49,9 +53,11 @@ pub struct TypeImpacted {
 /// Complete impact analysis result
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ImpactResult {
+    #[serde(rename = "name")]
     pub function_name: String,
     pub callers: Vec<CallerDetail>,
     pub tests: Vec<TestInfo>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub transitive_callers: Vec<TransitiveCaller>,
     pub type_impacted: Vec<TypeImpacted>,
     /// True when batch name search failed and caller snippets may be incomplete.
@@ -82,6 +88,7 @@ pub struct DiffTestInfo {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
+    #[serde(rename = "line_start")]
     pub line: u32,
     pub via: String,
     pub call_depth: usize,
@@ -102,7 +109,9 @@ pub struct DiffImpactSummary {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DiffImpactResult {
     pub changed_functions: Vec<ChangedFunction>,
+    #[serde(rename = "callers")]
     pub all_callers: Vec<CallerDetail>,
+    #[serde(rename = "tests")]
     pub all_tests: Vec<DiffTestInfo>,
     pub summary: DiffImpactSummary,
 }

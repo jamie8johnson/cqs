@@ -3,12 +3,6 @@
 //! Core logic is in shared functions (`build_compact_data`, `build_full_data`,
 //! `compact_to_json`, `full_to_json`) so batch mode can reuse them without
 //! duplicating ~120 lines.
-//!
-//! TODO: Replace 11 `json!` calls in `compact_to_json`, `full_to_json`, and
-//! `summary_to_json` with typed output structs (e.g. `CompactOutput`,
-//! `FullOutput`, `SummaryOutput`). Blocked on batch handler
-//! (src/cli/batch/handlers/info.rs) which calls `compact_to_json` / `full_to_json`
-//! and expects `serde_json::Value`. Migrate when batch handlers are updated.
 
 use anyhow::{bail, Context as _, Result};
 use std::collections::{HashMap, HashSet};
@@ -48,6 +42,25 @@ pub(crate) fn build_compact_data(store: &Store, path: &str) -> Result<CompactDat
     })
 }
 
+/// Typed output for compact context mode.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct CompactOutput<'a> {
+    pub file: &'a str,
+    pub chunk_count: usize,
+    pub chunks: Vec<CompactChunkEntry>,
+}
+
+/// A single chunk in compact context output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct CompactChunkEntry {
+    pub name: String,
+    pub chunk_type: String,
+    pub signature: String,
+    pub lines: [u32; 2],
+    pub caller_count: u64,
+    pub callee_count: u64,
+}
+
 /// Serialize compact data to JSON.
 pub(crate) fn compact_to_json(data: &CompactData, path: &str) -> serde_json::Value {
     let entries: Vec<_> = data
@@ -56,20 +69,24 @@ pub(crate) fn compact_to_json(data: &CompactData, path: &str) -> serde_json::Val
         .map(|c| {
             let cc = data.caller_counts.get(&c.name).copied().unwrap_or(0);
             let ce = data.callee_counts.get(&c.name).copied().unwrap_or(0);
-            serde_json::json!({
-                "name": c.name,
-                "chunk_type": c.chunk_type.to_string(),
-                "signature": c.signature,
-                "lines": [c.line_start, c.line_end],
-                "caller_count": cc,
-                "callee_count": ce,
-            })
+            CompactChunkEntry {
+                name: c.name.clone(),
+                chunk_type: c.chunk_type.to_string(),
+                signature: c.signature.clone(),
+                lines: [c.line_start, c.line_end],
+                caller_count: cc,
+                callee_count: ce,
+            }
         })
         .collect();
-    serde_json::json!({
-        "file": path,
-        "chunk_count": data.chunks.len(),
-        "chunks": entries,
+    let output = CompactOutput {
+        file: path,
+        chunk_count: data.chunks.len(),
+        chunks: entries,
+    };
+    serde_json::to_value(&output).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to serialize CompactOutput");
+        serde_json::json!({})
     })
 }
 
@@ -161,6 +178,48 @@ pub(crate) fn build_full_data(store: &Store, path: &str, root: &Path) -> Result<
     })
 }
 
+/// Typed output for full context mode.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct FullOutput<'a> {
+    pub file: &'a str,
+    pub chunks: Vec<FullChunkEntry>,
+    pub external_callers: Vec<ExternalCallerEntry>,
+    pub external_callees: Vec<ExternalCalleeEntry>,
+    pub dependent_files: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<usize>,
+}
+
+/// A chunk in full context output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct FullChunkEntry {
+    pub name: String,
+    pub chunk_type: String,
+    pub signature: String,
+    pub lines: [u32; 2],
+    pub doc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+/// An external caller in full context output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ExternalCallerEntry {
+    pub caller: String,
+    pub caller_file: String,
+    pub calls: String,
+    pub line_start: u32,
+}
+
+/// An external callee in full context output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ExternalCalleeEntry {
+    pub callee: String,
+    pub called_from: String,
+}
+
 /// Serialize full data to JSON, optionally including content within a token budget.
 /// When `content_set` is `Some`, only chunks whose names are in the set include content.
 /// When `None`, no content is included.
@@ -170,52 +229,56 @@ pub(crate) fn full_to_json(
     content_set: Option<&HashSet<String>>,
     token_info: Option<(usize, usize)>,
 ) -> serde_json::Value {
-    let chunks_json: Vec<_> = data
+    let chunks: Vec<_> = data
         .chunks
         .iter()
         .map(|c| {
-            let mut obj = serde_json::json!({
-                "name": c.name,
-                "chunk_type": c.chunk_type.to_string(),
-                "signature": c.signature,
-                "lines": [c.line_start, c.line_end],
-                "doc": c.doc,
-            });
-            if let Some(included) = content_set {
-                if included.contains(&c.name) {
-                    obj["content"] = serde_json::json!(c.content);
-                }
+            let content =
+                content_set.and_then(|set| set.contains(&c.name).then(|| c.content.clone()));
+            FullChunkEntry {
+                name: c.name.clone(),
+                chunk_type: c.chunk_type.to_string(),
+                signature: c.signature.clone(),
+                lines: [c.line_start, c.line_end],
+                doc: c.doc.clone(),
+                content,
             }
-            obj
         })
         .collect();
-    let callers_json: Vec<_> = data
+    let callers: Vec<_> = data
         .external_callers
         .iter()
-        .map(|(name, file, calls, line)| {
-            serde_json::json!({"caller": name, "caller_file": file, "calls": calls, "line": line})
+        .map(|(name, file, calls, line)| ExternalCallerEntry {
+            caller: name.clone(),
+            caller_file: file.clone(),
+            calls: calls.clone(),
+            line_start: *line,
         })
         .collect();
-    let callees_json: Vec<_> = data
+    let callees: Vec<_> = data
         .external_callees
         .iter()
-        .map(|(name, from)| serde_json::json!({"callee": name, "called_from": from}))
+        .map(|(name, from)| ExternalCalleeEntry {
+            callee: name.clone(),
+            called_from: from.clone(),
+        })
         .collect();
     let mut dep_files: Vec<String> = data.dependent_files.iter().cloned().collect();
     dep_files.sort();
 
-    let mut output = serde_json::json!({
-        "file": path,
-        "chunks": chunks_json,
-        "external_callers": callers_json,
-        "external_callees": callees_json,
-        "dependent_files": dep_files,
-    });
-    if let Some((used, budget)) = token_info {
-        output["token_count"] = serde_json::json!(used);
-        output["token_budget"] = serde_json::json!(budget);
-    }
-    output
+    let output = FullOutput {
+        file: path,
+        chunks,
+        external_callers: callers,
+        external_callees: callees,
+        dependent_files: dep_files,
+        token_count: token_info.map(|(used, _)| used),
+        token_budget: token_info.map(|(_, budget)| budget),
+    };
+    serde_json::to_value(&output).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to serialize FullOutput");
+        serde_json::json!({})
+    })
 }
 
 /// Pack chunks by relevance (caller count descending) within a token budget.
@@ -344,23 +407,48 @@ fn build_token_pack(
     Ok((Some(included), Some((used, budget))))
 }
 
+/// Typed output for summary context mode.
+#[derive(Debug, serde::Serialize)]
+struct SummaryOutput<'a> {
+    file: &'a str,
+    chunk_count: usize,
+    chunks: Vec<SummaryChunkEntry>,
+    external_caller_count: usize,
+    external_callee_count: usize,
+    dependent_files: Vec<String>,
+}
+
+/// A chunk in summary context output.
+#[derive(Debug, serde::Serialize)]
+struct SummaryChunkEntry {
+    name: String,
+    chunk_type: String,
+    lines: [u32; 2],
+}
+
 fn summary_to_json(data: &FullData, path: &str) -> serde_json::Value {
-    let chunks_summary: Vec<_> = data
+    let chunks: Vec<_> = data
         .chunks
         .iter()
-        .map(|c| {
-            serde_json::json!({"name": c.name, "chunk_type": c.chunk_type.to_string(), "lines": [c.line_start, c.line_end]})
+        .map(|c| SummaryChunkEntry {
+            name: c.name.clone(),
+            chunk_type: c.chunk_type.to_string(),
+            lines: [c.line_start, c.line_end],
         })
         .collect();
     let mut dep_files: Vec<String> = data.dependent_files.iter().cloned().collect();
     dep_files.sort();
-    serde_json::json!({
-        "file": path,
-        "chunk_count": data.chunks.len(),
-        "chunks": chunks_summary,
-        "external_caller_count": data.external_callers.len(),
-        "external_callee_count": data.external_callees.len(),
-        "dependent_files": dep_files,
+    let output = SummaryOutput {
+        file: path,
+        chunk_count: data.chunks.len(),
+        chunks,
+        external_caller_count: data.external_callers.len(),
+        external_callee_count: data.external_callees.len(),
+        dependent_files: dep_files,
+    };
+    serde_json::to_value(&output).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to serialize SummaryOutput");
+        serde_json::json!({})
     })
 }
 
