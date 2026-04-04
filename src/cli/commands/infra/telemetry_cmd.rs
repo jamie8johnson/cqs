@@ -1,4 +1,7 @@
 //! Telemetry dashboard — usage patterns at a glance.
+//!
+//! Core struct is [`TelemetryOutput`]; build with [`build_telemetry`].
+//! CLI uses `print_telemetry_text()` for human output, JSON path serializes directly.
 
 use std::collections::HashMap;
 use std::fs;
@@ -7,6 +10,39 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+
+// ---------------------------------------------------------------------------
+// Output structs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct TopQuery {
+    pub query: String,
+    pub count: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct DateRange {
+    pub from: u64,
+    pub to: u64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct TelemetryOutput {
+    pub events: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_range: Option<DateRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<usize>,
+    pub commands: HashMap<String, usize>,
+    pub categories: HashMap<String, usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub top_queries: Vec<TopQuery>,
+}
+
+// ---------------------------------------------------------------------------
+// Internals
+// ---------------------------------------------------------------------------
 
 /// Command categories for grouping telemetry data.
 fn category_for(cmd: &str) -> &'static str {
@@ -161,6 +197,97 @@ fn bar(width: usize) -> String {
     "█".repeat(width)
 }
 
+// ---------------------------------------------------------------------------
+// Builder
+// ---------------------------------------------------------------------------
+
+/// Build telemetry output from parsed entries.
+///
+/// Pure data assembly -- no I/O. CLI prints text, JSON path serializes.
+fn build_telemetry(entries: &[Entry]) -> TelemetryOutput {
+    let _span = tracing::info_span!("build_telemetry").entered();
+
+    // Filter to command entries for stats
+    let commands: Vec<_> = entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Command { cmd, query, ts } => Some((cmd.as_str(), query.as_deref(), *ts)),
+            _ => None,
+        })
+        .collect();
+
+    if commands.is_empty() {
+        return TelemetryOutput {
+            events: 0,
+            date_range: None,
+            sessions: None,
+            commands: HashMap::new(),
+            categories: HashMap::new(),
+            top_queries: Vec::new(),
+        };
+    }
+
+    // Command frequency
+    let mut cmd_counts: HashMap<&str, usize> = HashMap::new();
+    for &(cmd, _, _) in &commands {
+        *cmd_counts.entry(cmd).or_default() += 1;
+    }
+
+    // Category aggregation
+    let mut cat_counts: HashMap<&str, usize> = HashMap::new();
+    for &(cmd, _, _) in &commands {
+        *cat_counts.entry(category_for(cmd)).or_default() += 1;
+    }
+
+    // Top queries (sorted descending, capped at 10)
+    let mut query_counts: HashMap<&str, usize> = HashMap::new();
+    for &(_, query, _) in &commands {
+        if let Some(q) = query {
+            if !q.is_empty() {
+                *query_counts.entry(q).or_default() += 1;
+            }
+        }
+    }
+    let mut query_sorted: Vec<_> = query_counts.into_iter().collect();
+    query_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Date range
+    let min_ts = commands.iter().map(|c| c.2).min().unwrap_or(0);
+    let max_ts = commands.iter().map(|c| c.2).max().unwrap_or(0);
+
+    // Sessions
+    let sessions = count_sessions(entries);
+
+    TelemetryOutput {
+        events: commands.len(),
+        date_range: Some(DateRange {
+            from: min_ts,
+            to: max_ts,
+        }),
+        sessions: Some(sessions),
+        commands: cmd_counts
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+        categories: cat_counts
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+        top_queries: query_sorted
+            .into_iter()
+            .take(10)
+            .map(|(q, c)| TopQuery {
+                query: q.to_string(),
+                count: c,
+            })
+            .collect(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CLI command
+// ---------------------------------------------------------------------------
+
 pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_telemetry").entered();
 
@@ -193,159 +320,111 @@ pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()>
         }
     }
 
-    // Filter to command entries for stats
-    let commands: Vec<_> = entries
-        .iter()
-        .filter_map(|e| match e {
-            Entry::Command { cmd, query, ts } => Some((cmd.as_str(), query.as_deref(), *ts)),
-            _ => None,
-        })
-        .collect();
+    let output = build_telemetry(&entries);
 
-    if commands.is_empty() {
+    if output.events == 0 {
         if json {
-            println!(
-                "{}",
-                serde_json::json!({"events": 0, "commands": {}, "categories": {}})
-            );
+            println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
             println!("No telemetry data. Set CQS_TELEMETRY=1 to enable.");
         }
         return Ok(());
     }
 
-    // Command frequency
-    let mut cmd_counts: HashMap<&str, usize> = HashMap::new();
-    for &(cmd, _, _) in &commands {
-        *cmd_counts.entry(cmd).or_default() += 1;
-    }
-    let mut cmd_sorted: Vec<_> = cmd_counts.iter().collect();
-    cmd_sorted.sort_by(|a, b| b.1.cmp(a.1));
-
-    // Category aggregation
-    let mut cat_counts: HashMap<&str, usize> = HashMap::new();
-    for &(cmd, _, _) in &commands {
-        *cat_counts.entry(category_for(cmd)).or_default() += 1;
-    }
-
-    // Top queries
-    let mut query_counts: HashMap<&str, usize> = HashMap::new();
-    for &(_, query, _) in &commands {
-        if let Some(q) = query {
-            if !q.is_empty() {
-                *query_counts.entry(q).or_default() += 1;
-            }
-        }
-    }
-    let mut query_sorted: Vec<_> = query_counts.iter().collect();
-    query_sorted.sort_by(|a, b| b.1.cmp(a.1));
-
-    // Date range
-    let min_ts = commands.iter().map(|c| c.2).min().unwrap_or(0);
-    let max_ts = commands.iter().map(|c| c.2).max().unwrap_or(0);
-
-    // Sessions
-    let sessions = count_sessions(&entries);
-    let total = commands.len();
-
     if json {
-        let cmd_map: serde_json::Map<String, serde_json::Value> = cmd_sorted
-            .iter()
-            .map(|(&cmd, &count)| (cmd.to_string(), serde_json::json!(count)))
-            .collect();
-        let cat_map: serde_json::Map<String, serde_json::Value> = cat_counts
-            .iter()
-            .map(|(&cat, &count)| (cat.to_string(), serde_json::json!(count)))
-            .collect();
-        let top_queries: Vec<_> = query_sorted
-            .iter()
-            .take(10)
-            .map(|(&q, &c)| serde_json::json!({"query": q, "count": c}))
-            .collect();
-        let output = serde_json::json!({
-            "events": total,
-            "date_range": { "from": min_ts, "to": max_ts },
-            "sessions": sessions,
-            "commands": cmd_map,
-            "categories": cat_map,
-            "top_queries": top_queries,
-        });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        // Header
-        let days = (max_ts.saturating_sub(min_ts)) / 86400 + 1;
+        print_telemetry_text(&output);
+    }
+
+    Ok(())
+}
+
+/// Render telemetry as human-readable text with bar charts.
+fn print_telemetry_text(output: &TelemetryOutput) {
+    let total = output.events;
+
+    // Sort commands by count descending for display
+    let mut cmd_sorted: Vec<_> = output.commands.iter().collect();
+    cmd_sorted.sort_by(|a, b| b.1.cmp(a.1));
+
+    // Header
+    if let Some(ref dr) = output.date_range {
+        let days = (dr.to.saturating_sub(dr.from)) / 86400 + 1;
         println!(
             "{}: {} events over {} day{} ({} – {})",
             "Telemetry".bold(),
             total,
             days,
             if days == 1 { "" } else { "s" },
-            format_ts(min_ts),
-            format_ts(max_ts),
+            format_ts(dr.from),
+            format_ts(dr.to),
         );
-        println!();
+    } else {
+        println!("{}: {} events", "Telemetry".bold(), total);
+    }
+    println!();
 
-        // Command frequency with bar chart
-        let max_count = cmd_sorted.first().map(|(_, &c)| c).unwrap_or(1);
-        let bar_max = 20usize;
-        println!("{}:", "Command Usage".cyan());
-        for (&cmd, &count) in &cmd_sorted {
-            let bar_width = (count * bar_max) / max_count.max(1);
+    // Command frequency with bar chart
+    let max_count = cmd_sorted.first().map(|(_, &c)| c).unwrap_or(1);
+    let bar_max = 20usize;
+    println!("{}:", "Command Usage".cyan());
+    for (cmd, &count) in &cmd_sorted {
+        let bar_width = (count * bar_max) / max_count.max(1);
+        let pct = (count as f64 / total as f64) * 100.0;
+        println!(
+            "  {:<14} {:>4}  {}  ({:.1}%)",
+            cmd,
+            count,
+            bar(bar_width).blue(),
+            pct,
+        );
+    }
+    println!();
+
+    // Categories
+    println!("{}:", "Categories".cyan());
+    for &cat in CATEGORY_ORDER {
+        let count = output.categories.get(cat).copied().unwrap_or(0);
+        if count > 0 {
             let pct = (count as f64 / total as f64) * 100.0;
-            println!(
-                "  {:<14} {:>4}  {}  ({:.1}%)",
-                cmd,
-                count,
-                bar(bar_width).blue(),
-                pct,
-            );
-        }
-        println!();
-
-        // Categories
-        println!("{}:", "Categories".cyan());
-        for &cat in CATEGORY_ORDER {
-            let count = cat_counts.get(cat).copied().unwrap_or(0);
-            if count > 0 {
-                let pct = (count as f64 / total as f64) * 100.0;
-                let label = match cat {
-                    "Orchestrator" => {
-                        if pct < 5.0 {
-                            format!("{:.0}%", pct).red().to_string()
-                        } else {
-                            format!("{:.0}%", pct).green().to_string()
-                        }
+            let label = match cat {
+                "Orchestrator" => {
+                    if pct < 5.0 {
+                        format!("{:.0}%", pct).red().to_string()
+                    } else {
+                        format!("{:.0}%", pct).green().to_string()
                     }
-                    _ => format!("{:.0}%", pct),
-                };
-                println!("  {:<14} {:>4}  ({})", cat, count, label);
-            }
+                }
+                _ => format!("{:.0}%", pct),
+            };
+            println!("  {:<14} {:>4}  ({})", cat, count, label);
         }
-        println!();
+    }
+    println!();
 
-        // Sessions
+    // Sessions
+    if let Some(sessions) = output.sessions {
         println!(
             "Sessions: {} (avg {:.0} events/session)",
             sessions,
             total as f64 / sessions as f64,
         );
-
-        // Top queries
-        if !query_sorted.is_empty() {
-            println!();
-            println!("{}:", "Top Queries".cyan());
-            for (&query, &count) in query_sorted.iter().take(10) {
-                let display = if query.len() > 50 {
-                    format!("{}...", &query[..47])
-                } else {
-                    query.to_string()
-                };
-                println!("  {:>4}  {}", count, display);
-            }
-        }
     }
 
-    Ok(())
+    // Top queries
+    if !output.top_queries.is_empty() {
+        println!();
+        println!("{}:", "Top Queries".cyan());
+        for tq in &output.top_queries {
+            let display = if tq.query.len() > 50 {
+                format!("{}...", &tq.query[..47])
+            } else {
+                tq.query.clone()
+            };
+            println!("  {:>4}  {}", tq.count, display);
+        }
+    }
 }
 
 pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>) -> Result<()> {
@@ -560,5 +639,109 @@ mod tests {
             })
             .collect();
         assert_eq!(archives.len(), 1);
+    }
+
+    #[test]
+    fn test_telemetry_output_serialization() {
+        let mut commands = HashMap::new();
+        commands.insert("search".to_string(), 10);
+        commands.insert("impact".to_string(), 5);
+
+        let mut categories = HashMap::new();
+        categories.insert("Search".to_string(), 10);
+        categories.insert("Structural".to_string(), 5);
+
+        let output = TelemetryOutput {
+            events: 15,
+            date_range: Some(DateRange {
+                from: 1000,
+                to: 2000,
+            }),
+            sessions: Some(3),
+            commands,
+            categories,
+            top_queries: vec![
+                TopQuery {
+                    query: "foo bar".to_string(),
+                    count: 5,
+                },
+                TopQuery {
+                    query: "baz".to_string(),
+                    count: 2,
+                },
+            ],
+        };
+
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["events"], 15);
+        assert_eq!(json["date_range"]["from"], 1000);
+        assert_eq!(json["date_range"]["to"], 2000);
+        assert_eq!(json["sessions"], 3);
+        assert_eq!(json["commands"]["search"], 10);
+        assert_eq!(json["categories"]["Search"], 10);
+        assert_eq!(json["top_queries"][0]["query"], "foo bar");
+        assert_eq!(json["top_queries"][0]["count"], 5);
+    }
+
+    #[test]
+    fn test_telemetry_output_empty() {
+        let output = TelemetryOutput {
+            events: 0,
+            date_range: None,
+            sessions: None,
+            commands: HashMap::new(),
+            categories: HashMap::new(),
+            top_queries: Vec::new(),
+        };
+
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["events"], 0);
+        // Optional fields omitted when None/empty
+        assert!(json.get("date_range").is_none());
+        assert!(json.get("sessions").is_none());
+        assert!(json.get("top_queries").is_none());
+    }
+
+    #[test]
+    fn test_build_telemetry_with_data() {
+        let entries = vec![
+            Entry::Command {
+                cmd: "search".into(),
+                query: Some("foo".into()),
+                ts: 1000,
+            },
+            Entry::Command {
+                cmd: "search".into(),
+                query: Some("bar".into()),
+                ts: 1001,
+            },
+            Entry::Command {
+                cmd: "impact".into(),
+                query: Some("baz".into()),
+                ts: 1002,
+            },
+        ];
+
+        let output = build_telemetry(&entries);
+        assert_eq!(output.events, 3);
+        assert_eq!(output.commands.get("search"), Some(&2));
+        assert_eq!(output.commands.get("impact"), Some(&1));
+        assert_eq!(output.categories.get("Search"), Some(&2));
+        assert_eq!(output.categories.get("Structural"), Some(&1));
+        assert!(output.date_range.is_some());
+        let dr = output.date_range.unwrap();
+        assert_eq!(dr.from, 1000);
+        assert_eq!(dr.to, 1002);
+        assert_eq!(output.top_queries.len(), 3);
+    }
+
+    #[test]
+    fn test_build_telemetry_empty() {
+        let entries: Vec<Entry> = vec![];
+        let output = build_telemetry(&entries);
+        assert_eq!(output.events, 0);
+        assert!(output.date_range.is_none());
+        assert!(output.sessions.is_none());
+        assert!(output.commands.is_empty());
     }
 }
