@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-04-04
+
+### Changed
+- **CI rust-cache** — clippy 2m→41s, msrv 2m→43s (#764)
+- **cli/mod.rs split** — store openers, CommandContext, vector index builder extracted to `cli/store.rs` (#765)
+- **pipeline.rs split** — 1303 lines into 6 submodules: types, windowing, embedding, parsing, upsert (#766)
+- **store/helpers.rs split** — 1222 lines into 7 submodules: error, rows, types, search_filter, scoring, sql, embeddings (#768)
+- **Telemetry subcommands** — derive from clap `CommandFactory`, replaces 44-entry hardcoded list (#767)
+- **Lazy reranker** — `OnceLock` in `CommandContext`, eliminates per-search ONNX session creation (#769)
+- **Lazy embedder** — `OnceLock` in `CommandContext`, eliminates 8 per-command `Embedder::new()` calls (#774)
+- **Batch/CLI unification** — 3 phases: shared functions for deps/related/test_map (#771), JSON builders for trace/stats/stale/where (#772), token-packing utilities for scout/onboard/gather/search (#773)
+- **Eval script** — fixed schema mismatch for expanded eval format, corrected CoIR averaging method (#763)
+
+### Fixed
+- **CI test race** — env var race condition in embed batch size tests (#770)
+
 ## [1.15.0] - 2026-04-02
 
 ### Added
