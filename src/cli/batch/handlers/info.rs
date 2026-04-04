@@ -1,7 +1,5 @@
 //! Info dispatch handlers: stats, context, explain, similar, read, blame, onboard.
 
-use std::collections::HashMap;
-
 use anyhow::Result;
 
 use super::super::BatchContext;

@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use cqs::{onboard, onboard_to_json, Embedder};
+use cqs::{onboard, onboard_to_json};
 
 pub(crate) fn cmd_onboard(
     ctx: &crate::cli::CommandContext,
@@ -15,10 +15,10 @@ pub(crate) fn cmd_onboard(
     let _span = tracing::info_span!("cmd_onboard", concept, depth, ?max_tokens).entered();
     let store = &ctx.store;
     let root = &ctx.root;
-    let embedder = Embedder::new(ctx.model_config().clone())?;
+    let embedder = ctx.embedder()?;
     let depth = depth.clamp(1, 5);
 
-    let result = onboard(store, &embedder, concept, root, depth)?;
+    let result = onboard(store, embedder, concept, root, depth)?;
 
     if json {
         let mut output = onboard_to_json(&result).context("Failed to serialize onboard result")?;
@@ -46,7 +46,7 @@ pub(crate) fn cmd_onboard(
             .collect();
 
             let texts: Vec<&str> = all_content.iter().map(|(_, c, _)| *c).collect();
-            let token_counts = crate::cli::commands::count_tokens_batch(&embedder, &texts);
+            let token_counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
             let total_tokens: usize = token_counts.iter().sum();
 
             if total_tokens > budget {

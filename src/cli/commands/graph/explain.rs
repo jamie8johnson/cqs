@@ -269,13 +269,19 @@ pub(crate) fn cmd_explain(
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
 
+    let embedder = if max_tokens.is_some() {
+        Some(ctx.embedder()?)
+    } else {
+        None
+    };
+
     let data = build_explain_data(
         store,
         cqs_dir,
         target,
         max_tokens,
         None,
-        None,
+        embedder,
         ctx.model_config(),
     )?;
 

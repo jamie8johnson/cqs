@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use cqs::{suggest_placement, Embedder};
+use cqs::suggest_placement;
 
 /// Build JSON for placement suggestions.
 ///
@@ -55,10 +55,10 @@ pub(crate) fn cmd_where(
     let _span = tracing::info_span!("cmd_where", description).entered();
     let store = &ctx.store;
     let root = &ctx.root;
-    let embedder = Embedder::new(ctx.model_config().clone())?;
+    let embedder = ctx.embedder()?;
     let limit = limit.clamp(1, 10);
 
-    let result = suggest_placement(store, &embedder, description, limit)?;
+    let result = suggest_placement(store, embedder, description, limit)?;
 
     if json {
         let output = where_to_json(&result, description, root);

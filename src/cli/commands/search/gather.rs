@@ -3,9 +3,7 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use cqs::{
-    gather, gather_cross_index_with_index, normalize_path, Embedder, GatherDirection, GatherOptions,
-};
+use cqs::{gather, gather_cross_index_with_index, normalize_path, GatherDirection, GatherOptions};
 
 use crate::cli::staleness;
 
@@ -43,7 +41,7 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
     let store = &ctx.store;
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
-    let embedder = Embedder::new(ctx.model_config().clone())?;
+    let embedder = ctx.embedder()?;
 
     // When token-budgeted, fetch more chunks than limit so we have candidates to pack
     let fetch_limit = if max_tokens.is_some() {
@@ -74,7 +72,7 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
             index.as_deref(),
         )?
     } else {
-        gather(store, &embedder, query, &opts, root)?
+        gather(store, embedder, query, &opts, root)?
     };
 
     // Token-budgeted packing: keep highest-scoring chunks within token budget
@@ -86,7 +84,7 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
         };
         let chunks = std::mem::take(&mut result.chunks);
         let (mut packed, used) =
-            crate::cli::commands::pack_gather_chunks(chunks, &embedder, budget, overhead);
+            crate::cli::commands::pack_gather_chunks(chunks, embedder, budget, overhead);
 
         // Re-sort to reading order (ref first, then project, each in file/line order)
         packed.sort_by(|a, b| {

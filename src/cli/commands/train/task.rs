@@ -26,15 +26,15 @@ pub(crate) fn cmd_task(
     let _span = tracing::info_span!("cmd_task", ?max_tokens, brief).entered();
     let store = &ctx.store;
     let root = &ctx.root;
-    let embedder = Embedder::new(ctx.model_config().clone())?;
+    let embedder = ctx.embedder()?;
     let limit = limit.clamp(1, 10);
 
-    let result = task(store, &embedder, description, root, limit)?;
+    let result = task(store, embedder, description, root, limit)?;
 
     if brief {
         output_brief(&result, root, json)?;
     } else if let Some(budget) = max_tokens {
-        output_with_budget(&result, root, &embedder, budget, json)?;
+        output_with_budget(&result, root, embedder, budget, json)?;
     } else if json {
         let output = task_to_json(&result);
         println!("{}", serde_json::to_string_pretty(&output)?);
