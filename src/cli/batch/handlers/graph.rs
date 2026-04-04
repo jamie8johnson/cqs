@@ -1,7 +1,5 @@
 //! Call graph dispatch handlers: callers, callees, deps, impact, test-map, trace, related, impact-diff.
 
-use std::collections::HashMap;
-
 use anyhow::Result;
 
 use super::super::BatchContext;
@@ -32,27 +30,12 @@ pub(in crate::cli::batch) fn dispatch_deps(
 
     if reverse {
         let types = ctx.store().get_types_used_by(name)?;
-        Ok(serde_json::json!({
-            "function": name,
-            "types": types.iter().map(|t| {
-                serde_json::json!({"type_name": t.type_name, "edge_kind": t.edge_kind})
-            }).collect::<Vec<_>>(),
-            "count": types.len(),
-        }))
+        Ok(crate::cli::commands::deps_reverse_to_json(name, &types))
     } else {
         let users = ctx.store().get_type_users(name)?;
-        let json_users: Vec<serde_json::Value> = users
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "name": c.name,
-                    "file": cqs::rel_display(&c.file, &ctx.root),
-                    "line_start": c.line_start,
-                    "chunk_type": c.chunk_type.to_string(),
-                })
-            })
-            .collect();
-        Ok(serde_json::json!(json_users))
+        Ok(crate::cli::commands::deps_forward_to_json(
+            &users, &ctx.root,
+        ))
     }
 }
 
@@ -187,86 +170,17 @@ pub(in crate::cli::batch) fn dispatch_test_map(
     let graph = ctx.call_graph()?;
     let test_chunks = ctx.store().find_test_chunks()?;
 
-    // Reverse BFS from target
-    let mut ancestors: HashMap<String, (usize, String)> = HashMap::new();
-    let mut queue: std::collections::VecDeque<(String, usize)> = std::collections::VecDeque::new();
-    ancestors.insert(target_name.clone(), (0, String::new()));
-    queue.push_back((target_name.clone(), 0));
-
-    while let Some((current, depth)) = queue.pop_front() {
-        if depth >= max_depth {
-            continue;
-        }
-        if let Some(callers) = graph.reverse.get(current.as_str()) {
-            for caller in callers {
-                if !ancestors.contains_key(caller.as_ref()) {
-                    ancestors.insert(caller.to_string(), (depth + 1, current.clone()));
-                    queue.push_back((caller.to_string(), depth + 1));
-                }
-            }
-        }
-    }
-
-    struct TestMatch {
-        name: String,
-        file: String,
-        line: u32,
-        depth: usize,
-        chain: Vec<String>,
-    }
-
-    let mut matches: Vec<TestMatch> = Vec::new();
-    for test in test_chunks.iter() {
-        if let Some((depth, _)) = ancestors.get(&test.name) {
-            if *depth > 0 {
-                let mut chain = Vec::new();
-                let mut current = test.name.clone();
-                let chain_limit = max_depth + 1;
-                while !current.is_empty() && chain.len() < chain_limit {
-                    chain.push(current.clone());
-                    if current == target_name {
-                        break;
-                    }
-                    current = match ancestors.get(&current) {
-                        Some((_, p)) if !p.is_empty() => p.clone(),
-                        _ => {
-                            tracing::debug!(node = %current, "Chain walk hit dead end");
-                            break;
-                        }
-                    };
-                }
-                let rel_file = cqs::rel_display(&test.file, &ctx.root);
-                matches.push(TestMatch {
-                    name: test.name.clone(),
-                    file: rel_file,
-                    line: test.line_start,
-                    depth: *depth,
-                    chain,
-                });
-            }
-        }
-    }
-
-    matches.sort_by(|a, b| a.depth.cmp(&b.depth).then_with(|| a.name.cmp(&b.name)));
-
-    let tests_json: Vec<_> = matches
-        .iter()
-        .map(|m| {
-            serde_json::json!({
-                "name": m.name,
-                "file": m.file,
-                "line": m.line,
-                "call_depth": m.depth,
-                "call_chain": m.chain,
-            })
-        })
-        .collect();
-
-    Ok(serde_json::json!({
-        "function": target_name,
-        "tests": tests_json,
-        "test_count": matches.len(),
-    }))
+    let matches = crate::cli::commands::build_test_map(
+        &target_name,
+        &graph,
+        &test_chunks,
+        &ctx.root,
+        max_depth,
+    );
+    Ok(crate::cli::commands::test_map_to_json(
+        &target_name,
+        &matches,
+    ))
 }
 
 /// Traces a dependency path between two targets using breadth-first search through the call graph.
@@ -390,28 +304,9 @@ pub(in crate::cli::batch) fn dispatch_related(
     let limit = limit.clamp(1, 100);
 
     let result = cqs::find_related(&ctx.store(), name, limit)?;
-
-    let to_json = |items: &[cqs::RelatedFunction]| -> Vec<serde_json::Value> {
-        items
-            .iter()
-            .map(|r| {
-                let rel = cqs::rel_display(&r.file, &ctx.root);
-                serde_json::json!({
-                    "name": r.name,
-                    "file": rel,
-                    "line": r.line,
-                    "overlap_count": r.overlap_count,
-                })
-            })
-            .collect()
-    };
-
-    Ok(serde_json::json!({
-        "target": result.target,
-        "shared_callers": to_json(&result.shared_callers),
-        "shared_callees": to_json(&result.shared_callees),
-        "shared_types": to_json(&result.shared_types),
-    }))
+    Ok(crate::cli::commands::related_result_to_json(
+        &result, &ctx.root,
+    ))
 }
 
 /// Runs diff-aware impact analysis and returns results as JSON.
