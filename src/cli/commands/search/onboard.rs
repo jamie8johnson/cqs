@@ -1,4 +1,9 @@
 //! Onboard command — guided codebase tour for understanding a concept
+//!
+//! TODO(json-schema): Extract typed OnboardOutput struct. Depends on lib's
+//! `onboard_to_json()` being replaced with a typed struct — the lib owns the
+//! OnboardResult serialization today. Once the lib has an `OnboardOutput`,
+//! the CLI wrapper just adds token_count/token_budget fields.
 
 use anyhow::{Context, Result};
 use colored::Colorize;

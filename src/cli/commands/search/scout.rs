@@ -1,4 +1,9 @@
 //! Scout command — pre-investigation dashboard for task planning
+//!
+//! TODO(json-schema): Extract typed ScoutOutput struct. Depends on lib's
+//! `scout_to_json()` being replaced with a typed struct — the lib owns the
+//! ScoutResult serialization today. Once the lib has a `ScoutOutput`, the CLI
+//! wrapper just adds token_count/token_budget fields.
 
 use anyhow::Result;
 use colored::Colorize;
@@ -35,10 +40,7 @@ pub(crate) fn cmd_scout(
         if let Some(ref cmap) = content_map {
             crate::cli::commands::inject_content_into_scout_json(&mut output, cmap);
         }
-        if let Some((used, budget)) = token_info {
-            output["token_count"] = serde_json::json!(used);
-            output["token_budget"] = serde_json::json!(budget);
-        }
+        crate::cli::commands::inject_token_info(&mut output, token_info);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         let token_label = match token_info {

@@ -8,8 +8,10 @@ use anyhow::{Context as _, Result};
 use cqs::store::{ChunkSummary, Store};
 use cqs::{rel_display, resolve_target};
 
+// ─── Output types ──────────────────────────────────────────────────────────
+
 /// A neighbor entry with similarity score.
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 struct NeighborEntry {
     name: String,
     file: String,
@@ -17,6 +19,50 @@ struct NeighborEntry {
     chunk_type: String,
     similarity: f32,
 }
+
+/// Typed JSON output for the neighbors command.
+#[derive(Debug, serde::Serialize)]
+struct NeighborsOutput {
+    target: String,
+    neighbors: Vec<NeighborEntry>,
+    count: usize,
+}
+
+// ─── Shared builder ────────────────────────────────────────────────────────
+
+/// Build typed neighbors output — constructs entries from neighbor results.
+fn build_neighbors_output(
+    target_name: &str,
+    neighbors: &[(ChunkSummary, f32)],
+    root: &std::path::Path,
+) -> NeighborsOutput {
+    let _span = tracing::info_span!(
+        "build_neighbors_output",
+        target = target_name,
+        count = neighbors.len()
+    )
+    .entered();
+
+    let entries: Vec<NeighborEntry> = neighbors
+        .iter()
+        .map(|(chunk, sim)| NeighborEntry {
+            name: chunk.name.clone(),
+            file: rel_display(&chunk.file, root),
+            line_start: chunk.line_start,
+            chunk_type: chunk.chunk_type.to_string(),
+            similarity: *sim,
+        })
+        .collect();
+
+    let count = entries.len();
+    NeighborsOutput {
+        target: target_name.to_string(),
+        neighbors: entries,
+        count,
+    }
+}
+
+// ─── Internal helpers ──────────────────────────────────────────────────────
 
 /// Dot product for L2-normalized vectors (= cosine similarity).
 fn dot(a: &[f32], b: &[f32]) -> f32 {
@@ -95,6 +141,8 @@ fn fetch_chunk_summaries(
     Ok(map)
 }
 
+// ─── CLI command ───────────────────────────────────────────────────────────
+
 pub(crate) fn cmd_neighbors(
     ctx: &crate::cli::CommandContext,
     name: &str,
@@ -109,25 +157,10 @@ pub(crate) fn cmd_neighbors(
     let target = &resolved.chunk;
 
     let neighbors = find_neighbors(store, target, limit)?;
-
-    let entries: Vec<NeighborEntry> = neighbors
-        .iter()
-        .map(|(chunk, sim)| NeighborEntry {
-            name: chunk.name.clone(),
-            file: rel_display(&chunk.file, root),
-            line_start: chunk.line_start,
-            chunk_type: chunk.chunk_type.to_string(),
-            similarity: *sim,
-        })
-        .collect();
+    let output = build_neighbors_output(&target.name, &neighbors, root);
 
     if json {
-        let result = serde_json::json!({
-            "target": target.name,
-            "neighbors": entries,
-            "count": entries.len(),
-        });
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         use colored::Colorize;
         println!(
@@ -136,10 +169,10 @@ pub(crate) fn cmd_neighbors(
             target.name.bold(),
             rel_display(&target.file, root).dimmed()
         );
-        if entries.is_empty() {
+        if output.neighbors.is_empty() {
             println!("  No neighbors found.");
         } else {
-            for e in &entries {
+            for e in &output.neighbors {
                 println!(
                     "  {:.3}  {} [{}] ({}:{})",
                     e.similarity, e.name, e.chunk_type, e.file, e.line_start
@@ -180,18 +213,37 @@ mod tests {
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert_eq!(json["name"], "foo");
+        assert!(json.get("line_start").is_some());
+        assert!(json.get("line").is_none());
         let sim = json["similarity"].as_f64().unwrap();
         assert!((sim - 0.95).abs() < 0.001);
     }
 
     #[test]
-    fn neighbor_json_output_shape() {
-        let result = serde_json::json!({
-            "target": "my_func",
-            "neighbors": [],
-            "count": 0,
-        });
-        assert_eq!(result["target"], "my_func");
-        assert_eq!(result["count"], 0);
+    fn neighbors_output_empty() {
+        let output = build_neighbors_output("my_func", &[], std::path::Path::new("/project"));
+        assert_eq!(output.target, "my_func");
+        assert!(output.neighbors.is_empty());
+        assert_eq!(output.count, 0);
+    }
+
+    #[test]
+    fn neighbors_output_serializes() {
+        let output = NeighborsOutput {
+            target: "test_fn".to_string(),
+            neighbors: vec![NeighborEntry {
+                name: "similar_fn".to_string(),
+                file: "src/lib.rs".to_string(),
+                line_start: 10,
+                chunk_type: "Function".to_string(),
+                similarity: 0.85,
+            }],
+            count: 1,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["target"], "test_fn");
+        assert_eq!(json["count"], 1);
+        assert_eq!(json["neighbors"][0]["line_start"], 10);
+        assert!(json["neighbors"][0].get("line").is_none());
     }
 }

@@ -177,9 +177,6 @@ pub(in crate::cli::batch) fn dispatch_search(
         "query": params.query,
         "total": json_results.len(),
     });
-    if let Some((used, budget)) = token_info {
-        response["token_count"] = serde_json::json!(used);
-        response["token_budget"] = serde_json::json!(budget);
-    }
+    crate::cli::commands::inject_token_info(&mut response, token_info);
     Ok(response)
 }

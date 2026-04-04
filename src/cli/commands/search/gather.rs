@@ -1,11 +1,66 @@
 //! Gather command — smart context assembly for a question
+//!
+//! Core JSON builders are shared between CLI and batch handlers.
 
 use anyhow::Result;
 use colored::Colorize;
 
-use cqs::{gather, gather_cross_index_with_index, normalize_path, GatherDirection, GatherOptions};
+use cqs::{
+    gather, gather_cross_index_with_index, normalize_path, GatherDirection, GatherOptions,
+    GatherResult,
+};
 
 use crate::cli::staleness;
+
+// ─── Output types ──────────────────────────────────────────────────────────
+
+/// Typed JSON output for the gather command.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct GatherOutput {
+    pub query: String,
+    pub chunks: Vec<serde_json::Value>,
+    pub expansion_capped: bool,
+    pub search_degraded: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<usize>,
+}
+
+// ─── Shared JSON builder ───────────────────────────────────────────────────
+
+/// Build typed gather output from a `GatherResult` — shared between CLI and batch.
+///
+/// Serializes each chunk individually (logging warnings on failure) to match
+/// the previous behavior of silently dropping un-serializable chunks.
+pub(crate) fn build_gather_output(
+    result: &GatherResult,
+    query: &str,
+    token_info: Option<(usize, usize)>,
+) -> GatherOutput {
+    let _span = tracing::info_span!("build_gather_output", query_len = query.len()).entered();
+
+    let json_chunks: Vec<serde_json::Value> = result
+        .chunks
+        .iter()
+        .filter_map(|c| match serde_json::to_value(c) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(error = %e, chunk = %c.name, "Failed to serialize chunk");
+                None
+            }
+        })
+        .collect();
+
+    GatherOutput {
+        query: query.to_string(),
+        chunks: json_chunks,
+        expansion_capped: result.expansion_capped,
+        search_degraded: result.search_degraded,
+        token_count: token_info.map(|(used, _)| used),
+        token_budget: token_info.map(|(_, budget)| budget),
+    }
+}
 
 /// Infrastructure context for gather commands.
 pub(crate) struct GatherContext<'a> {
@@ -120,27 +175,8 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
     }
 
     if json {
-        let json_chunks: Vec<serde_json::Value> = result
-            .chunks
-            .iter()
-            .filter_map(|c| match serde_json::to_value(c) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!(error = %e, chunk = %c.name, "Failed to serialize chunk");
-                    None
-                }
-            })
-            .collect();
-        let mut output = serde_json::json!({
-            "query": query,
-            "chunks": json_chunks,
-            "expansion_capped": result.expansion_capped,
-            "search_degraded": result.search_degraded,
-        });
-        if let Some(tokens) = token_count_used {
-            output["token_count"] = serde_json::json!(tokens);
-            output["token_budget"] = serde_json::json!(max_tokens.unwrap_or(0));
-        }
+        let token_info = token_count_used.map(|used| (used, max_tokens.unwrap_or(0)));
+        let output = build_gather_output(&result, query, token_info);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if result.chunks.is_empty() {
         println!("No relevant code found for: {}", query);
@@ -226,4 +262,94 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_result(chunks: Vec<cqs::GatheredChunk>) -> GatherResult {
+        GatherResult {
+            chunks,
+            expansion_capped: false,
+            search_degraded: false,
+        }
+    }
+
+    fn make_chunk(name: &str) -> cqs::GatheredChunk {
+        cqs::GatheredChunk {
+            name: name.to_string(),
+            file: std::path::PathBuf::from("src/lib.rs"),
+            line_start: 1,
+            line_end: 10,
+            language: cqs::parser::Language::Rust,
+            chunk_type: cqs::parser::ChunkType::Function,
+            signature: format!("fn {}()", name),
+            content: "// body".to_string(),
+            score: 0.9,
+            depth: 0,
+            source: None,
+        }
+    }
+
+    #[test]
+    fn gather_output_empty() {
+        let result = make_result(vec![]);
+        let output = build_gather_output(&result, "test query", None);
+        assert_eq!(output.query, "test query");
+        assert!(output.chunks.is_empty());
+        assert!(!output.expansion_capped);
+        assert!(!output.search_degraded);
+        assert!(output.token_count.is_none());
+        assert!(output.token_budget.is_none());
+    }
+
+    #[test]
+    fn gather_output_with_chunks() {
+        let result = make_result(vec![make_chunk("foo"), make_chunk("bar")]);
+        let output = build_gather_output(&result, "find code", None);
+        assert_eq!(output.chunks.len(), 2);
+        assert_eq!(output.chunks[0]["name"], "foo");
+        assert_eq!(output.chunks[1]["name"], "bar");
+    }
+
+    #[test]
+    fn gather_output_with_token_info() {
+        let result = make_result(vec![make_chunk("baz")]);
+        let output = build_gather_output(&result, "q", Some((150, 500)));
+        assert_eq!(output.token_count, Some(150));
+        assert_eq!(output.token_budget, Some(500));
+    }
+
+    #[test]
+    fn gather_output_flags() {
+        let result = GatherResult {
+            chunks: vec![],
+            expansion_capped: true,
+            search_degraded: true,
+        };
+        let output = build_gather_output(&result, "q", None);
+        assert!(output.expansion_capped);
+        assert!(output.search_degraded);
+    }
+
+    #[test]
+    fn gather_output_serializes() {
+        let result = make_result(vec![make_chunk("x")]);
+        let output = build_gather_output(&result, "q", Some((100, 300)));
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["query"], "q");
+        assert_eq!(json["token_count"], 100);
+        assert_eq!(json["token_budget"], 300);
+        assert!(json["chunks"].is_array());
+    }
+
+    #[test]
+    fn gather_output_omits_tokens_when_none() {
+        let result = make_result(vec![]);
+        let output = build_gather_output(&result, "q", None);
+        let json = serde_json::to_value(&output).unwrap();
+        assert!(json.get("token_count").is_none());
+        assert!(json.get("token_budget").is_none());
+    }
 }

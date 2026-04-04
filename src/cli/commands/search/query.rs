@@ -1,6 +1,10 @@
 //! Query command for cqs
 //!
 //! Executes semantic search queries.
+//!
+//! TODO(json-schema): Extract typed QueryOutput struct. Depends on display module
+//! refactoring — search results use display::display_unified_results_json which
+//! builds JSON inline. Blocked until display module has typed output structs.
 
 use std::collections::HashMap;
 

@@ -239,10 +239,7 @@ pub(in crate::cli::batch) fn dispatch_context(
         "chunks": entries,
         "total": entries.len(),
     });
-    if let Some((used, budget)) = token_info {
-        response["token_count"] = serde_json::json!(used);
-        response["token_budget"] = serde_json::json!(budget);
-    }
+    crate::cli::commands::inject_token_info(&mut response, token_info);
     Ok(response)
 }
 
@@ -295,8 +292,7 @@ pub(in crate::cli::batch) fn dispatch_onboard(
     let mut json = cqs::onboard_to_json(&result)
         .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"))?;
     crate::cli::commands::inject_content_into_onboard_json(&mut json, &content_map, &result);
-    json["token_count"] = serde_json::json!(used);
-    json["token_budget"] = serde_json::json!(budget);
+    crate::cli::commands::inject_token_info(&mut json, Some((used, budget)));
     Ok(json)
 }
 
