@@ -2,6 +2,8 @@
 //!
 //! Removes chunks for deleted/stale files, cleans orphan call graph entries,
 //! and rebuilds the HNSW index.
+//!
+//! Core struct is [`GcOutput`]; CLI builds inline, batch builds inline.
 
 use std::collections::HashSet;
 
@@ -12,6 +14,27 @@ use cqs::Parser;
 use crate::cli::acquire_index_lock;
 
 use super::build_hnsw_index;
+
+// ---------------------------------------------------------------------------
+// Output struct
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct GcOutput {
+    pub stale_files: usize,
+    pub missing_files: usize,
+    pub pruned_chunks: usize,
+    pub pruned_calls: usize,
+    pub pruned_type_edges: usize,
+    pub pruned_summaries: usize,
+    pub hnsw_rebuilt: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hnsw_vectors: Option<usize>,
+}
+
+// ---------------------------------------------------------------------------
+// CLI command
+// ---------------------------------------------------------------------------
 
 /// Run garbage collection on the index
 pub(crate) fn cmd_gc(json: bool) -> Result<()> {
@@ -42,9 +65,9 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
     let prune = store
         .prune_all(&file_set)
         .context("Failed to prune stale entries from index")?;
-    let pruned_chunks = prune.pruned_chunks;
-    let pruned_calls = prune.pruned_calls;
-    let pruned_type_edges = prune.pruned_type_edges;
+    let pruned_chunks = prune.pruned_chunks as usize;
+    let pruned_calls = prune.pruned_calls as usize;
+    let pruned_type_edges = prune.pruned_type_edges as usize;
     let pruned_summaries = prune.pruned_summaries;
     tracing::debug!(
         pruned_chunks,
@@ -92,17 +115,17 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
     };
 
     if json {
-        let result = serde_json::json!({
-            "stale_files": stale_count,
-            "missing_files": missing_count,
-            "pruned_chunks": pruned_chunks,
-            "pruned_calls": pruned_calls,
-            "pruned_type_edges": pruned_type_edges,
-            "pruned_summaries": pruned_summaries,
-            "hnsw_rebuilt": pruned_chunks > 0,
-            "hnsw_vectors": hnsw_vectors,
-        });
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        let output = GcOutput {
+            stale_files: stale_count as usize,
+            missing_files: missing_count as usize,
+            pruned_chunks,
+            pruned_calls,
+            pruned_type_edges,
+            pruned_summaries,
+            hnsw_rebuilt: pruned_chunks > 0,
+            hnsw_vectors,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         if pruned_chunks == 0
             && pruned_calls == 0
@@ -142,7 +165,7 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
                 );
             }
             if let Some(vectors) = hnsw_vectors {
-                println!("Rebuilt HNSW index: {} vectors", vectors);
+                println!("Rebuilt HNSW index: {vectors} vectors");
             }
         }
         if stale_count > 0 {
@@ -155,4 +178,47 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gc_output_serialization() {
+        let output = GcOutput {
+            stale_files: 2,
+            missing_files: 1,
+            pruned_chunks: 15,
+            pruned_calls: 30,
+            pruned_type_edges: 5,
+            pruned_summaries: 3,
+            hnsw_rebuilt: true,
+            hnsw_vectors: Some(500),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["pruned_chunks"], 15);
+        assert_eq!(json["hnsw_rebuilt"], true);
+        assert_eq!(json["hnsw_vectors"], 500);
+    }
+
+    #[test]
+    fn test_gc_output_no_hnsw() {
+        let output = GcOutput {
+            stale_files: 0,
+            missing_files: 0,
+            pruned_chunks: 0,
+            pruned_calls: 0,
+            pruned_type_edges: 0,
+            pruned_summaries: 0,
+            hnsw_rebuilt: false,
+            hnsw_vectors: None,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert!(json.get("hnsw_vectors").is_none());
+    }
 }

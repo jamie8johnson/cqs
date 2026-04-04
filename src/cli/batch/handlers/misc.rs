@@ -470,15 +470,17 @@ pub(in crate::cli::batch) fn dispatch_gc(ctx: &BatchContext) -> Result<serde_jso
         .prune_all(&file_set)
         .context("Failed to prune stale entries from index")?;
 
-    Ok(serde_json::json!({
-        "stale_files": stale_count,
-        "missing_files": missing_count,
-        "pruned_chunks": prune.pruned_chunks,
-        "pruned_calls": prune.pruned_calls,
-        "pruned_type_edges": prune.pruned_type_edges,
-        "pruned_summaries": prune.pruned_summaries,
-        "hnsw_rebuilt": false,
-    }))
+    let output = crate::cli::commands::GcOutput {
+        stale_files: stale_count as usize,
+        missing_files: missing_count as usize,
+        pruned_chunks: prune.pruned_chunks as usize,
+        pruned_calls: prune.pruned_calls as usize,
+        pruned_type_edges: prune.pruned_type_edges as usize,
+        pruned_summaries: prune.pruned_summaries,
+        hnsw_rebuilt: false,
+        hnsw_vectors: None,
+    };
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Manually invalidates all mutable caches and re-opens the Store.
