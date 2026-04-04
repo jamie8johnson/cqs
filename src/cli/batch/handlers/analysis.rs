@@ -64,7 +64,8 @@ pub(in crate::cli::batch) fn dispatch_stale(ctx: &BatchContext) -> Result<serde_
     let file_set = ctx.file_set()?;
     let report = ctx.store().list_stale_files(&file_set)?;
 
-    Ok(crate::cli::commands::stale_to_json(&report))
+    let output = crate::cli::commands::build_stale(&report);
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Performs a health check on the batch processing system and returns the results as JSON.

@@ -68,12 +68,12 @@ pub(crate) use review::dead_to_json;
 
 // -- index --
 pub(crate) use index::build_hnsw_index_owned;
+pub(crate) use index::build_stale;
 pub(crate) use index::build_stats;
 pub(crate) use index::cmd_gc;
 pub(crate) use index::cmd_index;
 pub(crate) use index::cmd_stale;
 pub(crate) use index::cmd_stats;
-pub(crate) use index::stale_to_json;
 
 // -- io --
 pub(crate) use io::cmd_blame;

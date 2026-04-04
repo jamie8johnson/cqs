@@ -2,7 +2,8 @@
 //!
 //! Reports files that have changed since last index.
 //!
-//! Core JSON construction is in [`stale_to_json`] so batch mode can reuse it.
+//! Core struct is [`StaleOutput`]; build with [`build_stale`].
+//! CLI uses text output for human display, batch serializes with `serde_json::to_value()`.
 
 use std::collections::HashSet;
 
@@ -11,38 +12,62 @@ use anyhow::Result;
 use cqs::store::StaleReport;
 use cqs::Parser;
 
-/// Build the JSON representation of a stale report.
-///
-/// Shared between CLI (`cmd_stale --json`) and batch (`dispatch_stale`).
-pub(crate) fn stale_to_json(report: &StaleReport) -> serde_json::Value {
-    let _span = tracing::info_span!("stale_to_json").entered();
+// ---------------------------------------------------------------------------
+// Output structs
+// ---------------------------------------------------------------------------
 
-    let stale_json: Vec<_> = report
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct StaleEntry {
+    pub file: String,
+    pub stored_mtime: i64,
+    pub current_mtime: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct StaleOutput {
+    pub stale: Vec<StaleEntry>,
+    pub missing: Vec<String>,
+    pub stale_count: usize,
+    pub missing_count: usize,
+    pub total_indexed: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Builder
+// ---------------------------------------------------------------------------
+
+/// Build the typed stale report shared between CLI and batch.
+pub(crate) fn build_stale(report: &StaleReport) -> StaleOutput {
+    let _span = tracing::info_span!("build_stale").entered();
+
+    let stale = report
         .stale
         .iter()
-        .map(|f| {
-            serde_json::json!({
-                "file": cqs::normalize_path(&f.file),
-                "stored_mtime": f.stored_mtime,
-                "current_mtime": f.current_mtime,
-            })
+        .map(|f| StaleEntry {
+            file: cqs::normalize_path(&f.file),
+            stored_mtime: f.stored_mtime,
+            current_mtime: f.current_mtime,
         })
         .collect();
 
-    let missing_json: Vec<_> = report
+    let missing = report
         .missing
         .iter()
         .map(|f| cqs::normalize_path(f))
         .collect();
 
-    serde_json::json!({
-        "stale": stale_json,
-        "missing": missing_json,
-        "stale_count": report.stale.len(),
-        "missing_count": report.missing.len(),
-        "total_indexed": report.total_indexed,
-    })
+    StaleOutput {
+        stale_count: report.stale.len(),
+        missing_count: report.missing.len(),
+        total_indexed: report.total_indexed as usize,
+        stale,
+        missing,
+    }
 }
+
+// ---------------------------------------------------------------------------
+// CLI command
+// ---------------------------------------------------------------------------
 
 /// Report stale (modified) and missing files in the index
 pub(crate) fn cmd_stale(
@@ -64,8 +89,8 @@ pub(crate) fn cmd_stale(
     let report = store.list_stale_files(&file_set)?;
 
     if json {
-        let result = stale_to_json(&report);
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        let output = build_stale(&report);
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         let stale_count = report.stale.len();
         let missing_count = report.missing.len();
@@ -111,4 +136,47 @@ pub(crate) fn cmd_stale(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stale_output_empty() {
+        let output = StaleOutput {
+            stale: vec![],
+            missing: vec![],
+            stale_count: 0,
+            missing_count: 0,
+            total_indexed: 50,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["stale_count"], 0);
+        assert!(json["stale"].as_array().unwrap().is_empty());
+        assert!(json["missing"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_stale_output_serialization() {
+        let output = StaleOutput {
+            stale: vec![StaleEntry {
+                file: "src/main.rs".into(),
+                stored_mtime: 1000,
+                current_mtime: 2000,
+            }],
+            missing: vec!["src/deleted.rs".into()],
+            stale_count: 1,
+            missing_count: 1,
+            total_indexed: 50,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["stale_count"], 1);
+        assert_eq!(json["stale"][0]["file"], "src/main.rs");
+        assert!(json.get("missing").is_some());
+    }
 }
