@@ -124,6 +124,10 @@ fn parse_entries(path: &Path) -> Result<Vec<Entry>> {
 ///
 /// RB-9: starts at 0 sessions; first Command opens session 1.
 /// Reset events or gaps > 4 hours open a new session.
+///
+/// Production code uses the inlined version in [`TelemetryAggregator::push`].
+/// This standalone function is retained for direct unit tests.
+#[cfg(test)]
 fn count_sessions(entries: &[Entry]) -> usize {
     const GAP_SECS: u64 = 4 * 3600;
     let mut sessions = 0usize;
@@ -208,90 +212,158 @@ fn bar(width: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Builder
+// Streaming aggregator (RM-10, RM-11)
+// ---------------------------------------------------------------------------
+
+/// Accumulates telemetry stats in a single pass without storing raw entries.
+///
+/// RM-10: `--all` previously loaded every archived file into one `Vec<Entry>`.
+/// RM-11: `build_telemetry` then cloned entries into an intermediate `Vec` and
+/// iterated it four separate times. Now we aggregate in one pass per file,
+/// keeping only the fixed-size accumulators — not the raw entries.
+struct TelemetryAggregator {
+    event_count: usize,
+    min_ts: u64,
+    max_ts: u64,
+    cmd_counts: HashMap<String, usize>,
+    cat_counts: HashMap<String, usize>,
+    query_counts: HashMap<String, usize>,
+    // Session tracking (inlined from count_sessions)
+    sessions: usize,
+    last_ts: Option<u64>,
+}
+
+impl TelemetryAggregator {
+    const GAP_SECS: u64 = 4 * 3600;
+
+    fn new() -> Self {
+        Self {
+            event_count: 0,
+            min_ts: u64::MAX,
+            max_ts: 0,
+            cmd_counts: HashMap::with_capacity(32),
+            cat_counts: HashMap::with_capacity(8),
+            query_counts: HashMap::with_capacity(64),
+            sessions: 0,
+            last_ts: None,
+        }
+    }
+
+    /// Feed a single entry into the aggregator. Entry is not retained.
+    fn push(&mut self, entry: &Entry) {
+        match entry {
+            Entry::Command { cmd, query, ts } => {
+                self.event_count += 1;
+                let ts = *ts;
+
+                // Date range
+                if ts < self.min_ts {
+                    self.min_ts = ts;
+                }
+                if ts > self.max_ts {
+                    self.max_ts = ts;
+                }
+
+                // Command + category counts (single pass).
+                // Use get_mut to avoid cloning the key on every hit.
+                if let Some(c) = self.cmd_counts.get_mut(cmd.as_str()) {
+                    *c += 1;
+                } else {
+                    self.cmd_counts.insert(cmd.clone(), 1);
+                }
+                let cat = category_for(cmd);
+                if let Some(c) = self.cat_counts.get_mut(cat) {
+                    *c += 1;
+                } else {
+                    self.cat_counts.insert(cat.to_string(), 1);
+                }
+
+                // Query counts
+                if let Some(q) = query {
+                    if !q.is_empty() {
+                        if let Some(c) = self.query_counts.get_mut(q.as_str()) {
+                            *c += 1;
+                        } else {
+                            self.query_counts.insert(q.clone(), 1);
+                        }
+                    }
+                }
+
+                // Session tracking (inlined from count_sessions)
+                if self.sessions == 0 {
+                    self.sessions = 1;
+                }
+                if let Some(prev) = self.last_ts {
+                    if ts.saturating_sub(prev) > Self::GAP_SECS {
+                        self.sessions += 1;
+                    }
+                }
+                self.last_ts = Some(ts);
+            }
+            Entry::Reset { ts, .. } => {
+                if self.sessions > 0 {
+                    self.sessions += 1;
+                }
+                self.last_ts = Some(*ts);
+            }
+        }
+    }
+
+    /// Feed all entries from a slice. Entries are borrowed, not stored.
+    fn push_all(&mut self, entries: &[Entry]) {
+        for entry in entries {
+            self.push(entry);
+        }
+    }
+
+    /// Consume the aggregator and produce the final output.
+    fn finish(self) -> TelemetryOutput {
+        if self.event_count == 0 {
+            return TelemetryOutput {
+                events: 0,
+                date_range: None,
+                sessions: None,
+                commands: HashMap::new(),
+                categories: HashMap::new(),
+                top_queries: Vec::new(),
+            };
+        }
+
+        // Top queries (sorted descending, capped at 10)
+        let mut query_sorted: Vec<_> = self.query_counts.into_iter().collect();
+        query_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+
+        TelemetryOutput {
+            events: self.event_count,
+            date_range: Some(DateRange {
+                from: self.min_ts,
+                to: self.max_ts,
+            }),
+            sessions: Some(self.sessions),
+            commands: self.cmd_counts,
+            categories: self.cat_counts,
+            top_queries: query_sorted
+                .into_iter()
+                .take(10)
+                .map(|(q, c)| TopQuery { query: q, count: c })
+                .collect(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Builder (delegates to aggregator)
 // ---------------------------------------------------------------------------
 
 /// Build telemetry output from parsed entries.
 ///
-/// Pure data assembly -- no I/O. CLI prints text, JSON path serializes.
+/// Production code uses [`TelemetryAggregator`] directly in `cmd_telemetry`.
+/// This convenience wrapper is retained for tests.
+#[cfg(test)]
 fn build_telemetry(entries: &[Entry]) -> TelemetryOutput {
-    let _span = tracing::info_span!("build_telemetry").entered();
-
-    // Filter to command entries for stats
-    let commands: Vec<_> = entries
-        .iter()
-        .filter_map(|e| match e {
-            Entry::Command { cmd, query, ts } => Some((cmd.as_str(), query.as_deref(), *ts)),
-            _ => None,
-        })
-        .collect();
-
-    if commands.is_empty() {
-        return TelemetryOutput {
-            events: 0,
-            date_range: None,
-            sessions: None,
-            commands: HashMap::new(),
-            categories: HashMap::new(),
-            top_queries: Vec::new(),
-        };
-    }
-
-    // Command frequency
-    let mut cmd_counts: HashMap<&str, usize> = HashMap::new();
-    for &(cmd, _, _) in &commands {
-        *cmd_counts.entry(cmd).or_default() += 1;
-    }
-
-    // Category aggregation
-    let mut cat_counts: HashMap<&str, usize> = HashMap::new();
-    for &(cmd, _, _) in &commands {
-        *cat_counts.entry(category_for(cmd)).or_default() += 1;
-    }
-
-    // Top queries (sorted descending, capped at 10)
-    let mut query_counts: HashMap<&str, usize> = HashMap::new();
-    for &(_, query, _) in &commands {
-        if let Some(q) = query {
-            if !q.is_empty() {
-                *query_counts.entry(q).or_default() += 1;
-            }
-        }
-    }
-    let mut query_sorted: Vec<_> = query_counts.into_iter().collect();
-    query_sorted.sort_by(|a, b| b.1.cmp(&a.1));
-
-    // Date range
-    let min_ts = commands.iter().map(|c| c.2).min().unwrap_or(0);
-    let max_ts = commands.iter().map(|c| c.2).max().unwrap_or(0);
-
-    // Sessions
-    let sessions = count_sessions(entries);
-
-    TelemetryOutput {
-        events: commands.len(),
-        date_range: Some(DateRange {
-            from: min_ts,
-            to: max_ts,
-        }),
-        sessions: Some(sessions),
-        commands: cmd_counts
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect(),
-        categories: cat_counts
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect(),
-        top_queries: query_sorted
-            .into_iter()
-            .take(10)
-            .map(|(q, c)| TopQuery {
-                query: q.to_string(),
-                count: c,
-            })
-            .collect(),
-    }
+    let mut agg = TelemetryAggregator::new();
+    agg.push_all(entries);
+    agg.finish()
 }
 
 // ---------------------------------------------------------------------------
@@ -301,13 +373,12 @@ fn build_telemetry(entries: &[Entry]) -> TelemetryOutput {
 pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_telemetry").entered();
 
-    // TODO(RM-10): --all loads every archived + current entry into one Vec.
-    // For extreme usage this could be switched to streaming aggregation,
-    // but telemetry files are auto-archived at 10 MB so practical risk is low.
-    let mut entries = Vec::new();
+    // RM-10: streaming aggregation — each file's entries are fed into the
+    // aggregator then dropped, so --all never holds all files in memory at once.
+    let mut agg = TelemetryAggregator::new();
 
     if all {
-        // Read all telemetry files (archived + current)
+        // Read all telemetry files (archived + current), one at a time
         if let Ok(dir) = fs::read_dir(cqs_dir) {
             let mut paths: Vec<_> = dir
                 .filter_map(|e| e.ok())
@@ -321,7 +392,10 @@ pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()>
             paths.sort();
             for path in paths {
                 match parse_entries(&path) {
-                    Ok(e) => entries.extend(e),
+                    Ok(entries) => {
+                        agg.push_all(&entries);
+                        // entries dropped here — not accumulated
+                    }
                     Err(err) => tracing::warn!(path = %path.display(), error = %err, "Skipping"),
                 }
             }
@@ -329,11 +403,12 @@ pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()>
     } else {
         let path = cqs_dir.join("telemetry.jsonl");
         if path.exists() {
-            entries = parse_entries(&path)?;
+            let entries = parse_entries(&path)?;
+            agg.push_all(&entries);
         }
     }
 
-    let output = build_telemetry(&entries);
+    let output = agg.finish();
 
     if output.events == 0 {
         if json {
