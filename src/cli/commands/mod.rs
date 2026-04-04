@@ -38,6 +38,7 @@ pub(crate) use search::cmd_scout;
 pub(crate) use search::cmd_similar;
 pub(crate) use search::cmd_where;
 pub(crate) use search::related_result_to_json;
+pub(crate) use search::where_to_json;
 pub(crate) use search::GatherContext;
 
 // -- graph --
@@ -71,6 +72,8 @@ pub(crate) use index::cmd_gc;
 pub(crate) use index::cmd_index;
 pub(crate) use index::cmd_stale;
 pub(crate) use index::cmd_stats;
+pub(crate) use index::stale_to_json;
+pub(crate) use index::stats_to_json;
 
 // -- io --
 pub(crate) use io::cmd_blame;

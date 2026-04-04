@@ -1,12 +1,50 @@
 //! Stats command for cqs
 //!
 //! Displays index statistics.
+//!
+//! Core JSON construction is in [`stats_to_json`] so batch mode can reuse it.
 
 use std::collections::HashSet;
 
 use anyhow::{Context as _, Result};
 
 use cqs::{HnswIndex, Parser};
+
+/// Build the core stats JSON shared between CLI and batch.
+///
+/// Contains: total_chunks, total_files, notes, call_graph, type_graph,
+/// by_language, by_type, model, schema_version.
+/// Callers add context-specific fields (stale_files, errors, etc.).
+pub(crate) fn stats_to_json(store: &cqs::Store) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("stats_to_json").entered();
+    let stats = store.stats().context("Failed to read index statistics")?;
+    let note_count = store.note_count()?;
+    let fc_stats = store.function_call_stats()?;
+    let te_stats = store.type_edge_stats()?;
+
+    Ok(serde_json::json!({
+        "total_chunks": stats.total_chunks,
+        "total_files": stats.total_files,
+        "notes": note_count,
+        "call_graph": {
+            "total_calls": fc_stats.total_calls,
+            "unique_callers": fc_stats.unique_callers,
+            "unique_callees": fc_stats.unique_callees,
+        },
+        "type_graph": {
+            "total_edges": te_stats.total_edges,
+            "unique_types": te_stats.unique_types,
+        },
+        "by_language": stats.chunks_by_language.iter()
+            .map(|(l, c)| (l.to_string(), c))
+            .collect::<std::collections::HashMap<_, _>>(),
+        "by_type": stats.chunks_by_type.iter()
+            .map(|(t, c)| (t.to_string(), c))
+            .collect::<std::collections::HashMap<_, _>>(),
+        "model": stats.model_name,
+        "schema_version": stats.schema_version,
+    }))
+}
 
 /// Display index statistics (chunk counts, languages, types)
 pub(crate) fn cmd_stats(ctx: &crate::cli::CommandContext, json: bool) -> Result<()> {
@@ -36,33 +74,13 @@ pub(crate) fn cmd_stats(ctx: &crate::cli::CommandContext, json: bool) -> Result<
     let te_stats = store.type_edge_stats()?;
 
     if json || ctx.cli.json {
-        let json = serde_json::json!({
-            "total_chunks": stats.total_chunks,
-            "total_files": stats.total_files,
-            "stale_files": stale_count,
-            "missing_files": missing_count,
-            "notes": note_count,
-            "call_graph": {
-                "total_calls": call_count,
-                "unique_callers": caller_count,
-                "unique_callees": callee_count,
-            },
-            "type_graph": {
-                "total_edges": te_stats.total_edges,
-                "unique_types": te_stats.unique_types,
-            },
-            "by_language": stats.chunks_by_language.iter()
-                .map(|(l, c)| (l.to_string(), c))
-                .collect::<std::collections::HashMap<_, _>>(),
-            "by_type": stats.chunks_by_type.iter()
-                .map(|(t, c)| (t.to_string(), c))
-                .collect::<std::collections::HashMap<_, _>>(),
-            "model": stats.model_name,
-            "schema_version": stats.schema_version,
-            "created_at": stats.created_at,
-            "hnsw_vectors": hnsw_vectors,
-        });
-        println!("{}", serde_json::to_string_pretty(&json)?);
+        let mut output = stats_to_json(store)?;
+        // CLI-specific fields
+        output["stale_files"] = serde_json::json!(stale_count);
+        output["missing_files"] = serde_json::json!(missing_count);
+        output["created_at"] = serde_json::json!(stats.created_at);
+        output["hnsw_vectors"] = serde_json::json!(hnsw_vectors);
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!("Index Statistics");
         println!("================");
