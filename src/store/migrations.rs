@@ -5,7 +5,7 @@
 //!
 //! ## Adding a new migration
 //!
-//! 1. Increment `CURRENT_SCHEMA_VERSION` in `helpers.rs`
+//! 1. Increment `CURRENT_SCHEMA_VERSION` in `helpers/mod.rs`
 //! 2. Add a new migration function: `async fn migrate_vN_to_vM(pool: &SqlitePool) -> Result<()>`
 //! 3. Add the case to `run_migration()`: `(N, M) => migrate_vN_to_vM(pool).await`
 //! 4. Update `schema.sql` with the new schema
