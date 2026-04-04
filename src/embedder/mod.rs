@@ -1248,4 +1248,100 @@ mod tests {
             );
         }
     }
+
+    // ===== TC-11: Embedder init failure path =====
+
+    mod embedder_init_failure {
+        use super::*;
+        use std::sync::Mutex;
+
+        /// Mutex to serialize tests that manipulate CQS_ONNX_DIR env var.
+        static ONNX_DIR_MUTEX: Mutex<()> = Mutex::new(());
+
+        #[test]
+        fn embedder_with_bogus_onnx_path_returns_err_on_embed() {
+            // TC-11: Verify that an Embedder with a ModelConfig pointing to
+            // a nonexistent ONNX path returns Err (not panic) when embed is called.
+            let _lock = ONNX_DIR_MUTEX.lock().unwrap();
+
+            let dir = tempfile::TempDir::new().unwrap();
+            // Create only the tokenizer file, leave ONNX model missing
+            std::fs::write(dir.path().join("tokenizer.json"), b"{}").unwrap();
+            std::fs::create_dir_all(dir.path().join("onnx")).unwrap();
+            // Deliberately do NOT create onnx/model.onnx
+
+            let config = ModelConfig {
+                name: "bogus".to_string(),
+                repo: "nonexistent/model".to_string(),
+                onnx_path: "onnx/model.onnx".to_string(),
+                tokenizer_path: "tokenizer.json".to_string(),
+                dim: 768,
+                max_seq_length: 512,
+                query_prefix: String::new(),
+                doc_prefix: String::new(),
+            };
+
+            // Point CQS_ONNX_DIR at our incomplete dir (has tokenizer but no model)
+            // With CQS_ONNX_DIR set but model missing, ensure_model falls through
+            // to HF download which fails in test env.
+            std::env::set_var("CQS_ONNX_DIR", dir.path().to_str().unwrap());
+            let embedder = Embedder::new_cpu(config);
+            std::env::remove_var("CQS_ONNX_DIR");
+
+            // Embedder::new() itself may succeed (lazy) or fail (ensure_model fallthrough)
+            // Either way, we should get a clean error, not a panic
+            match embedder {
+                Ok(emb) => {
+                    // Lazy init: the session isn't created until embed is called.
+                    // Calling embed_query should fail because the model file doesn't exist.
+                    let result = emb.embed_query("test query");
+                    assert!(
+                        result.is_err(),
+                        "embed_query should return Err with missing model, got Ok"
+                    );
+                }
+                Err(_e) => {
+                    // Early failure at construction time is also acceptable --
+                    // the key is that it's an Err, not a panic.
+                }
+            }
+        }
+
+        #[test]
+        fn embedder_init_failure_is_not_cached() {
+            // TC-11: Verify that after an Embedder returns Err on embed,
+            // calling embed again also returns Err (no cached bad state).
+            let _lock = ONNX_DIR_MUTEX.lock().unwrap();
+
+            let dir = tempfile::TempDir::new().unwrap();
+            // Create empty dir -- no model files at all
+            std::env::set_var("CQS_ONNX_DIR", dir.path().to_str().unwrap());
+            let embedder = Embedder::new_cpu(ModelConfig {
+                name: "bogus".to_string(),
+                repo: "nonexistent/model".to_string(),
+                onnx_path: "model.onnx".to_string(),
+                tokenizer_path: "tokenizer.json".to_string(),
+                dim: 768,
+                max_seq_length: 512,
+                query_prefix: String::new(),
+                doc_prefix: String::new(),
+            });
+            std::env::remove_var("CQS_ONNX_DIR");
+
+            match embedder {
+                Ok(emb) => {
+                    let first = emb.embed_query("test");
+                    let second = emb.embed_query("test again");
+                    assert!(first.is_err(), "First embed should fail");
+                    assert!(
+                        second.is_err(),
+                        "Second embed should also fail (not cached bad state)"
+                    );
+                }
+                Err(_) => {
+                    // Early failure is fine -- both calls would fail anyway
+                }
+            }
+        }
+    }
 }

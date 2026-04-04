@@ -506,6 +506,281 @@ fn print_summary_terminal(data: &FullData, path: &str) {
     }
 }
 
+// ─── Tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cqs::language::{ChunkType, Language};
+    use cqs::store::ChunkSummary;
+    use std::path::PathBuf;
+
+    fn make_chunk(name: &str, line_start: u32, line_end: u32) -> ChunkSummary {
+        ChunkSummary {
+            id: format!("id_{name}"),
+            file: PathBuf::from("src/lib.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {name}()"),
+            content: format!("fn {name}() {{ }}"),
+            doc: Some(format!("Doc for {name}")),
+            line_start,
+            line_end,
+            content_hash: format!("hash_{name}"),
+            window_idx: None,
+            parent_id: None,
+            parent_type_name: None,
+        }
+    }
+
+    // ===== HP-1: compact_to_json tests =====
+
+    #[test]
+    fn hp1_compact_to_json_all_fields() {
+        let chunks = vec![make_chunk("foo", 1, 10), make_chunk("bar", 12, 20)];
+        let mut caller_counts = HashMap::new();
+        caller_counts.insert("foo".to_string(), 3);
+        caller_counts.insert("bar".to_string(), 0);
+        let mut callee_counts = HashMap::new();
+        callee_counts.insert("foo".to_string(), 1);
+        callee_counts.insert("bar".to_string(), 5);
+
+        let data = CompactData {
+            chunks,
+            caller_counts,
+            callee_counts,
+        };
+        let json = compact_to_json(&data, "src/lib.rs");
+
+        // Top-level fields
+        assert_eq!(json["file"], "src/lib.rs");
+        assert_eq!(json["chunk_count"], 2);
+
+        // First chunk: verify all CompactChunkEntry fields
+        let c0 = &json["chunks"][0];
+        assert_eq!(c0["name"], "foo");
+        assert_eq!(c0["chunk_type"], "function");
+        assert_eq!(c0["signature"], "fn foo()");
+        assert_eq!(c0["line_start"], 1);
+        assert_eq!(c0["line_end"], 10);
+        assert_eq!(c0["caller_count"], 3);
+        assert_eq!(c0["callee_count"], 1);
+
+        // Second chunk: zero callers
+        let c1 = &json["chunks"][1];
+        assert_eq!(c1["name"], "bar");
+        assert_eq!(c1["caller_count"], 0);
+        assert_eq!(c1["callee_count"], 5);
+    }
+
+    #[test]
+    fn hp1_compact_to_json_missing_counts_default_to_zero() {
+        // When caller/callee counts maps are empty, should default to 0
+        let chunks = vec![make_chunk("orphan", 1, 5)];
+        let data = CompactData {
+            chunks,
+            caller_counts: HashMap::new(),
+            callee_counts: HashMap::new(),
+        };
+        let json = compact_to_json(&data, "src/orphan.rs");
+
+        assert_eq!(json["chunks"][0]["caller_count"], 0);
+        assert_eq!(json["chunks"][0]["callee_count"], 0);
+    }
+
+    // ===== HP-1: full_to_json tests =====
+
+    #[test]
+    fn hp1_full_to_json_all_fields() {
+        let chunks = vec![make_chunk("process", 5, 25)];
+        let external_callers = vec![(
+            "main".to_string(),
+            "src/main.rs".to_string(),
+            "process".to_string(),
+            3u32,
+        )];
+        let external_callees = vec![("validate".to_string(), "process".to_string())];
+        let mut dependent_files = HashSet::new();
+        dependent_files.insert("src/main.rs".to_string());
+
+        let data = FullData {
+            chunks,
+            external_callers,
+            external_callees,
+            dependent_files,
+        };
+        let json = full_to_json(&data, "src/lib.rs", None, None);
+
+        // Top-level
+        assert_eq!(json["file"], "src/lib.rs");
+
+        // Chunks
+        let chunks_arr = json["chunks"].as_array().unwrap();
+        assert_eq!(chunks_arr.len(), 1);
+        let c0 = &chunks_arr[0];
+        assert_eq!(c0["name"], "process");
+        assert_eq!(c0["chunk_type"], "function");
+        assert_eq!(c0["signature"], "fn process()");
+        assert_eq!(c0["line_start"], 5);
+        assert_eq!(c0["line_end"], 25);
+        assert_eq!(c0["doc"], "Doc for process");
+        assert!(
+            c0.get("content").is_none(),
+            "content should be absent when content_set is None"
+        );
+
+        // External callers
+        let callers = json["external_callers"].as_array().unwrap();
+        assert_eq!(callers.len(), 1);
+        assert_eq!(callers[0]["name"], "main");
+        assert_eq!(callers[0]["file"], "src/main.rs");
+        assert_eq!(callers[0]["calls"], "process");
+        assert_eq!(callers[0]["line_start"], 3);
+
+        // External callees
+        let callees = json["external_callees"].as_array().unwrap();
+        assert_eq!(callees.len(), 1);
+        assert_eq!(callees[0]["name"], "validate");
+        assert_eq!(callees[0]["called_from"], "process");
+
+        // Dependent files
+        let dep = json["dependent_files"].as_array().unwrap();
+        assert_eq!(dep.len(), 1);
+        assert_eq!(dep[0], "src/main.rs");
+
+        // Token fields absent when not provided
+        assert!(
+            json.get("token_count").is_none(),
+            "token_count should be absent when token_info is None"
+        );
+        assert!(
+            json.get("token_budget").is_none(),
+            "token_budget should be absent when token_info is None"
+        );
+    }
+
+    #[test]
+    fn hp1_full_to_json_with_token_info() {
+        let data = FullData {
+            chunks: vec![make_chunk("f", 1, 5)],
+            external_callers: vec![],
+            external_callees: vec![],
+            dependent_files: HashSet::new(),
+        };
+        let json = full_to_json(&data, "src/lib.rs", None, Some((150, 500)));
+
+        assert_eq!(json["token_count"], 150);
+        assert_eq!(json["token_budget"], 500);
+    }
+
+    #[test]
+    fn hp1_full_to_json_with_content_set() {
+        let chunks = vec![
+            make_chunk("included", 1, 10),
+            make_chunk("excluded", 12, 20),
+        ];
+        let data = FullData {
+            chunks,
+            external_callers: vec![],
+            external_callees: vec![],
+            dependent_files: HashSet::new(),
+        };
+        let mut content_set = HashSet::new();
+        content_set.insert("included".to_string());
+
+        let json = full_to_json(&data, "src/lib.rs", Some(&content_set), None);
+
+        let chunks_arr = json["chunks"].as_array().unwrap();
+        assert!(
+            chunks_arr[0]["content"].is_string(),
+            "included chunk should have content"
+        );
+        assert_eq!(chunks_arr[0]["content"], "fn included() { }");
+        assert!(
+            chunks_arr[1].get("content").is_none(),
+            "excluded chunk should not have content"
+        );
+    }
+
+    // ===== HP-1: summary_to_json tests =====
+
+    #[test]
+    fn hp1_summary_to_json_all_fields() {
+        let data = FullData {
+            chunks: vec![make_chunk("a", 1, 10), make_chunk("b", 15, 30)],
+            external_callers: vec![
+                (
+                    "caller1".to_string(),
+                    "src/c.rs".to_string(),
+                    "a".to_string(),
+                    5,
+                ),
+                (
+                    "caller2".to_string(),
+                    "src/d.rs".to_string(),
+                    "b".to_string(),
+                    8,
+                ),
+            ],
+            external_callees: vec![("ext_fn".to_string(), "a".to_string())],
+            dependent_files: {
+                let mut s = HashSet::new();
+                s.insert("src/c.rs".to_string());
+                s.insert("src/d.rs".to_string());
+                s
+            },
+        };
+        let json = summary_to_json(&data, "src/lib.rs");
+
+        assert_eq!(json["file"], "src/lib.rs");
+        assert_eq!(json["chunk_count"], 2);
+        assert_eq!(json["external_caller_count"], 2);
+        assert_eq!(json["external_callee_count"], 1);
+
+        // Chunks have minimal fields
+        let chunks = json["chunks"].as_array().unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0]["name"], "a");
+        assert_eq!(chunks[0]["chunk_type"], "function");
+        assert_eq!(chunks[0]["line_start"], 1);
+        assert_eq!(chunks[0]["line_end"], 10);
+        // Summary chunks should NOT have signature, doc, content, caller_count etc.
+        assert!(chunks[0].get("signature").is_none());
+        assert!(chunks[0].get("doc").is_none());
+        assert!(chunks[0].get("content").is_none());
+
+        // Dependent files sorted
+        let dep = json["dependent_files"].as_array().unwrap();
+        assert_eq!(dep.len(), 2);
+        assert_eq!(dep[0], "src/c.rs");
+        assert_eq!(dep[1], "src/d.rs");
+    }
+
+    #[test]
+    fn hp1_compact_chunk_count_matches_array_length() {
+        // HP-5 gap: chunk_count should match chunks array length
+        let chunks = vec![
+            make_chunk("a", 1, 5),
+            make_chunk("b", 6, 10),
+            make_chunk("c", 11, 15),
+        ];
+        let data = CompactData {
+            chunks,
+            caller_counts: HashMap::new(),
+            callee_counts: HashMap::new(),
+        };
+        let json = compact_to_json(&data, "src/lib.rs");
+
+        let arr_len = json["chunks"].as_array().unwrap().len();
+        let count_field = json["chunk_count"].as_u64().unwrap();
+        assert_eq!(
+            count_field, arr_len as u64,
+            "chunk_count field must equal chunks array length"
+        );
+    }
+}
+
 fn print_full_terminal(
     data: &FullData,
     path: &str,

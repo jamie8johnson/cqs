@@ -5,6 +5,142 @@ use colored::Colorize;
 
 use cqs::scout;
 
+// ─── Tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    // ===== TC-15: inject_content_into_scout_json tests =====
+
+    #[test]
+    fn tc15_inject_content_into_scout_json_known_shape() {
+        // TC-15: verify inject_content_into_scout_json mutates content by name
+        let mut scout_json = json!({
+            "file_groups": [
+                {
+                    "file": "src/lib.rs",
+                    "chunks": [
+                        { "name": "foo", "signature": "fn foo()" },
+                        { "name": "bar", "signature": "fn bar()" }
+                    ]
+                }
+            ]
+        });
+        let mut content_map = std::collections::HashMap::new();
+        content_map.insert("foo".to_string(), "fn foo() { 42 }".to_string());
+
+        crate::cli::commands::inject_content_into_scout_json(&mut scout_json, &content_map);
+
+        let chunks = scout_json["file_groups"][0]["chunks"].as_array().unwrap();
+        assert_eq!(
+            chunks[0]["content"], "fn foo() { 42 }",
+            "foo's content should be injected"
+        );
+        assert!(
+            chunks[1].get("content").is_none(),
+            "bar should have no content (not in content_map)"
+        );
+    }
+
+    #[test]
+    fn tc15_inject_content_empty_map_is_noop() {
+        // TC-15: empty content_map should leave JSON unchanged
+        let original = json!({
+            "file_groups": [
+                {
+                    "file": "src/lib.rs",
+                    "chunks": [
+                        { "name": "baz", "signature": "fn baz()" }
+                    ]
+                }
+            ]
+        });
+        let mut json_val = original.clone();
+        let empty_map = std::collections::HashMap::new();
+
+        crate::cli::commands::inject_content_into_scout_json(&mut json_val, &empty_map);
+
+        assert_eq!(
+            json_val, original,
+            "Empty content_map should leave JSON unchanged"
+        );
+    }
+
+    #[test]
+    fn tc15_inject_content_unrecognized_names_is_noop() {
+        // TC-15: content_map with names not in the JSON should not add fields
+        let original = json!({
+            "file_groups": [
+                {
+                    "file": "src/lib.rs",
+                    "chunks": [
+                        { "name": "existing_fn", "signature": "fn existing_fn()" }
+                    ]
+                }
+            ]
+        });
+        let mut json_val = original.clone();
+        let mut content_map = std::collections::HashMap::new();
+        content_map.insert("nonexistent_fn".to_string(), "content".to_string());
+
+        crate::cli::commands::inject_content_into_scout_json(&mut json_val, &content_map);
+
+        assert_eq!(
+            json_val, original,
+            "Unrecognized names should leave JSON unchanged"
+        );
+    }
+
+    #[test]
+    fn tc15_inject_content_no_file_groups_is_noop() {
+        // TC-15: JSON without file_groups key should be a safe no-op
+        let mut json_val = json!({ "summary": { "total_files": 0 } });
+        let mut content_map = std::collections::HashMap::new();
+        content_map.insert("foo".to_string(), "content".to_string());
+
+        // Should not panic
+        crate::cli::commands::inject_content_into_scout_json(&mut json_val, &content_map);
+        assert!(json_val.get("file_groups").is_none());
+    }
+
+    // ===== TC-15: inject_token_info tests =====
+
+    #[test]
+    fn tc15_inject_token_info_adds_fields() {
+        let mut json_val = json!({ "results": [] });
+
+        crate::cli::commands::inject_token_info(&mut json_val, Some((100, 500)));
+
+        assert_eq!(json_val["token_count"], 100);
+        assert_eq!(json_val["token_budget"], 500);
+    }
+
+    #[test]
+    fn tc15_inject_token_info_none_is_noop() {
+        let original = json!({ "results": [] });
+        let mut json_val = original.clone();
+
+        crate::cli::commands::inject_token_info(&mut json_val, None);
+
+        assert_eq!(json_val, original, "None token_info should be a no-op");
+        assert!(
+            json_val.get("token_count").is_none(),
+            "token_count should not be added when token_info is None"
+        );
+    }
+
+    #[test]
+    fn tc15_inject_token_info_zero_values() {
+        let mut json_val = json!({});
+
+        crate::cli::commands::inject_token_info(&mut json_val, Some((0, 0)));
+
+        assert_eq!(json_val["token_count"], 0);
+        assert_eq!(json_val["token_budget"], 0);
+    }
+}
+
 pub(crate) fn cmd_scout(
     ctx: &crate::cli::CommandContext,
     task: &str,
