@@ -84,6 +84,7 @@ pub(crate) use io::cmd_context;
 pub(crate) use io::cmd_diff;
 pub(crate) use io::cmd_drift;
 pub(crate) use io::cmd_notes;
+pub(crate) use io::cmd_notes_mutate;
 pub(crate) use io::cmd_read;
 pub(crate) use io::cmd_reconstruct;
 pub(crate) use io::NotesCommand;

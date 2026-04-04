@@ -19,8 +19,16 @@ pub(crate) fn max_tokens_per_window(model_max_seq: usize) -> usize {
 
 /// Compute overlap tokens scaled to window size (~12.5% overlap).
 /// Floor of 64 for small models, scales up for large-context models.
+/// Clamped to `max_tokens / 2 - 1` to satisfy `split_into_windows`'s
+/// requirement that `overlap < max_tokens / 2` (prevents exponential
+/// window count).
 pub(crate) fn window_overlap_tokens(max_tokens: usize) -> usize {
-    64.max(max_tokens / 8)
+    if max_tokens < 4 {
+        return 0;
+    }
+    let overlap = 64.max(max_tokens / 8);
+    let ceiling = max_tokens / 2 - 1;
+    overlap.min(ceiling)
 }
 
 /// Apply windowing to chunks that exceed the token limit.

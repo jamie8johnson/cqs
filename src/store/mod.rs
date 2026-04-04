@@ -251,16 +251,17 @@ impl Store {
         )
     }
 
-    /// Open an existing index with single-threaded runtime but full memory.
-    /// Uses `current_thread` tokio runtime (1 OS thread instead of 4) while
-    /// keeping the full 256MB mmap and 16MB cache of `open()`. Ideal for
-    /// read-only CLI commands on the primary project index where we need
-    /// full search performance but don't need multi-threaded async.
+    /// Open an existing index in read-only mode with single-threaded runtime
+    /// but full memory. Uses `current_thread` tokio runtime (1 OS thread
+    /// instead of 4) while keeping the full 256MB mmap and 16MB cache of
+    /// `open()`. Ideal for read-only CLI commands on the primary project index
+    /// where we need full search performance but don't need multi-threaded
+    /// async.
     pub fn open_light(path: &Path) -> Result<Self, StoreError> {
         Self::open_with_config(
             path,
             StoreOpenConfig {
-                read_only: false,
+                read_only: true,
                 use_current_thread: true,
                 max_connections: 4,
                 mmap_size: "268435456", // 256MB

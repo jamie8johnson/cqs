@@ -102,9 +102,9 @@ pub(crate) enum NotesCommand {
     },
 }
 
+/// Handle `notes list` — requires a readonly CommandContext for staleness checks.
 pub(crate) fn cmd_notes(ctx: &crate::cli::CommandContext, subcmd: &NotesCommand) -> Result<()> {
     let _span = tracing::info_span!("cmd_notes").entered();
-    let cli = ctx.cli;
     match subcmd {
         NotesCommand::List {
             warnings,
@@ -112,6 +112,16 @@ pub(crate) fn cmd_notes(ctx: &crate::cli::CommandContext, subcmd: &NotesCommand)
             json,
             check,
         } => cmd_notes_list(ctx, *warnings, *patterns, *json, *check),
+        // Mutations delegated to cmd_notes_mutate (Group A, no CommandContext)
+        _ => unreachable!("mutations handled by cmd_notes_mutate in dispatch Group A"),
+    }
+}
+
+/// Handle `notes add|update|remove` — opens one read-write store for reindex,
+/// avoiding the extra readonly connection that CommandContext would create.
+pub(crate) fn cmd_notes_mutate(cli: &Cli, subcmd: &NotesCommand) -> Result<()> {
+    let _span = tracing::info_span!("cmd_notes_mutate").entered();
+    match subcmd {
         NotesCommand::Add {
             text,
             sentiment,
@@ -133,27 +143,30 @@ pub(crate) fn cmd_notes(ctx: &crate::cli::CommandContext, subcmd: &NotesCommand)
             *no_reindex,
         ),
         NotesCommand::Remove { text, no_reindex } => cmd_notes_remove(cli, text, *no_reindex),
+        NotesCommand::List { .. } => {
+            unreachable!("list handled by cmd_notes in dispatch Group B")
+        }
     }
 }
 
-/// Re-parse and re-index notes after a file mutation.
-fn reindex_notes_cli(root: &std::path::Path) -> (usize, Option<String>) {
+/// Re-parse and re-index notes after a file mutation, reusing an existing store.
+fn reindex_notes(root: &std::path::Path, store: &cqs::Store) -> (usize, Option<String>) {
     let notes_path = root.join("docs/notes.toml");
     match parse_notes(&notes_path) {
-        Ok(notes) if !notes.is_empty() => {
-            let index_path = cqs::resolve_index_dir(root).join("index.db");
-            let store = match cqs::Store::open(&index_path) {
-                Ok(s) => s,
-                Err(e) => return (0, Some(format!("Failed to open index: {}", e))),
-            };
-            match cqs::index_notes(&notes, &notes_path, &store) {
-                Ok(count) => (count, None),
-                Err(e) => (0, Some(format!("Failed to index notes: {}", e))),
-            }
-        }
+        Ok(notes) if !notes.is_empty() => match cqs::index_notes(&notes, &notes_path, store) {
+            Ok(count) => (count, None),
+            Err(e) => (0, Some(format!("Failed to index notes: {}", e))),
+        },
         Ok(_) => (0, None),
         Err(e) => (0, Some(format!("Failed to parse notes: {}", e))),
     }
+}
+
+/// Open a read-write store for notes mutations that need to reindex.
+fn open_rw_store(root: &std::path::Path) -> Result<cqs::Store> {
+    let index_path = cqs::resolve_index_dir(root).join("index.db");
+    cqs::Store::open(&index_path)
+        .map_err(|e| anyhow::anyhow!("Failed to open index at {}: {}", index_path.display(), e))
 }
 
 /// Build a text preview (first 100 chars or full text).
@@ -224,7 +237,10 @@ fn cmd_notes_add(
     let (indexed, index_error) = if no_reindex {
         (0, None)
     } else {
-        reindex_notes_cli(&root)
+        match open_rw_store(&root) {
+            Ok(store) => reindex_notes(root.as_path(), &store),
+            Err(e) => (0, Some(format!("{e}"))),
+        }
     };
 
     let sentiment_label = if sentiment < -0.3 {
@@ -332,7 +348,10 @@ fn cmd_notes_update(
     let (indexed, index_error) = if no_reindex {
         (0, None)
     } else {
-        reindex_notes_cli(&root)
+        match open_rw_store(&root) {
+            Ok(store) => reindex_notes(root.as_path(), &store),
+            Err(e) => (0, Some(format!("{e}"))),
+        }
     };
 
     let final_text = new_text.unwrap_or(text);
@@ -396,7 +415,10 @@ fn cmd_notes_remove(cli: &Cli, text: &str, no_reindex: bool) -> Result<()> {
     let (indexed, index_error) = if no_reindex {
         (0, None)
     } else {
-        reindex_notes_cli(&root)
+        match open_rw_store(&root) {
+            Ok(store) => reindex_notes(root.as_path(), &store),
+            Err(e) => (0, Some(format!("{e}"))),
+        }
     };
 
     if cli.json {
