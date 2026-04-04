@@ -115,6 +115,12 @@ fn doc_format_from_tag(tag: &str) -> DocFormat {
             suffix: "",
             position: InsertionPosition::BeforeFunction,
         },
+        "block_comment" => DocFormat {
+            prefix: "(*",
+            line_prefix: "",
+            suffix: "*)",
+            position: InsertionPosition::BeforeFunction,
+        },
         // "default" and any unknown tag
         _ => DocFormat {
             prefix: "",
@@ -474,6 +480,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_block_comment_format() {
+        let fmt = doc_format_from_tag("block_comment");
+        assert_eq!(fmt.prefix, "(*");
+        assert_eq!(fmt.line_prefix, "");
+        assert_eq!(fmt.suffix, "*)");
+        assert_eq!(fmt.position, InsertionPosition::BeforeFunction);
+    }
+
+    #[test]
+    fn test_format_block_comment_single_line() {
+        let fmt = doc_format_from_tag("block_comment");
+        // Simulate format_doc_comment logic for block_comment
+        let text = "Moves the axis to home position.";
+        let indent = "  ";
+        let mut result = String::new();
+        result.push_str(indent);
+        result.push_str(fmt.prefix);
+        result.push('\n');
+        for line in text.lines() {
+            result.push_str(indent);
+            result.push_str(fmt.line_prefix);
+            result.push_str(line);
+            result.push('\n');
+        }
+        result.push_str(indent);
+        result.push_str(fmt.suffix);
+        result.push('\n');
+        assert_eq!(result, "  (*\n  Moves the axis to home position.\n  *)\n");
     }
 
     #[test]
