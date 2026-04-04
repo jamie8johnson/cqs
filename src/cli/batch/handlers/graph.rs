@@ -272,9 +272,8 @@ pub(in crate::cli::batch) fn dispatch_related(
     let limit = limit.clamp(1, 100);
 
     let result = cqs::find_related(&ctx.store(), name, limit)?;
-    Ok(crate::cli::commands::related_result_to_json(
-        &result, &ctx.root,
-    ))
+    let output = crate::cli::commands::build_related_output(&result, &ctx.root);
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Runs diff-aware impact analysis and returns results as JSON.

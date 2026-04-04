@@ -440,7 +440,7 @@ fn cmd_query_name_only(
     // Token-budget packing (lazy embedder — only created when --tokens is set)
     let json_overhead = json_overhead_for(cli);
     let (unified, token_info) = if let Some(budget) = cli.tokens {
-        let embedder = Embedder::new(cli.model_config().clone())?;
+        let embedder = Embedder::new(cli.try_model_config()?.clone())?;
         token_pack_results(
             unified,
             budget,
@@ -572,7 +572,7 @@ fn cmd_query_ref_name_only(
     // Token-budget packing (lazy embedder — only created when --tokens is set)
     let json_overhead = json_overhead_for(cli);
     let (tagged, token_info) = if let Some(budget) = cli.tokens {
-        let embedder = Embedder::new(cli.model_config().clone())?;
+        let embedder = Embedder::new(cli.try_model_config()?.clone())?;
         token_pack_results(
             tagged,
             budget,

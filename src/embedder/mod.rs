@@ -112,7 +112,7 @@ impl Embedding {
     /// ```
     /// use cqs::embedder::Embedding;
     ///
-    /// let valid = Embedding::try_new(vec![0.5; 768]);
+    /// let valid = Embedding::try_new(vec![0.5; 1024]);
     /// assert!(valid.is_ok());
     ///
     /// let also_valid = Embedding::try_new(vec![0.5; 384]);
@@ -208,7 +208,7 @@ impl std::fmt::Display for ExecutionProvider {
 ///
 /// let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
 /// let embedding = embedder.embed_query("parse configuration file")?;
-/// println!("Embedding dimension: {}", embedding.len()); // 768
+/// println!("Embedding dimension: {}", embedding.len()); // 1024 for BGE-large
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub struct Embedder {
@@ -639,7 +639,7 @@ impl Embedder {
             ])
             .map_err(ort_err)?;
 
-        // Get the last_hidden_state output: shape [batch, seq_len, 768]
+        // Get the last_hidden_state output: shape [batch, seq_len, dim]
         let output = outputs.get("last_hidden_state").ok_or_else(|| {
             EmbedderError::InferenceFailed(format!(
                 "ONNX model has no 'last_hidden_state' output. Available: {:?}",
@@ -648,7 +648,7 @@ impl Embedder {
         })?;
         let (shape, data) = output.try_extract_tensor::<f32>().map_err(ort_err)?;
 
-        // Validate tensor shape: expect [batch_size, seq_len, 768]
+        // Validate tensor shape: expect [batch_size, seq_len, dim]
         let batch_size = texts.len();
         let seq_len = max_len;
         if shape.len() != 3 {

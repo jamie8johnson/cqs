@@ -111,7 +111,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
                 cmd_telemetry(&cqs_dir, output.json, all)
             }
         }
-        Some(Commands::Project { ref subcmd }) => return cmd_project(subcmd, cli.model_config()),
+        Some(Commands::Project { ref subcmd }) => {
+            return cmd_project(subcmd, cli.try_model_config()?)
+        }
         // Special: open stores on arbitrary paths, not via CommandContext
         Some(Commands::Diff {
             ref source,

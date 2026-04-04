@@ -475,11 +475,13 @@ mod tests {
         }
     }
 
-    // These tests must run sequentially — they mutate CQS_EMBED_BATCH_SIZE env var.
-    // Combined into one test to avoid race conditions with parallel test execution.
+    // Mutex to serialize tests that mutate CQS_EMBED_BATCH_SIZE env var.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_embed_batch_size() {
         use super::types::embed_batch_size;
+        let _lock = ENV_MUTEX.lock().unwrap();
 
         // Default
         std::env::remove_var("CQS_EMBED_BATCH_SIZE");

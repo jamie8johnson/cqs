@@ -324,7 +324,7 @@ pub(crate) fn cmd_explain(
         max_tokens,
         None,
         embedder,
-        ctx.model_config(),
+        ctx.cli.try_model_config()?,
     )?;
 
     // Proactive staleness warning

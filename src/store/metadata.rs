@@ -586,7 +586,7 @@ mod tests {
     #[test]
     fn test_store_dim_reads_from_metadata() {
         let (store, _dir) = make_test_store_initialized();
-        // Default init stores EMBEDDING_DIM (768)
+        // Default init stores EMBEDDING_DIM (1024 for BGE-large)
         assert_eq!(store.dim, crate::EMBEDDING_DIM);
     }
 

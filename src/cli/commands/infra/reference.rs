@@ -145,7 +145,7 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
         Store::open(&db_path)
             .with_context(|| format!("Failed to open reference store at {}", db_path.display()))?,
     );
-    let mc = cli.model_config();
+    let mc = cli.try_model_config()?;
     store.init(&ModelInfo::new(&mc.repo, mc.dim))?;
     let stats = run_index_pipeline(
         &source,
@@ -153,7 +153,7 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
         Arc::clone(&store),
         false,
         cli.quiet,
-        cli.model_config().clone(),
+        cli.try_model_config()?.clone(),
     )?;
 
     if !cli.quiet {
@@ -376,7 +376,7 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
         Arc::clone(&store),
         false,
         cli.quiet,
-        cli.model_config().clone(),
+        cli.try_model_config()?.clone(),
     )?;
 
     if !cli.quiet {

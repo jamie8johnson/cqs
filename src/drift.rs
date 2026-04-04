@@ -245,7 +245,7 @@ mod tests {
     /// Create an embedding with a distinct direction based on `seed`.
     /// Uses `seed` as the index of a "hot" dimension (set to 1.0) while the
     /// rest are 0.0, ensuring different seeds produce orthogonal vectors
-    /// (cosine similarity ≈ 0). The seed is taken modulo 768.
+    /// (cosine similarity ≈ 0). The seed is taken modulo `EMBEDDING_DIM`.
     fn make_emb(seed: f32) -> Embedding {
         let mut v = vec![0.0f32; crate::EMBEDDING_DIM];
         let idx = (seed.abs() as usize) % crate::EMBEDDING_DIM;

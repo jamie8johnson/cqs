@@ -270,7 +270,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
             Err(_) => (None, 0),
         };
 
-    let model_config = cli.model_config();
+    let model_config = cli.try_model_config()?;
     let watch_cfg = WatchConfig {
         root: &root,
         cqs_dir: &cqs_dir,

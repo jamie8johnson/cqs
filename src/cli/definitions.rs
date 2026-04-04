@@ -244,14 +244,25 @@ pub struct Cli {
 }
 
 impl Cli {
+    /// Get the resolved model config, returning an error if not yet resolved.
+    ///
+    /// Prefer this over [`model_config`] in new code — it propagates a proper
+    /// error instead of panicking.
+    pub fn try_model_config(&self) -> anyhow::Result<&cqs::embedder::ModelConfig> {
+        self.resolved_model
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("ModelConfig not resolved — call resolve_model() first"))
+    }
+
     /// Get the resolved model config. Panics if called before dispatch resolves it.
     ///
-    // SAFETY: dispatch() sets resolved_model before any command runs.
-    // All 20+ callers are in the dispatch path.
+    /// **Deprecated:** Use [`try_model_config`] instead — it returns `Result`
+    /// rather than panicking on unresolved config.
+    #[deprecated(note = "use try_model_config() which returns Result instead of panicking")]
     pub fn model_config(&self) -> &cqs::embedder::ModelConfig {
         self.resolved_model
             .as_ref()
-            .expect("ModelConfig not resolved — call resolve_model() first")
+            .expect("BUG: ModelConfig not resolved — dispatch() must call resolve_model() first")
     }
 }
 

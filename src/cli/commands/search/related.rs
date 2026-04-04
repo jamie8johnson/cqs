@@ -56,20 +56,6 @@ pub(crate) fn build_related_output(result: &cqs::RelatedResult, root: &Path) -> 
     }
 }
 
-// Keep the old function name as an alias for backward compatibility with batch handlers
-// that import `related_result_to_json`.
-/// Build full JSON output from a `RelatedResult` — shared between CLI and batch.
-pub(crate) fn related_result_to_json(
-    result: &cqs::RelatedResult,
-    root: &Path,
-) -> serde_json::Value {
-    let output = build_related_output(result, root);
-    serde_json::to_value(&output).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to serialize RelatedOutput");
-        serde_json::json!({})
-    })
-}
-
 // ─── CLI command ────────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_related(
@@ -207,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn related_result_to_json_compat() {
+    fn related_output_serializes_to_json_value() {
         let result = cqs::RelatedResult {
             target: "baz".to_string(),
             shared_callers: vec![],
@@ -215,7 +201,8 @@ mod tests {
             shared_types: vec![],
         };
         let root = PathBuf::from("/project");
-        let json = related_result_to_json(&result, &root);
+        let output = build_related_output(&result, &root);
+        let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["target"], "baz");
         assert_eq!(json["shared_callees"][0]["name"], "qux");
         assert_eq!(json["shared_callees"][0]["line_start"], 5);
