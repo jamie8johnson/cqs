@@ -1,9 +1,45 @@
 //! Type dependency command for cqs
 //!
 //! Shows which chunks reference a type (forward), or what types a function uses (reverse).
+//! Core JSON builders are shared between CLI and batch handlers.
+
+use std::path::Path;
 
 use anyhow::{Context as _, Result};
 use colored::Colorize;
+
+use cqs::store::{ChunkSummary, TypeUsage};
+
+// ─── Shared JSON builders ───────────────────────────────────────────────────
+
+/// Build JSON for reverse deps (types used by a function) — shared between CLI and batch.
+pub(crate) fn deps_reverse_to_json(name: &str, types: &[TypeUsage]) -> serde_json::Value {
+    serde_json::json!({
+        "function": name,
+        "types": types.iter().map(|t| {
+            serde_json::json!({"type_name": t.type_name, "edge_kind": t.edge_kind})
+        }).collect::<Vec<_>>(),
+        "count": types.len(),
+    })
+}
+
+/// Build JSON for forward deps (chunks that use a type) — shared between CLI and batch.
+pub(crate) fn deps_forward_to_json(users: &[ChunkSummary], root: &Path) -> serde_json::Value {
+    let json_users: Vec<serde_json::Value> = users
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "file": cqs::rel_display(&c.file, root),
+                "line_start": c.line_start,
+                "chunk_type": c.chunk_type.to_string(),
+            })
+        })
+        .collect();
+    serde_json::json!(json_users)
+}
+
+// ─── CLI command ────────────────────────────────────────────────────────────
 
 /// Show type dependencies.
 ///
@@ -24,15 +60,7 @@ pub(crate) fn cmd_deps(
             .get_types_used_by(name)
             .context("Failed to load type dependencies")?;
         if json {
-            let json_types: Vec<serde_json::Value> = types
-                .iter()
-                .map(|t| serde_json::json!({"type_name": t.type_name, "edge_kind": t.edge_kind}))
-                .collect();
-            let output = serde_json::json!({
-                "function": name,
-                "types": json_types,
-                "count": json_types.len(),
-            });
+            let output = deps_reverse_to_json(name, &types);
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else if types.is_empty() {
             println!("No type dependencies found for '{}'", name);
@@ -54,18 +82,8 @@ pub(crate) fn cmd_deps(
             .get_type_users(name)
             .context("Failed to load type users")?;
         if json {
-            let json_users: Vec<serde_json::Value> = users
-                .iter()
-                .map(|c| {
-                    serde_json::json!({
-                        "name": c.name,
-                        "file": cqs::rel_display(&c.file, root),
-                        "line_start": c.line_start,
-                        "chunk_type": c.chunk_type.to_string(),
-                    })
-                })
-                .collect();
-            println!("{}", serde_json::to_string_pretty(&json_users)?);
+            let output = deps_forward_to_json(&users, root);
+            println!("{}", serde_json::to_string_pretty(&output)?);
         } else if users.is_empty() {
             println!("No users found for type '{}'", name);
         } else {

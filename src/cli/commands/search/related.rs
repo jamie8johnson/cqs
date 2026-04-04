@@ -1,10 +1,17 @@
 //! Related command — co-occurrence analysis
+//!
+//! Core JSON builders are shared between CLI and batch handlers.
+
+use std::path::Path;
 
 use anyhow::Result;
 
-fn related_to_json(
+// ─── Shared JSON builders ───────────────────────────────────────────────────
+
+/// Build JSON array from a slice of `RelatedFunction` — shared between CLI and batch.
+pub(crate) fn related_items_to_json(
     items: &[cqs::RelatedFunction],
-    root: &std::path::Path,
+    root: &Path,
 ) -> Vec<serde_json::Value> {
     items
         .iter()
@@ -20,6 +27,21 @@ fn related_to_json(
         .collect()
 }
 
+/// Build full JSON output from a `RelatedResult` — shared between CLI and batch.
+pub(crate) fn related_result_to_json(
+    result: &cqs::RelatedResult,
+    root: &Path,
+) -> serde_json::Value {
+    serde_json::json!({
+        "target": result.target,
+        "shared_callers": related_items_to_json(&result.shared_callers, root),
+        "shared_callees": related_items_to_json(&result.shared_callees, root),
+        "shared_types": related_items_to_json(&result.shared_types, root),
+    })
+}
+
+// ─── CLI command ────────────────────────────────────────────────────────────
+
 pub(crate) fn cmd_related(
     ctx: &crate::cli::CommandContext,
     name: &str,
@@ -33,16 +55,7 @@ pub(crate) fn cmd_related(
     let result = cqs::find_related(store, name, limit)?;
 
     if json {
-        let shared_callers = related_to_json(&result.shared_callers, root);
-        let shared_callees = related_to_json(&result.shared_callees, root);
-        let shared_types = related_to_json(&result.shared_types, root);
-
-        let output = serde_json::json!({
-            "target": result.target,
-            "shared_callers": shared_callers,
-            "shared_callees": shared_callees,
-            "shared_types": shared_types,
-        });
+        let output = related_result_to_json(&result, root);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         use colored::Colorize;
