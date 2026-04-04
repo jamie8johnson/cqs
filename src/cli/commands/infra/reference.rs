@@ -2,6 +2,8 @@
 //!
 //! Manages reference indexes for multi-index search.
 //! References are read-only indexes of external codebases.
+//!
+//! Core struct is [`RefListEntry`]; built in `cmd_ref_list`.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -15,6 +17,24 @@ use cqs::{ModelInfo, Parser as CqParser, Store};
 
 use crate::cli::commands::index::build_hnsw_index;
 use crate::cli::{enumerate_files, find_project_root, run_index_pipeline, Cli};
+
+// ---------------------------------------------------------------------------
+// Output struct
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct RefListEntry {
+    pub name: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub weight: f32,
+    pub chunks: u64,
+}
+
+// ---------------------------------------------------------------------------
+// CLI types
+// ---------------------------------------------------------------------------
 
 /// Reference subcommands
 #[derive(clap::Subcommand)]
@@ -190,13 +210,13 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
                     .ok()
                     .and_then(|s| s.chunk_count().ok())
                     .unwrap_or(0);
-                serde_json::json!({
-                    "name": r.name,
-                    "path": cqs::normalize_path(&r.path),
-                    "source": r.source.as_ref().map(|p| cqs::normalize_path(p)),
-                    "weight": r.weight,
-                    "chunks": chunks,
-                })
+                RefListEntry {
+                    name: r.name.clone(),
+                    path: cqs::normalize_path(&r.path),
+                    source: r.source.as_ref().map(|p| cqs::normalize_path(p)),
+                    weight: r.weight,
+                    chunks,
+                }
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&refs)?);
@@ -389,4 +409,44 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
         println!("Reference '{}' updated.", name);
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ref_list_entry_serialization() {
+        let entry = RefListEntry {
+            name: "stdlib".into(),
+            path: "/home/user/.cqs/refs/stdlib".into(),
+            source: Some("/usr/src/rust/library".into()),
+            weight: 0.8,
+            chunks: 1234,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["name"], "stdlib");
+        assert_eq!(json["path"], "/home/user/.cqs/refs/stdlib");
+        assert_eq!(json["source"], "/usr/src/rust/library");
+        assert_eq!(json["weight"], 0.8f32 as f64);
+        assert_eq!(json["chunks"], 1234);
+    }
+
+    #[test]
+    fn test_ref_list_entry_no_source() {
+        let entry = RefListEntry {
+            name: "external".into(),
+            path: "/home/user/.cqs/refs/external".into(),
+            source: None,
+            weight: 0.5,
+            chunks: 0,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(json.get("source").is_none());
+        assert_eq!(json["chunks"], 0);
+    }
 }

@@ -1,4 +1,6 @@
 //! Project management command — register, list, remove, search across projects
+//!
+//! Core struct is [`ProjectSearchResult`]; built in the `Search` subcommand handler.
 
 use std::path::PathBuf;
 
@@ -9,6 +11,25 @@ use cqs::embedder::ModelConfig;
 use cqs::normalize_path;
 use cqs::Embedder;
 use cqs::{search_across_projects, ProjectRegistry};
+
+// ---------------------------------------------------------------------------
+// Output struct
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ProjectSearchResult {
+    pub project: String,
+    pub name: String,
+    pub file: String,
+    pub line: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    pub score: f32,
+}
+
+// ---------------------------------------------------------------------------
+// CLI types
+// ---------------------------------------------------------------------------
 
 /// Project subcommands
 #[derive(clap::Subcommand)]
@@ -102,15 +123,13 @@ pub(crate) fn cmd_project(subcmd: &ProjectCommand, model_config: &ModelConfig) -
             if *json {
                 let json_results: Vec<_> = results
                     .iter()
-                    .map(|r| {
-                        serde_json::json!({
-                            "project": r.project_name,
-                            "name": r.name,
-                            "file": normalize_path(&r.file),
-                            "line": r.line_start,
-                            "signature": r.signature,
-                            "score": r.score,
-                        })
+                    .map(|r| ProjectSearchResult {
+                        project: r.project_name.clone(),
+                        name: r.name.clone(),
+                        file: normalize_path(&r.file),
+                        line: r.line_start,
+                        signature: r.signature.clone(),
+                        score: r.score,
                     })
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&json_results)?);
@@ -133,5 +152,46 @@ pub(crate) fn cmd_project(subcmd: &ProjectCommand, model_config: &ModelConfig) -
             }
             Ok(())
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_project_search_result_serialization() {
+        let result = ProjectSearchResult {
+            project: "my-lib".into(),
+            name: "do_stuff".into(),
+            file: "src/lib.rs".into(),
+            line: 42,
+            signature: Some("fn do_stuff(x: i32) -> bool".into()),
+            score: 0.875,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["project"], "my-lib");
+        assert_eq!(json["name"], "do_stuff");
+        assert_eq!(json["file"], "src/lib.rs");
+        assert_eq!(json["line"], 42);
+        assert_eq!(json["signature"], "fn do_stuff(x: i32) -> bool");
+    }
+
+    #[test]
+    fn test_project_search_result_no_signature() {
+        let result = ProjectSearchResult {
+            project: "my-lib".into(),
+            name: "Widget".into(),
+            file: "src/types.rs".into(),
+            line: 10,
+            signature: None,
+            score: 0.5,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert!(json.get("signature").is_none());
     }
 }

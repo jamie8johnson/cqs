@@ -2,6 +2,8 @@
 //!
 //! Toggle audit mode to exclude notes from search/read results.
 //! Useful for unbiased code review and fresh-eyes analysis.
+//!
+//! Core struct is [`AuditModeOutput`]; built inline in the command handler.
 
 use anyhow::{bail, Result};
 use chrono::Utc;
@@ -11,6 +13,25 @@ use cqs::parse_duration;
 
 use crate::cli::find_project_root;
 use crate::cli::AuditModeState;
+
+// ---------------------------------------------------------------------------
+// Output struct
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct AuditModeOutput {
+    pub audit_mode: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// CLI command
+// ---------------------------------------------------------------------------
 
 pub(crate) fn cmd_audit_mode(
     state: Option<&AuditModeState>,
@@ -29,18 +50,22 @@ pub(crate) fn cmd_audit_mode(
     let Some(state) = state else {
         let mode = load_audit_state(&cqs_dir);
         if json {
-            let result = if mode.is_active() {
-                serde_json::json!({
-                    "audit_mode": true,
-                    "remaining": mode.remaining(),
-                    "expires_at": mode.expires_at.map(|t| t.to_rfc3339()),
-                })
+            let output = if mode.is_active() {
+                AuditModeOutput {
+                    audit_mode: true,
+                    message: None,
+                    remaining: mode.remaining(),
+                    expires_at: mode.expires_at.map(|t| t.to_rfc3339()),
+                }
             } else {
-                serde_json::json!({
-                    "audit_mode": false,
-                })
+                AuditModeOutput {
+                    audit_mode: false,
+                    message: None,
+                    remaining: None,
+                    expires_at: None,
+                }
             };
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            println!("{}", serde_json::to_string_pretty(&output)?);
         } else if mode.is_active() {
             println!(
                 "Audit mode: ON ({})",
@@ -64,13 +89,15 @@ pub(crate) fn cmd_audit_mode(
             save_audit_state(&cqs_dir, &mode)?;
 
             if json {
-                let result = serde_json::json!({
-                    "audit_mode": true,
-                    "message": "Audit mode enabled. Notes excluded from search and read.",
-                    "remaining": mode.remaining(),
-                    "expires_at": expires_at.to_rfc3339(),
-                });
-                println!("{}", serde_json::to_string_pretty(&result)?);
+                let output = AuditModeOutput {
+                    audit_mode: true,
+                    message: Some(
+                        "Audit mode enabled. Notes excluded from search and read.".into(),
+                    ),
+                    remaining: mode.remaining(),
+                    expires_at: Some(expires_at.to_rfc3339()),
+                };
+                println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 println!(
                     "Audit mode enabled. Notes excluded. Expires in {}.",
@@ -86,11 +113,13 @@ pub(crate) fn cmd_audit_mode(
             save_audit_state(&cqs_dir, &mode)?;
 
             if json {
-                let result = serde_json::json!({
-                    "audit_mode": false,
-                    "message": "Audit mode disabled. Notes included in search and read.",
-                });
-                println!("{}", serde_json::to_string_pretty(&result)?);
+                let output = AuditModeOutput {
+                    audit_mode: false,
+                    message: Some("Audit mode disabled. Notes included in search and read.".into()),
+                    remaining: None,
+                    expires_at: None,
+                };
+                println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 println!("Audit mode disabled. Notes included.");
             }
@@ -98,4 +127,47 @@ pub(crate) fn cmd_audit_mode(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_audit_mode_output_active() {
+        let output = AuditModeOutput {
+            audit_mode: true,
+            message: Some("Audit mode enabled. Notes excluded from search and read.".into()),
+            remaining: Some("29m".into()),
+            expires_at: Some("2026-04-02T12:00:00+00:00".into()),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["audit_mode"], true);
+        assert_eq!(
+            json["message"],
+            "Audit mode enabled. Notes excluded from search and read."
+        );
+        assert_eq!(json["remaining"], "29m");
+        assert!(json["expires_at"].as_str().unwrap().contains("2026"));
+    }
+
+    #[test]
+    fn test_audit_mode_output_inactive() {
+        let output = AuditModeOutput {
+            audit_mode: false,
+            message: None,
+            remaining: None,
+            expires_at: None,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["audit_mode"], false);
+        // Optional fields omitted
+        assert!(json.get("message").is_none());
+        assert!(json.get("remaining").is_none());
+        assert!(json.get("expires_at").is_none());
+    }
 }
