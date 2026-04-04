@@ -1,7 +1,71 @@
 //! Suggest command — auto-detect note-worthy patterns
+//!
+//! Core struct is [`SuggestEntry`]; build with [`build_suggest_entries`].
+//! CLI uses text output for human display, batch serializes with `serde_json::to_value()`.
 
 use anyhow::Result;
 use colored::Colorize;
+
+// ---------------------------------------------------------------------------
+// Output structs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct SuggestEntry {
+    pub text: String,
+    pub sentiment: f64,
+    pub mentions: Vec<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[allow(dead_code)] // Used in tests; will be wired into batch handler
+pub(crate) struct SuggestOutput {
+    pub suggestions: Vec<SuggestEntry>,
+    pub count: usize,
+    pub applied: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Builder
+// ---------------------------------------------------------------------------
+
+/// Build typed suggest entries from lib-level suggestions.
+pub(crate) fn build_suggest_entries(
+    suggestions: &[cqs::suggest::SuggestedNote],
+) -> Vec<SuggestEntry> {
+    let _span = tracing::info_span!("build_suggest_entries", count = suggestions.len()).entered();
+
+    suggestions
+        .iter()
+        .map(|s| SuggestEntry {
+            text: s.text.clone(),
+            sentiment: s.sentiment as f64,
+            mentions: s.mentions.clone(),
+            reason: s.reason.clone(),
+        })
+        .collect()
+}
+
+/// Build the full suggest output (entries + metadata).
+#[allow(dead_code)] // Used in tests; will be wired into batch handler
+pub(crate) fn build_suggest_output(
+    suggestions: &[cqs::suggest::SuggestedNote],
+    applied: bool,
+) -> SuggestOutput {
+    let _span =
+        tracing::info_span!("build_suggest_output", count = suggestions.len(), applied).entered();
+
+    SuggestOutput {
+        count: suggestions.len(),
+        applied,
+        suggestions: build_suggest_entries(suggestions),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CLI command
+// ---------------------------------------------------------------------------
 
 pub(crate) fn cmd_suggest(ctx: &crate::cli::CommandContext, json: bool, apply: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_suggest", apply).entered();
@@ -20,18 +84,8 @@ pub(crate) fn cmd_suggest(ctx: &crate::cli::CommandContext, json: bool, apply: b
     }
 
     if json {
-        let json_val: Vec<_> = suggestions
-            .iter()
-            .map(|s| {
-                serde_json::json!({
-                    "text": s.text,
-                    "sentiment": s.sentiment,
-                    "mentions": s.mentions,
-                    "reason": s.reason,
-                })
-            })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&json_val)?);
+        let entries = build_suggest_entries(&suggestions);
+        println!("{}", serde_json::to_string_pretty(&entries)?);
 
         if apply {
             apply_suggestions(&suggestions, root, store)?;
@@ -91,4 +145,59 @@ fn apply_suggestions(
     cqs::index_notes(&notes, &notes_path, store)?;
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suggest_entry_serialization() {
+        let entry = SuggestEntry {
+            text: "Missing error handling in parser".into(),
+            sentiment: -0.5,
+            mentions: vec!["parser.rs".into()],
+            reason: "No Result propagation".into(),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["text"], "Missing error handling in parser");
+        assert_eq!(json["sentiment"], -0.5);
+        assert_eq!(json["mentions"][0], "parser.rs");
+        assert_eq!(json["reason"], "No Result propagation");
+    }
+
+    #[test]
+    fn suggest_output_empty() {
+        let output = SuggestOutput {
+            suggestions: vec![],
+            count: 0,
+            applied: false,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["count"], 0);
+        assert_eq!(json["applied"], false);
+        assert!(json["suggestions"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn suggest_output_with_entries() {
+        let output = SuggestOutput {
+            suggestions: vec![SuggestEntry {
+                text: "note".into(),
+                sentiment: 0.5,
+                mentions: vec![],
+                reason: "pattern".into(),
+            }],
+            count: 1,
+            applied: true,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["count"], 1);
+        assert_eq!(json["applied"], true);
+        assert_eq!(json["suggestions"][0]["text"], "note");
+    }
 }

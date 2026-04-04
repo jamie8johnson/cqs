@@ -403,8 +403,8 @@ mod tests {
         let val = serde_json::json!({
             "dead": [{"name": "a"}],
             "possibly_dead_pub": [{"name": "b"}],
-            "total_dead": 1,
-            "total_possibly_dead_pub": 1
+            "count": 1,
+            "possibly_pub_count": 1
         });
         let names = extract_names(&val);
         assert!(names.contains(&"a".to_string()));

@@ -58,13 +58,13 @@ pub(crate) use graph::cmd_test_map;
 pub(crate) use graph::cmd_trace;
 
 // -- review --
+pub(crate) use review::build_dead_output;
 pub(crate) use review::cmd_affected;
 pub(crate) use review::cmd_ci;
 pub(crate) use review::cmd_dead;
 pub(crate) use review::cmd_health;
 pub(crate) use review::cmd_review;
 pub(crate) use review::cmd_suggest;
-pub(crate) use review::dead_to_json;
 
 // -- index --
 pub(crate) use index::build_hnsw_index_owned;
