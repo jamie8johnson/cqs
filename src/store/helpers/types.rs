@@ -457,4 +457,275 @@ mod tests {
         let json = result.to_json_relative(root);
         assert_eq!(json["has_parent"], true);
     }
+
+    // ===== HP-7: SearchResult::to_json field completeness =====
+
+    /// Helper: build a SearchResult with distinct values for every field
+    /// so assertions can verify each field maps to the correct source.
+    fn make_detailed_result() -> SearchResult {
+        SearchResult {
+            chunk: ChunkSummary {
+                id: "chunk-42".to_string(),
+                file: PathBuf::from("src/engine/search.rs"),
+                language: crate::parser::Language::Rust,
+                chunk_type: crate::parser::ChunkType::Function,
+                name: "search_filtered".to_string(),
+                signature: "pub fn search_filtered(query: &str) -> Vec<Result>".to_string(),
+                content: "pub fn search_filtered(query: &str) -> Vec<Result> { todo!() }"
+                    .to_string(),
+                doc: Some("Searches with filtering".to_string()),
+                line_start: 10,
+                line_end: 25,
+                parent_id: Some("parent-impl".to_string()),
+                parent_type_name: Some("SearchEngine".to_string()),
+                content_hash: "abc123".to_string(),
+                window_idx: None,
+            },
+            score: 0.9375,
+        }
+    }
+
+    #[test]
+    fn test_to_json_all_fields_present() {
+        let result = make_detailed_result();
+        let json = result.to_json();
+        let obj = json.as_object().expect("to_json should return an object");
+
+        // Exactly these 10 fields, no more, no fewer.
+        let expected_keys: std::collections::HashSet<&str> = [
+            "file",
+            "line_start",
+            "line_end",
+            "name",
+            "signature",
+            "language",
+            "chunk_type",
+            "score",
+            "content",
+            "has_parent",
+        ]
+        .iter()
+        .copied()
+        .collect();
+
+        let actual_keys: std::collections::HashSet<&str> = obj.keys().map(|k| k.as_str()).collect();
+        assert_eq!(
+            expected_keys,
+            actual_keys,
+            "to_json field set mismatch: extra={:?}, missing={:?}",
+            actual_keys.difference(&expected_keys).collect::<Vec<_>>(),
+            expected_keys.difference(&actual_keys).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn test_to_json_field_values() {
+        let result = make_detailed_result();
+        let json = result.to_json();
+
+        // File path normalized to forward slashes
+        let file_str = json["file"].as_str().unwrap();
+        assert!(
+            file_str.contains("src/engine/search.rs"),
+            "file should contain path, got: {file_str}"
+        );
+        assert!(!file_str.contains('\\'), "file should use forward slashes");
+
+        assert_eq!(json["line_start"], 10);
+        assert_eq!(json["line_end"], 25);
+        assert_eq!(json["name"], "search_filtered");
+        assert_eq!(
+            json["signature"],
+            "pub fn search_filtered(query: &str) -> Vec<Result>"
+        );
+        assert_eq!(json["language"], "rust");
+        assert_eq!(json["chunk_type"], "function");
+        assert_eq!(json["has_parent"], true);
+        assert_eq!(
+            json["content"],
+            "pub fn search_filtered(query: &str) -> Vec<Result> { todo!() }"
+        );
+
+        // Score is f32 -> JSON number; check approximate equality
+        let score = json["score"].as_f64().unwrap();
+        assert!(
+            (score - 0.9375).abs() < 1e-4,
+            "score should be ~0.9375, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_to_json_no_parent() {
+        let result = SearchResult {
+            chunk: make_chunk("standalone", None),
+            score: 0.5,
+        };
+        let json = result.to_json();
+        assert_eq!(json["has_parent"], false);
+        // parent_id itself should NOT leak into JSON
+        assert!(
+            json.get("parent_id").is_none(),
+            "parent_id should not appear in JSON output"
+        );
+    }
+
+    #[test]
+    fn test_to_json_relative_all_fields_present() {
+        let root = std::path::Path::new("src/engine");
+        let result = make_detailed_result();
+        let json = result.to_json_relative(root);
+        let obj = json
+            .as_object()
+            .expect("to_json_relative should return an object");
+
+        // Same field set as to_json
+        let expected_keys: std::collections::HashSet<&str> = [
+            "file",
+            "line_start",
+            "line_end",
+            "name",
+            "signature",
+            "language",
+            "chunk_type",
+            "score",
+            "content",
+            "has_parent",
+        ]
+        .iter()
+        .copied()
+        .collect();
+
+        let actual_keys: std::collections::HashSet<&str> = obj.keys().map(|k| k.as_str()).collect();
+        assert_eq!(expected_keys, actual_keys);
+    }
+
+    #[test]
+    fn test_to_json_relative_strips_prefix() {
+        let root = std::path::Path::new("src/engine");
+        let result = make_detailed_result();
+        let json = result.to_json_relative(root);
+
+        let file_str = json["file"].as_str().unwrap();
+        // Should strip the root prefix, leaving just "search.rs"
+        assert!(
+            !file_str.starts_with("src/engine/"),
+            "relative path should strip root prefix, got: {file_str}"
+        );
+        assert!(
+            file_str.contains("search.rs"),
+            "relative path should still contain filename, got: {file_str}"
+        );
+    }
+
+    #[test]
+    fn test_to_json_different_chunk_types() {
+        for (chunk_type, expected_str) in [
+            (crate::parser::ChunkType::Function, "function"),
+            (crate::parser::ChunkType::Struct, "struct"),
+            (crate::parser::ChunkType::Method, "method"),
+            (crate::parser::ChunkType::Trait, "trait"),
+            (crate::parser::ChunkType::Enum, "enum"),
+            (crate::parser::ChunkType::Module, "module"),
+        ] {
+            let result = SearchResult {
+                chunk: ChunkSummary {
+                    chunk_type,
+                    ..make_chunk("test_fn", None)
+                },
+                score: 0.5,
+            };
+            let json = result.to_json();
+            assert_eq!(
+                json["chunk_type"], expected_str,
+                "chunk_type mismatch for {:?}",
+                chunk_type
+            );
+        }
+    }
+
+    #[test]
+    fn test_to_json_different_languages() {
+        for (lang, expected_str) in [
+            (crate::parser::Language::Rust, "rust"),
+            (crate::parser::Language::Python, "python"),
+            (crate::parser::Language::TypeScript, "typescript"),
+            (crate::parser::Language::Java, "java"),
+            (crate::parser::Language::Go, "go"),
+        ] {
+            let result = SearchResult {
+                chunk: ChunkSummary {
+                    language: lang,
+                    ..make_chunk("test_fn", None)
+                },
+                score: 0.5,
+            };
+            let json = result.to_json();
+            assert_eq!(
+                json["language"], expected_str,
+                "language mismatch for {:?}",
+                lang
+            );
+        }
+    }
+
+    #[test]
+    fn test_to_json_score_boundary_values() {
+        // Score = 0.0
+        let result = SearchResult {
+            chunk: make_chunk("zero", None),
+            score: 0.0,
+        };
+        let json = result.to_json();
+        let s = json["score"].as_f64().unwrap();
+        assert!((s - 0.0).abs() < 1e-6, "score 0.0, got {s}");
+
+        // Score = 1.0
+        let result = SearchResult {
+            chunk: make_chunk("perfect", None),
+            score: 1.0,
+        };
+        let json = result.to_json();
+        let s = json["score"].as_f64().unwrap();
+        assert!((s - 1.0).abs() < 1e-6, "score 1.0, got {s}");
+    }
+
+    // ===== HP-7: UnifiedResult::to_json wrapping =====
+
+    #[test]
+    fn test_unified_result_to_json_adds_type_field() {
+        let result = UnifiedResult::Code(make_detailed_result());
+        let json = result.to_json();
+
+        // UnifiedResult::Code adds a "type" field on top of SearchResult fields
+        assert_eq!(json["type"], "code");
+        // All SearchResult fields still present
+        assert_eq!(json["name"], "search_filtered");
+        assert_eq!(json["has_parent"], true);
+        assert!(json["score"].as_f64().is_some());
+    }
+
+    #[test]
+    fn test_unified_result_to_json_relative_adds_type_field() {
+        let root = std::path::Path::new("src/engine");
+        let result = UnifiedResult::Code(make_detailed_result());
+        let json = result.to_json_relative(root);
+
+        assert_eq!(json["type"], "code");
+        assert_eq!(json["name"], "search_filtered");
+        let file_str = json["file"].as_str().unwrap();
+        assert!(
+            !file_str.starts_with("src/engine/"),
+            "relative path should strip root"
+        );
+    }
+
+    #[test]
+    fn test_unified_result_score() {
+        let result = UnifiedResult::Code(SearchResult {
+            chunk: make_chunk("test", None),
+            score: 0.42,
+        });
+        let s = result.score();
+        assert!((s - 0.42).abs() < 1e-6);
+    }
 }

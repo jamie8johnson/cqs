@@ -608,4 +608,122 @@ mod tests {
         assert_eq!(after.len(), 1);
         assert_eq!(after[0], "g");
     }
+
+    // ===== HP-7: display_similar_results_json tests =====
+
+    fn make_search_result(
+        name: &str,
+        score: f32,
+        parent_id: Option<&str>,
+    ) -> cqs::store::SearchResult {
+        cqs::store::SearchResult {
+            chunk: cqs::store::ChunkSummary {
+                id: format!("id-{name}"),
+                file: std::path::PathBuf::from(format!("src/{name}.rs")),
+                language: cqs::parser::Language::Rust,
+                chunk_type: cqs::parser::ChunkType::Function,
+                name: name.to_string(),
+                signature: format!("fn {name}()"),
+                content: format!("fn {name}() {{}}"),
+                doc: None,
+                line_start: 10,
+                line_end: 20,
+                parent_id: parent_id.map(|s| s.to_string()),
+                parent_type_name: None,
+                content_hash: String::new(),
+                window_idx: None,
+            },
+            score,
+        }
+    }
+
+    /// Verify display_similar_results_json succeeds with non-empty results.
+    /// Output goes to stdout (hard to capture in-process), so we assert Ok(()).
+    #[test]
+    fn test_display_similar_results_json_returns_ok() {
+        let results = vec![
+            make_search_result("alpha", 0.95, None),
+            make_search_result("beta", 0.80, Some("parent-1")),
+        ];
+        let result = super::display_similar_results_json(&results, "my_target");
+        assert!(
+            result.is_ok(),
+            "display_similar_results_json should succeed"
+        );
+    }
+
+    /// Verify display_similar_results_json succeeds with empty results.
+    #[test]
+    fn test_display_similar_results_json_empty() {
+        let results: Vec<cqs::store::SearchResult> = vec![];
+        let result = super::display_similar_results_json(&results, "no_matches");
+        assert!(result.is_ok(), "should succeed with empty results");
+    }
+
+    /// Verify the JSON structure that display_similar_results_json produces.
+    /// Since we cannot easily capture println! output, we replicate the same
+    /// construction logic and verify field completeness.
+    #[test]
+    fn test_display_similar_results_json_structure() {
+        let results = vec![
+            make_search_result("alpha", 0.95, None),
+            make_search_result("beta", 0.80, Some("parent-1")),
+        ];
+
+        // Use the same canonical to_json() that display_similar_results_json delegates to
+        let json_results: Vec<_> = results.iter().map(|r| r.to_json()).collect();
+
+        let output = serde_json::json!({
+            "target": "my_target",
+            "results": json_results,
+            "total": results.len(),
+        });
+
+        // Top-level fields
+        assert!(output.get("target").is_some(), "missing 'target'");
+        assert!(output.get("results").is_some(), "missing 'results'");
+        assert!(output.get("total").is_some(), "missing 'total'");
+        assert_eq!(output["target"], "my_target");
+        assert_eq!(output["total"], 2);
+
+        // Per-result fields
+        let arr = output["results"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+
+        for (i, item) in arr.iter().enumerate() {
+            let obj = item.as_object().unwrap_or_else(|| {
+                panic!("result[{i}] should be an object");
+            });
+            for field in [
+                "file",
+                "line_start",
+                "line_end",
+                "name",
+                "signature",
+                "language",
+                "chunk_type",
+                "score",
+                "content",
+            ] {
+                assert!(
+                    obj.contains_key(field),
+                    "result[{i}] missing field '{field}'"
+                );
+            }
+        }
+
+        // Verify specific values
+        assert_eq!(arr[0]["name"], "alpha");
+        assert_eq!(arr[1]["name"], "beta");
+        assert_eq!(arr[0]["line_start"], 10);
+        assert_eq!(arr[0]["line_end"], 20);
+        assert_eq!(arr[0]["language"], "rust");
+        assert_eq!(arr[0]["chunk_type"], "function");
+
+        // Score values
+        let s0 = arr[0]["score"].as_f64().unwrap();
+        assert!((s0 - 0.95).abs() < 1e-4, "alpha score should be ~0.95");
+        let s1 = arr[1]["score"].as_f64().unwrap();
+        assert!((s1 - 0.80).abs() < 1e-4, "beta score should be ~0.80");
+    }
 }
