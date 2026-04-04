@@ -209,7 +209,7 @@ pub const EMBEDDING_DIM: usize = embedder::DEFAULT_DIM;
 //
 // Non-SQL:
 //   EMBED_BATCH_SIZE = 32    — ONNX inference (GPU memory)
-//   FILE_BATCH_SIZE = 5000   — pipeline file processing
+//   FILE_BATCH_SIZE = 5000   — pipeline file processing (CQS_FILE_BATCH_SIZE)
 //   HNSW_BATCH_SIZE = 10000  — HNSW insert
 //   MAX_BATCH_SIZE = 10000   — Claude Batches API limit
 //

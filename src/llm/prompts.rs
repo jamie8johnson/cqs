@@ -1,12 +1,12 @@
 //! Prompt construction for LLM summary, doc comment, and HyDE passes.
 
-use super::{LlmClient, MAX_CONTENT_CHARS};
+use super::{max_content_chars, LlmClient};
 
 impl LlmClient {
     /// Build the discriminating prompt for a code chunk (no neighbor context).
     pub(super) fn build_prompt(content: &str, chunk_type: &str, language: &str) -> String {
-        let truncated = if content.len() > MAX_CONTENT_CHARS {
-            &content[..content.floor_char_boundary(MAX_CONTENT_CHARS)]
+        let truncated = if content.len() > max_content_chars() {
+            &content[..content.floor_char_boundary(max_content_chars())]
         } else {
             content
         };
@@ -27,8 +27,8 @@ impl LlmClient {
         language: &str,
         neighbors: &[String],
     ) -> String {
-        let truncated = if content.len() > MAX_CONTENT_CHARS {
-            &content[..content.floor_char_boundary(MAX_CONTENT_CHARS)]
+        let truncated = if content.len() > max_content_chars() {
+            &content[..content.floor_char_boundary(max_content_chars())]
         } else {
             content
         };
@@ -58,8 +58,8 @@ impl LlmClient {
     /// comment with language-specific conventions (Rust `# Arguments`/`# Returns`, Python
     /// Google-style docstrings, Go function-name-first, etc.).
     pub(super) fn build_doc_prompt(content: &str, chunk_type: &str, language: &str) -> String {
-        let truncated = if content.len() > MAX_CONTENT_CHARS {
-            &content[..content.floor_char_boundary(MAX_CONTENT_CHARS)]
+        let truncated = if content.len() > max_content_chars() {
+            &content[..content.floor_char_boundary(max_content_chars())]
         } else {
             content
         };
@@ -100,8 +100,8 @@ impl LlmClient {
     /// asks the LLM to generate 3-5 search queries a developer would use to find
     /// this function.
     pub(super) fn build_hyde_prompt(content: &str, signature: &str, language: &str) -> String {
-        let truncated = if content.len() > MAX_CONTENT_CHARS {
-            &content[..content.floor_char_boundary(MAX_CONTENT_CHARS)]
+        let truncated = if content.len() > max_content_chars() {
+            &content[..content.floor_char_boundary(max_content_chars())]
         } else {
             content
         };

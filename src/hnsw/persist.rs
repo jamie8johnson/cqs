@@ -12,6 +12,50 @@ use crate::index::VectorIndex;
 
 use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw};
 
+/// SHL-17: Configurable HNSW graph file size limit via `CQS_HNSW_MAX_GRAPH_BYTES` env var.
+/// Defaults to 500MB. Cached in OnceLock for single parse.
+fn hnsw_max_graph_bytes() -> u64 {
+    static MAX: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| match std::env::var("CQS_HNSW_MAX_GRAPH_BYTES") {
+        Ok(val) => match val.parse::<u64>() {
+            Ok(n) if n > 0 => {
+                tracing::info!(max_bytes = n, "CQS_HNSW_MAX_GRAPH_BYTES override");
+                n
+            }
+            _ => {
+                tracing::warn!(
+                    value = %val,
+                    "Invalid CQS_HNSW_MAX_GRAPH_BYTES, using default 500MB"
+                );
+                500 * 1024 * 1024
+            }
+        },
+        Err(_) => 500 * 1024 * 1024,
+    })
+}
+
+/// SHL-17: Configurable HNSW data file size limit via `CQS_HNSW_MAX_DATA_BYTES` env var.
+/// Defaults to 1GB. Cached in OnceLock for single parse.
+fn hnsw_max_data_bytes() -> u64 {
+    static MAX: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| match std::env::var("CQS_HNSW_MAX_DATA_BYTES") {
+        Ok(val) => match val.parse::<u64>() {
+            Ok(n) if n > 0 => {
+                tracing::info!(max_bytes = n, "CQS_HNSW_MAX_DATA_BYTES override");
+                n
+            }
+            _ => {
+                tracing::warn!(
+                    value = %val,
+                    "Invalid CQS_HNSW_MAX_DATA_BYTES, using default 1GB"
+                );
+                1024 * 1024 * 1024
+            }
+        },
+        Err(_) => 1024 * 1024 * 1024,
+    })
+}
+
 /// Whether the WSL advisory locking warning has been emitted (once per process)
 static WSL_LOCK_WARNED: AtomicBool = AtomicBool::new(false);
 
@@ -433,11 +477,9 @@ impl HnswIndex {
         }
 
         // Check graph and data file sizes to prevent OOM before deserialization
-        const MAX_HNSW_GRAPH_SIZE: u64 = 500 * 1024 * 1024; // 500MB
-        const MAX_HNSW_DATA_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
         for (path, limit, label) in [
-            (&graph_path, MAX_HNSW_GRAPH_SIZE, "graph"),
-            (&data_path, MAX_HNSW_DATA_SIZE, "data"),
+            (&graph_path, hnsw_max_graph_bytes(), "graph"),
+            (&data_path, hnsw_max_data_bytes(), "data"),
         ] {
             let size = std::fs::metadata(path)
                 .map_err(|e| {

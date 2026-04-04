@@ -11,7 +11,7 @@ use rayon::prelude::*;
 
 use cqs::{normalize_path, Parser as CqParser, Store};
 
-use super::types::{embed_batch_size, ParsedBatch, RelationshipData, FILE_BATCH_SIZE};
+use super::types::{embed_batch_size, file_batch_size, ParsedBatch, RelationshipData};
 use crate::cli::check_interrupted;
 
 /// CQ-39: Context struct for parser_stage to avoid too_many_arguments.
@@ -40,7 +40,7 @@ pub(super) fn parser_stage(
         parse_errors,
     } = ctx;
     let batch_size = embed_batch_size();
-    let file_batch_size = FILE_BATCH_SIZE;
+    let file_batch_size = file_batch_size();
 
     for (batch_idx, file_batch) in files.chunks(file_batch_size).enumerate() {
         if check_interrupted() {

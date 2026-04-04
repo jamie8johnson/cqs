@@ -153,7 +153,26 @@ const API_BASE: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
 const MODEL: &str = "claude-haiku-4-5";
 const MAX_TOKENS: u32 = 100;
-const MAX_CONTENT_CHARS: usize = 8000;
+/// Max content chars for LLM prompts.
+/// Configurable via `CQS_LLM_MAX_CONTENT_CHARS` environment variable.
+fn max_content_chars() -> usize {
+    static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| {
+        match std::env::var("CQS_LLM_MAX_CONTENT_CHARS") {
+            Ok(val) => match val.parse::<usize>() {
+                Ok(n) if n > 0 => {
+                    tracing::info!(max_chars = n, "CQS_LLM_MAX_CONTENT_CHARS override");
+                    n
+                }
+                _ => {
+                    tracing::warn!(value = %val, "Invalid CQS_LLM_MAX_CONTENT_CHARS, using default 8000");
+                    8000
+                }
+            },
+            Err(_) => 8000,
+        }
+    })
+}
 const MIN_CONTENT_CHARS: usize = 50;
 const MAX_BATCH_SIZE: usize = 10_000;
 /// Max tokens for HyDE query predictions (3-5 short queries).

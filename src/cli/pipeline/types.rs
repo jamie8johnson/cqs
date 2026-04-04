@@ -59,8 +59,24 @@ pub(super) struct PreparedEmbedding {
 
 // Pipeline tuning constants
 
-/// Files to parse per batch (bounded memory)
-pub(super) const FILE_BATCH_SIZE: usize = 5_000;
+/// Files to parse per batch (bounded memory).
+/// Configurable via `CQS_FILE_BATCH_SIZE` environment variable.
+pub(super) fn file_batch_size() -> usize {
+    static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| match std::env::var("CQS_FILE_BATCH_SIZE") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(n) if n > 0 => {
+                tracing::info!(batch_size = n, "CQS_FILE_BATCH_SIZE override");
+                n
+            }
+            _ => {
+                tracing::warn!(value = %val, "Invalid CQS_FILE_BATCH_SIZE, using default 5000");
+                5_000
+            }
+        },
+        Err(_) => 5_000,
+    })
+}
 /// Parse channel depth — lightweight (chunk metadata only), can be deeper
 pub(super) const PARSE_CHANNEL_DEPTH: usize = 512;
 /// Embed channel depth — heavy (embedding vectors), smaller to bound memory
