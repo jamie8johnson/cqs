@@ -376,24 +376,28 @@ mod tests {
 
     #[test]
     fn test_extract_names_callees() {
+        // Matches CalleesOutput: "name" (was "function"), "line_start" (was "line")
         let val = serde_json::json!({
-            "function": "f",
-            "calls": [{"name": "a", "line": 1}],
+            "name": "f",
+            "calls": [{"name": "a", "line_start": 1}],
             "count": 1
         });
-        assert_eq!(extract_names(&val), vec!["a"]);
+        let names = extract_names(&val);
+        assert_eq!(names, vec!["f", "a"]);
     }
 
     #[test]
     fn test_extract_names_impact() {
+        // Matches ImpactResult: "name" (was "function")
         let val = serde_json::json!({
-            "function": "f",
+            "name": "f",
             "callers": [{"name": "a"}],
             "tests": [{"name": "b"}],
             "caller_count": 1,
             "test_count": 1
         });
         let names = extract_names(&val);
+        assert!(names.contains(&"f".to_string()));
         assert!(names.contains(&"a".to_string()));
         assert!(names.contains(&"b".to_string()));
     }
@@ -615,7 +619,7 @@ mod tests {
 
     #[test]
     fn test_pipeable_names_sync() {
-        // Every name in PIPEABLE_NAMES must parse as a BatchInput and be pipeable
+        // Forward: every name in PIPEABLE_NAMES must parse as a BatchInput and be pipeable
         for name in PIPEABLE_NAMES {
             let result = BatchInput::try_parse_from([*name, "test_arg"]);
             assert!(
@@ -626,6 +630,27 @@ mod tests {
                 result.unwrap().cmd.is_pipeable(),
                 "PIPEABLE_NAMES entry '{name}' not pipeable via is_pipeable()"
             );
+        }
+
+        // Reverse: every pipeable command must be listed in PIPEABLE_NAMES.
+        // Iterates all BatchCmd subcommands, probes is_pipeable(), and checks
+        // membership. Catches new pipeable commands missing from the list.
+        use clap::CommandFactory;
+        let app = BatchInput::command();
+        let pipeable_set: std::collections::HashSet<&str> =
+            PIPEABLE_NAMES.iter().copied().collect();
+        for sc in app.get_subcommands() {
+            let name = sc.get_name();
+            // Probe: parse with a dummy arg, check is_pipeable()
+            let Ok(input) = BatchInput::try_parse_from([name, "test_arg"]) else {
+                continue; // commands that don't take a positional arg can't be pipeable
+            };
+            if input.cmd.is_pipeable() {
+                assert!(
+                    pipeable_set.contains(name),
+                    "Command '{name}' is pipeable via is_pipeable() but missing from PIPEABLE_NAMES"
+                );
+            }
         }
     }
 
