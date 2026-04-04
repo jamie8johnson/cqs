@@ -93,6 +93,37 @@ impl Store {
         })
     }
 
+    /// Check which chunk IDs from a set actually exist in the database.
+    /// Used by periodic deferred-flush to filter calls whose FK targets are present.
+    pub fn existing_chunk_ids(
+        &self,
+        ids: &std::collections::HashSet<&str>,
+    ) -> Result<std::collections::HashSet<String>, StoreError> {
+        let _span = tracing::debug_span!("existing_chunk_ids", candidates = ids.len()).entered();
+        if ids.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+        self.rt.block_on(async {
+            let mut found = std::collections::HashSet::new();
+            let id_vec: Vec<&str> = ids.iter().copied().collect();
+            // 200 per batch keeps bind count well under SQLite's 999 limit
+            for batch in id_vec.chunks(200) {
+                let placeholders: String = (0..batch.len())
+                    .map(|i| format!("?{}", i + 1))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!("SELECT id FROM chunks WHERE id IN ({placeholders})");
+                let mut query = sqlx::query_scalar::<_, String>(&sql);
+                for id in batch {
+                    query = query.bind(*id);
+                }
+                let rows: Vec<String> = query.fetch_all(&self.pool).await?;
+                found.extend(rows);
+            }
+            Ok(found)
+        })
+    }
+
     /// Get all function names called by a given chunk.
     /// Takes a chunk **ID** (unique) rather than a name. Returns only callee
     /// **names** (not full chunks) because:
