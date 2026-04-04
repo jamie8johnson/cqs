@@ -181,6 +181,10 @@ pub struct HnswIndex {
     pub(crate) ef_search: usize,
     /// Embedding dimension of vectors in this index
     pub(crate) dim: usize,
+    /// Shared lock held for the lifetime of a disk-loaded index (DS-NEW-1).
+    /// Prevents concurrent `save()` from overwriting files while this index is in use.
+    /// `None` for in-memory-only indexes that were never loaded from disk.
+    pub(crate) _lock_file: Option<std::fs::File>,
 }
 
 /// Internal HNSW state

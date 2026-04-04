@@ -578,6 +578,7 @@ impl HnswIndex {
             id_map,
             ef_search: super::ef_search(),
             dim,
+            _lock_file: Some(lock_file),
         })
     }
 

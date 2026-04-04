@@ -62,6 +62,7 @@ impl HnswIndex {
                 id_map: Vec::new(),
                 ef_search: super::ef_search(),
                 dim,
+                _lock_file: None,
             });
         }
 
@@ -95,6 +96,7 @@ impl HnswIndex {
             id_map,
             ef_search: super::ef_search(),
             dim,
+            _lock_file: None,
         })
     }
 
@@ -219,6 +221,7 @@ impl HnswIndex {
                 id_map: Vec::new(),
                 ef_search: super::ef_search(),
                 dim,
+                _lock_file: None,
             });
         }
 
@@ -229,6 +232,7 @@ impl HnswIndex {
             id_map,
             ef_search: super::ef_search(),
             dim,
+            _lock_file: None,
         })
     }
 }
