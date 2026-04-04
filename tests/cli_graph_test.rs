@@ -309,7 +309,7 @@ fn test_impact_json() {
         .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
 
     // validate is called by process, which is called by main
-    assert!(parsed["function"].is_string(), "Should have function field");
+    assert!(parsed["name"].is_string(), "Should have name field");
 }
 
 #[test]

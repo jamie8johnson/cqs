@@ -172,6 +172,7 @@ pub struct CallerInfo {
     #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     /// Line where function starts
+    #[serde(rename = "line_start")]
     pub line: u32,
 }
 

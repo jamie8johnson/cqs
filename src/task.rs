@@ -270,73 +270,11 @@ pub(crate) fn compute_summary(
 /// Serialize task result to JSON.
 ///
 /// Paths in the result are already relative to the project root (set at
-/// construction time). Uses `scout_to_json()` for the scout section.
+/// construction time). Uses typed `Serialize` on `TaskResult`.
 pub fn task_to_json(result: &TaskResult) -> serde_json::Value {
-    let scout_json = crate::scout::scout_to_json(&result.scout);
-
-    let code_json: Vec<serde_json::Value> = result
-        .code
-        .iter()
-        .filter_map(|c| match serde_json::to_value(c) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                tracing::warn!(error = %e, chunk = %c.name, "Failed to serialize chunk");
-                None
-            }
-        })
-        .collect();
-    let risk_json: Vec<serde_json::Value> = result
-        .risk
-        .iter()
-        .filter_map(|fr| {
-            serde_json::to_value(fr)
-                .map_err(|e| {
-                    tracing::debug!(error = %e, "Serialization failed");
-                    e
-                })
-                .ok()
-        })
-        .collect();
-    let tests_json: Vec<serde_json::Value> = result
-        .tests
-        .iter()
-        .filter_map(|t| {
-            serde_json::to_value(t)
-                .map_err(|e| {
-                    tracing::debug!(error = %e, "Serialization failed");
-                    e
-                })
-                .ok()
-        })
-        .collect();
-    let placement_json: Vec<serde_json::Value> = result
-        .placement
-        .iter()
-        .filter_map(|s| {
-            serde_json::to_value(s)
-                .map_err(|e| {
-                    tracing::debug!(error = %e, "Serialization failed");
-                    e
-                })
-                .ok()
-        })
-        .collect();
-
-    serde_json::json!({
-        "description": result.description,
-        "scout": scout_json,
-        "code": code_json,
-        "risk": risk_json,
-        "tests": tests_json,
-        "placement": placement_json,
-        "summary": {
-            "total_files": result.summary.total_files,
-            "total_functions": result.summary.total_functions,
-            "modify_targets": result.summary.modify_targets,
-            "high_risk_count": result.summary.high_risk_count,
-            "test_count": result.summary.test_count,
-            "stale_count": result.summary.stale_count,
-        }
+    serde_json::to_value(result).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to serialize TaskResult");
+        serde_json::json!({})
     })
 }
 

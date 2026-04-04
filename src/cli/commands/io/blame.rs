@@ -13,7 +13,7 @@ use cqs::{normalize_path, rel_display, resolve_target};
 // ─── Data structures ─────────────────────────────────────────────────────────
 
 /// A single git commit that touched the function's line range.
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub(crate) struct BlameEntry {
     pub hash: String,
     pub author: String,
@@ -165,38 +165,51 @@ pub(crate) fn parse_git_log_output(output: &str) -> Vec<BlameEntry> {
 
 // ─── JSON output ─────────────────────────────────────────────────────────────
 
-// TODO: blame_to_json should be replaced with typed BlameOutput struct.
-// Blocked on batch handler (src/cli/batch/handlers/info.rs) which calls this
-// and expects serde_json::Value. Migrate when batch handlers are updated.
-// Also normalize caller "line" → "line_start" at that time.
+/// Typed JSON output for blame. Borrows from `BlameData` to avoid cloning.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BlameOutput<'a> {
+    pub name: &'a str,
+    pub file: String,
+    pub lines: [u32; 2],
+    pub signature: &'a str,
+    pub commits: &'a [BlameEntry],
+    pub total_commits: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub callers: Vec<BlameCallerEntry>,
+}
+
+/// A caller entry in blame output with path already relativized.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BlameCallerEntry {
+    pub name: String,
+    pub file: String,
+    pub line_start: u32,
+}
 
 /// Build JSON output from BlameData.
 pub(crate) fn blame_to_json(data: &BlameData, root: &Path) -> serde_json::Value {
-    let mut result = serde_json::json!({
-        "function": data.chunk.name,
-        "file": normalize_path(&data.chunk.file),
-        "lines": [data.chunk.line_start, data.chunk.line_end],
-        "signature": data.chunk.signature,
-        "commits": data.commits,
-        "total_commits": data.commits.len(),
-    });
-
-    if !data.callers.is_empty() {
-        let callers: Vec<serde_json::Value> = data
+    let output = BlameOutput {
+        name: &data.chunk.name,
+        file: normalize_path(&data.chunk.file),
+        lines: [data.chunk.line_start, data.chunk.line_end],
+        signature: &data.chunk.signature,
+        commits: &data.commits,
+        total_commits: data.commits.len(),
+        callers: data
             .callers
             .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "name": c.name,
-                    "file": rel_display(&c.file, root),
-                    "line": c.line,
-                })
+            .map(|c| BlameCallerEntry {
+                name: c.name.clone(),
+                file: rel_display(&c.file, root),
+                line_start: c.line,
             })
-            .collect();
-        result["callers"] = serde_json::Value::Array(callers);
-    }
+            .collect(),
+    };
 
-    result
+    serde_json::to_value(&output).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to serialize BlameOutput");
+        serde_json::json!({})
+    })
 }
 
 // ─── Terminal output ─────────────────────────────────────────────────────────
@@ -363,7 +376,7 @@ mod tests {
         let root = Path::new("");
         let json = blame_to_json(&data, root);
 
-        assert_eq!(json["function"], "resolve_target");
+        assert_eq!(json["name"], "resolve_target");
         assert_eq!(json["file"], "src/search.rs");
         assert_eq!(json["lines"][0], 23);
         assert_eq!(json["lines"][1], 96);
@@ -372,6 +385,7 @@ mod tests {
         assert_eq!(json["total_commits"], 1);
         assert_eq!(json["callers"].as_array().unwrap().len(), 1);
         assert_eq!(json["callers"][0]["name"], "cmd_explain");
+        assert_eq!(json["callers"][0]["line_start"], 52);
     }
 
     #[test]

@@ -404,14 +404,11 @@ pub fn plan(
 /// Convert a PlanResult to JSON, including scout data.
 ///
 /// Paths in the result are already relative to the project root.
+/// Uses typed `Serialize` on `PlanResult`.
 pub fn plan_to_json(result: &PlanResult) -> serde_json::Value {
-    let scout_json = crate::scout::scout_to_json(&result.scout);
-    serde_json::json!({
-        "template": result.template,
-        "template_description": result.template_description,
-        "checklist": result.checklist,
-        "patterns": result.patterns,
-        "scout": scout_json,
+    serde_json::to_value(result).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to serialize PlanResult");
+        serde_json::json!({})
     })
 }
 
