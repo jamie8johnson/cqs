@@ -1,6 +1,6 @@
 //! Stage 3: Write embedded chunks to SQLite with call graph, function calls, and type edges.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -12,6 +12,73 @@ use cqs::{Chunk, Embedding, Store};
 
 use super::types::EmbeddedBatch;
 use crate::cli::check_interrupted;
+
+/// How often (in batches) to flush deferred vecs.
+/// Overridable via `CQS_DEFERRED_FLUSH_INTERVAL` env var.
+fn deferred_flush_interval() -> usize {
+    std::env::var("CQS_DEFERRED_FLUSH_INTERVAL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50)
+}
+
+/// Attempt to flush deferred chunk calls whose FK targets (caller_id) already
+/// exist in the database. Returns calls that could NOT be flushed (missing FK).
+fn flush_calls(
+    store: &Store,
+    calls: Vec<(String, cqs::parser::CallSite)>,
+) -> Vec<(String, cqs::parser::CallSite)> {
+    if calls.is_empty() {
+        return Vec::new();
+    }
+
+    let unique_ids: HashSet<&str> = calls.iter().map(|(id, _)| id.as_str()).collect();
+    let existing = match store.existing_chunk_ids(&unique_ids) {
+        Ok(set) => set,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to check existing chunk IDs, retaining all deferred calls");
+            return calls;
+        }
+    };
+
+    let (ready, retained): (Vec<_>, Vec<_>) = calls
+        .into_iter()
+        .partition(|(id, _)| existing.contains(id.as_str()));
+
+    if !ready.is_empty() {
+        tracing::info!(
+            flushed = ready.len(),
+            retained = retained.len(),
+            "Periodic flush: deferred chunk calls"
+        );
+        if let Err(e) = store.upsert_calls_batch(&ready) {
+            tracing::warn!(
+                count = ready.len(),
+                error = %e,
+                "Periodic flush of deferred calls failed, items lost"
+            );
+        }
+    }
+
+    retained
+}
+
+/// Attempt to flush deferred type edges. Type edge resolution already handles
+/// missing chunks gracefully (warns and skips), so we flush everything and
+/// clear the vec.
+fn flush_type_edges(store: &Store, edges: &[(PathBuf, Vec<cqs::parser::ChunkTypeRefs>)]) {
+    if edges.is_empty() {
+        return;
+    }
+    tracing::info!(files = edges.len(), "Periodic flush: deferred type edges");
+    if let Err(e) = store.upsert_type_edges_for_files(edges) {
+        tracing::warn!(
+            files = edges.len(),
+            error = %e,
+            "Periodic flush of deferred type edges failed"
+        );
+    }
+}
 
 /// Stage 3: Write embedded chunks to SQLite with call graph, function calls, and type edges.
 ///
@@ -30,6 +97,8 @@ pub(super) fn store_stage(
     let mut total_calls = 0;
     let mut deferred_type_edges: Vec<(PathBuf, Vec<cqs::parser::ChunkTypeRefs>)> = Vec::new();
     let mut deferred_chunk_calls: Vec<(String, cqs::parser::CallSite)> = Vec::new();
+    let mut batch_counter: usize = 0;
+    let flush_interval = deferred_flush_interval();
 
     for batch in embed_rx {
         if check_interrupted() {
@@ -100,11 +169,17 @@ pub(super) fn store_stage(
             "parsed:{} embedded:{} written:{}",
             parsed, embedded, total_embedded
         ));
+
+        // RM-9: Periodic flush to bound deferred vec memory.
+        batch_counter += 1;
+        if batch_counter.is_multiple_of(flush_interval) {
+            deferred_chunk_calls = flush_calls(store, std::mem::take(&mut deferred_chunk_calls));
+            flush_type_edges(store, &deferred_type_edges);
+            deferred_type_edges.clear();
+        }
     }
 
-    // Insert deferred chunk calls now that all chunks are in the DB.
-    // chunk_calls reference caller_id with FK on chunks(id), so they
-    // must be inserted after all chunks across all batches are committed.
+    // Final flush: insert any remaining deferred items now that all chunks are in the DB.
     if !deferred_chunk_calls.is_empty() {
         if let Err(e) = store.upsert_calls_batch(&deferred_chunk_calls) {
             tracing::warn!(
@@ -116,10 +191,7 @@ pub(super) fn store_stage(
         total_calls += deferred_chunk_calls.len();
     }
 
-    // Insert deferred type edges now that all chunks are in the DB.
-    // Type edges reference source_chunk_id with a FK constraint, so they
-    // must be inserted after all chunks across all batches are committed.
-    // PERF-26: Single transaction for all files instead of per-file transactions.
+    // PERF-26: Single transaction for all remaining files instead of per-file transactions.
     if !deferred_type_edges.is_empty() {
         if let Err(e) = store.upsert_type_edges_for_files(&deferred_type_edges) {
             tracing::warn!(
