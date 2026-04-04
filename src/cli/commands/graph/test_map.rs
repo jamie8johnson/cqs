@@ -22,6 +22,24 @@ pub(crate) struct TestMatch {
     pub chain: Vec<String>,
 }
 
+// ─── Output types ───────────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct TestMapEntry {
+    pub name: String,
+    pub file: String,
+    pub line_start: u32, // was "line"
+    pub call_depth: usize,
+    pub call_chain: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct TestMapOutput {
+    pub name: String, // was "function"
+    pub tests: Vec<TestMapEntry>,
+    pub count: usize,
+}
+
 // ─── Shared core ────────────────────────────────────────────────────────────
 
 /// Reverse BFS through the call graph to find all test chunks that call the
@@ -94,26 +112,24 @@ pub(crate) fn build_test_map(
     matches
 }
 
-/// Build JSON output from test map matches — shared between CLI and batch.
-pub(crate) fn test_map_to_json(target_name: &str, matches: &[TestMatch]) -> serde_json::Value {
-    let tests_json: Vec<_> = matches
-        .iter()
-        .map(|m| {
-            serde_json::json!({
-                "name": m.name,
-                "file": m.file,
-                "line": m.line,
-                "call_depth": m.depth,
-                "call_chain": m.chain,
+/// Build typed test map output from matches -- shared between CLI and batch.
+pub(crate) fn build_test_map_output(target_name: &str, matches: &[TestMatch]) -> TestMapOutput {
+    let _span =
+        tracing::info_span!("build_test_map_output", target_name, count = matches.len()).entered();
+    TestMapOutput {
+        name: target_name.to_string(),
+        tests: matches
+            .iter()
+            .map(|m| TestMapEntry {
+                name: m.name.clone(),
+                file: m.file.clone(),
+                line_start: m.line,
+                call_depth: m.depth,
+                call_chain: m.chain.clone(),
             })
-        })
-        .collect();
-
-    serde_json::json!({
-        "function": target_name,
-        "tests": tests_json,
-        "test_count": matches.len(),
-    })
+            .collect(),
+        count: matches.len(),
+    }
 }
 
 // ─── CLI command ────────────────────────────────────────────────────────────
@@ -140,7 +156,7 @@ pub(crate) fn cmd_test_map(
     let matches = build_test_map(&target_name, &graph, &test_chunks, root, max_depth);
 
     if json {
-        let output = test_map_to_json(&target_name, &matches);
+        let output = build_test_map_output(&target_name, &matches);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         use colored::Colorize;
@@ -159,4 +175,35 @@ pub(crate) fn cmd_test_map(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+
+    #[test]
+    fn test_test_map_output_field_names() {
+        let output = TestMapOutput {
+            name: "my_func".into(),
+            tests: vec![TestMapEntry {
+                name: "test_it".into(),
+                file: "tests/foo.rs".into(),
+                line_start: 10,
+                call_depth: 1,
+                call_chain: vec!["my_func".into()],
+            }],
+            count: 1,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["name"], "my_func"); // was "function"
+        assert!(json.get("function").is_none());
+        assert_eq!(json["tests"][0]["line_start"], 10); // was "line"
+    }
+
+    #[test]
+    fn test_test_map_output_empty() {
+        let output = build_test_map_output("no_tests", &[]);
+        assert_eq!(output.count, 0);
+        assert!(output.tests.is_empty());
+    }
 }

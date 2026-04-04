@@ -342,7 +342,7 @@ fn test_test_map_json() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
 
-    assert!(parsed["function"].is_string(), "Should have function field");
+    assert!(parsed["name"].is_string(), "Should have name field");
     assert!(parsed["tests"].is_array(), "Should have tests array");
 }
 
@@ -363,7 +363,7 @@ fn test_test_map_transitive() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
 
-    assert!(parsed["function"].is_string(), "Should have function field");
+    assert!(parsed["name"].is_string(), "Should have name field");
 }
 
 #[test]

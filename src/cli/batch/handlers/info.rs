@@ -68,9 +68,8 @@ pub(in crate::cli::batch) fn dispatch_explain(
         &ctx.model_config,
     )?;
 
-    Ok(crate::cli::commands::explain::explain_to_json(
-        &data, &ctx.root,
-    ))
+    let output = crate::cli::commands::explain::build_explain_output(&data, &ctx.root);
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Searches for chunks similar to a specified target chunk using vector embeddings.

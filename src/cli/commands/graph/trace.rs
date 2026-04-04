@@ -10,6 +10,92 @@ use cqs::Store;
 use crate::cli::commands::resolve::resolve_target;
 use crate::cli::OutputFormat;
 
+// ─── Output types ──────────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct TraceHop {
+    pub name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub file: String,
+    pub line_start: u32, // was "line"
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub signature: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct TraceOutput {
+    pub source: String,
+    pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<Vec<TraceHop>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depth: Option<usize>,
+    pub found: bool,
+}
+
+// ─── Shared JSON builder ───────────────────────────────────────────────────
+
+/// Build typed trace output from BFS result.
+///
+/// Shared between CLI (`cmd_trace --json`) and batch (`dispatch_trace`).
+/// Takes the BFS path (or None) and resolves chunk metadata via batch lookup.
+pub(crate) fn build_trace_output(
+    store: &Store,
+    source_name: &str,
+    target_name: &str,
+    path: Option<&[String]>,
+    root: &std::path::Path,
+) -> Result<TraceOutput> {
+    let _span = tracing::info_span!("build_trace_output", source_name, target_name).entered();
+
+    match path {
+        Some(names) => {
+            let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+            let batch_results = store.search_by_names_batch(&name_refs, 1)?;
+
+            let hops: Vec<TraceHop> = names
+                .iter()
+                .map(
+                    |name| match batch_results.get(name.as_str()).and_then(|v| v.first()) {
+                        Some(r) => TraceHop {
+                            name: name.clone(),
+                            file: cqs::rel_display(&r.chunk.file, root).to_string(),
+                            line_start: r.chunk.line_start,
+                            signature: r.chunk.signature.clone(),
+                        },
+                        None => {
+                            tracing::warn!(name, "Trace hop not found in index");
+                            TraceHop {
+                                name: name.clone(),
+                                file: String::new(),
+                                line_start: 0,
+                                signature: String::new(),
+                            }
+                        }
+                    },
+                )
+                .collect();
+
+            Ok(TraceOutput {
+                source: source_name.to_string(),
+                target: target_name.to_string(),
+                depth: Some(hops.len().saturating_sub(1)),
+                path: Some(hops),
+                found: true,
+            })
+        }
+        None => Ok(TraceOutput {
+            source: source_name.to_string(),
+            target: target_name.to_string(),
+            path: None,
+            depth: None,
+            found: false,
+        }),
+    }
+}
+
+// ─── CLI command ────────────────────────────────────────────────────────────
+
 pub(crate) fn cmd_trace(
     ctx: &crate::cli::CommandContext,
     source: &str,
@@ -35,14 +121,8 @@ pub(crate) fn cmd_trace(
     if source_name == target_name {
         if matches!(format, OutputFormat::Json) {
             let trivial_path = vec![source_name.clone()];
-            let result = trace_to_json(
-                store,
-                &source_name,
-                &target_name,
-                Some(&trivial_path),
-                root,
-                0,
-            )?;
+            let result =
+                build_trace_output(store, &source_name, &target_name, Some(&trivial_path), root)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         } else if matches!(format, OutputFormat::Mermaid) {
             let rel_file = cqs::rel_display(&source_chunk.file, root);
@@ -68,14 +148,8 @@ pub(crate) fn cmd_trace(
     match path {
         Some(names) => {
             if matches!(format, OutputFormat::Json) {
-                let result = trace_to_json(
-                    store,
-                    &source_name,
-                    &target_name,
-                    Some(&names),
-                    root,
-                    max_depth,
-                )?;
+                let result =
+                    build_trace_output(store, &source_name, &target_name, Some(&names), root)?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else if matches!(format, OutputFormat::Mermaid) {
                 format_mermaid(store, root, &names)?;
@@ -113,8 +187,7 @@ pub(crate) fn cmd_trace(
         }
         None => {
             if matches!(format, OutputFormat::Json) {
-                let result =
-                    trace_to_json(store, &source_name, &target_name, None, root, max_depth)?;
+                let result = build_trace_output(store, &source_name, &target_name, None, root)?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else if matches!(format, OutputFormat::Mermaid) {
                 // Empty graph with comment
@@ -186,58 +259,6 @@ fn mermaid_escape(s: &str) -> String {
     s.replace('"', "&quot;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
-}
-
-/// Build the JSON representation of a trace result.
-///
-/// Shared between CLI (`cmd_trace --json`) and batch (`dispatch_trace`).
-/// Takes the BFS path (or None) and resolves chunk metadata via batch lookup.
-pub(crate) fn trace_to_json(
-    store: &Store,
-    source_name: &str,
-    target_name: &str,
-    path: Option<&[String]>,
-    root: &std::path::Path,
-    max_depth: usize,
-) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("trace_to_json").entered();
-
-    match path {
-        Some(names) => {
-            let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-            let batch_results = store.search_by_names_batch(&name_refs, 1)?;
-
-            let mut path_json = Vec::new();
-            for name in names {
-                let entry = match batch_results.get(name.as_str()).and_then(|v| v.first()) {
-                    Some(r) => {
-                        let rel = cqs::rel_display(&r.chunk.file, root);
-                        serde_json::json!({
-                            "name": name,
-                            "file": rel,
-                            "line": r.chunk.line_start,
-                            "signature": r.chunk.signature
-                        })
-                    }
-                    None => serde_json::json!({"name": name}),
-                };
-                path_json.push(entry);
-            }
-
-            Ok(serde_json::json!({
-                "source": source_name,
-                "target": target_name,
-                "path": path_json,
-                "depth": names.len() - 1
-            }))
-        }
-        None => Ok(serde_json::json!({
-            "source": source_name,
-            "target": target_name,
-            "path": null,
-            "message": format!("No call path found within depth {}", max_depth)
-        })),
-    }
 }
 
 /// BFS shortest path through forward adjacency list.
@@ -384,5 +405,57 @@ mod tests {
         assert!(result.is_some());
         let path = result.unwrap();
         assert_eq!(path, vec!["A", "B", "C"]);
+    }
+
+    // ===== TraceOutput serialization tests =====
+
+    #[test]
+    fn test_trace_output_not_found() {
+        let output = TraceOutput {
+            source: "a".into(),
+            target: "b".into(),
+            path: None,
+            depth: None,
+            found: false,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["found"], false);
+        assert!(json.get("path").is_none());
+        assert!(json.get("depth").is_none());
+    }
+
+    #[test]
+    fn test_trace_output_found() {
+        let output = TraceOutput {
+            source: "a".into(),
+            target: "c".into(),
+            path: Some(vec![
+                TraceHop {
+                    name: "a".into(),
+                    file: "src/a.rs".into(),
+                    line_start: 1,
+                    signature: "fn a()".into(),
+                },
+                TraceHop {
+                    name: "b".into(),
+                    file: "src/b.rs".into(),
+                    line_start: 10,
+                    signature: "fn b()".into(),
+                },
+                TraceHop {
+                    name: "c".into(),
+                    file: "src/c.rs".into(),
+                    line_start: 20,
+                    signature: "fn c()".into(),
+                },
+            ]),
+            depth: Some(2),
+            found: true,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["found"], true);
+        assert_eq!(json["depth"], 2);
+        assert_eq!(json["path"][0]["line_start"], 1); // was "line"
+        assert!(json["path"][0].get("line").is_none());
     }
 }

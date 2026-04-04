@@ -42,9 +42,12 @@ pub(crate) use search::where_to_json;
 pub(crate) use search::GatherContext;
 
 // -- graph --
+pub(crate) use graph::build_callees;
+pub(crate) use graph::build_callers;
+pub(crate) use graph::build_deps_forward;
+pub(crate) use graph::build_deps_reverse;
 pub(crate) use graph::build_test_map;
-pub(crate) use graph::callees_to_json;
-pub(crate) use graph::callers_to_json;
+pub(crate) use graph::build_test_map_output;
 pub(crate) use graph::cmd_callees;
 pub(crate) use graph::cmd_callers;
 pub(crate) use graph::cmd_deps;
@@ -53,9 +56,6 @@ pub(crate) use graph::cmd_impact;
 pub(crate) use graph::cmd_impact_diff;
 pub(crate) use graph::cmd_test_map;
 pub(crate) use graph::cmd_trace;
-pub(crate) use graph::deps_forward_to_json;
-pub(crate) use graph::deps_reverse_to_json;
-pub(crate) use graph::test_map_to_json;
 
 // -- review --
 pub(crate) use review::cmd_affected;
