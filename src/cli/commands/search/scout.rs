@@ -22,83 +22,18 @@ pub(crate) fn cmd_scout(
 
     // Token-budgeted content: fetch chunk content and pack into budget
     let (content_map, token_info) = if let Some(budget) = max_tokens {
-        let _pack_span = tracing::info_span!("token_pack_scout", budget).entered();
-
-        // Collect all chunk names from all groups
-        let all_names: Vec<&str> = result
-            .file_groups
-            .iter()
-            .flat_map(|g| g.chunks.iter().map(|c| c.name.as_str()))
-            .collect();
-
-        // Batch-fetch content from store
-        let chunks_by_name = match store.get_chunks_by_names_batch(&all_names) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to batch-fetch chunk content for token packing");
-                std::collections::HashMap::new()
-            }
-        };
-
-        // Build (name, content, score) items for packing — only those with content
-        let items: Vec<(String, String, f32)> = result
-            .file_groups
-            .iter()
-            .flat_map(|g| {
-                g.chunks.iter().filter_map(|c| {
-                    let content = chunks_by_name
-                        .get(c.name.as_str())?
-                        .first()?
-                        .content
-                        .clone();
-                    Some((c.name.clone(), content, g.relevance_score * c.search_score))
-                })
-            })
-            .collect();
-
-        let texts: Vec<&str> = items
-            .iter()
-            .map(|(_, content, _)| content.as_str())
-            .collect();
-        let token_counts = crate::cli::commands::count_tokens_batch(&embedder, &texts);
-        let (packed, used) =
-            crate::cli::commands::token_pack(items, &token_counts, budget, 0, |&(_, _, score)| {
-                score
-            });
-
-        let included: std::collections::HashMap<String, String> = packed
-            .into_iter()
-            .map(|(name, content, _)| (name, content))
-            .collect();
-
-        tracing::info!(
-            chunks_with_content = included.len(),
-            tokens = used,
-            budget,
-            "Token-budgeted scout"
-        );
-        (Some(included), Some((used, budget)))
+        let named_items = crate::cli::commands::scout_scored_names(&result);
+        let (cmap, used) =
+            crate::cli::commands::fetch_and_pack_content(store, &embedder, &named_items, budget);
+        (Some(cmap), Some((used, budget)))
     } else {
         (None, None)
     };
 
     if json {
         let mut output = scout_to_json(&result);
-        // Inject content into chunks that fit in the token budget
         if let Some(ref cmap) = content_map {
-            if let Some(groups) = output.get_mut("file_groups").and_then(|v| v.as_array_mut()) {
-                for group in groups.iter_mut() {
-                    if let Some(chunks) = group.get_mut("chunks").and_then(|v| v.as_array_mut()) {
-                        for chunk in chunks.iter_mut() {
-                            if let Some(name) = chunk.get("name").and_then(|v| v.as_str()) {
-                                if let Some(content) = cmap.get(name) {
-                                    chunk["content"] = serde_json::json!(content);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            crate::cli::commands::inject_content_into_scout_json(&mut output, cmap);
         }
         if let Some((used, budget)) = token_info {
             output["token_count"] = serde_json::json!(used);
@@ -162,7 +97,7 @@ pub(crate) fn cmd_scout(
                     // Print content if within token budget
                     if let Some(ref cmap) = content_map {
                         if let Some(content) = cmap.get(&chunk.name) {
-                            println!("{}", "─".repeat(50));
+                            println!("{}", "\u{2500}".repeat(50));
                             println!("{}", content);
                             println!();
                         }

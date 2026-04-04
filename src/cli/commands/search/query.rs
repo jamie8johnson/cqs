@@ -374,36 +374,8 @@ fn cmd_query_project(ctx: &QueryContext<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Token info for display: (used, budget)
-type TokenInfo = Option<(usize, usize)>;
-
-/// Pack results into a token budget, keeping highest-scoring results.
-///
-/// Generic over result type — works for both `UnifiedResult` and `TaggedResult`.
-fn token_pack_results<T>(
-    results: Vec<T>,
-    budget: usize,
-    json_overhead: usize,
-    embedder: &Embedder,
-    text_fn: impl Fn(&T) -> &str,
-    score_fn: impl Fn(&T) -> f32,
-    label: &str,
-) -> (Vec<T>, TokenInfo) {
-    let _span = tracing::info_span!("token_pack_results", budget, label).entered();
-
-    let texts: Vec<&str> = results.iter().map(&text_fn).collect();
-    let token_counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
-    let (packed, used) =
-        crate::cli::commands::token_pack(results, &token_counts, budget, json_overhead, score_fn);
-    tracing::info!(
-        chunks = packed.len(),
-        tokens = used,
-        budget,
-        label,
-        "Token-budgeted query"
-    );
-    (packed, Some((used, budget)))
-}
+// token_pack_results lives in crate::cli::commands
+use crate::cli::commands::token_pack_results;
 
 /// Extract text content from a `UnifiedResult`.
 fn unified_text(r: &UnifiedResult) -> &str {

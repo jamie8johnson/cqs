@@ -1,7 +1,5 @@
 //! Misc dispatch handlers: notes, gc, plan, task, scout, where, gather, diff, drift, refresh, help.
 
-use std::collections::HashMap;
-
 use anyhow::{Context, Result};
 
 use super::super::commands::BatchInput;
@@ -68,16 +66,13 @@ pub(in crate::cli::batch) fn dispatch_gather(
     };
 
     // Token-budget packing
-    let (chunks, token_info) = if let Some(budget) = tokens {
+    let (chunks, token_info): (Vec<cqs::GatheredChunk>, _) = if let Some(budget) = tokens {
         let embedder = ctx.embedder()?;
-        let texts: Vec<&str> = result.chunks.iter().map(|c| c.content.as_str()).collect();
-        let counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
-        let (packed, used) = crate::cli::commands::token_pack(
+        let (packed, used) = crate::cli::commands::pack_gather_chunks(
             result.chunks,
-            &counts,
+            embedder,
             budget,
             crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
-            |c| c.score,
         );
         (packed, Some((used, budget)))
     } else {
@@ -221,63 +216,12 @@ pub(in crate::cli::batch) fn dispatch_scout(
         return Ok(cqs::scout_to_json(&result));
     };
 
-    // Batch-fetch content for all chunks
-    let all_names: Vec<&str> = result
-        .file_groups
-        .iter()
-        .flat_map(|g| g.chunks.iter().map(|c| c.name.as_str()))
-        .collect();
-    let chunks_by_name = match ctx.store().get_chunks_by_names_batch(&all_names) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to batch-fetch chunks for scout token packing");
-            HashMap::new()
-        }
-    };
+    let named_items = crate::cli::commands::scout_scored_names(&result);
+    let (content_map, used) =
+        crate::cli::commands::fetch_and_pack_content(&ctx.store(), embedder, &named_items, budget);
 
-    // Build (name, content, score) triples for packing
-    let items: Vec<(String, String, f32)> = result
-        .file_groups
-        .iter()
-        .flat_map(|g| {
-            g.chunks.iter().filter_map(|c| {
-                let content = chunks_by_name
-                    .get(c.name.as_str())?
-                    .first()?
-                    .content
-                    .clone();
-                Some((c.name.clone(), content, g.relevance_score * c.search_score))
-            })
-        })
-        .collect();
-
-    let texts: Vec<&str> = items
-        .iter()
-        .map(|(_, content, _)| content.as_str())
-        .collect();
-    let counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
-    let (packed, used) =
-        crate::cli::commands::token_pack(items, &counts, budget, 0, |&(_, _, score)| score);
-    let content_map: HashMap<String, String> = packed
-        .into_iter()
-        .map(|(name, content, _)| (name, content))
-        .collect();
-
-    // Build JSON with content for packed items
     let mut json = cqs::scout_to_json(&result);
-    if let Some(groups) = json.get_mut("file_groups").and_then(|v| v.as_array_mut()) {
-        for group in groups {
-            if let Some(chunks) = group.get_mut("chunks").and_then(|v| v.as_array_mut()) {
-                for chunk in chunks {
-                    if let Some(name) = chunk.get("name").and_then(|v| v.as_str()) {
-                        if let Some(content) = content_map.get(name) {
-                            chunk["content"] = serde_json::json!(content);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    crate::cli::commands::inject_content_into_scout_json(&mut json, &content_map);
     json["token_count"] = serde_json::json!(used);
     json["token_budget"] = serde_json::json!(budget);
     Ok(json)
@@ -400,7 +344,7 @@ pub(in crate::cli::batch) fn dispatch_diff(
 
     let target_label = target.unwrap_or("project");
     let target_store = if target_label == "project" {
-        // Reuse the batch context's store — avoid re-opening
+        // Reuse the batch context's store -- avoid re-opening
         &ctx.store()
     } else {
         // Need to load a separate reference store
@@ -408,7 +352,7 @@ pub(in crate::cli::batch) fn dispatch_diff(
         ctx.get_ref(target_label)?;
         // Fall through to resolve below since we can't borrow RefMut as &Store
         // directly. Use resolve_reference_store which opens a fresh Store.
-        &ctx.store() // placeholder — replaced below
+        &ctx.store() // placeholder -- replaced below
     };
 
     // For non-project targets, resolve properly

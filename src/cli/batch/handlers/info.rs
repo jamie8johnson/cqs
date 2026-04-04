@@ -195,7 +195,7 @@ pub(in crate::cli::batch) fn dispatch_context(
         }));
     }
 
-    // Full context — with optional token packing
+    // Full context -- with optional token packing
     let chunks = ctx.store().get_chunks_by_origin(path)?;
     if chunks.is_empty() {
         anyhow::bail!(
@@ -293,72 +293,13 @@ pub(in crate::cli::batch) fn dispatch_onboard(
             .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"));
     };
 
-    // Flatten entries with depth-based scores
-    let mut entries: Vec<(String, f32)> = Vec::new();
-    entries.push((result.entry_point.name.clone(), 1.0));
-    for (i, c) in result.call_chain.iter().enumerate() {
-        entries.push((c.name.clone(), 1.0 / (i as f32 + 2.0)));
-    }
-    for c in &result.callers {
-        entries.push((c.name.clone(), 0.3));
-    }
+    let named_items = crate::cli::commands::onboard_scored_names(&result);
+    let (content_map, used) =
+        crate::cli::commands::fetch_and_pack_content(&ctx.store(), embedder, &named_items, budget);
 
-    // Batch-fetch content
-    let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
-    let chunks_by_name = match ctx.store().get_chunks_by_names_batch(&names) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to batch-fetch chunks for onboard token packing");
-            HashMap::new()
-        }
-    };
-
-    let items: Vec<(String, String, f32)> = entries
-        .into_iter()
-        .filter_map(|(name, score)| {
-            let content = chunks_by_name.get(name.as_str())?.first()?.content.clone();
-            Some((name, content, score))
-        })
-        .collect();
-
-    let texts: Vec<&str> = items.iter().map(|(_, c, _)| c.as_str()).collect();
-    let counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
-    let (packed, used) =
-        crate::cli::commands::token_pack(items, &counts, budget, 0, |&(_, _, s)| s);
-    let content_map: HashMap<String, String> = packed
-        .into_iter()
-        .map(|(name, content, _)| (name, content))
-        .collect();
-
-    // Build JSON, injecting content for packed entries
     let mut json = cqs::onboard_to_json(&result)
         .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"))?;
-
-    // Inject content into entry_point
-    if let Some(content) = content_map.get(&result.entry_point.name) {
-        json["entry_point"]["content"] = serde_json::json!(content);
-    }
-    // Inject into call_chain
-    if let Some(chain) = json.get_mut("call_chain").and_then(|v| v.as_array_mut()) {
-        for (i, entry) in chain.iter_mut().enumerate() {
-            if let Some(c) = result.call_chain.get(i) {
-                if let Some(content) = content_map.get(&c.name) {
-                    entry["content"] = serde_json::json!(content);
-                }
-            }
-        }
-    }
-    // Inject into callers
-    if let Some(callers) = json.get_mut("callers").and_then(|v| v.as_array_mut()) {
-        for (i, entry) in callers.iter_mut().enumerate() {
-            if let Some(c) = result.callers.get(i) {
-                if let Some(content) = content_map.get(&c.name) {
-                    entry["content"] = serde_json::json!(content);
-                }
-            }
-        }
-    }
-
+    crate::cli::commands::inject_content_into_onboard_json(&mut json, &content_map, &result);
     json["token_count"] = serde_json::json!(used);
     json["token_budget"] = serde_json::json!(budget);
     Ok(json)
