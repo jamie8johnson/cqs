@@ -21,7 +21,7 @@ pub(crate) struct ProjectSearchResult {
     pub project: String,
     pub name: String,
     pub file: String,
-    pub line: u32,
+    pub line_start: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     pub score: f32,
@@ -127,7 +127,7 @@ pub(crate) fn cmd_project(subcmd: &ProjectCommand, model_config: &ModelConfig) -
                         project: r.project_name.clone(),
                         name: r.name.clone(),
                         file: normalize_path(&r.file),
-                        line: r.line_start,
+                        line_start: r.line_start,
                         signature: r.signature.clone(),
                         score: r.score,
                     })
@@ -169,7 +169,7 @@ mod tests {
             project: "my-lib".into(),
             name: "do_stuff".into(),
             file: "src/lib.rs".into(),
-            line: 42,
+            line_start: 42,
             signature: Some("fn do_stuff(x: i32) -> bool".into()),
             score: 0.875,
         };
@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(json["project"], "my-lib");
         assert_eq!(json["name"], "do_stuff");
         assert_eq!(json["file"], "src/lib.rs");
-        assert_eq!(json["line"], 42);
+        assert_eq!(json["line_start"], 42);
         assert_eq!(json["signature"], "fn do_stuff(x: i32) -> bool");
     }
 
@@ -187,7 +187,7 @@ mod tests {
             project: "my-lib".into(),
             name: "Widget".into(),
             file: "src/types.rs".into(),
-            line: 10,
+            line_start: 10,
             signature: None,
             score: 0.5,
         };
