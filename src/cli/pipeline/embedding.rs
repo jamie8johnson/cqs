@@ -26,6 +26,7 @@ pub(super) fn prepare_for_embedding(
     embedder: &Embedder,
     store: &Store,
 ) -> PreparedEmbedding {
+    let _span = tracing::info_span!("prepare_for_embedding").entered();
     use cqs::generate_nl_description;
 
     // Step 1: Apply windowing to split long chunks into overlapping windows
@@ -312,7 +313,14 @@ pub(super) fn cpu_embed_stage(
             vec![]
         } else {
             let text_refs: Vec<&str> = prepared.texts.iter().map(|s| s.as_str()).collect();
-            emb.embed_documents(&text_refs)?
+            emb.embed_documents(&text_refs).map_err(|e| {
+                tracing::warn!(
+                    error = %e,
+                    chunks = prepared.to_embed.len(),
+                    "CPU embedding failed"
+                );
+                e
+            })?
         };
 
         let embedded_batch = create_embedded_batch(

@@ -23,6 +23,7 @@ pub(super) fn store_stage(
     embedded_count: &AtomicUsize,
     progress: &ProgressBar,
 ) -> Result<(usize, usize, usize, usize)> {
+    let _span = tracing::info_span!("store_stage").entered();
     let mut total_embedded = 0;
     let mut total_cached = 0;
     let mut total_type_edges = 0;

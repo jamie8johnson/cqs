@@ -23,6 +23,7 @@ pub(crate) struct CompactData {
 
 /// Build compact-mode data: chunks with caller/callee counts.
 pub(crate) fn build_compact_data(store: &Store, path: &str) -> Result<CompactData> {
+    let _span = tracing::info_span!("build_compact_data", path).entered();
     let chunks = store
         .get_chunks_by_origin(path)
         .context("Failed to load chunks for file")?;
@@ -103,6 +104,7 @@ pub(crate) struct FullData {
 /// Build full-mode data: chunks with external callers/callees/dependent files.
 /// Shared between CLI summary mode (uses counts) and full mode (uses details).
 pub(crate) fn build_full_data(store: &Store, path: &str, root: &Path) -> Result<FullData> {
+    let _span = tracing::info_span!("build_full_data", path).entered();
     let chunks = store
         .get_chunks_by_origin(path)
         .context("Failed to load chunks for file")?;

@@ -21,6 +21,7 @@ impl Store {
     /// - `StoreError::SchemaMismatch` - Schema migration is not supported for the version difference.
     /// - Other `StoreError` variants from database access or migration failures.
     pub(crate) fn check_schema_version(&self, path: &Path) -> Result<(), StoreError> {
+        let _span = tracing::info_span!("check_schema_version").entered();
         let path_str = path.display().to_string();
         self.rt.block_on(async {
             let row: Option<(String,)> =
