@@ -10,7 +10,7 @@ use anyhow::Result;
 
 use cqs::index::VectorIndex;
 use cqs::store::{CallerInfo, ChunkSummary, SearchResult, Store};
-use cqs::{compute_hints, normalize_path, FunctionHints, HnswIndex, SearchFilter};
+use cqs::{compute_hints, rel_display, FunctionHints, HnswIndex, SearchFilter};
 
 use super::callers::{CalleeEntry, CallerEntry};
 use crate::cli::staleness;
@@ -228,7 +228,7 @@ pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOu
         .iter()
         .map(|c| CallerEntry {
             name: c.name.clone(),
-            file: normalize_path(&c.file).to_string(),
+            file: rel_display(&c.file, root),
             line_start: c.line,
         })
         .collect();
@@ -255,7 +255,7 @@ pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOu
             });
             SimilarEntry {
                 name: r.chunk.name.clone(),
-                file: normalize_path(&r.chunk.file).to_string(),
+                file: rel_display(&r.chunk.file, root),
                 score: r.score,
                 content,
             }
