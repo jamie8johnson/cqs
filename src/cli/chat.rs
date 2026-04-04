@@ -4,7 +4,7 @@
 //! history, and tab completion.
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -77,11 +77,10 @@ fn handle_meta(line: &str) -> Option<bool> {
     match line.to_ascii_lowercase().as_str() {
         "exit" | "quit" => Some(true),
         "help" => {
-            println!(
-                "Available commands: search, blame, callers, callees, deps, explain, similar,"
-            );
-            println!("  gather, impact, test-map, trace, dead, related, context, stats, onboard,");
-            println!("  scout, where, read, stale, health, drift, notes, task, help");
+            let app = batch::BatchInput::command();
+            let mut cmd_names: Vec<&str> = app.get_subcommands().map(|sc| sc.get_name()).collect();
+            cmd_names.sort();
+            println!("Available commands: {}", cmd_names.join(", "));
             println!();
             println!("Pipeline: search \"query\" | callers | test-map");
             println!("Meta: help, exit, quit, clear");
@@ -96,16 +95,21 @@ fn handle_meta(line: &str) -> Option<bool> {
     }
 }
 
-/// Build the sorted list of batch command names.
+/// Build the sorted list of batch command names, derived from clap's subcommand
+/// registry so it stays in sync automatically when new commands are added.
 fn command_names() -> Vec<String> {
-    let mut names = vec![
-        "search", "blame", "callers", "callees", "deps", "explain", "similar", "gather", "impact",
-        "test-map", "trace", "dead", "related", "context", "stats", "onboard", "scout", "where",
-        "read", "stale", "health", "drift", "notes", "task", "help", // meta-commands
-        "exit", "quit", "clear",
-    ];
+    let app = batch::BatchInput::command();
+    let mut names: Vec<String> = app
+        .get_subcommands()
+        .map(|sc| sc.get_name().to_string())
+        .collect();
+    // Meta-commands not in BatchCmd
+    for meta in ["exit", "quit", "clear"] {
+        names.push(meta.to_string());
+    }
     names.sort();
-    names.into_iter().map(String::from).collect()
+    names.dedup();
+    names
 }
 
 // ─── REPL ────────────────────────────────────────────────────────────────────
