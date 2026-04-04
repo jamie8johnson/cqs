@@ -5,10 +5,13 @@
 //!
 //! Off by default. No network calls — local file only.
 
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::time::SystemTime;
+
+/// Maximum telemetry file size before auto-archiving (10 MB).
+const MAX_TELEMETRY_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Log a command invocation to the telemetry file.
 ///
@@ -38,6 +41,38 @@ pub fn log_command(
 
     let path = cqs_dir.join("telemetry.jsonl");
     let _ = (|| -> std::io::Result<()> {
+        // DS-NEW-2: advisory lock to prevent races with concurrent telemetry reset.
+        // Non-blocking try_lock — if reset holds it, skip this write silently.
+        let lock_path = cqs_dir.join("telemetry.lock");
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)?;
+        if lock_file.try_lock().is_err() {
+            // Reset in progress — skip this write rather than block
+            return Ok(());
+        }
+
+        // SHL-20: auto-archive if file exceeds 10 MB to prevent unbounded growth
+        if let Ok(meta) = fs::metadata(&path) {
+            if meta.len() > MAX_TELEMETRY_BYTES {
+                let archive_name = format!("telemetry_{timestamp}.jsonl");
+                let archive_path = cqs_dir.join(&archive_name);
+                if let Err(e) = fs::rename(&path, &archive_path) {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to auto-archive telemetry file"
+                    );
+                } else {
+                    tracing::info!(
+                        archived = %archive_name,
+                        "Auto-archived telemetry file (exceeded 10 MB)"
+                    );
+                }
+            }
+        }
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
         #[cfg(unix)]
         {

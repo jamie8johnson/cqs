@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::BufRead;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -121,15 +121,25 @@ fn parse_entries(path: &Path) -> Result<Vec<Entry>> {
 }
 
 /// Detect sessions by splitting on reset events or 4-hour gaps.
+///
+/// RB-9: starts at 0 sessions; first Command opens session 1.
+/// Reset events or gaps > 4 hours open a new session.
 fn count_sessions(entries: &[Entry]) -> usize {
     const GAP_SECS: u64 = 4 * 3600;
-    let mut sessions = 1usize;
+    let mut sessions = 0usize;
     let mut last_ts: Option<u64> = None;
     for entry in entries {
         let ts = match entry {
-            Entry::Command { ts, .. } => *ts,
+            Entry::Command { ts, .. } => {
+                if sessions == 0 {
+                    sessions = 1;
+                }
+                *ts
+            }
             Entry::Reset { ts, .. } => {
-                sessions += 1;
+                if sessions > 0 {
+                    sessions += 1;
+                }
                 last_ts = Some(*ts);
                 continue;
             }
@@ -291,6 +301,9 @@ fn build_telemetry(entries: &[Entry]) -> TelemetryOutput {
 pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_telemetry").entered();
 
+    // TODO(RM-10): --all loads every archived + current entry into one Vec.
+    // For extreme usage this could be switched to streaming aggregation,
+    // but telemetry files are auto-archived at 10 MB so practical risk is low.
     let mut entries = Vec::new();
 
     if all {
@@ -417,8 +430,10 @@ fn print_telemetry_text(output: &TelemetryOutput) {
         println!();
         println!("{}:", "Top Queries".cyan());
         for tq in &output.top_queries {
+            // RB-7: char-boundary-safe truncation (avoids panic on multi-byte UTF-8)
             let display = if tq.query.len() > 50 {
-                format!("{}...", &tq.query[..47])
+                let truncated: String = tq.query.chars().take(47).collect();
+                format!("{truncated}...")
             } else {
                 tq.query.clone()
             };
@@ -436,14 +451,28 @@ pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>) -> Resul
         return Ok(());
     }
 
-    // Count lines for report
-    let line_count = fs::read_to_string(&current)
-        .unwrap_or_default()
-        .lines()
-        .count();
+    // DS-NEW-2: advisory file lock to prevent races with concurrent log_command
+    let lock_path = cqs_dir.join("telemetry.lock");
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .context("Failed to create telemetry lock file")?;
+    lock_file
+        .lock()
+        .context("Failed to acquire telemetry lock")?;
+
+    // SEC-7 / RM-11: count lines via BufReader, never load entire file into memory
+    let line_count = {
+        let f = fs::File::open(&current)
+            .with_context(|| format!("Cannot open {}", current.display()))?;
+        BufReader::new(f).lines().count()
+    };
 
     // Archive with timestamp
-    let now = chrono_like_timestamp();
+    let now = format_utc_timestamp();
     let archive = cqs_dir.join(format!("telemetry_{now}.jsonl"));
     fs::copy(&current, &archive)
         .with_context(|| format!("Failed to archive to {}", archive.display()))?;
@@ -468,26 +497,75 @@ pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>) -> Resul
         archive.file_name().unwrap_or_default().to_string_lossy(),
     );
 
+    // lock_file dropped here, releasing advisory lock
+    drop(lock_file);
     Ok(())
 }
 
-/// Produce a YYYYMMDD_HHMMSS timestamp without chrono.
-fn chrono_like_timestamp() -> String {
-    use std::process::Command;
-    // Use system date command — simpler than reimplementing timezone-aware formatting
-    Command::new("date")
-        .arg("+%Y%m%d_%H%M%S")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| {
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            format!("{ts}")
-        })
+/// Produce a YYYYMMDD_HHMMSS UTC timestamp in pure Rust.
+///
+/// PB-10: no longer spawns POSIX `date` — works on all platforms.
+fn format_utc_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+
+    // Decompose epoch seconds into date/time components (UTC)
+    let secs_of_day = secs.rem_euclid(86400);
+    let hour = secs_of_day / 3600;
+    let minute = (secs_of_day % 3600) / 60;
+    let second = secs_of_day % 60;
+
+    let days_since_epoch = secs.div_euclid(86400);
+    let mut y = 1970i64;
+    let mut remaining = days_since_epoch;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0u32;
+    for (i, &days) in month_days.iter().enumerate() {
+        if remaining < days {
+            m = i as u32;
+            break;
+        }
+        remaining -= days;
+    }
+    let day = remaining + 1;
+
+    format!(
+        "{:04}{:02}{:02}_{:02}{:02}{:02}",
+        y,
+        m + 1,
+        day,
+        hour,
+        minute,
+        second,
+    )
 }
 
 #[cfg(test)]
@@ -743,5 +821,103 @@ mod tests {
         assert!(output.date_range.is_none());
         assert!(output.sessions.is_none());
         assert!(output.commands.is_empty());
+    }
+
+    // RB-9: count_sessions should return 0 for empty entries
+    #[test]
+    fn test_count_sessions_empty() {
+        assert_eq!(count_sessions(&[]), 0);
+    }
+
+    // RB-9: resets before any command should not inflate session count
+    #[test]
+    fn test_count_sessions_leading_resets() {
+        let entries = vec![
+            Entry::Reset {
+                ts: 500,
+                _reason: None,
+            },
+            Entry::Reset {
+                ts: 600,
+                _reason: None,
+            },
+            Entry::Command {
+                cmd: "search".into(),
+                query: None,
+                ts: 1000,
+            },
+        ];
+        // Two resets before any command, then one command = 1 session
+        assert_eq!(count_sessions(&entries), 1);
+    }
+
+    // RB-9: only-resets (no commands) should return 0 sessions
+    #[test]
+    fn test_count_sessions_only_resets() {
+        let entries = vec![
+            Entry::Reset {
+                ts: 500,
+                _reason: None,
+            },
+            Entry::Reset {
+                ts: 600,
+                _reason: None,
+            },
+        ];
+        assert_eq!(count_sessions(&entries), 0);
+    }
+
+    // RB-7: multi-byte UTF-8 query truncation must not panic
+    #[test]
+    fn test_truncation_multibyte_utf8() {
+        // Build a query with multi-byte chars that would panic with &query[..47]
+        // Each emoji is 4 bytes, so 13 emojis = 52 bytes > 50
+        let emoji_query = "\u{1F600}".repeat(13); // 52 bytes, 13 chars
+        assert!(emoji_query.len() > 50);
+
+        let output = TelemetryOutput {
+            events: 1,
+            date_range: Some(DateRange {
+                from: 1000,
+                to: 1000,
+            }),
+            sessions: Some(1),
+            commands: {
+                let mut m = HashMap::new();
+                m.insert("search".to_string(), 1);
+                m
+            },
+            categories: {
+                let mut m = HashMap::new();
+                m.insert("Search".to_string(), 1);
+                m
+            },
+            top_queries: vec![TopQuery {
+                query: emoji_query,
+                count: 1,
+            }],
+        };
+
+        // This previously panicked; now it should succeed
+        print_telemetry_text(&output);
+    }
+
+    // PB-10: format_utc_timestamp produces YYYYMMDD_HHMMSS pattern
+    #[test]
+    fn test_format_utc_timestamp() {
+        let ts = format_utc_timestamp();
+        assert_eq!(ts.len(), 15); // "YYYYMMDD_HHMMSS"
+        assert_eq!(ts.as_bytes()[8], b'_');
+        // All other positions are digits
+        for (i, b) in ts.bytes().enumerate() {
+            if i == 8 {
+                continue;
+            }
+            assert!(
+                b.is_ascii_digit(),
+                "Expected digit at position {i}, got '{}'",
+                b as char
+            );
+        }
     }
 }
