@@ -24,79 +24,17 @@ pub(crate) fn cmd_onboard(
         let mut output =
             serde_json::to_value(&result).context("Failed to serialize onboard result")?;
 
-        // Token budgeting: pack entry content into budget
+        // Token budgeting via shared helpers (same path as batch dispatch)
         if let Some(budget) = max_tokens {
-            let all_content: Vec<(&str, &str, f32)> = std::iter::once((
-                result.entry_point.name.as_str(),
-                result.entry_point.content.as_str(),
-                1.0_f32,
-            ))
-            .chain(result.call_chain.iter().map(|e| {
-                (
-                    e.name.as_str(),
-                    e.content.as_str(),
-                    1.0 / (e.depth as f32 + 1.0),
-                )
-            }))
-            .chain(
-                result
-                    .callers
-                    .iter()
-                    .map(|e| (e.name.as_str(), e.content.as_str(), 0.3_f32)),
-            )
-            .collect();
-
-            let texts: Vec<&str> = all_content.iter().map(|(_, c, _)| *c).collect();
-            let token_counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
-            let total_tokens: usize = token_counts.iter().sum();
-
-            if total_tokens > budget {
-                // Pack greedily — higher score = higher priority
-                let items: Vec<(String, f32)> = all_content
-                    .iter()
-                    .map(|(name, _, score)| (name.to_string(), *score))
-                    .collect();
-                let (packed, used) = crate::cli::commands::token_pack(
-                    items,
-                    &token_counts,
-                    budget,
-                    0,
-                    |&(_, score)| score,
-                );
-                let included: std::collections::HashSet<String> =
-                    packed.into_iter().map(|(name, _)| name).collect();
-
-                // Remove content from entries not in budget
-                if let Some(ep) = output.get_mut("entry_point") {
-                    if !included.contains(result.entry_point.name.as_str()) {
-                        ep["content"] = serde_json::json!("");
-                    }
-                }
-                if let Some(chain) = output.get_mut("call_chain").and_then(|v| v.as_array_mut()) {
-                    for entry in chain.iter_mut() {
-                        if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
-                            if !included.contains(name) {
-                                entry["content"] = serde_json::json!("");
-                            }
-                        }
-                    }
-                }
-                if let Some(callers) = output.get_mut("callers").and_then(|v| v.as_array_mut()) {
-                    for entry in callers.iter_mut() {
-                        if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
-                            if !included.contains(name) {
-                                entry["content"] = serde_json::json!("");
-                            }
-                        }
-                    }
-                }
-
-                output["token_count"] = serde_json::json!(used);
-                output["token_budget"] = serde_json::json!(budget);
-            } else {
-                output["token_count"] = serde_json::json!(total_tokens);
-                output["token_budget"] = serde_json::json!(budget);
-            }
+            let named_items = crate::cli::commands::onboard_scored_names(&result);
+            let (content_map, used) =
+                crate::cli::commands::fetch_and_pack_content(store, embedder, &named_items, budget);
+            crate::cli::commands::inject_content_into_onboard_json(
+                &mut output,
+                &content_map,
+                &result,
+            );
+            crate::cli::commands::inject_token_info(&mut output, Some((used, budget)));
         }
 
         println!("{}", serde_json::to_string_pretty(&output)?);
