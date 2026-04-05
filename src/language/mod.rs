@@ -1287,6 +1287,10 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-dart")]
+        {
+            expected += 1;
+        }
         assert_eq!(all.len(), expected);
     }
 
