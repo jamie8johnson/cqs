@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current: v1.16.0 (pending)
+## Current: v1.16.0
 
 v1.16.0: Language macro v2 (52 files → `languages.rs` + `.scm` queries). Dart (53rd language). 53 languages + L5X/L5K PLC exports. ~2325 tests.
 
