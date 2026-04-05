@@ -1,0 +1,2 @@
+(call
+  method: (identifier) @callee)

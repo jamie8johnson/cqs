@@ -104,6 +104,26 @@ Enrichment dependency slightly increased vs baseline (doc -7.5pp vs -6.8pp) but 
 - [x] **f32→f64 cosine precision fix** — Done in v1.11.0 (AC-28).
 - [ ] **Imbalanced 200K** — test whether per-language saturation varies. Lower priority given the per-query analysis.
 
+### Done — GIST Margin Sweep (Exp 28, 2026-04-05)
+
+Swept GIST margin on E5-base with v9-200k data. All other params fixed.
+
+| Margin | Raw R@1 (55q) | Raw MRR |
+|--------|---------------|---------|
+| 0.01 | 69.1% | 0.785 |
+| **0.03** | **72.7%** | **0.811** |
+| 0.05 (v9 baseline) | 70.9% | 0.792 |
+| 0.08 | 69.1% | 0.797 |
+| 0.10 | 69.1% | 0.793 |
+
+**Winner = v10** (`e5-lora-r16-stack-200k-cg-gist0.03-matryoshka-1ep`). Same recipe as v9-200k, margin 0.05→0.03.
+
+**Finding:** Margin 0.03 beats 0.05 baseline by +1.8pp. CG filter + tight GIST margin is redundant — both remove the same class of near-miss false negatives. At 0.03, more informative hard negatives survive training. Eval loss is anti-correlated with retrieval quality.
+
+- [x] Margin sweep complete (5/6 runs, 0.15 killed — flat trend)
+- [ ] Band mining experiment (Exp #1) — uses 0.03 winner. Script ready: `~/training-data/run_band_mining.sh`
+- [ ] Pipeline eval (296q) on margin=0.03 model — pending
+
 ### Done — Embedding Model Options
 - [x] BGE-large-en-v1.5 as configurable alternative
 - [x] ModelConfig registry with per-model prefix/dim/repo

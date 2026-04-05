@@ -2,35 +2,29 @@
 
 ## Right Now
 
-**v1.15.2 released. Starting language codegen macro. Margin sweep running. (2026-04-05 CDT)**
+**Language macro v2 in progress. Margin sweep complete. (2026-04-05 CDT)**
 
 ### Active work
-- Language code generation macro — spec at `docs/superpowers/specs/2026-04-03-language-macro-design.md`
-- Margin sweep: 4/6 done (0.01, 0.03, 0.05, 0.08), 0.10 running, 0.15 queued. ETA ~1:15 PM.
-- Band mining experiment ready to launch after sweep: `~/training-data/run_band_mining.sh`
+- Language codegen: 52 defs in `languages.rs`, 106 `.scm` files, macro switched. Tests compiling (clean build after artifact cleanup). Branch: `feat/language-macro-v2`
+- Next steps: verify tests pass → delete old `.rs` files → move tests → commit → PR
 
-### Margin sweep results (raw R@1, 55-query eval)
-| Margin | R@1 | MRR | Eval Loss |
-|--------|-----|-----|-----------|
-| 0.01 | 69.1% | 0.785 | 0.084 |
-| **0.03** | **72.7%** | **0.811** | 0.024 |
-| 0.05 | 70.9% | 0.792 | 0.005 |
-| 0.08 | 69.1% | 0.797 | 0.002 |
+### Margin sweep results (GIST margin, E5-base, 200K CG-filtered)
+| Margin | R@1 | MRR |
+|--------|-----|-----|
+| 0.01 | 69.1% | 0.785 |
+| **0.03** | **72.7%** | **0.811** |
+| 0.05 | 70.9% | 0.792 |
+| 0.08 | 69.1% | 0.797 |
+| 0.10 | 69.1% | 0.793 |
 Peak at 0.03 — +1.8pp over baseline. Pipeline eval pending.
 
-### Uncommitted on main
-- `PROJECT_CONTINUITY.md` — this file
-- `docs/audit-triage.md` — final fix status
-- `.claude/agents/implementer.md` — targeted-test-only rule
-- `docs/audit-findings-v1.15.1.md`, `docs/audit-triage-v1.15.1.md` — archived audit
-- `docs/superpowers/specs/2026-04-04-wiki-system-design.md` — spec
-- `docs/superpowers/specs/2026-04-04-ssd-fine-tuning-roadmap.md` — spec
-- `docs/superpowers/plans/2026-04-04-wiki-system.md` — plan
+### Band mining experiment
+Script ready: `~/training-data/run_band_mining.sh`. Uses margin-0.03 model + band [20,50) + CG filter. A6000 free.
 
-### Design decisions this session
-- Wiki system: standalone (own git repo, `~/wiki/`), not colocated
-- Implementer agents: targeted tests only (`-- test_name`), never full suite
-- GIST margin 0.03 beats 0.05 baseline for CG-filtered data
+### Session artifacts
+- PR #814 (session artifacts) — in CI
+- Results log updated: `~/training-data/RESULTS.md`
+- ROADMAP updated with Exp 28 margin sweep
 
 ### Training results (BGE-large FT)
 91.6% R@1 fixture, 50% R@1 real (100q), 57.5 CoIR. Published: jamie8johnson/bge-large-v1.5-code-search
@@ -39,7 +33,7 @@ Peak at 0.03 — +1.8pp over baseline. Pipeline eval pending.
 - Cross-project call graph — spec ready
 - Embedding cache — spec ready
 - Wiki system — spec ready (standalone design)
-- SSD fine-tuning experiments — sweep running, band mining prepped
+- SSD fine-tuning: band mining prepped, iterative self-distillation next
 - Ladder logic (RLL) grammar
 - Dart, hnswlib-rs, DXF, Openclaw PLC
 - Blackwell RTX 6000 (96GB)
@@ -56,3 +50,4 @@ Peak at 0.03 — +1.8pp over baseline. Pipeline eval pending.
 - CommandContext with lazy reranker + embedder + open_readwrite
 - Commands in 7 subdirectories, JSON schema typed Serialize
 - 10th audit: 103/103 fixed, 0 remaining
+- Language macro v2: consolidated `languages.rs` + `queries/*.scm` (in progress)

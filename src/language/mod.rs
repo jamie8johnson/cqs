@@ -66,6 +66,8 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+mod languages;
+
 // ---------------------------------------------------------------------------
 // Macro: define_languages!
 //
@@ -105,15 +107,9 @@ macro_rules! define_languages {
     (
         $(
             $(#[doc = $doc:expr])*
-            $variant:ident => $name:literal, feature = $feature:literal, module = $module:ident;
+            $variant:ident => $name:literal, feature = $feature:literal, def = $def_fn:path;
         )+
     ) => {
-        // Feature-gated module imports
-        $(
-            #[cfg(feature = $feature)]
-            mod $module;
-        )+
-
         /// Supported programming languages
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
         #[serde(rename_all = "lowercase")]
@@ -171,7 +167,7 @@ macro_rules! define_languages {
                 };
                 $(
                     #[cfg(feature = $feature)]
-                    reg.register($module::definition());
+                    reg.register($def_fn());
                 )+
                 reg
             }
@@ -720,109 +716,109 @@ impl LanguageRegistry {
 
 define_languages! {
     /// Rust (.rs files)
-    Rust => "rust", feature = "lang-rust", module = rust;
+    Rust => "rust", feature = "lang-rust", def = languages::definition_rust;
     /// Python (.py, .pyi files)
-    Python => "python", feature = "lang-python", module = python;
+    Python => "python", feature = "lang-python", def = languages::definition_python;
     /// TypeScript (.ts, .tsx files)
-    TypeScript => "typescript", feature = "lang-typescript", module = typescript;
+    TypeScript => "typescript", feature = "lang-typescript", def = languages::definition_typescript;
     /// JavaScript (.js, .jsx, .mjs, .cjs files)
-    JavaScript => "javascript", feature = "lang-javascript", module = javascript;
+    JavaScript => "javascript", feature = "lang-javascript", def = languages::definition_javascript;
     /// Go (.go files)
-    Go => "go", feature = "lang-go", module = go;
+    Go => "go", feature = "lang-go", def = languages::definition_go;
     /// C (.c, .h files)
-    C => "c", feature = "lang-c", module = c;
+    C => "c", feature = "lang-c", def = languages::definition_c;
     /// C++ (.cpp, .cxx, .cc, .hpp, .hxx, .hh, .ipp files)
-    Cpp => "cpp", feature = "lang-cpp", module = cpp;
+    Cpp => "cpp", feature = "lang-cpp", def = languages::definition_cpp;
     /// Java (.java files)
-    Java => "java", feature = "lang-java", module = java;
+    Java => "java", feature = "lang-java", def = languages::definition_java;
     /// C# (.cs files)
-    CSharp => "csharp", feature = "lang-csharp", module = csharp;
+    CSharp => "csharp", feature = "lang-csharp", def = languages::definition_csharp;
     /// F# (.fs, .fsi files)
-    FSharp => "fsharp", feature = "lang-fsharp", module = fsharp;
+    FSharp => "fsharp", feature = "lang-fsharp", def = languages::definition_fsharp;
     /// PowerShell (.ps1, .psm1 files)
-    PowerShell => "powershell", feature = "lang-powershell", module = powershell;
+    PowerShell => "powershell", feature = "lang-powershell", def = languages::definition_powershell;
     /// Scala (.scala, .sc files)
-    Scala => "scala", feature = "lang-scala", module = scala;
+    Scala => "scala", feature = "lang-scala", def = languages::definition_scala;
     /// Ruby (.rb, .rake, .gemspec files)
-    Ruby => "ruby", feature = "lang-ruby", module = ruby;
+    Ruby => "ruby", feature = "lang-ruby", def = languages::definition_ruby;
     /// Bash (.sh, .bash files)
-    Bash => "bash", feature = "lang-bash", module = bash;
+    Bash => "bash", feature = "lang-bash", def = languages::definition_bash;
     /// HCL/Terraform (.tf, .tfvars, .hcl files)
-    Hcl => "hcl", feature = "lang-hcl", module = hcl;
+    Hcl => "hcl", feature = "lang-hcl", def = languages::definition_hcl;
     /// Kotlin (.kt, .kts files)
-    Kotlin => "kotlin", feature = "lang-kotlin", module = kotlin;
+    Kotlin => "kotlin", feature = "lang-kotlin", def = languages::definition_kotlin;
     /// Swift (.swift files)
-    Swift => "swift", feature = "lang-swift", module = swift;
+    Swift => "swift", feature = "lang-swift", def = languages::definition_swift;
     /// Objective-C (.m, .mm files)
-    ObjC => "objc", feature = "lang-objc", module = objc;
+    ObjC => "objc", feature = "lang-objc", def = languages::definition_objc;
     /// SQL (.sql files)
-    Sql => "sql", feature = "lang-sql", module = sql;
+    Sql => "sql", feature = "lang-sql", def = languages::definition_sql;
     /// Protobuf (.proto files)
-    Protobuf => "protobuf", feature = "lang-protobuf", module = protobuf;
+    Protobuf => "protobuf", feature = "lang-protobuf", def = languages::definition_protobuf;
     /// GraphQL (.graphql, .gql files)
-    GraphQL => "graphql", feature = "lang-graphql", module = graphql;
+    GraphQL => "graphql", feature = "lang-graphql", def = languages::definition_graphql;
     /// PHP (.php files)
-    Php => "php", feature = "lang-php", module = php;
+    Php => "php", feature = "lang-php", def = languages::definition_php;
     /// Lua (.lua files)
-    Lua => "lua", feature = "lang-lua", module = lua;
+    Lua => "lua", feature = "lang-lua", def = languages::definition_lua;
     /// Zig (.zig files)
-    Zig => "zig", feature = "lang-zig", module = zig;
+    Zig => "zig", feature = "lang-zig", def = languages::definition_zig;
     /// R (.r, .R files)
-    R => "r", feature = "lang-r", module = r;
+    R => "r", feature = "lang-r", def = languages::definition_r;
     /// YAML (.yaml, .yml files)
-    Yaml => "yaml", feature = "lang-yaml", module = yaml;
+    Yaml => "yaml", feature = "lang-yaml", def = languages::definition_yaml;
     /// TOML (.toml files)
-    Toml => "toml", feature = "lang-toml", module = toml_lang;
+    Toml => "toml", feature = "lang-toml", def = languages::definition_toml;
     /// Elixir (.ex, .exs files)
-    Elixir => "elixir", feature = "lang-elixir", module = elixir;
+    Elixir => "elixir", feature = "lang-elixir", def = languages::definition_elixir;
     /// Erlang (.erl, .hrl files)
-    Erlang => "erlang", feature = "lang-erlang", module = erlang;
+    Erlang => "erlang", feature = "lang-erlang", def = languages::definition_erlang;
     /// Haskell (.hs files)
-    Haskell => "haskell", feature = "lang-haskell", module = haskell;
+    Haskell => "haskell", feature = "lang-haskell", def = languages::definition_haskell;
     /// OCaml (.ml, .mli files)
-    OCaml => "ocaml", feature = "lang-ocaml", module = ocaml;
+    OCaml => "ocaml", feature = "lang-ocaml", def = languages::definition_ocaml;
     /// Julia (.jl files)
-    Julia => "julia", feature = "lang-julia", module = julia;
+    Julia => "julia", feature = "lang-julia", def = languages::definition_julia;
     /// Gleam (.gleam files)
-    Gleam => "gleam", feature = "lang-gleam", module = gleam;
+    Gleam => "gleam", feature = "lang-gleam", def = languages::definition_gleam;
     /// CSS (.css files)
-    Css => "css", feature = "lang-css", module = css;
+    Css => "css", feature = "lang-css", def = languages::definition_css;
     /// Perl (.pl, .pm files)
-    Perl => "perl", feature = "lang-perl", module = perl;
+    Perl => "perl", feature = "lang-perl", def = languages::definition_perl;
     /// HTML (.html, .htm, .xhtml files)
-    Html => "html", feature = "lang-html", module = html;
+    Html => "html", feature = "lang-html", def = languages::definition_html;
     /// JSON (.json, .jsonc files)
-    Json => "json", feature = "lang-json", module = json;
+    Json => "json", feature = "lang-json", def = languages::definition_json;
     /// XML (.xml, .xsl, .xsd, .svg files)
-    Xml => "xml", feature = "lang-xml", module = xml;
+    Xml => "xml", feature = "lang-xml", def = languages::definition_xml;
     /// INI (.ini, .cfg files)
-    Ini => "ini", feature = "lang-ini", module = ini;
+    Ini => "ini", feature = "lang-ini", def = languages::definition_ini;
     /// Nix (.nix files)
-    Nix => "nix", feature = "lang-nix", module = nix;
+    Nix => "nix", feature = "lang-nix", def = languages::definition_nix;
     /// Makefile (.mk, .mak files)
-    Make => "make", feature = "lang-make", module = make;
+    Make => "make", feature = "lang-make", def = languages::definition_make;
     /// LaTeX (.tex, .sty, .cls files)
-    Latex => "latex", feature = "lang-latex", module = latex;
+    Latex => "latex", feature = "lang-latex", def = languages::definition_latex;
     /// Solidity (.sol files)
-    Solidity => "solidity", feature = "lang-solidity", module = solidity;
+    Solidity => "solidity", feature = "lang-solidity", def = languages::definition_solidity;
     /// CUDA (.cu, .cuh files)
-    Cuda => "cuda", feature = "lang-cuda", module = cuda;
+    Cuda => "cuda", feature = "lang-cuda", def = languages::definition_cuda;
     /// GLSL (.glsl, .vert, .frag, .geom, .comp, .tesc, .tese files)
-    Glsl => "glsl", feature = "lang-glsl", module = glsl;
+    Glsl => "glsl", feature = "lang-glsl", def = languages::definition_glsl;
     /// Svelte (.svelte files)
-    Svelte => "svelte", feature = "lang-svelte", module = svelte;
+    Svelte => "svelte", feature = "lang-svelte", def = languages::definition_svelte;
     /// Razor/CSHTML (.cshtml, .razor files)
-    Razor => "razor", feature = "lang-razor", module = razor;
+    Razor => "razor", feature = "lang-razor", def = languages::definition_razor;
     /// VB.NET (.vb files)
-    VbNet => "vbnet", feature = "lang-vbnet", module = vbnet;
+    VbNet => "vbnet", feature = "lang-vbnet", def = languages::definition_vbnet;
     /// Vue (.vue files)
-    Vue => "vue", feature = "lang-vue", module = vue;
+    Vue => "vue", feature = "lang-vue", def = languages::definition_vue;
     /// Markdown (.md, .mdx files)
-    Markdown => "markdown", feature = "lang-markdown", module = markdown;
+    Markdown => "markdown", feature = "lang-markdown", def = languages::definition_markdown;
     /// ASP.NET Web Forms (.aspx, .ascx, .asmx, .master files)
-    Aspx => "aspx", feature = "lang-aspx", module = aspx;
+    Aspx => "aspx", feature = "lang-aspx", def = languages::definition_aspx;
     /// IEC 61131-3 Structured Text (.st, .stl files)
-    StructuredText => "structured_text", feature = "lang-st", module = structured_text;
+    StructuredText => "structured_text", feature = "lang-st", def = languages::definition_structured_text;
 }
 
 // ---------------------------------------------------------------------------
