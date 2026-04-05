@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v1.15.2
+## Current: v1.16.0 (pending)
 
-v1.15.2: 10th audit fully cleared (103/103 findings fixed). Typed JSON output structs. 52 languages + L5X/L5K PLC exports. ~2250 tests.
+v1.16.0: Language macro v2 (52 files → `languages.rs` + `.scm` queries). Dart (53rd language). 53 languages + L5X/L5K PLC exports. ~2325 tests.
 
 ### Expanded Pipeline Eval (296 queries, 7 languages, 2026-03-31)
 
