@@ -430,7 +430,7 @@ Without cqs, Claude uses grep/glob to find code and reads entire files for conte
 
 - **Fewer tool calls**: `gather`, `impact`, `trace`, `context`, `explain` each replace 5-10 sequential file reads with a single call
 - **Less context burn**: `cqs read --focus` returns a function + its type dependencies — not the whole file. Token budgeting (`--tokens N`) caps output across all commands.
-- **Find code by concept**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`. 94.5% Recall@1 (BGE-large) on confusable functions.
+- **Find code by concept**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`. 90.9% Recall@1 (BGE-large, 296 queries across 7 languages).
 - **Understand dependencies**: Call graphs, type dependencies, impact analysis, and risk scoring answer "what breaks if I change X?" without manual tracing
 - **Navigate unfamiliar codebases**: Semantic search + `cqs scout` + `cqs where` provide instant orientation without knowing project structure
 
