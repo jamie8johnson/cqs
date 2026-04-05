@@ -228,11 +228,8 @@ pub(in crate::cli::batch) fn dispatch_where(
     let limit = limit.clamp(1, 10);
     let result = cqs::suggest_placement(&ctx.store(), embedder, description, limit)?;
 
-    Ok(crate::cli::commands::where_to_json(
-        &result,
-        description,
-        &ctx.root,
-    ))
+    let output = crate::cli::commands::build_where_output(&result, description, &ctx.root);
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Detects content drift between a reference dataset and the current dataset by comparing similarity scores.

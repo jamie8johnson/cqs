@@ -19,7 +19,6 @@ pub(crate) struct SuggestEntry {
 }
 
 #[derive(Debug, serde::Serialize)]
-#[allow(dead_code)] // Used in tests; will be wired into batch handler
 pub(crate) struct SuggestOutput {
     pub suggestions: Vec<SuggestEntry>,
     pub count: usize,
@@ -48,7 +47,6 @@ pub(crate) fn build_suggest_entries(
 }
 
 /// Build the full suggest output (entries + metadata).
-#[allow(dead_code)] // Used in tests; will be wired into batch handler
 pub(crate) fn build_suggest_output(
     suggestions: &[cqs::suggest::SuggestedNote],
     applied: bool,
@@ -76,7 +74,8 @@ pub(crate) fn cmd_suggest(ctx: &crate::cli::CommandContext, json: bool, apply: b
 
     if suggestions.is_empty() {
         if json {
-            println!("[]");
+            let output = build_suggest_output(&suggestions, false);
+            println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
             println!("No suggestions — codebase looks clean.");
         }
@@ -84,12 +83,11 @@ pub(crate) fn cmd_suggest(ctx: &crate::cli::CommandContext, json: bool, apply: b
     }
 
     if json {
-        let entries = build_suggest_entries(&suggestions);
-        println!("{}", serde_json::to_string_pretty(&entries)?);
-
         if apply {
             apply_suggestions(&suggestions, root, store)?;
         }
+        let output = build_suggest_output(&suggestions, apply);
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else if apply {
         apply_suggestions(&suggestions, root, store)?;
         println!(

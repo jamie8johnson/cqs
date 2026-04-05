@@ -70,22 +70,22 @@ pub fn full_cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
 mod tests {
     use super::*;
 
-    /// Creates a vector embedding by repeating a single float value 768 times.
+    /// Creates a vector embedding by repeating a single float value `EMBEDDING_DIM` times.
     /// # Arguments
     /// * `val` - The float value to repeat in the embedding vector
     /// # Returns
-    /// A `Vec<f32>` of length 768 where every element equals `val`
+    /// A `Vec<f32>` of length `EMBEDDING_DIM` where every element equals `val`
     fn make_embedding(val: f32) -> Vec<f32> {
         vec![val; crate::EMBEDDING_DIM]
     }
 
-    /// Creates a one-hot encoded embedding vector of dimension 768.
+    /// Creates a one-hot encoded embedding vector of dimension `EMBEDDING_DIM`.
     /// # Arguments
     /// * `idx` - The index position where the value should be set to 1.0
     /// # Returns
-    /// A vector of 768 f32 values with all elements initialized to 0.0 except at position `idx` which is set to 1.0.
+    /// A vector of `EMBEDDING_DIM` f32 values with all elements initialized to 0.0 except at position `idx` which is set to 1.0.
     /// # Panics
-    /// Panics if `idx` >= 768.
+    /// Panics if `idx` >= `EMBEDDING_DIM`.
     fn make_unit_embedding(idx: usize) -> Vec<f32> {
         let mut v = vec![0.0; crate::EMBEDDING_DIM];
         v[idx] = 1.0;
@@ -145,7 +145,7 @@ mod tests {
             cosine_similarity(&a, &b).is_none(),
             "Should fail for mismatched dimensions"
         );
-        // Same-length non-768 vectors should succeed (dimension-agnostic)
+        // Same-length non-EMBEDDING_DIM vectors should succeed (dimension-agnostic)
         assert!(
             cosine_similarity(&a, &a).is_some(),
             "Same-length vectors should succeed regardless of dimension"

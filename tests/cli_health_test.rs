@@ -217,8 +217,21 @@ fn test_suggest_cli_json() {
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
     assert!(
-        parsed.is_array(),
-        "suggest --json should output a JSON array, got: {}",
+        parsed.is_object(),
+        "suggest --json should output a JSON object with suggestions, count, applied; got: {}",
+        parsed
+    );
+    assert!(
+        parsed
+            .get("suggestions")
+            .and_then(|v| v.as_array())
+            .is_some(),
+        "suggest --json should have a 'suggestions' array field, got: {}",
+        parsed
+    );
+    assert!(
+        parsed.get("count").is_some(),
+        "suggest --json should have a 'count' field, got: {}",
         parsed
     );
 }

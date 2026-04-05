@@ -43,7 +43,7 @@ pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
     if !cli.quiet {
         // Heuristic: BGE-large (dim=1024) is ~1.3GB, E5-base (dim=768) is ~547MB.
         // Custom models with unknown sizes will show whichever is closer by dimension.
-        let size = if cli.model_config().dim >= 1024 {
+        let size = if cli.try_model_config()?.dim >= 1024 {
             "~1.3GB"
         } else {
             "~547MB"
@@ -52,7 +52,7 @@ pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
     }
 
     let embedder =
-        Embedder::new(cli.model_config().clone()).context("Failed to initialize embedder")?;
+        Embedder::new(cli.try_model_config()?.clone()).context("Failed to initialize embedder")?;
 
     if !cli.quiet {
         println!("Detecting hardware... {}", embedder.provider());

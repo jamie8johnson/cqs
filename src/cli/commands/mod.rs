@@ -30,6 +30,8 @@ pub(crate) use train::task;
 
 // -- search --
 pub(crate) use search::build_gather_output;
+pub(crate) use search::build_related_output;
+pub(crate) use search::build_where_output;
 pub(crate) use search::cmd_gather;
 pub(crate) use search::cmd_neighbors;
 pub(crate) use search::cmd_onboard;
@@ -38,8 +40,6 @@ pub(crate) use search::cmd_related;
 pub(crate) use search::cmd_scout;
 pub(crate) use search::cmd_similar;
 pub(crate) use search::cmd_where;
-pub(crate) use search::related_result_to_json;
-pub(crate) use search::where_to_json;
 pub(crate) use search::GatherContext;
 
 // -- graph --

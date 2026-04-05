@@ -17,7 +17,7 @@ pub struct ModelConfig {
     pub onnx_path: String,
     /// Path to tokenizer file within the repo
     pub tokenizer_path: String,
-    /// Embedding dimension (768 for E5-base, 1024 for BGE-large)
+    /// Embedding dimension (1024 for BGE-large, 768 for E5-base)
     pub dim: usize,
     /// Maximum input sequence length in tokens
     pub max_seq_length: usize,

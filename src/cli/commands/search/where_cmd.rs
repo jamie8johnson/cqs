@@ -76,21 +76,6 @@ pub(crate) fn build_where_output(
     }
 }
 
-/// Build JSON for placement suggestions (backward-compatible wrapper).
-///
-/// Shared between CLI (`cmd_where --json`) and batch (`dispatch_where`).
-pub(crate) fn where_to_json(
-    result: &cqs::PlacementResult,
-    description: &str,
-    root: &Path,
-) -> serde_json::Value {
-    let output = build_where_output(result, description, root);
-    serde_json::to_value(&output).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to serialize WhereOutput");
-        serde_json::json!({})
-    })
-}
-
 // ─── CLI command ───────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_where(
@@ -220,12 +205,13 @@ mod tests {
     }
 
     #[test]
-    fn where_to_json_compat() {
+    fn where_output_serializes_to_json_value() {
         let result = cqs::PlacementResult {
             suggestions: vec![make_suggestion("src/foo.rs", 0.7)],
         };
         let root = PathBuf::from("/project");
-        let json = where_to_json(&result, "test desc", &root);
+        let output = build_where_output(&result, "test desc", &root);
+        let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["description"], "test desc");
         assert_eq!(json["suggestions"][0]["near_function"], "nearby_fn");
     }

@@ -137,7 +137,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         }
         let mut store = Store::open(&index_path)
             .with_context(|| format!("Failed to create store at {}", index_path.display()))?;
-        let mc = cli.model_config();
+        let mc = cli.try_model_config()?;
         store.init(&ModelInfo::new(&mc.repo, mc.dim))?;
         // Update dim to match the model — open() defaulted to EMBEDDING_DIM
         // because metadata didn't exist yet before init().
@@ -167,7 +167,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         Arc::clone(&store),
         force,
         cli.quiet,
-        cli.model_config().clone(),
+        cli.try_model_config()?.clone(),
     )?;
     let total_embedded = stats.total_embedded;
     let total_cached = stats.total_cached;
@@ -301,7 +301,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         if !cli.quiet {
             println!("Enriching embeddings with call graph context...");
         }
-        let embedder = Embedder::new(cli.model_config().clone())
+        let embedder = Embedder::new(cli.try_model_config()?.clone())
             .context("Failed to create embedder for enrichment pass")?;
         match enrichment_pass(&store, &embedder, cli.quiet) {
             Ok(count) => {

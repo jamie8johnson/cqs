@@ -85,6 +85,7 @@ impl<'a> CommandContext<'a> {
     }
 
     /// Get the resolved model config from the CLI.
+    #[allow(deprecated)]
     pub fn model_config(&self) -> &cqs::embedder::ModelConfig {
         self.cli.model_config()
     }

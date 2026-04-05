@@ -507,7 +507,7 @@ mod tests {
 
     // ===== score_candidate tests =====
 
-    /// Build a normalized 768-dim test vector for score_candidate tests.
+    /// Build a normalized EMBEDDING_DIM test vector for score_candidate tests.
     fn test_embedding(seed: f32) -> Vec<f32> {
         let mut v = vec![seed; crate::EMBEDDING_DIM];
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
