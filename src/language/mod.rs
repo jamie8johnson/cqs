@@ -819,6 +819,8 @@ define_languages! {
     Aspx => "aspx", feature = "lang-aspx", def = languages::definition_aspx;
     /// IEC 61131-3 Structured Text (.st, .stl files)
     StructuredText => "structured_text", feature = "lang-st", def = languages::definition_structured_text;
+    /// Dart (.dart files)
+    Dart => "dart", feature = "lang-dart", def = languages::definition_dart;
 }
 
 // ---------------------------------------------------------------------------
