@@ -150,6 +150,7 @@ src/
     signal.rs   - Signal handling (Ctrl+C)
     staleness.rs - Proactive staleness warnings for search results
     telemetry.rs - Optional command usage logging (CQS_TELEMETRY=1)
+    store.rs    - Store opening utilities, CommandContext, vector index building
     watch.rs    - File watcher for incremental reindexing
   language/     - Tree-sitter language support
     mod.rs      - Language enum, LanguageRegistry, LanguageDef, ChunkType
@@ -174,8 +175,10 @@ src/
     chunk.rs    - Chunk extraction, signatures, doc comments, parent type extraction
     calls.rs    - Call graph extraction, callee filtering
     injection.rs - Multi-grammar injection (HTML→JS/CSS via set_included_ranges)
+    aspx.rs     - ASP.NET Web Forms (.aspx/.ascx/.asmx) custom parser
     l5x.rs      - Rockwell PLC exports (L5X XML + L5K ASCII) → Structured Text extraction
-    markdown.rs - Heading-based markdown parser, cross-reference extraction
+    markdown/   - Heading-based markdown parser
+      mod.rs, headings.rs, code_blocks.rs, tables.rs
   embedder/      - ONNX embedding models (configurable: BGE-large-en-v1.5 default, E5-base preset, custom ONNX)
     mod.rs      - Embedder struct, embed(), batch embedding, runtime dimension detection
     models.rs   - ModelConfig struct, built-in presets (e5-base, bge-large), resolution logic, EmbeddingConfig
@@ -186,6 +189,7 @@ src/
     scoring/    - ScoringConfig, score normalization, RRF fusion constants
       mod.rs, candidate.rs, config.rs, filter.rs, name_match.rs, note_boost.rs
     query.rs    - Query parsing, filter extraction
+    synonyms.rs - Query synonym expansion
   math.rs       - Vector math utilities (cosine similarity, SIMD)
   hnsw/         - HNSW index with batched build, atomic writes
     mod.rs      - HnswIndex, LoadedHnsw (self_cell), HnswError, VectorIndex impl
@@ -224,6 +228,7 @@ src/
     bfs.rs      - Reverse BFS, reverse_bfs_multi_attributed, test_reachability
     format.rs   - JSON/Mermaid formatting
     hints.rs    - compute_hints, compute_hints_batch, compute_risk_batch, risk scoring
+    test_map.rs - Shared test-map algorithm (reverse BFS from function to test chunks)
   related.rs      - Co-occurrence analysis (shared callers, callees, types)
   scout.rs        - Pre-investigation dashboard (search + callers/tests + staleness + notes)
   task.rs         - Single-call implementation brief (scout + gather + impact + placement + notes)
