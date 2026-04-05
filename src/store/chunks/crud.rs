@@ -365,6 +365,33 @@ impl Store {
         })
     }
 
+    /// Copy LLM summaries from a backup database into this store.
+    /// Used by `--force` reindex to preserve cached summaries.
+    pub fn copy_summaries_from(&self, backup_path: &std::path::Path) -> Result<usize, StoreError> {
+        let _span =
+            tracing::info_span!("copy_summaries_from", backup = %backup_path.display()).entered();
+        let backup_str = backup_path.to_string_lossy();
+        self.rt.block_on(async {
+            // Attach backup DB
+            sqlx::query(&format!("ATTACH DATABASE '{}' AS backup", backup_str))
+                .execute(&self.pool)
+                .await?;
+            // Copy summaries that don't already exist
+            let result = sqlx::query(
+                "INSERT OR IGNORE INTO llm_summaries (content_hash, purpose, summary) \
+                 SELECT content_hash, purpose, summary FROM backup.llm_summaries",
+            )
+            .execute(&self.pool)
+            .await?;
+            let copied = result.rows_affected() as usize;
+            // Detach
+            sqlx::query("DETACH DATABASE backup")
+                .execute(&self.pool)
+                .await?;
+            Ok(copied)
+        })
+    }
+
     /// Check if a file needs reindexing based on mtime.
     ///
     /// Returns `Ok(Some(mtime))` if reindex needed (with the file's current mtime),
