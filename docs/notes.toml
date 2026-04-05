@@ -472,8 +472,8 @@ mentions = [
 sentiment = -0.5
 text = "Tree-sitter query patterns must be verified against actual AST dumps (tree.root_node().to_sexp()) — grammar docs are unreliable. Found 3 bugs: Rust trait_bound vs trait_bounds, Go interface types wrapped in type_elem, Go type_alias vs type_spec. Regression test test_type_queries_compile catches this."
 mentions = [
-    "src/language/rust.rs",
-    "src/language/go.rs",
+    "src/language/languages.rs",
+    "src/language/queries",
     "src/parser/calls.rs",
 ]
 
@@ -551,7 +551,7 @@ mentions = [
 sentiment = 1.0
 text = "C# language support shipped in v0.15.0. 10th language. New ChunkType variants: Property, Delegate, Event. Per-language common_types on LanguageDef. Data-driven container extraction. tree-sitter-c-sharp 0.23 behind lang-csharp feature flag."
 mentions = [
-    "src/language/csharp.rs",
+    "src/language/languages.rs",
     "src/language/mod.rs",
 ]
 
@@ -852,37 +852,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -1.0
-text = "92.7% R@1 was Relaxed R@1 (top-1 OR top-2), not strict R@1. Fresh pipeline eval: E5-base strict R@1 = 83.6%, Relaxed = 92.7%. BGE-large strict R@1 = 94.5%. All prior references to 92.7% were metric confusion across sessions."
-mentions = [
-    "RESULTS.md",
-    "research_log.md",
-    "Cargo.toml",
-    "README.md",
-]
-
-[[note]]
-sentiment = 1.0
-text = "v9-200k: 94.5% pipeline R@1, 70.9% raw R@1. Ties BGE-large (335M) at 1/3 size. Best raw R@1 of any model. 200K balanced dataset + call-graph false-negative filtering is the key — training signal quality > model capacity."
-mentions = [
-    "training-data",
-    "embedder",
-]
-
-[[note]]
-sentiment = -0.5
-text = "run_v9_200k.sh bug: sed removed --call-graph line but broke the backslash continuation, leaving --export-onnx as a standalone shell command. Training completed but ONNX wasn't exported. Always verify script edits don't break multi-line continuations."
-mentions = ["run_v9_200k.sh"]
-
-[[note]]
-sentiment = -0.5
-text = "Pipeline eval numbers shifted after P3 code fixes (AC-24 RRF flag dedup, etc). E5-base 83.6%→85.5%, v9-mini 87.3%→89.1%, v5/v8 85.5%→89.1%. Always re-verify all models on the same code state before publishing. Numbers from different code states are not comparable."
-mentions = [
-    "RESULTS.md",
-    "tests/pipeline_eval.rs",
-]
-
-[[note]]
 sentiment = -0.5
 text = "v1.9.0 default model change: bare cargo test without CQS_EMBEDDING_MODEL now uses BGE-large, not E5-base. Must explicitly set CQS_EMBEDDING_MODEL=e5-base to get real E5 numbers. Caught during full re-verification run."
 mentions = [
@@ -1038,10 +1007,27 @@ text = "Fine-tuned BGE-large: +5.8pp CSN on CoIR (0.779 vs 0.721 baseline), +4.4
 mentions = ["train_lora.py"]
 
 [[note]]
-sentiment = 1.0
-text = "GIST margin 0.03 beats 0.05 baseline by +1.8pp raw R@1 (72.7% vs 70.9%). CG filter + tight GIST margin is redundant — both remove the same near-miss false negatives. Lower margin lets more informative hard negatives through. Eval loss is anti-correlated with retrieval quality."
+sentiment = 0.0
+text = "GIST margin sweep (Exp 28): null result for pipeline. Margin 0.03 gives +1.8pp raw R@1 (repeatable) but pipeline R@1 is within training variance (80-83% for all margins). Default 0.05 confirmed correct. Expanded eval baseline stale (90.5% was old codebase, current ~80%). Rust stress MRR collapsed to 0.046 for ALL E5-base models on v1.15.2 index — needs investigation."
 mentions = [
     "train_lora.py",
     "margin",
     "GIST",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Expanded eval baseline is stale after v1.15.2 refactoring (35 PRs). Original v9-200k scores 80.1% pipeline R@1 on current index, not 90.5%. All E5-base models land 80-83%. Numbers in expanded eval table are relative rankings only. Re-baseline needed."
+mentions = [
+    "pipeline_eval",
+    "RESULTS.md",
+]
+
+[[note]]
+sentiment = -1.0
+text = "Rust stress MRR collapsed to 0.046 for ALL E5-base models on v1.15.2 index. Not model-specific — affects original v9-200k and all margin sweep variants equally. Likely enrichment or chunking change from the 35 PRs of refactoring. Needs investigation."
+mentions = [
+    "stress_eval",
+    "enrichment",
+    "rust",
 ]

@@ -7269,3 +7269,138 @@ std.debug.print("processing\n", .{});
         names
     );
 }
+
+// -- dart ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_dart_parse_function() {
+    let content = r#"
+Map<String, dynamic> parseConfig(String path) {
+  final file = File(path);
+  return jsonDecode(file.readAsStringSync());
+}
+"#;
+    let file = write_temp_file(content, "dart");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    assert!(
+        chunks
+            .iter()
+            .any(|c| c.name == "parseConfig" && c.chunk_type == ChunkType::Function),
+        "Expected parseConfig function, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_dart_parse_class() {
+    let content = r#"
+class User {
+  final String name;
+  final int age;
+
+  User(this.name, this.age);
+
+  String getDisplayName() {
+    return '$name ($age)';
+  }
+}
+"#;
+    let file = write_temp_file(content, "dart");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    assert!(
+        chunks
+            .iter()
+            .any(|c| c.name == "User" && c.chunk_type == ChunkType::Class),
+        "Expected User class, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_dart_parse_enum() {
+    let content = r#"
+enum Status {
+  active,
+  inactive,
+  pending,
+}
+"#;
+    let file = write_temp_file(content, "dart");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    assert!(
+        chunks
+            .iter()
+            .any(|c| c.name == "Status" && c.chunk_type == ChunkType::Enum),
+        "Expected Status enum, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_dart_parse_method() {
+    let content = r#"
+class User {
+  final String name;
+
+  String getDisplayName() {
+    return name.toUpperCase();
+  }
+
+  bool isValid() => name.isNotEmpty;
+}
+"#;
+    let file = write_temp_file(content, "dart");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    assert!(
+        chunks
+            .iter()
+            .any(|c| c.name == "User" && c.chunk_type == ChunkType::Class),
+        "Expected User class, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        chunks
+            .iter()
+            .any(|c| c.name == "getDisplayName" && c.chunk_type == ChunkType::Method),
+        "Expected getDisplayName method, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_dart_doc_comment() {
+    let content = r#"
+/// Parse a configuration file from disk
+Map<String, dynamic> parseConfig(String path) {
+  return {};
+}
+"#;
+    let file = write_temp_file(content, "dart");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let func = chunks.iter().find(|c| c.name == "parseConfig").unwrap();
+    assert!(
+        func.doc.as_ref().map_or(false, |d| d.contains("Parse")),
+        "Expected doc comment, got: {:?}",
+        func.doc
+    );
+}

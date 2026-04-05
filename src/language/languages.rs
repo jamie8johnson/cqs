@@ -947,6 +947,121 @@ pub fn definition_cuda() -> &'static LanguageDef {
 }
 
 // ============================================================================
+// Dart
+// ============================================================================
+
+#[cfg(feature = "lang-dart")]
+static LANG_DART: LanguageDef = LanguageDef {
+    name: "dart",
+    grammar: Some(|| tree_sitter_dart::LANGUAGE.into()),
+    extensions: &["dart"],
+    chunk_query: include_str!("queries/dart.chunks.scm"),
+    signature_style: SignatureStyle::UntilBrace,
+    doc_nodes: &["comment", "documentation_comment"],
+    method_node_kinds: &[],
+    method_containers: &["class_body", "extension_body"],
+    stopwords: &[
+        "if",
+        "else",
+        "for",
+        "while",
+        "do",
+        "return",
+        "class",
+        "extends",
+        "implements",
+        "import",
+        "void",
+        "var",
+        "final",
+        "const",
+        "static",
+        "this",
+        "super",
+        "new",
+        "null",
+        "true",
+        "false",
+        "async",
+        "await",
+        "switch",
+        "case",
+        "break",
+        "continue",
+        "try",
+        "catch",
+        "throw",
+        "with",
+        "abstract",
+        "mixin",
+        "enum",
+        "late",
+        "required",
+        "dynamic",
+        "override",
+    ],
+    common_types: &[
+        "String", "int", "double", "bool", "List", "Map", "Set", "Future", "Stream", "void",
+        "dynamic", "Object", "Iterable", "Function", "Type", "Null", "num", "Never",
+    ],
+    container_body_kinds: &["class_body", "extension_body", "enum_body"],
+    test_markers: &["@test", "test("],
+    test_path_patterns: &["%_test.dart", "%/test/%"],
+    entry_point_names: &["main"],
+    doc_format: "triple_slash",
+    doc_convention:
+        "Use /// for documentation comments. Follow Effective Dart documentation guidelines.",
+    field_style: FieldStyle::NameFirst {
+        separators: ":",
+        strip_prefixes: "final late var static const",
+    },
+    extract_return_nl: extract_return_dart,
+    ..DEFAULTS
+};
+
+#[cfg(feature = "lang-dart")]
+fn extract_return_dart(sig: &str) -> Option<String> {
+    // Dart: ReturnType functionName(params) — type is the first token before the name
+    // For void, int, String, Future<X>, etc.
+    let sig = sig.trim();
+    // Skip if starts with a keyword that's not a return type
+    if sig.starts_with("class ")
+        || sig.starts_with("enum ")
+        || sig.starts_with("mixin ")
+        || sig.starts_with("extension ")
+    {
+        return None;
+    }
+    // Look for the type before the function name
+    // Pattern: [modifiers] Type name(params)
+    let paren = sig.find('(')?;
+    let before_paren = sig[..paren].trim();
+    let parts: Vec<&str> = before_paren.split_whitespace().collect();
+    if parts.len() >= 2 {
+        let type_part = parts[parts.len() - 2];
+        if type_part == "void" {
+            return None;
+        }
+        // Skip modifiers
+        if [
+            "static", "abstract", "external", "factory", "get", "set", "operator",
+        ]
+        .contains(&type_part)
+        {
+            return None;
+        }
+        let ret_words = crate::nl::tokenize_identifier(type_part).join(" ");
+        return Some(format!("Returns {}", ret_words));
+    }
+    None
+}
+
+#[cfg(feature = "lang-dart")]
+pub fn definition_dart() -> &'static LanguageDef {
+    &LANG_DART
+}
+
+// ============================================================================
 // Elixir (elixir)
 // ============================================================================
 
