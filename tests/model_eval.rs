@@ -4,7 +4,7 @@
 //!
 //! Tests template variations, weight sweeps, type-aware embeddings, and reranker
 //! quality using the cqs ONNX pipeline. For authoritative raw R@1 numbers across
-//! models, use `run_hard_eval.py` in ~/training-data (SentenceTransformer, avoids
+//! models, use `run_raw_eval.py` in ~/training-data (SentenceTransformer, avoids
 //! ONNX precision differences).
 //!
 //! CUDA gate: only BERT-style models (absolute position embeddings) are candidates.
