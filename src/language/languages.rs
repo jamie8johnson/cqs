@@ -2017,7 +2017,7 @@ fn post_process_haskell_haskell(
         "newtype" => *chunk_type = ChunkType::Struct,
         "type_synomym" => *chunk_type = ChunkType::TypeAlias,
         "class" => *chunk_type = ChunkType::Trait,
-        "instance" => *chunk_type = ChunkType::Object,
+        "instance" => *chunk_type = ChunkType::Impl,
         _ => {}
     }
     true

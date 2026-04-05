@@ -533,6 +533,8 @@ define_chunk_types! {
     Extension => "extension";
     /// Constructor (initializer method — `__init__`, `new`, `init`, etc.)
     Constructor => "constructor";
+    /// Implementation block (Haskell `instance`, Rust `impl`)
+    Impl => "impl";
     /// Configuration key (JSON, TOML, YAML, INI — data, not code)
     ConfigKey => "configkey";
 }
@@ -578,6 +580,7 @@ impl ChunkType {
                     | ChunkType::TypeAlias
                     | ChunkType::Class
                     | ChunkType::Constant
+                    | ChunkType::Impl
             )
     }
 
