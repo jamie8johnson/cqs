@@ -116,13 +116,17 @@ Swept GIST margin on E5-base with v9-200k data. All other params fixed.
 | 0.08 | 69.1% | 0.797 |
 | 0.10 | 69.1% | 0.793 |
 
-**Winner = v10** (`e5-lora-r16-stack-200k-cg-gist0.03-matryoshka-1ep`). Same recipe as v9-200k, margin 0.05→0.03.
+**Null result.** Margin=0.03 gives +1.8pp raw R@1 (repeatable, deterministic eval) but pipeline R@1 is within training variance (~80-83% for all margins). The GIST paper default (0.05) is confirmed correct. v9-200k remains the production E5-base model.
 
-**Finding:** Margin 0.03 beats 0.05 baseline by +1.8pp. CG filter + tight GIST margin is redundant — both remove the same class of near-miss false negatives. At 0.03, more informative hard negatives survive training. Eval loss is anti-correlated with retrieval quality.
+**Stale baseline discovered:** The 90.5% pipeline R@1 in the expanded eval table was from an older codebase. On the current v1.15.2 index, original v9-200k scores 80.1%. All E5-base models land 80-83%. Expanded eval numbers are relative rankings, not absolute.
+
+**Rust stress MRR collapsed to 0.046** for all E5-base models on current index. Not margin-related — needs separate investigation.
 
 - [x] Margin sweep complete (5/6 runs, 0.15 killed — flat trend)
-- [ ] Band mining experiment (Exp #1) — uses 0.03 winner. Script ready: `~/training-data/run_band_mining.sh`
-- [ ] Pipeline eval (296q) on margin=0.03 model — pending
+- [x] Pipeline eval (296q) on all margins + original v9-200k — null result
+- [x] Stress eval on 0.03 + original v9-200k — both show Rust collapse
+- [ ] Band mining experiment (Exp #1) — still worth testing (changes negative selection, not filter). Use margin=0.05
+- [ ] Investigate Rust stress MRR collapse on v1.15.2 index
 
 ### Done — Embedding Model Options
 - [x] BGE-large-en-v1.5 as configurable alternative
