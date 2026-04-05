@@ -142,6 +142,15 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         // Update dim to match the model — open() defaulted to EMBEDDING_DIM
         // because metadata didn't exist yet before init().
         store.set_dim(mc.dim);
+        // Preserve LLM summaries from the backup — they're keyed by content_hash
+        // (blake3 of content) so they survive reindexing unchanged content.
+        if backup_path.exists() {
+            match store.copy_summaries_from(&backup_path) {
+                Ok(n) if n > 0 => tracing::info!(count = n, "Restored LLM summaries from backup"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "Failed to restore LLM summaries from backup"),
+            }
+        }
         store
     };
     let store = Arc::new(store);
