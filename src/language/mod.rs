@@ -533,6 +533,8 @@ define_chunk_types! {
     Extension => "extension";
     /// Constructor (initializer method — `__init__`, `new`, `init`, etc.)
     Constructor => "constructor";
+    /// Configuration key (JSON, TOML, YAML, INI — data, not code)
+    ConfigKey => "configkey";
 }
 
 impl ChunkType {

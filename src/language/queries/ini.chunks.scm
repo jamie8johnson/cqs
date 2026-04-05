@@ -5,4 +5,4 @@
 
 ;; Settings: key = value
 (setting
-  (setting_name) @name) @property
+  (setting_name) @name) @configkey
