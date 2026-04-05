@@ -37,7 +37,7 @@ All margins (0.01-0.10) land in 80-83% pipeline R@1. Margin=0.03 gives +1.8pp ra
 - Rust stress MRR collapse — needs investigation
 - Re-baseline expanded eval numbers on current index
 - Ladder logic (RLL) grammar
-- Dart, hnswlib-rs, DXF, Openclaw PLC
+- hnswlib-rs, DXF, Openclaw PLC
 - Blackwell RTX 6000 (96GB)
 - L5X files from plant
 - Reranker V2 experiments
