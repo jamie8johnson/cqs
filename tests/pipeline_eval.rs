@@ -12,7 +12,7 @@ mod eval_common;
 
 use cqs::embedder::{Embedder, Embedding, ModelConfig};
 use cqs::hnsw::HnswIndex;
-use cqs::parser::{Language, Parser};
+use cqs::parser::{ChunkType, Language, Parser};
 use cqs::store::{ModelInfo, SearchFilter, Store};
 use cqs::VectorIndex;
 use cqs::{generate_nl_description, generate_nl_with_call_context, CallContext};
@@ -277,8 +277,8 @@ fn compute_metrics(
 }
 
 #[test]
-#[ignore] // Slow - needs embedding. Run with: cargo test pipeline_eval -- --ignored --nocapture
-fn test_pipeline_scoring() {
+#[ignore] // Slow - needs embedding. Run with: cargo test fixture_eval_296q -- --ignored --nocapture
+fn test_fixture_eval_296q() {
     // === Setup ===
     eprintln!("Initializing embedder...");
     let embedder =
@@ -970,6 +970,7 @@ fn test_holdout_eval() {
     for (i, case) in HOLDOUT_EVAL_CASES.iter().enumerate() {
         let filter = SearchFilter {
             languages: Some(vec![case.language]),
+            chunk_types: Some(ChunkType::code_types()),
             name_boost: 0.2,
             query_text: case.query.to_string(),
             enable_demotion: true,
@@ -1038,10 +1039,10 @@ fn test_holdout_eval() {
 /// Indexes cqs source (Rust), Flask (Python), Zod (TypeScript), Express (JavaScript),
 /// Chi (Go) alongside eval fixtures. Tests how ranking degrades with real distractors.
 ///
-/// Run with: cargo test stress_eval -- --ignored --nocapture
+/// Run with: cargo test noise_eval_143q -- --ignored --nocapture
 #[test]
 #[ignore]
-fn test_stress_eval() {
+fn test_noise_eval_143q() {
     use std::path::Path;
     use walkdir::WalkDir;
 
@@ -1260,6 +1261,7 @@ fn test_stress_eval() {
         for (i, case) in HOLDOUT_EVAL_CASES.iter().enumerate() {
             let filter = SearchFilter {
                 languages: Some(vec![case.language]),
+                chunk_types: Some(ChunkType::code_types()),
                 name_boost: boost,
                 query_text: case.query.to_string(),
                 enable_demotion: true,

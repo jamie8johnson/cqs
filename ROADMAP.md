@@ -52,6 +52,9 @@ Enrichment stack contributes ~15pp. RRF hurts at scale (74.7% vs 90.9% cosine-on
 
 ### Infrastructure
 
+- [ ] **Unify capture name lists** — `chunk.rs` capture_types, `mod.rs` DEF_CAPTURES, and `define_chunk_types!` all maintain separate lists of chunk type names. Adding a ChunkType requires updating all three. Replace with single source of truth via `ChunkType::capture_name_to_chunk_type()`.
+- [ ] **RPC/Service chunk type** — protobuf `service`/`rpc`, GraphQL `type Query`/`mutation`, gRPC definitions. Currently Function. Distinct concept: contract definitions, not implementations.
+- [ ] **SQL view/trigger chunk types** — views, triggers, and stored procedures are all Function today. Views are computed data (closer to Property), triggers are event handlers. Matters for impact analysis on schema changes.
 - [ ] **Agent adoption** — fewer commands in prompts (only `scout`/`task`)
 - [ ] **Reranker eval config** — add Config G (Cosine + rerank) to pipeline_eval
 
@@ -68,6 +71,10 @@ Enrichment stack contributes ~15pp. RRF hurts at scale (74.7% vs 90.9% cosine-on
 - KD-LoRA distillation (CodeSage→E5)
 - ColBERT late interaction
 - SPLADE sparse retrieval
+- Solidity modifier chunk type — `modifier onlyOwner()` is access control, not a function
+- Rust impl block chunk type — `impl<T: Hash> Cache<T>` for type dependency analysis
+- Test suite/describe chunk type — Jest `describe()`, RSpec `context`, pytest fixtures
+- CSS @media/@keyframes chunk types — scoping rules and animation definitions
 
 ---
 

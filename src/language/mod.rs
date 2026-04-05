@@ -533,6 +533,8 @@ define_chunk_types! {
     Extension => "extension";
     /// Constructor (initializer method — `__init__`, `new`, `init`, etc.)
     Constructor => "constructor";
+    /// Configuration key (JSON, TOML, YAML, INI — data, not code)
+    ConfigKey => "configkey";
 }
 
 impl ChunkType {
@@ -560,6 +562,28 @@ impl ChunkType {
                 | ChunkType::Macro
                 | ChunkType::Extension
         )
+    }
+
+    /// Returns true if this is a code chunk type (callable + type definitions).
+    /// Excludes Section (markdown), Module (file-level), Object (misc).
+    /// Matches the CLI default search filter.
+    pub fn is_code(self) -> bool {
+        self.is_callable()
+            || matches!(
+                self,
+                ChunkType::Struct
+                    | ChunkType::Enum
+                    | ChunkType::Interface
+                    | ChunkType::Trait
+                    | ChunkType::TypeAlias
+                    | ChunkType::Class
+                    | ChunkType::Constant
+            )
+    }
+
+    /// Returns all code chunk types (for use in SearchFilter::chunk_types).
+    pub fn code_types() -> Vec<ChunkType> {
+        Self::ALL.iter().copied().filter(|t| t.is_code()).collect()
     }
 
     /// SQL IN clause string for all callable chunk types.

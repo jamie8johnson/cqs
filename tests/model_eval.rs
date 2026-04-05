@@ -1,10 +1,11 @@
-//! Model evaluation harness - compare embedding models for code search quality
+//! Model evaluation harness - embedding quality tests (ONNX via cqs Embedder)
 //!
 //! Run with: cargo test model_eval -- --ignored --nocapture
 //!
-//! This evaluates alternative embedding models against the same 50-query eval suite
-//! used for production. Models are compared on raw Recall@5 without Store/FTS/name-boost
-//! to isolate embedding quality.
+//! Tests template variations, weight sweeps, type-aware embeddings, and reranker
+//! quality using the cqs ONNX pipeline. For authoritative raw R@1 numbers across
+//! models, use `run_raw_eval.py` in ~/training-data (SentenceTransformer, avoids
+//! ONNX precision differences).
 //!
 //! CUDA gate: only BERT-style models (absolute position embeddings) are candidates.
 //! Models with rotary embeddings (nomic, Qwen3) cause ort CPU fallback thrashing.

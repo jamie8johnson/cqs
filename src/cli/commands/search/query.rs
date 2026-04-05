@@ -102,26 +102,8 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         None if cli.include_docs => None, // --include-docs: search everything
         None => {
             // Default: search code only (callable types + type definitions).
-            // Excludes Section (markdown), Module (file-level), Property (config).
-            Some(
-                ChunkType::ALL
-                    .iter()
-                    .copied()
-                    .filter(|t| {
-                        t.is_callable()
-                            || matches!(
-                                t,
-                                ChunkType::Struct
-                                    | ChunkType::Enum
-                                    | ChunkType::Interface
-                                    | ChunkType::Trait
-                                    | ChunkType::TypeAlias
-                                    | ChunkType::Class
-                                    | ChunkType::Constant
-                            )
-                    })
-                    .collect(),
-            )
+            // Excludes Section (markdown), Module (file-level).
+            Some(ChunkType::code_types())
         }
     };
 

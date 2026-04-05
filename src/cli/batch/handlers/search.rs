@@ -83,6 +83,7 @@ pub(in crate::cli::batch) fn dispatch_search(
 
     let filter = cqs::SearchFilter {
         languages,
+        chunk_types: Some(cqs::parser::ChunkType::code_types()),
         path_pattern: params.path.clone(),
         name_boost: cqs::store::DEFAULT_NAME_BOOST,
         query_text: params.query.clone(),

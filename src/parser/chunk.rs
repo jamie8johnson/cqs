@@ -44,6 +44,7 @@ impl Parser {
             ("typealias", ChunkType::TypeAlias),
             ("extension", ChunkType::Extension),
             ("constructor", ChunkType::Constructor),
+            ("configkey", ChunkType::ConfigKey),
         ];
 
         // Find which definition capture matched and get its node

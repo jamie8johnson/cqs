@@ -2,54 +2,58 @@
 
 ## Right Now
 
-**Language macro v2 in CI. Band mining running. Margin sweep was null result. (2026-04-05 CDT)**
+**v1.16.0 released. PR #818 in CI (ConfigKey + eval fixes). Band mining running. (2026-04-05 CDT)**
 
-### PR #815 — language macro v2
-Branch: `feat/language-macro-v2`. Clippy fix pushed, CI re-running. Consolidates 52 per-language `.rs` files into `languages.rs` + 106 `.scm` query files. 2320 tests pass, 31 private-function tests dropped.
+### PR #818 — ConfigKey + eval cleanup
+- New `ConfigKey` chunk type for JSON/TOML/YAML/INI (were `Property`, polluted code search)
+- Code-only filter added to batch mode search (was unfiltered — agent bug)
+- Code-only filter added to noise eval
+- Eval renames: `test_fixture_eval_296q`, `test_noise_eval_143q`, `run_raw_eval.py`, `run_model_eval.sh`
+- Dead eval scripts deleted, one source of truth per metric
 
-### Band mining experiment (Exp #1)
-Running on A6000: `~/training-data/run_band_mining.sh`. Mining with original v9-200k model, band [20,50), margin=0.05. ETA ~4-5h from 12:56 CDT. Monitor: `tail -f ~/training-data/exp-band/experiment.log`. Resumable.
+### Band mining (Exp #1)
+Running on A6000. Training at ~6% (was set back by GPU contention from aborted reindex). Mining model: original v9-200k, margin=0.05, band [20,50). Monitor: `tail -f ~/training-data/exp-band/experiment.log`
 
-### Margin sweep (Exp #2) — null result
-All margins (0.01-0.10) land in 80-83% pipeline R@1. Margin=0.03 gives +1.8pp raw R@1 (repeatable) but pipeline is training variance. Default 0.05 confirmed correct. v10 designation withdrawn.
+### Pending after training finishes
+1. Reindex with `cqs index --force --llm-summaries` (killed earlier due to GPU contention)
+2. Rerun real-code eval to measure ConfigKey + LLM summaries impact
+3. Band mining eval results
 
-**Stale baseline discovered:** 90.5% pipeline R@1 in expanded eval table was from older codebase. On v1.15.2 index, original v9-200k scores 80.1%. Needs re-baselining.
+### LLM summaries
+4,813 summaries generated (~$0.87). Cached by content_hash. Need reindex to bake into embeddings (pending GPU).
 
-**Rust stress MRR collapsed to 0.046** for ALL E5-base models on current index. Not margin-related. Needs investigation.
+### Session PRs (#810-818)
+- #810-813: audit fixes + v1.15.2 release
+- #814: session artifacts
+- #815: language macro v2 (52 files → 2 + queries)
+- #816: Dart (53rd language) + docs review + roadmap cleanup
+- #817: v1.16.0 release
+- #818: ConfigKey chunk type + eval fixes (in CI)
 
-### Uncommitted on feat/language-macro-v2
-- `ROADMAP.md` — margin sweep + band mining updates
-- `docs/notes.toml` — margin sweep note updated
-
-### Session PRs (#810-815)
-- #810: 5 misc P3/P4 audit findings — merged
-- #811: DS-NEW-4, last audit finding (103/103) — merged
-- #812: docs pre-release review — merged
-- #813: v1.15.2 release — merged, published crates.io + tagged
-- #814: session artifacts — merged
-- #815: language macro v2 — in CI
+### Training results
+- Margin sweep (Exp #2): null result. Default 0.05 confirmed.
+- Band mining (Exp #1): in progress
 
 ## Parked
 - Cross-project call graph — spec ready
 - Embedding cache — spec ready
 - Wiki system — spec ready (standalone design)
 - SSD fine-tuning: band mining running, iterative self-distillation next
-- Rust stress MRR collapse — needs investigation
-- Re-baseline expanded eval numbers on current index
 - Ladder logic (RLL) grammar
 - hnswlib-rs, DXF, Openclaw PLC
 - Blackwell RTX 6000 (96GB)
 - L5X files from plant
 - Reranker V2 experiments
+- Refactor: replace hardcoded capture lists in chunk.rs/mod.rs with capture_name_to_chunk_type()
 
 ## Open Issues
-- #717 (HNSW mmap), #389 (CAGRA memory), #255 (pre-built refs), #106 (ort RC), #63 (paste — advisory resolved, monitoring)
+- #717 (HNSW mmap), #389 (CAGRA memory), #255 (pre-built refs), #106 (ort RC), #63 (paste)
 
 ## Architecture
-- Version: 1.15.2, Languages: 52 + L5X/L5K, Commands: 54+, Tests: 2320
-- Best model: BGE-large FT (91.6% R@1 fixture, but needs re-eval on current index)
+- Version: 1.16.0, Languages: 53 + L5X/L5K, Commands: 54+, Tests: ~2330
+- Best model: BGE-large FT (91.6% R@1 fixture)
+- Real-code eval: 50% R@1, 73% R@5 (BGE-large, 100q, pre-summaries)
 - CI: rust-cache, ~16m test
-- CommandContext with lazy reranker + embedder + open_readwrite
-- Commands in 7 subdirectories, JSON schema typed Serialize
-- 10th audit: 103/103 fixed, 0 remaining
-- Language macro v2: `languages.rs` + `queries/*.scm` (PR #815)
+- 21 chunk types (added ConfigKey for data formats)
+- Language macro v2: `languages.rs` + `queries/*.scm`
+- 10th audit: 103/103 fixed

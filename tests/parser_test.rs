@@ -1399,8 +1399,8 @@ fn test_ini_section_and_setting_extraction() {
 
     let host = chunks
         .iter()
-        .find(|c| c.name == "host" && c.chunk_type == ChunkType::Property);
-    assert!(host.is_some(), "Should find 'host' setting as Property");
+        .find(|c| c.name == "host" && c.chunk_type == ChunkType::ConfigKey);
+    assert!(host.is_some(), "Should find 'host' setting as ConfigKey");
 }
 
 // ===== Nix tests =====
