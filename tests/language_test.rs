@@ -1864,7 +1864,7 @@ fn parse_html_div_with_id_kept() {
         .find(|c| c.name == "div#app" && c.chunk_type == ChunkType::Property);
     assert!(
         app.is_some(),
-        "Expected div#app as Property, got: {:?}",
+        "Expected div#app as ConfigKey, got: {:?}",
         chunks
             .iter()
             .map(|c| (&c.name, &c.chunk_type))
@@ -2326,10 +2326,10 @@ log_level = info
     let chunks = parser.parse_file(file.path()).unwrap();
     let debug = chunks
         .iter()
-        .find(|c| c.name == "debug" && c.chunk_type == ChunkType::Property);
+        .find(|c| c.name == "debug" && c.chunk_type == ChunkType::ConfigKey);
     assert!(
         debug.is_some(),
-        "Expected 'debug' setting as Property, got: {:?}",
+        "Expected 'debug' setting as ConfigKey, got: {:?}",
         chunks
             .iter()
             .map(|c| (&c.name, &c.chunk_type))
@@ -2484,7 +2484,7 @@ fn parse_json_chunk_type() {
     let chunks = parser.parse_file(file.path()).unwrap();
     let key = chunks.iter().find(|c| c.name == "key");
     assert!(key.is_some(), "Expected 'key' chunk");
-    assert_eq!(key.unwrap().chunk_type, ChunkType::Property);
+    assert_eq!(key.unwrap().chunk_type, ChunkType::ConfigKey);
 }
 
 #[test]
@@ -6484,7 +6484,7 @@ port = 8080
     let chunks = parser.parse_file(file.path()).unwrap();
     let server = chunks.iter().find(|c| c.name == "server");
     assert!(server.is_some(), "Expected 'server' chunk");
-    assert_eq!(server.unwrap().chunk_type, ChunkType::Property);
+    assert_eq!(server.unwrap().chunk_type, ChunkType::ConfigKey);
 }
 
 #[test]
@@ -7174,7 +7174,7 @@ fn parse_yaml_chunk_type() {
     let chunks = parser.parse_file(file.path()).unwrap();
     let server = chunks.iter().find(|c| c.name == "server");
     assert!(server.is_some(), "Expected 'server' chunk");
-    assert_eq!(server.unwrap().chunk_type, ChunkType::Property);
+    assert_eq!(server.unwrap().chunk_type, ChunkType::ConfigKey);
 }
 
 #[test]

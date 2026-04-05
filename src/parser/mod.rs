@@ -773,6 +773,7 @@ pub(crate) fn extract_definition_node<'c, 't>(
         "event",
         "extension",
         "constructor",
+        "configkey",
     ];
     DEF_CAPTURES.iter().find_map(|name| {
         query
