@@ -180,7 +180,7 @@ mentions = [
 sentiment = 0.5
 text = "CLI trace/impact/gather tools combine search + call graph traversal to collapse 5-10 file reads into one semantic operation. Saves tokens via server-side context assembly. Design applies to any AI consumer that values efficiency."
 mentions = [
-    "src/cli/commands/graph/trace.rs",
+    "src/cli/commands/trace.rs",
     "src/impact/mod.rs",
     "src/gather.rs",
 ]
@@ -415,7 +415,7 @@ mentions = [
 sentiment = -0.5
 text = 'score_name_match("foo", "") returns 0.9 because "foo".starts_with("") is always true in Rust. Empty string is a valid prefix of everything. Always guard name-match functions against empty queries.'
 mentions = [
-    "src/store/helpers/types.rs",
+    "src/store/helpers.rs",
     "score_name_match",
 ]
 
@@ -427,6 +427,13 @@ mentions = [
     "to_lowercase",
 ]
 
+[[note]]
+sentiment = -0.5
+text = '''ort 2.0.0-rc.11: raw ndarray can't be passed to ort::inputs\![]. Must wrap with Tensor::from_array(). Easy to miss — compiler error is 'SessionInputValue trait not satisfied' which doesn't mention Tensor.'''
+mentions = [
+    "reranker.rs",
+    "src/embedder/mod.rs",
+]
 
 [[note]]
 sentiment = 0.0
@@ -561,7 +568,7 @@ mentions = [
 sentiment = 0.5
 text = "git log %x00 (NUL byte) as field separator avoids ambiguity with | in commit messages. --no-pager must come before 'log' (git-level flag, not log flag). Pattern used in blame.rs for reliable parse_git_log_output."
 mentions = [
-    "src/cli/commands/io/blame.rs",
+    "src/cli/commands/blame.rs",
     "git",
 ]
 
@@ -718,6 +725,13 @@ mentions = [
     "find_contrastive_neighbors",
 ]
 
+[[note]]
+sentiment = -0.5
+text = "Parallel audit agents cause file contention — agent writes get reverted when another agent touches the same file. Solution: ensure exclusive file ownership per agent. impact/mod.rs was reverted 3 times during P2 fixes."
+mentions = [
+    "audit",
+    "agents",
+]
 
 [[note]]
 sentiment = -0.5
@@ -767,6 +781,13 @@ sentiment = -0.5
 text = "Instruction-based embedding models (GTE-Qwen2, E5-mistral) perform WORSE than simple prefix models for confusable code search. More specific adversarial instructions degrade results further (47% to 18%). The prefix system (query:/passage:) is the right abstraction for code search."
 mentions = ["embedder"]
 
+[[note]]
+sentiment = -0.5
+text = "BGE-large plan review found 10 issues including 5 critical EMBEDDING_DIM threading sites missed in initial plan. prepare_index_data, Embedding::new/try_new, hnsw persist load, insert_batch, cagra (15 refs), EXPECTED_BYTES validation all hardcode 768. Fresh-eyes plan review essential for any EMBEDDING_DIM-touching change."
+mentions = [
+    "hnsw",
+    "embedder",
+]
 
 [[note]]
 sentiment = 0.5
@@ -831,12 +852,27 @@ mentions = [
 ]
 
 [[note]]
+sentiment = -1.0
+text = "92.7% R@1 was Relaxed R@1 (top-1 OR top-2), not strict R@1. Fresh pipeline eval: E5-base strict R@1 = 83.6%, Relaxed = 92.7%. BGE-large strict R@1 = 94.5%. All prior references to 92.7% were metric confusion across sessions."
+mentions = [
+    "RESULTS.md",
+    "research_log.md",
+    "Cargo.toml",
+    "README.md",
+]
+
+[[note]]
 sentiment = 1.0
 text = "v9-200k: 94.5% pipeline R@1, 70.9% raw R@1. Ties BGE-large (335M) at 1/3 size. Best raw R@1 of any model. 200K balanced dataset + call-graph false-negative filtering is the key — training signal quality > model capacity."
 mentions = [
     "training-data",
     "embedder",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "run_v9_200k.sh bug: sed removed --call-graph line but broke the backslash continuation, leaving --export-onnx as a standalone shell command. Training completed but ONNX wasn't exported. Always verify script edits don't break multi-line continuations."
+mentions = ["run_v9_200k.sh"]
 
 [[note]]
 sentiment = -0.5
@@ -953,7 +989,13 @@ mentions = [
     "enrichment",
 ]
 
-
+[[note]]
+sentiment = -0.5
+text = "Audit agents hitting 500 errors after ~100 tool uses. Test Coverage agent failed twice. Workaround: relaunch with tighter scope (5-8 findings max). Split TC into happy-path and adversarial categories for the audit skill."
+mentions = [
+    "audit",
+    "agents",
+]
 
 [[note]]
 sentiment = 0.5
@@ -980,6 +1022,10 @@ mentions = [
     "research",
 ]
 
+[[note]]
+sentiment = -1.0
+text = "Real eval script had schema mismatch — real_eval_expanded.json uses function_lookup/conceptual keys, script expected queries. Prior 187q/100q claims were inflated. Only 50 manual queries actually ran. Fixed 2026-04-03."
+mentions = ["run_real_eval.py"]
 
 [[note]]
 sentiment = -0.5
@@ -992,14 +1038,10 @@ text = "Fine-tuned BGE-large: +5.8pp CSN on CoIR (0.779 vs 0.721 baseline), +4.4
 mentions = ["train_lora.py"]
 
 [[note]]
-sentiment = -0.5
-text = "Parallel implementer agents stall on cargo target-dir lock contention. Full test suite (14 min) serializes all agents. Fix: agents run targeted tests only, orchestrator runs full suite once after."
+sentiment = 1.0
+text = "GIST margin 0.03 beats 0.05 baseline by +1.8pp raw R@1 (72.7% vs 70.9%). CG filter + tight GIST margin is redundant — both remove the same near-miss false negatives. Lower margin lets more informative hard negatives through. Eval loss is anti-correlated with retrieval quality."
 mentions = [
-    "implementer.md",
-    "pipeline",
+    "train_lora.py",
+    "margin",
+    "GIST",
 ]
-
-[[note]]
-sentiment = 0.5
-text = "Wiki system spec updated: standalone repo not colocated. Research wiki content spans projects, pollutes code search, and mixes git history. Use cqs ref add for cross-project searchability."
-mentions = ["wiki-system-design.md"]
