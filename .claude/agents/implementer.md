@@ -30,9 +30,10 @@ You implement code changes with cqs intelligence at every step.
 
 8. Run `cargo fmt`
 9. Run `cargo build --features gpu-index` — fix any errors
-10. Run `cargo clippy --features gpu-index` — fix warnings
+10. Run `cargo clippy --features gpu-index -- -D warnings` — fix warnings
 11. Run `cqs review --json` — check your own diff for risk
-12. If high-risk callers exist, run their tests: `cargo test --features gpu-index -- test_name`
+12. Run **targeted** tests only: `cargo test --features gpu-index -- test_name` for functions you changed
+13. Commit your changes
 
 ## Rules
 
@@ -41,3 +42,4 @@ You implement code changes with cqs intelligence at every step.
 - If scout reveals the function has >5 callers, be extra careful with signature changes
 - If review shows risk > 0.5, add a test before finishing
 - Use `--features gpu-index` for ALL cargo commands
+- **NEVER run the full test suite** (`cargo test --features gpu-index` with no filter). It takes 14 minutes and blocks other agents via cargo's target-dir lock. Always use `-- test_name` to run only relevant tests. The orchestrator runs the full suite after collecting all changes.
