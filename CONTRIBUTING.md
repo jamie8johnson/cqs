@@ -447,9 +447,14 @@ All fields except `name`, `grammar`, `extensions`, `chunk_query` have defaults v
 | `extract_return_nl` | `\|_\| None` | Return type extraction for NL descriptions |
 | `injections` | `&[]` | Multi-grammar rules (e.g., HTML→JS/CSS) |
 
+### Required updates (the tests enforce these)
+
+- Add `#[cfg(feature = "lang-newlang")] { expected += 1; }` to `test_registry_all_languages` in `src/language/mod.rs`
+- Add `"newlang" => Some("newlang")` to `normalize_lang()` in `src/parser/markdown/code_blocks.rs`
+
 ### Ecosystem updates (after the language works)
 
-- Update language count in README.md (Supported Languages section + TL;DR)
+- Update language count in README.md (Supported Languages section + TL;DR), lib.rs, Cargo.toml
 - Update `CHANGELOG.md`
 
 ## Questions?
