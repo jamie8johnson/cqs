@@ -71,6 +71,10 @@ Enrichment stack contributes ~15pp. RRF hurts at scale (74.7% vs 90.9% cosine-on
 - KD-LoRA distillation (CodeSage→E5)
 - ColBERT late interaction
 - SPLADE sparse retrieval
+- Solidity modifier chunk type — `modifier onlyOwner()` is access control, not a function
+- Rust impl block chunk type — `impl<T: Hash> Cache<T>` for type dependency analysis
+- Test suite/describe chunk type — Jest `describe()`, RSpec `context`, pytest fixtures
+- CSS @media/@keyframes chunk types — scoping rules and animation definitions
 
 ---
 
