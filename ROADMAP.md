@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v1.15.0
+## Current: v1.15.2
 
-v1.15.0: 52 languages + L5X/L5K PLC exports, `cqs telemetry`, CommandContext refactor, commands subdirectories, 6 custom agents, BGE-large fine-tuned (91.6% R@1). ~2196 tests.
+v1.15.2: 10th audit fully cleared (103/103 findings fixed). Typed JSON output structs. 52 languages + L5X/L5K PLC exports. ~2250 tests.
 
 ### Expanded Pipeline Eval (296 queries, 7 languages, 2026-03-31)
 

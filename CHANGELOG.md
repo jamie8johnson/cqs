@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.2] - 2026-04-04
+
+10th code audit: 103 findings, 103 fixed. Zero P1/P2/P3/P4 remaining. Typed JSON output structs across all commands. 35 PRs (#776-812).
+
+### Added
+- **Typed JSON output structs** — `#[derive(Serialize)]` structs replace all manual `json!({})` builders. Consistent field naming (`line_start`/`line_end`, `name`, `score`, `file`) across all `--json` output (#776-783, #788, #797).
+- **JSON naming conventions** documented in CONTRIBUTING.md (EXT-42, #807).
+- **`CommandContext::open_readwrite()`** — writable store access for batch mode (AD-17, #798).
+- **53 new tests** — batch integration (HP-4, #802), SearchResult/CommandContext unit tests (HP-7/HP-8, #803), adversarial parser tests (TC-8/9/10, #796), edge case coverage (TC-7/11-16, HP-1-9, #793/#807/#809).
+
+### Fixed
+- **10 P1 findings** — FTS injection guard compiled out in release (SEC-10), unicode panic in telemetry (RB-7), BFS node cap checked before target (AC-7), RRF K env var read per-search (PF-2), wrong doc_format match arm (EXT-39), field name normalization across 3 output types (AD-11/13/15), token_pack zero-budget guarantee (TC-6), is_hnsw_dirty wrong default (EH-7) (#785-788, #793).
+- **13 P2 findings** — 3 divergent search JSON constructors unified (CQ-NEW-3/5/7, #797), batch context schema mismatch (AD-14, #798), onboard token packing deduplicated (CQ-NEW-4, #801), BFS unbounded memory (AC-10, #794), deferred vecs unbounded during indexing (RM-9, #800), HNSW lock released too early (DS-NEW-1, #799), impact_to_json double-pass serialize (CQ-NEW-6/PF-3, #794).
+- **33 P3 findings** — N+1 DB queries in map_hunks_to_functions (PF-1, #805), blake3 recomputation (PF-4, #805), hardcoded limits now env-var configurable (SHL-17/18/19, #795), open_readonly actually readonly (RM-7, #806), notes double store connection (RM-8, #806), stale 768-dim doc comments (SHL-21, #810), dead SuggestOutput code (AD-18, #810), model_config panic before resolve (RB-8, #810), notes cache RwLock→Mutex race fix (DS-NEW-4, #811), 6 silent error fallbacks now warn (EH-8/9/10/11/12, #804), telemetry unbounded growth (SHL-20, #786), L5K regex backtracking (SEC-8, #796), path normalization in diff/explain output (PB-8/9, #789), window overlap edge case (AC-8, #806), env var test race (DS-NEW-3, #810).
+- **47 P4 findings** — 9 tracing spans (OB-1-9, #790), 10 stale doc paths/counts (DOC-11-20, #791), telemetry memory reduction (RM-10/11, #808), all adversarial and happy-path test gaps (#793/#796/#807/#809).
+
+### Changed
+- **Docs review** — README R@1 94.5% → 90.9% (current 296-query eval). CONTRIBUTING.md architecture listing updated with 4 missing source files (#812).
+
 ## [1.15.1] - 2026-04-04
 
 ### Changed
