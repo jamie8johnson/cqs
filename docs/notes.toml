@@ -1024,10 +1024,28 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -1.0
-text = "Rust stress MRR collapsed to 0.046 for ALL E5-base models on v1.15.2 index. Not model-specific — affects original v9-200k and all margin sweep variants equally. Likely enrichment or chunking change from the 35 PRs of refactoring. Needs investigation."
+sentiment = 0.0
+text = "Rust stress MRR ~0.04 is a known eval artifact (documented since 2026-03-27). BGE-large 0.037, E5-base 0.037-0.046. Stress eval indexes cqs src/ (~8500 Rust chunks) as noise but no other language repos. Fixture queries drown in real code. Not a regression — same since stress eval was created."
 mentions = [
     "stress_eval",
     "enrichment",
     "rust",
+]
+
+[[note]]
+sentiment = 0.5
+text = "ConfigKey chunk type: JSON/TOML/YAML/INI keys were Property (callable), polluting code search. New ConfigKey type is not callable, not in is_code(). Required updates in 3 places: define_chunk_types!, chunk.rs capture_types, mod.rs DEF_CAPTURES. Adding a new ChunkType requires all three."
+mentions = [
+    "src/language/mod.rs",
+    "src/parser/chunk.rs",
+    "src/parser/mod.rs",
+    "ChunkType",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Batch mode search was missing code-only chunk type filter. CLI search filters to code types by default (ChunkType::code_types()), but batch mode used Default::default() with no chunk_types. Agents using cqs batch got markdown sections, JSON keys, and TOML entries mixed with code results."
+mentions = [
+    "src/cli/batch/handlers/search.rs",
+    "SearchFilter",
 ]

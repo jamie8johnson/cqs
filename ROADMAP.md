@@ -52,6 +52,7 @@ Enrichment stack contributes ~15pp. RRF hurts at scale (74.7% vs 90.9% cosine-on
 
 ### Infrastructure
 
+- [ ] **Unify capture name lists** — `chunk.rs` capture_types, `mod.rs` DEF_CAPTURES, and `define_chunk_types!` all maintain separate lists of chunk type names. Adding a ChunkType requires updating all three. Replace with single source of truth via `ChunkType::capture_name_to_chunk_type()`.
 - [ ] **Agent adoption** — fewer commands in prompts (only `scout`/`task`)
 - [ ] **Reranker eval config** — add Config G (Cosine + rerank) to pipeline_eval
 
