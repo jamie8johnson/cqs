@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-04-05
+
+### Added
+- **Dart language support** — 53rd language. Functions, classes, enums, mixins, extensions, methods, getters/setters, doc comments (#816).
+
+### Changed
+- **Language macro v2** — consolidated 52 per-language `.rs` files into `src/language/languages.rs` with `..DEFAULTS` spread + 106 `.scm` query files in `src/language/queries/`. Adding a language is now: write `.scm` queries, add one `LanguageDef` static, register in `define_languages!` (#815).
+- **331 language tests** moved to `tests/language_test.rs` (integration tests). 31 private-function tests dropped.
+- **CONTRIBUTING.md** — "Adding a New Language" guide rewritten for the consolidated system. Architecture overview updated.
+- **ROADMAP.md** — cleaned from 528 to 111 lines. Done items collapsed into summary table.
+
 ## [1.15.2] - 2026-04-04
 
 10th code audit: 103 findings, 103 fixed. Zero P1/P2/P3/P4 remaining. Typed JSON output structs across all commands. 35 PRs (#776-812).
