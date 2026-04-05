@@ -29,7 +29,7 @@ pub(crate) mod helpers;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex};
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{ConnectOptions, SqlitePool};
@@ -196,7 +196,7 @@ pub struct Store {
     pub(crate) dim: usize,
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
-    notes_summaries_cache: RwLock<Option<Arc<Vec<NoteSummary>>>>,
+    notes_summaries_cache: Mutex<Option<Arc<Vec<NoteSummary>>>>,
     /// Cached call graph — populated on first access, valid for Store lifetime.
     /// **No invalidation mechanism by design.** `OnceLock` is intentionally write-once:
     /// once populated the cache is never cleared. This is safe because `Store` is opened
@@ -419,7 +419,7 @@ impl Store {
             rt,
             dim,
             closed: AtomicBool::new(false),
-            notes_summaries_cache: RwLock::new(None),
+            notes_summaries_cache: Mutex::new(None),
             call_graph_cache: std::sync::OnceLock::new(),
             test_chunks_cache: std::sync::OnceLock::new(),
         };

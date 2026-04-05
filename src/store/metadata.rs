@@ -280,24 +280,16 @@ impl Store {
     /// during search, so shared ownership is safe and avoids O(notes * string_len)
     /// cloning on every search call.
     pub fn cached_notes_summaries(&self) -> Result<Arc<Vec<NoteSummary>>, StoreError> {
-        {
-            let guard = self.notes_summaries_cache.read().unwrap_or_else(|p| {
-                tracing::warn!("notes cache read lock poisoned, recovering");
-                p.into_inner()
-            });
-            if let Some(ref ns) = *guard {
-                return Ok(Arc::clone(ns));
-            }
+        let mut guard = self.notes_summaries_cache.lock().unwrap_or_else(|p| {
+            tracing::warn!("notes cache lock poisoned, recovering");
+            p.into_inner()
+        });
+        if let Some(ref ns) = *guard {
+            return Ok(Arc::clone(ns));
         }
-        // Cache miss — load from DB and populate
+        // Cache miss — load from DB and populate (lock held, no race)
         let ns = Arc::new(self.list_notes_summaries()?);
-        {
-            let mut guard = self.notes_summaries_cache.write().unwrap_or_else(|p| {
-                tracing::warn!("notes cache write lock poisoned, recovering");
-                p.into_inner()
-            });
-            *guard = Some(Arc::clone(&ns));
-        }
+        *guard = Some(Arc::clone(&ns));
         Ok(ns)
     }
 
@@ -305,10 +297,10 @@ impl Store {
     /// Must be called after any operation that modifies notes (upsert, replace, delete)
     /// so subsequent reads see fresh data.
     pub(crate) fn invalidate_notes_cache(&self) {
-        match self.notes_summaries_cache.write() {
+        match self.notes_summaries_cache.lock() {
             Ok(mut guard) => *guard = None,
             Err(p) => {
-                tracing::warn!("notes cache write lock poisoned during invalidation, recovering");
+                tracing::warn!("notes cache lock poisoned during invalidation, recovering");
                 *p.into_inner() = None;
             }
         }
