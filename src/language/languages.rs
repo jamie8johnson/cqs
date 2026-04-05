@@ -7132,7 +7132,6 @@ fn post_process_vue_vue(
 }
 
 #[cfg(feature = "lang-vue")]
-
 static LANG_VUE: LanguageDef = LanguageDef {
     name: "vue",
     grammar: Some(|| tree_sitter_vue::LANGUAGE.into()),
