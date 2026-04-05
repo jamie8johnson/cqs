@@ -20,4 +20,4 @@
 
 ;; Instance declaration: instance Foo Bar where ...
 (instance
-  name: (name) @name) @struct
+  name: (name) @name) @impl

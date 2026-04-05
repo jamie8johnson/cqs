@@ -55,6 +55,7 @@ Enrichment stack contributes ~15pp. RRF hurts at scale (74.7% vs 90.9% cosine-on
 - [ ] **Unify capture name lists** — `chunk.rs` capture_types, `mod.rs` DEF_CAPTURES, and `define_chunk_types!` all maintain separate lists of chunk type names. Adding a ChunkType requires updating all three. Replace with single source of truth via `ChunkType::capture_name_to_chunk_type()`.
 - [ ] **RPC/Service chunk type** — protobuf `service`/`rpc`, GraphQL `type Query`/`mutation`, gRPC definitions. Currently Function. Distinct concept: contract definitions, not implementations.
 - [ ] **SQL view/trigger chunk types** — views, triggers, and stored procedures are all Function today. Views are computed data (closer to Property), triggers are event handlers. Matters for impact analysis on schema changes.
+- [ ] **Audit weak chunk type tests** — post_process overrides can mask wrong query captures. Haskell instance test was asserting Object while query said Struct — passed because post_process silently fixed it. 34 languages have post_process; scan for tests where the assertion matches the post_process output, not the query capture.
 - [ ] **Agent adoption** — fewer commands in prompts (only `scout`/`task`)
 - [ ] **Reranker eval config** — add Config G (Cosine + rerank) to pipeline_eval
 

@@ -45,6 +45,7 @@ impl Parser {
             ("extension", ChunkType::Extension),
             ("constructor", ChunkType::Constructor),
             ("configkey", ChunkType::ConfigKey),
+            ("impl", ChunkType::Impl),
         ];
 
         // Find which definition capture matched and get its node

@@ -1473,8 +1473,15 @@ instance Show Color where
     let chunks = parser.parse_file(file.path()).unwrap();
     let inst = chunks
         .iter()
-        .find(|c| c.name == "Show" && c.chunk_type == ChunkType::Object);
-    assert!(inst.is_some(), "Should find 'Show' instance as Object");
+        .find(|c| c.name == "Show" && c.chunk_type == ChunkType::Impl);
+    assert!(
+        inst.is_some(),
+        "Should find 'Show' instance as Impl, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
