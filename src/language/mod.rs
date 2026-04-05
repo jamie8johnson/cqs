@@ -562,6 +562,28 @@ impl ChunkType {
         )
     }
 
+    /// Returns true if this is a code chunk type (callable + type definitions).
+    /// Excludes Section (markdown), Module (file-level), Object (misc).
+    /// Matches the CLI default search filter.
+    pub fn is_code(self) -> bool {
+        self.is_callable()
+            || matches!(
+                self,
+                ChunkType::Struct
+                    | ChunkType::Enum
+                    | ChunkType::Interface
+                    | ChunkType::Trait
+                    | ChunkType::TypeAlias
+                    | ChunkType::Class
+                    | ChunkType::Constant
+            )
+    }
+
+    /// Returns all code chunk types (for use in SearchFilter::chunk_types).
+    pub fn code_types() -> Vec<ChunkType> {
+        Self::ALL.iter().copied().filter(|t| t.is_code()).collect()
+    }
+
     /// SQL IN clause string for all callable chunk types.
     /// Derived from `ALL` filtered by `is_callable()` — stays in sync automatically.
     pub fn callable_sql_list() -> String {

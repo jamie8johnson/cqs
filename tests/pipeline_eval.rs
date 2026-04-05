@@ -12,7 +12,7 @@ mod eval_common;
 
 use cqs::embedder::{Embedder, Embedding, ModelConfig};
 use cqs::hnsw::HnswIndex;
-use cqs::parser::{Language, Parser};
+use cqs::parser::{ChunkType, Language, Parser};
 use cqs::store::{ModelInfo, SearchFilter, Store};
 use cqs::VectorIndex;
 use cqs::{generate_nl_description, generate_nl_with_call_context, CallContext};
@@ -970,6 +970,7 @@ fn test_holdout_eval() {
     for (i, case) in HOLDOUT_EVAL_CASES.iter().enumerate() {
         let filter = SearchFilter {
             languages: Some(vec![case.language]),
+            chunk_types: Some(ChunkType::code_types()),
             name_boost: 0.2,
             query_text: case.query.to_string(),
             enable_demotion: true,
@@ -1260,6 +1261,7 @@ fn test_stress_eval() {
         for (i, case) in HOLDOUT_EVAL_CASES.iter().enumerate() {
             let filter = SearchFilter {
                 languages: Some(vec![case.language]),
+                chunk_types: Some(ChunkType::code_types()),
                 name_boost: boost,
                 query_text: case.query.to_string(),
                 enable_demotion: true,
