@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 90.9% Recall@1 (BGE-large, 296 queries). 52 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 90.9% Recall@1 (BGE-large, 296 queries). 53 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -505,7 +505,7 @@ Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after
 ```
 
 <details>
-<summary><h2>Supported Languages (52)</h2></summary>
+<summary><h2>Supported Languages (53)</h2></summary>
 
 - ASP.NET Web Forms (ASPX/ASCX/ASMX — C#/VB.NET code-behind in server script blocks and `<% %>` expressions, delegates to C#/VB.NET grammars)
 - Bash (functions, command calls)
@@ -514,6 +514,7 @@ Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after
 - C# (classes, structs, records, interfaces, enums, properties, delegates, events)
 - CSS (rule sets, keyframes, media queries)
 - CUDA (reuses C++ grammar — kernels, classes, structs, device/host functions)
+- Dart (functions, classes, enums, mixins, extensions, methods, getters/setters)
 - Elixir (functions, modules, protocols, implementations, macros, pipe calls)
 - Erlang (functions, modules, records, type aliases, behaviours, callbacks)
 - F# (functions, records, discriminated unions, classes, interfaces, modules, members)
@@ -583,7 +584,7 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 **Parse → Describe → Embed → Enrich → Index → Search → Reason**
 
-1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 52 languages (plus L5X/L5K PLC exports). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
+1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 53 languages (plus L5X/L5K PLC exports). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination (SQ-11). Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
 3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 90.9% Recall@1 (BGE-large, 296 queries across 7 languages) — outperforms code-specific models because NL descriptions play to general-purpose model strengths. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.

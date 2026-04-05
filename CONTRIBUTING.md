@@ -100,7 +100,7 @@ Rules:
 
 ### Feature Ideas
 
-- Additional language support (see `src/language/` for current list — 52 languages + L5X/L5K PLC exports)
+- Additional language support (see `src/language/languages.rs` for current list — 53 languages + L5X/L5K PLC exports)
 - Non-CUDA GPU support (ROCm for AMD, Metal for Apple Silicon)
 - VS Code extension
 - Performance improvements
@@ -152,9 +152,11 @@ src/
     telemetry.rs - Optional command usage logging (CQS_TELEMETRY=1)
     store.rs    - Store opening utilities, CommandContext, vector index building
     watch.rs    - File watcher for incremental reindexing
-  language/     - Tree-sitter language support
-    mod.rs      - Language enum, LanguageRegistry, LanguageDef, ChunkType
-    rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, cpp.rs, java.rs, csharp.rs, fsharp.rs, powershell.rs, scala.rs, ruby.rs, bash.rs, hcl.rs, kotlin.rs, swift.rs, objc.rs, sql.rs, protobuf.rs, graphql.rs, php.rs, lua.rs, zig.rs, r.rs, yaml.rs, toml_lang.rs, elixir.rs, erlang.rs, gleam.rs, haskell.rs, julia.rs, ocaml.rs, css.rs, perl.rs, html.rs, json.rs, xml.rs, ini.rs, nix.rs, make.rs, latex.rs, solidity.rs, cuda.rs, glsl.rs, svelte.rs, razor.rs, vbnet.rs, vue.rs, aspx.rs, markdown.rs, structured_text.rs
+  language/     - Tree-sitter language support (53 languages + L5X/L5K)
+    mod.rs      - Language enum (define_languages! macro), LanguageRegistry, LanguageDef, ChunkType
+    languages.rs - All 53 language definitions (LanguageDef statics with ..DEFAULTS) + custom functions
+    queries/    - Tree-sitter queries (.scm files, loaded via include_str!())
+      <lang>.chunks.scm, <lang>.calls.scm, <lang>.types.scm
   test_helpers.rs - Shared test fixtures module
   store/        - SQLite storage layer (Schema v16, WAL mode)
     mod.rs      - Store struct, open/init, FTS5
@@ -332,183 +334,122 @@ Files like HTML contain embedded languages (`<script>` → JS, `<style>` → CSS
 
 6. The two-phase flow in `parse_file` and `parse_file_relationships` automatically handles injection when `injections` is non-empty. No changes needed outside the language definition.
 
-**Key files:** `src/language/mod.rs` (InjectionRule struct), `src/parser/injection.rs` (parsing logic), `src/language/html.rs` (reference implementation).
+**Key files:** `src/language/mod.rs` (InjectionRule struct), `src/parser/injection.rs` (parsing logic), `src/language/languages.rs` (HTML definition with injection rules as reference).
 
 ## Adding a New Language
 
-Adding a language is a data-entry task, not a coding task. The `LanguageDef` system handles everything — you fill in fields.
+Adding a language is a data-entry task. Write query files, add a `LanguageDef` static, register it.
 
 ### Prerequisites
 
 - A tree-sitter grammar published on crates.io (search `tree-sitter-<lang>`)
 - A sample source file to test with
-- `tree-sitter parse sample.ext` to see node types (install: `cargo install tree-sitter-cli`)
+- The grammar's `node-types.json` (in `~/.cargo/registry/src/*/tree-sitter-<lang>-*/src/node-types.json` after `cargo check`)
 
 ### Steps
 
 **1. Add the dependency to `Cargo.toml`:**
 
 ```toml
-tree-sitter-dart = { version = "0.X", optional = true }
+tree-sitter-newlang = { version = "0.X", optional = true }
 ```
 
 And the feature flag:
 ```toml
-lang-dart = ["dep:tree-sitter-dart"]
+lang-newlang = ["dep:tree-sitter-newlang"]
 ```
 
-Add `"lang-dart"` to the `default` and `lang-all` feature lists.
+Add `"lang-newlang"` to the `default` and `lang-all` feature lists.
 
-**2. Create `src/language/dart.rs`:**
+**2. Create query files:**
 
-Copy `src/language/bash.rs` as your starting template — it's the simplest language file (~65 lines). Then fill in:
-
-```rust
-//! Dart language definition
-
-use super::{FieldStyle, LanguageDef, SignatureStyle};
-
-// === STEP A: Write the chunk query ===
-// Run `tree-sitter parse sample.dart` and look for function-like nodes.
-// Common patterns: function_declaration, method_declaration, class_declaration
-const CHUNK_QUERY: &str = r#"
+Create `src/language/queries/newlang.chunks.scm` with tree-sitter patterns:
+```scheme
 (function_declaration
-  name: (identifier) @name) @function
-
-(method_declaration
   name: (identifier) @name) @function
 
 (class_declaration
   name: (identifier) @name) @class
-"#;
+```
 
-// === STEP B: Write the call query ===
-// Look for call-like nodes in the AST dump.
-const CALL_QUERY: &str = r#"
-(call_expression
-  function: (identifier) @callee)
+Optionally create `newlang.calls.scm` (call extraction) and `newlang.types.scm` (type edges).
 
-(call_expression
-  function: (selector) @callee)
-"#;
+Discover node types from the grammar's `node-types.json` or `tree-sitter parse sample.ext`.
 
-// === STEP C: Fill in the rest (data entry) ===
-const DOC_NODES: &[&str] = &["comment", "documentation_comment"];
+**3. Add definition to `src/language/languages.rs`:**
 
-const STOPWORDS: &[&str] = &[
-    "if", "else", "for", "while", "do", "return", "class", "extends",
-    "implements", "import", "void", "var", "final", "const", "static",
-    "this", "super", "new", "null", "true", "false", "async", "await",
-];
+Add a `LanguageDef` static using `..DEFAULTS` for all optional fields. Only specify fields that differ from defaults:
 
-const COMMON_TYPES: &[&str] = &[
-    "String", "int", "double", "bool", "List", "Map", "Set", "Future",
-    "Stream", "void", "dynamic", "Object", "Iterable", "Function",
-];
-
-static DEFINITION: LanguageDef = LanguageDef {
-    name: "dart",
-    grammar: Some(|| tree_sitter_dart::LANGUAGE.into()),
-    extensions: &["dart"],
-    chunk_query: CHUNK_QUERY,
-    call_query: Some(CALL_QUERY),
-    signature_style: SignatureStyle::UntilBrace,
-    doc_nodes: DOC_NODES,
-    method_node_kinds: &["method_declaration"],
-    method_containers: &["class_body"],
-    stopwords: STOPWORDS,
-    extract_return_nl: |sig| {
-        // Dart: ReturnType functionName(params) { ... }
-        // Type is before the function name
-        None // Start simple, add later
-    },
-    test_file_suggestion: None,
-    test_name_suggestion: None,
-    type_query: None,       // Add later for type edges
-    common_types: COMMON_TYPES,
-    container_body_kinds: &["class_body"],
-    extract_container_name: None,
-    extract_qualified_method: None,
-    post_process_chunk: None,
-    test_markers: &["@test", "test("],
-    test_path_patterns: &["%_test.dart", "%/test/%"],
-    structural_matchers: None,
+```rust
+#[cfg(feature = "lang-newlang")]
+static LANG_NEWLANG: LanguageDef = LanguageDef {
+    name: "newlang",
+    grammar: Some(|| tree_sitter_newlang::LANGUAGE.into()),
+    extensions: &["nl"],
+    chunk_query: include_str!("queries/newlang.chunks.scm"),
+    call_query: Some(include_str!("queries/newlang.calls.scm")),
+    doc_nodes: &["comment"],
+    stopwords: &["if", "else", "for", "while", "return"],
     entry_point_names: &["main"],
-    trait_method_names: &[],
-    injections: &[],
-    doc_format: "default",
-    doc_convention: "Use /// for documentation comments. Follow Effective Dart documentation guidelines.",
-    field_style: FieldStyle::NameFirst {
-        separators: ":",
-        strip_prefixes: "final late var static const",
-    },
+    ..DEFAULTS
 };
 
-pub fn definition() -> &'static LanguageDef {
-    &DEFINITION
+#[cfg(feature = "lang-newlang")]
+pub fn definition_newlang() -> &'static LanguageDef {
+    &LANG_NEWLANG
 }
 ```
 
-**3. Register in `src/language/mod.rs`:**
+See Bash (simplest) or Rust/HTML (complex, with custom functions and injections) in `languages.rs` for reference.
+
+**4. Register in `src/language/mod.rs`:**
 
 Add one line to `define_languages!`:
 ```rust
-Dart => "dart", feature = "lang-dart", module = dart;
+NewLang => "newlang", feature = "lang-newlang", def = languages::definition_newlang;
 ```
 
-**4. Write tests:**
+**5. Write tests in `tests/language_test.rs`:**
 
-Add a `#[cfg(test)] mod tests` section in your file. Minimum 3 tests:
-- Parse a function → verify name and ChunkType::Function
-- Parse a class → verify name and ChunkType::Class
-- Parse function calls → verify callee names extracted
+Minimum 3 tests: parse a function, parse a class/struct, parse doc comments.
 
-See `src/language/bash.rs` tests for the pattern.
+```rust
+#[test]
+fn test_newlang_parse_function() {
+    let content = r#"func hello() { print("hi") }"#;
+    let file = write_temp_file(content, "nl");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    assert!(chunks.iter().any(|c| c.name == "hello" && c.chunk_type == ChunkType::Function));
+}
+```
 
-**5. Build and test:**
+**6. Build and test:**
 
 ```bash
-cargo test --features gpu-index,lang-dart -- dart
+cargo test --features gpu-index -- newlang
 ```
-
-### How to discover node types
-
-Run `tree-sitter parse` on a sample file:
-
-```bash
-tree-sitter parse sample.dart 2>/dev/null | head -50
-```
-
-Output shows the AST. Look for:
-- **Function nodes**: usually `function_declaration`, `method_declaration`, `function_expression`
-- **Class nodes**: `class_declaration`, `interface_declaration`, `enum_declaration`
-- **Call nodes**: `call_expression`, `method_invocation`
-- **Name fields**: `name:` or `(identifier)`
-
-The chunk query captures `@name` (the function/class name) and `@function` / `@class` / `@property` etc. (the full node for content extraction).
 
 ### Fields Reference
 
-Most fields have sensible defaults (`None`, `&[]`, empty string). The important ones:
+All fields except `name`, `grammar`, `extensions`, `chunk_query` have defaults via `..DEFAULTS`. Important optional fields:
 
-| Field | Required? | How to fill |
-|-------|-----------|-------------|
-| `grammar` | Yes | `Some(\|\| tree_sitter_<lang>::LANGUAGE.into())` |
-| `extensions` | Yes | File extensions without dot |
-| `chunk_query` | Yes | Tree-sitter S-expression query |
-| `call_query` | Recommended | Tree-sitter query for function calls |
-| `signature_style` | Yes | `UntilBrace` for C-like, `UntilNewline` for Python-like |
-| `doc_nodes` | Recommended | Node kinds that contain doc comments |
-| `stopwords` | Recommended | Language keywords to filter from NL |
-| `common_types` | Recommended | Stdlib types to exclude from type edges |
-| `field_style` | Recommended | `NameFirst`/`TypeFirst`/`None` for struct field extraction |
-| Everything else | Optional | `None`, `&[]`, or `""` — add later as needed |
+| Field | Default | When to set |
+|-------|---------|-------------|
+| `call_query` | `None` | If the grammar has call/invocation nodes |
+| `type_query` | `None` | For type dependency edges |
+| `signature_style` | `UntilBrace` | `UntilColon` for Python-like, `FirstLine` for Ruby-like |
+| `doc_nodes` | `&[]` | Node kinds containing doc comments |
+| `stopwords` | `&[]` | Language keywords to filter from NL descriptions |
+| `common_types` | `&[]` | Stdlib types to exclude from type edges |
+| `field_style` | `None` | `NameFirst` or `TypeFirst` for struct field extraction |
+| `post_process_chunk` | `None` | Custom logic to rename/retype/filter chunks |
+| `extract_return_nl` | `\|_\| None` | Return type extraction for NL descriptions |
+| `injections` | `&[]` | Multi-grammar rules (e.g., HTML→JS/CSS) |
 
 ### Ecosystem updates (after the language works)
 
-- Add `"lang-dart"` to the default features list in `Cargo.toml`
-- Add to `CLAUDE.md` agent instructions (key commands block in agent prompts)
-- Add to `README.md` language count
+- Update language count in README.md (Supported Languages section + TL;DR)
 - Update `CHANGELOG.md`
 
 ## Questions?
