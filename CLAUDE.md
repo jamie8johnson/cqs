@@ -1,4 +1,4 @@
-Remain calm. There is no rush.
+Remain calm. We have plenty of time and context. The user works continuously — there is always a next task.
 
 # CLAUDE.md
 

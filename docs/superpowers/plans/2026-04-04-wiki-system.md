@@ -2,11 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a standalone, LLM-maintained research wiki with 4 skills (`/wiki-bootstrap`, `/wiki-update`, `/wiki-lint`, `/wiki-query`) and a git-tracked directory structure.
+**Goal:** Build a standalone, LLM-maintained research wiki with 4 skills (`/wiki-bootstrap`, `/wiki-update`, `/wiki-lint`, `/wiki-query`), a git-tracked directory structure, and bootstrap it from existing research artifacts.
 
-**Architecture:** The wiki is a standalone git repo (`~/wiki/`) registered as a cqs reference project. Four Claude Code skills handle all writes. A pre-commit hook enforces the `wiki:` commit prefix convention. No Rust code — pure skills and markdown.
+**Architecture:** The wiki is a standalone git repo (`~/wiki/`) registered as a cqs reference project. Four Claude Code skills handle all writes. A commit-msg hook enforces the `wiki:` commit prefix convention. No Rust code — pure skills and markdown.
 
 **Tech Stack:** Claude Code skills (SKILL.md), git, cqs ref, markdown, YAML frontmatter
+
+**Spec:** `docs/superpowers/specs/2026-04-04-wiki-system-design.md`
 
 ---
 
@@ -41,13 +43,7 @@
 - Create: `~/wiki/.cqsignore`
 - Create: `~/wiki/.gitignore`
 - Create: `~/wiki/.git/hooks/commit-msg`
-- Create: `~/wiki/experiments/.gitkeep`
-- Create: `~/wiki/techniques/.gitkeep`
-- Create: `~/wiki/models/.gitkeep`
-- Create: `~/wiki/datasets/.gitkeep`
-- Create: `~/wiki/findings/.gitkeep`
-- Create: `~/wiki/papers/.gitkeep`
-- Create: `~/wiki/evals/.gitkeep`
+- Create: `~/wiki/{experiments,techniques,models,datasets,findings,papers,evals}/.gitkeep`
 
 - [ ] **Step 1: Create the wiki directory and init git**
 
@@ -81,181 +77,13 @@ touch experiments/.gitkeep techniques/.gitkeep models/.gitkeep datasets/.gitkeep
 
 - [ ] **Step 5: Create `schema.md`**
 
-Write `~/wiki/schema.md`:
-```markdown
-# Wiki Schema
+Write `~/wiki/schema.md` with all page templates and conventions. Use 4-space indented blocks (not fenced code blocks) for the templates inside the file, since the file itself is markdown.
 
-Conventions for maintaining this wiki. Read this before creating or updating pages.
+Templates to include: Experiment, Technique, Finding, Paper, Model, Dataset, Eval. Each template has the fields from the design spec (Status, Date, Confidence, etc.).
 
-## Page Templates
+Conventions section covers: cross-reference format (`[name](../category/name.md)`), status/confidence vocabularies, commit message format, log entry format, YAML frontmatter fields, category management (suggest-category workflow), graduation criteria.
 
-### Experiment
-
-```
-# <experiment-name>
-
-**Status:** Production / Rejected / Superseded / In Progress
-**Date:** YYYY-MM-DD
-**Training time:** (if applicable)
-
-## Configuration
-- (key parameters)
-
-## Results
-
-| Eval | Metric | Value |
-|------|--------|-------|
-| ... | ... | ... |
-
-## Key finding
-(What this proved/disproved.)
-See: [finding](../findings/finding.md), [technique](../techniques/technique.md)
-
-## Contradictions / open questions
-- ...
-```
-
-### Technique
-
-```
-# <technique-name>
-
-**Status:** Production / Rejected / Experimental
-**Novel:** Yes / No — (prior art)
-**Implemented in:** `file.py`, `module.rs`
-
-## What it does
-(Concise description.)
-
-## Why it matters
-- (Evidence with links)
-
-## Mechanism
-(Implementation detail.)
-
-## Evidence
-See: [experiment](../experiments/experiment.md)
-
-## Future
-- ...
-```
-
-### Finding
-
-```
-# <finding — stated as a claim>
-
-**Established:** YYYY-MM-DD
-**Confidence:** High / Medium / Low / Speculative
-**Implication:** (One-line practical consequence)
-
-## The finding
-(Claim, evidence, magnitude.)
-
-## Caveats
-- ...
-
-## Contradictions
-- [other](other.md): (how it conflicts)
-
-## Related
-[a](a.md), [b](b.md)
-```
-
-### Paper
-
-```
-# <paper-title>
-
-**Authors:** ...
-**Venue:** ... (year)
-**Relevance:** (Why this matters)
-
-## Thesis
-(One paragraph.)
-
-## Key findings
-- (Bullets with links)
-
-## Applicability
-(What we tried, links to experiments)
-```
-
-### Model
-
-```
-# <model-name>
-
-**Architecture:** ...
-**Parameters:** ...
-**Default dim:** ...
-
-## Eval results
-
-| Eval | R@1 | MRR | Notes |
-|------|-----|-----|-------|
-| ... | ... | ... | ... |
-
-## Training
-See: [experiment](../experiments/experiment.md)
-
-## Notes
-- ...
-```
-
-### Dataset
-
-```
-# <dataset-name>
-
-**Size:** ...
-**Source:** ...
-**Used in:** [experiment](../experiments/experiment.md)
-
-## Description
-...
-
-## Known issues
-- ...
-```
-
-### Eval
-
-```
-# <eval-name>
-
-**Query count:** ...
-**Languages:** ...
-**Type:** fixture / real-code / external
-
-## Description
-...
-
-## Baseline results
-
-| Model | R@1 | MRR |
-|-------|-----|-----|
-| ... | ... | ... |
-```
-
-## Conventions
-
-- **Cross-references:** Relative markdown links only. `[name](../category/name.md)`.
-- **Field names:** snake_case in frontmatter.
-- **Status vocabulary:** Production / Rejected / Superseded / Planned / In Progress
-- **Confidence vocabulary:** High / Medium / Low / Speculative
-- **Commit messages:** `wiki: <verb> | <description>`. Verbs: bootstrap, ingest, graduate, lint, contradiction, query.
-- **Log format:** `## [YYYY-MM-DD] verb | description` in log.md.
-- **YAML frontmatter:** Optional on wiki pages. Fields: status, date, confidence, tags. Enables Obsidian Dataview queries.
-
-## Graduation Criteria (notes.toml → wiki)
-
-A note graduates when ANY of:
-- Sentiment >= 0.5 or <= -0.5, AND age > 7 days
-- Referenced in 3+ distinct search results within a session
-- Manually tagged `wiki: true`
-- Contradicts an existing wiki finding
-```
+Full content is in the design spec under "Page Formats" and "schema.md" sections.
 
 - [ ] **Step 6: Create `index.md`**
 
@@ -263,7 +91,7 @@ Write `~/wiki/index.md`:
 ```markdown
 # Wiki Index
 
-Last updated: 2026-04-04
+Last updated: 2026-04-06
 
 ## Experiments (0)
 
@@ -286,8 +114,8 @@ Write `~/wiki/log.md`:
 ```markdown
 # Wiki Log
 
-## [2026-04-04] bootstrap | wiki infrastructure created
-Empty scaffold. Skills installed. Awaiting clean-room eval data for population.
+## [2026-04-06] bootstrap | wiki infrastructure created
+Empty scaffold. Skills installed. Awaiting bootstrap pass 1 for population.
 ```
 
 - [ ] **Step 8: Install the commit-msg hook**
@@ -313,10 +141,10 @@ chmod +x ~/wiki/.git/hooks/commit-msg
 ```bash
 cd ~/wiki
 git add -A
-git commit --no-verify -m "wiki: bootstrap | initial scaffold"
+git commit -m "wiki: bootstrap | initial scaffold"
 ```
 
-(Use `--no-verify` for this one commit since the hook expects `wiki:` prefix and `git commit -m "wiki: bootstrap | ..."` should work, but the hook reads from COMMIT_EDITMSG which may not be populated with `-m`. Safer to skip for init.)
+The hook reads from `$1` (the COMMIT_EDITMSG file), and `git commit -m` does populate it. The `wiki:` prefix matches.
 
 - [ ] **Step 10: Index with cqs and register as reference**
 
@@ -328,14 +156,10 @@ cd /mnt/c/Projects/cqs && cqs ref add wiki ~/wiki
 - [ ] **Step 11: Verify search works**
 
 ```bash
-cd /mnt/c/Projects/cqs && cqs "wiki schema conventions" --json | head -5
+cd /mnt/c/Projects/cqs && cqs "wiki schema conventions" --include-refs --json | head -5
 ```
 
 Expected: results from `~/wiki/schema.md`.
-
-- [ ] **Step 12: Commit**
-
-Already committed in step 9. Nothing to do.
 
 ---
 
@@ -346,87 +170,32 @@ Already committed in step 9. Nothing to do.
 
 - [ ] **Step 1: Write the skill**
 
-Write `.claude/skills/wiki-update/SKILL.md`:
-```markdown
----
-name: wiki-update
-description: File a new experiment, paper, finding, or technique to the wiki. Also handles notes.toml graduation.
-disable-model-invocation: false
-argument-hint: "<type> [--graduate]"
----
+The skill handles two workflows: ingest (new content) and graduation (notes → wiki).
 
-# Wiki Update
+**Ingest process:**
+1. Read `$WIKI/schema.md` for the matching template
+2. Check for existing page — update if exists, create if not
+3. Write the page using the template, include YAML frontmatter
+4. Check `$WIKI/findings/` for contradictions — update finding pages if found
+5. Update cross-references (relative markdown links to/from related pages)
+6. Update `index.md` (add entry, update count)
+7. Append to `log.md`
+8. Git commit with `wiki: ingest | <name>`
+9. Reindex: `cd "$WIKI" && cqs index`
 
-File new content to the wiki or graduate notes.
+**Graduation process:**
+1. Read `cqs notes list --json` for candidates meeting graduation criteria (sentiment + age, or contradiction)
+2. For each candidate: create/update wiki page, update index + log
+3. Git commit with `wiki: graduate | N notes from <project>`
+4. Reindex
 
-## Arguments
+**Note:** The `--graduated` flag does not exist on `cqs notes update`. Track graduation in `log.md` instead — log which notes were graduated with their text prefix. The `/wiki-lint` skill can cross-check notes vs log to detect re-graduation.
 
-- `experiment <name>` — ingest a new experiment result
-- `paper <name>` — ingest a new paper
-- `finding <claim>` — file a new finding
-- `technique <name>` — file a new technique
-- `model <name>` — file a new model entry
-- `dataset <name>` — file a new dataset entry
-- `eval <name>` — file a new eval definition
-- `--graduate` — check notes.toml for graduation candidates
+**Arguments:** `experiment <name>`, `paper <name>`, `finding <claim>`, `technique <name>`, `model <name>`, `dataset <name>`, `eval <name>`, `--graduate`
 
-## Wiki Path
+**Wiki path:** `CQS_WIKI_PATH` env var, falls back to `~/wiki`.
 
-Read from `CQS_WIKI_PATH` env var. Falls back to `~/wiki`.
-
-```bash
-WIKI="${CQS_WIKI_PATH:-$HOME/wiki}"
-```
-
-Verify the path exists and is a git repo before proceeding.
-
-## Process (ingest)
-
-1. **Read schema**: Read `$WIKI/schema.md` for the template matching the content type
-2. **Check for existing page**: `ls $WIKI/<category>/<name>.md` — update if exists, create if not
-3. **Read source material**: Ask the user what to ingest, or read from the current session context
-4. **Write the page**: Use the template from schema.md. Include YAML frontmatter.
-5. **Check for contradictions**: Read `$WIKI/findings/` pages. If the new content contradicts an existing finding, update the finding page with a Contradictions entry and note the contradiction in log.md.
-6. **Update cross-references**: Add relative markdown links to/from related pages (experiments ↔ findings ↔ techniques).
-7. **Update index.md**: Add entry under the correct category. Update the count in the section header.
-8. **Append to log.md**: `## [YYYY-MM-DD] ingest | <name>`
-9. **Git commit**:
-```bash
-cd "$WIKI" && git add -A && git commit -m "wiki: ingest | <name>"
-```
-10. **Reindex**: `cd "$WIKI" && cqs index`
-
-## Process (graduation)
-
-1. **Read notes**: `cqs notes list --json` in the current project
-2. **Check graduation criteria** (from schema.md):
-   - Sentiment >= 0.5 or <= -0.5, AND age > 7 days
-   - Contradicts an existing wiki finding
-3. **For each candidate**:
-   - Determine category (finding, technique, or observation)
-   - Create or update the wiki page
-   - Mark the note as graduated: `cqs notes update "<text>" --graduated true`
-   - Update index.md and log.md
-4. **Git commit**: `cd "$WIKI" && git add -A && git commit -m "wiki: graduate | N notes from <project>"`
-5. **Reindex**: `cd "$WIKI" && cqs index`
-
-## Rules
-
-- Always read schema.md first — templates may have evolved
-- Never modify raw sources (research_log.md, RESULTS.md)
-- Always check for contradictions before committing
-- Use relative markdown links for all cross-references
-- Commit message format: `wiki: ingest | <name>` or `wiki: graduate | <description>`
-```
-
-- [ ] **Step 2: Verify skill loads**
-
-```bash
-cd /mnt/c/Projects/cqs
-# The skill should appear in Claude Code's skill list
-```
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
 cd /mnt/c/Projects/cqs
@@ -443,101 +212,17 @@ git commit -m "feat: add /wiki-update skill"
 
 - [ ] **Step 1: Write the skill**
 
-Write `.claude/skills/wiki-lint/SKILL.md`:
-```markdown
----
-name: wiki-lint
-description: Health check the wiki — find stale claims, orphans, broken links, missing pages, inconsistent results.
-disable-model-invocation: false
----
+Eight checks, grouped by severity:
 
-# Wiki Lint
+**Fix now:** Broken links (grep for `](` targets, check file existence), index.md inconsistencies (directory count vs header count, missing/extra entries).
 
-Health check and maintenance pass on the wiki.
+**Review:** Stale claims (findings referencing old experiments when newer ones exist), orphan pages (zero inbound links).
 
-## Wiki Path
+**Info:** Missing pages (link targets that don't exist), cross-reference gaps (experiments without finding links, findings without evidence links), category suggestions (count `suggest-category` log entries, surface at 5+).
 
-```bash
-WIKI="${CQS_WIKI_PATH:-$HOME/wiki}"
-```
+**Maintenance:** Log rotation (>100 entries → move all but last 50 to `log-archive.md`).
 
-## Checks
-
-Run each check and report findings:
-
-### 1. Broken links
-
-```bash
-grep -rn '](../' "$WIKI" --include="*.md" | while read line; do
-    file=$(echo "$line" | cut -d: -f1)
-    link=$(echo "$line" | grep -oP '\]\(\K[^)]+')
-    dir=$(dirname "$file")
-    target="$dir/$link"
-    [ ! -f "$target" ] && echo "BROKEN: $file -> $link"
-done
-```
-
-### 2. Orphan pages
-
-Pages with zero inbound links (not referenced by any other page or index.md):
-
-```bash
-for f in "$WIKI"/*/*.md; do
-    name=$(basename "$f")
-    refs=$(grep -rl "$name" "$WIKI" --include="*.md" | grep -v "$f" | wc -l)
-    [ "$refs" -eq 0 ] && echo "ORPHAN: $f"
-done
-```
-
-### 3. Missing pages
-
-Concepts referenced in links but with no corresponding file. Extract all link targets and check existence.
-
-### 4. Stale claims
-
-Read each finding page. If the finding references experiments, check if newer experiments in the same category exist that might contradict. Flag for human review — don't auto-update.
-
-### 5. Index.md consistency
-
-- Count pages per category directory. Compare with count in index.md header.
-- Check that every page has an entry in index.md.
-- Check that every index.md entry points to an existing page.
-
-### 6. Log rotation
-
-```bash
-ENTRIES=$(grep -c "^## \[" "$WIKI/log.md")
-if [ "$ENTRIES" -gt 100 ]; then
-    # Move all but last 50 entries to log-archive.md
-fi
-```
-
-### 7. Cross-reference completeness
-
-For each experiment page, check that it links to at least one finding or technique. For each finding, check that it links to at least one experiment as evidence.
-
-## Output
-
-Report findings grouped by severity:
-- **Fix now**: Broken links, index inconsistencies
-- **Review**: Stale claims, orphan pages
-- **Info**: Missing pages, cross-reference gaps
-
-## Fix mode
-
-After presenting findings, offer to fix automatically:
-- Broken links → remove or prompt for correction
-- Index inconsistencies → rebuild index.md from directory listing
-- Log rotation → move entries to archive
-- Orphans → add to index.md or prompt for deletion
-
-## Commit
-
-```bash
-cd "$WIKI" && git add -A && git commit -m "wiki: lint | fixed N issues"
-cd "$WIKI" && cqs index
-```
-```
+After presenting findings, offer to fix automatically. Commit fixes with `wiki: lint | fixed N issues`. Reindex after.
 
 - [ ] **Step 2: Commit**
 
@@ -556,105 +241,15 @@ git commit -m "feat: add /wiki-lint skill"
 
 - [ ] **Step 1: Write the skill**
 
-Write `.claude/skills/wiki-bootstrap/SKILL.md`:
-```markdown
----
-name: wiki-bootstrap
-description: Two-pass bootstrap of the wiki from research artifacts. Pass 1 creates stubs, Pass 2 adds cross-references and synthesis.
-disable-model-invocation: false
-argument-hint: "<pass> [--source <path>]"
----
+Two-pass bootstrap from research artifacts.
 
-# Wiki Bootstrap
+**Pass 1 (stubs):** Read `~/training-data/research_log.md`, `~/training-data/RESULTS.md`, and `docs/notes.toml`. Identify all entities (experiments, models, datasets, techniques, papers, evals). Create stub pages with name, status, date, results table, one-line summary, empty cross-reference sections. Generate index.md. Git commit.
 
-Populate the wiki from research artifacts.
+**Pass 2 (synthesis):** Read all stubs, add cross-references between pages, write finding claims with evidence citations and confidence levels, note contradictions, update index.md summaries. Verify all links resolve. Git commit. Reindex.
 
-## Arguments
+**Clean-room mode:** When source data reliability is uncertain, mark ALL numerical results as `**unverified**` in experiment pages. Qualitative content (techniques, findings, models) is reliable. After a clean-room eval re-runs all models, update with verified numbers via `/wiki-update`.
 
-- `1` or `pass1` — create stub pages (mechanical extraction)
-- `2` or `pass2` — add cross-references and synthesis
-- `--source <path>` — path to source material (default: `~/training-data`)
-
-## Wiki Path
-
-```bash
-WIKI="${CQS_WIKI_PATH:-$HOME/wiki}"
-```
-
-## Prerequisites
-
-- Wiki scaffold must exist (`$WIKI/schema.md`, `$WIKI/index.md`)
-- Source material must be accessible
-
-## Pass 1: Stubs
-
-1. **Read source material**:
-   - `<source>/research_log.md` — experiment timeline
-   - `<source>/RESULTS.md` — eval numbers
-   - Current project's `docs/notes.toml` — observations
-
-2. **Identify entities**: Scan sources for:
-   - Experiments (each `### Exp N` section in research log)
-   - Models (each model evaluated — E5-base, BGE-large, v9-200k, etc.)
-   - Datasets (CSN, 200K balanced, fixture queries, real queries)
-   - Techniques (enrichment, CG filtering, GIST loss, Matryoshka, etc.)
-   - Papers (SSD, any cited papers)
-   - Evals (fixture 296q, real 50q, CoIR)
-
-3. **Create stub pages**: For each entity, create a page using the template from `$WIKI/schema.md`. Include:
-   - Name, status, date
-   - Results table with numbers (mark unverified numbers with `*`)
-   - One-line summary
-   - Empty cross-reference sections (filled in pass 2)
-
-4. **Generate index.md**: Rebuild from directory listing.
-
-5. **Append to log.md**: `## [YYYY-MM-DD] bootstrap | pass 1, N stubs created`
-
-6. **Git commit**: `cd "$WIKI" && git add -A && git commit -m "wiki: bootstrap | pass 1, N stubs"`
-
-## Pass 2: Synthesis
-
-1. **Read all stub pages**: Build a mental map of entities and relationships.
-
-2. **Add cross-references**: For each page:
-   - Link experiments → findings they established
-   - Link experiments → techniques they tested
-   - Link findings → experiments that provide evidence
-   - Link techniques → experiments and findings
-   - Link models → experiments that evaluated them
-
-3. **Write finding claims**: For each identified insight, write a clear claim with evidence citations and confidence level.
-
-4. **Note contradictions**: Where experiments disagree, add Contradictions sections to the relevant finding pages.
-
-5. **Update index.md summaries**: Replace stub one-liners with meaningful summaries.
-
-6. **Verify links**: `grep -rn '](../' "$WIKI" --include="*.md"` — check all resolve.
-
-7. **Append to log.md**: `## [YYYY-MM-DD] bootstrap | pass 2, cross-references and synthesis`
-
-8. **Git commit**: `cd "$WIKI" && git add -A && git commit -m "wiki: bootstrap | pass 2, cross-references and synthesis"`
-
-9. **Reindex**: `cd "$WIKI" && cqs index`
-
-## Clean-Room Mode
-
-When source data reliability is uncertain, use clean-room mode:
-
-1. Create stubs for techniques, findings, models, and evals (qualitative content is reliable)
-2. Mark ALL numerical results as `**unverified**` in experiment pages
-3. After a clean-room eval session re-runs all models, update experiment pages with verified numbers via `/wiki-update`
-
-This separates "what we tried" (reliable) from "what numbers we got" (needs re-verification).
-
-## Rules
-
-- Never modify source material
-- Mark unverified numbers with `*` or `**unverified**`
-- Each pass ends with a git commit
-- Run `/wiki-lint` after pass 2 to catch orphans and broken links
-```
+**Arguments:** `1` or `pass1`, `2` or `pass2`, `--source <path>` (default: `~/training-data`).
 
 - [ ] **Step 2: Commit**
 
@@ -673,59 +268,13 @@ git commit -m "feat: add /wiki-bootstrap skill"
 
 - [ ] **Step 1: Write the skill**
 
-Write `.claude/skills/wiki-query/SKILL.md`:
-```markdown
----
-name: wiki-query
-description: Synthesize an answer from wiki pages with citations. Optionally file the answer back as a new finding.
-disable-model-invocation: false
-argument-hint: "<question> [--file]"
----
+Synthesize an answer from wiki pages with citations.
 
-# Wiki Query
+**Process:** `cqs gather "<question>" --tokens 4000` to surface wiki pages, read relevant pages + one hop of cross-references, synthesize answer with citations. Optionally file back as a finding page (`--file`).
 
-Answer a research question using wiki pages as sources.
+**Rules:** Always cite wiki pages not raw sources. Don't hallucinate — say "not answerable from wiki" if needed. Query-derived findings start at confidence "Speculative."
 
-## Arguments
-
-- `<question>` — the research question to answer
-- `--file` — file the answer back as a new finding page
-
-## Wiki Path
-
-```bash
-WIKI="${CQS_WIKI_PATH:-$HOME/wiki}"
-```
-
-## Process
-
-1. **Search**: `cqs gather "<question>" --tokens 4000` — surfaces wiki pages and code together via the reference index.
-
-2. **Read relevant pages**: For each wiki result, read the full page. Follow cross-references one hop deep to gather supporting evidence.
-
-3. **Synthesize**: Answer the question with citations to specific wiki pages. Format:
-   ```
-   [Answer text]
-
-   Sources:
-   - [page-name](path/to/page.md) — what it contributed
-   - [page-name](path/to/page.md) — what it contributed
-   ```
-
-4. **File back** (if `--file`):
-   - Create a finding page in `$WIKI/findings/` with the synthesized answer
-   - Add cross-references to source pages
-   - Update index.md and log.md
-   - `cd "$WIKI" && git add -A && git commit -m "wiki: query | <question summary>"`
-   - `cd "$WIKI" && cqs index`
-
-## Rules
-
-- Always cite wiki pages, not raw sources
-- If a question can't be answered from existing wiki pages, say so — don't hallucinate
-- If filing back, use the finding template from schema.md
-- Confidence level for query-derived findings: start at "Speculative" unless strongly supported
-```
+**Arguments:** `<question>`, `--file` (optional).
 
 - [ ] **Step 2: Commit**
 
@@ -745,7 +294,7 @@ git commit -m "feat: add /wiki-query skill"
 
 - [ ] **Step 1: Add wiki skills to CLAUDE.md skills list**
 
-In `CLAUDE.md`, find the skills list section and add after the existing entries:
+Add after existing skill entries:
 
 ```markdown
 - `/wiki-bootstrap` -- populate wiki from research artifacts (two-pass)
@@ -754,9 +303,9 @@ In `CLAUDE.md`, find the skills list section and add after the existing entries:
 - `/wiki-query` -- answer research questions from wiki with citations
 ```
 
-- [ ] **Step 2: Add wiki env var convention to CLAUDE.md**
+- [ ] **Step 2: Add wiki section to CLAUDE.md**
 
-In `CLAUDE.md`, add near the Continuity section:
+Add near the Continuity section:
 
 ```markdown
 ## Wiki
@@ -766,12 +315,12 @@ Research wiki at `$CQS_WIKI_PATH` (default `~/wiki`). Registered as cqs referenc
 - `/wiki-update` to file new content
 - `/wiki-lint` for health checks
 - `/wiki-query` to synthesize answers
-- Wiki pages surface in `cqs gather` and `cqs search` via reference index
+- Wiki pages surface in `cqs gather` and `cqs search --include-refs`
 ```
 
 - [ ] **Step 3: Add wiki skills to cqs-bootstrap portable list**
 
-Read `.claude/skills/cqs-bootstrap/SKILL.md` and add wiki skills to the portable skills list so new projects get them.
+Read `.claude/skills/cqs-bootstrap/SKILL.md` and add wiki skills to the portable skills list.
 
 - [ ] **Step 4: Commit**
 
@@ -806,16 +355,20 @@ source ~/.bashrc
 
 ```bash
 cd /mnt/c/Projects/cqs
-cqs "wiki conventions schema" --json | head -5
+cqs "wiki conventions schema" --include-refs --json | head -5
 ```
 
-Expected: results from `~/wiki/schema.md` with `source: "wiki"`.
+Expected: results from `~/wiki/schema.md`.
 
-- [ ] **Step 4: Test `/wiki-update` with a manual finding**
+- [ ] **Step 4: Test `/wiki-update` with a specific finding**
 
-Invoke `/wiki-update finding "enrichment stack compresses model differences"` and verify:
-- Finding page created at `~/wiki/findings/enrichment-compresses-model-differences.md`
-- index.md updated with entry
+Invoke `/wiki-update finding "E5-base architecture ceiling at 81% pipeline R@1"` and provide explicit content:
+
+"Three experiments (margin sweep, band mining, iterative distillation) all null. E5-base + CG-filtered 200K + GIST 0.05 + 1 epoch is the ceiling. Confidence: High. Evidence: Exp 1, 2, 3 from SSD roadmap."
+
+Verify:
+- Finding page created at `~/wiki/findings/e5-base-ceiling.md`
+- index.md updated with entry under Findings
 - log.md has ingest entry
 - Git commit with `wiki:` prefix
 
@@ -824,20 +377,50 @@ Invoke `/wiki-update finding "enrichment stack compresses model differences"` an
 Invoke `/wiki-lint` and verify it:
 - Reports the orphan finding page (no inbound links yet — expected for first page)
 - No broken links
-- Index counts match directory listing
-
-- [ ] **Step 6: Commit bashrc change**
-
-The bashrc change is outside the repo — no git commit needed.
+- Index counts match directory listing (1 finding)
 
 ---
 
-## Post-Plan: Clean-Room Eval Session
+### Task 8: Bootstrap wiki from research artifacts
 
-Not part of this plan. After the wiki infrastructure is built:
+**Files:**
+- Modify: `~/wiki/` (many new pages)
 
-1. Re-run all model evals (E5-base, BGE-large, v9-200k, BGE-large-FT) on current code
-2. Record verified numbers in RESULTS.md
-3. Run `/wiki-bootstrap pass1 --source ~/training-data` in clean-room mode
-4. Run `/wiki-bootstrap pass2` for cross-references
-5. Run `/wiki-lint` to verify health
+This is where the wiki gets its value. Tasks 1-7 built infrastructure; this populates it.
+
+- [ ] **Step 1: Run `/wiki-bootstrap pass1 --source ~/training-data`**
+
+Creates stub pages for all entities found in:
+- `~/training-data/research_log.md` (experiments 1-28)
+- `~/training-data/RESULTS.md` (models, evals, baselines)
+- `docs/notes.toml` (graduated notes)
+
+Expected: ~40-60 stub pages across all categories.
+
+Use clean-room mode for experiment numbers — mark results as `**unverified**` since we just re-baselined and some old numbers are stale. Qualitative content (what was tried, what technique was used) is reliable.
+
+- [ ] **Step 2: Review stubs**
+
+Spot-check 5-10 pages for correctness:
+- Do experiment pages have the right configuration?
+- Do model pages have the right parameter counts?
+- Are techniques correctly classified as Production/Rejected?
+
+- [ ] **Step 3: Run `/wiki-bootstrap pass2`**
+
+Adds cross-references, writes finding claims, notes contradictions.
+
+- [ ] **Step 4: Run `/wiki-lint`**
+
+Catch orphans, broken links, missing cross-references from the bootstrap.
+
+- [ ] **Step 5: Update verified numbers**
+
+For models we re-baselined today (BGE-large 91.2%, BGE-large FT 91.9%, v9-200k 81.4%), update the experiment and model pages with verified numbers via `/wiki-update`.
+
+- [ ] **Step 6: Final commit and reindex**
+
+```bash
+cd ~/wiki && git add -A && git commit -m "wiki: bootstrap | complete, N pages"
+cd ~/wiki && cqs index
+```

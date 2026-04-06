@@ -710,14 +710,6 @@ text = "Brute-force cosine for contrastive neighbors is fast enough: 1.3s for 10
 mentions = ["llm/summary.rs"]
 
 [[note]]
-sentiment = -0.5
-text = "FTS keyword results in RRF fusion were NOT path-filtered — --path glob only applied to semantic/HNSW path. Eval fixture scaffolding (HARD_EVAL_CASES constant) contaminated search results. Fixed by applying compile_glob_filter to FTS results in finalize_results()."
-mentions = [
-    "src/search/query.rs",
-    "finalize_results",
-]
-
-[[note]]
 sentiment = 0.5
 text = "Contrastive LLM summaries: brute-force cosine neighbors from embeddings, top-3 per chunk, passed to prompt. Doc-comment shortcut removed — all callable chunks go through API. ~$0.38 one-time Haiku. Full pipeline: 92.7% R@1, 0.948 NDCG@10."
 mentions = [
@@ -825,17 +817,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 1.0
-text = "P1+P2 audit fixes: 34 items fixed across 14 categories. Multi-model support now functional end-to-end. 14 new tests. nl.rs split into 4 submodules. BatchSubmitItem replaces opaque 4-tuple. LlmProvider enum for future provider extensibility."
-mentions = [
-    "src/cli/dispatch.rs",
-    "src/store/mod.rs",
-    "src/hnsw/build.rs",
-    "src/nl/mod.rs",
-    "src/llm/provider.rs",
-]
-
-[[note]]
 sentiment = -0.5
 text = "WAL checkpoint timing: Store::close().unwrap() in tests doesn't guarantee dim metadata is visible to a new Store::open() in the same process. Tests that verify dim persistence should check metadata directly rather than reopening."
 mentions = [
@@ -867,11 +848,6 @@ mentions = ["openclaw-contributions.md"]
 [[note]]
 sentiment = 0.5
 text = "Greptile bot auto-reviews OpenClaw PRs instantly. Two 5/5 scores confirms our verification-before-submission calibration is right. PRs that pass our verification process pass automated review first try."
-mentions = ["openclaw-contributions.md"]
-
-[[note]]
-sentiment = 0.0
-text = "OpenClaw #11202 (apiKey leak into LLM prompt) is already fixed despite issue being Open. Multi-layered: ModelCatalogEntry has no apiKey field, marker system stores env var names not plaintext, config.get uses redactConfigSnapshot, auth isolated to HTTP headers. Posted comment documenting the fix."
 mentions = ["openclaw-contributions.md"]
 
 [[note]]
@@ -909,11 +885,6 @@ mentions = [
     "train_lora.py",
     "research_log.md",
 ]
-
-[[note]]
-sentiment = 0.5
-text = "Session 2026-03-29: v1.11.0 released (80/88 audit fixes + 6 new commands + query expansion). 19 OpenClaw contributions. Contrastive training confirmed 89.1% floor (5th data point). Paper v0.6. Pre-Edit hook live. Markdown.rs split. Pipeline batch=64 restored with debug logging."
-mentions = ["PROJECT_CONTINUITY.md"]
 
 [[note]]
 sentiment = -0.5
@@ -1043,9 +1014,36 @@ mentions = [
 ]
 
 [[note]]
+sentiment = 0.0
+text = "E5-base architecture ceiling confirmed at ~81% pipeline R@1 (296q). Three experiments (margin sweep, band mining, iterative self-distillation) all null. Same data, same CG filter, any negative selection strategy or hyperparameter → same result. BGE-large (335M) at 91.2% is genuinely better, not a fluke. Further E5-base improvement requires fundamentally different training signal, not recipe tuning."
+mentions = [
+    "train_lora.py",
+    "embedder",
+    "pipeline_eval",
+]
+
+[[note]]
+sentiment = 0.0
+text = "HNSW traversal-time filtering effectively bypasses CAGRA for all default searches. Both CLI and batch mode set chunk_types: Some(code_types()) by default, which routes to HNSW search_with_filter instead of CAGRA. CAGRA only runs with --include-docs (chunk_types: None). At 10K-50K chunks this is fine (HNSW filtered < 1ms). Revisit if indexing 500K+ chunks where CAGRA batch throughput matters."
+mentions = [
+    "src/hnsw/search.rs",
+    "src/cagra.rs",
+    "src/search/query.rs",
+]
+
+[[note]]
 sentiment = -0.5
-text = "Batch mode search was missing code-only chunk type filter. CLI search filters to code types by default (ChunkType::code_types()), but batch mode used Default::default() with no chunk_types. Agents using cqs batch got markdown sections, JSON keys, and TOML entries mixed with code results."
+text = "LLM summaries regenerated 3 times in one session (~$2.60 total). content_hash is blake3 of source content (stable), but --force reindex still loses summaries. Issue is likely that copy_summaries_from runs before chunks are inserted, then prune_missing_files deletes them. Need to verify the timing in the --force path."
+mentions = [
+    "src/cli/commands/index/build.rs",
+    "llm_summaries",
+    "content_hash",
+]
+
+[[note]]
+sentiment = -0.5
+text = "semantic_only field on batch SearchParams was suppressed with #[allow(dead_code)] instead of removing. Should be refactored: rename to rrf and make it opt-in (--rrf flag) instead of opt-out. The field is still parsed from batch commands."
 mentions = [
     "src/cli/batch/handlers/search.rs",
-    "SearchFilter",
+    "SearchParams",
 ]
