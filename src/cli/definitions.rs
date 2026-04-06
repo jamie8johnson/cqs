@@ -190,6 +190,10 @@ pub struct Cli {
     #[arg(long)]
     pub rerank: bool,
 
+    /// Enable SPLADE sparse-dense hybrid search (requires SPLADE model)
+    #[arg(long)]
+    pub splade: bool,
+
     /// Output as JSON
     #[arg(long)]
     pub json: bool,

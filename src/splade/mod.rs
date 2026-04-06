@@ -156,7 +156,7 @@ impl SpladeEncoder {
         }
 
         let vocab = shape[2] as usize;
-        let logits = Array2::from_shape_vec((seq_len, vocab), data.iter().copied().collect())
+        let logits = Array2::from_shape_vec((seq_len, vocab), data.to_vec())
             .map_err(|e| SpladeError::InferenceFailed(format!("Failed to reshape logits: {e}")))?;
 
         // Max pool over sequence dimension → [vocab_size]

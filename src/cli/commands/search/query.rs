@@ -116,6 +116,7 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         query_text: query.to_string(),
         enable_rrf: cli.rrf, // RRF off by default (pure cosine is faster + higher R@1), enable with --rrf
         enable_demotion: !cli.no_demote,
+        enable_splade: cli.splade,
         ..Default::default()
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
@@ -141,6 +142,22 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         );
     }
 
+    // SPLADE sparse encoding (if enabled and model available)
+    let splade_query = if cli.splade {
+        ctx.splade_encoder().and_then(|enc| {
+            match enc.encode(query) {
+                Ok(sv) => Some(sv),
+                Err(e) => {
+                    tracing::warn!(error = %e, "SPLADE query encoding failed, falling back to cosine-only");
+                    None
+                }
+            }
+        })
+    } else {
+        None
+    };
+    let splade_index = if cli.splade { ctx.splade_index() } else { None };
+
     cmd_query_project(&QueryContext {
         cli,
         query,
@@ -152,6 +169,8 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         embedder,
         effective_limit,
         reranker,
+        splade_query,
+        splade_index,
     })
 }
 
@@ -167,6 +186,8 @@ struct QueryContext<'a> {
     embedder: &'a Embedder,
     effective_limit: usize,
     reranker: Option<&'a cqs::Reranker>,
+    splade_query: Option<cqs::splade::SparseVector>,
+    splade_index: Option<&'a cqs::splade::index::SpladeIndex>,
 }
 
 /// Project search: search project index, optionally include references (--include-refs).
@@ -189,23 +210,43 @@ fn cmd_query_project(ctx: &QueryContext<'_>) -> Result<()> {
     } else {
         effective_limit
     };
+    // Build SPLADE argument for search_hybrid
+    let splade_arg = ctx
+        .splade_query
+        .as_ref()
+        .and_then(|sq| ctx.splade_index.map(|si| (si, sq)));
+
     let results = if audit_mode.is_active() {
-        let code_results = store.search_filtered_with_index(
+        let code_results = store.search_hybrid(
             query_embedding,
             filter,
             search_limit,
             cli.threshold,
             index.as_deref(),
+            splade_arg,
         )?;
         code_results.into_iter().map(UnifiedResult::Code).collect()
     } else {
-        store.search_unified_with_index(
-            query_embedding,
-            filter,
-            search_limit,
-            cli.threshold,
-            index.as_deref(),
-        )?
+        // search_unified doesn't support SPLADE yet — use hybrid for code, unified for rest
+        if splade_arg.is_some() {
+            let code_results = store.search_hybrid(
+                query_embedding,
+                filter,
+                search_limit,
+                cli.threshold,
+                index.as_deref(),
+                splade_arg,
+            )?;
+            code_results.into_iter().map(UnifiedResult::Code).collect()
+        } else {
+            store.search_unified_with_index(
+                query_embedding,
+                filter,
+                search_limit,
+                cli.threshold,
+                index.as_deref(),
+            )?
+        }
     };
 
     // Pattern filter

@@ -51,6 +51,8 @@ pub(crate) struct CommandContext<'a> {
     pub cqs_dir: PathBuf,
     reranker: OnceLock<cqs::Reranker>,
     embedder: OnceLock<cqs::Embedder>,
+    splade_encoder: OnceLock<Option<cqs::splade::SpladeEncoder>>,
+    splade_index: OnceLock<Option<cqs::splade::index::SpladeIndex>>,
 }
 
 impl<'a> CommandContext<'a> {
@@ -64,6 +66,8 @@ impl<'a> CommandContext<'a> {
             cqs_dir,
             reranker: OnceLock::new(),
             embedder: OnceLock::new(),
+            splade_encoder: OnceLock::new(),
+            splade_index: OnceLock::new(),
         })
     }
 
@@ -81,6 +85,8 @@ impl<'a> CommandContext<'a> {
             cqs_dir,
             reranker: OnceLock::new(),
             embedder: OnceLock::new(),
+            splade_encoder: OnceLock::new(),
+            splade_index: OnceLock::new(),
         })
     }
 
@@ -123,6 +129,53 @@ impl<'a> CommandContext<'a> {
             .embedder
             .get()
             .expect("embedder OnceLock populated by set() above"))
+    }
+
+    /// Get or lazily load the SPLADE encoder.
+    /// Returns None if the SPLADE model is not available.
+    pub fn splade_encoder(&self) -> Option<&cqs::splade::SpladeEncoder> {
+        let opt = self.splade_encoder.get_or_init(|| {
+            let _span = tracing::debug_span!("command_context_splade_encoder_init").entered();
+            let model_dir = dirs::home_dir()
+                .map(|h| h.join(".cache/huggingface/splade-onnx"))
+                .unwrap_or_default();
+            if !model_dir.join("model.onnx").exists() {
+                tracing::debug!("SPLADE model not found, hybrid search unavailable");
+                return None;
+            }
+            match cqs::splade::SpladeEncoder::new(&model_dir, 0.01) {
+                Ok(enc) => Some(enc),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to load SPLADE encoder");
+                    None
+                }
+            }
+        });
+        opt.as_ref()
+    }
+
+    /// Get or lazily load the SPLADE inverted index from SQLite.
+    /// Returns None if no sparse vectors are stored.
+    pub fn splade_index(&self) -> Option<&cqs::splade::index::SpladeIndex> {
+        let opt = self.splade_index.get_or_init(|| {
+            let _span = tracing::debug_span!("command_context_splade_index_init").entered();
+            match self.store.load_all_sparse_vectors() {
+                Ok(vectors) if !vectors.is_empty() => {
+                    let idx = cqs::splade::index::SpladeIndex::build(vectors);
+                    tracing::info!(chunks = idx.len(), "SPLADE index loaded");
+                    Some(idx)
+                }
+                Ok(_) => {
+                    tracing::debug!("No sparse vectors in store, SPLADE index unavailable");
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to load sparse vectors");
+                    None
+                }
+            }
+        });
+        opt.as_ref()
     }
 }
 
