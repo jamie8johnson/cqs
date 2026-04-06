@@ -14,6 +14,7 @@ pub(in crate::cli::batch) struct SearchParams {
     pub semantic_only: bool,
     pub rerank: bool,
     pub splade: bool,
+    pub splade_alpha: f32,
     pub lang: Option<String>,
     pub path: Option<String>,
     pub tokens: Option<usize>,
@@ -91,6 +92,7 @@ pub(in crate::cli::batch) fn dispatch_search(
         query_text: params.query.clone(),
         enable_rrf: false,
         enable_splade: params.splade,
+        splade_alpha: params.splade_alpha,
         ..Default::default()
     };
 

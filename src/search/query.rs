@@ -356,10 +356,11 @@ impl Store {
             }
         };
 
-        // Dense results from HNSW
+        // Dense results from vector index (HNSW or CAGRA)
         let dense_results = if let Some(idx) = index {
             idx.search_with_filter(query, candidate_count, &predicate)
         } else {
+            tracing::warn!("No vector index available for dense leg of hybrid search");
             Vec::new()
         };
 
@@ -406,15 +407,34 @@ impl Store {
         }
 
         // Fuse with linear interpolation: final = α * dense + (1-α) * sparse
-        let alpha = super::scoring::ScoringConfig::DEFAULT.splade_alpha;
+        let alpha = filter.splade_alpha;
+        tracing::debug!(
+            alpha,
+            dense = dense_scores.len(),
+            sparse = sparse_scores.len(),
+            "SPLADE fusion"
+        );
         let mut fused: Vec<crate::index::IndexResult> = all_ids
             .iter()
             .map(|id| {
                 let d = dense_scores.get(id).copied().unwrap_or(0.0);
                 let s = sparse_scores.get(id).copied().unwrap_or(0.0);
+                let score = if alpha <= 0.0 {
+                    // Pure re-rank mode: SPLADE score for chunks it found,
+                    // cosine score (demoted) for chunks it didn't.
+                    // This preserves cosine ordering for SPLADE-unknown chunks
+                    // while letting SPLADE override when it has signal.
+                    if s > 0.0 {
+                        1.0 + s
+                    } else {
+                        d
+                    }
+                } else {
+                    alpha * d + (1.0 - alpha) * s
+                };
                 crate::index::IndexResult {
                     id: id.to_string(),
-                    score: alpha * d + (1.0 - alpha) * s,
+                    score,
                 }
             })
             .collect();

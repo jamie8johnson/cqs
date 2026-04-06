@@ -43,9 +43,11 @@ pub struct SearchFilter {
     /// Enable SPLADE sparse-dense hybrid search.
     ///
     /// When enabled, queries are encoded with both the dense embedder and the
-    /// SPLADE sparse encoder. Results are fused via linear interpolation with
-    /// `splade_alpha` from ScoringConfig. Requires SPLADE model to be loaded.
+    /// SPLADE sparse encoder. Results are fused via linear interpolation.
     pub enable_splade: bool,
+    /// SPLADE fusion weight: 1.0 = pure cosine, 0.0 = pure sparse.
+    /// Only used when enable_splade is true.
+    pub splade_alpha: f32,
 }
 
 impl Default for SearchFilter {
@@ -59,6 +61,7 @@ impl Default for SearchFilter {
             enable_rrf: false,
             enable_demotion: true, // Demote test functions by default
             enable_splade: false,
+            splade_alpha: 0.7,
         }
     }
 }

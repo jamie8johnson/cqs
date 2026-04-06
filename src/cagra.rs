@@ -215,7 +215,10 @@ impl CagraIndex {
         //   - k*2 gives headroom for filtering duplicates/invalids
         //   - 128 minimum ensures enough candidates for the graph search
         // Trade-off: larger itopk_size = better recall, more GPU memory/compute
-        let itopk_size = (k * 2).max(128);
+        let itopk_size = (k * 2).max(128).min(512);
+        if k * 2 > 512 {
+            tracing::warn!(k, "CAGRA itopk_size clamped to 512, recall may degrade");
+        }
 
         let search_params = match cuvs::cagra::SearchParams::new() {
             Ok(params) => params.set_itopk_size(itopk_size),

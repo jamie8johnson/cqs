@@ -117,6 +117,7 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         enable_rrf: cli.rrf, // RRF off by default (pure cosine is faster + higher R@1), enable with --rrf
         enable_demotion: !cli.no_demote,
         enable_splade: cli.splade,
+        splade_alpha: cli.splade_alpha,
         ..Default::default()
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
