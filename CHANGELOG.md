@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-04-06
+
+### Added
+- **SPLADE sparse-dense hybrid search** — opt-in via `--splade` flag (default off, zero overhead when disabled). Learned sparse retrieval alongside dense cosine using off-the-shelf `naver/splade-cocondenser-ensembledistil` (110M). `--splade-alpha` tunes fusion weight (0=pure sparse rerank, 1=pure cosine). +2pp R@1 function lookup, +5pp conceptual queries on real code. Schema v17 adds `sparse_vectors` table (#829).
+- **HNSW traversal-time filtering** — `--chunk-type` and `--lang` filters applied during HNSW graph walk instead of post-filter. Returns exactly k matching results (#826).
+- **ConfigKey chunk type** — JSON/TOML/YAML/INI keys were Property (callable), polluting code search. New ConfigKey type excluded from code search by default (#818).
+- **Impl chunk type** — Haskell `instance` declarations correctly typed as Impl, not Object (#819).
+- **`enrichment_version` column** — RT-DATA-2 idempotency marker for enrichment passes (schema v17).
+- **Config G** in fixture eval — SPLADE rerank configuration.
+
+### Fixed
+- **RRF disabled in batch mode** — was 17pp worse than cosine-only. Cosine-only is now the default for all search paths (#827).
+- **LLM summary preservation** — `--force` reindex reads summaries into memory before DB rename, restores after. No more redundant API calls (#820).
+- **CAGRA itopk_size cap** — clamped to 512 (cuVS limit). Was silently returning empty results when `search_with_filter` over-fetched (#829).
+- **prune_missing path mismatch** — suffix matching catches absolute/relative ID mismatches from incremental reindex (#829).
+- **VB.NET @constant → @const** capture fix (#829).
+- **Code-only filter in batch search** — batch mode was missing `ChunkType::code_types()` filter (#818).
+
+### Changed
+- **Eval renames** — `test_pipeline_scoring` → `test_fixture_eval_296q`, `test_stress_eval` → `test_noise_eval_143q`, `run_hard_eval.py` → `run_raw_eval.py` (#818).
+- **Schema v17** — `sparse_vectors` table + `enrichment_version` column.
+
 ## [1.16.0] - 2026-04-05
 
 ### Added
