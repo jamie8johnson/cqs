@@ -87,7 +87,7 @@ pub(in crate::cli::batch) fn dispatch_search(
         path_pattern: params.path.clone(),
         name_boost: cqs::store::DEFAULT_NAME_BOOST,
         query_text: params.query.clone(),
-        enable_rrf: !params.semantic_only,
+        enable_rrf: false,
         ..Default::default()
     };
 
