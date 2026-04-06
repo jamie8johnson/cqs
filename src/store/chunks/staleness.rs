@@ -40,6 +40,11 @@ impl Store {
             // PB-24: On macOS (HFS+/APFS case-insensitive), PathBuf comparison
             // is case-sensitive but the filesystem is not. Normalize both sides
             // to lowercase so we don't falsely mark files as missing.
+            //
+            // Also handles absolute/relative path mismatches: if the stored origin
+            // is absolute and the existing_files set has relative (or vice versa),
+            // fall back to suffix matching so stale chunks from moved/deleted files
+            // are correctly detected.
             let missing: Vec<String> = rows
                 .into_iter()
                 .filter(|(origin,)| {
@@ -53,7 +58,16 @@ impl Store {
                     }
                     #[cfg(not(target_os = "macos"))]
                     {
-                        !existing_files.contains(&origin_path)
+                        if existing_files.contains(&origin_path) {
+                            false // exact match — not missing
+                        } else {
+                            // Suffix match: catch absolute/relative mismatches
+                            !existing_files.iter().any(|p| {
+                                let p_str = p.to_string_lossy();
+                                let o_str = origin_path.to_string_lossy();
+                                p_str.ends_with(o_str.as_ref()) || o_str.ends_with(p_str.as_ref())
+                            })
+                        }
                     }
                 })
                 .map(|(origin,)| origin)
