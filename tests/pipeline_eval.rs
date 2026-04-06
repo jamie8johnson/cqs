@@ -323,6 +323,41 @@ fn test_fixture_eval_296q() {
     }
     eprintln!("Indexed {} total chunks\n", chunk_count);
 
+    // SPLADE encoding (if model available)
+    let splade_model_dir = dirs::home_dir()
+        .map(|h| h.join(".cache/huggingface/splade-onnx"))
+        .unwrap_or_default();
+    let splade_index = if splade_model_dir.join("model.onnx").exists() {
+        eprintln!("Encoding SPLADE sparse vectors...");
+        match cqs::splade::SpladeEncoder::new(&splade_model_dir, 0.01) {
+            Ok(encoder) => {
+                let texts = store.chunk_splade_texts().unwrap_or_default();
+                let mut sparse_vecs = Vec::new();
+                for (id, text) in &texts {
+                    if let Ok(sv) = encoder.encode(text) {
+                        if !sv.is_empty() {
+                            sparse_vecs.push((id.clone(), sv));
+                        }
+                    }
+                }
+                if !sparse_vecs.is_empty() {
+                    store.upsert_sparse_vectors(&sparse_vecs).unwrap();
+                }
+                let loaded = store.load_all_sparse_vectors().unwrap();
+                let idx = cqs::splade::index::SpladeIndex::build(loaded);
+                eprintln!("  SPLADE index: {} chunks\n", idx.len());
+                Some((encoder, idx))
+            }
+            Err(e) => {
+                eprintln!("  SPLADE encoder unavailable: {e}\n");
+                None
+            }
+        }
+    } else {
+        eprintln!("SPLADE model not found, skipping SPLADE configs\n");
+        None
+    };
+
     // Build HNSW index from the store
     eprintln!("Building HNSW index...");
     let chunk_total = store.chunk_count().unwrap() as usize;
@@ -744,6 +779,79 @@ fn test_fixture_eval_296q() {
             compute_metrics_refs(&results_per_case, &all_cases);
         all_metrics.push(ConfigMetrics {
             name: "F: HNSW + boost + demote",
+            recall_at_1: r1,
+            recall_at_5: r5,
+            mrr,
+            per_lang_mrr: per_lang,
+            relaxed_recall_at_1: relaxed_r1,
+        });
+    }
+
+    // Config G: SPLADE rerank (cosine retrieval + SPLADE re-ranking, α=0)
+    if let Some((ref splade_enc, ref splade_idx)) = splade_index {
+        eprintln!("\n--- Config G: SPLADE rerank ---");
+        let mut results_per_case = Vec::new();
+
+        // Pre-encode SPLADE queries
+        let splade_queries: Vec<_> = all_cases
+            .iter()
+            .map(|case| splade_enc.encode(case.query).unwrap_or_default())
+            .collect();
+
+        for (i, case) in all_cases.iter().enumerate() {
+            let filter = SearchFilter {
+                languages: Some(vec![case.language]),
+                enable_splade: true,
+                splade_alpha: 0.0, // pure rerank
+                ..Default::default()
+            };
+            let splade_arg = Some((splade_idx, &splade_queries[i]));
+            let results = match store.search_hybrid(
+                &query_embeddings[i],
+                &filter,
+                10,
+                0.0,
+                Some(&hnsw),
+                splade_arg,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!(
+                        "  ! [{:?}] \"{}\" -> SEARCH ERROR: {}",
+                        case.language, case.query, e
+                    );
+                    results_per_case.push((i, None, None));
+                    continue;
+                }
+            };
+
+            let (rank, relaxed_rank) = find_ranks(&results, case);
+            let status = match rank {
+                Some(1) => "+",
+                Some(r) if r <= 5 => "~",
+                _ => "-",
+            };
+            let top3_names: Vec<&str> = results
+                .iter()
+                .take(3)
+                .map(|r| r.chunk.name.as_str())
+                .collect();
+            eprintln!(
+                "  {} [{:?}] \"{}\" -> exp: {} (rank: {}), top3: {:?}",
+                status,
+                case.language,
+                case.query,
+                case.expected_name,
+                rank.map_or("miss".to_string(), |r| r.to_string()),
+                top3_names
+            );
+            results_per_case.push((i, rank, relaxed_rank));
+        }
+
+        let (r1, r5, mrr, per_lang, relaxed_r1) =
+            compute_metrics_refs(&results_per_case, &all_cases);
+        all_metrics.push(ConfigMetrics {
+            name: "G: SPLADE rerank",
             recall_at_1: r1,
             recall_at_5: r5,
             mrr,

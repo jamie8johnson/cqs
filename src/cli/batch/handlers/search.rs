@@ -13,6 +13,8 @@ pub(in crate::cli::batch) struct SearchParams {
     #[allow(dead_code)] // Parsed from batch commands, reserved for future --rrf opt-in
     pub semantic_only: bool,
     pub rerank: bool,
+    pub splade: bool,
+    pub splade_alpha: f32,
     pub lang: Option<String>,
     pub path: Option<String>,
     pub tokens: Option<usize>,
@@ -89,21 +91,41 @@ pub(in crate::cli::batch) fn dispatch_search(
         name_boost: cqs::store::DEFAULT_NAME_BOOST,
         query_text: params.query.clone(),
         enable_rrf: false,
+        enable_splade: params.splade,
+        splade_alpha: params.splade_alpha,
         ..Default::default()
     };
+
+    // SPLADE sparse encoding (if enabled)
+    let splade_query = if params.splade {
+        ctx.splade_encoder()
+            .and_then(|enc| enc.encode(&params.query).ok())
+    } else {
+        None
+    };
+    if params.splade {
+        ctx.ensure_splade_index();
+    }
+    let splade_index_ref = ctx.borrow_splade_index();
+
+    // Build SPLADE arg from borrowed references
+    let splade_arg = splade_query
+        .as_ref()
+        .and_then(|sq| splade_index_ref.as_ref().map(|si| (si, sq)));
 
     // Check audit mode (cached per session)
     let audit_mode = ctx.audit_state();
     let index = ctx.vector_index()?;
     let index = index.as_deref();
 
-    let results = if audit_mode.is_active() {
-        let code_results = ctx.store().search_filtered_with_index(
+    let results = if audit_mode.is_active() || splade_arg.is_some() {
+        let code_results = ctx.store().search_hybrid(
             &query_embedding,
             &filter,
             effective_limit,
             0.3,
             index,
+            splade_arg,
         )?;
         code_results
             .into_iter()

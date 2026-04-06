@@ -190,6 +190,14 @@ pub struct Cli {
     #[arg(long)]
     pub rerank: bool,
 
+    /// Enable SPLADE sparse-dense hybrid search (requires SPLADE model)
+    #[arg(long)]
+    pub splade: bool,
+
+    /// SPLADE fusion weight: 1.0 = pure cosine, 0.0 = pure sparse (default: 0.7)
+    #[arg(long, default_value = "0.7")]
+    pub splade_alpha: f32,
+
     /// Output as JSON
     #[arg(long)]
     pub json: bool,

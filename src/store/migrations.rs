@@ -70,6 +70,7 @@ async fn run_migration(
         (13, 14) => migrate_v13_to_v14(conn).await,
         (14, 15) => migrate_v14_to_v15(conn).await,
         (15, 16) => migrate_v15_to_v16(conn).await,
+        (16, 17) => migrate_v16_to_v17(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -235,6 +236,39 @@ async fn migrate_v15_to_v16(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// Migrate from v16 to v17: sparse_vectors table + enrichment_version column
+///
+/// - `sparse_vectors`: stores SPLADE sparse vectors for hybrid search.
+///   Each chunk gets a set of (token_id, weight) pairs from the learned sparse encoder.
+/// - `enrichment_version`: RT-DATA-2 idempotency marker. Tracks which enrichment pass
+///   last processed each chunk, preventing double-application of call graph context.
+async fn migrate_v16_to_v17(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v16_to_v17").entered();
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS sparse_vectors (
+            chunk_id TEXT NOT NULL,
+            token_id INTEGER NOT NULL,
+            weight REAL NOT NULL,
+            PRIMARY KEY (chunk_id, token_id)
+        )",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_sparse_token ON sparse_vectors(token_id)")
+        .execute(&mut *conn)
+        .await?;
+
+    // RT-DATA-2: enrichment idempotency marker
+    sqlx::query("ALTER TABLE chunks ADD COLUMN enrichment_version INTEGER NOT NULL DEFAULT 0")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!("Migrated to v17: sparse_vectors table + enrichment_version column");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,7 +286,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 16);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 17);
     }
 
     #[test]

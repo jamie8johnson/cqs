@@ -88,6 +88,7 @@ pub struct ScoringOverrides {
     pub importance_private: Option<f32>,
     pub parent_boost_per_child: Option<f32>,
     pub parent_boost_cap: Option<f32>,
+    pub splade_alpha: Option<f32>,
 }
 
 /// Configuration options loaded from config files

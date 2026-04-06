@@ -304,6 +304,160 @@ impl Store {
     }
 
     /// Search with optional vector index for O(log n) candidate retrieval
+    /// Search with optional SPLADE sparse-dense fusion.
+    ///
+    /// When `splade` is Some and `filter.enable_splade` is true, fuses dense
+    /// (cosine) and sparse (SPLADE) results via linear interpolation.
+    pub fn search_hybrid(
+        &self,
+        query: &Embedding,
+        filter: &SearchFilter,
+        limit: usize,
+        threshold: f32,
+        index: Option<&dyn VectorIndex>,
+        splade: Option<(
+            &crate::splade::index::SpladeIndex,
+            &crate::splade::SparseVector,
+        )>,
+    ) -> Result<Vec<SearchResult>, StoreError> {
+        // If SPLADE is not enabled or not available, delegate to standard path
+        if !filter.enable_splade || splade.is_none() {
+            return self.search_filtered_with_index(query, filter, limit, threshold, index);
+        }
+
+        let (splade_index, sparse_query) = splade.unwrap();
+        let _span = tracing::info_span!("search_hybrid", limit, enable_splade = true).entered();
+
+        // Load notes once for all paths
+        let notes = match self.cached_notes_summaries() {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load notes for search boosting");
+                std::sync::Arc::new(Vec::new())
+            }
+        };
+
+        let candidate_count = (limit * 5).max(100);
+
+        // Build chunk filter predicate
+        let meta = self.chunk_type_language_map()?;
+        let chunk_types = filter.chunk_types.as_ref();
+        let languages = filter.languages.as_ref();
+        let predicate = |chunk_id: &str| -> bool {
+            if chunk_types.is_none() && languages.is_none() {
+                return true;
+            }
+            if let Some((ct, lang)) = meta.get(chunk_id) {
+                let type_ok = chunk_types.is_none_or(|types| types.contains(ct));
+                let lang_ok = languages.is_none_or(|langs| langs.contains(lang));
+                type_ok && lang_ok
+            } else {
+                false
+            }
+        };
+
+        // Dense results from vector index (HNSW or CAGRA)
+        let dense_results = if let Some(idx) = index {
+            idx.search_with_filter(query, candidate_count, &predicate)
+        } else {
+            tracing::warn!("No vector index available for dense leg of hybrid search");
+            Vec::new()
+        };
+
+        // Sparse results from SPLADE inverted index
+        let sparse_results =
+            splade_index.search_with_filter(sparse_query, candidate_count, &predicate);
+
+        tracing::debug!(
+            dense = dense_results.len(),
+            sparse = sparse_results.len(),
+            "Hybrid search: fusing results"
+        );
+
+        // Normalize sparse scores to [0, 1] via min-max
+        let max_sparse = sparse_results
+            .iter()
+            .map(|r| r.score)
+            .fold(0.0f32, f32::max);
+
+        // Build score maps
+        let mut dense_scores: std::collections::HashMap<&str, f32> =
+            std::collections::HashMap::new();
+        for r in &dense_results {
+            dense_scores.insert(&r.id, r.score);
+        }
+        let mut sparse_scores: std::collections::HashMap<&str, f32> =
+            std::collections::HashMap::new();
+        for r in &sparse_results {
+            let normalized = if max_sparse > 0.0 {
+                r.score / max_sparse
+            } else {
+                0.0
+            };
+            sparse_scores.insert(&r.id, normalized);
+        }
+
+        // Union of all candidate IDs
+        let mut all_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for r in &dense_results {
+            all_ids.insert(&r.id);
+        }
+        for r in &sparse_results {
+            all_ids.insert(&r.id);
+        }
+
+        // Fuse with linear interpolation: final = α * dense + (1-α) * sparse
+        let alpha = filter.splade_alpha;
+        tracing::debug!(
+            alpha,
+            dense = dense_scores.len(),
+            sparse = sparse_scores.len(),
+            "SPLADE fusion"
+        );
+        let mut fused: Vec<crate::index::IndexResult> = all_ids
+            .iter()
+            .map(|id| {
+                let d = dense_scores.get(id).copied().unwrap_or(0.0);
+                let s = sparse_scores.get(id).copied().unwrap_or(0.0);
+                let score = if alpha <= 0.0 {
+                    // Pure re-rank mode: SPLADE score for chunks it found,
+                    // cosine score (demoted) for chunks it didn't.
+                    // This preserves cosine ordering for SPLADE-unknown chunks
+                    // while letting SPLADE override when it has signal.
+                    if s > 0.0 {
+                        1.0 + s
+                    } else {
+                        d
+                    }
+                } else {
+                    alpha * d + (1.0 - alpha) * s
+                };
+                crate::index::IndexResult {
+                    id: id.to_string(),
+                    score,
+                }
+            })
+            .collect();
+        fused.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        fused.truncate(candidate_count);
+
+        tracing::debug!(fused = fused.len(), alpha, "Hybrid fusion complete");
+
+        let candidate_ids: Vec<&str> = fused.iter().map(|r| r.id.as_str()).collect();
+        self.search_by_candidate_ids_with_notes(
+            &candidate_ids,
+            query,
+            filter,
+            limit,
+            threshold,
+            &notes,
+        )
+    }
+
     pub fn search_filtered_with_index(
         &self,
         query: &Embedding,

@@ -44,6 +44,12 @@ pub(crate) enum BatchCmd {
         /// Re-rank results with cross-encoder
         #[arg(long)]
         rerank: bool,
+        /// Enable SPLADE sparse-dense hybrid search
+        #[arg(long)]
+        splade: bool,
+        /// SPLADE fusion weight: 1.0 = pure cosine, 0.0 = pure sparse
+        #[arg(long, default_value = "0.7")]
+        splade_alpha: f32,
         /// Filter by language
         #[arg(short = 'l', long)]
         lang: Option<String>,
@@ -312,6 +318,8 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             name_only,
             semantic_only,
             rerank,
+            splade,
+            splade_alpha,
             lang,
             path,
             tokens,
@@ -323,6 +331,8 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
                 name_only,
                 semantic_only,
                 rerank,
+                splade,
+                splade_alpha,
                 lang,
                 path,
                 tokens,

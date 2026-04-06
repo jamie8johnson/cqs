@@ -452,6 +452,8 @@ Key commands (`--json` works on all commands; `--format mermaid` also accepted o
 - `cqs "name" --name-only` - definition lookup (fast, no embedding)
 - `cqs "query" --semantic-only` - pure vector similarity, no keyword RRF
 - `cqs "query" --rerank` - cross-encoder re-ranking (slower, more accurate)
+- `cqs "query" --splade` - sparse-dense hybrid search (requires SPLADE model)
+- `cqs "query" --splade --splade-alpha 0.3` - tune fusion weight (0=pure sparse, 1=pure dense)
 - `cqs read <path>` - file with context notes injected as comments
 - `cqs read --focus <function>` - function + type dependencies only
 - `cqs stats` - index stats, chunk counts, HNSW index status
