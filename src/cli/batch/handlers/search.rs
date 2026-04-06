@@ -10,6 +10,7 @@ pub(in crate::cli::batch) struct SearchParams {
     pub query: String,
     pub limit: usize,
     pub name_only: bool,
+    #[allow(dead_code)] // Parsed from batch commands, reserved for future --rrf opt-in
     pub semantic_only: bool,
     pub rerank: bool,
     pub lang: Option<String>,
