@@ -1,29 +1,66 @@
 //! HNSW search implementation
 
 use hnsw_rs::api::AnnT;
+use hnsw_rs::filter::FilterT;
+use hnsw_rs::prelude::DataId;
 
 use crate::embedder::Embedding;
 use crate::index::IndexResult;
 
 use super::HnswIndex;
 
+/// Wraps a `dyn Fn(&usize) -> bool` to satisfy hnsw_rs's `FilterT` trait.
+struct PredicateFilter<'a>(&'a dyn Fn(&usize) -> bool);
+
+impl FilterT for PredicateFilter<'_> {
+    fn hnsw_filter(&self, id: &DataId) -> bool {
+        (self.0)(id)
+    }
+}
+
 impl HnswIndex {
-    /// Search for nearest neighbors (inherent implementation).
-    /// This is the actual search implementation. The `VectorIndex` trait method
-    /// delegates to this inherent method. Both methods have identical signatures
-    /// and behavior - use whichever is more convenient at the call site.
-    /// # Arguments
-    /// * `query` - Query embedding vector (dimension detected at runtime from model)
-    /// * `k` - Maximum number of results to return
-    /// # Returns
-    /// Vector of (chunk_id, score) pairs, sorted by descending score
+    /// Search for nearest neighbors (unfiltered).
     pub fn search(&self, query: &Embedding, k: usize) -> Vec<IndexResult> {
+        self.search_impl(query, k, None)
+    }
+
+    /// Search with traversal-time filtering.
+    ///
+    /// The predicate receives a chunk_id and returns true to keep the candidate.
+    /// During HNSW graph traversal, non-matching nodes are skipped — the index
+    /// returns exactly k matching results (or fewer if <k matches exist).
+    pub fn search_filtered(
+        &self,
+        query: &Embedding,
+        k: usize,
+        filter: &dyn Fn(&str) -> bool,
+    ) -> Vec<IndexResult> {
+        // Build a predicate over DataId (usize index into id_map)
+        let id_filter = |id: &usize| -> bool {
+            self.id_map
+                .get(*id)
+                .is_some_and(|chunk_id| filter(chunk_id))
+        };
+        self.search_impl(query, k, Some(&id_filter))
+    }
+
+    fn search_impl(
+        &self,
+        query: &Embedding,
+        k: usize,
+        filter: Option<&dyn Fn(&usize) -> bool>,
+    ) -> Vec<IndexResult> {
         if self.id_map.is_empty() {
             return Vec::new();
         }
 
-        let _span =
-            tracing::debug_span!("hnsw_search", k, index_size = self.id_map.len()).entered();
+        let _span = tracing::debug_span!(
+            "hnsw_search",
+            k,
+            index_size = self.id_map.len(),
+            filtered = filter.is_some()
+        )
+        .entered();
 
         if query.is_empty() || query.len() != self.dim {
             if !query.is_empty() {
@@ -41,17 +78,22 @@ impl HnswIndex {
         let index_size = self.id_map.len();
         let ef_search = self.ef_search.max(k * 2).min(index_size);
 
-        let neighbors = self
-            .inner
-            .with_hnsw(|h| h.search_neighbours(query.as_slice(), k, ef_search));
+        let neighbors = match filter {
+            Some(f) => {
+                let wrapper = PredicateFilter(f);
+                self.inner
+                    .with_hnsw(|h| h.search_filter(query.as_slice(), k, ef_search, Some(&wrapper)))
+            }
+            None => self
+                .inner
+                .with_hnsw(|h| h.search_neighbours(query.as_slice(), k, ef_search)),
+        };
 
         neighbors
             .into_iter()
             .filter_map(|n| {
                 let idx = n.d_id;
                 if idx < self.id_map.len() {
-                    // Convert distance to similarity score
-                    // Cosine distance is 1 - cosine_similarity, so we convert back
                     let score = 1.0 - n.distance;
                     if !score.is_finite() {
                         tracing::warn!(

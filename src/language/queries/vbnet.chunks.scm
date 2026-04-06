@@ -13,7 +13,7 @@
 
 ;; Constants
 (const_declaration
-  (variable_declarator (identifier) @name)) @constant
+  (variable_declarator (identifier) @name)) @const
 
 ;; Events
 (event_declaration name: (identifier) @name) @event

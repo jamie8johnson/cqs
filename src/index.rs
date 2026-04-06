@@ -39,6 +39,25 @@ pub trait VectorIndex: Send + Sync {
 
     /// Embedding dimension of vectors in this index
     fn dim(&self) -> usize;
+
+    /// Search with traversal-time filtering.
+    ///
+    /// The predicate receives a chunk_id and returns true to keep the candidate.
+    /// HNSW overrides this with traversal-time filtering (skips non-matching nodes
+    /// during graph walk). Default impl over-fetches and post-filters.
+    fn search_with_filter(
+        &self,
+        query: &Embedding,
+        k: usize,
+        filter: &dyn Fn(&str) -> bool,
+    ) -> Vec<IndexResult> {
+        // Default: over-fetch unfiltered, post-filter by chunk_id
+        self.search(query, k * 3)
+            .into_iter()
+            .filter(|r| filter(&r.id))
+            .take(k)
+            .collect()
+    }
 }
 
 #[cfg(test)]

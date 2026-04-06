@@ -342,6 +342,15 @@ impl VectorIndex for HnswIndex {
         self.search(query, k)
     }
 
+    fn search_with_filter(
+        &self,
+        query: &Embedding,
+        k: usize,
+        filter: &dyn Fn(&str) -> bool,
+    ) -> Vec<IndexResult> {
+        self.search_filtered(query, k, filter)
+    }
+
     /// Returns the number of elements in the collection.
     ///
     /// # Returns
