@@ -372,6 +372,58 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         }
     }
 
+    // SPLADE sparse encoding (if model available)
+    if !check_interrupted() {
+        let splade_dir = dirs::home_dir()
+            .map(|h| h.join(".cache/huggingface/splade-onnx"))
+            .unwrap_or_default();
+        if splade_dir.join("model.onnx").exists() {
+            if !cli.quiet {
+                println!("Encoding SPLADE sparse vectors...");
+            }
+            match cqs::splade::SpladeEncoder::new(&splade_dir, 0.01) {
+                Ok(encoder) => {
+                    let _span = tracing::info_span!("splade_index_encode").entered();
+                    // Get all chunks that need SPLADE encoding
+                    let identities = store.all_chunk_identities()?;
+                    let mut sparse_vecs: Vec<(String, cqs::splade::SparseVector)> = Vec::new();
+                    let mut encoded = 0usize;
+                    let mut failed = 0usize;
+                    for chunk in &identities {
+                        // Use name + file context as the sparse encoding text
+                        // (simple, fast — full NL would be better but requires re-generating)
+                        let text = format!("{} {}", chunk.name, chunk.file.display());
+                        match encoder.encode(&text) {
+                            Ok(sv) if !sv.is_empty() => {
+                                sparse_vecs.push((chunk.id.clone(), sv));
+                                encoded += 1;
+                            }
+                            Ok(_) => {} // empty vector, skip
+                            Err(e) => {
+                                if failed == 0 {
+                                    tracing::warn!(error = %e, chunk = %chunk.name, "SPLADE encoding failed");
+                                }
+                                failed += 1;
+                            }
+                        }
+                    }
+                    if !sparse_vecs.is_empty() {
+                        store.upsert_sparse_vectors(&sparse_vecs)?;
+                    }
+                    if !cli.quiet {
+                        println!("  SPLADE: {} chunks encoded", encoded);
+                        if failed > 0 {
+                            println!("  SPLADE: {} chunks failed", failed);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "SPLADE encoder unavailable, skipping sparse encoding");
+                }
+            }
+        }
+    }
+
     // Build HNSW index for fast chunk search (notes use brute-force from SQLite)
     if !check_interrupted() {
         if !cli.quiet {

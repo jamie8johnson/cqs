@@ -85,6 +85,8 @@ pub(crate) struct BatchContext {
     // Single-threaded by design — RefCell is correct, no Mutex needed
     // RM-27: Reduced from 4 to 2 — each ReferenceIndex holds Store + HNSW (50-200MB)
     refs: RefCell<lru::LruCache<String, ReferenceIndex>>,
+    splade_encoder: OnceLock<Option<cqs::splade::SpladeEncoder>>,
+    splade_index: RefCell<Option<cqs::splade::index::SpladeIndex>>,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
     pub model_config: cqs::embedder::ModelConfig,
@@ -232,6 +234,48 @@ impl BatchContext {
             .embedder
             .get()
             .expect("embedder OnceLock populated by set() above"))
+    }
+
+    /// Get or lazily load the SPLADE encoder. Returns None if model unavailable.
+    pub fn splade_encoder(&self) -> Option<&cqs::splade::SpladeEncoder> {
+        let opt = self.splade_encoder.get_or_init(|| {
+            let model_dir = dirs::home_dir()
+                .map(|h| h.join(".cache/huggingface/splade-onnx"))
+                .unwrap_or_default();
+            if !model_dir.join("model.onnx").exists() {
+                return None;
+            }
+            match cqs::splade::SpladeEncoder::new(&model_dir, 0.01) {
+                Ok(enc) => Some(enc),
+                Err(e) => {
+                    tracing::warn!(error = %e, "SPLADE encoder unavailable in batch mode");
+                    None
+                }
+            }
+        });
+        opt.as_ref()
+    }
+
+    /// Ensure SPLADE index is loaded, then borrow it.
+    /// Call `ensure_splade_index()` first, then `borrow_splade_index()`.
+    pub fn ensure_splade_index(&self) {
+        self.check_index_staleness();
+        if self.splade_index.borrow().is_some() {
+            return;
+        }
+        if let Ok(vectors) = self.store().load_all_sparse_vectors() {
+            if !vectors.is_empty() {
+                let idx = cqs::splade::index::SpladeIndex::build(vectors);
+                *self.splade_index.borrow_mut() = Some(idx);
+            }
+        }
+    }
+
+    /// Borrow the SPLADE index (call ensure_splade_index first).
+    pub fn borrow_splade_index(
+        &self,
+    ) -> std::cell::Ref<'_, Option<cqs::splade::index::SpladeIndex>> {
+        self.splade_index.borrow()
     }
 
     /// Get or build the vector index (CAGRA/HNSW/brute-force, cached).
@@ -504,6 +548,8 @@ pub(crate) fn create_context() -> Result<BatchContext> {
         test_chunks: RefCell::new(None),
         file_set: RefCell::new(None),
         notes_cache: RefCell::new(None),
+        splade_encoder: OnceLock::new(),
+        splade_index: RefCell::new(None),
         refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(2).unwrap())),
         root,
         cqs_dir,
@@ -536,6 +582,8 @@ fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
         test_chunks: RefCell::new(None),
         file_set: RefCell::new(None),
         notes_cache: RefCell::new(None),
+        splade_encoder: OnceLock::new(),
+        splade_index: RefCell::new(None),
         refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(2).unwrap())),
         root,
         cqs_dir: cqs_dir.to_path_buf(),
