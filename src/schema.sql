@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     parent_id TEXT,           -- if windowed: ID of the logical parent chunk
     window_idx INTEGER,       -- if windowed: 0, 1, 2... for each window
     parent_type_name TEXT,    -- for methods: name of enclosing class/struct/impl
-    enrichment_hash TEXT      -- blake3 hash of call context used for enrichment (NULL = not enriched)
+    enrichment_hash TEXT,     -- blake3 hash of call context used for enrichment (NULL = not enriched)
+    enrichment_version INTEGER NOT NULL DEFAULT 0  -- RT-DATA-2: idempotency marker for enrichment passes
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_origin ON chunks(origin);
@@ -113,6 +114,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
     text,
     tokenize='unicode61'
 );
+
+-- SPLADE sparse vectors for hybrid search (v17)
+-- Each chunk gets a set of (token_id, weight) pairs from the learned sparse encoder.
+CREATE TABLE IF NOT EXISTS sparse_vectors (
+    chunk_id TEXT NOT NULL,
+    token_id INTEGER NOT NULL,
+    weight REAL NOT NULL,
+    PRIMARY KEY (chunk_id, token_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sparse_token ON sparse_vectors(token_id);
 
 -- LLM-generated summaries cache (SQ-6, v16: composite PK)
 -- Keyed by (content_hash, purpose) so the same code can have multiple summary types
