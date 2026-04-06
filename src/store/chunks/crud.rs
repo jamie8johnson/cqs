@@ -365,30 +365,18 @@ impl Store {
         })
     }
 
-    /// Copy LLM summaries from a backup database into this store.
-    /// Used by `--force` reindex to preserve cached summaries.
-    pub fn copy_summaries_from(&self, backup_path: &std::path::Path) -> Result<usize, StoreError> {
-        let _span =
-            tracing::info_span!("copy_summaries_from", backup = %backup_path.display()).entered();
-        let backup_str = backup_path.to_string_lossy();
+    /// Get all summaries with full metadata for backup/restore.
+    /// Returns Vec of (content_hash, summary, model, purpose).
+    pub fn get_all_summaries_full(
+        &self,
+    ) -> Result<Vec<(String, String, String, String)>, StoreError> {
+        let _span = tracing::debug_span!("get_all_summaries_full").entered();
         self.rt.block_on(async {
-            // Attach backup DB
-            sqlx::query(&format!("ATTACH DATABASE '{}' AS backup", backup_str))
-                .execute(&self.pool)
-                .await?;
-            // Copy summaries that don't already exist
-            let result = sqlx::query(
-                "INSERT OR IGNORE INTO llm_summaries (content_hash, purpose, summary) \
-                 SELECT content_hash, purpose, summary FROM backup.llm_summaries",
-            )
-            .execute(&self.pool)
-            .await?;
-            let copied = result.rows_affected() as usize;
-            // Detach
-            sqlx::query("DETACH DATABASE backup")
-                .execute(&self.pool)
-                .await?;
-            Ok(copied)
+            let rows: Vec<(String, String, String, String)> =
+                sqlx::query_as("SELECT content_hash, summary, model, purpose FROM llm_summaries")
+                    .fetch_all(&self.pool)
+                    .await?;
+            Ok(rows)
         })
     }
 

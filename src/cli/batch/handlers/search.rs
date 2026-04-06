@@ -10,6 +10,7 @@ pub(in crate::cli::batch) struct SearchParams {
     pub query: String,
     pub limit: usize,
     pub name_only: bool,
+    #[allow(dead_code)] // Parsed from batch commands, reserved for future --rrf opt-in
     pub semantic_only: bool,
     pub rerank: bool,
     pub lang: Option<String>,
@@ -87,7 +88,7 @@ pub(in crate::cli::batch) fn dispatch_search(
         path_pattern: params.path.clone(),
         name_boost: cqs::store::DEFAULT_NAME_BOOST,
         query_text: params.query.clone(),
-        enable_rrf: !params.semantic_only,
+        enable_rrf: false,
         ..Default::default()
     };
 

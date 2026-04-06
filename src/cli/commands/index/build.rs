@@ -120,6 +120,31 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         Store::open(&index_path)
             .with_context(|| format!("Failed to open store at {}", index_path.display()))?
     } else {
+        // Read LLM summaries from existing DB before destroying it.
+        // Summaries are keyed by content_hash (blake3 of source content) so they're
+        // valid for any chunk with identical source, even after reindex.
+        let saved_summaries = if index_path.exists() {
+            match Store::open(&index_path) {
+                Ok(old_store) => {
+                    let summaries = old_store.get_all_summaries_full().unwrap_or_default();
+                    if !summaries.is_empty() {
+                        tracing::info!(
+                            count = summaries.len(),
+                            "Read LLM summaries from existing DB"
+                        );
+                    }
+                    drop(old_store); // Close before rename
+                    summaries
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to read summaries from existing DB");
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
         if index_path.exists() {
             std::fs::rename(&index_path, &backup_path)
                 .with_context(|| format!("Failed to back up {}", index_path.display()))?;
@@ -139,16 +164,13 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
             .with_context(|| format!("Failed to create store at {}", index_path.display()))?;
         let mc = cli.try_model_config()?;
         store.init(&ModelInfo::new(&mc.repo, mc.dim))?;
-        // Update dim to match the model — open() defaulted to EMBEDDING_DIM
-        // because metadata didn't exist yet before init().
         store.set_dim(mc.dim);
-        // Preserve LLM summaries from the backup — they're keyed by content_hash
-        // (blake3 of content) so they survive reindexing unchanged content.
-        if backup_path.exists() {
-            match store.copy_summaries_from(&backup_path) {
-                Ok(n) if n > 0 => tracing::info!(count = n, "Restored LLM summaries from backup"),
-                Ok(_) => {}
-                Err(e) => tracing::warn!(error = %e, "Failed to restore LLM summaries from backup"),
+
+        // Restore saved summaries into the fresh DB
+        if !saved_summaries.is_empty() {
+            match store.upsert_summaries_batch(&saved_summaries) {
+                Ok(n) => tracing::info!(count = n, "Restored LLM summaries"),
+                Err(e) => tracing::warn!(error = %e, "Failed to restore LLM summaries"),
             }
         }
         store
