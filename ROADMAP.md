@@ -78,7 +78,11 @@ Further embedding improvement requires BGE-large (already 91.2%) or fundamentall
 - L5X files from plant
 - KD-LoRA distillation (CodeSage→E5)
 - ColBERT late interaction
-- SPLADE sparse-dense hybrid — learned sparse retrieval replaces FTS5 keyword matching. Our RRF attempt (FTS5 + cosine) degraded quality 17pp because FTS5 is dumb token matching. SPLADE learns token importance and query expansion. The right fix for exact-name queries without hurting semantic search. Requires: trained sparse model (or off-the-shelf naver/splade), inverted index storage, fused scoring pipeline.
+- Code-specific SPLADE fine-tuning — off-the-shelf naver/splade gives +2-5pp. CodeBERT-based SPLADE with code vocabulary would likely improve. Training project, not download.
+- Variable chunk type — top-level bindings: JS/TS `export const routes = [...]`, Python `config = {...}`, Go `var MaxRetries = 3`. Configuration surface currently missed.
+- Test chunk type — dedicated type for test functions (currently Function/Method, identified by `is_test_chunk()` heuristic). Would improve test-map and dead code detection.
+- Handler/Callback chunk type — Express routes, React event handlers, PLC ISRs. Currently Function.
+- Route/Endpoint chunk type — REST endpoints with HTTP method + path metadata.
 - Solidity modifier chunk type — `modifier onlyOwner()` is access control, not a function
 - Rust impl block chunk type — `impl<T: Hash> Cache<T>` for type dependency analysis
 - Test suite/describe chunk type — Jest `describe()`, RSpec `context`, pytest fixtures
@@ -90,7 +94,8 @@ Further embedding improvement requires BGE-large (already 91.2%) or fundamentall
 
 | Version | Highlights |
 |---------|-----------|
-| v1.16.0 | Language macro v2 (52→2 files), Dart (53rd), ConfigKey + Impl chunk types, HNSW traversal filtering, batch code-only filter, eval cleanup |
+| v1.17.0 | SPLADE hybrid search, HNSW traversal filtering, CAGRA itopk cap, prune path fix, batch RRF disabled, summary preservation |
+| v1.16.0 | Language macro v2 (52→2 files), Dart (53rd), ConfigKey + Impl chunk types, batch code-only filter, eval cleanup |
 | v1.15.2 | 10th audit 103/103 fixed, typed JSON output structs, 35 PRs |
 | v1.15.1 | JSON schema migration, batch/CLI unification, 4 file splits |
 | v1.15.0 | L5X/L5K PLC, telemetry, CommandContext, custom agents, BGE-large FT |

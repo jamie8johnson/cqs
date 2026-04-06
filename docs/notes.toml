@@ -1047,3 +1047,30 @@ mentions = [
     "src/cli/batch/handlers/search.rs",
     "SearchParams",
 ]
+
+[[note]]
+sentiment = 1.0
+text = "SPLADE off-the-shelf (naver/splade-cocondenser-ensembledistil, 110M, no fine-tuning) gives +18pp R@1 on real-code eval (34%→52%) at α=0.7. First real search quality improvement since BGE-large. Sparse signal disambiguates top-1 without hurting R@5. Full document encoding at index time should improve further — prototype only re-ranked by chunk name."
+mentions = [
+    "src/splade/mod.rs",
+    "src/search/query.rs",
+    "SPLADE",
+]
+
+[[note]]
+sentiment = -1.0
+text = "Mixed absolute/relative chunk IDs in Store caused CAGRA search_with_filter to return 0 results. Root cause: incremental reindex after file restructuring (language consolidation) left stale chunks with old IDs. CAGRA built from mixed IDs, metadata map from SQLite had matching mix, but the filter predicate path was inconsistent. --force fixes but masks. The real fix: prune_missing should remove chunks for files that no longer exist at their stored path."
+mentions = [
+    "src/cli/pipeline/parsing.rs",
+    "src/store/chunks/staleness.rs",
+    "CAGRA",
+]
+
+[[note]]
+sentiment = -1.0
+text = "CAGRA itopk_size overflow: (k*2).max(128) exceeded cuVS 512 limit when search_with_filter over-fetches k*3. Caused silently empty dense results in search_hybrid — SPLADE fusion was actually pure SPLADE for all evals. Fix: .min(512) cap with warning log. CAGRA filtered search limited to ~170 effective results before clamping degrades recall."
+mentions = [
+    "src/cagra.rs",
+    "src/index.rs",
+    "search_with_filter",
+]
