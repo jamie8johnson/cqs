@@ -20,6 +20,7 @@ mod metadata;
 mod migrations;
 mod notes;
 mod search;
+mod sparse;
 mod types;
 
 /// Helper types and embedding conversion functions.
