@@ -436,6 +436,29 @@ impl Store {
         self.all_chunk_identities_filtered(None)
     }
 
+    /// Bulk lookup of chunk_type and language for all chunks, keyed by chunk ID.
+    /// Used by HNSW traversal-time filtering to decide which chunks to skip.
+    pub fn chunk_type_language_map(
+        &self,
+    ) -> Result<HashMap<String, (ChunkType, Language)>, StoreError> {
+        let _span = tracing::debug_span!("chunk_type_language_map").entered();
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query("SELECT id, chunk_type, language FROM chunks")
+                .fetch_all(&self.pool)
+                .await?;
+            let mut map = HashMap::with_capacity(rows.len());
+            for row in &rows {
+                let id: String = row.get("id");
+                let ct: String = row.get("chunk_type");
+                let lang: String = row.get("language");
+                if let (Ok(chunk_type), Ok(language)) = (ct.parse(), lang.parse()) {
+                    map.insert(id, (chunk_type, language));
+                }
+            }
+            Ok(map)
+        })
+    }
+
     /// Fetch a page of full chunks by rowid cursor.
     /// Returns `(chunks, next_cursor)`. When the returned vec is empty, iteration
     /// is complete. Used by the enrichment pass to iterate all chunks without

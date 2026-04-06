@@ -325,7 +325,27 @@ impl Store {
             let _span = tracing::info_span!("search_index_guided", limit = limit).entered();
 
             let candidate_count = (limit * 5).max(100);
-            let index_results = idx.search(query, candidate_count);
+            let has_type_or_lang_filter =
+                filter.chunk_types.is_some() || filter.languages.is_some();
+
+            let index_results = if has_type_or_lang_filter {
+                // Build traversal-time filter from chunk metadata
+                let meta = self.chunk_type_language_map()?;
+                let chunk_types = filter.chunk_types.as_ref();
+                let languages = filter.languages.as_ref();
+                let predicate = |chunk_id: &str| -> bool {
+                    if let Some((ct, lang)) = meta.get(chunk_id) {
+                        let type_ok = chunk_types.is_none_or(|types| types.contains(ct));
+                        let lang_ok = languages.is_none_or(|langs| langs.contains(lang));
+                        type_ok && lang_ok
+                    } else {
+                        false
+                    }
+                };
+                idx.search_with_filter(query, candidate_count, &predicate)
+            } else {
+                idx.search(query, candidate_count)
+            };
 
             if index_results.is_empty() {
                 tracing::info!("Index returned no candidates, falling back to brute-force search (performance may degrade)");
