@@ -97,6 +97,33 @@ impl Store {
         })
     }
 
+    /// Get (id, text) pairs for SPLADE encoding.
+    /// Text is name + signature + doc comment — the most informative NL-like fields.
+    pub fn chunk_splade_texts(&self) -> Result<Vec<(String, String)>, StoreError> {
+        let _span = tracing::info_span!("chunk_splade_texts").entered();
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query("SELECT id, name, signature, doc FROM chunks")
+                .fetch_all(&self.pool)
+                .await?;
+            let result: Vec<(String, String)> = rows
+                .iter()
+                .map(|row| {
+                    let id: String = row.get("id");
+                    let name: String = row.get("name");
+                    let sig: String = row.get("signature");
+                    let doc: Option<String> = row.get("doc");
+                    let text = match doc {
+                        Some(d) if !d.is_empty() => format!("{} {} {}", name, sig, d),
+                        _ => format!("{} {}", name, sig),
+                    };
+                    (id, text)
+                })
+                .collect();
+            tracing::info!(chunks = result.len(), "Loaded chunk texts for SPLADE");
+            Ok(result)
+        })
+    }
+
     /// Delete sparse vectors for chunks that no longer exist.
     pub fn prune_orphan_sparse_vectors(&self) -> Result<usize, StoreError> {
         let _span = tracing::debug_span!("prune_orphan_sparse_vectors").entered();

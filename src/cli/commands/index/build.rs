@@ -384,24 +384,22 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
             match cqs::splade::SpladeEncoder::new(&splade_dir, 0.01) {
                 Ok(encoder) => {
                     let _span = tracing::info_span!("splade_index_encode").entered();
-                    // Get all chunks that need SPLADE encoding
-                    let identities = store.all_chunk_identities()?;
+                    // Fetch name + signature + doc for SPLADE encoding
+                    // These are the most informative NL-like fields without regenerating full NL
+                    let chunk_texts = store.chunk_splade_texts()?;
                     let mut sparse_vecs: Vec<(String, cqs::splade::SparseVector)> = Vec::new();
                     let mut encoded = 0usize;
                     let mut failed = 0usize;
-                    for chunk in &identities {
-                        // Use name + file context as the sparse encoding text
-                        // (simple, fast — full NL would be better but requires re-generating)
-                        let text = format!("{} {}", chunk.name, chunk.file.display());
-                        match encoder.encode(&text) {
+                    for (id, text) in &chunk_texts {
+                        match encoder.encode(text) {
                             Ok(sv) if !sv.is_empty() => {
-                                sparse_vecs.push((chunk.id.clone(), sv));
+                                sparse_vecs.push((id.clone(), sv));
                                 encoded += 1;
                             }
-                            Ok(_) => {} // empty vector, skip
+                            Ok(_) => {}
                             Err(e) => {
                                 if failed == 0 {
-                                    tracing::warn!(error = %e, chunk = %chunk.name, "SPLADE encoding failed");
+                                    tracing::warn!(error = %e, "SPLADE encoding failed");
                                 }
                                 failed += 1;
                             }
