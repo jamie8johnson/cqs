@@ -2,6 +2,8 @@
 
 Motivated by "Embarrassingly Simple Self-Distillation Improves Code Generation" (Zhang et al., Apple, April 2026, arxiv 2604.01193). SSD's structural insight — self-derived training signal needs a structural filter to break the fixed point, and the filter contributes more than the signal itself — validates the CG filter pattern and suggests next experiments.
 
+**Status (2026-04-06):** Experiments 1-3 complete. All null for E5-base. E5-base ceiling confirmed at ~81% pipeline R@1. BGE-large at 91.2% is the production model. Experiments 4-5 remain untried but face diminishing returns.
+
 ---
 
 ## Background: What Transferred
@@ -12,60 +14,53 @@ The parallel to cqs embedding training:
 
 | SSD (generative) | cqs (contrastive) |
 |---|---|
-| Naive self-training = fixed point | FAISS hard negative mining = basin at ~82% (296q) |
+| Naive self-training = fixed point | FAISS hard negative mining = basin at ~81% (296q) |
 | Truncation breaks fixed point | CG filter breaks fixed point |
 | Near-gibberish data still helps | Enrichment dominates model choice (+15pp on 296q) |
 | Context-dependent reshaping | BM25 handles locks, HNSW handles forks, RRF fuses |
 
 ---
 
-## Experiments (priority order)
+## Current Baselines (re-baselined 2026-04-06)
 
-### 1. Similarity-Band Negative Mining
-
-**Cost:** Low. Data pipeline change only, no new infrastructure.
-
-**Idea:** Don't take the absolute hardest negatives (closest in embedding space). Those are the most likely false negatives even after CG filtering — functions that are genuinely similar but not in the call graph. Take negatives from a similarity band: hard enough to be informative, but not the hardest.
-
-**Concretely:** Instead of top-5 nearest non-CG neighbors, take top-20-to-top-50. The CG filter catches structural false negatives; the band catches semantic false negatives the call graph doesn't know about.
-
-**SSD analog:** SSD's truncation doesn't just cut the bottom of the distribution — it removes both tails. Very highest probability tokens pass through unchanged; very lowest are removed. Similarity-band mining is the same shape: remove both extremes (too close = likely false negative, too far = uninformative).
-
-**Prior evidence:** v9-200k-hn used FAISS top-k (hardest negatives) and regressed from 90.5% to 82.4%. v9-200k used CG-filtered only with no similarity ranking. The band idea sits between these — the experiment we should have run instead of jumping to FAISS.
-
-**Test:** Train v10 with band-mined negatives, compare against v9-200k on fixture (296q) and real-code (100q) evals.
+| Model | Params | Pipeline R@1 (296q) | MRR | Raw R@1 (55q) |
+|-------|--------|---------------------|-----|---------------|
+| **BGE-large FT** | 335M | **91.9%** | **0.955** | 66.2% |
+| BGE-large | 335M | 91.2% | 0.951 | 61.8% |
+| v9-200k | 110M | 81.4% | 0.898 | 70.9% |
+| E5-base | 110M | ~75% | ~0.87 | 49.1% |
 
 ---
 
-### 2. GIST Margin / InfoNCE Temperature Sweep
+## Experiments
 
-**Cost:** Lowest. Hyperparameter change only.
+### ~~1. Similarity-Band Negative Mining~~ — NULL RESULT (2026-04-05)
 
-**Idea:** Standard contrastive loss uses a fixed temperature τ on similarity scores. SSD's insight: training-time temperature interacts with eval-time behavior — the optimal training temperature isn't necessarily the default. The CG filter changes which negatives survive, which changes the optimal τ. If CG filter was added without re-tuning τ, there may be headroom.
+**Result:** 81.1% pipeline R@1 vs 81.4% v9-200k baseline. Band [20,50) negatives from v9-200k embedding space, CG-filtered, margin=0.05.
 
-**Note:** We use CachedGISTEmbedLoss with margin=0.05. GIST's margin parameter acts similarly to temperature — sweep both: GIST margin ∈ {0.01, 0.03, 0.05, 0.08, 0.1, 0.15} and if switching to InfoNCE, τ ∈ {0.01, 0.02, 0.05, 0.07, 0.1, 0.15, 0.2}.
-
-**Test:** Grid search, each run is cheap (same data, same architecture, different scalar).
+Band-selected negatives (ranks 20-50 instead of top-k) don't help. The model already learns everything it can from the CG-filtered data regardless of which negatives are selected from the filtered pool.
 
 ---
 
-### 3. Iterative Self-Distillation
+### ~~2. GIST Margin Sweep~~ — NULL RESULT (2026-04-05)
 
-**Cost:** Medium. Multiple training rounds, each ~3h (E5-base) or ~13h (BGE-large) on A6000.
+**Result:** All margins (0.01-0.10) land in 80-83% pipeline R@1. Margin=0.03 gives +1.8pp raw R@1 (repeatable, deterministic) but pipeline is within training seed variance. Default 0.05 confirmed correct.
 
-**Idea:** v9-200k was one round: train on base model's embedding space negatives with CG filter. Use v9-200k's embedding space to mine negatives (with CG filter) → train v10. The reshaped embedding space produces different negatives. The CG filter prevents collapse (fixed-point breaker preserved across rounds).
-
-**Concretely:**
-1. Index training corpus with v9-200k model
-2. Mine negatives from v9-200k's embedding space (with CG filter, possibly with band from experiment #1)
-3. Train v10 on new negatives
-4. Evaluate. If improved, repeat.
-
-**Risk:** The ~82% basin might reassert. The CG filter breaks the one-round fixed point, but multi-round dynamics could converge to a different basin. Monitor for collapse — if round 2 matches round 1, stop.
+Note: the original spec proposed an InfoNCE temperature sweep. We swept the GIST margin instead, which serves the same purpose — controls the false-negative filtering aggressiveness. The finding: CG filter + GIST margin overlap; adjusting one doesn't compensate for the other.
 
 ---
 
-### 4. Enrichment-Mismatch Mining
+### ~~3. Iterative Self-Distillation~~ — NULL RESULT (2026-04-06)
+
+**Result:** 70.9% raw R@1 — identical to v9-200k baseline. Exact fixed point.
+
+Mining from v9-200k's own embedding space (top-k, CG-filtered) and retraining produces the identical model. SSD's prediction holds: self-training without a *new* structural filter is a fixed point. CG filter broke the fixed point once (base → v9-200k); the same filter applied to v9-200k's space doesn't break it again.
+
+The **risk identified in the original spec was correct**: "The 89.1% basin might reassert." It did — the CG filter is a one-shot escape, not an iterative one.
+
+---
+
+### 4. Enrichment-Mismatch Mining — NOT RUN
 
 **Cost:** Medium-high. Requires dual-index (raw and enriched) for the training corpus.
 
@@ -76,64 +71,59 @@ The parallel to cqs embedding training:
 2. Mine hard negatives from the raw index (with CG filter)
 3. Train using enriched representations as usual
 
-**Expected effect:** The model learns the distinctions that currently require enrichment to make. If successful, enrichment contribution should decrease (model internalizes it) while raw model quality increases. Long-term: potentially reduce enrichment dependency, which is currently the fragile bottleneck (v9-200k collapsed from 49% to 26% R@1 after file restructuring because path-dependent enrichment changed).
+**Why this is different from 1-3:** Experiments 1-3 all operated within the same embedding space (v9-200k enriched). This experiment creates a *mismatch* between the mining space and training space. The gradient comes from the gap between what the raw model confuses and what enrichment can distinguish.
 
-**SSD analog:** This inverts the relationship between training data quality and model capability, similar to SSD's "bad data, good results" finding. The training data isn't better — it's worse (raw negatives are noisier) — but the mismatch between mining space and training space creates a gradient the model can learn from.
+**Expected effect:** The model learns the distinctions that currently require enrichment to make. If successful, enrichment contribution should decrease (model internalizes it) while raw model quality increases. The enrichment ablation showed v9-200k loses 16.6pp without doc comments vs BGE-large's 6.8pp — reducing that gap would be a real advance.
 
----
-
-### 5. Lock/Fork-Aware Training Weights
-
-**Cost:** Medium. Requires new infrastructure (per-chunk entropy estimation), then a training pipeline change.
-
-**Idea:** Some code chunks are "lock-like" — unique signatures, isolated in embedding space. Others are "fork-like" — generic utilities, dense neighborhoods, many close neighbors. Weight training pairs by anchor entropy: fork-like anchors get upweighted because that's where the model needs finer discrimination. Lock-like anchors are already well-separated.
-
-**SSD analog:** Context-dependent reshaping is SSD's core mechanism. Uniform sharpening hurts (kills fork diversity). Context-dependent sharpening helps (cleans lock tails, preserves fork spread). Entropy-weighted training is the contrastive equivalent.
-
-#### Infrastructure Required
-
-**A. Per-chunk k-NN density estimation.**
-One query per training chunk against existing HNSW index. ~minutes for 200K chunks. Could be a `cqs density` command or `--entropy` flag on `train-data`.
-
-**B. Mapping to training pairs.**
-Join entropy scores with training data via content_hash (already the primary key).
-
-**C. Weighted loss.**
-Per-anchor weight scaling. Most contrastive loss implementations accept sample weights.
-
-**D. Weight function.**
-Three bins to start: low entropy (lock) = 0.5, medium = 1.0, high entropy (fork) = 2.0.
-
-Total new code: ~100 lines in `train-data` for entropy estimation, ~10 lines in training loop for weighting.
+**Honest assessment:** Given three null results on E5-base, there's a real possibility this also hits the ceiling. The E5-base architecture (110M params, 768-dim) may simply not have the capacity to internalize what enrichment provides. BGE-large (335M, 1024-dim) already does this naturally — its enrichment dependency is 2-3x lower.
 
 ---
 
-## Experiment Order and Dependencies
+### 5. Lock/Fork-Aware Training Weights — NOT RUN
+
+**Cost:** Medium. Requires per-chunk entropy estimation + weighted loss.
+
+**Idea:** Weight training pairs by anchor entropy: fork-like anchors (dense neighborhoods) get upweighted, lock-like anchors (isolated) get downweighted.
+
+**Infrastructure required:**
+- A. Per-chunk k-NN density estimation (~minutes for 200K chunks)
+- B. Join entropy with training pairs via content_hash
+- C. Per-anchor weight scaling in loss function
+- D. Three-bin weighting: low entropy = 0.5, medium = 1.0, high entropy = 2.0
+
+**Honest assessment:** Three null results suggest the E5-base training signal is saturated. Reweighting the same signal is unlikely to break through alone. Might stack with #4 if #4 shows signal. Low priority.
+
+---
+
+## Experiment Order (revised)
 
 ```
-#2 (margin/τ sweep)   — no dependencies, cheapest, run first
-#1 (band mining)      — no dependencies, data pipeline only
-#3 (iterative)        — depends on best result from #1/#2
-#4 (mismatch mining)  — independent, needs dual-index build
-#5 (entropy weights)  — needs infrastructure, run after #1/#2 establish baseline
+#1 (band mining)      — DONE — null
+#2 (margin sweep)     — DONE — null
+#3 (iterative)        — DONE — null, exact fixed point
+#4 (mismatch mining)  — next if pursuing E5-base, independent
+#5 (entropy weights)  — lowest priority, run only if #4 shows signal
 ```
-
-#2 and #1 can run in parallel. #3 uses whatever #1/#2 found works best. #4 is independent and can run anytime. #5 is the most novel but has the highest setup cost.
 
 ---
 
-## Success Criteria
+## Revised Success Criteria
 
-The target to beat: v9-200k at 90.5% fixture R@1 (296q), BGE-large FT at 91.6%. Fine-tuned BGE-large at 50% real-code R@1 (100q expanded eval).
+The original target ("break above 91% fixture R@1") is unreachable for E5-base. Three experiments confirmed the ceiling at ~81%.
 
-Any recipe that breaks above 92% on fixtures — or improves real-code eval by 2+pp above 50% — is a meaningful advance.
+**For E5-base (experiments 4-5):**
+- Any improvement above 82% pipeline R@1 on the 296q fixture eval
+- OR: reduction in enrichment dependency (doc ablation <-12pp, currently -16.6pp)
 
-Secondary goal: reduce enrichment dependency. v9-200k loses 16.6pp without doc comments vs BGE-large's 7.5pp. A recipe that achieves comparable fixture R@1 with fewer enrichment layers active means the model internalized what enrichment was providing.
+**For the project:**
+- BGE-large FT at 91.9% is the production ceiling
+- Further improvement requires a different base architecture (ColBERT, larger model) or enrichment stack improvements
+- Time may be better spent on features (wiki, embedding cache, cross-project call graph) than training experiments
 
 ---
 
 ## References
 
 - Zhang et al. "Embarrassingly Simple Self-Distillation Improves Code Generation." arXiv 2604.01193, April 2026.
-- cqs research log: Exp 18-27, enrichment ablation, basin analysis
-- v9-200k deep analysis: `ROADMAP.md` section "Future — Deep Analysis: Why v9-200k Escapes the Basin"
+- cqs RESULTS.md — authoritative eval numbers
+- cqs ROADMAP.md — experiment tracking

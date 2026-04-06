@@ -2,58 +2,65 @@
 
 ## Right Now
 
-**v1.16.0 released. PR #818 in CI (ConfigKey + eval fixes). Band mining running. (2026-04-05 CDT)**
+**SPLADE spec + plan written. RRF disabled, summary preservation fixed. 14 PRs today. (2026-04-06 CDT)**
 
-### PR #818 — ConfigKey + eval cleanup
-- New `ConfigKey` chunk type for JSON/TOML/YAML/INI (were `Property`, polluted code search)
-- Code-only filter added to batch mode search (was unfiltered — agent bug)
-- Code-only filter added to noise eval
-- Eval renames: `test_fixture_eval_296q`, `test_noise_eval_143q`, `run_raw_eval.py`, `run_model_eval.sh`
-- Dead eval scripts deleted, one source of truth per metric
+### Specs & plans ready
+- SPLADE sparse-dense hybrid: spec + 8-task plan at `docs/superpowers/specs/2026-04-06-splade-*` and `docs/superpowers/plans/2026-04-06-splade-*`
+- Wiki system: spec + 8-task plan at `docs/superpowers/specs/2026-04-04-wiki-*` and `docs/superpowers/plans/2026-04-04-wiki-*`
 
-### Band mining (Exp #1)
-Running on A6000. Training at ~6% (was set back by GPU contention from aborted reindex). Mining model: original v9-200k, margin=0.05, band [20,50). Monitor: `tail -f ~/training-data/exp-band/experiment.log`
-
-### Pending after training finishes
-1. Reindex with `cqs index --force --llm-summaries` (killed earlier due to GPU contention)
-2. Rerun real-code eval to measure ConfigKey + LLM summaries impact
-3. Band mining eval results
-
-### LLM summaries
-4,813 summaries generated (~$0.87). Cached by content_hash. Need reindex to bake into embeddings (pending GPU).
-
-### Session PRs (#810-818)
-- #810-813: audit fixes + v1.15.2 release
+### PRs merged this session (#810-827)
+- #810-813: audit 103/103, v1.15.2 release
 - #814: session artifacts
 - #815: language macro v2 (52 files → 2 + queries)
-- #816: Dart (53rd language) + docs review + roadmap cleanup
+- #816: Dart (53rd language), docs, roadmap cleanup
 - #817: v1.16.0 release
-- #818: ConfigKey chunk type + eval fixes (in CI)
+- #818: ConfigKey chunk type, batch mode filter, eval cleanup
+- #819: Impl chunk type for Haskell instances
+- #820: Preserve LLM summaries across --force (ATTACH method)
+- #826: HNSW traversal-time filtering for --chunk-type and --lang
+- #827: Disable RRF in batch mode + robust summary preservation (read-before-rename)
 
-### Training results
-- Margin sweep (Exp #2): null result. Default 0.05 confirmed.
-- Band mining (Exp #1): in progress
+### Key findings
+- RRF degrades search 17pp vs cosine-only (74% vs 91.2%). Disabled in batch mode.
+- ConfigKey: JSON/TOML/YAML/INI keys polluted code search. Fixed.
+- Batch mode was missing code-only filter. Fixed.
+- `--force` reindex silently regenerated LLM summaries (~$0.87/run). Fixed: read summaries before rename.
+- E5-base training ceiling confirmed at ~81%. BGE-large at 91.2% is production model.
+- Three training experiments (margin sweep, band mining, iterative distillation) all null.
+
+### Re-baselined eval numbers (2026-04-06)
+| Model | Pipeline R@1 (296q) |
+|-------|---------------------|
+| BGE-large FT | 91.9% |
+| BGE-large | 91.2% |
+| v9-200k | 81.4% |
+
+### Uncommitted on main
+- CLAUDE.md, PROJECT_CONTINUITY.md, ROADMAP.md, docs/notes.toml — tears
+- docs/superpowers/specs/2026-04-06-splade-sparse-dense-hybrid-design.md — spec
+- docs/superpowers/plans/2026-04-06-splade-sparse-dense-hybrid.md — plan
+- docs/superpowers/specs/2026-04-04-ssd-fine-tuning-roadmap.md — updated with results
+- docs/superpowers/plans/2026-04-04-wiki-system.md — revised plan
 
 ## Parked
+- Wiki system — spec + plan ready
 - Cross-project call graph — spec ready
 - Embedding cache — spec ready
-- Wiki system — spec ready (standalone design)
-- SSD fine-tuning: band mining running, iterative self-distillation next
 - Ladder logic (RLL) grammar
 - hnswlib-rs, DXF, Openclaw PLC
 - Blackwell RTX 6000 (96GB)
 - L5X files from plant
-- Reranker V2 experiments
-- Refactor: replace hardcoded capture lists in chunk.rs/mod.rs with capture_name_to_chunk_type()
+- Reranker V2
+- Paper v0.7
 
 ## Open Issues
 - #717 (HNSW mmap), #389 (CAGRA memory), #255 (pre-built refs), #106 (ort RC), #63 (paste)
 
 ## Architecture
-- Version: 1.16.0, Languages: 53 + L5X/L5K, Commands: 54+, Tests: ~2330
-- Best model: BGE-large FT (91.6% R@1 fixture)
-- Real-code eval: 50% R@1, 73% R@5 (BGE-large, 100q, pre-summaries)
-- CI: rust-cache, ~16m test
-- 21 chunk types (added ConfigKey for data formats)
-- Language macro v2: `languages.rs` + `queries/*.scm`
-- 10th audit: 103/103 fixed
+- Version: 1.16.0 (1.16.1 pending), Languages: 53 + L5X/L5K, Tests: ~2330
+- 22 chunk types (ConfigKey, Impl added this session)
+- BGE-large production model at 91.2% pipeline R@1 (re-baselined)
+- Cosine-only search (RRF disabled — 17pp worse)
+- HNSW traversal-time filtering for chunk_type/language
+- LLM summaries: preserved across --force via read-before-rename
+- Eval: test_fixture_eval_296q, test_noise_eval_143q, run_raw_eval.py

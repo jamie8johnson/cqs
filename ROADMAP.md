@@ -4,34 +4,39 @@
 
 v1.16.0: Language macro v2 (52 files → `languages.rs` + `.scm` queries). Dart (53rd language). 53 languages + L5X/L5K PLC exports. ~2325 tests.
 
-### Eval Baselines (296 queries, 7 languages)
+### Eval Baselines (296 queries, 7 languages, re-baselined 2026-04-06)
 
-Config A (Cosine-only). **⚠️ Numbers are relative rankings — absolute values shift with codebase changes.** On v1.15.2 index, original v9-200k scores ~80% (was 90.5% on older index).
+Config A (Cosine-only). A6000. Current v1.16.0 codebase.
 
-| Model | Params | R@1 | R@5 | MRR | Raw R@1 | CoIR |
-|-------|--------|-----|-----|-----|---------|------|
-| **BGE-large FT** | 335M | **91.6%** | 99.3% | **0.9521** | 66.2% | **57.5** |
-| **BGE-large** | 335M | 90.9% | 99.3% | 0.9493 | 61.8% | 55.7 |
-| **v9-200k** | 110M | 90.5% | 99.3% | 0.9482 | **70.9%** | 52.7 |
-| E5-base | 110M | 75.3% | 99.0% | 0.8688 | 49.1% | 0.627 |
+| Model | Params | R@1 | MRR |
+|-------|--------|-----|-----|
+| **BGE-large FT** | 335M | **91.9%** | **0.955** |
+| BGE-large | 335M | 91.2% | 0.951 |
+| v9-200k | 110M | 81.4% | 0.898 |
+| E5-base | 110M | ~75% | ~0.87 |
 
-Enrichment stack contributes ~15pp. RRF hurts at scale (74.7% vs 90.9% cosine-only).
+BGE-large FT is the best model. Fine-tuning adds +0.7pp. 10pp gap to E5-base models is real and stable.
 
 ---
 
 ## Active & Next
 
-### Training Experiments
+### Training Experiments — E5-base ceiling reached
 
-**Band mining (Exp #1)** — mine negatives from similarity rank [20,50) instead of top-k. Uses original v9-200k as mining model, margin=0.05. Script: `~/training-data/run_band_mining.sh`.
+Three experiments all null. E5-base + CG-filtered 200K + GIST 0.05 + 1 epoch is the ceiling.
 
-**GIST Margin Sweep (Exp #2) — null result.** All margins 0.01-0.10 land in 80-83% pipeline. Default 0.05 confirmed correct. +1.8pp raw at margin=0.03 doesn't translate to pipeline.
+| Experiment | Result |
+|-----------|--------|
+| Margin sweep (Exp #2) | Null — all margins 80-83% pipeline |
+| Band mining (Exp #1) | Null — 81.1% vs 81.4% baseline |
+| Iterative distillation (Exp #3) | Null — 70.9% raw, exact fixed point |
 
-**Open training items:**
-- [ ] Band mining experiment
-- [ ] Investigate Rust stress MRR collapse (0.046 for all E5-base models on v1.15.2 index)
-- [ ] Re-baseline expanded eval on current codebase
-- [ ] Iterative self-distillation (Exp #3 from SSD roadmap)
+Further embedding improvement requires BGE-large (already 91.2%) or fundamentally different training signal (enrichment-mismatch mining Exp #4, lock/fork-aware weights Exp #5).
+
+- [x] Re-baseline expanded eval on current codebase (2026-04-06)
+- [ ] Enrichment-mismatch mining (Exp #4) — mine from raw, train with enriched
+- [ ] Lock/fork-aware training weights (Exp #5) — entropy-weighted loss
+- [x] Find BGE-large FT ONNX path and re-baseline — 91.9% R@1 (path: `bge-large-lora-v1/onnx`)
 - [ ] Paper v0.7
 
 ### Features
@@ -52,10 +57,12 @@ Enrichment stack contributes ~15pp. RRF hurts at scale (74.7% vs 90.9% cosine-on
 
 ### Infrastructure
 
+- [x] **Fix --force summary cache invalidation** — ATTACH backup DB, copy summaries. PR #820.
 - [ ] **Unify capture name lists** — `chunk.rs` capture_types, `mod.rs` DEF_CAPTURES, and `define_chunk_types!` all maintain separate lists of chunk type names. Adding a ChunkType requires updating all three. Replace with single source of truth via `ChunkType::capture_name_to_chunk_type()`.
 - [ ] **RPC/Service chunk type** — protobuf `service`/`rpc`, GraphQL `type Query`/`mutation`, gRPC definitions. Currently Function. Distinct concept: contract definitions, not implementations.
 - [ ] **SQL view/trigger chunk types** — views, triggers, and stored procedures are all Function today. Views are computed data (closer to Property), triggers are event handlers. Matters for impact analysis on schema changes.
 - [ ] **Audit weak chunk type tests** — post_process overrides can mask wrong query captures. Haskell instance test was asserting Object while query said Struct — passed because post_process silently fixed it. 34 languages have post_process; scan for tests where the assertion matches the post_process output, not the query capture.
+- [ ] **Refactor batch --rrf opt-in** — `semantic_only` field suppressed with `#[allow(dead_code)]`. Rename to `rrf: bool`, wire as opt-in `--rrf` flag. Cosine-only is the default since RRF degrades quality by 17pp.
 - [ ] **Agent adoption** — fewer commands in prompts (only `scout`/`task`)
 - [ ] **Reranker eval config** — add Config G (Cosine + rerank) to pipeline_eval
 
@@ -71,7 +78,7 @@ Enrichment stack contributes ~15pp. RRF hurts at scale (74.7% vs 90.9% cosine-on
 - L5X files from plant
 - KD-LoRA distillation (CodeSage→E5)
 - ColBERT late interaction
-- SPLADE sparse retrieval
+- SPLADE sparse-dense hybrid — learned sparse retrieval replaces FTS5 keyword matching. Our RRF attempt (FTS5 + cosine) degraded quality 17pp because FTS5 is dumb token matching. SPLADE learns token importance and query expansion. The right fix for exact-name queries without hurting semantic search. Requires: trained sparse model (or off-the-shelf naver/splade), inverted index storage, fused scoring pipeline.
 - Solidity modifier chunk type — `modifier onlyOwner()` is access control, not a function
 - Rust impl block chunk type — `impl<T: Hash> Cache<T>` for type dependency analysis
 - Test suite/describe chunk type — Jest `describe()`, RSpec `context`, pytest fixtures
@@ -83,7 +90,7 @@ Enrichment stack contributes ~15pp. RRF hurts at scale (74.7% vs 90.9% cosine-on
 
 | Version | Highlights |
 |---------|-----------|
-| v1.16.0 | Language macro v2 (52→2 files), Dart (53rd language) |
+| v1.16.0 | Language macro v2 (52→2 files), Dart (53rd), ConfigKey + Impl chunk types, HNSW traversal filtering, batch code-only filter, eval cleanup |
 | v1.15.2 | 10th audit 103/103 fixed, typed JSON output structs, 35 PRs |
 | v1.15.1 | JSON schema migration, batch/CLI unification, 4 file splits |
 | v1.15.0 | L5X/L5K PLC, telemetry, CommandContext, custom agents, BGE-large FT |
@@ -94,7 +101,7 @@ Enrichment stack contributes ~15pp. RRF hurts at scale (74.7% vs 90.9% cosine-on
 | v1.9.0 | BGE-large default, v9-200k LoRA preset, red team (23 findings) |
 | v1.0.x | 52 languages, multi-grammar injection, LLM summaries, HNSW, call graphs |
 
-**Training:** v9-200k (90.5% pipeline R@1, 110M) is production model. BGE-large FT (91.6%, 335M) published. 7 basin experiments, margin sweep — all confirmed v9-200k recipe optimal. CoIR: 57.5 (BGE-large FT), 52.7 (v9-200k).
+**Training:** BGE-large is the production model (91.2% pipeline R@1). v9-200k (81.4%, 110M) is the E5-base ceiling — 10 experiments confirmed. BGE-large FT (91.9%, 335M) published. CoIR: 57.5 (BGE-large FT), 52.7 (v9-200k).
 
 **Enrichment stack (shipped):** Type-aware signatures (+3.6pp) → call graph context (63% enriched) → LLM summaries (opt-in) → HyDE predictions (opt-in). Ablation: doc +6.8pp > file context +4.1pp > signatures +1.4pp > call graph ~0.4pp.
 
