@@ -14,6 +14,10 @@ pub(crate) struct ScoringConfig {
     pub importance_private: f32,
     pub parent_boost_per_child: f32,
     pub parent_boost_cap: f32,
+    /// Weight for dense score in sparse-dense fusion (0.0-1.0).
+    /// 0.7 = cosine-heavy (default), 0.3 = SPLADE-heavy.
+    /// 1-splade_alpha is the weight for the sparse score.
+    pub splade_alpha: f32,
 }
 
 impl ScoringConfig {
@@ -27,6 +31,7 @@ impl ScoringConfig {
         importance_private: 0.80,
         parent_boost_per_child: 0.05,
         parent_boost_cap: 1.15,
+        splade_alpha: 0.7,
     };
 
     /// Build a `ScoringConfig` by layering optional overrides on top of defaults.
@@ -59,6 +64,7 @@ impl ScoringConfig {
             parent_boost_cap: overrides
                 .parent_boost_cap
                 .unwrap_or(Self::DEFAULT.parent_boost_cap),
+            splade_alpha: overrides.splade_alpha.unwrap_or(Self::DEFAULT.splade_alpha),
         }
     }
 }

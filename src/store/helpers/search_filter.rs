@@ -40,6 +40,12 @@ pub struct SearchFilter {
     /// Underscore-prefixed private names (`_foo` but not `__dunder__`) get 0.95x.
     /// Disable with `--no-demote` CLI flag.
     pub enable_demotion: bool,
+    /// Enable SPLADE sparse-dense hybrid search.
+    ///
+    /// When enabled, queries are encoded with both the dense embedder and the
+    /// SPLADE sparse encoder. Results are fused via linear interpolation with
+    /// `splade_alpha` from ScoringConfig. Requires SPLADE model to be loaded.
+    pub enable_splade: bool,
 }
 
 impl Default for SearchFilter {
@@ -52,6 +58,7 @@ impl Default for SearchFilter {
             query_text: String::new(),
             enable_rrf: false,
             enable_demotion: true, // Demote test functions by default
+            enable_splade: false,
         }
     }
 }
