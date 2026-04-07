@@ -331,11 +331,11 @@ fn test_parse_sql_fixture() {
         chunks.len()
     );
 
-    // Stored procedure
+    // Stored procedure → StoredProc
     let proc = chunks.iter().find(|c| c.name.contains("usp_GetOrders"));
     assert!(proc.is_some(), "Should find usp_GetOrders procedure");
     let proc = proc.unwrap();
-    assert_eq!(proc.chunk_type, ChunkType::Function);
+    assert_eq!(proc.chunk_type, ChunkType::StoredProc);
     assert_eq!(proc.language, Language::Sql);
 
     // Function
@@ -348,7 +348,7 @@ fn test_parse_sql_fixture() {
         .iter()
         .find(|c| c.name.contains("vw_ActiveCustomers"));
     assert!(view.is_some(), "Should find vw_ActiveCustomers view");
-    assert_eq!(view.unwrap().chunk_type, ChunkType::Function);
+    assert_eq!(view.unwrap().chunk_type, ChunkType::StoredProc);
 }
 
 #[test]
@@ -809,13 +809,13 @@ fn test_protobuf_message_and_service_extraction() {
     assert!(user.is_some(), "Should find 'User' message (as Struct)");
     assert_eq!(user.unwrap().language, Language::Protobuf);
 
-    // Service → Interface
+    // Service → Service
     let svc = chunks
         .iter()
-        .find(|c| c.name == "UserService" && c.chunk_type == ChunkType::Interface);
+        .find(|c| c.name == "UserService" && c.chunk_type == ChunkType::Service);
     assert!(
         svc.is_some(),
-        "Should find 'UserService' service (as Interface)"
+        "Should find 'UserService' service (as Service)"
     );
 
     // Enum

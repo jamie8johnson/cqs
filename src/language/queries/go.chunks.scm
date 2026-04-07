@@ -70,3 +70,7 @@
 (const_declaration
   (const_spec
     name: (identifier) @name)) @const
+
+(var_declaration
+  (var_spec
+    name: (identifier) @name)) @var

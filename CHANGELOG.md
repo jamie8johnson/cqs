@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **V2 eval harness** — ablation matrix runner with bootstrap CIs (10k resamples), paired comparisons, per-category breakdown, per-query result storage (JSONL), markdown report generation. 48-query seed set across 8 categories. Baseline: R@1=56.2%, R@5=84.4% on BGE-large against 12k-chunk live index.
 - **Batch query logging** — search, gather, scout, onboard, where, task queries logged to `~/.cache/cqs/query_log.jsonl` for eval workflow capture.
 - **Reranker passage format ablation** — NL descriptions, raw code, name+signature × α-interpolation sweep. Finding: ms-marco-MiniLM-L-6-v2 is net negative for code search across all configurations.
+- **5 new chunk types** — Test (Rust #[test], Python test_, Go Test prefix), Variable (static mut, let/var, module-level assignments), Endpoint (capture ready, framework queries Phase 2), Service (protobuf service definitions), StoredProc (SQL procedures, views, triggers). 27 total chunk types.
 
 ### Changed
 - **Zero `clippy::too_many_arguments` suppressions** — extracted `EmbedStageContext`, `RefQueryContext`, `SweepConfig` structs.

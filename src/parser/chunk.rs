@@ -46,6 +46,11 @@ impl Parser {
             ("constructor", ChunkType::Constructor),
             ("configkey", ChunkType::ConfigKey),
             ("impl", ChunkType::Impl),
+            ("test", ChunkType::Test),
+            ("var", ChunkType::Variable),
+            ("endpoint", ChunkType::Endpoint),
+            ("service", ChunkType::Service),
+            ("storedproc", ChunkType::StoredProc),
         ];
 
         // Find which definition capture matched and get its node

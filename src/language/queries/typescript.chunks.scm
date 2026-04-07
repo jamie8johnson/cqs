@@ -38,3 +38,16 @@
   (variable_declarator
     name: (identifier) @name
     value: (_) @_val) @const)
+
+;; Module-level let declarations → Variable
+(lexical_declaration
+  kind: "let"
+  (variable_declarator
+    name: (identifier) @name
+    value: (_) @_val) @var)
+
+;; Module-level var declarations → Variable
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (_) @_val) @var)
