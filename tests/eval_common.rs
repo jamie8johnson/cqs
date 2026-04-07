@@ -1,11 +1,248 @@
 //! Shared evaluation infrastructure — types, test cases, and fixture paths.
 //!
-//! Used by eval_test.rs, model_eval.rs, and pipeline_eval.rs.
+//! Used by eval_test.rs, model_eval.rs, pipeline_eval.rs, and eval_harness.rs.
 
 #![allow(dead_code)]
 
 use cqs::parser::Language;
 use std::path::PathBuf;
+
+// ===== V2 Eval Schema (300q harness) =====
+
+/// A single eval query with ground truth and categorization.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EvalQuery {
+    /// Unique identifier (e.g., "beh-042", "id-007")
+    pub id: String,
+    /// The natural-language query text
+    pub query: String,
+    /// Primary category (exactly one)
+    pub category: QueryCategory,
+    /// Secondary tags (zero or more)
+    #[serde(default)]
+    pub tags: Vec<QueryTag>,
+    /// Language filter (None = all languages)
+    pub language: Option<String>,
+    /// The single chunk that is the correct top-1 result
+    pub primary_answer: GroundTruth,
+    /// Additional valid answers (up to 5)
+    #[serde(default)]
+    pub acceptable_answers: Vec<GroundTruth>,
+    /// Similar-but-wrong chunks for hard negative analysis
+    #[serde(default)]
+    pub negative_examples: Vec<GroundTruth>,
+    /// Train/held-out split
+    pub split: EvalSplit,
+}
+
+/// Ground truth: identifies a chunk in the index
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GroundTruth {
+    /// Chunk name as it appears in the index
+    pub name: String,
+    /// File path relative to project root
+    pub file: String,
+    /// Optional line range for disambiguation
+    #[serde(default)]
+    pub line_start: Option<u32>,
+}
+
+/// Primary query category — mutually exclusive
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryCategory {
+    IdentifierLookup,
+    BehavioralSearch,
+    ConceptualSearch,
+    TypeFiltered,
+    CrossLanguage,
+    StructuralSearch,
+    Negation,
+    MultiStep,
+}
+
+impl std::fmt::Display for QueryCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IdentifierLookup => write!(f, "identifier"),
+            Self::BehavioralSearch => write!(f, "behavioral"),
+            Self::ConceptualSearch => write!(f, "conceptual"),
+            Self::TypeFiltered => write!(f, "type_filtered"),
+            Self::CrossLanguage => write!(f, "cross_lang"),
+            Self::StructuralSearch => write!(f, "structural"),
+            Self::Negation => write!(f, "negation"),
+            Self::MultiStep => write!(f, "multi_step"),
+        }
+    }
+}
+
+/// Secondary tags
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryTag {
+    CrossFile,
+    RecentAdd,
+    NoiseTolerant,
+    SynonymHeavy,
+    Acronym,
+    CaseSensitive,
+}
+
+/// Train/held-out split
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalSplit {
+    Train,
+    HeldOut,
+}
+
+/// Full query set with metadata
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EvalQuerySet {
+    pub version: String,
+    pub created: String,
+    pub description: String,
+    pub queries: Vec<EvalQuery>,
+}
+
+/// Per-query result from a single eval cell
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EvalQueryResult {
+    pub run_id: String,
+    pub query_id: String,
+    pub config_id: String,
+    pub rank_of_correct: Option<u32>,
+    pub reciprocal_rank: f64,
+    pub top_1_correct: bool,
+    pub top_5_correct: bool,
+    pub top_5_acceptable: bool,
+    pub top_1_score: f64,
+    pub top_2_score: f64,
+    pub retrieval_ms: f64,
+    pub rerank_ms: f64,
+}
+
+/// Metric with 95% bootstrap CI
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MetricWithCI {
+    pub value: f64,
+    pub ci_lower: f64,
+    pub ci_upper: f64,
+}
+
+impl std::fmt::Display for MetricWithCI {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:.1}% [{:.1}, {:.1}]",
+            self.value * 100.0,
+            self.ci_lower * 100.0,
+            self.ci_upper * 100.0
+        )
+    }
+}
+
+/// Bootstrap CI computation (10,000 resamples)
+pub fn bootstrap_ci(values: &[f64], n_resamples: usize) -> MetricWithCI {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let n = values.len();
+    if n == 0 {
+        return MetricWithCI {
+            value: 0.0,
+            ci_lower: 0.0,
+            ci_upper: 0.0,
+        };
+    }
+
+    let point = values.iter().sum::<f64>() / n as f64;
+
+    // Simple LCG PRNG (deterministic, no external dep)
+    let mut seed: u64 = {
+        let mut h = DefaultHasher::new();
+        values.len().hash(&mut h);
+        if let Some(v) = values.first() {
+            v.to_bits().hash(&mut h);
+        }
+        h.finish()
+    };
+
+    let mut estimates: Vec<f64> = Vec::with_capacity(n_resamples);
+    for _ in 0..n_resamples {
+        let mut sum = 0.0;
+        for _ in 0..n {
+            // LCG step
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let idx = (seed >> 33) as usize % n;
+            sum += values[idx];
+        }
+        estimates.push(sum / n as f64);
+    }
+    estimates.sort_by(|a, b| a.total_cmp(b));
+
+    let lo_idx = (n_resamples as f64 * 0.025) as usize;
+    let hi_idx = (n_resamples as f64 * 0.975).ceil() as usize - 1;
+
+    MetricWithCI {
+        value: point,
+        ci_lower: estimates[lo_idx.min(estimates.len() - 1)],
+        ci_upper: estimates[hi_idx.min(estimates.len() - 1)],
+    }
+}
+
+/// Paired bootstrap test: is config B better than config A?
+/// Returns (delta, ci_lower, ci_upper, p_value)
+pub fn paired_bootstrap(
+    a_values: &[f64],
+    b_values: &[f64],
+    n_resamples: usize,
+) -> (f64, f64, f64, f64) {
+    assert_eq!(a_values.len(), b_values.len());
+    let n = a_values.len();
+    if n == 0 {
+        return (0.0, 0.0, 0.0, 1.0);
+    }
+
+    let deltas: Vec<f64> = a_values.iter().zip(b_values).map(|(a, b)| b - a).collect();
+
+    let observed_delta: f64 = deltas.iter().sum::<f64>() / n as f64;
+
+    let mut seed: u64 = 0x12345678_u64;
+    let mut boot_deltas: Vec<f64> = Vec::with_capacity(n_resamples);
+
+    for _ in 0..n_resamples {
+        let mut sum = 0.0;
+        for _ in 0..n {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let idx = (seed >> 33) as usize % n;
+            sum += deltas[idx];
+        }
+        boot_deltas.push(sum / n as f64);
+    }
+    boot_deltas.sort_by(|a, b| a.total_cmp(b));
+
+    let lo_idx = (n_resamples as f64 * 0.025) as usize;
+    let hi_idx = (n_resamples as f64 * 0.975).ceil() as usize - 1;
+
+    // Two-sided p-value: proportion of bootstrap samples on the opposite side of zero
+    let p_value = if observed_delta >= 0.0 {
+        boot_deltas.iter().filter(|&&d| d <= 0.0).count() as f64 / n_resamples as f64
+    } else {
+        boot_deltas.iter().filter(|&&d| d >= 0.0).count() as f64 / n_resamples as f64
+    };
+
+    (
+        observed_delta,
+        boot_deltas[lo_idx.min(boot_deltas.len() - 1)],
+        boot_deltas[hi_idx.min(boot_deltas.len() - 1)],
+        p_value * 2.0, // two-sided
+    )
+}
 
 /// A single evaluation case: semantic query -> expected function name
 pub struct EvalCase {

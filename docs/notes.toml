@@ -1047,3 +1047,24 @@ mentions = [
     "src/cli/batch/handlers/search.rs",
     "SearchParams",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "ms-marco-MiniLM-L-6-v2 reranker is net negative for code search: -15pp (NL passages) to -49pp (raw code). Need code-trained cross-encoder."
+mentions = [
+    "reranker.rs",
+    "model_eval.rs",
+]
+
+[[note]]
+sentiment = 0.0
+text = "v2 eval harness baseline: R@1=56.2%, R@5=84.4%, R@20=100% on 32 train queries against 12k-chunk live index. Conceptual/negation/structural categories are weak."
+mentions = [
+    "eval_harness.rs",
+    "eval_common.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Embedding cache working: SQLite at ~/.cache/cqs/embeddings.db, keyed by (content_hash, model_fingerprint). Best-effort, never blocks pipeline."
+mentions = ["cache.rs"]

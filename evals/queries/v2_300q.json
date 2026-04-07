@@ -1,0 +1,1864 @@
+{
+  "version": "v2_300q",
+  "created": "2026-04-06",
+  "description": "Eval query set (112 queries, 8 categories) against cqs codebase. Hand-curated + auto-generated, ground truth validated.",
+  "queries": [
+    {
+      "id": "id-001",
+      "query": "prepare_for_embedding",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "prepare_for_embedding",
+        "file": "src/cli/pipeline/embedding.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-002",
+      "query": "HnswIndex struct",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "HnswIndex",
+        "file": "src/hnsw/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-003",
+      "query": "run_index_pipeline",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "run_index_pipeline",
+        "file": "src/cli/pipeline/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-004",
+      "query": "cmd_doctor function",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "cmd_doctor",
+        "file": "src/cli/commands/infra/doctor.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-005",
+      "query": "model_fingerprint",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "model_fingerprint",
+        "file": "src/embedder/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-006",
+      "query": "prune_missing function",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "prune_missing",
+        "file": "src/store/chunks/staleness.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-001",
+      "query": "function that embeds a batch of text documents using ONNX",
+      "category": "behavioral_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "embed_documents",
+        "file": "src/embedder/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "embed_batch",
+          "file": "src/embedder/mod.rs"
+        }
+      ],
+      "negative_examples": [
+        {
+          "name": "embed_query",
+          "file": "src/embedder/mod.rs"
+        }
+      ],
+      "split": "train"
+    },
+    {
+      "id": "beh-002",
+      "query": "parse a source code file and extract all chunks from it",
+      "category": "behavioral_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "parse_file",
+        "file": "src/parser/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "parse_file_all",
+          "file": "src/parser/mod.rs"
+        },
+        {
+          "name": "Parser",
+          "file": "src/parser/mod.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-003",
+      "query": "save HNSW index to disk with checksum verification",
+      "category": "behavioral_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "save",
+        "file": "src/hnsw/persist.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "HnswIndex",
+          "file": "src/hnsw/mod.rs"
+        }
+      ],
+      "negative_examples": [
+        {
+          "name": "load_with_dim",
+          "file": "src/hnsw/persist.rs"
+        }
+      ],
+      "split": "train"
+    },
+    {
+      "id": "beh-004",
+      "query": "reorder search results using cross-encoder scoring",
+      "category": "behavioral_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "rerank",
+        "file": "src/reranker.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "rerank_with_passages",
+          "file": "src/reranker.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-005",
+      "query": "generate natural language description of a code chunk",
+      "category": "behavioral_search",
+      "tags": [
+        "synonym_heavy"
+      ],
+      "language": null,
+      "primary_answer": {
+        "name": "generate_nl_description",
+        "file": "src/nl/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "generate_nl_with_template",
+          "file": "src/nl/mod.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-006",
+      "query": "remove stale chunks for files that no longer exist on disk",
+      "category": "behavioral_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "prune_missing",
+        "file": "src/store/chunks/staleness.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "con-001",
+      "query": "dead code detection and unused function analysis",
+      "category": "conceptual_search",
+      "tags": [
+        "synonym_heavy"
+      ],
+      "language": null,
+      "primary_answer": {
+        "name": "cmd_dead",
+        "file": "src/cli/commands/review/dead.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "detect_dead_clusters",
+          "file": "src/suggest.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-002",
+      "query": "reciprocal rank fusion for combining search results",
+      "category": "conceptual_search",
+      "tags": [
+        "acronym"
+      ],
+      "language": null,
+      "primary_answer": {
+        "name": "rrf_fuse",
+        "file": "src/store/search.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-003",
+      "query": "vector dot product for measuring embedding similarity",
+      "category": "conceptual_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "cosine_similarity",
+        "file": "src/math.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-004",
+      "query": "token budget packing for fitting results into context windows",
+      "category": "conceptual_search",
+      "tags": [
+        "synonym_heavy"
+      ],
+      "language": null,
+      "primary_answer": {
+        "name": "token_pack",
+        "file": "src/cli/commands/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "fetch_and_pack_content",
+          "file": "src/cli/commands/mod.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-005",
+      "query": "GPU accelerated approximate nearest neighbor index",
+      "category": "conceptual_search",
+      "tags": [
+        "acronym"
+      ],
+      "language": null,
+      "primary_answer": {
+        "name": "CagraIndex",
+        "file": "src/cagra.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [
+        {
+          "name": "HnswIndex",
+          "file": "src/hnsw/mod.rs"
+        }
+      ],
+      "split": "held_out"
+    },
+    {
+      "id": "con-006",
+      "query": "sparse lexical retrieval with learned token expansion",
+      "category": "conceptual_search",
+      "tags": [
+        "synonym_heavy",
+        "acronym"
+      ],
+      "language": null,
+      "primary_answer": {
+        "name": "SpladeEncoder",
+        "file": "src/splade/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "SpladeIndex",
+          "file": "src/splade/index.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "tf-001",
+      "query": "error types and error handling in the store module",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "StoreError",
+        "file": "src/store/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [
+        {
+          "name": "EmbedderError",
+          "file": "src/embedder/mod.rs"
+        }
+      ],
+      "split": "train"
+    },
+    {
+      "id": "tf-002",
+      "query": "struct definitions for search results and chunk metadata",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "SearchResult",
+        "file": "src/store/helpers/types.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "ChunkSummary",
+          "file": "src/store/helpers/types.rs"
+        },
+        {
+          "name": "Store",
+          "file": "src/store/mod.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-003",
+      "query": "configuration for embedding model selection and presets",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "model_config",
+        "file": "src/embedder/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "resolve",
+          "file": "src/embedder/models.rs"
+        },
+        {
+          "name": "Embedder",
+          "file": "src/embedder/mod.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-004",
+      "query": "enum variants for different kinds of code chunks",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "ChunkType",
+        "file": "src/parser/types.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "define_chunk_types",
+          "file": "src/parser/types.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-005",
+      "query": "CLI argument definitions and command enum",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "Cli",
+        "file": "src/cli/definitions.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "Commands",
+          "file": "src/cli/definitions.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "tf-006",
+      "query": "statistics about the embedding cache entries and size",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "CacheStats",
+        "file": "src/cache.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "cmd_cache",
+          "file": "src/cli/commands/infra/cache_cmd.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "st-001",
+      "query": "trait definition for pluggable vector search index",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "VectorIndex",
+        "file": "src/index.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "HnswIndex",
+          "file": "src/hnsw/mod.rs"
+        },
+        {
+          "name": "CagraIndex",
+          "file": "src/cagra.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-002",
+      "query": "language definition macro that registers parser grammars",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "LanguageDef",
+        "file": "src/language/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "define_languages",
+          "file": "src/language/languages.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-003",
+      "query": "database schema migration system for version upgrades",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "migrate",
+        "file": "src/store/migrations.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-004",
+      "query": "shared context struct that holds store embedder and paths for commands",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "CommandContext",
+        "file": "src/cli/store.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "BatchContext",
+          "file": "src/cli/batch/mod.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-005",
+      "query": "pipeline stage types for parsing embedding and writing",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "EmbedStageContext",
+        "file": "src/cli/pipeline/types.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "ParsedBatch",
+          "file": "src/cli/pipeline/types.rs"
+        },
+        {
+          "name": "EmbeddedBatch",
+          "file": "src/cli/pipeline/types.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "st-006",
+      "query": "filter configuration for search queries with language and path constraints",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "SearchFilter",
+        "file": "src/store/helpers/search_filter.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "neg-001",
+      "query": "embedder initialization that forces CPU not GPU",
+      "category": "negation",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "new_cpu",
+        "file": "src/embedder/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [
+        {
+          "name": "new",
+          "file": "src/embedder/mod.rs"
+        }
+      ],
+      "split": "train"
+    },
+    {
+      "id": "neg-002",
+      "query": "store open that is read-only not writable",
+      "category": "negation",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "open_readonly",
+        "file": "src/store/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "open_light",
+          "file": "src/store/mod.rs"
+        }
+      ],
+      "negative_examples": [
+        {
+          "name": "open",
+          "file": "src/store/mod.rs"
+        }
+      ],
+      "split": "train"
+    },
+    {
+      "id": "neg-003",
+      "query": "HNSW index build not CAGRA GPU index",
+      "category": "negation",
+      "tags": [
+        "acronym"
+      ],
+      "language": null,
+      "primary_answer": {
+        "name": "build_batched_with_dim",
+        "file": "src/hnsw/build.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [
+        {
+          "name": "CagraIndex",
+          "file": "src/cagra.rs"
+        }
+      ],
+      "split": "train"
+    },
+    {
+      "id": "neg-004",
+      "query": "embed a single query string not a batch of documents",
+      "category": "negation",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "embed_query",
+        "file": "src/embedder/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [
+        {
+          "name": "embed_documents",
+          "file": "src/embedder/mod.rs"
+        }
+      ],
+      "split": "train"
+    },
+    {
+      "id": "neg-005",
+      "query": "search by function name only not semantic embedding",
+      "category": "negation",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "search_by_name",
+        "file": "src/store/search.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [
+        {
+          "name": "search_filtered",
+          "file": "src/search/query.rs"
+        }
+      ],
+      "split": "held_out"
+    },
+    {
+      "id": "neg-006",
+      "query": "clear embedding cache entries not evict by size limit",
+      "category": "negation",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "clear",
+        "file": "src/cache.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "cache_clear",
+          "file": "src/cli/commands/infra/cache_cmd.rs"
+        }
+      ],
+      "negative_examples": [
+        {
+          "name": "evict",
+          "file": "src/cache.rs"
+        }
+      ],
+      "split": "held_out"
+    },
+    {
+      "id": "ms-001",
+      "query": "how does the three-stage indexing pipeline process files from parse to store",
+      "category": "multi_step",
+      "tags": [
+        "cross_file"
+      ],
+      "language": null,
+      "primary_answer": {
+        "name": "run_index_pipeline",
+        "file": "src/cli/pipeline/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "parser_stage",
+          "file": "src/cli/pipeline/parsing.rs"
+        },
+        {
+          "name": "gpu_embed_stage",
+          "file": "src/cli/pipeline/embedding.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-002",
+      "query": "how does impact analysis trace callers to find affected tests",
+      "category": "multi_step",
+      "tags": [
+        "cross_file"
+      ],
+      "language": null,
+      "primary_answer": {
+        "name": "cmd_impact",
+        "file": "src/cli/commands/graph/impact.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "find_transitive_callers",
+          "file": "src/impact/analysis.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-003",
+      "query": "how does the doctor command check model index and hardware",
+      "category": "multi_step",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "cmd_doctor",
+        "file": "src/cli/commands/infra/doctor.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-004",
+      "query": "how does gather assemble context by expanding the call graph",
+      "category": "multi_step",
+      "tags": [
+        "cross_file"
+      ],
+      "language": null,
+      "primary_answer": {
+        "name": "GatherContext",
+        "file": "src/cli/commands/search/gather.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "gather",
+          "file": "src/gather.rs"
+        },
+        {
+          "name": "build_gather_output",
+          "file": "src/cli/commands/search/gather.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-005",
+      "query": "how does batch mode maintain state between commands in a session",
+      "category": "multi_step",
+      "tags": [
+        "cross_file"
+      ],
+      "language": null,
+      "primary_answer": {
+        "name": "BatchContext",
+        "file": "src/cli/batch/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "dispatch",
+          "file": "src/cli/batch/commands.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "ms-006",
+      "query": "how does the scout command search then check staleness and test coverage",
+      "category": "multi_step",
+      "tags": [
+        "cross_file"
+      ],
+      "language": null,
+      "primary_answer": {
+        "name": "cmd_scout",
+        "file": "src/cli/commands/search/scout.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "scout_core",
+          "file": "src/scout.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "cl-001",
+      "query": "extract call sites and function calls from source code",
+      "category": "cross_language",
+      "tags": [
+        "cross_file"
+      ],
+      "language": null,
+      "primary_answer": {
+        "name": "extract_calls",
+        "file": "src/parser/calls.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "parse_file_calls",
+          "file": "src/parser/calls.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-002",
+      "query": "tree-sitter query patterns for language grammars",
+      "category": "cross_language",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "LanguageDef",
+        "file": "src/language/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "define_languages",
+          "file": "src/language/languages.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-003",
+      "query": "determine which programming language a file uses by extension",
+      "category": "cross_language",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "Language",
+        "file": "src/parser/types.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "LanguageDef",
+          "file": "src/language/mod.rs"
+        },
+        {
+          "name": "from_extension",
+          "file": "src/language/mod.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-004",
+      "query": "injection rules for embedded languages inside HTML templates",
+      "category": "cross_language",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "InjectionRule",
+        "file": "src/language/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-005",
+      "query": "ASP.NET web forms custom parser for server script blocks",
+      "category": "cross_language",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "parse_aspx",
+        "file": "src/parser/aspx.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "cl-006",
+      "query": "markdown heading based chunking and code block extraction",
+      "category": "cross_language",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "parse_markdown",
+        "file": "src/parser/markdown/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-101",
+      "query": "ApiError",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "ApiError",
+        "file": "src/llm/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-102",
+      "query": "ChunkIdentity",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "ChunkIdentity",
+        "file": "src/store/helpers/types.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-103",
+      "query": "ScoringContext",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "ScoringContext",
+        "file": "src/search/scoring/candidate.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "st-101",
+      "query": "implementation of DriftEntryOutput",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "DriftEntryOutput",
+        "file": "src/cli/commands/io/drift.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-104",
+      "query": "TraceArgs",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "TraceArgs",
+        "file": "src/cli/args.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-105",
+      "query": "BlameEntry",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "BlameEntry",
+        "file": "src/cli/commands/io/blame.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "tf-101",
+      "query": "constants defined in src/cli/batch/pipeline.rs",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "PIPELINE_FAN_OUT_LIMIT",
+        "file": "src/cli/batch/pipeline.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "tf-102",
+      "query": "error types in src/doc_writer",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "DocWriterError",
+        "file": "src/doc_writer/rewriter.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-106",
+      "query": "DiffEntryOutput",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "DiffEntryOutput",
+        "file": "src/cli/commands/io/diff.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-107",
+      "query": "StoreOpenConfig",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "StoreOpenConfig",
+        "file": "src/store/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "tf-103",
+      "query": "constants defined in src/cagra.rs",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "BATCH_SIZE",
+        "file": "src/cagra.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "tf-104",
+      "query": "struct definitions in src/impact",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "ImpactOptions",
+        "file": "src/impact/analysis.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "CallerDetail",
+          "file": "src/impact/types.rs"
+        },
+        {
+          "name": "TestInfo",
+          "file": "src/impact/types.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-108",
+      "query": "SuggestedNote",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "SuggestedNote",
+        "file": "src/suggest.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "st-102",
+      "query": "implementation of DiffTestInfo",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "DiffTestInfo",
+        "file": "src/impact/types.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "tf-105",
+      "query": "constants defined in src/cli/batch/mod.rs",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "MAX_BATCH_LINE_LEN",
+        "file": "src/cli/batch/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-109",
+      "query": "TaskTemplate",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "TaskTemplate",
+        "file": "src/plan.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "st-103",
+      "query": "implementation of sparse_vectors",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "sparse_vectors",
+        "file": "src/schema.sql"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "tf-106",
+      "query": "BatchProvider trait definition",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "BatchProvider",
+        "file": "src/llm/provider.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-110",
+      "query": "WatchState",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "WatchState",
+        "file": "src/cli/watch.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-111",
+      "query": "Section",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "Section",
+        "file": "src/parser/markdown/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-112",
+      "query": "SimilarEntry",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "SimilarEntry",
+        "file": "src/cli/commands/graph/explain.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-113",
+      "query": "SummaryEntry",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "SummaryEntry",
+        "file": "src/llm/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-114",
+      "query": "CommitInfo",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "CommitInfo",
+        "file": "src/train_data/git.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-107",
+      "query": "error types in src",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "CacheError",
+        "file": "src/cache.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-115",
+      "query": "CommandContext",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "CommandContext",
+        "file": "src/cli/store.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-108",
+      "query": "struct definitions in src/llm",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "BatchPhase2",
+        "file": "src/llm/batch.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "EligibleChunk",
+          "file": "src/llm/mod.rs"
+        },
+        {
+          "name": "LlmConfig",
+          "file": "src/llm/mod.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-109",
+      "query": "constants defined in src/cli/batch/pipeline.rs",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "PIPEABLE_NAMES",
+        "file": "src/cli/batch/pipeline.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-116",
+      "query": "ProjectSearchResult",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "ProjectSearchResult",
+        "file": "src/cli/commands/infra/project.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-110",
+      "query": "VectorIndex trait definition",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "VectorIndex",
+        "file": "src/index.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-117",
+      "query": "IndexStats",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "IndexStats",
+        "file": "src/store/helpers/types.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-118",
+      "query": "TypeInfo",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "TypeInfo",
+        "file": "src/onboard.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-111",
+      "query": "struct definitions in src/store/helpers",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "CandidateRow",
+        "file": "src/store/helpers/rows.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "ChunkRow",
+          "file": "src/store/helpers/rows.rs"
+        },
+        {
+          "name": "SearchFilter",
+          "file": "src/store/helpers/search_filter.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-119",
+      "query": "HnswIoCell",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "HnswIoCell",
+        "file": "src/hnsw/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-104",
+      "query": "implementation of TextJsonArgs",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "TextJsonArgs",
+        "file": "src/cli/definitions.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-120",
+      "query": "LlmConfig",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "LlmConfig",
+        "file": "src/llm/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-121",
+      "query": "ChunkSummary",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "ChunkSummary",
+        "file": "src/store/helpers/types.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-122",
+      "query": "CallContext",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "CallContext",
+        "file": "src/nl/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-123",
+      "query": "EmbedStageContext",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "EmbedStageContext",
+        "file": "src/cli/pipeline/types.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-124",
+      "query": "DiffOutput",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "DiffOutput",
+        "file": "src/cli/commands/io/diff.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-125",
+      "query": "TraceHop",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "TraceHop",
+        "file": "src/cli/commands/graph/trace.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-105",
+      "query": "implementation of Bm25Index",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "Bm25Index",
+        "file": "src/train_data/bm25.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-126",
+      "query": "FileGroup",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "FileGroup",
+        "file": "src/scout.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-127",
+      "query": "ReviewResult",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "ReviewResult",
+        "file": "src/review.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-106",
+      "query": "implementation of DocCommentResult",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "DocCommentResult",
+        "file": "src/doc_writer/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-112",
+      "query": "struct definitions in src/cli/commands/train",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "TaskBriefOutput",
+        "file": "src/cli/commands/train/task.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "TaskBriefRisk",
+          "file": "src/cli/commands/train/task.rs"
+        },
+        {
+          "name": "TaskBriefSummary",
+          "file": "src/cli/commands/train/task.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-128",
+      "query": "AuditModeFile",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "AuditModeFile",
+        "file": "src/audit.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-129",
+      "query": "BatchInput",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "BatchInput",
+        "file": "src/cli/batch/commands.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-107",
+      "query": "implementation of DiffImpactSummary",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "DiffImpactSummary",
+        "file": "src/impact/types.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-108",
+      "query": "implementation of PreparedEmbedding",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "PreparedEmbedding",
+        "file": "src/cli/pipeline/types.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-113",
+      "query": "constants defined in src/cagra.rs",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "MAX",
+        "file": "src/cagra.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-109",
+      "query": "implementation of StatsOutput",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "StatsOutput",
+        "file": "src/cli/commands/index/stats.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-110",
+      "query": "implementation of TypeGraph",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "TypeGraph",
+        "file": "src/store/types.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-111",
+      "query": "implementation of metadata",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "metadata",
+        "file": "src/schema.sql"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-130",
+      "query": "RelatedResult",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "RelatedResult",
+        "file": "src/related.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-112",
+      "query": "implementation of BlameEntry",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "BlameEntry",
+        "file": "src/cli/commands/io/blame.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-131",
+      "query": "BudgetedNoteEntry",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "BudgetedNoteEntry",
+        "file": "src/cli/commands/train/task.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-132",
+      "query": "Store",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "Store",
+        "file": "src/store/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-113",
+      "query": "implementation of MessagesResponse",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "MessagesResponse",
+        "file": "src/llm/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-114",
+      "query": "implementation of TypeUsageEntry",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "TypeUsageEntry",
+        "file": "src/cli/commands/graph/deps.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-133",
+      "query": "Embedder",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "Embedder",
+        "file": "src/embedder/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-134",
+      "query": "CagraIndex",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "CagraIndex",
+        "file": "src/cagra.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-114",
+      "query": "struct definitions in src/cli/commands/infra",
+      "category": "type_filtered",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "AuditModeOutput",
+        "file": "src/cli/commands/infra/audit_mode.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "DoctorIssue",
+          "file": "src/cli/commands/infra/doctor.rs"
+        },
+        {
+          "name": "ProjectSearchResult",
+          "file": "src/cli/commands/infra/project.rs"
+        }
+      ],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-115",
+      "query": "implementation of GatherResult",
+      "category": "structural_search",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "GatherResult",
+        "file": "src/gather.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-135",
+      "query": "EligibleChunk",
+      "category": "identifier_lookup",
+      "tags": [],
+      "language": null,
+      "primary_answer": {
+        "name": "EligibleChunk",
+        "file": "src/llm/mod.rs"
+      },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    }
+  ]
+}
