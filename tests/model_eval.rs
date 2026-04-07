@@ -1416,20 +1416,27 @@ fn test_hard_reranker_comparison() {
     eprintln!("\n--- Loading reranker ---");
     let reranker = Reranker::new().expect("Failed to create reranker");
 
-    // For each query: get top-20 by embedding, then rerank
     const CANDIDATE_K: usize = 20;
-    let mut emb_reciprocal_ranks: Vec<f64> = Vec::new();
-    let mut rerank_reciprocal_ranks: Vec<f64> = Vec::new();
-    let mut emb_r1 = 0usize;
-    let mut rerank_r1 = 0usize;
-    let mut emb_ndcg_sum = 0.0f64;
-    let mut rerank_ndcg_sum = 0.0f64;
+
+    // For each query, get top-K candidates and collect reranker scores per passage format
+    struct QueryResult {
+        emb_rank: Option<usize>,
+        // Per passage format: Vec of (candidate_index, rerank_score) sorted by rerank_score desc
+        reranked: Vec<Vec<(usize, f32)>>,
+        // Original embedding scores for interpolation
+        emb_scores: Vec<(usize, f32)>,
+    }
+
+    let passage_formats: &[&str] = &["NL description", "raw code", "name + signature"];
 
     eprintln!(
-        "\n  Evaluating {} queries (top-{} candidates):\n",
+        "\n  Evaluating {} queries × {} passage formats (top-{} candidates)...\n",
         HARD_EVAL_CASES.len(),
+        passage_formats.len(),
         CANDIDATE_K
     );
+
+    let mut query_results: Vec<QueryResult> = Vec::new();
 
     for (case, query_embedding) in HARD_EVAL_CASES.iter().zip(query_embeddings.iter()) {
         // Step 1: Embedding retrieval — top-K candidates by cosine similarity
@@ -1439,10 +1446,9 @@ fn test_hard_reranker_comparison() {
             .filter(|(_, c)| c.language == case.language)
             .map(|(i, c)| (i, cosine_similarity(query_embedding, &c.embedding)))
             .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(CANDIDATE_K);
 
-        // Embedding-only rank
         let emb_rank = scored
             .iter()
             .position(|(i, _)| {
@@ -1451,125 +1457,205 @@ fn test_hard_reranker_comparison() {
             })
             .map(|pos| pos + 1);
 
-        let emb_rr = emb_rank.map(|r| 1.0 / r as f64).unwrap_or(0.0);
-        emb_reciprocal_ranks.push(emb_rr);
-        if emb_rank == Some(1) {
-            emb_r1 += 1;
+        // Step 2: Rerank with each passage format
+        let mut reranked_per_format: Vec<Vec<(usize, f32)>> = Vec::new();
+
+        for (fmt_idx, _fmt_name) in passage_formats.iter().enumerate() {
+            let mut search_results: Vec<SearchResult> = scored
+                .iter()
+                .map(|(i, score)| {
+                    let desc = &chunk_descs[*i];
+                    SearchResult {
+                        chunk: cqs::store::ChunkSummary {
+                            id: format!("eval-{}", i),
+                            file: PathBuf::from("eval_fixture"),
+                            language: desc.language,
+                            chunk_type: ChunkType::Function,
+                            name: desc.name.clone(),
+                            signature: String::new(),
+                            content: desc.content.clone(),
+                            doc: None,
+                            line_start: 0,
+                            line_end: 0,
+                            content_hash: String::new(),
+                            window_idx: None,
+                            parent_id: None,
+                            parent_type_name: None,
+                        },
+                        score: *score,
+                    }
+                })
+                .collect();
+
+            let passages: Vec<String> = scored
+                .iter()
+                .map(|(i, _)| {
+                    let desc = &chunk_descs[*i];
+                    match fmt_idx {
+                        0 => desc.nl_text.clone(),
+                        1 => desc.content.clone(),
+                        2 => format!(
+                            "{}: {}",
+                            desc.name,
+                            desc.content.lines().next().unwrap_or("")
+                        ),
+                        _ => unreachable!(),
+                    }
+                })
+                .collect();
+            let passage_refs: Vec<&str> = passages.iter().map(|s| s.as_str()).collect();
+
+            reranker
+                .rerank_with_passages(case.query, &mut search_results, &passage_refs, CANDIDATE_K)
+                .expect("Reranking failed");
+
+            // Capture (original_index, rerank_score) in reranked order
+            let reranked: Vec<(usize, f32)> = search_results
+                .iter()
+                .map(|r| {
+                    let idx = r
+                        .chunk
+                        .id
+                        .strip_prefix("eval-")
+                        .unwrap()
+                        .parse::<usize>()
+                        .unwrap();
+                    (idx, r.score)
+                })
+                .collect();
+            reranked_per_format.push(reranked);
         }
-        emb_ndcg_sum += emb_rank
-            .map(|r| 1.0 / (r as f64 + 1.0).log2())
-            .unwrap_or(0.0);
 
-        // Step 2: Rerank candidates with cross-encoder
-        // Build SearchResult objects for the reranker API
-        let mut search_results: Vec<SearchResult> = scored
-            .iter()
-            .map(|(i, score)| {
-                let desc = &chunk_descs[*i];
-                SearchResult {
-                    chunk: cqs::store::ChunkSummary {
-                        id: format!("eval-{}", i),
-                        file: PathBuf::from("eval_fixture"),
-                        language: desc.language,
-                        chunk_type: ChunkType::Function,
-                        name: desc.name.clone(),
-                        signature: String::new(),
-                        content: desc.content.clone(),
-                        doc: None,
-                        line_start: 0,
-                        line_end: 0,
-                        content_hash: String::new(),
-                        window_idx: None,
-                        parent_id: None,
-                        parent_type_name: None,
-                    },
-                    score: *score,
-                }
-            })
-            .collect();
-
-        // Use NL descriptions as passages for the cross-encoder
-        let passage_texts: Vec<&str> = scored
-            .iter()
-            .map(|(i, _)| chunk_descs[*i].nl_text.as_str())
-            .collect();
-
-        reranker
-            .rerank_with_passages(case.query, &mut search_results, &passage_texts, CANDIDATE_K)
-            .expect("Reranking failed");
-
-        // Reranked rank
-        let rerank_rank = search_results
-            .iter()
-            .position(|r| {
-                r.chunk.name == case.expected_name
-                    || case.also_accept.contains(&r.chunk.name.as_str())
-            })
-            .map(|pos| pos + 1);
-
-        let rerank_rr = rerank_rank.map(|r| 1.0 / r as f64).unwrap_or(0.0);
-        rerank_reciprocal_ranks.push(rerank_rr);
-        if rerank_rank == Some(1) {
-            rerank_r1 += 1;
-        }
-        rerank_ndcg_sum += rerank_rank
-            .map(|r| 1.0 / (r as f64 + 1.0).log2())
-            .unwrap_or(0.0);
-
-        // Per-query output
-        let emb_rank_str = emb_rank
-            .map(|r| r.to_string())
-            .unwrap_or_else(|| "miss".to_string());
-        let rerank_rank_str = rerank_rank
-            .map(|r| r.to_string())
-            .unwrap_or_else(|| "miss".to_string());
-        let delta = match (emb_rank, rerank_rank) {
-            (Some(e), Some(r)) if r < e => format!(" (+{})", e - r),
-            (Some(e), Some(r)) if r > e => format!(" (-{})", r - e),
-            (None, Some(_)) => " (rescued)".to_string(),
-            (Some(_), None) => " (lost)".to_string(),
-            _ => String::new(),
-        };
-        eprintln!(
-            "  [{:?}] \"{}\" -> exp: {}, emb: {}, rerank: {}{}",
-            case.language, case.query, case.expected_name, emb_rank_str, rerank_rank_str, delta
-        );
+        query_results.push(QueryResult {
+            emb_rank,
+            reranked: reranked_per_format,
+            emb_scores: scored,
+        });
     }
 
-    let n = HARD_EVAL_CASES.len() as f64;
-    let emb_mrr = emb_reciprocal_ranks.iter().sum::<f64>() / n;
-    let rerank_mrr = rerank_reciprocal_ranks.iter().sum::<f64>() / n;
-    let emb_r1_pct = emb_r1 as f64 / n * 100.0;
-    let rerank_r1_pct = rerank_r1 as f64 / n * 100.0;
-    let emb_ndcg = emb_ndcg_sum / n;
-    let rerank_ndcg = rerank_ndcg_sum / n;
+    // Evaluate: passage formats × scoring strategies
+    // Scoring: "pure rerank" (α=0), interpolation at α=0.3, 0.5, 0.7, "pure emb" (α=1)
+    let alphas: &[f32] = &[0.0, 0.3, 0.5, 0.7, 1.0];
 
-    // Comparison table
     eprintln!(
-        "\n=== Reranker Impact (top-{} candidates, {} queries) ===\n",
-        CANDIDATE_K,
-        HARD_EVAL_CASES.len()
+        "=== Reranker Ablation ({} queries, top-{} candidates) ===\n",
+        HARD_EVAL_CASES.len(),
+        CANDIDATE_K
     );
     eprintln!(
-        "{:<25} {:>10} {:>10} {:>10}",
-        "Method", "Recall@1", "MRR", "NDCG@10"
+        "{:<30} {:>10} {:>10} {:>10}",
+        "Config", "Recall@1", "MRR", "NDCG@10"
     );
-    eprintln!("{}", "-".repeat(58));
+    eprintln!("{}", "-".repeat(63));
+
+    // Embedding-only baseline
+    let n = HARD_EVAL_CASES.len() as f64;
+    let emb_r1: usize = query_results
+        .iter()
+        .filter(|q| q.emb_rank == Some(1))
+        .count();
+    let emb_mrr: f64 = query_results
+        .iter()
+        .map(|q| q.emb_rank.map(|r| 1.0 / r as f64).unwrap_or(0.0))
+        .sum::<f64>()
+        / n;
+    let emb_ndcg: f64 = query_results
+        .iter()
+        .map(|q| {
+            q.emb_rank
+                .map(|r| 1.0 / (r as f64 + 1.0).log2())
+                .unwrap_or(0.0)
+        })
+        .sum::<f64>()
+        / n;
     eprintln!(
-        "{:<25} {:>9.1}% {:>10.4} {:>10.4}",
-        "Embedding only", emb_r1_pct, emb_mrr, emb_ndcg
+        "{:<30} {:>9.1}% {:>10.4} {:>10.4}",
+        "Embedding only (baseline)",
+        emb_r1 as f64 / n * 100.0,
+        emb_mrr,
+        emb_ndcg
     );
-    eprintln!(
-        "{:<25} {:>9.1}% {:>10.4} {:>10.4}",
-        "Embedding + Reranker", rerank_r1_pct, rerank_mrr, rerank_ndcg
-    );
-    eprintln!(
-        "{:<25} {:>+9.1}% {:>+10.4} {:>+10.4}",
-        "Delta",
-        rerank_r1_pct - emb_r1_pct,
-        rerank_mrr - emb_mrr,
-        rerank_ndcg - emb_ndcg
-    );
+    eprintln!("{}", "-".repeat(63));
+
+    for (fmt_idx, fmt_name) in passage_formats.iter().enumerate() {
+        for &alpha in alphas {
+            // For each query, compute interpolated rank
+            let mut r1 = 0usize;
+            let mut mrr_sum = 0.0f64;
+            let mut ndcg_sum = 0.0f64;
+
+            for (qi, qr) in query_results.iter().enumerate() {
+                let case = &HARD_EVAL_CASES[qi];
+                let reranked = &qr.reranked[fmt_idx];
+
+                // Build combined scores: α * emb_score + (1-α) * rerank_score
+                // Normalize rerank scores to [0,1] range for fair interpolation
+                let max_rerank = reranked
+                    .iter()
+                    .map(|(_, s)| *s)
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let min_rerank = reranked
+                    .iter()
+                    .map(|(_, s)| *s)
+                    .fold(f32::INFINITY, f32::min);
+                let rerank_range = (max_rerank - min_rerank).max(1e-6);
+
+                let mut combined: Vec<(usize, f32)> = qr
+                    .emb_scores
+                    .iter()
+                    .map(|&(idx, emb_s)| {
+                        let rerank_s = reranked
+                            .iter()
+                            .find(|(i, _)| *i == idx)
+                            .map(|(_, s)| *s)
+                            .unwrap_or(min_rerank);
+                        let norm_rerank = (rerank_s - min_rerank) / rerank_range;
+                        let score = alpha * emb_s + (1.0 - alpha) * norm_rerank;
+                        (idx, score)
+                    })
+                    .collect();
+                combined.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+                let rank = combined
+                    .iter()
+                    .position(|(i, _)| {
+                        let name = &indexed[*i].name;
+                        name == case.expected_name || case.also_accept.contains(&name.as_str())
+                    })
+                    .map(|p| p + 1);
+
+                if rank == Some(1) {
+                    r1 += 1;
+                }
+                mrr_sum += rank.map(|r| 1.0 / r as f64).unwrap_or(0.0);
+                ndcg_sum += rank.map(|r| 1.0 / (r as f64 + 1.0).log2()).unwrap_or(0.0);
+            }
+
+            let label = if alpha == 0.0 {
+                format!("{} (pure rerank)", fmt_name)
+            } else if alpha == 1.0 {
+                // Skip "pure emb" for all but first format — it's always the same
+                if fmt_idx > 0 {
+                    continue;
+                }
+                "Embedding only (check)".to_string()
+            } else {
+                format!("{} (α={:.1})", fmt_name, alpha)
+            };
+
+            let r1_pct = r1 as f64 / n * 100.0;
+            let mrr = mrr_sum / n;
+            let ndcg = ndcg_sum / n;
+            let delta_r1 = r1_pct - emb_r1 as f64 / n * 100.0;
+            let sign = if delta_r1 >= 0.0 { "+" } else { "" };
+
+            eprintln!(
+                "{:<30} {:>9.1}% {:>10.4} {:>10.4}  {}{:.1}pp",
+                label, r1_pct, mrr, ndcg, sign, delta_r1
+            );
+        }
+        eprintln!();
+    }
     eprintln!();
 }
 
