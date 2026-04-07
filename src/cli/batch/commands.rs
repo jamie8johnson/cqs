@@ -38,9 +38,9 @@ pub(crate) enum BatchCmd {
         /// Definition search: find by name only
         #[arg(long)]
         name_only: bool,
-        /// Pure semantic similarity, disable RRF hybrid
+        /// Enable RRF hybrid search (cosine + FTS5 keyword fusion)
         #[arg(long)]
-        semantic_only: bool,
+        rrf: bool,
         /// Re-rank results with cross-encoder
         #[arg(long)]
         rerank: bool,
@@ -346,7 +346,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             query,
             limit,
             name_only,
-            semantic_only,
+            rrf,
             rerank,
             splade,
             splade_alpha,
@@ -361,7 +361,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
                     query,
                     limit,
                     name_only,
-                    semantic_only,
+                    rrf,
                     rerank,
                     splade,
                     splade_alpha,
