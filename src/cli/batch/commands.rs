@@ -302,6 +302,36 @@ impl BatchCmd {
     }
 }
 
+// ─── Query logging ───────────────────────────────────────────────────────────
+
+/// Append a query to the query log for eval workflow capture.
+/// Best-effort: failures are silently ignored (never blocks batch mode).
+fn log_query(command: &str, query: &str) {
+    use std::io::Write;
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let log_path = home.join(".cache/cqs/query_log.jsonl");
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    else {
+        return;
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let _ = writeln!(
+        f,
+        "{{\"ts\":{},\"cmd\":\"{}\",\"query\":{}}}",
+        ts,
+        command,
+        serde_json::to_string(query).unwrap_or_else(|_| "\"\"".to_string())
+    );
+}
+
 // ─── Dispatch ────────────────────────────────────────────────────────────────
 
 /// Execute a batch command and return a JSON value.
@@ -323,21 +353,24 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             lang,
             path,
             tokens,
-        } => handlers::dispatch_search(
-            ctx,
-            &handlers::SearchParams {
-                query,
-                limit,
-                name_only,
-                semantic_only,
-                rerank,
-                splade,
-                splade_alpha,
-                lang,
-                path,
-                tokens,
-            },
-        ),
+        } => {
+            log_query("search", &query);
+            handlers::dispatch_search(
+                ctx,
+                &handlers::SearchParams {
+                    query,
+                    limit,
+                    name_only,
+                    semantic_only,
+                    rerank,
+                    splade,
+                    splade_alpha,
+                    lang,
+                    path,
+                    tokens,
+                },
+            )
+        }
         BatchCmd::Deps { name, reverse } => handlers::dispatch_deps(ctx, &name, reverse),
         BatchCmd::Callers { name } => handlers::dispatch_callers(ctx, &name),
         BatchCmd::Callees { name } => handlers::dispatch_callees(ctx, &name),
@@ -345,17 +378,20 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
         BatchCmd::Similar { args } => {
             handlers::dispatch_similar(ctx, &args.name, args.limit, args.threshold)
         }
-        BatchCmd::Gather { args } => handlers::dispatch_gather(
-            ctx,
-            &handlers::GatherParams {
-                query: &args.query,
-                expand: args.expand,
-                direction: args.direction,
-                limit: args.limit,
-                tokens: args.tokens,
-                ref_name: args.ref_name.as_deref(),
-            },
-        ),
+        BatchCmd::Gather { args } => {
+            log_query("gather", &args.query);
+            handlers::dispatch_gather(
+                ctx,
+                &handlers::GatherParams {
+                    query: &args.query,
+                    expand: args.expand,
+                    direction: args.direction,
+                    limit: args.limit,
+                    tokens: args.tokens,
+                    ref_name: args.ref_name.as_deref(),
+                },
+            )
+        }
         BatchCmd::Impact { args } => handlers::dispatch_impact(
             ctx,
             &args.name,
@@ -379,11 +415,16 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             query,
             depth,
             tokens,
-        } => handlers::dispatch_onboard(ctx, &query, depth, tokens),
+        } => {
+            log_query("onboard", &query);
+            handlers::dispatch_onboard(ctx, &query, depth, tokens)
+        }
         BatchCmd::Scout { args } => {
+            log_query("scout", &args.query);
             handlers::dispatch_scout(ctx, &args.query, args.limit, args.tokens)
         }
         BatchCmd::Where { description, limit } => {
+            log_query("where", &description);
             handlers::dispatch_where(ctx, &description, limit)
         }
         BatchCmd::Read { path, focus } => handlers::dispatch_read(ctx, &path, focus.as_deref()),
@@ -408,7 +449,10 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             description,
             limit,
             tokens,
-        } => handlers::dispatch_task(ctx, &description, limit, tokens),
+        } => {
+            log_query("task", &description);
+            handlers::dispatch_task(ctx, &description, limit, tokens)
+        }
         BatchCmd::Review { base, tokens } => {
             handlers::dispatch_review(ctx, base.as_deref(), tokens)
         }
