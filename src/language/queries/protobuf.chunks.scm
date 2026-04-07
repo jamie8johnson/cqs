@@ -3,10 +3,10 @@
   (message_name
     (identifier) @name)) @struct
 
-;; Services
+;; Services → Service type (contract definitions, not implementations)
 (service
   (service_name
-    (identifier) @name)) @interface
+    (identifier) @name)) @service
 
 ;; RPCs (inside services → Method via method_containers)
 (rpc

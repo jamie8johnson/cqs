@@ -537,6 +537,16 @@ define_chunk_types! {
     Impl => "impl";
     /// Configuration key (JSON, TOML, YAML, INI — data, not code)
     ConfigKey => "configkey";
+    /// Test function or test suite (Jest describe, pytest test_, #[test], etc.)
+    Test => "test";
+    /// Top-level exported variable (let/var, global declarations — mutable, not constant)
+    Variable => "variable", capture = "var";
+    /// HTTP route/endpoint handler (Express app.get, Flask @app.route, Spring @GetMapping)
+    Endpoint => "endpoint";
+    /// RPC/service definition (protobuf service, GraphQL Query/Mutation)
+    Service => "service";
+    /// SQL stored procedure, view, or trigger
+    StoredProc => "storedproc";
 }
 
 impl ChunkType {
@@ -549,11 +559,13 @@ impl ChunkType {
     pub fn human_name(self) -> String {
         match self {
             ChunkType::TypeAlias => "type alias".to_string(),
+            ChunkType::StoredProc => "stored procedure".to_string(),
+            ChunkType::ConfigKey => "config key".to_string(),
             other => other.to_string(),
         }
     }
 
-    /// Returns true for types that have call graph connections (Function, Method, Constructor, Property, Macro, Extension).
+    /// Returns true for types that have call graph connections.
     pub fn is_callable(self) -> bool {
         matches!(
             self,
@@ -563,11 +575,14 @@ impl ChunkType {
                 | ChunkType::Property
                 | ChunkType::Macro
                 | ChunkType::Extension
+                | ChunkType::Test
+                | ChunkType::Endpoint
+                | ChunkType::StoredProc
         )
     }
 
     /// Returns true if this is a code chunk type (callable + type definitions).
-    /// Excludes Section (markdown), Module (file-level), Object (misc).
+    /// Excludes Section (markdown), Module (file-level), Object (misc), ConfigKey (data).
     /// Matches the CLI default search filter.
     pub fn is_code(self) -> bool {
         self.is_callable()
@@ -581,6 +596,8 @@ impl ChunkType {
                     | ChunkType::Class
                     | ChunkType::Constant
                     | ChunkType::Impl
+                    | ChunkType::Variable
+                    | ChunkType::Service
             )
     }
 

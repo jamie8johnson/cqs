@@ -1,20 +1,22 @@
+;; Functions stay as Function (reusable, callable)
 (create_function
-  (object_reference) @name) @function
-
-(create_procedure
   (object_reference) @name) @function
 
 (alter_function
   (object_reference) @name) @function
 
+;; Procedures, views, triggers → StoredProc
+(create_procedure
+  (object_reference) @name) @storedproc
+
 (alter_procedure
-  (object_reference) @name) @function
+  (object_reference) @name) @storedproc
 
 (create_view
-  (object_reference) @name) @function
+  (object_reference) @name) @storedproc
 
 (create_trigger
-  name: (identifier) @name) @function
+  (object_reference) @name) @storedproc
 
 ;; Tables
 (create_table

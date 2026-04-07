@@ -1861,6 +1861,10 @@ fn post_process_go_go(
     if *chunk_type == ChunkType::Function && name.starts_with("New") && name.len() > 3 {
         *chunk_type = ChunkType::Constructor;
     }
+    // Go convention: func TestFoo(t *testing.T) is a test
+    if *chunk_type == ChunkType::Function && name.starts_with("Test") && name.len() > 4 {
+        *chunk_type = ChunkType::Test;
+    }
     true
 }
 
@@ -2929,8 +2933,8 @@ fn post_process_javascript_javascript(
     node: tree_sitter::Node,
     _source: &str,
 ) -> bool {
-    if *chunk_type == ChunkType::Constant {
-        // Skip const declarations inside function bodies — only capture module-level
+    if *chunk_type == ChunkType::Constant || *chunk_type == ChunkType::Variable {
+        // Skip declarations inside function bodies — only capture module-level
         if is_inside_function_javascript(node) {
             return false;
         }
@@ -4812,11 +4816,22 @@ fn post_process_python_python(
         if is_inside_function_python(node) {
             return false;
         }
-        return is_upper_snake_case_python(name);
+        // UPPER_SNAKE_CASE → Constant, lowercase → Variable
+        if is_upper_snake_case_python(name) {
+            return true;
+        }
+        *chunk_type = ChunkType::Variable;
+        return true;
     }
     // __init__ methods are constructors
     if *chunk_type == ChunkType::Method && name == "__init__" {
         *chunk_type = ChunkType::Constructor;
+    }
+    // test_ prefix → Test chunk type
+    if (*chunk_type == ChunkType::Function || *chunk_type == ChunkType::Method)
+        && name.starts_with("test_")
+    {
+        *chunk_type = ChunkType::Test;
     }
     true
 }
@@ -5640,13 +5655,40 @@ fn extract_container_name_rust_rust(container: tree_sitter::Node, source: &str) 
 fn post_process_rust_rust(
     name: &mut String,
     chunk_type: &mut ChunkType,
-    _node: tree_sitter::Node,
-    _source: &str,
+    node: tree_sitter::Node,
+    source: &str,
 ) -> bool {
-    // Rust convention: fn new_rust(...) inside an impl block is a constructor
+    // Rust convention: fn new(...) inside an impl block is a constructor
     if *chunk_type == ChunkType::Method && name == "new" {
         *chunk_type = ChunkType::Constructor;
     }
+
+    // #[test] functions → Test chunk type
+    // In tree-sitter-rust, attribute_item is a sibling before the function_item
+    if *chunk_type == ChunkType::Function || *chunk_type == ChunkType::Method {
+        let mut sibling = node.prev_sibling();
+        while let Some(sib) = sibling {
+            if sib.kind() == "attribute_item" {
+                let attr_text = &source[sib.byte_range()];
+                if attr_text.contains("#[test]") || attr_text.contains("#[tokio::test]") {
+                    *chunk_type = ChunkType::Test;
+                    break;
+                }
+            } else if sib.kind() != "line_comment" && sib.kind() != "block_comment" {
+                break; // stop at non-attribute, non-comment siblings
+            }
+            sibling = sib.prev_sibling();
+        }
+    }
+
+    // static mut → Variable (mutable, not constant)
+    if *chunk_type == ChunkType::Constant && node.kind() == "static_item" {
+        let text = &source[node.byte_range()];
+        if text.contains("static mut ") {
+            *chunk_type = ChunkType::Variable;
+        }
+    }
+
     true
 }
 
@@ -6753,8 +6795,8 @@ fn post_process_typescript_typescript(
     node: tree_sitter::Node,
     _source: &str,
 ) -> bool {
-    if *chunk_type == ChunkType::Constant {
-        // Skip const declarations inside function bodies — only capture module-level
+    if *chunk_type == ChunkType::Constant || *chunk_type == ChunkType::Variable {
+        // Skip declarations inside function bodies — only capture module-level
         if is_inside_function_typescript(node) {
             return false;
         }

@@ -775,6 +775,11 @@ pub(crate) fn extract_definition_node<'c, 't>(
         "constructor",
         "configkey",
         "impl",
+        "test",
+        "var",
+        "endpoint",
+        "service",
+        "storedproc",
     ];
     DEF_CAPTURES.iter().find_map(|name| {
         query

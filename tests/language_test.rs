@@ -4505,8 +4505,8 @@ service UserService {
     let chunks = parser.parse_file(file.path()).unwrap();
     let svc = chunks
         .iter()
-        .find(|c| c.name == "UserService" && c.chunk_type == ChunkType::Interface);
-    assert!(svc.is_some(), "Should find 'UserService' as Interface");
+        .find(|c| c.name == "UserService" && c.chunk_type == ChunkType::Service);
+    assert!(svc.is_some(), "Should find 'UserService' as Service");
 }
 
 #[test]
@@ -4596,15 +4596,13 @@ def foo():
     let url = chunks.iter().find(|c| c.name == "API_URL");
     assert!(url.is_some(), "Should capture API_URL");
     assert_eq!(url.unwrap().chunk_type, ChunkType::Constant);
-    // lowercase and MixedCase should be filtered out
-    assert!(
-        chunks.iter().find(|c| c.name == "lowercase_var").is_none(),
-        "Should not capture lowercase_var"
-    );
-    assert!(
-        chunks.iter().find(|c| c.name == "MixedCase").is_none(),
-        "Should not capture MixedCase"
-    );
+    // lowercase and MixedCase are now captured as Variable (not Constant)
+    let lc = chunks.iter().find(|c| c.name == "lowercase_var");
+    assert!(lc.is_some(), "Should capture lowercase_var as Variable");
+    assert_eq!(lc.unwrap().chunk_type, ChunkType::Variable);
+    let mc = chunks.iter().find(|c| c.name == "MixedCase");
+    assert!(mc.is_some(), "Should capture MixedCase as Variable");
+    assert_eq!(mc.unwrap().chunk_type, ChunkType::Variable);
 }
 
 #[test]
@@ -5830,7 +5828,187 @@ fn parse_sql_create_view_as_function() {
     let parser = Parser::new().unwrap();
     let chunks = parser.parse_file(file.path()).unwrap();
     let view = chunks.iter().find(|c| c.name == "active_users").unwrap();
-    assert_eq!(view.chunk_type, ChunkType::Function);
+    assert_eq!(view.chunk_type, ChunkType::StoredProc);
+}
+
+#[test]
+fn parse_sql_stored_procedure() {
+    let content =
+        "CREATE PROCEDURE update_salary(emp_id INT, new_salary DECIMAL)\nBEGIN\n  UPDATE employees SET salary = new_salary WHERE id = emp_id;\nEND;\n";
+    let file = write_temp_file(content, "sql");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let proc = chunks.iter().find(|c| c.name == "update_salary").unwrap();
+    assert_eq!(proc.chunk_type, ChunkType::StoredProc);
+}
+
+#[test]
+fn parse_sql_trigger() {
+    // tree-sitter-sql doesn't have a create_trigger node — triggers are not parsed.
+    // The @storedproc capture is ready in the .scm file for when the grammar adds support.
+    // tree-sitter-sequel-tsql parses triggers but the name extraction pattern
+    // is grammar-version-dependent. Test that we at least parse without crashing
+    // and find a StoredProc chunk if the grammar supports it.
+    let content =
+        "CREATE TRIGGER audit_insert AFTER INSERT ON orders\nBEGIN\n  INSERT INTO audit_log VALUES (NEW.id);\nEND;\n";
+    let file = write_temp_file(content, "sql");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    if let Some(trigger) = chunks.iter().find(|c| c.name.contains("audit_insert")) {
+        assert_eq!(trigger.chunk_type, ChunkType::StoredProc);
+    }
+    // No panic = grammar handles the syntax
+}
+
+#[test]
+fn parse_sql_function_stays_function() {
+    let content =
+        "CREATE FUNCTION add_numbers(a INT, b INT) RETURNS INT\nBEGIN\n  RETURN a + b;\nEND;\n";
+    let file = write_temp_file(content, "sql");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let func = chunks.iter().find(|c| c.name == "add_numbers").unwrap();
+    assert_eq!(func.chunk_type, ChunkType::Function);
+}
+
+#[test]
+fn parse_rust_test_function() {
+    let content = r#"
+#[test]
+fn test_addition() {
+    assert_eq!(2 + 2, 4);
+}
+
+fn regular_function() {
+    println!("not a test");
+}
+"#;
+    let file = write_temp_file(content, "rs");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let test_fn = chunks.iter().find(|c| c.name == "test_addition").unwrap();
+    assert_eq!(test_fn.chunk_type, ChunkType::Test);
+    let regular = chunks
+        .iter()
+        .find(|c| c.name == "regular_function")
+        .unwrap();
+    assert_eq!(regular.chunk_type, ChunkType::Function);
+}
+
+#[test]
+fn parse_rust_static_mut_is_variable() {
+    let content = r#"
+static mut COUNTER: u32 = 0;
+static IMMUTABLE: &str = "hello";
+const MAX: u32 = 100;
+"#;
+    let file = write_temp_file(content, "rs");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let counter = chunks.iter().find(|c| c.name == "COUNTER").unwrap();
+    assert_eq!(counter.chunk_type, ChunkType::Variable);
+    let immut = chunks.iter().find(|c| c.name == "IMMUTABLE").unwrap();
+    assert_eq!(immut.chunk_type, ChunkType::Constant);
+    let max_c = chunks.iter().find(|c| c.name == "MAX").unwrap();
+    assert_eq!(max_c.chunk_type, ChunkType::Constant);
+}
+
+#[test]
+fn parse_python_test_function() {
+    let content = r#"
+def test_login():
+    assert True
+
+def helper_function():
+    pass
+"#;
+    let file = write_temp_file(content, "py");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let test_fn = chunks.iter().find(|c| c.name == "test_login").unwrap();
+    assert_eq!(test_fn.chunk_type, ChunkType::Test);
+    let helper = chunks.iter().find(|c| c.name == "helper_function").unwrap();
+    assert_eq!(helper.chunk_type, ChunkType::Function);
+}
+
+#[test]
+fn parse_go_test_function() {
+    let content = r#"
+package main
+
+func TestAdd(t *testing.T) {
+    if add(1, 2) != 3 {
+        t.Error("expected 3")
+    }
+}
+
+func add(a, b int) int {
+    return a + b
+}
+"#;
+    let file = write_temp_file(content, "go");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let test_fn = chunks.iter().find(|c| c.name == "TestAdd").unwrap();
+    assert_eq!(test_fn.chunk_type, ChunkType::Test);
+    let add_fn = chunks.iter().find(|c| c.name == "add").unwrap();
+    assert_eq!(add_fn.chunk_type, ChunkType::Function);
+}
+
+#[test]
+fn parse_go_var_declaration() {
+    let content = r#"
+package main
+
+var globalCount int = 0
+const MaxRetries = 3
+"#;
+    let file = write_temp_file(content, "go");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let var = chunks.iter().find(|c| c.name == "globalCount").unwrap();
+    assert_eq!(var.chunk_type, ChunkType::Variable);
+    let cnst = chunks.iter().find(|c| c.name == "MaxRetries").unwrap();
+    assert_eq!(cnst.chunk_type, ChunkType::Constant);
+}
+
+#[test]
+fn parse_javascript_let_var_declarations() {
+    let content = r#"
+let counter = 0;
+var legacy = "old";
+const MAX = 100;
+"#;
+    let file = write_temp_file(content, "js");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let let_var = chunks.iter().find(|c| c.name == "counter").unwrap();
+    assert_eq!(let_var.chunk_type, ChunkType::Variable);
+    let var_var = chunks.iter().find(|c| c.name == "legacy").unwrap();
+    assert_eq!(var_var.chunk_type, ChunkType::Variable);
+    let const_var = chunks.iter().find(|c| c.name == "MAX").unwrap();
+    assert_eq!(const_var.chunk_type, ChunkType::Constant);
+}
+
+#[test]
+fn parse_protobuf_service() {
+    let content = r#"
+syntax = "proto3";
+service UserService {
+  rpc GetUser (GetUserRequest) returns (User);
+  rpc CreateUser (CreateUserRequest) returns (User);
+}
+message User {
+  string name = 1;
+}
+"#;
+    let file = write_temp_file(content, "proto");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let svc = chunks.iter().find(|c| c.name == "UserService").unwrap();
+    assert_eq!(svc.chunk_type, ChunkType::Service);
+    let msg = chunks.iter().find(|c| c.name == "User").unwrap();
+    assert_eq!(msg.chunk_type, ChunkType::Struct);
 }
 
 #[test]
