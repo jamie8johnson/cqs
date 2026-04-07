@@ -1,7 +1,7 @@
 {
   "version": "v2_300q",
   "created": "2026-04-06",
-  "description": "Eval query set (112 queries, 8 categories) against cqs codebase. Hand-curated + auto-generated, ground truth validated.",
+  "description": "Eval query set (293 queries, 8 categories) against cqs codebase. Hand-curated + auto-generated, ground truth validated.",
   "queries": [
     {
       "id": "id-001",
@@ -1856,6 +1856,2735 @@
         "name": "EligibleChunk",
         "file": "src/llm/mod.rs"
       },
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-101",
+      "query": "function that watches filesystem for changes and triggers reindex",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "reindex_files",
+        "file": "src/cli/watch.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "cmd_watch",
+          "file": "src/cli/watch.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-102",
+      "query": "detect semantic drift between a reference snapshot and current code",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "detect_drift",
+        "file": "src/drift.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-103",
+      "query": "extract function signature from a tree-sitter node",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "extract_signature",
+        "file": "src/parser/chunk.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-104",
+      "query": "build the HNSW index from stored embeddings in batches",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "build_batched_with_dim",
+        "file": "src/hnsw/build.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-105",
+      "query": "validate that search filter parameters are consistent",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "validate",
+        "file": "src/store/helpers/search_filter.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-106",
+      "query": "compute impact analysis showing callers and affected tests for a function",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "analyze_impact",
+        "file": "src/impact/analysis.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "cmd_impact",
+          "file": "src/cli/commands/graph/impact.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-107",
+      "query": "normalize text for full-text search indexing",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "normalize_for_fts",
+        "file": "src/nl/fts.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-108",
+      "query": "format search results as JSON for CLI output",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "impact_to_json",
+        "file": "src/impact/format.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "display_unified_results_json",
+          "file": "src/cli/display.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-109",
+      "query": "check if a file needs reindexing based on modification time",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "needs_reindex",
+        "file": "src/cli/pipeline/parsing.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-110",
+      "query": "split long code chunks into overlapping windows for embedding",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "apply_windowing",
+        "file": "src/cli/pipeline/windowing.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-111",
+      "query": "extract field names and keywords from a code body",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "extract_body_keywords",
+        "file": "src/nl/fields.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "extract_field_names",
+          "file": "src/nl/fields.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-112",
+      "query": "suggest where in the codebase to add new code",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "cmd_where",
+        "file": "src/cli/commands/search/where_cmd.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-113",
+      "query": "convert a document file to markdown format",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "convert_path",
+        "file": "src/convert/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-114",
+      "query": "compute the blake3 hash of file contents for change detection",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "content_hash",
+        "file": "src/parser/types.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "model_fingerprint",
+          "file": "src/embedder/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-115",
+      "query": "display a one-line summary for each function in a file",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "cmd_brief",
+        "file": "src/cli/commands/io/brief.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-116",
+      "query": "find functions similar to a given function by embedding distance",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "cmd_similar",
+        "file": "src/cli/commands/search/similar.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "cmd_neighbors",
+          "file": "src/cli/commands/search/neighbors.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-117",
+      "query": "write HNSW index data to disk with checksum verification",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "save",
+        "file": "src/hnsw/persist.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-118",
+      "query": "reconstruct source file content from indexed chunks",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "cmd_reconstruct",
+        "file": "src/cli/commands/io/reconstruct.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-119",
+      "query": "generate shell completions for bash zsh fish powershell",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "cmd_completions",
+        "file": "src/cli/dispatch.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-120",
+      "query": "evict old entries from the global embedding cache by size limit",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "evict",
+        "file": "src/cache.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-121",
+      "query": "tokenize an identifier into separate words for search matching",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "tokenize_identifier",
+        "file": "src/nl/fts.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-122",
+      "query": "auto-suggest notes from codebase patterns like dead code and hotspots",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "cmd_suggest",
+        "file": "src/cli/commands/review/suggest.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-123",
+      "query": "parse L5X PLC export files into structured text chunks",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "parse_l5x",
+        "file": "src/parser/l5x.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-124",
+      "query": "select the best ONNX execution provider for GPU or CPU",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "select_provider",
+        "file": "src/embedder/provider.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "con-101",
+      "query": "call graph traversal for finding transitive dependencies",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "find_transitive_callers",
+        "file": "src/impact/analysis.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-102",
+      "query": "staleness detection for outdated index entries",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "cmd_stale",
+        "file": "src/cli/commands/index/stale.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "prune_missing",
+          "file": "src/store/chunks/staleness.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-103",
+      "query": "schema migration system for database version upgrades",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "migrate",
+        "file": "src/store/migrations.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "con-104",
+      "query": "name matching and fuzzy search for function lookup",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "search_by_name",
+        "file": "src/store/search.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "name_match_score",
+          "file": "src/search/scoring/name_match.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "con-105",
+      "query": "document frequency weighting for search result scoring",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "callee_caller_counts",
+        "file": "src/store/calls/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-106",
+      "query": "embedding dimension and model configuration management",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "model_config",
+        "file": "src/embedder/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "resolve",
+          "file": "src/embedder/models.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-107",
+      "query": "inverted index for sparse token retrieval",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "SpladeIndex",
+        "file": "src/splade/index.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-108",
+      "query": "test coverage analysis for code functions",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "find_test_chunks",
+        "file": "src/store/calls/test_map.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "cmd_test_map",
+          "file": "src/cli/commands/graph/test_map.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-109",
+      "query": "incremental indexing avoiding re-parsing unchanged files",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "needs_reindex",
+        "file": "src/cli/pipeline/parsing.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-110",
+      "query": "note sentiment scoring and boost for search results",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "note_boost",
+        "file": "src/search/scoring/note_boost.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-111",
+      "query": "multi-grammar parsing for embedded code in templates",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "InjectionRule",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-112",
+      "query": "checkpoint verification and data integrity for index files",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "verify_hnsw_checksums",
+        "file": "src/hnsw/persist.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-113",
+      "query": "garbage collection removing orphaned chunks from the index",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "cmd_gc",
+        "file": "src/cli/commands/index/gc.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-114",
+      "query": "audit mode that forces direct code examination without cached notes",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "cmd_audit_mode",
+        "file": "src/cli/commands/infra/audit_mode.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-101",
+      "query": "search by file path glob not by function name",
+      "category": "negation",
+      "primary_answer": {
+        "name": "compile_glob_filter",
+        "file": "src/search/scoring/filter.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-102",
+      "query": "load HNSW index from disk not build from scratch",
+      "category": "negation",
+      "primary_answer": {
+        "name": "load_with_dim",
+        "file": "src/hnsw/persist.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-103",
+      "query": "callees of a function not callers",
+      "category": "negation",
+      "primary_answer": {
+        "name": "callees_of",
+        "file": "src/store/graph.rs"
+      },
+      "negative_examples": [
+        {
+          "name": "callers_of",
+          "file": "src/store/graph.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-104",
+      "query": "delete notes from the project not add them",
+      "category": "negation",
+      "primary_answer": {
+        "name": "remove",
+        "file": "src/note.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "neg-105",
+      "query": "brute force search without HNSW index",
+      "category": "negation",
+      "primary_answer": {
+        "name": "search_embedding_only",
+        "file": "src/search/query.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "neg-106",
+      "query": "markdown section chunks not code function chunks",
+      "category": "negation",
+      "primary_answer": {
+        "name": "parse_markdown",
+        "file": "src/parser/markdown/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "neg-107",
+      "query": "type dependency edges not call graph edges",
+      "category": "negation",
+      "primary_answer": {
+        "name": "cmd_deps",
+        "file": "src/cli/commands/graph/deps.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "neg-108",
+      "query": "constant value not mutable variable",
+      "category": "negation",
+      "primary_answer": {
+        "name": "Constant",
+        "file": "src/language/mod.rs"
+      },
+      "negative_examples": [
+        {
+          "name": "Variable",
+          "file": "src/language/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "split": "held_out"
+    },
+    {
+      "id": "neg-109",
+      "query": "text output formatting not JSON serialization",
+      "category": "negation",
+      "primary_answer": {
+        "name": "display_unified_results",
+        "file": "src/cli/display.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "neg-110",
+      "query": "prune stale chunks not add new ones",
+      "category": "negation",
+      "primary_answer": {
+        "name": "prune_missing",
+        "file": "src/store/chunks/staleness.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "neg-111",
+      "query": "disable search demotion not enable it",
+      "category": "negation",
+      "primary_answer": {
+        "name": "enable_demotion",
+        "file": "src/store/helpers/search_filter.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-112",
+      "query": "file extension detection not content-based language detection",
+      "category": "negation",
+      "primary_answer": {
+        "name": "supported_extensions",
+        "file": "src/parser/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-101",
+      "query": "how does the enrichment pass add call graph context to embeddings",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "enrichment_pass",
+        "file": "src/cli/enrichment.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-102",
+      "query": "how does stale detection compare file modification times against index",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "prune_missing",
+        "file": "src/store/chunks/staleness.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "cmd_stale",
+          "file": "src/cli/commands/index/stale.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "ms-103",
+      "query": "how does the test map trace from a function through callers to find tests",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_test_map",
+        "file": "src/cli/commands/graph/test_map.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "find_test_chunks",
+          "file": "src/store/calls/test_map.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "ms-104",
+      "query": "how does multi-index search merge results from project and reference indexes",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "search_reference",
+        "file": "src/reference.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-105",
+      "query": "how does the review command combine diff analysis with risk scoring",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_review",
+        "file": "src/cli/commands/review/diff_review.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-106",
+      "query": "how does health check compute dead code and test coverage metrics",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_health",
+        "file": "src/cli/commands/review/health.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-107",
+      "query": "how does the onboard command build a guided tour of a codebase concept",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_onboard",
+        "file": "src/cli/commands/search/onboard.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "ms-108",
+      "query": "how does context assembly decide which related chunks to include for a file",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_context",
+        "file": "src/cli/commands/io/context.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-109",
+      "query": "how does the CI gate decide whether to pass or fail based on risk",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_ci",
+        "file": "src/cli/commands/review/ci.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "ms-110",
+      "query": "how does name search combine FTS5 with embedding similarity",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "search_by_name",
+        "file": "src/store/search.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-111",
+      "query": "how does the plan command classify tasks and generate checklists",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_plan",
+        "file": "src/cli/commands/train/plan.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-112",
+      "query": "how does SPLADE encoding compute sparse token importance scores",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "SpladeEncoder",
+        "file": "src/splade/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-101",
+      "query": "extract doc comments from source code across languages",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "extract_doc_comment",
+        "file": "src/parser/chunk.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-102",
+      "query": "method detection inside class or struct bodies",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "method_containers",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-103",
+      "query": "constructor detection across language conventions",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "Constructor",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-104",
+      "query": "return type extraction from function signatures",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "extract_return_rust",
+        "file": "src/language/languages.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "extract_return_python",
+          "file": "src/language/languages.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-105",
+      "query": "file extension to programming language mapping",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "LanguageDef",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "cl-106",
+      "query": "tree-sitter grammar initialization for code parsing",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "grammar",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "cl-107",
+      "query": "stopword filtering for search across different languages",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "stopwords",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "cl-108",
+      "query": "post-processing chunks after tree-sitter extraction",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "post_process_chunk",
+        "file": "src/language/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "PostProcessChunkFn",
+          "file": "src/language/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "cl-109",
+      "query": "structural pattern matching for code patterns like builder or async",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "StructuralMatcherFn",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "cl-110",
+      "query": "call site extraction for building the call graph",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "extract_calls",
+        "file": "src/parser/calls.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "parse_file_calls",
+          "file": "src/parser/calls.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-125",
+      "query": "upsert chunks into the SQLite store with embedding data",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "update_embeddings_batch",
+        "file": "src/store/chunks/embeddings.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-126",
+      "query": "count total chunks files and languages in the index",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "stats",
+        "file": "src/store/metadata.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "cmd_stats",
+          "file": "src/cli/commands/index/stats.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-127",
+      "query": "trace the call chain between two functions",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "cmd_trace",
+        "file": "src/cli/commands/graph/trace.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-128",
+      "query": "export training data pairs from git history",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "cmd_train_data",
+        "file": "src/cli/commands/train/train_data.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-129",
+      "query": "parse ASP.NET web forms with embedded server code",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "parse_aspx",
+        "file": "src/parser/aspx.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-130",
+      "query": "read a file and inject developer notes as inline comments",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "cmd_read",
+        "file": "src/cli/commands/io/read.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-131",
+      "query": "find functions related by shared callers or shared types",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "cmd_related",
+        "file": "src/cli/commands/search/related.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-132",
+      "query": "run database schema migration from old version to current",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "migrate",
+        "file": "src/store/migrations.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-133",
+      "query": "check hardware capabilities and model availability",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "cmd_doctor",
+        "file": "src/cli/commands/infra/doctor.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-134",
+      "query": "export a huggingface model to ONNX format",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "cmd_export_model",
+        "file": "src/cli/commands/train/export_model.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-115",
+      "query": "hybrid scoring combining embedding similarity with keyword matching",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "rrf_fuse",
+        "file": "src/store/search.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-116",
+      "query": "windowed chunking for long code that exceeds token limits",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "apply_windowing",
+        "file": "src/cli/pipeline/windowing.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-117",
+      "query": "lazy model loading to avoid startup overhead for simple commands",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "new",
+        "file": "src/embedder/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-118",
+      "query": "pipelined concurrent indexing with parse embed and write stages",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "run_index_pipeline",
+        "file": "src/cli/pipeline/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-119",
+      "query": "embedding normalization for cosine similarity computation",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "cosine_similarity",
+        "file": "src/math.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-120",
+      "query": "reference project registry for cross-project search",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "cmd_project",
+        "file": "src/cli/commands/infra/project.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "con-121",
+      "query": "telemetry and usage tracking for command frequency analysis",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "cmd_telemetry",
+        "file": "src/cli/commands/infra/telemetry_cmd.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-122",
+      "query": "BFS expansion through call graph for context assembly",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "gather",
+        "file": "src/gather.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-123",
+      "query": "content hash deduplication for avoiding redundant embedding",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "content_hash",
+        "file": "src/parser/types.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-124",
+      "query": "GPU fallback mechanism when CUDA is unavailable",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "cpu_embed_stage",
+        "file": "src/cli/pipeline/embedding.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "new_cpu",
+          "file": "src/embedder/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "neg-113",
+      "query": "reverse type dependencies showing types used by a function not type users",
+      "category": "negation",
+      "primary_answer": {
+        "name": "cmd_deps",
+        "file": "src/cli/commands/graph/deps.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-114",
+      "query": "clear the entire embedding cache not just prune old entries",
+      "category": "negation",
+      "primary_answer": {
+        "name": "clear",
+        "file": "src/cache.rs"
+      },
+      "negative_examples": [
+        {
+          "name": "prune_older_than",
+          "file": "src/cache.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-115",
+      "query": "semantic search not name-only lookup",
+      "category": "negation",
+      "primary_answer": {
+        "name": "search_filtered",
+        "file": "src/search/query.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-116",
+      "query": "write index to disk not read from disk",
+      "category": "negation",
+      "primary_answer": {
+        "name": "save",
+        "file": "src/hnsw/persist.rs"
+      },
+      "negative_examples": [
+        {
+          "name": "load_with_dim",
+          "file": "src/hnsw/persist.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-117",
+      "query": "add a developer note not remove one",
+      "category": "negation",
+      "primary_answer": {
+        "name": "cmd_notes_mutate",
+        "file": "src/cli/commands/io/notes.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-118",
+      "query": "parse only the calls not the full chunks",
+      "category": "negation",
+      "primary_answer": {
+        "name": "parse_file_calls",
+        "file": "src/parser/calls.rs"
+      },
+      "negative_examples": [
+        {
+          "name": "parse_file",
+          "file": "src/parser/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-119",
+      "query": "open store for writing not read-only",
+      "category": "negation",
+      "primary_answer": {
+        "name": "open",
+        "file": "src/store/mod.rs"
+      },
+      "negative_examples": [
+        {
+          "name": "open_readonly",
+          "file": "src/store/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-120",
+      "query": "sparse vector search not dense embedding search",
+      "category": "negation",
+      "primary_answer": {
+        "name": "SpladeIndex",
+        "file": "src/splade/index.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "neg-121",
+      "query": "batch mode persistent session not one-shot CLI",
+      "category": "negation",
+      "primary_answer": {
+        "name": "BatchContext",
+        "file": "src/cli/batch/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "neg-122",
+      "query": "module-level code scope not function-level scope",
+      "category": "negation",
+      "primary_answer": {
+        "name": "Module",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-113",
+      "query": "how does the affected command trace from git diff to impacted functions and tests",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_affected",
+        "file": "src/cli/commands/review/affected.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-114",
+      "query": "how does the explain command assemble a function card with callers callees and similar",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_explain",
+        "file": "src/cli/commands/graph/explain.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "ms-115",
+      "query": "how does dead code detection use call graph to find zero-caller functions",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "find_dead_code",
+        "file": "src/store/calls/dead_code.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "cmd_dead",
+          "file": "src/cli/commands/review/dead.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-116",
+      "query": "how does the diff command compare two indexed snapshots semantically",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_diff",
+        "file": "src/cli/commands/io/diff.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-117",
+      "query": "how does blame combine git history with semantic chunk identification",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_blame",
+        "file": "src/cli/commands/io/blame.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "ms-118",
+      "query": "how does the suggest command detect patterns and propose notes",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_suggest",
+        "file": "src/cli/commands/review/suggest.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-119",
+      "query": "how does multi-index search weight and merge results from different reference projects",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "search_reference",
+        "file": "src/reference.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-120",
+      "query": "how does the task command combine scout gather and impact into an implementation brief",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_task",
+        "file": "src/cli/commands/train/task.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-121",
+      "query": "how does the where command suggest file placement for new code",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_where",
+        "file": "src/cli/commands/search/where_cmd.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-122",
+      "query": "how does the embedding pipeline handle GPU failures by requeueing to CPU",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "gpu_embed_stage",
+        "file": "src/cli/pipeline/embedding.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "flush_to_cpu",
+          "file": "src/cli/pipeline/embedding.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "cl-111",
+      "query": "type alias and typedef definitions across languages",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "TypeAlias",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-112",
+      "query": "enum and variant definitions in different languages",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "Enum",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-113",
+      "query": "interface and protocol definitions across languages",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "Interface",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-114",
+      "query": "property and getter setter definitions across languages",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "Property",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-115",
+      "query": "test file suggestion based on language conventions",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "test_file_suggestion",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-116",
+      "query": "macro and metaprogramming definitions across languages",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "Macro",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-117",
+      "query": "delegate and event handler type definitions",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "Delegate",
+        "file": "src/language/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "Event",
+          "file": "src/language/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "cl-118",
+      "query": "signature extraction format varying by language syntax",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "SignatureStyle",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-119",
+      "query": "common type filtering to exclude standard library types from search",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "common_types",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-120",
+      "query": "function declaration patterns across different syntax families",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "Function",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "tf-101",
+      "query": "trait and interface definitions in the parser module",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "VectorIndex",
+        "file": "src/index.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-102",
+      "query": "constants and configuration values in the embedder",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "MAX_QUERY_BYTES",
+        "file": "src/embedder/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-103",
+      "query": "method implementations on the Store struct",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "search_filtered",
+        "file": "src/search/query.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "open",
+          "file": "src/store/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "tf-104",
+      "query": "enum definitions for error handling",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "StoreError",
+        "file": "src/store/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "EmbedderError",
+          "file": "src/embedder/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-105",
+      "query": "static constants in the language module",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "DEFAULTS",
+        "file": "src/language/languages.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-106",
+      "query": "struct definitions for pipeline message passing",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "ParsedBatch",
+        "file": "src/cli/pipeline/types.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "EmbeddedBatch",
+          "file": "src/cli/pipeline/types.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-107",
+      "query": "function type definitions and type aliases in the codebase",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "PostProcessChunkFn",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "tf-108",
+      "query": "methods on the Reranker struct",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "rerank",
+        "file": "src/reranker.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "rerank_with_passages",
+          "file": "src/reranker.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-109",
+      "query": "test helper functions and utilities",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "mock_embedding",
+        "file": "src/test_helpers.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-110",
+      "query": "serializable output structs for JSON responses",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "SearchResult",
+        "file": "src/store/helpers/types.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-107",
+      "query": "error enum with thiserror derive for automatic display",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "StoreError",
+        "file": "src/store/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "EmbedderError",
+          "file": "src/embedder/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-108",
+      "query": "module re-exports that form the public API",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "lib.rs",
+        "file": "src/lib.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "st-109",
+      "query": "builder pattern with method chaining for configuration",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "with_query",
+        "file": "src/store/helpers/search_filter.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-110",
+      "query": "OnceLock or LazyLock for lazy static initialization",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "model_fingerprint",
+        "file": "src/embedder/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-111",
+      "query": "async runtime block_on wrapper for sync API",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "open",
+        "file": "src/store/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "st-112",
+      "query": "Send and Sync implementation for thread-safe index sharing",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "HnswIndex",
+        "file": "src/hnsw/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "st-113",
+      "query": "Display trait implementation for human-readable output",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "ChunkType",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "st-114",
+      "query": "FromStr implementation for parsing CLI arguments",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "ChunkType",
+        "file": "src/language/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "Language",
+          "file": "src/language/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-115",
+      "query": "clap derive macro usage for command line argument parsing",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "Cli",
+        "file": "src/cli/definitions.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "Commands",
+          "file": "src/cli/definitions.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "st-116",
+      "query": "Arc shared ownership pattern for concurrent data access",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "run_index_pipeline",
+        "file": "src/cli/pipeline/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-125",
+      "query": "codebase health scoring across multiple dimensions",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "cmd_health",
+        "file": "src/cli/commands/review/health.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-126",
+      "query": "diff-aware impact analysis from uncommitted changes",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "cmd_impact_diff",
+        "file": "src/cli/commands/graph/impact_diff.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-127",
+      "query": "focused read showing only a function and its type dependencies",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "focused_read",
+        "file": "src/focused_read.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "con-128",
+      "query": "structural code pattern detection like builder or error swallowing",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "StructuralMatcherFn",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "con-129",
+      "query": "training data extraction from git commit history",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "cmd_train_data",
+        "file": "src/cli/commands/train/train_data.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "con-130",
+      "query": "query logging for collecting real workflow search patterns",
+      "category": "conceptual_search",
+      "primary_answer": {
+        "name": "log_query",
+        "file": "src/cli/batch/commands.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "ms-123",
+      "query": "how does the init command download the model and set up the index directory",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_init",
+        "file": "src/cli/commands/infra/init.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "ms-124",
+      "query": "how does the completions command generate autocomplete scripts for different shells",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_completions",
+        "file": "src/cli/dispatch.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "ms-125",
+      "query": "how does train_pairs extract NL description and code pairs for embedding fine-tuning",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "cmd_train_pairs",
+        "file": "src/cli/commands/train/train_pairs.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "ms-126",
+      "query": "how does the notes system boost or demote search results based on sentiment",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "note_boost",
+        "file": "src/search/scoring/note_boost.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-127",
+      "query": "how does garbage collection clean up orphaned call graph entries after chunk pruning",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "prune_stale_calls",
+        "file": "src/store/calls/test_map.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "cmd_gc",
+          "file": "src/cli/commands/index/gc.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "ms-128",
+      "query": "how does the embedding cache prevent re-computation across reindexes",
+      "category": "multi_step",
+      "primary_answer": {
+        "name": "prepare_for_embedding",
+        "file": "src/cli/pipeline/embedding.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "EmbeddingCache",
+          "file": "src/cache.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-123",
+      "query": "all chunk types not just callable ones",
+      "category": "negation",
+      "primary_answer": {
+        "name": "ALL",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "neg-124",
+      "query": "full file parse not focused function extraction",
+      "category": "negation",
+      "primary_answer": {
+        "name": "parse_file_all",
+        "file": "src/parser/mod.rs"
+      },
+      "negative_examples": [
+        {
+          "name": "parse_file",
+          "file": "src/parser/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-121",
+      "query": "class and struct definitions varying by language",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "Class",
+        "file": "src/language/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "Struct",
+          "file": "src/language/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "cl-122",
+      "query": "trait and protocol and interface concepts across languages",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "Trait",
+        "file": "src/language/mod.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "Interface",
+          "file": "src/language/mod.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "cl-123",
+      "query": "how different languages handle module and namespace scoping",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "Module",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "cl-124",
+      "query": "object and singleton patterns in Scala and other languages",
+      "category": "cross_language",
+      "primary_answer": {
+        "name": "Object",
+        "file": "src/language/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-117",
+      "query": "Serialize derive for JSON output across all output types",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "SearchResult",
+        "file": "src/store/helpers/types.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "st-118",
+      "query": "crossbeam channel usage for pipeline message passing",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "run_index_pipeline",
+        "file": "src/cli/pipeline/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "st-119",
+      "query": "progress bar integration for long-running CLI operations",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "run_index_pipeline",
+        "file": "src/cli/pipeline/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "st-120",
+      "query": "tracing span instrumentation for performance monitoring",
+      "category": "structural_search",
+      "primary_answer": {
+        "name": "prepare_for_embedding",
+        "file": "src/cli/pipeline/embedding.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "tf-111",
+      "query": "database migration functions for schema upgrades",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "migrate",
+        "file": "src/store/migrations.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-112",
+      "query": "error variants for embedding model failures",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "EmbedderError",
+        "file": "src/embedder/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "tf-113",
+      "query": "enum values for different search scoring strategies",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "ScoringConfig",
+        "file": "src/search/scoring/config.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "tf-114",
+      "query": "structs representing call graph relationships",
+      "category": "type_filtered",
+      "primary_answer": {
+        "name": "CallSite",
+        "file": "src/parser/types.rs"
+      },
+      "acceptable_answers": [
+        {
+          "name": "FunctionCalls",
+          "file": "src/parser/types.rs"
+        }
+      ],
+      "tags": [],
+      "language": null,
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-135",
+      "query": "parse Nix package definitions and function declarations",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "definition_nix",
+        "file": "src/language/languages.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "beh-136",
+      "query": "list and manage reference indexes for multi-project search",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "cmd_ref",
+        "file": "src/cli/commands/infra/reference.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-137",
+      "query": "infer chunk type from tree-sitter node kind when capture misses",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "infer_chunk_type",
+        "file": "src/parser/chunk.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "beh-138",
+      "query": "apply config file defaults before CLI argument parsing",
+      "category": "behavioral_search",
+      "primary_answer": {
+        "name": "apply_config_defaults",
+        "file": "src/cli/config.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-101",
+      "query": "SpladeEncoder struct",
+      "category": "identifier_lookup",
+      "primary_answer": {
+        "name": "SpladeEncoder",
+        "file": "src/splade/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-102",
+      "query": "BatchContext",
+      "category": "identifier_lookup",
+      "primary_answer": {
+        "name": "BatchContext",
+        "file": "src/cli/batch/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-103",
+      "query": "extract_calls function",
+      "category": "identifier_lookup",
+      "primary_answer": {
+        "name": "extract_calls",
+        "file": "src/parser/calls.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-104",
+      "query": "enrichment_pass",
+      "category": "identifier_lookup",
+      "primary_answer": {
+        "name": "enrichment_pass",
+        "file": "src/cli/enrichment.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-105",
+      "query": "find_dead_code",
+      "category": "identifier_lookup",
+      "primary_answer": {
+        "name": "find_dead_code",
+        "file": "src/store/calls/dead_code.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-106",
+      "query": "CacheStats struct",
+      "category": "identifier_lookup",
+      "primary_answer": {
+        "name": "CacheStats",
+        "file": "src/cache.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-107",
+      "query": "NlTemplate enum",
+      "category": "identifier_lookup",
+      "primary_answer": {
+        "name": "NlTemplate",
+        "file": "src/nl/mod.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "train"
+    },
+    {
+      "id": "id-108",
+      "query": "PipelineStats",
+      "category": "identifier_lookup",
+      "primary_answer": {
+        "name": "PipelineStats",
+        "file": "src/cli/pipeline/types.rs"
+      },
+      "tags": [],
+      "language": null,
+      "acceptable_answers": [],
+      "negative_examples": [],
+      "split": "held_out"
+    },
+    {
+      "id": "id-109",
+      "query": "SearchFilter struct",
+      "category": "identifier_lookup",
+      "primary_answer": {
+        "name": "SearchFilter",
+        "file": "src/store/helpers/search_filter.rs"
+      },
+      "tags": [],
+      "language": null,
       "acceptable_answers": [],
       "negative_examples": [],
       "split": "train"
