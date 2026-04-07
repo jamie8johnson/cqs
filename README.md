@@ -500,6 +500,7 @@ Key commands (`--json` works on all commands; `--format mermaid` also accepted o
 - `cqs ref add/remove/list` - manage reference indexes for multi-index search
 - `cqs project register/remove/list/search` - cross-project search registry
 - `cqs export-model --repo <org/model>` - export a HuggingFace model to ONNX format for use with cqs
+- `cqs cache stats/clear/prune` - manage global embedding cache (~/.cache/cqs/embeddings.db)
 - `cqs doctor` - check model, index, hardware (execution provider, CAGRA availability)
 - `cqs completions <shell>` - generate shell completions (bash, zsh, fish, powershell, elvish)
 

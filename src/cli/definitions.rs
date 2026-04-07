@@ -741,10 +741,15 @@ pub(super) enum Commands {
         #[arg(long)]
         contrastive: bool,
     },
+    /// Manage global embedding cache (stats, clear, prune)
+    Cache {
+        #[command(subcommand)]
+        subcmd: CacheCommand,
+    },
 }
 
 // Re-export the subcommand types used in Commands variants
-pub(super) use super::commands::{NotesCommand, ProjectCommand, RefCommand};
+pub(super) use super::commands::{CacheCommand, NotesCommand, ProjectCommand, RefCommand};
 
 #[cfg(test)]
 mod tests {

@@ -7,24 +7,28 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use crossbeam_channel::{select, Receiver, Sender};
 
-use cqs::embedder::ModelConfig;
 use cqs::{Chunk, Embedder, Embedding, Store};
 
-use super::types::{EmbeddedBatch, ParsedBatch, PreparedEmbedding, RelationshipData};
+use super::types::{
+    EmbedStageContext, EmbeddedBatch, ParsedBatch, PreparedEmbedding, RelationshipData,
+};
 use super::windowing::apply_windowing;
 use crate::cli::check_interrupted;
 
-/// Prepare a batch for embedding: apply windowing, check cache, generate texts.
+/// Prepare a batch for embedding: apply windowing, check caches, generate texts.
 ///
 /// This consolidates the common logic between GPU and CPU embedder threads:
 /// 1. Apply windowing to split long chunks
-/// 2. Check store for cached embeddings by content hash
-/// 3. Separate into cached (reuse) vs to_embed (need new embedding)
-/// 4. Generate NL descriptions for chunks needing embedding
+/// 2. Check global embedding cache (by content_hash + model_fingerprint)
+/// 3. Check store for cached embeddings by content hash
+/// 4. Separate into cached (reuse) vs to_embed (need new embedding)
+/// 5. Generate NL descriptions for chunks needing embedding
 pub(super) fn prepare_for_embedding(
     batch: ParsedBatch,
     embedder: &Embedder,
     store: &Store,
+    global_cache: Option<&cqs::cache::EmbeddingCache>,
+    model_fingerprint: &str,
 ) -> PreparedEmbedding {
     let _span = tracing::info_span!("prepare_for_embedding").entered();
     use cqs::generate_nl_description;
@@ -32,7 +36,32 @@ pub(super) fn prepare_for_embedding(
     // Step 1: Apply windowing to split long chunks into overlapping windows
     let windowed_chunks = apply_windowing(batch.chunks, embedder);
 
-    // Step 2: Check for existing embeddings by content hash
+    // Step 2a: Check global embedding cache first (fastest path)
+    let dim = embedder.embedding_dim();
+    let mut global_hits: HashMap<String, Embedding> = HashMap::new();
+    if let Some(cache) = global_cache {
+        let hashes: Vec<&str> = windowed_chunks
+            .iter()
+            .map(|c| c.content_hash.as_str())
+            .collect();
+        match cache.read_batch(&hashes, model_fingerprint, dim) {
+            Ok(hits) => {
+                if !hits.is_empty() {
+                    tracing::debug!(hits = hits.len(), "Global cache hits");
+                }
+                for (hash, emb_vec) in hits {
+                    if let Ok(emb) = cqs::embedder::Embedding::try_new(emb_vec) {
+                        global_hits.insert(hash, emb);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Global cache read failed (best-effort)");
+            }
+        }
+    }
+
+    // Step 2b: Check store for cached embeddings by content hash
     let hashes: Vec<&str> = windowed_chunks
         .iter()
         .map(|c| c.content_hash.as_str())
@@ -45,17 +74,27 @@ pub(super) fn prepare_for_embedding(
         }
     };
 
-    // Step 3: Separate into cached vs to_embed
+    // Step 3: Separate into cached vs to_embed (global cache > store cache > embed)
     let mut to_embed: Vec<Chunk> = Vec::new();
     let mut cached: Vec<(Chunk, Embedding)> = Vec::new();
 
     for chunk in windowed_chunks {
-        if let Some(emb) = existing.get(&chunk.content_hash) {
+        if let Some(emb) = global_hits.get(&chunk.content_hash) {
+            cached.push((chunk, emb.clone()));
+        } else if let Some(emb) = existing.get(&chunk.content_hash) {
             cached.push((chunk, emb.clone()));
         } else {
             to_embed.push(chunk);
         }
     }
+
+    tracing::info!(
+        total = cached.len() + to_embed.len(),
+        global_hits = global_hits.len(),
+        store_hits = cached.len().saturating_sub(global_hits.len()),
+        to_embed = to_embed.len(),
+        "Embedding cache stats"
+    );
 
     // Step 4: Generate NL descriptions for chunks needing embedding
     let texts: Vec<String> = to_embed.iter().map(generate_nl_description).collect();
@@ -144,14 +183,13 @@ pub(super) fn gpu_embed_stage(
     parse_rx: Receiver<ParsedBatch>,
     embed_tx: Sender<EmbeddedBatch>,
     fail_tx: Sender<ParsedBatch>,
-    store: Arc<Store>,
-    embedded_count: Arc<AtomicUsize>,
+    ctx: EmbedStageContext,
     gpu_failures: Arc<AtomicUsize>,
-    model_config: ModelConfig,
 ) -> Result<()> {
     let _span = tracing::info_span!("embed_thread", mode = "gpu").entered();
-    let embedder = Embedder::new(model_config).context("Failed to initialize GPU embedder")?;
+    let embedder = Embedder::new(ctx.model_config).context("Failed to initialize GPU embedder")?;
     embedder.warm().context("Failed to warm GPU embedder")?;
+    let fingerprint = embedder.model_fingerprint().to_string();
 
     for batch in parse_rx {
         if check_interrupted() {
@@ -159,12 +197,19 @@ pub(super) fn gpu_embed_stage(
         }
 
         // Use shared preparation logic (windowing + cache check + NL generation)
-        let prepared = prepare_for_embedding(batch, &embedder, &store);
+        let prepared = prepare_for_embedding(
+            batch,
+            &embedder,
+            &ctx.store,
+            ctx.global_cache.as_deref(),
+            &fingerprint,
+        );
 
         if prepared.to_embed.is_empty() {
             // All cached, send directly
             let cached_count = prepared.cached.len();
-            embedded_count.fetch_add(cached_count, Ordering::Relaxed);
+            ctx.embedded_count
+                .fetch_add(cached_count, Ordering::Relaxed);
             if embed_tx
                 .send(EmbeddedBatch {
                     chunk_embeddings: prepared.cached,
@@ -200,7 +245,7 @@ pub(super) fn gpu_embed_stage(
                 max_len,
                 "Routing long batch to CPU (GPU CUDNN limit)"
             );
-            if !flush_to_cpu(prepared, &embed_tx, &fail_tx, &embedded_count) {
+            if !flush_to_cpu(prepared, &embed_tx, &fail_tx, &ctx.embedded_count) {
                 break;
             }
             continue;
@@ -216,10 +261,27 @@ pub(super) fn gpu_embed_stage(
                     "embed_batch ok"
                 );
                 let new_embeddings: Vec<Embedding> = embs;
+
+                // Write new embeddings to global cache (best-effort)
+                if let Some(ref cache) = ctx.global_cache {
+                    let entries: Vec<(String, Vec<f32>)> = prepared
+                        .to_embed
+                        .iter()
+                        .zip(new_embeddings.iter())
+                        .map(|(chunk, emb)| (chunk.content_hash.clone(), emb.as_slice().to_vec()))
+                        .collect();
+                    if let Err(e) =
+                        cache.write_batch(&entries, &fingerprint, embedder.embedding_dim())
+                    {
+                        tracing::warn!(error = %e, "Global cache write failed (best-effort)");
+                    }
+                }
+
                 let cached_count = prepared.cached.len();
                 let mut chunk_embeddings = prepared.cached;
                 chunk_embeddings.extend(prepared.to_embed.into_iter().zip(new_embeddings));
-                embedded_count.fetch_add(chunk_embeddings.len(), Ordering::Relaxed);
+                ctx.embedded_count
+                    .fetch_add(chunk_embeddings.len(), Ordering::Relaxed);
                 if embed_tx
                     .send(EmbeddedBatch {
                         chunk_embeddings,
@@ -247,7 +309,7 @@ pub(super) fn gpu_embed_stage(
                     ?files,
                     "GPU embedding failed, requeueing to CPU"
                 );
-                if !flush_to_cpu(prepared, &embed_tx, &fail_tx, &embedded_count) {
+                if !flush_to_cpu(prepared, &embed_tx, &fail_tx, &ctx.embedded_count) {
                     break;
                 }
             }
@@ -265,12 +327,11 @@ pub(super) fn cpu_embed_stage(
     parse_rx: Receiver<ParsedBatch>,
     fail_rx: Receiver<ParsedBatch>,
     embed_tx: Sender<EmbeddedBatch>,
-    store: Arc<Store>,
-    embedded_count: Arc<AtomicUsize>,
-    model_config: ModelConfig,
+    ctx: EmbedStageContext,
 ) -> Result<()> {
     let _span = tracing::info_span!("embed_thread", mode = "cpu").entered();
     let mut embedder: Option<Embedder> = None;
+    let mut fingerprint: Option<String> = None;
 
     loop {
         if check_interrupted() {
@@ -299,28 +360,50 @@ pub(super) fn cpu_embed_stage(
         let emb = match &embedder {
             Some(e) => e,
             None => {
-                let e = Embedder::new_cpu(model_config.clone())
+                let e = Embedder::new_cpu(ctx.model_config.clone())
                     .context("Failed to initialize CPU embedder")?;
                 embedder.insert(e)
             }
         };
 
+        // Compute fingerprint lazily (after embedder init)
+        if fingerprint.is_none() {
+            fingerprint = Some(emb.model_fingerprint().to_string());
+        }
+        let fp = fingerprint.as_deref().unwrap_or("");
+
         // Prepare batch: windowing, cache check, text generation
-        let prepared = prepare_for_embedding(batch, emb, &store);
+        let prepared =
+            prepare_for_embedding(batch, emb, &ctx.store, ctx.global_cache.as_deref(), fp);
 
         // Embed new chunks (CPU only)
         let new_embeddings: Vec<Embedding> = if prepared.to_embed.is_empty() {
             vec![]
         } else {
             let text_refs: Vec<&str> = prepared.texts.iter().map(|s| s.as_str()).collect();
-            emb.embed_documents(&text_refs).map_err(|e| {
+            let embs = emb.embed_documents(&text_refs).map_err(|e| {
                 tracing::warn!(
                     error = %e,
                     chunks = prepared.to_embed.len(),
                     "CPU embedding failed"
                 );
                 e
-            })?
+            })?;
+
+            // Write new embeddings to global cache (best-effort)
+            if let Some(ref cache) = ctx.global_cache {
+                let entries: Vec<(String, Vec<f32>)> = prepared
+                    .to_embed
+                    .iter()
+                    .zip(embs.iter())
+                    .map(|(chunk, emb)| (chunk.content_hash.clone(), emb.as_slice().to_vec()))
+                    .collect();
+                if let Err(e) = cache.write_batch(&entries, fp, emb.embedding_dim()) {
+                    tracing::warn!(error = %e, "Global cache write failed (best-effort)");
+                }
+            }
+
+            embs
         };
 
         let embedded_batch = create_embedded_batch(
@@ -331,7 +414,8 @@ pub(super) fn cpu_embed_stage(
             prepared.file_mtimes,
         );
 
-        embedded_count.fetch_add(embedded_batch.chunk_embeddings.len(), Ordering::Relaxed);
+        ctx.embedded_count
+            .fetch_add(embedded_batch.chunk_embeddings.len(), Ordering::Relaxed);
 
         if embed_tx.send(embedded_batch).is_err() {
             break; // Receiver dropped

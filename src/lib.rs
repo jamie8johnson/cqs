@@ -55,6 +55,7 @@
 //!
 // Public library API modules
 pub mod audit;
+pub mod cache;
 pub mod config;
 pub mod convert;
 pub mod embedder;

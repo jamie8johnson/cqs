@@ -30,7 +30,9 @@ use cqs::{Parser as CqParser, Store};
 
 use embedding::{cpu_embed_stage, gpu_embed_stage};
 use parsing::{parser_stage, ParserStageContext};
-use types::{EmbeddedBatch, ParsedBatch, EMBED_CHANNEL_DEPTH, PARSE_CHANNEL_DEPTH};
+use types::{
+    EmbedStageContext, EmbeddedBatch, ParsedBatch, EMBED_CHANNEL_DEPTH, PARSE_CHANNEL_DEPTH,
+};
 use upsert::store_stage;
 
 /// Run the indexing pipeline with 3 concurrent stages:
@@ -90,40 +92,42 @@ pub(crate) fn run_index_pipeline(
         })
     };
 
+    // Open global embedding cache (best-effort)
+    let global_cache: Option<Arc<cqs::cache::EmbeddingCache>> = {
+        let cache_path = cqs::cache::EmbeddingCache::default_path();
+        match cqs::cache::EmbeddingCache::open(&cache_path) {
+            Ok(c) => {
+                tracing::info!(path = %cache_path.display(), "Global embedding cache opened");
+                Some(Arc::new(c))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Global embedding cache unavailable");
+                None
+            }
+        }
+    };
+
     // Stage 2a: GPU embedder thread
-    let gpu_model = model_config.clone();
     let gpu_handle = {
-        let store = Arc::clone(&store);
-        let embedded_count = Arc::clone(&embedded_count);
+        let ctx = EmbedStageContext {
+            store: Arc::clone(&store),
+            embedded_count: Arc::clone(&embedded_count),
+            model_config: model_config.clone(),
+            global_cache: global_cache.clone(),
+        };
         let gpu_failures = Arc::clone(&gpu_failures);
-        thread::spawn(move || {
-            gpu_embed_stage(
-                parse_rx,
-                embed_tx,
-                fail_tx,
-                store,
-                embedded_count,
-                gpu_failures,
-                gpu_model,
-            )
-        })
+        thread::spawn(move || gpu_embed_stage(parse_rx, embed_tx, fail_tx, ctx, gpu_failures))
     };
 
     // Stage 2b: CPU embedder thread
-    let cpu_model = model_config;
     let cpu_handle = {
-        let store = Arc::clone(&store);
-        let embedded_count = Arc::clone(&embedded_count);
-        thread::spawn(move || {
-            cpu_embed_stage(
-                parse_rx_cpu,
-                fail_rx,
-                embed_tx_cpu,
-                store,
-                embedded_count,
-                cpu_model,
-            )
-        })
+        let ctx = EmbedStageContext {
+            store: Arc::clone(&store),
+            embedded_count: Arc::clone(&embedded_count),
+            model_config,
+            global_cache: global_cache.clone(),
+        };
+        thread::spawn(move || cpu_embed_stage(parse_rx_cpu, fail_rx, embed_tx_cpu, ctx))
     };
 
     // Stage 3: Writer (main thread)
@@ -157,6 +161,13 @@ pub(crate) fn run_index_pipeline(
     cpu_handle
         .join()
         .map_err(|e| anyhow::anyhow!("CPU embedder thread panicked: {}", panic_message(&e)))??;
+
+    // Evict global cache if over size limit
+    if let Some(ref cache) = global_cache {
+        if let Err(e) = cache.evict() {
+            tracing::warn!(error = %e, "Global cache eviction failed");
+        }
+    }
 
     // Update the "updated_at" metadata timestamp
     if let Err(e) = store.touch_updated_at() {
