@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Global embedding cache** — transparent acceleration layer at `~/.cache/cqs/embeddings.db`. Caches ONNX embeddings keyed by `(content_hash, model_fingerprint)`. Pipeline checks cache before running inference. LRA eviction (no write-on-read). `cqs cache stats|clear|prune` CLI commands.
+- **Model fingerprint** — blake3 hash of the ONNX model file, computed lazily. Cache entries are tied to a specific model binary, not just its name.
+
+### Changed
+- **Zero `clippy::too_many_arguments` suppressions** — extracted `EmbedStageContext`, `RefQueryContext`, `SweepConfig` structs.
+
 ## [1.17.0] - 2026-04-06
 
 ### Added

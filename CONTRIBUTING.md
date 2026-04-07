@@ -130,7 +130,7 @@ src/
       review/     - diff_review, ci, dead, health, suggest, affected
       index/      - build, gc, stale, stats
       io/         - blame, brief, context, diff, drift, notes, read, reconstruct
-      infra/      - audit_mode, convert, doctor, init, project, reference, telemetry_cmd
+      infra/      - audit_mode, cache_cmd, convert, doctor, init, project, reference, telemetry_cmd
       train/      - export_model, plan, task, train_data, train_pairs
     chat.rs     - Interactive REPL (wraps batch mode with rustyline)
     batch/      - Batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
@@ -207,6 +207,7 @@ src/
     naming.rs   - Title extraction, kebab-case filename generation
     cleaning.rs - Extensible tag-based cleaning rules (7 rules)
     webhelp.rs  - Web help site detection and multi-page merge
+  cache.rs      - Global embedding cache (SQLite, keyed by content_hash + model_fingerprint)
   cagra.rs      - GPU-accelerated CAGRA index (optional)
   nl/           - NL description generation, JSDoc parsing
     mod.rs      - Core NL generation, type-aware embeddings, call context
