@@ -1068,3 +1068,32 @@ mentions = [
 sentiment = 0.5
 text = "Embedding cache working: SQLite at ~/.cache/cqs/embeddings.db, keyed by (content_hash, model_fingerprint). Best-effort, never blocks pipeline."
 mentions = ["cache.rs"]
+
+[[note]]
+sentiment = 0.0
+text = "Test chunk type is additive to find_test_chunks heuristics — both coexist. Test is callable (in call graph + callable_sql_list). Consider --exclude-type for filtering test chunks out of impact analysis."
+mentions = [
+    "language/mod.rs",
+    "store/calls/test_map.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Store get_embeddings_by_hashes is not model-aware — matches on content_hash only. Model switching without --force silently reuses wrong-model embeddings. Dim check added to pipeline but not yet released. Global cache (content_hash, model_fingerprint) is correct."
+mentions = [
+    "store/chunks/embeddings.rs",
+    "cli/pipeline/embedding.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Off-the-shelf SPLADE (naver/splade-cocondenser) is null on code search: 0pp BGE-large, -1.4pp E5-LoRA on v2 eval. Code-trained SPLADE needed."
+mentions = ["splade/mod.rs"]
+
+[[note]]
+sentiment = 0.5
+text = "Best production config: BGE-large + LLM summaries, no SPLADE, no reranker. Summaries +25pp behavioral/multi_step, -25pp negation. SPLADE null across all configs."
+mentions = [
+    "nl/mod.rs",
+    "enrichment.rs",
+]
