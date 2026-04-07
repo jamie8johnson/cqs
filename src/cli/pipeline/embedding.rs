@@ -61,17 +61,28 @@ pub(super) fn prepare_for_embedding(
         }
     }
 
-    // Step 2b: Check store for cached embeddings by content hash
-    let hashes: Vec<&str> = windowed_chunks
-        .iter()
-        .map(|c| c.content_hash.as_str())
-        .collect();
-    let existing = match store.get_embeddings_by_hashes(&hashes) {
-        Ok(map) => map,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to fetch cached embeddings by hash");
-            HashMap::new()
+    // Step 2b: Check store for cached embeddings by content hash.
+    // Skip when the embedder dim differs from store dim — prevents reusing
+    // embeddings from a different model after model switching.
+    let existing = if dim == store.dim() {
+        let hashes: Vec<&str> = windowed_chunks
+            .iter()
+            .map(|c| c.content_hash.as_str())
+            .collect();
+        match store.get_embeddings_by_hashes(&hashes) {
+            Ok(map) => map,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to fetch cached embeddings by hash");
+                HashMap::new()
+            }
         }
+    } else {
+        tracing::info!(
+            store_dim = store.dim(),
+            embedder_dim = dim,
+            "Skipping store embedding cache (dimension mismatch — model switch)"
+        );
+        HashMap::new()
     };
 
     // Step 3: Separate into cached vs to_embed (global cache > store cache > embed)

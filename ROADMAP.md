@@ -59,8 +59,12 @@ Further embedding improvement requires BGE-large (already 91.2%) or fundamentall
 
 - [x] **Fix --force summary cache invalidation** — ATTACH backup DB, copy summaries. PR #820.
 - [ ] **Unify capture name lists** — `chunk.rs` capture_types, `mod.rs` DEF_CAPTURES, and `define_chunk_types!` all maintain separate lists of chunk type names. Adding a ChunkType requires updating all three. Replace with single source of truth via `ChunkType::capture_name_to_chunk_type()`.
-- [ ] **RPC/Service chunk type** — protobuf `service`/`rpc`, GraphQL `type Query`/`mutation`, gRPC definitions. Currently Function. Distinct concept: contract definitions, not implementations.
-- [ ] **SQL view/trigger chunk types** — views, triggers, and stored procedures are all Function today. Views are computed data (closer to Property), triggers are event handlers. Matters for impact analysis on schema changes.
+- [x] **RPC/Service chunk type** — protobuf `service` → Service type. RPCs stay Function. #833.
+- [x] **SQL view/trigger chunk types** — procedures/views/triggers → StoredProc. Functions stay Function. #833.
+- [x] **Test/Variable chunk types** — Rust #[test], Python test_, Go Test prefix → Test. static mut, let/var, module-level assignments → Variable. #833.
+- [ ] **Endpoint chunk type queries** — capture name registered but no .scm queries yet. Phase 2: Flask @app.route, Express app.get, Spring @GetMapping.
+- [ ] **JS/TS test block detection** — Jest describe/it/test call expressions. Needs tree-sitter query for call expressions with string args.
+- [ ] **--exclude-type search filter** — `--chunk-type` includes, but no way to exclude (e.g., "callable but not test"). Useful for impact analysis.
 - [ ] **Audit weak chunk type tests** — post_process overrides can mask wrong query captures. Haskell instance test was asserting Object while query said Struct — passed because post_process silently fixed it. 34 languages have post_process; scan for tests where the assertion matches the post_process output, not the query capture.
 - [ ] **Refactor batch --rrf opt-in** — `semantic_only` field suppressed with `#[allow(dead_code)]`. Rename to `rrf: bool`, wire as opt-in `--rrf` flag. Cosine-only is the default since RRF degrades quality by 17pp.
 - [ ] **Agent adoption** — fewer commands in prompts (only `scout`/`task`)
@@ -78,7 +82,8 @@ Further embedding improvement requires BGE-large (already 91.2%) or fundamentall
 - L5X files from plant
 - KD-LoRA distillation (CodeSage→E5)
 - ColBERT late interaction
-- SPLADE sparse-dense hybrid — learned sparse retrieval replaces FTS5 keyword matching. Our RRF attempt (FTS5 + cosine) degraded quality 17pp because FTS5 is dumb token matching. SPLADE learns token importance and query expansion. The right fix for exact-name queries without hurting semantic search. Requires: trained sparse model (or off-the-shelf naver/splade), inverted index storage, fused scoring pipeline.
+- SPLADE sparse-dense hybrid — shipped in v1.17.0 behind `--splade` flag. V2 eval ablation: 0pp on BGE-large, -1.4pp on E5-LoRA. Off-the-shelf naver/splade doesn't help code search. **Code-trained SPLADE** is the next step: fine-tune on cqs training data with code-specific vocabulary expansion. Reuse E5-LoRA data pipeline.
+- **Fine-tune SPLADE for code search** — train naver/splade-cocondenser on code pairs from Stack repos. The model should learn to expand "sort" → {quicksort, heapsort, merge_sort}, "retry" → {backoff, exponential, jitter}. Training data exists (200k pairs from v9-200k). Priority: after eval reaches 300q.
 - Solidity modifier chunk type — `modifier onlyOwner()` is access control, not a function
 - Rust impl block chunk type — `impl<T: Hash> Cache<T>` for type dependency analysis
 - Test suite/describe chunk type — Jest `describe()`, RSpec `context`, pytest fixtures
