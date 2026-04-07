@@ -4,24 +4,33 @@
 
 **Two-lane parallel work session. v1.18.0 shipped. (2026-04-07 CDT)**
 
-### GPU Lane: SPLADE fine-tuning
-- Training naver/splade-cocondenser-ensembledistil on 200k code pairs
-- Goal: code-aware token expansion ("sort" → {quicksort, heapsort, merge_sort})
-- Off-the-shelf SPLADE confirmed null (0pp) in v2 eval ablation
-- Requirements: observable (wandb), robust (checkpointing), resumable
-- Status: research agent dispatched, awaiting findings
+### GPU Lane: SPLADE fine-tuning (RUNNING)
+- PID 182066, A6000 100% utilization, 48.4/49.1 GB VRAM
+- 12,250 steps, ~2.2s/step, ETA ~7.5h from start
+- Checkpoints every 500 steps, tensorboard at `~/training-data/splade-code-v1/tb_logs`
+- Log: `~/training-data/splade_train.log`
+- Script: `~/training-data/train_splade.py`
+- Config: LoRA r=16, lr=2e-5, batch=32, reg_weight=5e-4, 2 epochs
 
-### CPU Lane: dev work (in order)
-1. **Unify capture name lists** — three lists → one. Branch: `refactor/unify-capture-lists`. Quick cleanup.
-2. **Phase 2 chunk types** — Flask/Express endpoint detection, JS describe/it/test blocks. Framework-specific tree-sitter queries.
-3. **Expand eval to 300q** — generator handles identifier/structural/type-filtered auto. Need ~150 hand-curated behavioral/conceptual/negation/multi-step/cross-language queries.
+### CPU Lane: dev work
+1. ~~**Unify capture name lists**~~ — DONE. `ChunkType::CAPTURE_NAMES` replaces three lists. PR #836.
+2. ~~**Phase 2 chunk types**~~ — DONE. JS/TS describe/it/test, Python Flask endpoints. PR #836.
+3. **Expand eval to 300q** — next. Generator handles auto categories, need ~150 hand-curated.
+
+### What still needs to happen
+- [ ] Expand eval to 300 queries
+- [ ] Evaluate code-trained SPLADE (when training completes ~7.5h)
+- [ ] ONNX export + integration test of trained SPLADE
+- [ ] Code-trained reranker experiment (after SPLADE eval)
+- [ ] Release v1.19.0 (capture unification + Phase 2 chunks + SPLADE if it works)
 
 ### This session so far
 - PR #831: Embedding cache (merged)
 - PR #832: V2 eval harness + query logging (merged)
 - PR #833: 5 new chunk types (merged)
 - PR #834: v1.18.0 release (merged)
-- PR #835: Session artifacts + store dim fix (open, CI pending)
+- PR #835: Session artifacts + store dim fix (CI green)
+- PR #836: Capture list unification + Phase 2 chunk types (CI pending)
 - Full ablation: BGE-large × E5-LoRA × SPLADE × reranker × LLM summaries
 - Best config confirmed: BGE-large + LLM summaries, no SPLADE, no reranker
 
@@ -37,7 +46,7 @@
 
 ### Bugs found this session
 - Store `get_embeddings_by_hashes` not model-aware — dim check fix in PR #835
-- Three hardcoded capture name lists — unification in progress
+- Three hardcoded capture name lists — unified in PR #836
 
 ## Parked
 - Wiki system — spec revised (agent-first), parked for review
