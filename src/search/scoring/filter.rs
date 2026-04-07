@@ -101,6 +101,16 @@ pub(crate) fn build_filter_sql(filter: &SearchFilter) -> FilterSql {
         }
     }
 
+    if let Some(ref types) = filter.exclude_types {
+        let placeholders: Vec<_> = (0..types.len())
+            .map(|i| format!("?{}", bind_values.len() + i + 1))
+            .collect();
+        conditions.push(format!("chunk_type NOT IN ({})", placeholders.join(",")));
+        for ct in types {
+            bind_values.push(ct.to_string());
+        }
+    }
+
     let use_hybrid = filter.name_boost > 0.0
         && !filter.query_text.is_empty()
         && is_name_like_query(&filter.query_text);

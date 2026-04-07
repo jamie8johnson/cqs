@@ -88,9 +88,9 @@ cqs --path "tests/**" "mock"
 cqs --path "**/*.go" "interface"
 
 # By chunk type
-cqs --chunk-type function "retry logic"
-cqs --chunk-type struct "config"
-cqs --chunk-type enum "error types"
+cqs --include-type function "retry logic"
+cqs --include-type struct "config"
+cqs --include-type enum "error types"
 
 # By structural pattern
 cqs --pattern async "request handling"
@@ -100,7 +100,7 @@ cqs --pattern recursion "tree traversal"
 
 # Combined
 cqs --lang typescript --path "src/api/*" "authentication"
-cqs --lang rust --chunk-type function --pattern async "database query"
+cqs --lang rust --include-type function --pattern async "database query"
 
 # Hybrid search tuning
 cqs --name-boost 0.2 "retry logic"   # Semantic-heavy (default)
