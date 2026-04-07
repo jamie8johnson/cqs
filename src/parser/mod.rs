@@ -755,33 +755,8 @@ pub(crate) fn extract_definition_node<'c, 't>(
     m: &tree_sitter::QueryMatch<'c, 't>,
     query: &tree_sitter::Query,
 ) -> Option<tree_sitter::Node<'t>> {
-    const DEF_CAPTURES: &[&str] = &[
-        "function",
-        "struct",
-        "class",
-        "enum",
-        "trait",
-        "interface",
-        "const",
-        "section",
-        "module",
-        "macro",
-        "object",
-        "typealias",
-        "property",
-        "delegate",
-        "event",
-        "extension",
-        "constructor",
-        "configkey",
-        "impl",
-        "test",
-        "var",
-        "endpoint",
-        "service",
-        "storedproc",
-    ];
-    DEF_CAPTURES.iter().find_map(|name| {
+    // Uses ChunkType::CAPTURE_NAMES — single source of truth from define_chunk_types! macro
+    ChunkType::CAPTURE_NAMES.iter().find_map(|name| {
         query
             .capture_index_for_name(name)
             .and_then(|idx| m.captures.iter().find(|c| c.index == idx))

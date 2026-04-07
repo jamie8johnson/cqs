@@ -7589,3 +7589,95 @@ Map<String, dynamic> parseConfig(String path) {
         func.doc
     );
 }
+
+// -- Phase 2 chunk type tests ────────────────────────────────────────
+
+#[test]
+fn parse_javascript_describe_it_test_blocks() {
+    let content = r#"
+describe("UserService", () => {
+    it("should create a user", () => {
+        expect(true).toBe(true);
+    });
+
+    test("handles errors", () => {
+        expect(false).toBe(false);
+    });
+});
+
+function helperFunction() {
+    return 42;
+}
+"#;
+    let file = write_temp_file(content, "js");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let describe = chunks.iter().find(|c| c.name == "UserService");
+    assert!(
+        describe.is_some(),
+        "Should find describe block 'UserService'"
+    );
+    assert_eq!(describe.unwrap().chunk_type, ChunkType::Test);
+    let it_block = chunks.iter().find(|c| c.name == "should create a user");
+    assert!(it_block.is_some(), "Should find it block");
+    assert_eq!(it_block.unwrap().chunk_type, ChunkType::Test);
+    let test_block = chunks.iter().find(|c| c.name == "handles errors");
+    assert!(test_block.is_some(), "Should find test block");
+    assert_eq!(test_block.unwrap().chunk_type, ChunkType::Test);
+    let helper = chunks.iter().find(|c| c.name == "helperFunction").unwrap();
+    assert_eq!(helper.chunk_type, ChunkType::Function);
+}
+
+#[test]
+fn parse_typescript_describe_it_test_blocks() {
+    let content = r#"
+describe("Calculator", () => {
+    it("adds numbers", () => {
+        expect(add(1, 2)).toBe(3);
+    });
+});
+"#;
+    let file = write_temp_file(content, "ts");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let describe = chunks.iter().find(|c| c.name == "Calculator");
+    assert!(
+        describe.is_some(),
+        "Should find describe block 'Calculator'"
+    );
+    assert_eq!(describe.unwrap().chunk_type, ChunkType::Test);
+}
+
+#[test]
+fn parse_python_flask_endpoint() {
+    let content = r#"
+from flask import Flask
+app = Flask(__name__)
+
+@app.route("/users")
+def list_users():
+    return []
+
+@app.get("/users/<int:id>")
+def get_user(id):
+    return {"id": id}
+
+@app.post("/users")
+def create_user():
+    return {"created": True}
+
+def helper():
+    pass
+"#;
+    let file = write_temp_file(content, "py");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let list_users = chunks.iter().find(|c| c.name == "list_users").unwrap();
+    assert_eq!(list_users.chunk_type, ChunkType::Endpoint);
+    let get_user = chunks.iter().find(|c| c.name == "get_user").unwrap();
+    assert_eq!(get_user.chunk_type, ChunkType::Endpoint);
+    let create_user = chunks.iter().find(|c| c.name == "create_user").unwrap();
+    assert_eq!(create_user.chunk_type, ChunkType::Endpoint);
+    let helper = chunks.iter().find(|c| c.name == "helper").unwrap();
+    assert_eq!(helper.chunk_type, ChunkType::Function);
+}

@@ -51,3 +51,12 @@
   (variable_declarator
     name: (identifier) @name
     value: (_) @_val) @var)
+
+;; Jest/Mocha/Vitest test blocks: describe("name", fn), it("name", fn), test("name", fn)
+(expression_statement
+  (call_expression
+    function: (identifier) @_fn
+    arguments: (arguments
+      (string
+        (string_fragment) @name))
+    (#any-of? @_fn "describe" "it" "test"))) @test

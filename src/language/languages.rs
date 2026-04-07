@@ -4833,6 +4833,30 @@ fn post_process_python_python(
     {
         *chunk_type = ChunkType::Test;
     }
+
+    // Flask/FastAPI/Sanic route decorators → Endpoint
+    if *chunk_type == ChunkType::Function {
+        let mut parent = node.parent();
+        while let Some(p) = parent {
+            if p.kind() == "decorated_definition" {
+                let text = &_source[p.byte_range()];
+                // Match @app.route, @app.get, @app.post, @router.get, etc.
+                if text.starts_with("@")
+                    && (text.contains(".route(")
+                        || text.contains(".get(")
+                        || text.contains(".post(")
+                        || text.contains(".put(")
+                        || text.contains(".delete(")
+                        || text.contains(".patch("))
+                {
+                    *chunk_type = ChunkType::Endpoint;
+                }
+                break;
+            }
+            parent = p.parent();
+        }
+    }
+
     true
 }
 
