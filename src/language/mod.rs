@@ -427,10 +427,16 @@ macro_rules! define_chunk_types {
                 $(ChunkType::$variant,)+
             ];
 
-            /// All valid chunk type name strings
+            /// All valid chunk type name strings (display names, used by FromStr).
             pub fn valid_names() -> &'static [&'static str] {
                 &[$($name),+]
             }
+
+            /// All tree-sitter capture names (may differ from display names via `capture = "..."`).
+            /// Single source of truth for chunk extraction and definition node lookup.
+            pub const CAPTURE_NAMES: &'static [&'static str] = &[
+                $(define_chunk_types!(@capture $name $(, $capture)?),)+
+            ];
         }
 
         impl std::fmt::Display for ChunkType {

@@ -2,51 +2,52 @@
 
 ## Right Now
 
-**v1.18.0 released. Full ablation complete. Best config confirmed. (2026-04-07 CDT)**
+**Two-lane parallel work session. v1.18.0 shipped. (2026-04-07 CDT)**
 
-### Released this session
-- PR #831: Embedding cache (SQLite, model fingerprint, `cqs cache` CLI)
-- PR #832: V2 eval harness + batch query logging (112 queries, 8 categories, bootstrap CIs)
-- PR #833: 5 new chunk types (Test, Variable, Endpoint, Service, StoredProc — 27 total)
-- PR #834: v1.18.0 release
+### GPU Lane: SPLADE fine-tuning
+- Training naver/splade-cocondenser-ensembledistil on 200k code pairs
+- Goal: code-aware token expansion ("sort" → {quicksort, heapsort, merge_sort})
+- Off-the-shelf SPLADE confirmed null (0pp) in v2 eval ablation
+- Requirements: observable (wandb), robust (checkpointing), resumable
+- Status: research agent dispatched, awaiting findings
 
-### Key findings
-- ms-marco-MiniLM-L-6-v2 reranker is net negative for code search (-15pp to -49pp)
-- Eval baseline: R@1=68%, R@5=87%, R@20=100% on 75 train queries against 13k-chunk live index
-- Identifier lookup: 100% R@1. Conceptual/multi-step: 25% R@1.
-- New chunk types added ~1,200 chunks to index (13,290 vs 12,085)
-- Test chunk type is additive to existing heuristic test detection (find_test_chunks)
+### CPU Lane: dev work (in order)
+1. **Unify capture name lists** — three lists → one. Branch: `refactor/unify-capture-lists`. Quick cleanup.
+2. **Phase 2 chunk types** — Flask/Express endpoint detection, JS describe/it/test blocks. Framework-specific tree-sitter queries.
+3. **Expand eval to 300q** — generator handles identifier/structural/type-filtered auto. Need ~150 hand-curated behavioral/conceptual/negation/multi-step/cross-language queries.
 
-### Design decisions
-- Embedding cache: SQLite, keyed by (content_hash, model_fingerprint), LRA eviction
-- Test is_callable (call graph + test discovery). Variable is_code not callable. Service is_code not callable.
-- Endpoint has capture name registered but no .scm queries yet (Phase 2: framework-specific)
-- Three hardcoded capture lists (chunk.rs, mod.rs, define_chunk_types!) all updated — unification still needed
+### This session so far
+- PR #831: Embedding cache (merged)
+- PR #832: V2 eval harness + query logging (merged)
+- PR #833: 5 new chunk types (merged)
+- PR #834: v1.18.0 release (merged)
+- PR #835: Session artifacts + store dim fix (open, CI pending)
+- Full ablation: BGE-large × E5-LoRA × SPLADE × reranker × LLM summaries
+- Best config confirmed: BGE-large + LLM summaries, no SPLADE, no reranker
 
-### Ablation results (v2 eval, 75 train queries, BGE-large)
-- **Best config: BGE-large + LLM summaries, no SPLADE, no reranker**
-- Summaries: +25pp behavioral, +25pp multi_step, -25pp negation, +1.3pp overall
-- SPLADE: 0pp across all configs. Off-the-shelf model doesn't know code.
-- Reranker: -15pp to -49pp. ms-marco-MiniLM not code-trained.
-- Store dim check fix written (model switching bug), not yet released
+### Ablation results (v2 eval, 75 train queries)
+| Config | R@1 | R@5 |
+|--------|-----|-----|
+| BGE-large (baseline) | 68.0% | 86.7% |
+| + LLM summaries | 69.3% | 85.3% |
+| + SPLADE | 68.0% | 86.7% |
+| + summaries + SPLADE | 68.0% | 84.0% |
+| E5-LoRA v9-200k | 54.7% | 76.0% |
+| ms-marco reranker | -15pp to -49pp | — |
 
-### What still needs to happen
-- Expand eval to 300 queries
-- Phase 2 chunk types: Flask/Express endpoint detection, JS describe/it/test blocks
-- Fine-tune SPLADE on code pairs (200k training data ready)
-- Code-trained reranker experiment
-- Unify the three capture name lists into single source of truth
-- Release store dim check fix (model switching)
+### Bugs found this session
+- Store `get_embeddings_by_hashes` not model-aware — dim check fix in PR #835
+- Three hardcoded capture name lists — unification in progress
 
 ## Parked
-- Wiki system — spec + plan ready
+- Wiki system — spec revised (agent-first), parked for review
 - Cross-project call graph — spec ready
+- Code-trained reranker — after SPLADE and eval expansion
 - Ladder logic (RLL) grammar
 - hnswlib-rs, DXF, Openclaw PLC
 - Blackwell RTX 6000 (96GB)
 - L5X files from plant
 - Paper v0.7
-- SPLADE: shipped but +2pp is inside noise floor, need 300q eval to confirm
 
 ## Open Issues
 - #717 (HNSW mmap), #389 (CAGRA memory), #255 (pre-built refs), #106 (ort RC), #63 (paste)
@@ -54,10 +55,9 @@
 ## Architecture
 - Version: 1.18.0, Languages: 53 + L5X/L5K, Tests: ~2360
 - 27 chunk types (Test, Variable, Endpoint, Service, StoredProc added this session)
-- BGE-large production model at 90.9% pipeline R@1 (296q fixture eval)
-- Cosine-only search (RRF disabled)
-- HNSW traversal-time filtering for chunk_type/language
-- Embedding cache: SQLite at ~/.cache/cqs/embeddings.db
-- Eval: v2 harness (112q, evals/), fixture eval (296q), noise eval (143q)
+- BGE-large + LLM summaries = best production config
+- Cosine-only search (RRF disabled, SPLADE null, reranker negative)
+- Embedding cache: SQLite at ~/.cache/cqs/embeddings.db (2 models, 81 MB)
+- Eval: v2 harness (112q, evals/), fixture (296q), noise (143q)
 - Query logging: batch mode → ~/.cache/cqs/query_log.jsonl
-- 13,290 chunks, 432 files indexed
+- 10,948 chunks, 432 files indexed (BGE-large 1024-dim)
