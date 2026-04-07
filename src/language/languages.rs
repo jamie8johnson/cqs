@@ -489,13 +489,41 @@ fn post_process_csharp_csharp(
     _name: &mut String,
     chunk_type: &mut ChunkType,
     node: tree_sitter::Node,
-    _source: &str,
+    source: &str,
 ) -> bool {
     if node.kind() == "constructor_declaration"
         && matches!(*chunk_type, ChunkType::Function | ChunkType::Method)
     {
         *chunk_type = ChunkType::Constructor;
     }
+
+    // C# attributes may be children or siblings depending on grammar version.
+    // Check node text header for attribute markers.
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) {
+        let node_text = &source[node.byte_range()];
+        let header = if let Some(brace) = node_text.find('{') {
+            &node_text[..brace]
+        } else {
+            &node_text[..node_text.len().min(200)]
+        };
+
+        if header.contains("[Test]")
+            || header.contains("[Fact]")
+            || header.contains("[Theory]")
+            || header.contains("[TestMethod]")
+        {
+            *chunk_type = ChunkType::Test;
+        } else if header.contains("[HttpGet]")
+            || header.contains("[HttpPost]")
+            || header.contains("[HttpPut]")
+            || header.contains("[HttpDelete]")
+            || header.contains("[HttpPatch]")
+            || header.contains("[Route(")
+        {
+            *chunk_type = ChunkType::Endpoint;
+        }
+    }
+
     true
 }
 
@@ -2746,6 +2774,35 @@ fn post_process_java_java(
     {
         *chunk_type = ChunkType::Constructor;
     }
+
+    // Java annotations are inside 'modifiers' child of method_declaration.
+    // Check the source text before the method body for annotation markers.
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) {
+        // Get text from node start to find annotations in modifiers
+        let node_text = &source[node.byte_range()];
+        // Only check the first line or two (annotations come before the return type)
+        let header = if let Some(brace) = node_text.find('{') {
+            &node_text[..brace]
+        } else {
+            &node_text[..node_text.len().min(200)]
+        };
+
+        if header.contains("@Test")
+            || header.contains("@ParameterizedTest")
+            || header.contains("@RepeatedTest")
+        {
+            *chunk_type = ChunkType::Test;
+        } else if header.contains("@GetMapping")
+            || header.contains("@PostMapping")
+            || header.contains("@PutMapping")
+            || header.contains("@DeleteMapping")
+            || header.contains("@PatchMapping")
+            || header.contains("@RequestMapping")
+        {
+            *chunk_type = ChunkType::Endpoint;
+        }
+    }
+
     true
 }
 

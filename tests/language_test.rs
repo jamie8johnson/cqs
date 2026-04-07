@@ -7681,3 +7681,141 @@ def helper():
     let helper = chunks.iter().find(|c| c.name == "helper").unwrap();
     assert_eq!(helper.chunk_type, ChunkType::Function);
 }
+
+#[test]
+fn parse_java_test_annotation() {
+    let content = r#"
+import org.junit.jupiter.api.Test;
+
+public class UserTest {
+    @Test
+    void shouldCreateUser() {
+        assert(true);
+    }
+
+    void helperMethod() {
+        // not a test
+    }
+}
+"#;
+    let file = write_temp_file(content, "java");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let test_fn = chunks.iter().find(|c| c.name == "shouldCreateUser");
+    assert!(test_fn.is_some(), "Should find @Test method");
+    assert_eq!(test_fn.unwrap().chunk_type, ChunkType::Test);
+    let helper = chunks.iter().find(|c| c.name == "helperMethod");
+    assert!(helper.is_some(), "Should find helper method");
+    assert_eq!(helper.unwrap().chunk_type, ChunkType::Method);
+}
+
+#[test]
+fn parse_java_spring_endpoint() {
+    let content = r#"
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class UserController {
+    @GetMapping("/users")
+    public List<User> getUsers() {
+        return userService.findAll();
+    }
+
+    @PostMapping("/users")
+    public User createUser(@RequestBody User user) {
+        return userService.save(user);
+    }
+
+    private void validate(User user) {
+        // not an endpoint
+    }
+}
+"#;
+    let file = write_temp_file(content, "java");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let get = chunks.iter().find(|c| c.name == "getUsers");
+    assert!(get.is_some(), "Should find @GetMapping endpoint");
+    assert_eq!(get.unwrap().chunk_type, ChunkType::Endpoint);
+    let post = chunks.iter().find(|c| c.name == "createUser");
+    assert!(post.is_some(), "Should find @PostMapping endpoint");
+    assert_eq!(post.unwrap().chunk_type, ChunkType::Endpoint);
+    let validate = chunks.iter().find(|c| c.name == "validate");
+    assert!(validate.is_some(), "Should find private method");
+    assert_eq!(validate.unwrap().chunk_type, ChunkType::Method);
+}
+
+#[test]
+fn parse_csharp_test_attributes() {
+    let content = r#"
+using NUnit.Framework;
+
+[TestFixture]
+public class CalculatorTests {
+    [Test]
+    public void Add_ReturnsSum() {
+        Assert.AreEqual(4, 2 + 2);
+    }
+
+    [Fact]
+    public void Subtract_ReturnsDifference() {
+        Assert.Equal(0, 2 - 2);
+    }
+
+    private void Setup() {
+        // not a test
+    }
+}
+"#;
+    let file = write_temp_file(content, "cs");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let nunit = chunks.iter().find(|c| c.name == "Add_ReturnsSum");
+    assert!(nunit.is_some(), "Should find [Test] method");
+    assert_eq!(nunit.unwrap().chunk_type, ChunkType::Test);
+    let xunit = chunks
+        .iter()
+        .find(|c| c.name == "Subtract_ReturnsDifference");
+    assert!(xunit.is_some(), "Should find [Fact] method");
+    assert_eq!(xunit.unwrap().chunk_type, ChunkType::Test);
+    let setup = chunks.iter().find(|c| c.name == "Setup");
+    assert!(setup.is_some(), "Should find Setup method");
+    assert_eq!(setup.unwrap().chunk_type, ChunkType::Method);
+}
+
+#[test]
+fn parse_csharp_aspnet_endpoint() {
+    let content = r#"
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("api/[controller]")]
+public class UsersController : ControllerBase {
+    [HttpGet]
+    public IActionResult GetAll() {
+        return Ok();
+    }
+
+    [HttpPost]
+    public IActionResult Create([FromBody] User user) {
+        return Created();
+    }
+
+    private bool Validate(User user) {
+        return true;
+    }
+}
+"#;
+    let file = write_temp_file(content, "cs");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let get = chunks.iter().find(|c| c.name == "GetAll");
+    assert!(get.is_some(), "Should find [HttpGet] endpoint");
+    assert_eq!(get.unwrap().chunk_type, ChunkType::Endpoint);
+    let post = chunks.iter().find(|c| c.name == "Create");
+    assert!(post.is_some(), "Should find [HttpPost] endpoint");
+    assert_eq!(post.unwrap().chunk_type, ChunkType::Endpoint);
+    let validate = chunks.iter().find(|c| c.name == "Validate");
+    assert!(validate.is_some(), "Should find private method");
+    assert_eq!(validate.unwrap().chunk_type, ChunkType::Method);
+}
