@@ -2,9 +2,12 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 
+use cqs::embedder::ModelConfig;
 use cqs::parser::{CallSite, ChunkTypeRefs, FunctionCalls};
-use cqs::{Chunk, Embedding};
+use cqs::{Chunk, Embedding, Store};
 
 /// Relationship data extracted during parsing, keyed by file path.
 /// Threaded through the pipeline so store_stage can persist without re-reading files.
@@ -55,6 +58,17 @@ pub(super) struct PreparedEmbedding {
     pub relationships: RelationshipData,
     /// File modification times (per-file)
     pub file_mtimes: HashMap<PathBuf, i64>,
+}
+
+/// Shared configuration for GPU and CPU embedding stages.
+///
+/// Groups the parameters common to both `gpu_embed_stage` and `cpu_embed_stage`,
+/// avoiding long argument lists on each function.
+pub(super) struct EmbedStageContext {
+    pub store: Arc<Store>,
+    pub embedded_count: Arc<AtomicUsize>,
+    pub model_config: ModelConfig,
+    pub global_cache: Option<Arc<cqs::cache::EmbeddingCache>>,
 }
 
 // Pipeline tuning constants

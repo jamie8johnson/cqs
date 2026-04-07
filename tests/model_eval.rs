@@ -2372,103 +2372,77 @@ fn test_weight_sweep() {
 
     let mut results: Vec<ScoringResult> = Vec::new();
 
-    results.push(eval_sweep(
-        "Embedding only",
-        &chunks,
-        &all_embs,
-        &query_embs,
-        0.0,
-        0.0,
-        false,
-        60.0,
-        1.0,
-        1.0,
-    ));
+    let base = SweepConfig {
+        label: "",
+        chunks: &chunks,
+        all_embs: &all_embs,
+        query_embs: &query_embs,
+        name_boost: 0.0,
+        kw_boost: 0.0,
+        use_rrf: false,
+        rrf_k: 60.0,
+        semantic_weight: 1.0,
+        keyword_weight: 1.0,
+    };
+
+    results.push(eval_sweep(&SweepConfig {
+        label: "Embedding only",
+        ..base
+    }));
     for nb in [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40] {
-        results.push(eval_sweep(
-            &format!("name_boost={nb:.2}"),
-            &chunks,
-            &all_embs,
-            &query_embs,
-            nb,
-            0.0,
-            false,
-            60.0,
-            1.0,
-            1.0,
-        ));
+        let label = format!("name_boost={nb:.2}");
+        results.push(eval_sweep(&SweepConfig {
+            label: &label,
+            name_boost: nb,
+            ..base
+        }));
     }
     for kb in [0.05, 0.10, 0.15, 0.20] {
-        results.push(eval_sweep(
-            &format!("kw_boost={kb:.2}"),
-            &chunks,
-            &all_embs,
-            &query_embs,
-            0.0,
-            kb,
-            false,
-            60.0,
-            1.0,
-            1.0,
-        ));
+        let label = format!("kw_boost={kb:.2}");
+        results.push(eval_sweep(&SweepConfig {
+            label: &label,
+            kw_boost: kb,
+            ..base
+        }));
     }
     for nb in [0.05, 0.10, 0.15] {
         for kb in [0.05, 0.10, 0.15] {
-            results.push(eval_sweep(
-                &format!("nb={nb:.2}+kb={kb:.2}"),
-                &chunks,
-                &all_embs,
-                &query_embs,
-                nb,
-                kb,
-                false,
-                60.0,
-                1.0,
-                1.0,
-            ));
+            let label = format!("nb={nb:.2}+kb={kb:.2}");
+            results.push(eval_sweep(&SweepConfig {
+                label: &label,
+                name_boost: nb,
+                kw_boost: kb,
+                ..base
+            }));
         }
     }
     for k in [20.0, 40.0, 60.0, 80.0] {
-        results.push(eval_sweep(
-            &format!("RRF k={k:.0} (1:1)"),
-            &chunks,
-            &all_embs,
-            &query_embs,
-            0.0,
-            0.0,
-            true,
-            k,
-            1.0,
-            1.0,
-        ));
+        let label = format!("RRF k={k:.0} (1:1)");
+        results.push(eval_sweep(&SweepConfig {
+            label: &label,
+            use_rrf: true,
+            rrf_k: k,
+            ..base
+        }));
     }
     for (sw, kw) in [(2.0, 1.0), (3.0, 1.0), (1.0, 2.0)] {
-        results.push(eval_sweep(
-            &format!("RRF k=60 ({sw}:{kw})"),
-            &chunks,
-            &all_embs,
-            &query_embs,
-            0.0,
-            0.0,
-            true,
-            60.0,
-            sw,
-            kw,
-        ));
+        let label = format!("RRF k=60 ({sw}:{kw})");
+        results.push(eval_sweep(&SweepConfig {
+            label: &label,
+            use_rrf: true,
+            semantic_weight: sw,
+            keyword_weight: kw,
+            ..base
+        }));
     }
     for nb in [0.10, 0.20] {
-        results.push(eval_sweep(
-            &format!("RRF k=60 + nb={nb:.2}"),
-            &chunks,
-            &all_embs,
-            &query_embs,
-            nb,
-            0.0,
-            true,
-            60.0,
-            1.0,
-            1.0,
-        ));
+        let label = format!("RRF k=60 + nb={nb:.2}");
+        results.push(eval_sweep(&SweepConfig {
+            label: &label,
+            name_boost: nb,
+            use_rrf: true,
+            ..base
+        }));
     }
 
     eprintln!(
@@ -2515,45 +2489,48 @@ fn test_weight_sweep() {
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn eval_sweep(
-    label: &str,
-    chunks: &[SweepChunk],
-    all_embs: &[Vec<f32>],
-    query_embs: &[Vec<f32>],
+#[derive(Clone, Copy)]
+struct SweepConfig<'a> {
+    label: &'a str,
+    chunks: &'a [SweepChunk],
+    all_embs: &'a [Vec<f32>],
+    query_embs: &'a [Vec<f32>],
     name_boost: f32,
     kw_boost: f32,
     use_rrf: bool,
     rrf_k: f32,
     semantic_weight: f32,
     keyword_weight: f32,
-) -> ScoringResult {
+}
+
+fn eval_sweep(cfg: &SweepConfig<'_>) -> ScoringResult {
     let mut r1 = 0usize;
     let mut rr_sum = 0.0f64;
     let mut ndcg_sum = 0.0f64;
     let n = HARD_EVAL_CASES.len();
 
-    for (case, q_emb) in HARD_EVAL_CASES.iter().zip(query_embs.iter()) {
-        let candidates: Vec<(usize, f32, f32, f32)> = chunks
+    for (case, q_emb) in HARD_EVAL_CASES.iter().zip(cfg.query_embs.iter()) {
+        let candidates: Vec<(usize, f32, f32, f32)> = cfg
+            .chunks
             .iter()
             .enumerate()
             .filter(|(_, c)| c.language == case.language)
             .map(|(i, c)| {
-                let emb = cosine_similarity(q_emb, &all_embs[i]);
+                let emb = cosine_similarity(q_emb, &cfg.all_embs[i]);
                 let nm = name_match_score(case.query, &c.name);
                 let kw = keyword_score(case.query, &c.name, &c.content);
                 (i, emb, nm, kw)
             })
             .collect();
 
-        let ranked: Vec<(usize, f32)> = if use_rrf {
+        let ranked: Vec<(usize, f32)> = if cfg.use_rrf {
             let mut sem: Vec<(usize, f32)> = candidates
                 .iter()
                 .map(|&(i, emb, nm, _)| {
                     (
                         i,
-                        if name_boost > 0.0 {
-                            (1.0 - name_boost) * emb + name_boost * nm
+                        if cfg.name_boost > 0.0 {
+                            (1.0 - cfg.name_boost) * emb + cfg.name_boost * nm
                         } else {
                             emb
                         },
@@ -2564,11 +2541,19 @@ fn eval_sweep(
             let mut kw: Vec<(usize, f32)> =
                 candidates.iter().map(|&(i, _, _, kw)| (i, kw)).collect();
             kw.sort_by(|a, b| b.1.total_cmp(&a.1));
-            rrf_merge(&sem, &kw, rrf_k, semantic_weight, keyword_weight)
+            rrf_merge(
+                &sem,
+                &kw,
+                cfg.rrf_k,
+                cfg.semantic_weight,
+                cfg.keyword_weight,
+            )
         } else {
             let mut scored: Vec<(usize, f32)> = candidates
                 .iter()
-                .map(|&(i, emb, nm, kw)| (i, weighted_score(emb, nm, kw, name_boost, kw_boost)))
+                .map(|&(i, emb, nm, kw)| {
+                    (i, weighted_score(emb, nm, kw, cfg.name_boost, cfg.kw_boost))
+                })
                 .collect();
             scored.sort_by(|a, b| b.1.total_cmp(&a.1));
             scored
@@ -2577,8 +2562,8 @@ fn eval_sweep(
         let rank = ranked
             .iter()
             .position(|(i, _)| {
-                chunks[*i].name == case.expected_name
-                    || case.also_accept.contains(&chunks[*i].name.as_str())
+                cfg.chunks[*i].name == case.expected_name
+                    || case.also_accept.contains(&cfg.chunks[*i].name.as_str())
             })
             .map(|p| p + 1);
 
@@ -2590,7 +2575,7 @@ fn eval_sweep(
     }
 
     ScoringResult {
-        label: label.to_string(),
+        label: cfg.label.to_string(),
         r1: r1 as f64 / n as f64,
         mrr: rr_sum / n as f64,
         ndcg10: ndcg_sum / n as f64,

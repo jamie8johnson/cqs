@@ -132,14 +132,16 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
     // --ref scoped search: skip project index, search only the named reference
     if let Some(ref ref_name) = cli.ref_name {
         return cmd_query_ref_only(
-            cli,
+            &RefQueryContext {
+                cli,
+                query,
+                query_embedding: &query_embedding,
+                filter: &filter,
+                root,
+                embedder,
+                reranker,
+            },
             ref_name,
-            query,
-            &query_embedding,
-            &filter,
-            root,
-            embedder,
-            reranker,
         );
     }
 
@@ -495,41 +497,42 @@ fn cmd_query_name_only(
     Ok(())
 }
 
+/// Context for ref-scoped search queries.
+struct RefQueryContext<'a> {
+    cli: &'a Cli,
+    query: &'a str,
+    query_embedding: &'a Embedding,
+    filter: &'a SearchFilter,
+    root: &'a std::path::Path,
+    embedder: &'a Embedder,
+    reranker: Option<&'a cqs::Reranker>,
+}
+
 /// Ref-scoped semantic search: search only the named reference, no project index
-#[allow(clippy::too_many_arguments)]
-fn cmd_query_ref_only(
-    cli: &Cli,
-    ref_name: &str,
-    query: &str,
-    query_embedding: &Embedding,
-    filter: &SearchFilter,
-    root: &std::path::Path,
-    embedder: &Embedder,
-    reranker: Option<&cqs::Reranker>,
-) -> Result<()> {
+fn cmd_query_ref_only(ctx: &RefQueryContext<'_>, ref_name: &str) -> Result<()> {
     let _span = tracing::info_span!("cmd_query_ref_only", ref_name).entered();
 
-    let ref_idx = crate::cli::commands::resolve::find_reference(root, ref_name)?;
+    let ref_idx = crate::cli::commands::resolve::find_reference(ctx.root, ref_name)?;
 
-    let ref_limit = if cli.rerank {
-        (cli.limit * 4).min(100)
+    let ref_limit = if ctx.cli.rerank {
+        (ctx.cli.limit * 4).min(100)
     } else {
-        cli.limit
+        ctx.cli.limit
     };
     let mut results = reference::search_reference(
         &ref_idx,
-        query_embedding,
-        filter,
+        ctx.query_embedding,
+        ctx.filter,
         ref_limit,
-        cli.threshold,
+        ctx.cli.threshold,
         false, // no weight for --ref scoped search
     )?;
 
     // Cross-encoder re-ranking for ref-only path
-    if let Some(reranker) = reranker {
+    if let Some(reranker) = ctx.reranker {
         if results.len() > 1 {
             reranker
-                .rerank(query, &mut results, cli.limit)
+                .rerank(ctx.query, &mut results, ctx.cli.limit)
                 .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
         }
     }
@@ -543,13 +546,13 @@ fn cmd_query_ref_only(
         .collect();
 
     // Token-budget packing
-    let json_overhead = json_overhead_for(cli);
-    let (tagged, token_info) = if let Some(budget) = cli.tokens {
+    let json_overhead = json_overhead_for(ctx.cli);
+    let (tagged, token_info) = if let Some(budget) = ctx.cli.tokens {
         token_pack_results(
             tagged,
             budget,
             json_overhead,
-            embedder,
+            ctx.embedder,
             |r| unified_text(&r.result),
             |r| unified_score(&r.result),
             "ref-only",
@@ -559,13 +562,19 @@ fn cmd_query_ref_only(
     };
 
     if tagged.is_empty() {
-        emit_empty_results(query, cli.json, Some(ref_name));
+        emit_empty_results(ctx.query, ctx.cli.json, Some(ref_name));
     }
 
-    if cli.json {
-        display::display_tagged_results_json(&tagged, query, None, token_info)?;
+    if ctx.cli.json {
+        display::display_tagged_results_json(&tagged, ctx.query, None, token_info)?;
     } else {
-        display::display_tagged_results(&tagged, root, cli.no_content, cli.context, None)?;
+        display::display_tagged_results(
+            &tagged,
+            ctx.root,
+            ctx.cli.no_content,
+            ctx.cli.context,
+            None,
+        )?;
     }
 
     Ok(())

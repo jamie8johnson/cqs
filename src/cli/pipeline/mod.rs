@@ -30,7 +30,9 @@ use cqs::{Parser as CqParser, Store};
 
 use embedding::{cpu_embed_stage, gpu_embed_stage};
 use parsing::{parser_stage, ParserStageContext};
-use types::{EmbeddedBatch, ParsedBatch, EMBED_CHANNEL_DEPTH, PARSE_CHANNEL_DEPTH};
+use types::{
+    EmbedStageContext, EmbeddedBatch, ParsedBatch, EMBED_CHANNEL_DEPTH, PARSE_CHANNEL_DEPTH,
+};
 use upsert::store_stage;
 
 /// Run the indexing pipeline with 3 concurrent stages:
@@ -106,43 +108,26 @@ pub(crate) fn run_index_pipeline(
     };
 
     // Stage 2a: GPU embedder thread
-    let gpu_model = model_config.clone();
     let gpu_handle = {
-        let store = Arc::clone(&store);
-        let embedded_count = Arc::clone(&embedded_count);
+        let ctx = EmbedStageContext {
+            store: Arc::clone(&store),
+            embedded_count: Arc::clone(&embedded_count),
+            model_config: model_config.clone(),
+            global_cache: global_cache.clone(),
+        };
         let gpu_failures = Arc::clone(&gpu_failures);
-        let cache = global_cache.clone();
-        thread::spawn(move || {
-            gpu_embed_stage(
-                parse_rx,
-                embed_tx,
-                fail_tx,
-                store,
-                embedded_count,
-                gpu_failures,
-                gpu_model,
-                cache,
-            )
-        })
+        thread::spawn(move || gpu_embed_stage(parse_rx, embed_tx, fail_tx, ctx, gpu_failures))
     };
 
     // Stage 2b: CPU embedder thread
-    let cpu_model = model_config;
     let cpu_handle = {
-        let store = Arc::clone(&store);
-        let embedded_count = Arc::clone(&embedded_count);
-        let cache = global_cache.clone();
-        thread::spawn(move || {
-            cpu_embed_stage(
-                parse_rx_cpu,
-                fail_rx,
-                embed_tx_cpu,
-                store,
-                embedded_count,
-                cpu_model,
-                cache,
-            )
-        })
+        let ctx = EmbedStageContext {
+            store: Arc::clone(&store),
+            embedded_count: Arc::clone(&embedded_count),
+            model_config,
+            global_cache: global_cache.clone(),
+        };
+        thread::spawn(move || cpu_embed_stage(parse_rx_cpu, fail_rx, embed_tx_cpu, ctx))
     };
 
     // Stage 3: Writer (main thread)
