@@ -89,7 +89,7 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         None => None,
     };
 
-    let chunk_types = match &cli.chunk_type {
+    let chunk_types = match &cli.include_type {
         Some(types) => {
             let parsed: Result<Vec<ChunkType>, _> = types.iter().map(|t| t.parse()).collect();
             Some(parsed.with_context(|| {
@@ -107,10 +107,24 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         }
     };
 
+    let exclude_types = match &cli.exclude_type {
+        Some(types) => {
+            let parsed: Result<Vec<ChunkType>, _> = types.iter().map(|t| t.parse()).collect();
+            Some(parsed.with_context(|| {
+                format!(
+                    "Invalid chunk type for --exclude-type. Valid: {}",
+                    ChunkType::valid_names().join(", ")
+                )
+            })?)
+        }
+        None => None,
+    };
+
     #[allow(clippy::needless_update)]
     let filter = SearchFilter {
         languages,
         chunk_types,
+        exclude_types,
         path_pattern: cli.path.clone(),
         name_boost: cli.name_boost,
         query_text: query.to_string(),

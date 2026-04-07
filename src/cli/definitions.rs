@@ -158,9 +158,13 @@ pub struct Cli {
     #[arg(short = 'l', long)]
     pub lang: Option<String>,
 
-    /// Filter by chunk type (function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event, module, macro, object, typealias)
+    /// Include only these chunk types in results (e.g., function, struct, test, endpoint)
+    #[arg(long, alias = "chunk-type")]
+    pub include_type: Option<Vec<String>>,
+
+    /// Exclude these chunk types from results (e.g., test, variable, configkey)
     #[arg(long)]
-    pub chunk_type: Option<Vec<String>>,
+    pub exclude_type: Option<Vec<String>>,
 
     /// Filter by path pattern (glob)
     #[arg(short = 'p', long)]

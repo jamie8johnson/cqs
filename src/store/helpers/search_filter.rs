@@ -16,8 +16,10 @@ pub const DEFAULT_NAME_BOOST: f32 = 0.2;
 pub struct SearchFilter {
     /// Filter by programming language(s)
     pub languages: Option<Vec<Language>>,
-    /// Filter by chunk type(s) (function, method, class, struct, enum, trait, interface, constant)
+    /// Include only these chunk types (function, method, class, struct, test, endpoint, etc.)
     pub chunk_types: Option<Vec<ChunkType>>,
+    /// Exclude these chunk types from results (e.g., test, variable, configkey)
+    pub exclude_types: Option<Vec<ChunkType>>,
     /// Filter by file path glob pattern (e.g., `src/**/*.rs`)
     pub path_pattern: Option<String>,
     /// Weight for name matching in hybrid search (0.0-1.0)
@@ -55,6 +57,7 @@ impl Default for SearchFilter {
         Self {
             languages: None,
             chunk_types: None,
+            exclude_types: None,
             path_pattern: None,
             name_boost: 0.0,
             query_text: String::new(),

@@ -33,7 +33,8 @@ cqs "<query>" [flags] --json -q
 | `--semantic-only` | Pure vector similarity, no hybrid RRF |
 | `--rerank` | Cross-encoder re-ranking (slower, more accurate) |
 | `-p/--path <glob>` | Path pattern filter (e.g., `src/cli/**`) |
-| `--chunk-type <T>` | Filter: function, method, class, struct, enum, trait, interface, constant, section |
+| `--include-type <T>` | Include only: function, method, class, struct, test, endpoint, etc. |
+| `--exclude-type <T>` | Exclude: test, variable, configkey, etc. |
 | `--pattern <P>` | Pattern: builder, error_swallow, async, mutex, unsafe, recursion |
 | `--note-only` | Return only notes |
 | `--note-weight <F>` | Note score weight 0.0-1.0 (default 1.0) |
