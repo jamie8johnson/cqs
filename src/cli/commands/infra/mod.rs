@@ -1,6 +1,7 @@
-//! Infrastructure commands — init, doctor, audit mode, telemetry, projects, references
+//! Infrastructure commands — init, doctor, audit mode, telemetry, projects, references, cache
 
 mod audit_mode;
+mod cache_cmd;
 #[cfg(feature = "convert")]
 mod convert;
 mod doctor;
@@ -10,6 +11,7 @@ mod reference;
 mod telemetry_cmd;
 
 pub(crate) use audit_mode::cmd_audit_mode;
+pub(crate) use cache_cmd::{cmd_cache, CacheCommand};
 #[cfg(feature = "convert")]
 pub(crate) use convert::cmd_convert;
 pub(crate) use doctor::cmd_doctor;
