@@ -90,12 +90,28 @@ pub(crate) fn run_index_pipeline(
         })
     };
 
+    // Open global embedding cache (best-effort)
+    let global_cache: Option<Arc<cqs::cache::EmbeddingCache>> = {
+        let cache_path = cqs::cache::EmbeddingCache::default_path();
+        match cqs::cache::EmbeddingCache::open(&cache_path) {
+            Ok(c) => {
+                tracing::info!(path = %cache_path.display(), "Global embedding cache opened");
+                Some(Arc::new(c))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Global embedding cache unavailable");
+                None
+            }
+        }
+    };
+
     // Stage 2a: GPU embedder thread
     let gpu_model = model_config.clone();
     let gpu_handle = {
         let store = Arc::clone(&store);
         let embedded_count = Arc::clone(&embedded_count);
         let gpu_failures = Arc::clone(&gpu_failures);
+        let cache = global_cache.clone();
         thread::spawn(move || {
             gpu_embed_stage(
                 parse_rx,
@@ -105,6 +121,7 @@ pub(crate) fn run_index_pipeline(
                 embedded_count,
                 gpu_failures,
                 gpu_model,
+                cache,
             )
         })
     };
@@ -114,6 +131,7 @@ pub(crate) fn run_index_pipeline(
     let cpu_handle = {
         let store = Arc::clone(&store);
         let embedded_count = Arc::clone(&embedded_count);
+        let cache = global_cache.clone();
         thread::spawn(move || {
             cpu_embed_stage(
                 parse_rx_cpu,
@@ -122,6 +140,7 @@ pub(crate) fn run_index_pipeline(
                 store,
                 embedded_count,
                 cpu_model,
+                cache,
             )
         })
     };
@@ -157,6 +176,13 @@ pub(crate) fn run_index_pipeline(
     cpu_handle
         .join()
         .map_err(|e| anyhow::anyhow!("CPU embedder thread panicked: {}", panic_message(&e)))??;
+
+    // Evict global cache if over size limit
+    if let Some(ref cache) = global_cache {
+        if let Err(e) = cache.evict() {
+            tracing::warn!(error = %e, "Global cache eviction failed");
+        }
+    }
 
     // Update the "updated_at" metadata timestamp
     if let Err(e) = store.touch_updated_at() {

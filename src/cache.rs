@@ -69,7 +69,7 @@ impl EmbeddingCache {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| CacheError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .map_err(|e| CacheError::Io(std::io::Error::other(e)))?;
 
         let url = format!("sqlite:{}?mode=rwc", path.display());
         let pool = rt.block_on(async {
