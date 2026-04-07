@@ -7,17 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- **Global embedding cache** — transparent acceleration layer at `~/.cache/cqs/embeddings.db`. Caches ONNX embeddings keyed by `(content_hash, model_fingerprint)`. Pipeline checks cache before running inference. LRA eviction (no write-on-read). `cqs cache stats|clear|prune` CLI commands.
-- **Model fingerprint** — blake3 hash of the ONNX model file, computed lazily. Cache entries are tied to a specific model binary, not just its name.
+## [1.18.0] - 2026-04-07
 
-- **V2 eval harness** — ablation matrix runner with bootstrap CIs (10k resamples), paired comparisons, per-category breakdown, per-query result storage (JSONL), markdown report generation. 48-query seed set across 8 categories. Baseline: R@1=56.2%, R@5=84.4% on BGE-large against 12k-chunk live index.
-- **Batch query logging** — search, gather, scout, onboard, where, task queries logged to `~/.cache/cqs/query_log.jsonl` for eval workflow capture.
-- **Reranker passage format ablation** — NL descriptions, raw code, name+signature × α-interpolation sweep. Finding: ms-marco-MiniLM-L-6-v2 is net negative for code search across all configurations.
-- **5 new chunk types** — Test (Rust #[test], Python test_, Go Test prefix), Variable (static mut, let/var, module-level assignments), Endpoint (capture ready, framework queries Phase 2), Service (protobuf service definitions), StoredProc (SQL procedures, views, triggers). 27 total chunk types.
+### Added
+- **Global embedding cache** — transparent acceleration layer at `~/.cache/cqs/embeddings.db`. Caches ONNX embeddings keyed by `(content_hash, model_fingerprint)`. Pipeline checks cache before running inference. LRA eviction (no write-on-read). `cqs cache stats|clear|prune` CLI commands (#831).
+- **Model fingerprint** — blake3 hash of the ONNX model file, computed lazily. Cache entries are tied to a specific model binary, not just its name (#831).
+- **5 new chunk types** — Test (Rust `#[test]`, Python `test_`, Go `Test` prefix), Variable (`static mut`, `let`/`var`, module-level assignments), Endpoint (capture ready, framework queries Phase 2), Service (protobuf service definitions), StoredProc (SQL procedures, views, triggers). 27 total chunk types (#833).
+- **V2 eval harness** — ablation matrix runner with bootstrap CIs (10k resamples), paired comparisons, per-category breakdown, per-query result storage (JSONL), markdown report generation. 112-query set across 8 categories (#832).
+- **Batch query logging** — search, gather, scout, onboard, where, task queries logged to `~/.cache/cqs/query_log.jsonl` for eval workflow capture (#832).
 
 ### Changed
-- **Zero `clippy::too_many_arguments` suppressions** — extracted `EmbedStageContext`, `RefQueryContext`, `SweepConfig` structs.
+- **Zero `clippy::too_many_arguments` suppressions** — extracted `EmbedStageContext`, `RefQueryContext`, `SweepConfig` structs (#831).
 
 ## [1.17.0] - 2026-04-06
 
