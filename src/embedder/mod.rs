@@ -230,6 +230,9 @@ pub struct Embedder {
     detected_dim: std::sync::OnceLock<usize>,
     /// Model configuration (repo, paths, prefixes, dimensions)
     model_config: ModelConfig,
+    /// blake3 fingerprint of the ONNX model file, computed lazily on first access.
+    /// Used as cache key to distinguish models with the same name but different weights.
+    model_fingerprint: std::sync::OnceLock<String>,
 }
 
 /// Default query cache size (entries). Each entry is ~4KB (1024 floats + key).
@@ -298,12 +301,68 @@ impl Embedder {
             query_cache,
             detected_dim: std::sync::OnceLock::new(),
             model_config,
+            model_fingerprint: std::sync::OnceLock::new(),
         })
     }
 
     /// Get the model configuration
     pub fn model_config(&self) -> &ModelConfig {
         &self.model_config
+    }
+
+    /// Get or compute the model fingerprint (blake3 hash of ONNX file).
+    ///
+    /// Computed lazily on first access. Used as cache key to distinguish
+    /// models with the same name but different weights (fine-tuned, different
+    /// HF revision, different ONNX export).
+    pub fn model_fingerprint(&self) -> &str {
+        self.model_fingerprint.get_or_init(|| {
+            let _span = tracing::info_span!("compute_model_fingerprint").entered();
+            match self.model_paths() {
+                Ok((model_path, _)) => {
+                    match std::fs::metadata(model_path) {
+                        Ok(meta) if meta.len() > 2 * 1024 * 1024 * 1024 => {
+                            // >2GB: fallback to name + size + mtime
+                            let mtime = meta
+                                .modified()
+                                .ok()
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            let fp = format!(
+                                "{}_{}_{}",
+                                self.model_config.repo,
+                                meta.len(),
+                                mtime
+                            );
+                            tracing::info!(size = meta.len(), "Model >2GB, using metadata fingerprint");
+                            fp
+                        }
+                        _ => {
+                            // Hash the ONNX file
+                            match std::fs::read(model_path) {
+                                Ok(bytes) => {
+                                    let hash = blake3::hash(&bytes).to_hex().to_string();
+                                    tracing::info!(
+                                        hash = &hash[..16],
+                                        "Model fingerprint computed"
+                                    );
+                                    hash
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Failed to read model for fingerprint, using repo name");
+                                    self.model_config.repo.clone()
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to get model paths for fingerprint");
+                    self.model_config.repo.clone()
+                }
+            }
+        })
     }
 
     /// Get or initialize model paths (lazy download)
