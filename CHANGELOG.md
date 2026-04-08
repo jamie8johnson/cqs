@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-04-08
+
+14-category code audit: 71 findings, 69 fixed, 2 tracked issues (#843, #844).
+
+### Added
+- **Batch `--include-type`/`--exclude-type`** — agents can now filter by chunk type in batch mode, matching CLI parity (#842).
+- **`CQS_SPLADE_THRESHOLD` env var** — SPLADE sparse activation threshold configurable (default 0.01) (#842).
+- **`SpladeEncoder::default_threshold()`** — reads env var with fallback (#842).
+- **`ChunkTypeMap` type alias** — public type for chunk type + language map (#842).
+- **Environment Variables table in README** — 14 operational knobs documented (#842).
+- **EXT-1 exhaustive test** — compile-time check that every ChunkType variant is classified in `is_code()` (#842).
+- **8 P4 audit tests** — HnswIndex::search_filtered, cache boundary crossing, NaN embeddings, chunk type capture names, prune edge cases, duplicate hash behavior (#841).
+- **Elm language support** — 54th language (#840).
+
+### Fixed
+- **AC-2**: Watch mode chunk ID rewrite — absolute → relative path in ID, preventing duplicate chunks (#842).
+- **SEC-10**: Cache evict() negative size guard + logical data measurement (#841).
+- **SEC-7/8/9**: Cache SQLite path encoding, DB permissions 0o700/0o600, query log 0o600 (#840, #841).
+- **DS-45**: Model fingerprint fallback appends timestamp to prevent cache key collisions (#842).
+- **DS-47/49/50**: Cache busy_timeout, logical eviction sizing, multi_thread runtime (#840, #841).
+- **RB-10/11/12/13**: SPLADE poisoned mutex, format_timestamp panic, splade_alpha validation, input truncation (#840, #841).
+- **PF-6/8/9/11/12/13/14**: Cache buffer reuse, hash dedup, fold optimization, batched DELETE, chunk_type_map caching, direct indexing, zero-copy logits (#840, #841, #842).
+- **OB-1–6**: Stats/evict/read_batch/log_query/dispatch/cache_cmd observability (#841).
+- **EH-13/14/15/16**: SPLADE batch, ensure_splade_index, neighbors, prune_orphan wired into GC (#841, #842).
+- **CQ-2/4/5/6/7**: Dead code removal, parent context dedup, batch type filters, rerank guard (#841, #842).
+- **AC-1/3**: Evict min deletions, bootstrap CI seed quality (#842).
+- **PB-1/2**: SQLite pool sizing, idle timeout WAL retention (#842).
+- **RM-2**: Cache pool connection count (#842).
+- **DOC-27–31**: Language count, chunk type count, eval baselines, stale comments (#842).
+
+### Changed
+- **README eval section** — fixture (91.2%) and live (48.5%/69.3%) evals presented separately with context.
+- **SPLADE code fine-tuning** — completed, null result (0.0pp R@1). Failure mode analyzed: weak regularization, BERT vocab, dense-mined negatives. v2-v4 experiments planned.
+
 ## [1.19.0] - 2026-04-07
 
 ### Added
