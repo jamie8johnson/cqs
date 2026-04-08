@@ -438,11 +438,15 @@ impl Store {
 
     /// Bulk lookup of chunk_type and language for all chunks, keyed by chunk ID.
     /// Used by HNSW traversal-time filtering to decide which chunks to skip.
+    /// Cached chunk type + language map. Computed once per Store lifetime (PF-12).
     pub fn chunk_type_language_map(
         &self,
-    ) -> Result<HashMap<String, (ChunkType, Language)>, StoreError> {
+    ) -> Result<std::sync::Arc<crate::store::ChunkTypeMap>, StoreError> {
+        if let Some(cached) = self.chunk_type_map_cache.get() {
+            return Ok(std::sync::Arc::clone(cached));
+        }
         let _span = tracing::debug_span!("chunk_type_language_map").entered();
-        self.rt.block_on(async {
+        let map = self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query("SELECT id, chunk_type, language FROM chunks")
                 .fetch_all(&self.pool)
                 .await?;
@@ -455,8 +459,11 @@ impl Store {
                     map.insert(id, (chunk_type, language));
                 }
             }
-            Ok(map)
-        })
+            Ok::<_, StoreError>(map)
+        })?;
+        let arc = std::sync::Arc::new(map);
+        let _ = self.chunk_type_map_cache.set(std::sync::Arc::clone(&arc));
+        Ok(arc)
     }
 
     /// Fetch a page of full chunks by rowid cursor.

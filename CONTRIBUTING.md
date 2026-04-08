@@ -100,7 +100,7 @@ Rules:
 
 ### Feature Ideas
 
-- Additional language support (see `src/language/languages.rs` for current list — 53 languages + L5X/L5K PLC exports)
+- Additional language support (see `src/language/languages.rs` for current list — 54 languages + L5X/L5K PLC exports)
 - Non-CUDA GPU support (ROCm for AMD, Metal for Apple Silicon)
 - VS Code extension
 - Performance improvements
@@ -152,9 +152,9 @@ src/
     telemetry.rs - Optional command usage logging (CQS_TELEMETRY=1)
     store.rs    - Store opening utilities, CommandContext, vector index building
     watch.rs    - File watcher for incremental reindexing
-  language/     - Tree-sitter language support (53 languages + L5X/L5K)
+  language/     - Tree-sitter language support (54 languages + L5X/L5K)
     mod.rs      - Language enum (define_languages! macro), LanguageRegistry, LanguageDef, ChunkType
-    languages.rs - All 53 language definitions (LanguageDef statics with ..DEFAULTS) + custom functions
+    languages.rs - All 54 language definitions (LanguageDef statics with ..DEFAULTS) + custom functions
     queries/    - Tree-sitter queries (.scm files, loaded via include_str!())
       <lang>.chunks.scm, <lang>.calls.scm, <lang>.types.scm
   test_helpers.rs - Shared test fixtures module

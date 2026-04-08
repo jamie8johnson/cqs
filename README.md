@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 90.9% Recall@1 (BGE-large, 296 queries). 53 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 91.2% Recall@1 on fixtures, 69.3% on live code with LLM summaries. 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -430,7 +430,7 @@ Without cqs, Claude uses grep/glob to find code and reads entire files for conte
 
 - **Fewer tool calls**: `gather`, `impact`, `trace`, `context`, `explain` each replace 5-10 sequential file reads with a single call
 - **Less context burn**: `cqs read --focus` returns a function + its type dependencies — not the whole file. Token budgeting (`--tokens N`) caps output across all commands.
-- **Find code by concept**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`. 90.9% Recall@1 (BGE-large, 296 queries across 7 languages).
+- **Find code by concept**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`. 91.2% Recall@1 on fixtures, 69.3% on live code (BGE-large + LLM summaries).
 - **Understand dependencies**: Call graphs, type dependencies, impact analysis, and risk scoring answer "what breaks if I change X?" without manual tracing
 - **Navigate unfamiliar codebases**: Semantic search + `cqs scout` + `cqs where` provide instant orientation without knowing project structure
 
@@ -508,7 +508,7 @@ Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after
 ```
 
 <details>
-<summary><h2>Supported Languages (53)</h2></summary>
+<summary><h2>Supported Languages (54)</h2></summary>
 
 - ASP.NET Web Forms (ASPX/ASCX/ASMX — C#/VB.NET code-behind in server script blocks and `<% %>` expressions, delegates to C#/VB.NET grammars)
 - Bash (functions, command calls)
@@ -587,9 +587,9 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 **Parse → Describe → Embed → Enrich → Index → Search → Reason**
 
-1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 53 languages (plus L5X/L5K PLC exports). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
+1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 54 languages (plus L5X/L5K PLC exports). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination (SQ-11). Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 90.9% Recall@1 (BGE-large, 296 queries across 7 languages) — outperforms code-specific models because NL descriptions play to general-purpose model strengths. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
+3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 91.2% Recall@1 on fixture eval (BGE-large, 296 queries across 7 languages). With LLM summaries, 69.3% on diverse real-codebase queries. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
@@ -617,17 +617,45 @@ For most codebases (<100k chunks), defaults work well. Large repos may benefit f
 
 ## Retrieval Quality
 
-Evaluated on an expanded eval suite of 296 queries across 7 languages (Rust, Python, TypeScript, JavaScript, Go, Java, PHP):
+Two eval suites measure different things:
+
+**Fixture eval** (296 queries, 7 languages — synthetic functions in test fixtures):
 
 | Model | Params | Recall@1 | Recall@5 | MRR |
 |-------|--------|----------|----------|-----|
-| **BGE-large** (default) | 335M | **90.9%** | 99.3% | **0.949** |
-| **v9-200k LoRA** (preset) | 110M | **90.5%** | 99.3% | 0.948 |
+| **BGE-large** (default) | 335M | **91.2%** | 99.3% | **0.951** |
+| v9-200k LoRA (preset) | 110M | 81.4% | 99.3% | 0.898 |
 | E5-base (preset) | 110M | 75.3% | 99.0% | 0.869 |
 
-All columns include the full cqs enrichment stack (contrastive summaries, type-aware embeddings, call graph context). The enrichment stack is the dominant contributor — it compresses top model differences to ~1pp.
+**Live codebase eval** (265 queries, 8 categories — real code, diverse query types):
 
-The v9-200k LoRA (fine-tuned on 200K code pairs with call-graph false-negative filtering) virtually ties BGE-large at 1/3 the parameter cost. Use `CQS_EMBEDDING_MODEL=v9-200k` for resource-constrained environments.
+| Config | Recall@1 | Recall@5 |
+|--------|----------|----------|
+| BGE-large | 48.5% | 66.7% |
+| BGE-large + LLM summaries | 69.3% | 85.3% |
+
+The fixture eval measures retrieval from small synthetic fixtures (high ceiling). The live eval measures retrieval from a real 11k-chunk codebase across identifier lookup (93.5% R@1), behavioral, conceptual, structural, negation, and multi-step queries. The gap reflects that real-world queries are harder than synthetic benchmarks.
+
+Best production config: **BGE-large + LLM summaries** (`cqs index --llm-summaries`). Use `CQS_EMBEDDING_MODEL=v9-200k` for resource-constrained environments.
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CQS_EMBEDDING_MODEL` | `bge-large` | Embedding model preset (`bge-large`, `v9-200k`, `e5-base`) or custom repo |
+| `CQS_ONNX_DIR` | (auto) | Custom ONNX model directory (must contain `model.onnx` + `tokenizer.json`) |
+| `CQS_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder model for `--rerank` |
+| `CQS_EMBED_BATCH_SIZE` | `64` | ONNX inference batch size (reduce if GPU OOM) |
+| `CQS_FILE_BATCH_SIZE` | `5000` | Files per parse batch in pipeline |
+| `CQS_CACHE_MAX_SIZE` | `1073741824` (1 GB) | Global embedding cache size limit |
+| `CQS_SPLADE_THRESHOLD` | `0.01` | SPLADE sparse activation threshold |
+| `CQS_CAGRA_MAX_BYTES` | (auto) | Max GPU memory for CAGRA index |
+| `CQS_CAGRA_THRESHOLD` | `50000` | Min chunks to trigger CAGRA over HNSW |
+| `CQS_TRACE_MAX_NODES` | `1000` | Max nodes in call chain trace |
+| `CQS_RRF_K` | `60` | RRF fusion constant (higher = more weight to top results) |
+| `CQS_WATCH_REBUILD_THRESHOLD` | `100` | Files changed before watch triggers full HNSW rebuild |
+| `CQS_WATCH_MAX_PENDING` | `1000` | Max pending file changes before watch forces flush |
+| `CQS_TELEMETRY` | `0` | Set to `1` to enable command usage telemetry |
 
 ## RAG Efficiency
 

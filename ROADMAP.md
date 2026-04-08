@@ -2,7 +2,7 @@
 
 ## Current: v1.19.0
 
-54 languages. 27 chunk types. 265-query v2 eval. BGE-large + LLM summaries = best config.
+54 languages. 25 chunk types. 265-query v2 eval. BGE-large + LLM summaries = best config.
 
 ### Eval Baselines
 

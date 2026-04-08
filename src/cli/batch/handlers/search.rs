@@ -16,6 +16,8 @@ pub(in crate::cli::batch) struct SearchParams {
     pub splade_alpha: f32,
     pub lang: Option<String>,
     pub path: Option<String>,
+    pub include_type: Option<Vec<String>>,
+    pub exclude_type: Option<Vec<String>>,
     pub tokens: Option<usize>,
 }
 
@@ -83,9 +85,28 @@ pub(in crate::cli::batch) fn dispatch_search(
         limit
     };
 
+    // Parse include/exclude type filters (CQ-5)
+    let chunk_types = match &params.include_type {
+        Some(types) => {
+            let parsed: Result<Vec<cqs::parser::ChunkType>, _> =
+                types.iter().map(|t| t.parse()).collect();
+            Some(parsed.map_err(|e| anyhow::anyhow!("Invalid --include-type: {e}"))?)
+        }
+        None => Some(cqs::parser::ChunkType::code_types()),
+    };
+    let exclude_types = match &params.exclude_type {
+        Some(types) => {
+            let parsed: Result<Vec<cqs::parser::ChunkType>, _> =
+                types.iter().map(|t| t.parse()).collect();
+            Some(parsed.map_err(|e| anyhow::anyhow!("Invalid --exclude-type: {e}"))?)
+        }
+        None => None,
+    };
+
     let filter = cqs::SearchFilter {
         languages,
-        chunk_types: Some(cqs::parser::ChunkType::code_types()),
+        chunk_types,
+        exclude_types,
         path_pattern: params.path.clone(),
         name_boost: cqs::store::DEFAULT_NAME_BOOST,
         query_text: params.query.clone(),
@@ -94,6 +115,7 @@ pub(in crate::cli::batch) fn dispatch_search(
         splade_alpha: params.splade_alpha,
         ..Default::default()
     };
+    filter.validate().map_err(|e| anyhow::anyhow!(e))?;
 
     // SPLADE sparse encoding (if enabled)
     let splade_query = if params.splade {

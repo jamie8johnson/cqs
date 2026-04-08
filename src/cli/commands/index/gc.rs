@@ -72,11 +72,25 @@ pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<(
     let pruned_calls = prune.pruned_calls as usize;
     let pruned_type_edges = prune.pruned_type_edges as usize;
     let pruned_summaries = prune.pruned_summaries;
+    // Prune orphaned sparse vectors (EH-16)
+    let pruned_sparse = match store.prune_orphan_sparse_vectors() {
+        Ok(n) => {
+            if n > 0 {
+                tracing::debug!(pruned_sparse = n, "Pruned orphan sparse vectors");
+            }
+            n
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to prune orphan sparse vectors");
+            0
+        }
+    };
     tracing::debug!(
         pruned_chunks,
         pruned_calls,
         pruned_type_edges,
         pruned_summaries,
+        pruned_sparse,
         "GC prune complete"
     );
 

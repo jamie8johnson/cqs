@@ -70,9 +70,6 @@ impl Default for SearchFilter {
 }
 
 impl SearchFilter {
-    /// Create a new SearchFilter with default values.
-    ///
-    /// Equivalent to `SearchFilter::default()`. Prefer `Default::default()`
     /// Set the query text (required for name_boost > 0 or enable_rrf).
     pub fn with_query(mut self, query: impl Into<String>) -> Self {
         self.query_text = query.into();

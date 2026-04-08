@@ -56,6 +56,12 @@ pub(crate) enum BatchCmd {
         /// Filter by path pattern (glob)
         #[arg(short = 'p', long)]
         path: Option<String>,
+        /// Include only these chunk types (e.g., function, test, endpoint)
+        #[arg(long)]
+        include_type: Option<Vec<String>>,
+        /// Exclude these chunk types (e.g., test, variable, configkey)
+        #[arg(long)]
+        exclude_type: Option<Vec<String>>,
         /// Maximum token budget
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
@@ -357,6 +363,8 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             splade_alpha,
             lang,
             path,
+            include_type,
+            exclude_type,
             tokens,
         } => {
             log_query("search", &query);
@@ -372,6 +380,8 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
                     splade_alpha,
                     lang,
                     path,
+                    include_type,
+                    exclude_type,
                     tokens,
                 },
             )

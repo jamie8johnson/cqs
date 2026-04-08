@@ -159,10 +159,11 @@ pub fn bootstrap_ci(values: &[f64], n_resamples: usize) -> MetricWithCI {
     let point = values.iter().sum::<f64>() / n as f64;
 
     // Simple LCG PRNG (deterministic, no external dep)
+    // AC-3: hash all values for a unique seed, not just len + first
     let mut seed: u64 = {
         let mut h = DefaultHasher::new();
         values.len().hash(&mut h);
-        if let Some(v) = values.first() {
+        for v in values {
             v.to_bits().hash(&mut h);
         }
         h.finish()

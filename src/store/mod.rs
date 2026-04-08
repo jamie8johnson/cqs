@@ -212,7 +212,14 @@ pub struct Store {
     /// write-once for the per-command `Store` lifetime. Re-open the `Store` if the
     /// underlying index has been updated (e.g., after `cqs index` in watch mode).
     test_chunks_cache: std::sync::OnceLock<std::sync::Arc<Vec<ChunkSummary>>>,
+    /// Cached chunk_type+language map — populated on first filtered search, valid for Store lifetime.
+    /// Same no-invalidation contract as above.
+    chunk_type_map_cache: std::sync::OnceLock<std::sync::Arc<ChunkTypeMap>>,
 }
+
+/// Map from chunk ID to (ChunkType, Language) — used by HNSW traversal-time filtering.
+pub type ChunkTypeMap =
+    std::collections::HashMap<String, (crate::parser::ChunkType, crate::parser::Language)>;
 
 /// Internal configuration for [`Store::open_with_config`].
 /// Captures the five parameters that differ between read-write and read-only
@@ -264,9 +271,9 @@ impl Store {
             StoreOpenConfig {
                 read_only: true,
                 use_current_thread: true,
-                max_connections: 4,
+                max_connections: 1, // PB-1: single-thread runtime can only use 1 connection
                 mmap_size: "268435456", // 256MB
-                cache_size: "-16384",   // 16MB
+                cache_size: "-16384", // 16MB
             },
         )
     }
@@ -333,7 +340,7 @@ impl Store {
         let pool = rt.block_on(async {
             SqlitePoolOptions::new()
                 .max_connections(config.max_connections)
-                .idle_timeout(std::time::Duration::from_secs(300))
+                .idle_timeout(std::time::Duration::from_secs(30)) // PB-2: shorter timeout to release WAL locks
                 .after_connect(move |conn, _meta| {
                     let pragma = cache_pragma.clone();
                     Box::pin(async move {
@@ -423,6 +430,7 @@ impl Store {
             notes_summaries_cache: Mutex::new(None),
             call_graph_cache: std::sync::OnceLock::new(),
             test_chunks_cache: std::sync::OnceLock::new(),
+            chunk_type_map_cache: std::sync::OnceLock::new(),
         };
 
         // Skip model name validation on open — dimension is validated at embed time,

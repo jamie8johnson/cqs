@@ -78,7 +78,7 @@ impl EmbeddingCache {
 
         let pool = rt.block_on(async {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
-                .max_connections(2)
+                .max_connections(1) // RM-2: single worker thread can only use 1 connection
                 .connect_with(connect_opts)
                 .await?;
 
@@ -322,7 +322,8 @@ impl EmbeddingCache {
             .fetch_one(&self.pool)
             .await
             .unwrap_or(4200);
-            let entries_to_delete = (excess / avg_entry.max(1) as u64).max(100);
+            // AC-1: don't force minimum 100 deletions — delete only what's needed
+            let entries_to_delete = (excess / avg_entry.max(1) as u64).max(1);
 
             let result = sqlx::query(
                 "DELETE FROM embedding_cache WHERE rowid IN \

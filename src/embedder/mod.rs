@@ -350,16 +350,26 @@ impl Embedder {
                                     hash
                                 }
                                 Err(e) => {
-                                    tracing::warn!(error = %e, "Failed to read model for fingerprint, using repo name");
-                                    self.model_config.repo.clone()
+                                    tracing::warn!(error = %e, "Failed to read model for fingerprint, using repo+timestamp fallback");
+                                    // DS-45: append timestamp to prevent cache key collisions
+                                    // between different model files with the same repo name
+                                    let ts = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs();
+                                    format!("{}:{}", self.model_config.repo, ts)
                                 }
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "Failed to get model paths for fingerprint");
-                    self.model_config.repo.clone()
+                    tracing::warn!(error = %e, "Failed to get model paths for fingerprint, using repo+timestamp fallback");
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    format!("{}:{}", self.model_config.repo, ts)
                 }
             }
         })

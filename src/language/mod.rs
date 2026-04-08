@@ -943,6 +943,54 @@ pub static REGISTRY: LazyLock<LanguageRegistry> = LazyLock::new(LanguageRegistry
 mod tests {
     use super::*;
 
+    /// EXT-1: Every ChunkType variant must be explicitly classified in is_code().
+    /// This test fails with a compile error when a new variant is added to
+    /// define_chunk_types! without updating is_callable() or is_code().
+    #[test]
+    fn test_all_chunk_types_classified() {
+        // Exhaustive match — adding a variant without a branch is a compile error.
+        for &ct in ChunkType::ALL {
+            let _ = match ct {
+                // Callable (in call graph + search)
+                ChunkType::Function
+                | ChunkType::Method
+                | ChunkType::Constructor
+                | ChunkType::Property
+                | ChunkType::Macro
+                | ChunkType::Extension
+                | ChunkType::Test
+                | ChunkType::Endpoint
+                | ChunkType::StoredProc => {
+                    assert!(ct.is_callable(), "{ct} should be callable");
+                    assert!(ct.is_code(), "{ct} should be code");
+                }
+                // Code but not callable (in search, not call graph)
+                ChunkType::Struct
+                | ChunkType::Enum
+                | ChunkType::Interface
+                | ChunkType::Trait
+                | ChunkType::TypeAlias
+                | ChunkType::Class
+                | ChunkType::Constant
+                | ChunkType::Impl
+                | ChunkType::Variable
+                | ChunkType::Service => {
+                    assert!(!ct.is_callable(), "{ct} should not be callable");
+                    assert!(ct.is_code(), "{ct} should be code");
+                }
+                // Not code (excluded from default search)
+                ChunkType::Section
+                | ChunkType::Module
+                | ChunkType::Object
+                | ChunkType::Delegate
+                | ChunkType::Event
+                | ChunkType::ConfigKey => {
+                    assert!(!ct.is_code(), "{ct} should not be code");
+                }
+            };
+        }
+    }
+
     #[test]
     #[cfg(feature = "lang-rust")]
     fn test_registry_by_name() {
