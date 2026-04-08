@@ -441,7 +441,7 @@ impl Store {
     /// Cached chunk type + language map. Computed once per Store lifetime (PF-12).
     pub fn chunk_type_language_map(
         &self,
-    ) -> Result<std::sync::Arc<HashMap<String, (ChunkType, Language)>>, StoreError> {
+    ) -> Result<std::sync::Arc<crate::store::ChunkTypeMap>, StoreError> {
         if let Some(cached) = self.chunk_type_map_cache.get() {
             return Ok(std::sync::Arc::clone(cached));
         }

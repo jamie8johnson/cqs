@@ -214,12 +214,12 @@ pub struct Store {
     test_chunks_cache: std::sync::OnceLock<std::sync::Arc<Vec<ChunkSummary>>>,
     /// Cached chunk_type+language map — populated on first filtered search, valid for Store lifetime.
     /// Same no-invalidation contract as above.
-    chunk_type_map_cache: std::sync::OnceLock<
-        std::sync::Arc<
-            std::collections::HashMap<String, (crate::parser::ChunkType, crate::parser::Language)>,
-        >,
-    >,
+    chunk_type_map_cache: std::sync::OnceLock<std::sync::Arc<ChunkTypeMap>>,
 }
+
+/// Map from chunk ID to (ChunkType, Language) — used by HNSW traversal-time filtering.
+pub type ChunkTypeMap =
+    std::collections::HashMap<String, (crate::parser::ChunkType, crate::parser::Language)>;
 
 /// Internal configuration for [`Store::open_with_config`].
 /// Captures the five parameters that differ between read-write and read-only

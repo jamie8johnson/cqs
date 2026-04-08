@@ -78,7 +78,7 @@ pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<(
             if n > 0 {
                 tracing::debug!(pruned_sparse = n, "Pruned orphan sparse vectors");
             }
-            n as usize
+            n
         }
         Err(e) => {
             tracing::warn!(error = %e, "Failed to prune orphan sparse vectors");
