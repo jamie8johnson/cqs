@@ -7819,3 +7819,146 @@ public class UsersController : ControllerBase {
     assert!(validate.is_some(), "Should find private method");
     assert_eq!(validate.unwrap().chunk_type, ChunkType::Method);
 }
+
+// -- Audit: post_process reclassification preservation tests ──────────
+// Verify that non-reclassified chunks stay as their raw capture type.
+// Catches bugs where post_process silently fixes a wrong query capture.
+
+#[test]
+fn audit_java_static_final_constant() {
+    let content = r#"
+public class Config {
+    public static final int MAX_RETRIES = 3;
+    public static final String API_URL = "https://example.com";
+    public int normalField = 42;
+}
+"#;
+    let file = write_temp_file(content, "java");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let max = chunks.iter().find(|c| c.name == "MAX_RETRIES");
+    assert!(max.is_some(), "Should find static final constant");
+    assert_eq!(max.unwrap().chunk_type, ChunkType::Constant);
+}
+
+#[test]
+fn audit_java_regular_method_stays_method() {
+    let content = r#"
+public class Service {
+    public void process() {
+        System.out.println("working");
+    }
+}
+"#;
+    let file = write_temp_file(content, "java");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let method = chunks.iter().find(|c| c.name == "process");
+    assert!(method.is_some(), "Should find regular method");
+    assert_eq!(method.unwrap().chunk_type, ChunkType::Method);
+}
+
+#[test]
+fn audit_typescript_let_var_is_variable() {
+    let content = r#"
+let counter: number = 0;
+var legacy: string = "old";
+const MAX: number = 100;
+"#;
+    let file = write_temp_file(content, "ts");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let let_var = chunks.iter().find(|c| c.name == "counter");
+    assert!(let_var.is_some(), "Should find let declaration as Variable");
+    assert_eq!(let_var.unwrap().chunk_type, ChunkType::Variable);
+    let var_var = chunks.iter().find(|c| c.name == "legacy");
+    assert!(var_var.is_some(), "Should find var declaration as Variable");
+    assert_eq!(var_var.unwrap().chunk_type, ChunkType::Variable);
+    let const_var = chunks.iter().find(|c| c.name == "MAX");
+    assert!(const_var.is_some(), "Should find const as Constant");
+    assert_eq!(const_var.unwrap().chunk_type, ChunkType::Constant);
+}
+
+#[test]
+fn audit_javascript_function_stays_function() {
+    let content = r#"
+function processData(input) {
+    return input.map(x => x * 2);
+}
+"#;
+    let file = write_temp_file(content, "js");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let func = chunks.iter().find(|c| c.name == "processData");
+    assert!(func.is_some(), "Should find regular function");
+    assert_eq!(func.unwrap().chunk_type, ChunkType::Function);
+}
+
+#[test]
+fn audit_csharp_method_stays_method() {
+    let content = r#"
+public class Service {
+    public void Process() {
+        Console.WriteLine("working");
+    }
+}
+"#;
+    let file = write_temp_file(content, "cs");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let method = chunks.iter().find(|c| c.name == "Process");
+    assert!(method.is_some(), "Should find regular method");
+    assert_eq!(method.unwrap().chunk_type, ChunkType::Method);
+}
+
+// -- Elm ─────────────────────────────────────────────────────────────
+
+#[test]
+fn parse_elm_function_and_types() {
+    let content = r#"
+module Main exposing (main, update, view)
+
+type Msg
+    = Increment
+    | Decrement
+
+type alias Model =
+    { count : Int
+    }
+
+update : Msg -> Model -> Model
+update msg model =
+    case msg of
+        Increment ->
+            { model | count = model.count + 1 }
+
+        Decrement ->
+            { model | count = model.count - 1 }
+
+view : Model -> Html Msg
+view model =
+    text (String.fromInt model.count)
+
+main =
+    text "Hello"
+"#;
+    let file = write_temp_file(content, "elm");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+
+    let update_fn = chunks.iter().find(|c| c.name == "update");
+    assert!(update_fn.is_some(), "Should find 'update' function");
+    assert_eq!(update_fn.unwrap().chunk_type, ChunkType::Function);
+
+    let view_fn = chunks.iter().find(|c| c.name == "view");
+    assert!(view_fn.is_some(), "Should find 'view' function");
+    assert_eq!(view_fn.unwrap().chunk_type, ChunkType::Function);
+
+    let msg_type = chunks.iter().find(|c| c.name == "Msg");
+    assert!(msg_type.is_some(), "Should find 'Msg' type");
+    assert_eq!(msg_type.unwrap().chunk_type, ChunkType::Enum);
+
+    let model_alias = chunks.iter().find(|c| c.name == "Model");
+    assert!(model_alias.is_some(), "Should find 'Model' type alias");
+    assert_eq!(model_alias.unwrap().chunk_type, ChunkType::TypeAlias);
+}

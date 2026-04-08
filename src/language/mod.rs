@@ -37,6 +37,7 @@
 //! - `lang-yaml` - YAML support (enabled by default)
 //! - `lang-toml` - TOML support (enabled by default)
 //! - `lang-elixir` - Elixir support (enabled by default)
+//! - `lang-elm` - Elm support (enabled by default)
 //! - `lang-erlang` - Erlang support (enabled by default)
 //! - `lang-haskell` - Haskell support (enabled by default)
 //! - `lang-ocaml` - OCaml support (enabled by default)
@@ -821,6 +822,8 @@ define_languages! {
     Toml => "toml", feature = "lang-toml", def = languages::definition_toml;
     /// Elixir (.ex, .exs files)
     Elixir => "elixir", feature = "lang-elixir", def = languages::definition_elixir;
+    /// Elm (.elm files)
+    Elm => "elm", feature = "lang-elm", def = languages::definition_elm;
     /// Erlang (.erl, .hrl files)
     Erlang => "erlang", feature = "lang-erlang", def = languages::definition_erlang;
     /// Haskell (.hs files)
@@ -1044,6 +1047,8 @@ mod tests {
             assert!(REGISTRY.from_extension("ex").is_some());
             assert!(REGISTRY.from_extension("exs").is_some());
         }
+        #[cfg(feature = "lang-elm")]
+        assert!(REGISTRY.from_extension("elm").is_some());
         #[cfg(feature = "lang-erlang")]
         {
             assert!(REGISTRY.from_extension("erl").is_some());
@@ -1238,6 +1243,10 @@ mod tests {
             expected += 1;
         }
         #[cfg(feature = "lang-elixir")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-elm")]
         {
             expected += 1;
         }

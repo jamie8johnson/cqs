@@ -30,15 +30,6 @@ pub struct CacheStats {
     pub newest_timestamp: Option<i64>,
 }
 
-/// Result of verifying cached embeddings against the current model.
-#[derive(Debug)]
-pub struct VerifyReport {
-    pub sampled: usize,
-    pub matched: usize,
-    pub mismatched: usize,
-    pub missing: usize,
-}
-
 /// Global embedding cache backed by SQLite.
 ///
 /// Best-effort: all operations that fail are logged and skipped.
@@ -61,26 +52,34 @@ impl EmbeddingCache {
     pub fn open(path: &Path) -> Result<Self, CacheError> {
         let _span = tracing::info_span!("embedding_cache_open", path = %path.display()).entered();
 
-        // Create parent directories
+        // Create parent directories with restricted permissions
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+            }
         }
 
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
             .enable_all()
             .build()
             .map_err(|e| CacheError::Io(std::io::Error::other(e)))?;
 
-        let url = format!("sqlite:{}?mode=rwc", path.display());
+        // Use SqliteConnectOptions to avoid URL-encoding issues with special paths
+        let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+
         let pool = rt.block_on(async {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
                 .max_connections(2)
-                .connect(&url)
-                .await?;
-
-            // WAL mode for concurrent access
-            sqlx::query("PRAGMA journal_mode=WAL")
-                .execute(&pool)
+                .connect_with(connect_opts)
                 .await?;
 
             // Create table if not exists
@@ -105,6 +104,24 @@ impl EmbeddingCache {
 
             Ok::<_, sqlx::Error>(pool)
         })?;
+
+        // Restrict DB file permissions (cache contains embedding data, not secrets,
+        // but no reason for world-readable)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            for suffix in &["", "-wal", "-shm"] {
+                let db_file = path.with_extension(
+                    path.extension()
+                        .map(|e| format!("{}{}", e.to_string_lossy(), suffix))
+                        .unwrap_or_else(|| suffix.trim_start_matches('-').to_string()),
+                );
+                if db_file.exists() {
+                    let _ = std::fs::set_permissions(&db_file, perms.clone());
+                }
+            }
+        }
 
         let max_size_bytes = std::env::var("CQS_CACHE_MAX_SIZE")
             .ok()

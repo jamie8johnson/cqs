@@ -48,6 +48,7 @@ pub(super) fn normalize_lang(lang: &str) -> Option<&'static str> {
         "yaml" | "yml" => Some("yaml"),
         "toml" => Some("toml"),
         "elixir" | "ex" => Some("elixir"),
+        "elm" => Some("elm"),
         "erlang" | "erl" => Some("erlang"),
         "haskell" | "hs" => Some("haskell"),
         "ocaml" | "ml" => Some("ocaml"),
