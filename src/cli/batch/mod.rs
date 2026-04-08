@@ -245,7 +245,10 @@ impl BatchContext {
             if !model_dir.join("model.onnx").exists() {
                 return None;
             }
-            match cqs::splade::SpladeEncoder::new(&model_dir, 0.01) {
+            match cqs::splade::SpladeEncoder::new(
+                &model_dir,
+                cqs::splade::SpladeEncoder::default_threshold(),
+            ) {
                 Ok(enc) => Some(enc),
                 Err(e) => {
                     tracing::warn!(error = %e, "SPLADE encoder unavailable in batch mode");

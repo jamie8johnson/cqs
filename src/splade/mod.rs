@@ -52,6 +52,14 @@ pub struct SpladeEncoder {
 }
 
 impl SpladeEncoder {
+    /// Default SPLADE threshold, overridable via `CQS_SPLADE_THRESHOLD` env var.
+    pub fn default_threshold() -> f32 {
+        std::env::var("CQS_SPLADE_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.01)
+    }
+
     /// Load SPLADE model from a directory containing model.onnx and tokenizer.json.
     pub fn new(model_dir: &Path, threshold: f32) -> Result<Self, SpladeError> {
         let _span = tracing::info_span!("splade_encoder_new", dir = %model_dir.display()).entered();

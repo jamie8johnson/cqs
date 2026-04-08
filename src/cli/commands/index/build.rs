@@ -381,7 +381,10 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
             if !cli.quiet {
                 println!("Encoding SPLADE sparse vectors...");
             }
-            match cqs::splade::SpladeEncoder::new(&splade_dir, 0.01) {
+            match cqs::splade::SpladeEncoder::new(
+                &splade_dir,
+                cqs::splade::SpladeEncoder::default_threshold(),
+            ) {
                 Ok(encoder) => {
                     let _span = tracing::info_span!("splade_index_encode").entered();
                     // Fetch name + signature + doc for SPLADE encoding

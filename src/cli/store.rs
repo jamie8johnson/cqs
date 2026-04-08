@@ -143,7 +143,10 @@ impl<'a> CommandContext<'a> {
                 tracing::debug!("SPLADE model not found, hybrid search unavailable");
                 return None;
             }
-            match cqs::splade::SpladeEncoder::new(&model_dir, 0.01) {
+            match cqs::splade::SpladeEncoder::new(
+                &model_dir,
+                cqs::splade::SpladeEncoder::default_threshold(),
+            ) {
                 Ok(enc) => Some(enc),
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to load SPLADE encoder");
