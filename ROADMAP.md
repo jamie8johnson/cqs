@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current: v1.19.0
+## Current: v1.20.0
 
 54 languages. 25 chunk types. 265-query v2 eval. BGE-large + LLM summaries = best config.
 
@@ -69,6 +69,7 @@
 
 | Version | Highlights |
 |---------|-----------|
+| v1.20.0 | 14-category audit (71 findings, 69 fixed), Elm (54th), batch --include-type/--exclude-type, SPLADE code training (null), env var docs, README eval rewrite |
 | v1.19.0 | `--include-type`/`--exclude-type`, Java/C# test+endpoint, batch `--rrf`, capture list unification, Phase 2 chunks, 265q eval, store dim check |
 | v1.18.0 | Embedding cache, 5 chunk types, v2 eval harness, batch query logging |
 | v1.17.0 | SPLADE sparse-dense hybrid, schema v17, HNSW traversal filtering, ConfigKey, CAGRA itopk fix |
