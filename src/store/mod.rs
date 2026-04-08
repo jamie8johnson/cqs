@@ -212,6 +212,13 @@ pub struct Store {
     /// write-once for the per-command `Store` lifetime. Re-open the `Store` if the
     /// underlying index has been updated (e.g., after `cqs index` in watch mode).
     test_chunks_cache: std::sync::OnceLock<std::sync::Arc<Vec<ChunkSummary>>>,
+    /// Cached chunk_type+language map — populated on first filtered search, valid for Store lifetime.
+    /// Same no-invalidation contract as above.
+    chunk_type_map_cache: std::sync::OnceLock<
+        std::sync::Arc<
+            std::collections::HashMap<String, (crate::parser::ChunkType, crate::parser::Language)>,
+        >,
+    >,
 }
 
 /// Internal configuration for [`Store::open_with_config`].
@@ -423,6 +430,7 @@ impl Store {
             notes_summaries_cache: Mutex::new(None),
             call_graph_cache: std::sync::OnceLock::new(),
             test_chunks_cache: std::sync::OnceLock::new(),
+            chunk_type_map_cache: std::sync::OnceLock::new(),
         };
 
         // Skip model name validation on open — dimension is validated at embed time,

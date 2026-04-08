@@ -681,7 +681,8 @@ fn resolve_parent_context(
         }
     };
 
-    // For each result with parent_id, resolve the parent content
+    // Cache resolved ParentContext by parent_id to avoid rebuilding for siblings (CQ-7)
+    let mut resolved_parents: HashMap<String, ParentContext> = HashMap::new();
     for result in results {
         let UnifiedResult::Code(sr) = result;
         let parent_id = match &sr.chunk.parent_id {
@@ -689,22 +690,22 @@ fn resolve_parent_context(
             None => continue,
         };
 
-        // Skip if already resolved (multiple children share same parent)
-        if parents.contains_key(&sr.chunk.id) {
+        // Reuse cached ParentContext if this parent was already resolved
+        if let Some(cached) = resolved_parents.get(parent_id) {
+            parents.insert(sr.chunk.id.clone(), cached.clone());
             continue;
         }
 
         if let Some(parent) = stored_parents.get(parent_id) {
             // Parent found in DB (table chunk → section parent)
-            parents.insert(
-                sr.chunk.id.clone(),
-                ParentContext {
-                    name: parent.name.clone(),
-                    content: parent.content.clone(),
-                    line_start: parent.line_start,
-                    line_end: parent.line_end,
-                },
-            );
+            let ctx = ParentContext {
+                name: parent.name.clone(),
+                content: parent.content.clone(),
+                line_start: parent.line_start,
+                line_end: parent.line_end,
+            };
+            resolved_parents.insert(parent_id.clone(), ctx.clone());
+            parents.insert(sr.chunk.id.clone(), ctx);
         } else {
             // Parent not in DB (windowed chunk → read source file)
             // RT-FS-1: Validate the resolved path stays within project root
@@ -729,15 +730,14 @@ fn resolve_parent_context(
                     let end = (sr.chunk.line_end as usize).min(lines.len());
                     if start < end {
                         let parent_content = lines[start..end].join("\n");
-                        parents.insert(
-                            sr.chunk.id.clone(),
-                            ParentContext {
-                                name: sr.chunk.name.clone(),
-                                content: parent_content,
-                                line_start: sr.chunk.line_start,
-                                line_end: sr.chunk.line_end,
-                            },
-                        );
+                        let ctx = ParentContext {
+                            name: sr.chunk.name.clone(),
+                            content: parent_content,
+                            line_start: sr.chunk.line_start,
+                            line_end: sr.chunk.line_end,
+                        };
+                        resolved_parents.insert(parent_id.clone(), ctx.clone());
+                        parents.insert(sr.chunk.id.clone(), ctx);
                     }
                 }
                 Err(e) => {
