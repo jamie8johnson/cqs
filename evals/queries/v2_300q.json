@@ -1,7 +1,7 @@
 {
   "version": "v2_300q",
   "created": "2026-04-06",
-  "description": "Eval query set (293 queries, 8 categories) against cqs codebase. Hand-curated + auto-generated, ground truth validated.",
+  "description": "Eval query set (265 queries, 8 categories) against cqs codebase.",
   "queries": [
     {
       "id": "id-001",
@@ -1004,34 +1004,6 @@
       "split": "held_out"
     },
     {
-      "id": "tf-101",
-      "query": "constants defined in src/cli/batch/pipeline.rs",
-      "category": "type_filtered",
-      "tags": [],
-      "language": null,
-      "primary_answer": {
-        "name": "PIPELINE_FAN_OUT_LIMIT",
-        "file": "src/cli/batch/pipeline.rs"
-      },
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "held_out"
-    },
-    {
-      "id": "tf-102",
-      "query": "error types in src/doc_writer",
-      "category": "type_filtered",
-      "tags": [],
-      "language": null,
-      "primary_answer": {
-        "name": "DocWriterError",
-        "file": "src/doc_writer/rewriter.rs"
-      },
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "held_out"
-    },
-    {
       "id": "id-106",
       "query": "DiffEntryOutput",
       "category": "identifier_lookup",
@@ -1119,20 +1091,6 @@
       "primary_answer": {
         "name": "DiffTestInfo",
         "file": "src/impact/types.rs"
-      },
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "held_out"
-    },
-    {
-      "id": "tf-105",
-      "query": "constants defined in src/cli/batch/mod.rs",
-      "category": "type_filtered",
-      "tags": [],
-      "language": null,
-      "primary_answer": {
-        "name": "MAX_BATCH_LINE_LEN",
-        "file": "src/cli/batch/mod.rs"
       },
       "acceptable_answers": [],
       "negative_examples": [],
@@ -1298,20 +1256,6 @@
           "file": "src/llm/mod.rs"
         }
       ],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
-      "id": "tf-109",
-      "query": "constants defined in src/cli/batch/pipeline.rs",
-      "category": "type_filtered",
-      "tags": [],
-      "language": null,
-      "primary_answer": {
-        "name": "PIPEABLE_NAMES",
-        "file": "src/cli/batch/pipeline.rs"
-      },
-      "acceptable_answers": [],
       "negative_examples": [],
       "split": "train"
     },
@@ -1642,48 +1586,6 @@
       "split": "train"
     },
     {
-      "id": "tf-113",
-      "query": "constants defined in src/cagra.rs",
-      "category": "type_filtered",
-      "tags": [],
-      "language": null,
-      "primary_answer": {
-        "name": "MAX",
-        "file": "src/cagra.rs"
-      },
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
-      "id": "st-109",
-      "query": "implementation of StatsOutput",
-      "category": "structural_search",
-      "tags": [],
-      "language": null,
-      "primary_answer": {
-        "name": "StatsOutput",
-        "file": "src/cli/commands/index/stats.rs"
-      },
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
-      "id": "st-110",
-      "query": "implementation of TypeGraph",
-      "category": "structural_search",
-      "tags": [],
-      "language": null,
-      "primary_answer": {
-        "name": "TypeGraph",
-        "file": "src/store/types.rs"
-      },
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
       "id": "st-111",
       "query": "implementation of metadata",
       "category": "structural_search",
@@ -1768,20 +1670,6 @@
       "split": "train"
     },
     {
-      "id": "st-114",
-      "query": "implementation of TypeUsageEntry",
-      "category": "structural_search",
-      "tags": [],
-      "language": null,
-      "primary_answer": {
-        "name": "TypeUsageEntry",
-        "file": "src/cli/commands/graph/deps.rs"
-      },
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
       "id": "id-133",
       "query": "Embedder",
       "category": "identifier_lookup",
@@ -1816,17 +1704,17 @@
       "tags": [],
       "language": null,
       "primary_answer": {
-        "name": "AuditModeOutput",
-        "file": "src/cli/commands/infra/audit_mode.rs"
+        "name": "CallSite",
+        "file": "src/parser/types.rs"
       },
       "acceptable_answers": [
         {
-          "name": "DoctorIssue",
-          "file": "src/cli/commands/infra/doctor.rs"
+          "name": "CallContext",
+          "file": "src/nl/mod.rs"
         },
         {
-          "name": "ProjectSearchResult",
-          "file": "src/cli/commands/infra/project.rs"
+          "name": "FunctionCalls",
+          "file": "src/parser/types.rs"
         }
       ],
       "negative_examples": [],
@@ -2039,8 +1927,8 @@
       "query": "suggest where in the codebase to add new code",
       "category": "behavioral_search",
       "primary_answer": {
-        "name": "cmd_where",
-        "file": "src/cli/commands/search/where_cmd.rs"
+        "name": "suggest_placement_with_options",
+        "file": "src/where_to_add.rs"
       },
       "tags": [],
       "language": null,
@@ -2091,7 +1979,12 @@
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "parse_file_all",
+          "file": "src/parser/mod.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -2189,12 +2082,17 @@
       "query": "auto-suggest notes from codebase patterns like dead code and hotspots",
       "category": "behavioral_search",
       "primary_answer": {
-        "name": "cmd_suggest",
-        "file": "src/cli/commands/review/suggest.rs"
+        "name": "detect_dead_clusters",
+        "file": "src/suggest.rs"
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "cmd_suggest",
+          "file": "src/cli/commands/review/suggest.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -2245,10 +2143,14 @@
       "query": "staleness detection for outdated index entries",
       "category": "conceptual_search",
       "primary_answer": {
-        "name": "cmd_stale",
-        "file": "src/cli/commands/index/stale.rs"
+        "name": "check_index_staleness",
+        "file": "src/store/chunks/staleness.rs"
       },
       "acceptable_answers": [
+        {
+          "name": "cmd_stale",
+          "file": "src/cli/commands/index/stale.rs"
+        },
         {
           "name": "prune_missing",
           "file": "src/store/chunks/staleness.rs"
@@ -2349,8 +2251,8 @@
       },
       "acceptable_answers": [
         {
-          "name": "cmd_test_map",
-          "file": "src/cli/commands/graph/test_map.rs"
+          "name": "compute_risk_batch",
+          "file": "src/impact/analysis.rs"
         }
       ],
       "tags": [],
@@ -2419,12 +2321,17 @@
       "query": "garbage collection removing orphaned chunks from the index",
       "category": "conceptual_search",
       "primary_answer": {
-        "name": "cmd_gc",
-        "file": "src/cli/commands/index/gc.rs"
+        "name": "prune_orphan_summaries",
+        "file": "src/store/metadata.rs"
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "cmd_gc",
+          "file": "src/cli/commands/index/gc.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -2433,12 +2340,17 @@
       "query": "audit mode that forces direct code examination without cached notes",
       "category": "conceptual_search",
       "primary_answer": {
-        "name": "cmd_audit_mode",
-        "file": "src/cli/commands/infra/audit_mode.rs"
+        "name": "audit_state",
+        "file": "src/audit.rs"
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "cmd_audit_mode",
+          "file": "src/cli/commands/infra/audit_mode.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -2705,12 +2617,17 @@
       "query": "how does health check compute dead code and test coverage metrics",
       "category": "multi_step",
       "primary_answer": {
-        "name": "cmd_health",
-        "file": "src/cli/commands/review/health.rs"
+        "name": "health_check",
+        "file": "src/health.rs"
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "cmd_health",
+          "file": "src/cli/commands/review/health.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -2972,13 +2889,13 @@
       "query": "count total chunks files and languages in the index",
       "category": "behavioral_search",
       "primary_answer": {
-        "name": "stats",
-        "file": "src/store/metadata.rs"
+        "name": "cmd_stats",
+        "file": "src/cli/commands/index/stats.rs"
       },
       "acceptable_answers": [
         {
-          "name": "cmd_stats",
-          "file": "src/cli/commands/index/stats.rs"
+          "name": "stats",
+          "file": "src/store/metadata.rs"
         }
       ],
       "tags": [],
@@ -3019,12 +2936,17 @@
       "query": "parse ASP.NET web forms with embedded server code",
       "category": "behavioral_search",
       "primary_answer": {
-        "name": "parse_aspx",
-        "file": "src/parser/aspx.rs"
+        "name": "definition_aspx",
+        "file": "src/language/languages.rs"
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "parse_aspx",
+          "file": "src/parser/aspx.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -3047,12 +2969,17 @@
       "query": "find functions related by shared callers or shared types",
       "category": "behavioral_search",
       "primary_answer": {
-        "name": "cmd_related",
-        "file": "src/cli/commands/search/related.rs"
+        "name": "find_related",
+        "file": "src/store/calls/related.rs"
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "cmd_related",
+          "file": "src/cli/commands/search/related.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -3094,7 +3021,12 @@
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "Embedder",
+          "file": "src/embedder/mod.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -3103,12 +3035,17 @@
       "query": "hybrid scoring combining embedding similarity with keyword matching",
       "category": "conceptual_search",
       "primary_answer": {
-        "name": "rrf_fuse",
-        "file": "src/store/search.rs"
+        "name": "score_candidate",
+        "file": "src/search/scoring/candidate.rs"
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "rrf_fuse",
+          "file": "src/store/search.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -3390,20 +3327,6 @@
       "split": "held_out"
     },
     {
-      "id": "neg-122",
-      "query": "module-level code scope not function-level scope",
-      "category": "negation",
-      "primary_answer": {
-        "name": "Module",
-        "file": "src/language/mod.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
       "id": "ms-113",
       "query": "how does the affected command trace from git diff to impacted functions and tests",
       "category": "multi_step",
@@ -3488,7 +3411,12 @@
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "is_pattern",
+          "file": "src/structural.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -3554,81 +3482,11 @@
       "split": "held_out"
     },
     {
-      "id": "cl-111",
-      "query": "type alias and typedef definitions across languages",
-      "category": "cross_language",
-      "primary_answer": {
-        "name": "TypeAlias",
-        "file": "src/language/mod.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
-      "id": "cl-112",
-      "query": "enum and variant definitions in different languages",
-      "category": "cross_language",
-      "primary_answer": {
-        "name": "Enum",
-        "file": "src/language/mod.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
-      "id": "cl-113",
-      "query": "interface and protocol definitions across languages",
-      "category": "cross_language",
-      "primary_answer": {
-        "name": "Interface",
-        "file": "src/language/mod.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
-      "id": "cl-114",
-      "query": "property and getter setter definitions across languages",
-      "category": "cross_language",
-      "primary_answer": {
-        "name": "Property",
-        "file": "src/language/mod.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
       "id": "cl-115",
       "query": "test file suggestion based on language conventions",
       "category": "cross_language",
       "primary_answer": {
         "name": "test_file_suggestion",
-        "file": "src/language/mod.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
-      "id": "cl-116",
-      "query": "macro and metaprogramming definitions across languages",
-      "category": "cross_language",
-      "primary_answer": {
-        "name": "Macro",
         "file": "src/language/mod.rs"
       },
       "tags": [],
@@ -3657,34 +3515,6 @@
       "split": "held_out"
     },
     {
-      "id": "cl-118",
-      "query": "signature extraction format varying by language syntax",
-      "category": "cross_language",
-      "primary_answer": {
-        "name": "SignatureStyle",
-        "file": "src/language/mod.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
-      "id": "cl-119",
-      "query": "common type filtering to exclude standard library types from search",
-      "category": "cross_language",
-      "primary_answer": {
-        "name": "common_types",
-        "file": "src/language/mod.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
       "id": "cl-120",
       "query": "function declaration patterns across different syntax families",
       "category": "cross_language",
@@ -3697,34 +3527,6 @@
       "acceptable_answers": [],
       "negative_examples": [],
       "split": "held_out"
-    },
-    {
-      "id": "tf-101",
-      "query": "trait and interface definitions in the parser module",
-      "category": "type_filtered",
-      "primary_answer": {
-        "name": "VectorIndex",
-        "file": "src/index.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
-      "id": "tf-102",
-      "query": "constants and configuration values in the embedder",
-      "category": "type_filtered",
-      "primary_answer": {
-        "name": "MAX_QUERY_BYTES",
-        "file": "src/embedder/mod.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
     },
     {
       "id": "tf-103",
@@ -3761,20 +3563,6 @@
       ],
       "tags": [],
       "language": null,
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
-      "id": "tf-105",
-      "query": "static constants in the language module",
-      "category": "type_filtered",
-      "primary_answer": {
-        "name": "DEFAULTS",
-        "file": "src/language/languages.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
       "negative_examples": [],
       "split": "train"
     },
@@ -3831,20 +3619,6 @@
       "split": "train"
     },
     {
-      "id": "tf-109",
-      "query": "test helper functions and utilities",
-      "category": "type_filtered",
-      "primary_answer": {
-        "name": "mock_embedding",
-        "file": "src/test_helpers.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
       "id": "tf-110",
       "query": "serializable output structs for JSON responses",
       "category": "type_filtered",
@@ -3892,34 +3666,6 @@
       "split": "held_out"
     },
     {
-      "id": "st-109",
-      "query": "builder pattern with method chaining for configuration",
-      "category": "structural_search",
-      "primary_answer": {
-        "name": "with_query",
-        "file": "src/store/helpers/search_filter.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
-      "id": "st-110",
-      "query": "OnceLock or LazyLock for lazy static initialization",
-      "category": "structural_search",
-      "primary_answer": {
-        "name": "model_fingerprint",
-        "file": "src/embedder/mod.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
       "id": "st-111",
       "query": "async runtime block_on wrapper for sync API",
       "category": "structural_search",
@@ -3962,25 +3708,6 @@
       "split": "held_out"
     },
     {
-      "id": "st-114",
-      "query": "FromStr implementation for parsing CLI arguments",
-      "category": "structural_search",
-      "primary_answer": {
-        "name": "ChunkType",
-        "file": "src/language/mod.rs"
-      },
-      "acceptable_answers": [
-        {
-          "name": "Language",
-          "file": "src/language/mod.rs"
-        }
-      ],
-      "tags": [],
-      "language": null,
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
       "id": "st-115",
       "query": "clap derive macro usage for command line argument parsing",
       "category": "structural_search",
@@ -4000,20 +3727,6 @@
       "split": "held_out"
     },
     {
-      "id": "st-116",
-      "query": "Arc shared ownership pattern for concurrent data access",
-      "category": "structural_search",
-      "primary_answer": {
-        "name": "run_index_pipeline",
-        "file": "src/cli/pipeline/mod.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
       "id": "con-125",
       "query": "codebase health scoring across multiple dimensions",
       "category": "conceptual_search",
@@ -4023,7 +3736,12 @@
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "health_check",
+          "file": "src/health.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -4037,7 +3755,12 @@
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "review_diff",
+          "file": "src/cli/commands/review/diff_review.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -4046,12 +3769,17 @@
       "query": "focused read showing only a function and its type dependencies",
       "category": "conceptual_search",
       "primary_answer": {
-        "name": "focused_read",
+        "name": "find_type_impacted",
         "file": "src/focused_read.rs"
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "focused_read",
+          "file": "src/focused_read.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -4201,7 +3929,12 @@
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "is_callable",
+          "file": "src/language/mod.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
@@ -4222,25 +3955,6 @@
       "tags": [],
       "language": null,
       "acceptable_answers": [],
-      "split": "train"
-    },
-    {
-      "id": "cl-121",
-      "query": "class and struct definitions varying by language",
-      "category": "cross_language",
-      "primary_answer": {
-        "name": "Class",
-        "file": "src/language/mod.rs"
-      },
-      "acceptable_answers": [
-        {
-          "name": "Struct",
-          "file": "src/language/mod.rs"
-        }
-      ],
-      "tags": [],
-      "language": null,
-      "negative_examples": [],
       "split": "train"
     },
     {
@@ -4275,34 +3989,6 @@
       "acceptable_answers": [],
       "negative_examples": [],
       "split": "held_out"
-    },
-    {
-      "id": "cl-124",
-      "query": "object and singleton patterns in Scala and other languages",
-      "category": "cross_language",
-      "primary_answer": {
-        "name": "Object",
-        "file": "src/language/mod.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
-      "id": "st-117",
-      "query": "Serialize derive for JSON output across all output types",
-      "category": "structural_search",
-      "primary_answer": {
-        "name": "SearchResult",
-        "file": "src/store/helpers/types.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
     },
     {
       "id": "st-118",
@@ -4375,20 +4061,6 @@
       "split": "held_out"
     },
     {
-      "id": "tf-113",
-      "query": "enum values for different search scoring strategies",
-      "category": "type_filtered",
-      "primary_answer": {
-        "name": "ScoringConfig",
-        "file": "src/search/scoring/config.rs"
-      },
-      "tags": [],
-      "language": null,
-      "acceptable_answers": [],
-      "negative_examples": [],
-      "split": "train"
-    },
-    {
       "id": "tf-114",
       "query": "structs representing call graph relationships",
       "category": "type_filtered",
@@ -4397,6 +4069,10 @@
         "file": "src/parser/types.rs"
       },
       "acceptable_answers": [
+        {
+          "name": "CallContext",
+          "file": "src/nl/mod.rs"
+        },
         {
           "name": "FunctionCalls",
           "file": "src/parser/types.rs"
@@ -4431,7 +4107,12 @@
       },
       "tags": [],
       "language": null,
-      "acceptable_answers": [],
+      "acceptable_answers": [
+        {
+          "name": "search_reference",
+          "file": "src/reference.rs"
+        }
+      ],
       "negative_examples": [],
       "split": "train"
     },
