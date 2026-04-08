@@ -620,6 +620,150 @@ mod tests {
         }
     }
 
+    // ===== TC-20: read_batch crosses 100-entry sub-batch boundary =====
+
+    #[test]
+    fn test_read_batch_crosses_100_boundary() {
+        let (cache, _dir) = test_cache();
+
+        // Write 150 entries — read_batch internally batches in groups of 100,
+        // so this crosses the boundary.
+        let entries: Vec<_> = (0..150)
+            .map(|i| (format!("hash_{i:04}"), make_embedding(768, i as f32)))
+            .collect();
+        let written = cache.write_batch(&entries, "fp_cross", 768).unwrap();
+        assert_eq!(written, 150);
+
+        // Read all 150 back in one call
+        let hashes: Vec<&str> = entries.iter().map(|(h, _)| h.as_str()).collect();
+        let result = cache.read_batch(&hashes, "fp_cross", 768).unwrap();
+        assert_eq!(
+            result.len(),
+            150,
+            "read_batch should return all 150 entries across the 100-entry sub-batch boundary"
+        );
+
+        // Verify a sample from each sub-batch (first, boundary, last)
+        for idx in [0, 99, 100, 149] {
+            let key = format!("hash_{idx:04}");
+            assert!(
+                result.contains_key(&key),
+                "Missing key '{}' from read_batch results",
+                key
+            );
+        }
+    }
+
+    // ===== TC-21: NaN embedding behavior =====
+
+    #[test]
+    fn test_nan_embedding() {
+        let (cache, _dir) = test_cache();
+
+        // Create an embedding containing NaN values
+        let mut nan_emb = make_embedding(128, 1.0);
+        nan_emb[0] = f32::NAN;
+        nan_emb[64] = f32::NAN;
+
+        let entries = vec![("hash_nan".to_string(), nan_emb)];
+        // write_batch does not currently reject NaN — it round-trips through blob encoding.
+        // This test documents the current behavior: NaN is stored and retrieved.
+        let written = cache.write_batch(&entries, "fp_nan", 128).unwrap();
+        assert_eq!(written, 1);
+
+        let result = cache.read_batch(&["hash_nan"], "fp_nan", 128).unwrap();
+        assert_eq!(result.len(), 1);
+        let cached = &result["hash_nan"];
+        assert!(cached[0].is_nan(), "NaN should round-trip through cache");
+        assert!(cached[64].is_nan(), "NaN should round-trip through cache");
+        // Non-NaN values should be preserved
+        assert!(!cached[1].is_nan());
+    }
+
+    // ===== TC-24: prune edge cases =====
+
+    #[test]
+    fn test_prune_zero_days() {
+        let (cache, _dir) = test_cache();
+
+        // Write entries (they get current timestamp)
+        let entries: Vec<_> = (0..5)
+            .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
+            .collect();
+        cache.write_batch(&entries, "fp_1", 128).unwrap();
+
+        // Prune with 0 days — cutoff is "now - 0 seconds" = now.
+        // Entries written in the same second should survive (created_at >= cutoff).
+        let pruned = cache.prune_older_than(0).unwrap();
+        // Same-second entries: created_at == cutoff, and the query is `< cutoff`,
+        // so they should NOT be pruned.
+        assert_eq!(
+            pruned, 0,
+            "prune(0) should not delete entries written in the same second"
+        );
+
+        let stats = cache.stats().unwrap();
+        assert_eq!(stats.total_entries, 5);
+    }
+
+    #[test]
+    fn test_prune_large_days() {
+        let (cache, _dir) = test_cache();
+
+        // Write some entries
+        let entries: Vec<_> = (0..3)
+            .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
+            .collect();
+        cache.write_batch(&entries, "fp_1", 128).unwrap();
+
+        // Prune with u32::MAX days — should not panic (overflow-safe).
+        // cutoff = now - (u32::MAX as i64 * 86400) will go deeply negative,
+        // so no entries should be pruned (all created_at > cutoff).
+        let pruned = cache.prune_older_than(u32::MAX).unwrap();
+        assert_eq!(
+            pruned, 0,
+            "prune(u32::MAX) should not delete any entries (cutoff is in the far past)"
+        );
+
+        let stats = cache.stats().unwrap();
+        assert_eq!(stats.total_entries, 3);
+    }
+
+    // ===== TC-26: duplicate content_hash behavior =====
+
+    #[test]
+    fn test_write_batch_duplicate_hashes() {
+        let (cache, _dir) = test_cache();
+
+        let emb_a = make_embedding(128, 1.0);
+        let emb_b = make_embedding(128, 2.0);
+
+        // Two entries with the same content_hash but different embeddings
+        let entries = vec![
+            ("dup_hash".to_string(), emb_a.clone()),
+            ("dup_hash".to_string(), emb_b.clone()),
+        ];
+
+        // write_batch uses INSERT OR IGNORE — the second insert is silently dropped.
+        let written = cache.write_batch(&entries, "fp_dup", 128).unwrap();
+        // Only 1 row should be written (second is ignored due to PK conflict)
+        assert_eq!(
+            written, 1,
+            "Duplicate hash should be ignored by INSERT OR IGNORE"
+        );
+
+        // Read back — the first embedding (emb_a) should win
+        let result = cache.read_batch(&["dup_hash"], "fp_dup", 128).unwrap();
+        assert_eq!(result.len(), 1);
+        let cached = &result["dup_hash"];
+        assert!(
+            (cached[0] - emb_a[0]).abs() < 1e-6,
+            "First embedding should win: expected {}, got {}",
+            emb_a[0],
+            cached[0]
+        );
+    }
+
     #[test]
     fn test_prune_by_age() {
         let (cache, _dir) = test_cache();
