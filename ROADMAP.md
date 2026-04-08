@@ -26,6 +26,9 @@
 ### CPU Lane — ready to pick up
 - [ ] **Paper v0.7** — research writeup
 - [ ] **Cross-project call graph** — spec ready. CPU-only (graph algorithms, no embeddings)
+- [ ] **Extern chunk type** — FFI declarations without implementation: Rust `extern fn`, TS `declare function`, C prototypes, Java `native`, C# `extern`. Distinguishes "contract" from "has code" for impact analysis.
+- [ ] **Namespace chunk type** — C++ `namespace`, C# `namespace`. Currently Module or uncaptured.
+- [ ] **Middleware chunk type** — Express `app.use()`, Django middleware. Framework-specific but common pattern.
 - [ ] **Solidity modifier chunk type** — `modifier onlyOwner()` → new type. ~30 min.
 - [ ] **Rust impl block chunk type** — `impl<T: Hash> Cache<T>`. ~30 min.
 - [ ] **CSS @media/@keyframes** — scoping rules, animations. ~30 min.
