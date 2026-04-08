@@ -185,16 +185,19 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Deps {
             ref name,
             reverse,
+            cross_project,
             ref output,
-        }) => cmd_deps(&ctx, name, reverse, output.json),
+        }) => cmd_deps(&ctx, name, reverse, cross_project, output.json),
         Some(Commands::Callers {
             ref name,
+            cross_project,
             ref output,
-        }) => cmd_callers(&ctx, name, output.json),
+        }) => cmd_callers(&ctx, name, cross_project, output.json),
         Some(Commands::Callees {
             ref name,
+            cross_project,
             ref output,
-        }) => cmd_callees(&ctx, name, output.json),
+        }) => cmd_callees(&ctx, name, cross_project, output.json),
         Some(Commands::Onboard {
             ref query,
             depth,
@@ -228,6 +231,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
                 &format,
                 args.suggest_tests,
                 args.include_types,
+                args.cross_project,
             )
         }
         Some(Commands::ImpactDiff {
@@ -265,13 +269,15 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
                 &args.target,
                 args.max_depth as usize,
                 &format,
+                args.cross_project,
             )
         }
         Some(Commands::TestMap {
             ref name,
             depth,
+            cross_project,
             ref output,
-        }) => cmd_test_map(&ctx, name, depth, output.json),
+        }) => cmd_test_map(&ctx, name, depth, cross_project, output.json),
         Some(Commands::Context {
             ref args,
             ref output,

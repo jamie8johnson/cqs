@@ -78,16 +78,25 @@ pub(crate) enum BatchCmd {
         /// Show types used by function (instead of type users)
         #[arg(long)]
         reverse: bool,
+        /// Query across all configured reference projects
+        #[arg(long)]
+        cross_project: bool,
     },
     /// Find callers of a function
     Callers {
         /// Function name
         name: String,
+        /// Query callers across all configured reference projects
+        #[arg(long)]
+        cross_project: bool,
     },
     /// Find callees of a function
     Callees {
         /// Function name
         name: String,
+        /// Query callees across all configured reference projects
+        #[arg(long)]
+        cross_project: bool,
     },
     /// Function card: signature, callers, callees, similar
     Explain {
@@ -120,6 +129,9 @@ pub(crate) enum BatchCmd {
         /// Max call chain depth
         #[arg(long, default_value = "5")]
         depth: usize,
+        /// Search for tests across all configured reference projects
+        #[arg(long)]
+        cross_project: bool,
     },
     /// Trace call path between two functions
     Trace {
@@ -386,9 +398,19 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
                 },
             )
         }
-        BatchCmd::Deps { name, reverse } => handlers::dispatch_deps(ctx, &name, reverse),
-        BatchCmd::Callers { name } => handlers::dispatch_callers(ctx, &name),
-        BatchCmd::Callees { name } => handlers::dispatch_callees(ctx, &name),
+        BatchCmd::Deps {
+            name,
+            reverse,
+            cross_project,
+        } => handlers::dispatch_deps(ctx, &name, reverse, cross_project),
+        BatchCmd::Callers {
+            name,
+            cross_project,
+        } => handlers::dispatch_callers(ctx, &name, cross_project),
+        BatchCmd::Callees {
+            name,
+            cross_project,
+        } => handlers::dispatch_callees(ctx, &name, cross_project),
         BatchCmd::Explain { name, tokens } => handlers::dispatch_explain(ctx, &name, tokens),
         BatchCmd::Similar { args } => {
             handlers::dispatch_similar(ctx, &args.name, args.limit, args.threshold)
@@ -413,11 +435,20 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             args.depth,
             args.suggest_tests,
             args.include_types,
+            args.cross_project,
         ),
-        BatchCmd::TestMap { name, depth } => handlers::dispatch_test_map(ctx, &name, depth),
-        BatchCmd::Trace { args } => {
-            handlers::dispatch_trace(ctx, &args.source, &args.target, args.max_depth as usize)
-        }
+        BatchCmd::TestMap {
+            name,
+            depth,
+            cross_project,
+        } => handlers::dispatch_test_map(ctx, &name, depth, cross_project),
+        BatchCmd::Trace { args } => handlers::dispatch_trace(
+            ctx,
+            &args.source,
+            &args.target,
+            args.max_depth as usize,
+            args.cross_project,
+        ),
         BatchCmd::Dead { args } => {
             handlers::dispatch_dead(ctx, args.include_pub, &args.min_confidence)
         }
@@ -537,7 +568,7 @@ mod tests {
     fn test_parse_callers() {
         let input = BatchInput::try_parse_from(["callers", "my_func"]).unwrap();
         match input.cmd {
-            BatchCmd::Callers { ref name } => assert_eq!(name, "my_func"),
+            BatchCmd::Callers { ref name, .. } => assert_eq!(name, "my_func"),
             _ => panic!("Expected Callers command"),
         }
     }

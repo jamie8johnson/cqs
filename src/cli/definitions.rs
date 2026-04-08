@@ -349,6 +349,9 @@ pub(super) enum Commands {
         /// Reverse: show types used by a function instead of type users
         #[arg(long)]
         reverse: bool,
+        /// Query across all configured reference projects
+        #[arg(long)]
+        cross_project: bool,
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -356,6 +359,9 @@ pub(super) enum Commands {
     Callers {
         /// Function name to search for
         name: String,
+        /// Query callers across all configured reference projects
+        #[arg(long)]
+        cross_project: bool,
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -363,6 +369,9 @@ pub(super) enum Commands {
     Callees {
         /// Function name to search for
         name: String,
+        /// Query callees across all configured reference projects
+        #[arg(long)]
+        cross_project: bool,
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -520,6 +529,9 @@ pub(super) enum Commands {
         /// Max call chain depth to search
         #[arg(long, default_value = "5")]
         depth: usize,
+        /// Search for tests across all configured reference projects
+        #[arg(long)]
+        cross_project: bool,
         #[command(flatten)]
         output: TextJsonArgs,
     },

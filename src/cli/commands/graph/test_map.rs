@@ -181,9 +181,13 @@ pub(crate) fn cmd_test_map(
     ctx: &crate::cli::CommandContext,
     name: &str,
     max_depth: usize,
+    cross_project: bool,
     json: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_test_map", name).entered();
+    let _span = tracing::info_span!("cmd_test_map", name, cross_project).entered();
+    if cross_project {
+        tracing::warn!("--cross-project for test-map is not yet implemented, using local only");
+    }
     let store = &ctx.store;
     let root = &ctx.root;
     let resolved = resolve_target(store, name)?;

@@ -127,6 +127,7 @@ pub use store::{ModelInfo, SearchFilter, Store};
 pub use diff::*;
 pub use focused_read::COMMON_TYPES;
 pub use gather::*;
+pub use impact::cross_project;
 pub use impact::*;
 pub use nl::*;
 pub use onboard::*;

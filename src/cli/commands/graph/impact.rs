@@ -17,8 +17,12 @@ pub(crate) fn cmd_impact(
     format: &OutputFormat,
     do_suggest_tests: bool,
     include_types: bool,
+    cross_project: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_impact", name).entered();
+    let _span = tracing::info_span!("cmd_impact", name, cross_project).entered();
+    if cross_project {
+        tracing::warn!("--cross-project for impact is not yet implemented, using local only");
+    }
     let store = &ctx.store;
     let root = &ctx.root;
     let depth = depth.clamp(1, 10);

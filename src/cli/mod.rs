@@ -204,7 +204,7 @@ mod tests {
     fn test_cmd_callers() {
         let cli = Cli::try_parse_from(["cqs", "callers", "my_function"]).unwrap();
         match cli.command {
-            Some(Commands::Callers { name, output }) => {
+            Some(Commands::Callers { name, output, .. }) => {
                 assert_eq!(name, "my_function");
                 assert!(!output.json);
             }
@@ -216,7 +216,7 @@ mod tests {
     fn test_cmd_callees_json() {
         let cli = Cli::try_parse_from(["cqs", "callees", "my_function", "--json"]).unwrap();
         match cli.command {
-            Some(Commands::Callees { name, output }) => {
+            Some(Commands::Callees { name, output, .. }) => {
                 assert_eq!(name, "my_function");
                 assert!(output.json);
             }
