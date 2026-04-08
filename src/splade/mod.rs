@@ -14,7 +14,7 @@ pub mod index;
 use std::path::Path;
 use std::sync::Mutex;
 
-use ndarray::{Array2, Axis};
+use ndarray::{Array2, ArrayView2, Axis};
 use ort::session::Session;
 use ort::value::Tensor;
 use thiserror::Error;
@@ -103,6 +103,23 @@ impl SpladeEncoder {
             return Ok(Vec::new());
         }
 
+        // Truncate overly long input to avoid excessive tokenization/inference cost
+        let text = if text.len() > 4000 {
+            let truncated = &text[..text
+                .char_indices()
+                .nth(4000)
+                .map(|(i, _)| i)
+                .unwrap_or(text.len())];
+            tracing::debug!(
+                original_len = text.len(),
+                truncated_len = truncated.len(),
+                "Truncated SPLADE input to 4000 chars"
+            );
+            truncated
+        } else {
+            text
+        };
+
         // Tokenize
         let encoding = self
             .tokenizer
@@ -131,7 +148,7 @@ impl SpladeEncoder {
             .map_err(|e| SpladeError::InferenceFailed(format!("Tensor: {e}")))?;
 
         // Run inference
-        let mut session = self.session.lock().unwrap();
+        let mut session = self.session.lock().unwrap_or_else(|p| p.into_inner());
         let outputs = session
             .run(ort::inputs![
                 "input_ids" => ids_tensor,
@@ -156,7 +173,7 @@ impl SpladeEncoder {
         }
 
         let vocab = shape[2] as usize;
-        let logits = Array2::from_shape_vec((seq_len, vocab), data.to_vec())
+        let logits = ArrayView2::from_shape((seq_len, vocab), &data)
             .map_err(|e| SpladeError::InferenceFailed(format!("Failed to reshape logits: {e}")))?;
 
         // Max pool over sequence dimension → [vocab_size]
