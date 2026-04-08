@@ -183,8 +183,8 @@ impl EmbeddingCache {
                     let dim: i64 = row.get("dim");
                     let blob: Vec<u8> = row.get("embedding");
 
-                    // Validate dimension
-                    if dim as usize != expected_dim {
+                    // Validate dimension (DS-46: guard negative before cast)
+                    if dim < 0 || dim as usize != expected_dim {
                         tracing::debug!(
                             hash = &hash[..8.min(hash.len())],
                             cached_dim = dim,
@@ -201,6 +201,12 @@ impl EmbeddingCache {
                         .collect();
 
                     if embedding.len() != expected_dim {
+                        tracing::debug!(
+                            hash = &hash[..8.min(hash.len())],
+                            actual = embedding.len(),
+                            expected_dim,
+                            "Cache blob length mismatch, skipping"
+                        );
                         continue;
                     }
 
@@ -240,14 +246,27 @@ impl EmbeddingCache {
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
             let mut written = 0usize;
+            let mut blob = Vec::with_capacity(dim * 4); // PF-6: reuse scratch buffer
 
             for (content_hash, embedding) in entries {
                 if embedding.is_empty() {
-                    continue; // Skip zero-length embeddings
+                    continue;
                 }
 
-                // Encode Vec<f32> to blob
-                let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+                // DS-44: validate dimension matches
+                if embedding.len() != dim {
+                    tracing::warn!(
+                        hash = &content_hash[..8.min(content_hash.len())],
+                        actual = embedding.len(),
+                        expected = dim,
+                        "Skipping cache write: embedding length mismatch"
+                    );
+                    continue;
+                }
+
+                // Encode Vec<f32> to blob (PF-6: reuse buffer)
+                blob.clear();
+                blob.extend(embedding.iter().flat_map(|f| f.to_le_bytes()));
 
                 let result = sqlx::query(
                     "INSERT OR IGNORE INTO embedding_cache \
@@ -276,20 +295,34 @@ impl EmbeddingCache {
         let _span = tracing::info_span!("cache_evict").entered();
 
         self.rt.block_on(async {
-            let size: i64 = sqlx::query_scalar(
-                "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+            // Use logical data size, not physical pages (DS-49)
+            let size: i64 = match sqlx::query_scalar(
+                "SELECT COALESCE(SUM(LENGTH(embedding)), 0) + COUNT(*) * 200 FROM embedding_cache",
             )
             .fetch_one(&self.pool)
             .await
-            .unwrap_or(0);
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Cache evict size query failed");
+                    return Ok(0);
+                }
+            };
 
-            if (size as u64) <= self.max_size_bytes {
+            // Guard against negative/zero size (SEC-10)
+            if size <= 0 || (size as u64) <= self.max_size_bytes {
                 return Ok(0);
             }
 
             let excess = size as u64 - self.max_size_bytes;
-            // Estimate: ~4200 bytes per entry (1024-dim)
-            let entries_to_delete = (excess / 4200).max(100);
+            // Estimate per-entry size from actual data
+            let avg_entry: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(AVG(LENGTH(embedding) + 200), 4200) FROM embedding_cache",
+            )
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(4200);
+            let entries_to_delete = (excess / avg_entry.max(1) as u64).max(100);
 
             let result = sqlx::query(
                 "DELETE FROM embedding_cache WHERE rowid IN \
@@ -313,32 +346,47 @@ impl EmbeddingCache {
             let total_entries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM embedding_cache")
                 .fetch_one(&self.pool)
                 .await
-                .unwrap_or(0);
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "cache stats: COUNT failed");
+                    0
+                });
 
             let total_size: i64 = sqlx::query_scalar(
                 "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
             )
             .fetch_one(&self.pool)
             .await
-            .unwrap_or(0);
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "cache stats: page_size failed");
+                0
+            });
 
             let unique_models: i64 =
                 sqlx::query_scalar("SELECT COUNT(DISTINCT model_fingerprint) FROM embedding_cache")
                     .fetch_one(&self.pool)
                     .await
-                    .unwrap_or(0);
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "cache stats: DISTINCT failed");
+                        0
+                    });
 
             let oldest: Option<i64> =
                 sqlx::query_scalar("SELECT MIN(created_at) FROM embedding_cache")
                     .fetch_one(&self.pool)
                     .await
-                    .unwrap_or(None);
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "cache stats: MIN failed");
+                        None
+                    });
 
             let newest: Option<i64> =
                 sqlx::query_scalar("SELECT MAX(created_at) FROM embedding_cache")
                     .fetch_one(&self.pool)
                     .await
-                    .unwrap_or(None);
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "cache stats: MAX failed");
+                        None
+                    });
 
             Ok(CacheStats {
                 total_entries: total_entries as u64,

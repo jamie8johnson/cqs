@@ -78,12 +78,8 @@ impl SpladeIndex {
         for &(token_id, query_weight) in query {
             if let Some(posting_list) = self.postings.get(&token_id) {
                 for &(chunk_idx, doc_weight) in posting_list {
-                    // Apply filter
-                    if let Some(chunk_id) = self.id_map.get(chunk_idx) {
-                        if !filter(chunk_id) {
-                            continue;
-                        }
-                    } else {
+                    // Apply filter (PF-13: direct indexing — idx always valid by construction)
+                    if chunk_idx >= self.id_map.len() || !filter(&self.id_map[chunk_idx]) {
                         continue;
                     }
                     *scores.entry(chunk_idx).or_insert(0.0) += query_weight * doc_weight;

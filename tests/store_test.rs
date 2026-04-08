@@ -654,7 +654,7 @@ fn test_fts_unicode_function_names() {
         .unwrap();
 
     // FTS should normalize and find it (using query text)
-    let filter = SearchFilter::new().with_query("计算");
+    let filter = SearchFilter::default().with_query("计算");
     let results = store.search_filtered(&mock_embedding(1.0), &filter, 5, 0.0);
     assert!(results.is_ok(), "FTS search should not fail on Unicode");
     // Note: Whether it actually finds depends on FTS tokenization; test ensures no crash
@@ -672,7 +672,7 @@ fn test_fts_emoji_in_comments() {
         .unwrap();
 
     // Should not crash on emoji content
-    let filter = SearchFilter::new().with_query("launch");
+    let filter = SearchFilter::default().with_query("launch");
     let results = store.search_filtered(&mock_embedding(1.0), &filter, 5, 0.0);
     assert!(
         results.is_ok(),

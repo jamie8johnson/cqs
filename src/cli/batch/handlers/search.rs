@@ -98,7 +98,13 @@ pub(in crate::cli::batch) fn dispatch_search(
     // SPLADE sparse encoding (if enabled)
     let splade_query = if params.splade {
         ctx.splade_encoder()
-            .and_then(|enc| enc.encode(&params.query).ok())
+            .and_then(|enc| match enc.encode(&params.query) {
+                Ok(sv) => Some(sv),
+                Err(e) => {
+                    tracing::warn!(error = %e, "SPLADE query encoding failed, falling back to cosine-only");
+                    None
+                }
+            })
     } else {
         None
     };
@@ -148,12 +154,10 @@ pub(in crate::cli::batch) fn dispatch_search(
                 cqs::store::UnifiedResult::Code(sr) => sr,
             })
             .collect();
-        if code_results.len() > 1 {
-            let reranker = ctx.reranker()?;
-            reranker
-                .rerank(&params.query, &mut code_results, limit)
-                .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
-        }
+        let reranker = ctx.reranker()?;
+        reranker
+            .rerank(&params.query, &mut code_results, limit)
+            .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
         code_results
             .into_iter()
             .map(cqs::store::UnifiedResult::Code)

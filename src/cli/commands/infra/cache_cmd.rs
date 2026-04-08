@@ -40,13 +40,14 @@ pub(crate) fn cmd_cache(subcmd: &CacheCommand) -> Result<()> {
         .with_context(|| format!("Failed to open embedding cache at {}", cache_path.display()))?;
 
     match subcmd {
-        CacheCommand::Stats { json } => cache_stats(&cache, *json),
+        CacheCommand::Stats { json } => cache_stats(&cache, &cache_path, *json),
         CacheCommand::Clear { model, json } => cache_clear(&cache, model.as_deref(), *json),
         CacheCommand::Prune { days, json } => cache_prune(&cache, *days, *json),
     }
 }
 
-fn cache_stats(cache: &EmbeddingCache, json: bool) -> Result<()> {
+fn cache_stats(cache: &EmbeddingCache, cache_path: &std::path::Path, json: bool) -> Result<()> {
+    let _span = tracing::info_span!("cache_stats").entered();
     let stats = cache.stats().context("Failed to get cache stats")?;
 
     if json {
@@ -60,7 +61,7 @@ fn cache_stats(cache: &EmbeddingCache, json: bool) -> Result<()> {
         });
         println!("{}", serde_json::to_string_pretty(&obj)?);
     } else {
-        println!("Embedding cache: {}", cache_path_display());
+        println!("Embedding cache: {}", cache_path.display());
         println!("  Entries:  {}", stats.total_entries);
         println!(
             "  Size:     {:.1} MB",
@@ -79,6 +80,7 @@ fn cache_stats(cache: &EmbeddingCache, json: bool) -> Result<()> {
 }
 
 fn cache_clear(cache: &EmbeddingCache, model: Option<&str>, json: bool) -> Result<()> {
+    let _span = tracing::info_span!("cache_clear", model = ?model).entered();
     let deleted = cache.clear(model).context("Failed to clear cache")?;
 
     if json {
@@ -97,6 +99,7 @@ fn cache_clear(cache: &EmbeddingCache, model: Option<&str>, json: bool) -> Resul
 }
 
 fn cache_prune(cache: &EmbeddingCache, days: u32, json: bool) -> Result<()> {
+    let _span = tracing::info_span!("cache_prune", days).entered();
     let pruned = cache
         .prune_older_than(days)
         .context("Failed to prune cache")?;
@@ -114,11 +117,10 @@ fn cache_prune(cache: &EmbeddingCache, days: u32, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cache_path_display() -> String {
-    EmbeddingCache::default_path().display().to_string()
-}
-
 fn format_timestamp(ts: i64) -> String {
+    if ts <= 0 {
+        return "unknown".to_string();
+    }
     use std::time::{Duration, UNIX_EPOCH};
     let dt = UNIX_EPOCH + Duration::from_secs(ts as u64);
     let elapsed = dt.elapsed().unwrap_or_default();
