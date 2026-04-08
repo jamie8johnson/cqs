@@ -37,6 +37,7 @@
 //! - `lang-yaml` - YAML support (enabled by default)
 //! - `lang-toml` - TOML support (enabled by default)
 //! - `lang-elixir` - Elixir support (enabled by default)
+//! - `lang-elm` - Elm support (enabled by default)
 //! - `lang-erlang` - Erlang support (enabled by default)
 //! - `lang-haskell` - Haskell support (enabled by default)
 //! - `lang-ocaml` - OCaml support (enabled by default)
@@ -1046,6 +1047,8 @@ mod tests {
             assert!(REGISTRY.from_extension("ex").is_some());
             assert!(REGISTRY.from_extension("exs").is_some());
         }
+        #[cfg(feature = "lang-elm")]
+        assert!(REGISTRY.from_extension("elm").is_some());
         #[cfg(feature = "lang-erlang")]
         {
             assert!(REGISTRY.from_extension("erl").is_some());
@@ -1240,6 +1243,10 @@ mod tests {
             expected += 1;
         }
         #[cfg(feature = "lang-elixir")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-elm")]
         {
             expected += 1;
         }
