@@ -14,7 +14,7 @@
 //! - **Diff review & CI**: Structured risk analysis, dead code detection in diffs, gating pipeline
 //! - **Batch & chat modes**: Persistent session with pipeline syntax (`search "error" | callers | test-map`)
 //! - **Notes with sentiment**: Unified memory system for AI collaborators
-//! - **Multi-language**: 53 languages + L5X/L5K PLC exports, with multi-grammar injection (HTML→JS/CSS, Svelte, Vue, Razor, etc.)
+//! - **Multi-language**: 54 languages + L5X/L5K PLC exports, with multi-grammar injection (HTML→JS/CSS, Svelte, Vue, Razor, etc.)
 //! - **Type-aware embeddings**: Full signatures appended to NL descriptions for richer type discrimination
 //! - **Doc comment generation**: `--improve-docs` generates and writes doc comments to source files via LLM
 //! - **HyDE query predictions**: `--hyde-queries` generates synthetic search queries per function for improved recall
@@ -210,7 +210,7 @@ pub const EMBEDDING_DIM: usize = embedder::DEFAULT_DIM;
 //   20    — enrichment hash (many columns)
 //
 // Non-SQL:
-//   EMBED_BATCH_SIZE = 32    — ONNX inference (GPU memory)
+//   EMBED_BATCH_SIZE = 64    — ONNX inference (CQS_EMBED_BATCH_SIZE)
 //   FILE_BATCH_SIZE = 5000   — pipeline file processing (CQS_FILE_BATCH_SIZE)
 //   HNSW_BATCH_SIZE = 10000  — HNSW insert
 //   MAX_BATCH_SIZE = 10000   — Claude Batches API limit

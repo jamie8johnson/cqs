@@ -637,9 +637,14 @@ fn reindex_files(
             }
             match parser.parse_file_all(&abs_path) {
                 Ok((mut file_chunks, calls, chunk_type_refs)) => {
-                    // Rewrite paths to be relative
+                    // Rewrite paths to be relative (AC-2: fix both file and id)
                     for chunk in &mut file_chunks {
                         chunk.file = rel_path.clone();
+                        // Rewrite id: replace absolute path prefix with relative
+                        // ID format: {path}:{line_start}:{content_hash}
+                        if let Some(rest) = chunk.id.strip_prefix(&abs_path.display().to_string()) {
+                            chunk.id = format!("{}{}", rel_path.display(), rest);
+                        }
                     }
                     // Stash type refs for upsert after chunks are stored
                     if !chunk_type_refs.is_empty() {
