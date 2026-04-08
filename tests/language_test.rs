@@ -7910,3 +7910,55 @@ public class Service {
     assert!(method.is_some(), "Should find regular method");
     assert_eq!(method.unwrap().chunk_type, ChunkType::Method);
 }
+
+// -- Elm ─────────────────────────────────────────────────────────────
+
+#[test]
+fn parse_elm_function_and_types() {
+    let content = r#"
+module Main exposing (main, update, view)
+
+type Msg
+    = Increment
+    | Decrement
+
+type alias Model =
+    { count : Int
+    }
+
+update : Msg -> Model -> Model
+update msg model =
+    case msg of
+        Increment ->
+            { model | count = model.count + 1 }
+
+        Decrement ->
+            { model | count = model.count - 1 }
+
+view : Model -> Html Msg
+view model =
+    text (String.fromInt model.count)
+
+main =
+    text "Hello"
+"#;
+    let file = write_temp_file(content, "elm");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+
+    let update_fn = chunks.iter().find(|c| c.name == "update");
+    assert!(update_fn.is_some(), "Should find 'update' function");
+    assert_eq!(update_fn.unwrap().chunk_type, ChunkType::Function);
+
+    let view_fn = chunks.iter().find(|c| c.name == "view");
+    assert!(view_fn.is_some(), "Should find 'view' function");
+    assert_eq!(view_fn.unwrap().chunk_type, ChunkType::Function);
+
+    let msg_type = chunks.iter().find(|c| c.name == "Msg");
+    assert!(msg_type.is_some(), "Should find 'Msg' type");
+    assert_eq!(msg_type.unwrap().chunk_type, ChunkType::Enum);
+
+    let model_alias = chunks.iter().find(|c| c.name == "Model");
+    assert!(model_alias.is_some(), "Should find 'Model' type alias");
+    assert_eq!(model_alias.unwrap().chunk_type, ChunkType::TypeAlias);
+}

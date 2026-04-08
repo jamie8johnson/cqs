@@ -821,6 +821,8 @@ define_languages! {
     Toml => "toml", feature = "lang-toml", def = languages::definition_toml;
     /// Elixir (.ex, .exs files)
     Elixir => "elixir", feature = "lang-elixir", def = languages::definition_elixir;
+    /// Elm (.elm files)
+    Elm => "elm", feature = "lang-elm", def = languages::definition_elm;
     /// Erlang (.erl, .hrl files)
     Erlang => "erlang", feature = "lang-erlang", def = languages::definition_erlang;
     /// Haskell (.hs files)

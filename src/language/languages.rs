@@ -1267,6 +1267,29 @@ pub fn definition_elixir() -> &'static LanguageDef {
 }
 
 // ============================================================================
+// Elm (elm)
+// ============================================================================
+
+#[cfg(feature = "lang-elm")]
+static LANG_ELM: LanguageDef = LanguageDef {
+    name: "elm",
+    grammar: Some(|| tree_sitter_elm::LANGUAGE.into()),
+    extensions: &["elm"],
+    chunk_query: include_str!("queries/elm.chunks.scm"),
+    doc_nodes: &["block_comment", "line_comment"],
+    stopwords: &[
+        "module", "import", "exposing", "type", "alias", "port", "let", "in", "case", "of", "if",
+        "then", "else", "as", "where",
+    ],
+    ..DEFAULTS
+};
+
+#[cfg(feature = "lang-elm")]
+pub fn definition_elm() -> &'static LanguageDef {
+    &LANG_ELM
+}
+
+// ============================================================================
 // Erlang (erlang)
 // ============================================================================
 
