@@ -454,4 +454,61 @@ mod tests {
             "dim=0 with non-empty embeddings should error on dimension mismatch"
         );
     }
+
+    // ===== TC-17: HnswIndex::search_filtered predicate tests =====
+
+    #[test]
+    fn tc17_search_filtered_accepts_only_matching_ids() {
+        // Build a 20-item index where IDs are "chunk_0" .. "chunk_19".
+        // Filter accepts only even-numbered IDs. Assert no odd IDs appear.
+        let embeddings: Vec<(String, Embedding)> = (0..20)
+            .map(|i| (format!("chunk_{}", i), make_embedding(i)))
+            .collect();
+
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+        assert_eq!(index.len(), 20);
+
+        let query = make_embedding(4); // bias toward chunk_4 (even)
+        let results = index.search_filtered(&query, 10, &|id: &str| {
+            // Accept only even-numbered chunk IDs
+            id.strip_prefix("chunk_")
+                .and_then(|n| n.parse::<u32>().ok())
+                .is_some_and(|n| n % 2 == 0)
+        });
+
+        // Every returned result must have an even ID
+        for r in &results {
+            let num: u32 = r.id.strip_prefix("chunk_").unwrap().parse().unwrap();
+            assert_eq!(
+                num % 2,
+                0,
+                "Rejected ID '{}' appeared in search_filtered results",
+                r.id
+            );
+        }
+        // Should have returned some results (we have 10 even IDs, asked for 10)
+        assert!(
+            !results.is_empty(),
+            "search_filtered should return results when matches exist"
+        );
+    }
+
+    #[test]
+    fn tc17_search_filtered_all_rejected_returns_empty() {
+        // Build a small index, then filter that rejects everything.
+        let embeddings: Vec<(String, Embedding)> = (0..10)
+            .map(|i| (format!("chunk_{}", i), make_embedding(i)))
+            .collect();
+
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+
+        let query = make_embedding(1);
+        let results = index.search_filtered(&query, 5, &|_id: &str| false);
+
+        assert!(
+            results.is_empty(),
+            "search_filtered with all-reject predicate should return empty, got {} results",
+            results.len()
+        );
+    }
 }

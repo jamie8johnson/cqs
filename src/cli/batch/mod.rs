@@ -263,10 +263,14 @@ impl BatchContext {
         if self.splade_index.borrow().is_some() {
             return;
         }
-        if let Ok(vectors) = self.store().load_all_sparse_vectors() {
-            if !vectors.is_empty() {
+        match self.store().load_all_sparse_vectors() {
+            Ok(vectors) if !vectors.is_empty() => {
                 let idx = cqs::splade::index::SpladeIndex::build(vectors);
                 *self.splade_index.borrow_mut() = Some(idx);
+            }
+            Ok(_) => {} // no vectors — cosine-only
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load sparse vectors, falling back to cosine-only");
             }
         }
     }

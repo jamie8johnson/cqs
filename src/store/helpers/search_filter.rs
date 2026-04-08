@@ -73,12 +73,6 @@ impl SearchFilter {
     /// Create a new SearchFilter with default values.
     ///
     /// Equivalent to `SearchFilter::default()`. Prefer `Default::default()`
-    /// or struct literal syntax for direct construction.
-    #[inline]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Set the query text (required for name_boost > 0 or enable_rrf).
     pub fn with_query(mut self, query: impl Into<String>) -> Self {
         self.query_text = query.into();
@@ -136,6 +130,14 @@ impl SearchFilter {
             if globset::Glob::new(pattern).is_err() {
                 return Err("path_pattern is not a valid glob pattern".to_string());
             }
+        }
+
+        // splade_alpha must be in [0.0, 1.0] when SPLADE is enabled (RB-12)
+        if self.enable_splade && !(0.0..=1.0).contains(&self.splade_alpha) {
+            return Err(format!(
+                "splade_alpha must be between 0.0 and 1.0, got {}",
+                self.splade_alpha
+            ));
         }
 
         Ok(())

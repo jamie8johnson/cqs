@@ -134,8 +134,14 @@ fn fetch_chunk_summaries(
     // Better: use get_chunk_with_embedding (already loads ChunkSummary) for each.
     let mut map = std::collections::HashMap::new();
     for id in ids {
-        if let Ok(Some((chunk, _emb))) = store.get_chunk_with_embedding(id) {
-            map.insert(id.to_string(), chunk);
+        match store.get_chunk_with_embedding(id) {
+            Ok(Some((chunk, _emb))) => {
+                map.insert(id.to_string(), chunk);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(id = %id, error = %e, "Failed to fetch chunk for neighbor display");
+            }
         }
     }
     Ok(map)

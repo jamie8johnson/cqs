@@ -21,13 +21,20 @@ impl Store {
             let mut tx = self.pool.begin().await?;
             let mut total = 0usize;
 
-            for (chunk_id, sparse) in vectors {
-                // Delete existing entries for this chunk
-                sqlx::query("DELETE FROM sparse_vectors WHERE chunk_id = ?1")
-                    .bind(chunk_id)
-                    .execute(&mut *tx)
-                    .await?;
+            // Batched DELETE for all chunk IDs (PF-11: N→ceil(N/333) SQL statements)
+            let chunk_ids: Vec<&str> = vectors.iter().map(|(id, _)| id.as_str()).collect();
+            for batch in chunk_ids.chunks(333) {
+                let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> =
+                    sqlx::QueryBuilder::new("DELETE FROM sparse_vectors WHERE chunk_id IN (");
+                let mut sep = qb.separated(", ");
+                for id in batch {
+                    sep.push_bind(*id);
+                }
+                sep.push_unseparated(")");
+                qb.build().execute(&mut *tx).await?;
+            }
 
+            for (chunk_id, sparse) in vectors {
                 // Insert new entries in batches
                 // 3 params per row, batch of 333 = 999 < SQLite 999 limit
                 const BATCH_SIZE: usize = 333;
@@ -81,6 +88,10 @@ impl Store {
                         result.push((id, std::mem::take(&mut current_vec)));
                     }
                     current_id = Some(chunk_id);
+                }
+                if token_id < 0 || token_id > u32::MAX as i64 {
+                    tracing::warn!(token_id, chunk_id = %current_id.as_deref().unwrap_or("?"), "Invalid token_id, skipping");
+                    continue;
                 }
                 current_vec.push((token_id as u32, weight as f32));
             }

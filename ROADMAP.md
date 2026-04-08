@@ -19,9 +19,11 @@
 ## Active
 
 ### GPU Lane
-- **SPLADE code fine-tuning** — training on A6000, ~47% complete. Off-the-shelf was null (0pp). Code-trained model should learn vocabulary expansion.
-- [ ] Evaluate trained SPLADE → ONNX export → integration test
-- [ ] Reranker V2 — code-trained cross-encoder (after SPLADE)
+- [x] ~~SPLADE v1~~ — **NULL**. 0.0pp R@1. Failure: reg_weight 5e-4 too weak (198 tokens vs 40), BERT vocab can't represent code identifiers, dense-mined hard negatives don't teach token discrimination.
+- [ ] **SPLADE v2: token-overlap hard negatives** — mine by token Jaccard, not dense similarity. Foundation — without the right training signal, reg and vocab won't help. New mining pass.
+- [ ] **SPLADE v3: reg sweep** — reg_weight 1e-3, 3e-3, 5e-3 on v2 data. 3h each.
+- [ ] **SPLADE v4: CodeBERT base** — SPLADE on microsoft/codebert-base (50k code BPE vocab). Only if v2+v3 show promise.
+- [ ] **Reranker V2** — code-trained cross-encoder (ms-marco-MiniLM was -15pp)
 
 ### CPU Lane — ready to pick up
 - [ ] **Paper v0.7** — research writeup

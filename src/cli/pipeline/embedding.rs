@@ -38,12 +38,12 @@ pub(super) fn prepare_for_embedding(
 
     // Step 2a: Check global embedding cache first (fastest path)
     let dim = embedder.embedding_dim();
+    let hashes: Vec<&str> = windowed_chunks
+        .iter()
+        .map(|c| c.content_hash.as_str())
+        .collect();
     let mut global_hits: HashMap<String, Embedding> = HashMap::new();
     if let Some(cache) = global_cache {
-        let hashes: Vec<&str> = windowed_chunks
-            .iter()
-            .map(|c| c.content_hash.as_str())
-            .collect();
         match cache.read_batch(&hashes, model_fingerprint, dim) {
             Ok(hits) => {
                 if !hits.is_empty() {
@@ -65,10 +65,6 @@ pub(super) fn prepare_for_embedding(
     // Skip when the embedder dim differs from store dim — prevents reusing
     // embeddings from a different model after model switching.
     let existing = if dim == store.dim() {
-        let hashes: Vec<&str> = windowed_chunks
-            .iter()
-            .map(|c| c.content_hash.as_str())
-            .collect();
         match store.get_embeddings_by_hashes(&hashes) {
             Ok(map) => map,
             Err(e) => {
@@ -235,17 +231,20 @@ pub(super) fn gpu_embed_stage(
             continue;
         }
 
-        let max_len = prepared.texts.iter().map(|t| t.len()).max().unwrap_or(0);
+        let (max_len, total_chars) = prepared
+            .texts
+            .iter()
+            .fold((0, 0), |(mx, sm), t| (mx.max(t.len()), sm + t.len()));
         let avg_len = if prepared.texts.is_empty() {
             0
         } else {
-            prepared.texts.iter().map(|t| t.len()).sum::<usize>() / prepared.texts.len()
+            total_chars / prepared.texts.len()
         };
         tracing::debug!(
             batch_size = prepared.texts.len(),
             max_char_len = max_len,
             avg_char_len = avg_len,
-            total_chars = prepared.texts.iter().map(|t| t.len()).sum::<usize>(),
+            total_chars,
             "embed_batch start"
         );
 

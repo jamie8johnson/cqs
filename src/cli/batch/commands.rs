@@ -312,11 +312,15 @@ fn log_query(command: &str, query: &str) {
         return;
     };
     let log_path = home.join(".cache/cqs/query_log.jsonl");
-    let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    else {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let Ok(mut f) = opts.open(&log_path) else {
+        tracing::debug!(path = %log_path.display(), "Query log open failed, skipping");
         return;
     };
     let ts = std::time::SystemTime::now()
@@ -338,6 +342,7 @@ fn log_query(command: &str, query: &str) {
 /// This is the seam for step 3 (REPL): import `BatchContext` + `dispatch`, wrap
 /// with readline.
 pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::Value> {
+    let _span = tracing::debug_span!("batch_dispatch").entered();
     match cmd {
         BatchCmd::Blame { args } => {
             handlers::dispatch_blame(ctx, &args.name, args.depth, args.callers)

@@ -183,8 +183,8 @@ impl EmbeddingCache {
                     let dim: i64 = row.get("dim");
                     let blob: Vec<u8> = row.get("embedding");
 
-                    // Validate dimension
-                    if dim as usize != expected_dim {
+                    // Validate dimension (DS-46: guard negative before cast)
+                    if dim < 0 || dim as usize != expected_dim {
                         tracing::debug!(
                             hash = &hash[..8.min(hash.len())],
                             cached_dim = dim,
@@ -201,6 +201,12 @@ impl EmbeddingCache {
                         .collect();
 
                     if embedding.len() != expected_dim {
+                        tracing::debug!(
+                            hash = &hash[..8.min(hash.len())],
+                            actual = embedding.len(),
+                            expected_dim,
+                            "Cache blob length mismatch, skipping"
+                        );
                         continue;
                     }
 
@@ -240,14 +246,27 @@ impl EmbeddingCache {
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
             let mut written = 0usize;
+            let mut blob = Vec::with_capacity(dim * 4); // PF-6: reuse scratch buffer
 
             for (content_hash, embedding) in entries {
                 if embedding.is_empty() {
-                    continue; // Skip zero-length embeddings
+                    continue;
                 }
 
-                // Encode Vec<f32> to blob
-                let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+                // DS-44: validate dimension matches
+                if embedding.len() != dim {
+                    tracing::warn!(
+                        hash = &content_hash[..8.min(content_hash.len())],
+                        actual = embedding.len(),
+                        expected = dim,
+                        "Skipping cache write: embedding length mismatch"
+                    );
+                    continue;
+                }
+
+                // Encode Vec<f32> to blob (PF-6: reuse buffer)
+                blob.clear();
+                blob.extend(embedding.iter().flat_map(|f| f.to_le_bytes()));
 
                 let result = sqlx::query(
                     "INSERT OR IGNORE INTO embedding_cache \
@@ -276,20 +295,34 @@ impl EmbeddingCache {
         let _span = tracing::info_span!("cache_evict").entered();
 
         self.rt.block_on(async {
-            let size: i64 = sqlx::query_scalar(
-                "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+            // Use logical data size, not physical pages (DS-49)
+            let size: i64 = match sqlx::query_scalar(
+                "SELECT COALESCE(SUM(LENGTH(embedding)), 0) + COUNT(*) * 200 FROM embedding_cache",
             )
             .fetch_one(&self.pool)
             .await
-            .unwrap_or(0);
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Cache evict size query failed");
+                    return Ok(0);
+                }
+            };
 
-            if (size as u64) <= self.max_size_bytes {
+            // Guard against negative/zero size (SEC-10)
+            if size <= 0 || (size as u64) <= self.max_size_bytes {
                 return Ok(0);
             }
 
             let excess = size as u64 - self.max_size_bytes;
-            // Estimate: ~4200 bytes per entry (1024-dim)
-            let entries_to_delete = (excess / 4200).max(100);
+            // Estimate per-entry size from actual data
+            let avg_entry: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(AVG(LENGTH(embedding) + 200), 4200) FROM embedding_cache",
+            )
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(4200);
+            let entries_to_delete = (excess / avg_entry.max(1) as u64).max(100);
 
             let result = sqlx::query(
                 "DELETE FROM embedding_cache WHERE rowid IN \
@@ -313,32 +346,47 @@ impl EmbeddingCache {
             let total_entries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM embedding_cache")
                 .fetch_one(&self.pool)
                 .await
-                .unwrap_or(0);
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "cache stats: COUNT failed");
+                    0
+                });
 
             let total_size: i64 = sqlx::query_scalar(
                 "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
             )
             .fetch_one(&self.pool)
             .await
-            .unwrap_or(0);
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "cache stats: page_size failed");
+                0
+            });
 
             let unique_models: i64 =
                 sqlx::query_scalar("SELECT COUNT(DISTINCT model_fingerprint) FROM embedding_cache")
                     .fetch_one(&self.pool)
                     .await
-                    .unwrap_or(0);
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "cache stats: DISTINCT failed");
+                        0
+                    });
 
             let oldest: Option<i64> =
                 sqlx::query_scalar("SELECT MIN(created_at) FROM embedding_cache")
                     .fetch_one(&self.pool)
                     .await
-                    .unwrap_or(None);
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "cache stats: MIN failed");
+                        None
+                    });
 
             let newest: Option<i64> =
                 sqlx::query_scalar("SELECT MAX(created_at) FROM embedding_cache")
                     .fetch_one(&self.pool)
                     .await
-                    .unwrap_or(None);
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "cache stats: MAX failed");
+                        None
+                    });
 
             Ok(CacheStats {
                 total_entries: total_entries as u64,
@@ -618,6 +666,150 @@ mod tests {
             // SQLite sometimes accepts random bytes and creates a new DB
             // That's fine too — the cache will just be empty
         }
+    }
+
+    // ===== TC-20: read_batch crosses 100-entry sub-batch boundary =====
+
+    #[test]
+    fn test_read_batch_crosses_100_boundary() {
+        let (cache, _dir) = test_cache();
+
+        // Write 150 entries — read_batch internally batches in groups of 100,
+        // so this crosses the boundary.
+        let entries: Vec<_> = (0..150)
+            .map(|i| (format!("hash_{i:04}"), make_embedding(768, i as f32)))
+            .collect();
+        let written = cache.write_batch(&entries, "fp_cross", 768).unwrap();
+        assert_eq!(written, 150);
+
+        // Read all 150 back in one call
+        let hashes: Vec<&str> = entries.iter().map(|(h, _)| h.as_str()).collect();
+        let result = cache.read_batch(&hashes, "fp_cross", 768).unwrap();
+        assert_eq!(
+            result.len(),
+            150,
+            "read_batch should return all 150 entries across the 100-entry sub-batch boundary"
+        );
+
+        // Verify a sample from each sub-batch (first, boundary, last)
+        for idx in [0, 99, 100, 149] {
+            let key = format!("hash_{idx:04}");
+            assert!(
+                result.contains_key(&key),
+                "Missing key '{}' from read_batch results",
+                key
+            );
+        }
+    }
+
+    // ===== TC-21: NaN embedding behavior =====
+
+    #[test]
+    fn test_nan_embedding() {
+        let (cache, _dir) = test_cache();
+
+        // Create an embedding containing NaN values
+        let mut nan_emb = make_embedding(128, 1.0);
+        nan_emb[0] = f32::NAN;
+        nan_emb[64] = f32::NAN;
+
+        let entries = vec![("hash_nan".to_string(), nan_emb)];
+        // write_batch does not currently reject NaN — it round-trips through blob encoding.
+        // This test documents the current behavior: NaN is stored and retrieved.
+        let written = cache.write_batch(&entries, "fp_nan", 128).unwrap();
+        assert_eq!(written, 1);
+
+        let result = cache.read_batch(&["hash_nan"], "fp_nan", 128).unwrap();
+        assert_eq!(result.len(), 1);
+        let cached = &result["hash_nan"];
+        assert!(cached[0].is_nan(), "NaN should round-trip through cache");
+        assert!(cached[64].is_nan(), "NaN should round-trip through cache");
+        // Non-NaN values should be preserved
+        assert!(!cached[1].is_nan());
+    }
+
+    // ===== TC-24: prune edge cases =====
+
+    #[test]
+    fn test_prune_zero_days() {
+        let (cache, _dir) = test_cache();
+
+        // Write entries (they get current timestamp)
+        let entries: Vec<_> = (0..5)
+            .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
+            .collect();
+        cache.write_batch(&entries, "fp_1", 128).unwrap();
+
+        // Prune with 0 days — cutoff is "now - 0 seconds" = now.
+        // Entries written in the same second should survive (created_at >= cutoff).
+        let pruned = cache.prune_older_than(0).unwrap();
+        // Same-second entries: created_at == cutoff, and the query is `< cutoff`,
+        // so they should NOT be pruned.
+        assert_eq!(
+            pruned, 0,
+            "prune(0) should not delete entries written in the same second"
+        );
+
+        let stats = cache.stats().unwrap();
+        assert_eq!(stats.total_entries, 5);
+    }
+
+    #[test]
+    fn test_prune_large_days() {
+        let (cache, _dir) = test_cache();
+
+        // Write some entries
+        let entries: Vec<_> = (0..3)
+            .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
+            .collect();
+        cache.write_batch(&entries, "fp_1", 128).unwrap();
+
+        // Prune with u32::MAX days — should not panic (overflow-safe).
+        // cutoff = now - (u32::MAX as i64 * 86400) will go deeply negative,
+        // so no entries should be pruned (all created_at > cutoff).
+        let pruned = cache.prune_older_than(u32::MAX).unwrap();
+        assert_eq!(
+            pruned, 0,
+            "prune(u32::MAX) should not delete any entries (cutoff is in the far past)"
+        );
+
+        let stats = cache.stats().unwrap();
+        assert_eq!(stats.total_entries, 3);
+    }
+
+    // ===== TC-26: duplicate content_hash behavior =====
+
+    #[test]
+    fn test_write_batch_duplicate_hashes() {
+        let (cache, _dir) = test_cache();
+
+        let emb_a = make_embedding(128, 1.0);
+        let emb_b = make_embedding(128, 2.0);
+
+        // Two entries with the same content_hash but different embeddings
+        let entries = vec![
+            ("dup_hash".to_string(), emb_a.clone()),
+            ("dup_hash".to_string(), emb_b.clone()),
+        ];
+
+        // write_batch uses INSERT OR IGNORE — the second insert is silently dropped.
+        let written = cache.write_batch(&entries, "fp_dup", 128).unwrap();
+        // Only 1 row should be written (second is ignored due to PK conflict)
+        assert_eq!(
+            written, 1,
+            "Duplicate hash should be ignored by INSERT OR IGNORE"
+        );
+
+        // Read back — the first embedding (emb_a) should win
+        let result = cache.read_batch(&["dup_hash"], "fp_dup", 128).unwrap();
+        assert_eq!(result.len(), 1);
+        let cached = &result["dup_hash"];
+        assert!(
+            (cached[0] - emb_a[0]).abs() < 1e-6,
+            "First embedding should win: expected {}, got {}",
+            emb_a[0],
+            cached[0]
+        );
     }
 
     #[test]

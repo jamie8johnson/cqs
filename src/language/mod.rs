@@ -2056,4 +2056,79 @@ mod tests {
             let _matchers = lang.def().structural_matchers;
         }
     }
+
+    // ===== TC-23: capture_name_to_chunk_type for newer chunk types =====
+
+    #[test]
+    fn test_new_chunk_type_capture_names() {
+        use crate::parser::ChunkType;
+
+        // "test" capture -> ChunkType::Test
+        assert_eq!(
+            capture_name_to_chunk_type("test"),
+            Some(ChunkType::Test),
+            "'test' should map to ChunkType::Test"
+        );
+
+        // "endpoint" capture -> ChunkType::Endpoint
+        assert_eq!(
+            capture_name_to_chunk_type("endpoint"),
+            Some(ChunkType::Endpoint),
+            "'endpoint' should map to ChunkType::Endpoint"
+        );
+
+        // "service" capture -> ChunkType::Service
+        assert_eq!(
+            capture_name_to_chunk_type("service"),
+            Some(ChunkType::Service),
+            "'service' should map to ChunkType::Service"
+        );
+
+        // "storedproc" capture -> ChunkType::StoredProc
+        assert_eq!(
+            capture_name_to_chunk_type("storedproc"),
+            Some(ChunkType::StoredProc),
+            "'storedproc' should map to ChunkType::StoredProc"
+        );
+
+        // "var" capture -> ChunkType::Variable (uses capture = "var")
+        assert_eq!(
+            capture_name_to_chunk_type("var"),
+            Some(ChunkType::Variable),
+            "'var' should map to ChunkType::Variable"
+        );
+
+        // Verify that the display name "variable" does NOT map (capture is "var")
+        assert_eq!(
+            capture_name_to_chunk_type("variable"),
+            None,
+            "'variable' should NOT be a valid capture name (capture is 'var')"
+        );
+
+        // "const" capture -> ChunkType::Constant (uses capture = "const")
+        assert_eq!(
+            capture_name_to_chunk_type("const"),
+            Some(ChunkType::Constant),
+            "'const' should map to ChunkType::Constant"
+        );
+
+        // Verify that the display name "constant" does NOT map (capture is "const")
+        assert_eq!(
+            capture_name_to_chunk_type("constant"),
+            None,
+            "'constant' should NOT be a valid capture name (capture is 'const')"
+        );
+
+        // Unknown capture names return None
+        assert_eq!(
+            capture_name_to_chunk_type("unknown_capture"),
+            None,
+            "Unknown capture names should return None"
+        );
+        assert_eq!(
+            capture_name_to_chunk_type("name"),
+            None,
+            "'name' is not a chunk type capture"
+        );
+    }
 }
