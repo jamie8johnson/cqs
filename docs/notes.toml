@@ -1097,3 +1097,16 @@ mentions = [
     "nl/mod.rs",
     "enrichment.rs",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "SPLADE code fine-tuning complete: 24,500 steps, 3h20m, batch_size=16 (32 OOMed). ONNX export failed silently — model.onnx missing, need manual export. Final model at ~/training-data/splade-code-v1/final/"
+mentions = [
+    "splade/mod.rs",
+    "train_splade.py",
+]
+
+[[note]]
+sentiment = -0.5
+text = "SPLADE training resume: SparseEncoder(checkpoint_path) + re-apply LoRA works. Trainer resume_from_checkpoint= does NOT work with PEFT checkpoints (key double-wrapping). batch_size=32 → 48GB OOM on A6000, use 16."
+mentions = ["train_splade.py"]
