@@ -20,15 +20,21 @@
 
 ### GPU Lane
 - [x] ~~SPLADE v1~~ — **NULL**. 0pp R@1. Weak reg, wrong vocab, wrong negatives.
-- [x] ~~SPLADE v2 data mining~~ — 199,998 token-overlap pairs via BM25 self-retrieval. Complete.
-- [ ] **SPLADE v2 training** — IN PROGRESS. Token-overlap negs + reg_weight 1e-3. ~32% done, ETA ~1h45m.
-- [ ] **SPLADE v3: reg sweep** — reg_weight 1e-3, 3e-3, 5e-3 on v2 data. 3h each. After v2 eval.
-- [ ] **SPLADE v4: CodeBERT base** — Only if v2+v3 show promise.
+- [x] ~~SPLADE v2 data mining~~ — 199,998 token-overlap pairs. Complete.
+- [x] ~~SPLADE v2 training~~ — Complete. Token-overlap negs + reg_weight 1e-3. Awaiting eval.
+- [ ] **SPLADE v2 eval** — ablation running now
+- [ ] **SPLADE-Code 0.6B** — Naver Labs code-specific SPLADE (arXiv 2603.22008). Export script ready. Eval after v2.
+- [ ] **SPLADE v3: reg sweep** — Only if v2 shows signal AND SPLADE-Code doesn't work.
 - [ ] **Reranker V2** — code-trained cross-encoder (ms-marco was catastrophic)
 
-### CPU Lane
-- [ ] **Paper v1.0** — clean rewrite done (~/training-data/paper/draft.md), needs review/polish
-- [ ] **Cross-project: wire remaining 4 commands** — impact, trace, test-map, deps have stubs. In progress.
+### CPU Lane (next up)
+- [ ] **Adaptive retrieval** — smart hybrid routing. +10-15pp estimated. No new models needed. Spec: `docs/plans/adaptive-retrieval.md`
+  - Phase 1: QueryClassifier (heuristics) + confidence scoring (~1 day)
+  - Phase 2: Ensemble search for ambiguous queries (RRF merge of dense ± summaries) (~1 day)
+  - Phase 3: SpladeEncoder update for pre-pooled ONNX output (~0.5 day)
+  - Phase 4: Eval + iterate
+- [ ] **Paper v1.0** — clean rewrite done, needs review/polish + adaptive retrieval results
+- [x] ~~**Cross-project: wire remaining commands**~~ — impact, trace, test-map wired in #864. Deps local-only.
 - [x] ~~**Agent adoption: telemetry analysis**~~ — mined 16,731 invocations across all sessions. Finding: main conversation uses search (60%) + context (28%). Subagents use the full toolkit (impact, callers, test-map). The gap is in the main conversation, not subagents.
 - [ ] **Agent adoption: pre-edit impact hook** — PreToolUse hook that runs `cqs impact` on every Edit, injects caller/test/risk as additionalContext. Prototype in `.claude/hooks/pre-edit-impact.sh`. Needs session restart to test.
 - [ ] **Agent adoption: slim CLAUDE.md** — reduce 30-command reference to top 5 (search, context, read, impact, review) + "see `cqs --help`". Measure with telemetry before/after.
@@ -98,6 +104,7 @@ Current implementation: N-project via `[[reference]]` entries in `.cqs.toml` →
 
 ## Parked
 
+- **Graph visualization** (`cqs serve`) — interactive web UI for call graphs, chunk types, impact radius. Spec: `docs/plans/graph-visualization.md`
 - Wiki system — spec revised (agent-first), parked for review
 - SSD fine-tuning experiments — spec ready, 5 experiments
 - MCP server — re-add when CLI solid
