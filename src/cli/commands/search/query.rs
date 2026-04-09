@@ -71,6 +71,35 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         return cmd_query_name_only(cli, store, query, root);
     }
 
+    // Adaptive routing: classify query BEFORE embedding to potentially skip it
+    let has_explicit_flags = cli.splade || cli.rrf || cli.rerank || cli.ref_name.is_some();
+    let classification = if !has_explicit_flags {
+        let c = cqs::search::router::classify_query(query);
+        tracing::info!(
+            category = %c.category,
+            confidence = %c.confidence,
+            strategy = %c.strategy,
+            "Query classified"
+        );
+        Some(c)
+    } else {
+        tracing::debug!("Explicit flags set, skipping adaptive routing");
+        None
+    };
+
+    // NameOnly strategy: try FTS5 first, fall back to dense on 0 results
+    if let Some(ref c) = classification {
+        if c.strategy == cqs::search::router::SearchStrategy::NameOnly {
+            let results = store.search_by_name(query, cli.limit)?;
+            if !results.is_empty() {
+                tracing::info!(results = results.len(), "NameOnly search succeeded");
+                // Display results using the existing name-only display path
+                return cmd_query_name_only(cli, store, query, root);
+            }
+            tracing::info!("NameOnly returned 0 results, falling back to dense");
+        }
+    }
+
     // Over-retrieve when reranking to give the cross-encoder more candidates
     let effective_limit = if cli.rerank {
         (cli.limit * 4).min(100)
@@ -120,6 +149,9 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         None => None,
     };
 
+    // Type boost from adaptive routing (boost, not filter — won't exclude results)
+    let type_boost_types = classification.as_ref().and_then(|c| c.type_hints.clone());
+
     #[allow(clippy::needless_update)]
     let filter = SearchFilter {
         languages,
@@ -132,6 +164,7 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         enable_demotion: !cli.no_demote,
         enable_splade: cli.splade,
         splade_alpha: cli.splade_alpha,
+        type_boost_types,
         ..Default::default()
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;

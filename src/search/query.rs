@@ -12,6 +12,7 @@ use sqlx::Row;
 use crate::embedder::Embedding;
 use crate::index::VectorIndex;
 use crate::nl::normalize_for_fts;
+use crate::parser::ChunkType;
 use crate::store::helpers::{
     embedding_slice, CandidateRow, ChunkSummary, SearchFilter, SearchResult,
 };
@@ -196,6 +197,7 @@ impl Store {
                     fsql.use_rrf,
                     limit,
                     filter.path_pattern.as_deref(),
+                    filter.type_boost_types.as_deref(),
                 )
                 .await?;
 
@@ -220,6 +222,7 @@ impl Store {
         use_rrf: bool,
         limit: usize,
         path_pattern: Option<&str>,
+        type_boost_types: Option<&[ChunkType]>,
     ) -> Result<Vec<SearchResult>, StoreError> {
         // Step 1: RRF fusion with FTS keyword search, or plain truncate
         let final_scored: Vec<(String, f32)> = if use_rrf {
@@ -296,6 +299,17 @@ impl Store {
 
         // Step 4: Boost container chunks when multiple child methods appear
         apply_parent_boost(&mut results);
+
+        // Step 4b: Type boost from adaptive routing (1.2x for matching types)
+        if let Some(boost_types) = type_boost_types {
+            for result in &mut results {
+                if boost_types.contains(&result.chunk.chunk_type) {
+                    result.score *= 1.2;
+                }
+            }
+            // Re-sort after boost
+            results.sort_by(|a, b| b.score.total_cmp(&a.score));
+        }
 
         // Step 5: Truncate back to requested limit after parent dedup
         results.truncate(limit);
@@ -656,6 +670,7 @@ impl Store {
                 use_rrf,
                 limit,
                 filter.path_pattern.as_deref(),
+                filter.type_boost_types.as_deref(),
             )
             .await
         })

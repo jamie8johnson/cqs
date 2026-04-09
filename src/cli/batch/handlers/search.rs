@@ -125,6 +125,7 @@ pub(in crate::cli::batch) fn dispatch_search(
         enable_demotion: !params.no_demote,
         enable_splade: params.splade,
         splade_alpha: params.splade_alpha,
+        type_boost_types: None,
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
 

@@ -1110,3 +1110,16 @@ mentions = [
 sentiment = -0.5
 text = "SPLADE training resume: SparseEncoder(checkpoint_path) + re-apply LoRA works. Trainer resume_from_checkpoint= does NOT work with PEFT checkpoints (key double-wrapping). batch_size=32 → 48GB OOM on A6000, use 16."
 mentions = ["train_splade.py"]
+
+[[note]]
+sentiment = -0.5
+text = "SPLADE-Code 0.6B export: needed 4 fixes — Qwen tokenizer fallback, __init__.py for package imports, LossKwargs stub, get_decoder_model patch. flash_attention_2 assert bypassed by patching at module level, not class level."
+mentions = ["~/training-data/export_splade_code.py"]
+
+[[note]]
+sentiment = 0.5
+text = "Monitor tool is available in Claude Code. Use for streaming background processes (eval, training, export, CI) instead of sleep/poll/tail loops. Each stdout line becomes a notification. Use grep --line-buffered to filter."
+mentions = [
+    ".claude/hooks",
+    "telemetry",
+]

@@ -2,53 +2,60 @@
 
 ## Right Now
 
-**Adaptive retrieval planned. SPLADE v2 eval running. PR #866 in CI. (2026-04-09 14:00 CDT)**
+**Adaptive retrieval Phase 1 done. SPLADE-Code exported. Pausing. (2026-04-09 17:45 CDT)**
 
-### What happened this session
-- v1.21.0 released (PRs #850-865 merged). Cross-project, 29 chunk types, 14-category audit (40+ fixes), API renames, batch flags, write serializer mutex, path containment.
-- SPLADE v2 training complete (199,998 token-overlap negatives, reg_weight 1e-3, 3h43m). ONNX exported. Eval ablation running now (~1h 40m so far, per-query CLI calls are slow).
-- SPLADE-Code paper found (Naver Labs, arXiv 2603.22008) — 600M/8B code-specific SPLADE. Export script at ~/training-data/export_splade_code.py. May obsolete our v2/v3/v4 training.
-- Agent adoption telemetry analysis: main conversation = search 60% + context 28%. Subagents use impact/callers/test-map. Pre-edit impact hook built (.claude/hooks/pre-edit-impact.sh). Telemetry reset for baseline.
-- Adaptive retrieval spec complete: v1 mechanism routing (+2-4pp) + v2 dual embeddings (+10-15pp). 52 tests planned. Spec: docs/plans/adaptive-retrieval.md.
-- Graph visualization spec (parked): axum + Cytoscape.js. Spec: docs/plans/graph-visualization.md.
-- Research: paper v1.0 rewrite, research split to 7 files, HF model cards updated.
-- Notes groomed: 145 → 133.
+### Branch: `feat/adaptive-retrieval`
 
-### Pending right now
-- **SPLADE v2 eval**: `evals/run_ablation.py` running with `CQS_SPLADE_MODEL=~/training-data/splade-code-v2/onnx`. Per-query CLI subprocess calls. Output will go to `evals/runs/`. Check with `ps aux | grep run_ablation`.
-- **PR #866**: docs/specs PR in CI. Merge when green, then start adaptive retrieval implementation.
+One commit: `40ad770 feat: Phase 1 — QueryClassifier for adaptive retrieval`
+- `src/search/router.rs` — classifier with 9 categories, 3 confidence levels, 4 strategies
+- 28 tests (13 happy + 15 adversarial), all passing
+- NOT pushed yet — local only
+
+### Also pending
+- **PR #868**: `fix/eval-script-and-docs` — eval script --config flag fix. Needs merge.
+- **SPLADE-Code 0.6B ONNX**: exported to `~/training-data/splade-code-naver/onnx/` (2.3GB). Verified with ORT. Ready to eval but needs Phase 3 (pre-pooled output support in SpladeEncoder) first — output is (1, 151936) not (1, seq_len, 30522).
 
 ### What to do next (in order)
-1. Check SPLADE v2 eval results — if null, proceed to SPLADE-Code 0.6B export
-2. Merge PR #866
-3. Create branch `feat/adaptive-retrieval`
-4. Implement Phase 1-5 of adaptive retrieval spec (docs/plans/adaptive-retrieval.md)
-5. Export SPLADE-Code 0.6B (~/training-data/export_splade_code.py) when GPU free
-6. Paper v1.0 polish with new results
+1. Push `feat/adaptive-retrieval` branch
+2. Merge PR #868
+3. Implement Phase 2: wire classifier into cmd_query (before embedding), add --strategy flag, type boost
+4. Implement Phase 3: SpladeEncoder pre-pooled output detection (enables SPLADE-Code eval)
+5. Implement Phase 4: telemetry extension
+6. Eval SPLADE-Code 0.6B with fixed eval script: `CQS_SPLADE_MODEL=~/training-data/splade-code-naver/onnx python3 evals/run_ablation.py --config bge-large --config bge-large+splade`
+7. Phase 5: dual embeddings (v2, schema migration) — only if Phase 2 eval shows routing helps
+
+### Key decisions this session
+- SPLADE v2: **NULL** (0.0pp). 110M BERT with SpladeLoss is dead. v3/v4 cancelled.
+- SPLADE-Code paper: 600M with KL distillation works. Our failures were capacity + training objective.
+- Adaptive retrieval v1: +2-4pp from mechanism routing alone (no schema change)
+- Adaptive retrieval v2: +5-10pp from dual embeddings (schema migration v17→v18)
+- Summaries are index-time not search-time — critical constraint for routing design
+- Paper 2508.21038 proves single-vector limits — justifies dual embeddings theoretically
+- Pre-edit impact hook works — fires on every Edit, shows caller count
+- Monitor tool available — use for streaming background processes
+- Ultraplan = remote Opus session for deep planning (keyword trigger, not slash command)
 
 ### Key files
-- Adaptive retrieval spec: `docs/plans/adaptive-retrieval.md`
-- Graph viz spec: `docs/plans/graph-visualization.md`
-- SPLADE v2 model: `~/training-data/splade-code-v2/onnx/`
+- Classifier: `src/search/router.rs` (Phase 1 complete)
+- Plan: `docs/plans/adaptive-retrieval.md` (all 6 phases)
+- SPLADE-Code ONNX: `~/training-data/splade-code-naver/onnx/model.onnx` + `.data`
 - SPLADE-Code export script: `~/training-data/export_splade_code.py`
-- Pre-edit hook: `.claude/hooks/pre-edit-impact.sh`
-- Telemetry baseline: `.cqs/telemetry.jsonl` (reset 2026-04-09)
+- SPLADE v2 eval results: `/tmp/eval_v2.log`
+- Claude Code source: `/mnt/c/Projects/collection-claude-code-source-code-main/`
 
 ## Parked
-- Graph visualization (`cqs serve`) — spec ready, parked
-- Wiki system — spec revised (agent-first)
-- Paper v1.0 — needs adaptive retrieval + SPLADE-Code results
+- Graph visualization (`cqs serve`) — spec at docs/plans/graph-visualization.md
+- Wiki system, Paper v1.0, Phase 6 explainable search
+- Phase 5 dual embeddings — after v1 eval proves routing works
 
 ## Open Issues
 - #856 (PB-5 atexit UB)
 - #717 (HNSW mmap), #389 (CAGRA memory), #255 (pre-built refs), #106 (ort RC), #63 (paste)
 
 ## Architecture
-- Version: 1.21.0, Languages: 54, Tests: ~2440, Chunk types: 29
+- Version: 1.21.0, Languages: 54, Tests: ~2468 (28 new router tests), Chunk types: 29
 - BGE-large + LLM summaries = best production config
-- SPLADE: v1 null (off-the-shelf + code-trained). v2 training complete, eval running. SPLADE-Code 0.6B export script ready.
-- Eval: v2 (265q), fixture (296q), noise (143q)
-- Cross-project: callers, callees, impact, trace, test-map wired
-- Write serializer mutex on all store transactions (#853)
-- Telemetry: file-presence activation (subagents captured)
-- Pre-edit impact hook active
+- SPLADE: v1 null, v2 null (110M BERT). SPLADE-Code 0.6B exported, pending eval.
+- Adaptive retrieval: Phase 1 complete (classifier), Phases 2-5 pending
+- Cross-project: 5 commands wired (callers, callees, impact, trace, test-map)
+- Write serializer mutex, telemetry file-presence, pre-edit impact hook
