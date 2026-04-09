@@ -52,11 +52,24 @@ pub trait VectorIndex: Send + Sync {
         filter: &dyn Fn(&str) -> bool,
     ) -> Vec<IndexResult> {
         // Default: over-fetch unfiltered, post-filter by chunk_id
-        self.search(query, k * 3)
+        let results: Vec<IndexResult> = self
+            .search(query, k * 3)
             .into_iter()
             .filter(|r| filter(&r.id))
             .take(k)
-            .collect()
+            .collect();
+        // AC-7: Warn when post-filter yields fewer results than requested.
+        // This indicates the filter is too restrictive relative to the over-fetch
+        // multiplier (3x), or the index is too small.
+        if results.len() < k && self.len() >= k {
+            tracing::warn!(
+                returned = results.len(),
+                requested = k,
+                index_size = self.len(),
+                "Filter-aware search under-returned"
+            );
+        }
+        results
     }
 }
 

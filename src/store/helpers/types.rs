@@ -188,6 +188,7 @@ pub struct CallerWithContext {
     #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     /// Line where the calling function starts
+    #[serde(rename = "line_start")]
     pub line: u32,
     /// Line where the call to the target occurs
     pub call_line: u32,

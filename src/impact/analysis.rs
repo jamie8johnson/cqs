@@ -316,8 +316,11 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult, root: &Path) -> Vec<T
     for caller in &impact.callers {
         // Check if this caller is reached by ANY test (not just the target's tests).
         // Per-caller BFS is correct here because we need per-caller test status.
-        // Multi-source BFS would merge all callers, losing which caller reaches which test.
-        // Caller count is typically small (direct callers only), so this is fine.
+        // PF-9 analysis: reverse_bfs_multi_attributed cannot replace this loop because
+        // it attributes each ancestor to only one source (the closest). A test reachable
+        // from callers A and B at different depths would only be attributed to one,
+        // making the other appear untested. Caller count is typically small (direct
+        // callers only), so per-caller BFS is acceptable.
         let ancestors = reverse_bfs(&graph, &caller.name, DEFAULT_MAX_TEST_SEARCH_DEPTH);
         let is_tested = test_chunks
             .iter()

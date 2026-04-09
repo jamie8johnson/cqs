@@ -122,6 +122,14 @@ impl BatchContext {
                     "Cleared reranker session after idle timeout"
                 );
             }
+            // RM-3: Also clear SPLADE encoder session
+            if let Some(splade) = self.splade_encoder.get().and_then(|opt| opt.as_ref()) {
+                splade.clear_session();
+                tracing::info!(
+                    idle_minutes = elapsed.as_secs() / 60,
+                    "Cleared SPLADE session after idle timeout"
+                );
+            }
         }
         self.last_command_time.set(Instant::now());
     }

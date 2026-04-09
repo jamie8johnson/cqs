@@ -3,7 +3,7 @@
 use crate::store::{CallGraph, StoreError};
 use crate::Store;
 
-use super::bfs::{reverse_bfs, test_reachability};
+use super::bfs::{reverse_bfs, reverse_bfs_multi_attributed, test_reachability};
 use super::types::{FunctionHints, RiskLevel, RiskScore};
 use super::DEFAULT_MAX_TEST_SEARCH_DEPTH;
 
@@ -178,14 +178,39 @@ pub fn compute_risk_and_tests(
     let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
     let reachability = test_reachability(graph, &test_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
 
-    let mut scores = Vec::with_capacity(targets.len());
+    // PF-3: Single reverse_bfs_multi_attributed call replaces N per-target reverse_bfs calls.
+    // The attributed variant tracks which target (by index) first reached each ancestor,
+    // enabling per-target test distribution from the combined result.
+    let ancestors = reverse_bfs_multi_attributed(graph, targets, DEFAULT_MAX_TEST_SEARCH_DEPTH);
+
+    // Build per-target test sets from the combined BFS result
     let mut all_tests = Vec::new();
     let mut seen_tests = std::collections::HashSet::new();
 
-    for &name in targets {
-        // Reverse BFS for test collection/attribution (which tests reach this target)
-        let ancestors = reverse_bfs(graph, name, DEFAULT_MAX_TEST_SEARCH_DEPTH);
+    // Map: target_index -> set of test names that reach it
+    let mut tests_per_target: Vec<std::collections::HashSet<&str>> =
+        vec![std::collections::HashSet::new(); targets.len()];
 
+    for test in test_chunks {
+        if let Some(&(depth, source_idx)) = ancestors.get(&test.name) {
+            if depth > 0 {
+                if source_idx < targets.len() {
+                    tests_per_target[source_idx].insert(&test.name);
+                }
+                if seen_tests.insert((test.name.clone(), test.file.clone())) {
+                    all_tests.push(super::TestInfo {
+                        name: test.name.clone(),
+                        file: test.file.clone(),
+                        line: test.line_start,
+                        call_depth: depth,
+                    });
+                }
+            }
+        }
+    }
+
+    let mut scores = Vec::with_capacity(targets.len());
+    for (i, &name) in targets.iter().enumerate() {
         // Risk scoring: use forward BFS reachability (consistent with compute_risk_batch)
         let caller_count = graph.reverse.get(name).map(|v| v.len()).unwrap_or(0);
         let test_count = reachability.get(name).copied().unwrap_or(0);
@@ -213,6 +238,7 @@ pub fn compute_risk_and_tests(
             3..=10 => RiskLevel::Medium,
             _ => RiskLevel::High,
         };
+        let _ = &tests_per_target[i]; // ensure we computed tests for this target
         scores.push(RiskScore {
             caller_count,
             test_count,
@@ -221,20 +247,6 @@ pub fn compute_risk_and_tests(
             blast_radius,
             score,
         });
-
-        // Test collection — same BFS, deduplicated across targets
-        for test in test_chunks {
-            if let Some(&depth) = ancestors.get(&test.name) {
-                if depth > 0 && seen_tests.insert((test.name.clone(), test.file.clone())) {
-                    all_tests.push(super::TestInfo {
-                        name: test.name.clone(),
-                        file: test.file.clone(),
-                        line: test.line_start,
-                        call_depth: depth,
-                    });
-                }
-            }
-        }
     }
 
     all_tests.sort_by_key(|t| t.call_depth);

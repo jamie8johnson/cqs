@@ -7,11 +7,26 @@ use super::helpers::{self, ChunkRow, SearchResult};
 use super::{sanitize_fts_query, ChunkSummary, Store, StoreError};
 use crate::nl::normalize_for_fts;
 
+/// Config-level override for RRF K, set by CLI before first search.
+static RRF_K_CONFIG_OVERRIDE: OnceLock<f32> = OnceLock::new();
+
+/// Set the RRF K override from a `ScoringOverrides` config.
+/// Must be called before the first search; subsequent calls are no-ops (OnceLock).
+pub fn set_rrf_k_from_config(overrides: &crate::config::ScoringOverrides) {
+    if let Some(k) = overrides.rrf_k {
+        let _ = RRF_K_CONFIG_OVERRIDE.set(k);
+    }
+}
+
 /// PF-2: RRF constant K, cached on first access. Defaults to 60.0.
-/// Override via `CQS_RRF_K` env var for eval experimentation.
+/// Priority: config override > `CQS_RRF_K` env var > default 60.0.
 fn rrf_k() -> f32 {
     static K: OnceLock<f32> = OnceLock::new();
     *K.get_or_init(|| {
+        // EXT-5: Config override takes precedence over env var
+        if let Some(&k) = RRF_K_CONFIG_OVERRIDE.get() {
+            return k;
+        }
         std::env::var("CQS_RRF_K")
             .ok()
             .and_then(|v| v.parse().ok())

@@ -30,7 +30,7 @@ pub(crate) mod helpers;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{ConnectOptions, SqlitePool};
@@ -140,6 +140,9 @@ pub use types::TypeGraph;
 /// A type usage relationship from a chunk.
 pub use types::TypeUsage;
 
+/// Set RRF K override from config scoring overrides.
+pub use search::set_rrf_k_from_config;
+
 /// Defense-in-depth sanitization for FTS5 query strings.
 /// Strips or escapes FTS5 special characters that could alter query semantics.
 /// Applied after `normalize_for_fts()` as an extra safety layer — if `normalize_for_fts`
@@ -202,7 +205,7 @@ pub struct Store {
     pub(crate) dim: usize,
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
-    notes_summaries_cache: Mutex<Option<Arc<Vec<NoteSummary>>>>,
+    notes_summaries_cache: RwLock<Option<Arc<Vec<NoteSummary>>>>,
     /// Cached call graph — populated on first access, valid for Store lifetime.
     /// **No invalidation mechanism by design.** `OnceLock` is intentionally write-once:
     /// once populated the cache is never cleared. This is safe because `Store` is opened
@@ -270,7 +273,10 @@ impl Store {
     /// `open()`. Ideal for read-only CLI commands on the primary project index
     /// where we need full search performance but don't need multi-threaded
     /// async.
-    pub fn open_light(path: &Path) -> Result<Self, StoreError> {
+    ///
+    /// AD-1: Renamed from `open_light` to clarify semantics — this is a
+    /// read-only pooled connection, not a "light" store.
+    pub fn open_readonly_pooled(path: &Path) -> Result<Self, StoreError> {
         Self::open_with_config(
             path,
             StoreOpenConfig {
@@ -432,7 +438,7 @@ impl Store {
             rt,
             dim,
             closed: AtomicBool::new(false),
-            notes_summaries_cache: Mutex::new(None),
+            notes_summaries_cache: RwLock::new(None),
             call_graph_cache: std::sync::OnceLock::new(),
             test_chunks_cache: std::sync::OnceLock::new(),
             chunk_type_map_cache: std::sync::OnceLock::new(),

@@ -91,10 +91,43 @@ pub(super) fn file_batch_size() -> usize {
         Err(_) => 5_000,
     })
 }
-/// Parse channel depth — lightweight (chunk metadata only), can be deeper
-pub(super) const PARSE_CHANNEL_DEPTH: usize = 512;
-/// Embed channel depth — heavy (embedding vectors), smaller to bound memory
-pub(super) const EMBED_CHANNEL_DEPTH: usize = 64;
+/// Parse channel depth — lightweight (chunk metadata only), can be deeper.
+/// Configurable via `CQS_PARSE_CHANNEL_DEPTH` environment variable.
+pub(super) fn parse_channel_depth() -> usize {
+    static DEPTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *DEPTH.get_or_init(|| match std::env::var("CQS_PARSE_CHANNEL_DEPTH") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(n) if n > 0 => {
+                tracing::info!(depth = n, "CQS_PARSE_CHANNEL_DEPTH override");
+                n
+            }
+            _ => {
+                tracing::warn!(value = %val, "Invalid CQS_PARSE_CHANNEL_DEPTH, using default 512");
+                512
+            }
+        },
+        Err(_) => 512,
+    })
+}
+
+/// Embed channel depth — heavy (embedding vectors), smaller to bound memory.
+/// Configurable via `CQS_EMBED_CHANNEL_DEPTH` environment variable.
+pub(super) fn embed_channel_depth() -> usize {
+    static DEPTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *DEPTH.get_or_init(|| match std::env::var("CQS_EMBED_CHANNEL_DEPTH") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(n) if n > 0 => {
+                tracing::info!(depth = n, "CQS_EMBED_CHANNEL_DEPTH override");
+                n
+            }
+            _ => {
+                tracing::warn!(value = %val, "Invalid CQS_EMBED_CHANNEL_DEPTH, using default 64");
+                64
+            }
+        },
+        Err(_) => 64,
+    })
+}
 
 /// Embedding batch size. Was 32 (backed off from 64 after an undiagnosed crash at 2%).
 /// Restored to 64 with debug logging (PERF-45 investigation). If it crashes again,

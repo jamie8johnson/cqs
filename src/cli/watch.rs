@@ -156,6 +156,48 @@ fn try_init_embedder<'a>(
     }
 }
 
+/// PB-3: Check if a path is under a WSL DrvFS automount root.
+///
+/// Default automount root is `/mnt/`, but users can customize it via `automount.root`
+/// in `/etc/wsl.conf`. Reads the config once via `OnceLock` and caches the result.
+fn is_under_wsl_automount(path: &str) -> bool {
+    static AUTOMOUNT_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let root = AUTOMOUNT_ROOT
+        .get_or_init(|| parse_wsl_automount_root().unwrap_or_else(|| "/mnt/".to_string()));
+    path.starts_with(root.as_str())
+}
+
+/// Parse the `automount.root` value from `/etc/wsl.conf`.
+/// Returns `None` if the file doesn't exist or doesn't contain the setting.
+fn parse_wsl_automount_root() -> Option<String> {
+    let content = std::fs::read_to_string("/etc/wsl.conf").ok()?;
+    let mut in_automount = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_automount = trimmed
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim()
+                .eq_ignore_ascii_case("automount");
+            continue;
+        }
+        if in_automount {
+            if let Some((key, value)) = trimmed.split_once('=') {
+                if key.trim().eq_ignore_ascii_case("root") {
+                    let mut root = value.trim().to_string();
+                    // Ensure trailing slash for prefix matching
+                    if !root.ends_with('/') {
+                        root.push('/');
+                    }
+                    return Some(root);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Watches the project for file changes and updates the code search index incrementally.
 ///
 /// # Arguments
@@ -181,20 +223,21 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
 
     let root = find_project_root();
 
-    // Auto-detect when polling is needed: WSL + /mnt/ path.
+    // Auto-detect when polling is needed: WSL + DrvFS mount path.
     //
-    // Detection is prefix-based (/mnt/) rather than filesystem-based (statfs NTFS/FAT magic)
-    // because that's pragmatic: paths under /mnt/ in WSL are DrvFs mounts of Windows
-    // filesystems (NTFS, FAT32, exFAT), none of which support inotify. A statfs check would
-    // give the same answer with more syscalls and less portability across WSL versions.
+    // Detection is prefix-based rather than filesystem-based (statfs NTFS/FAT magic)
+    // because that's pragmatic: paths under DrvFS mounts in WSL are Windows filesystems
+    // (NTFS, FAT32, exFAT), none of which support inotify. A statfs check would give
+    // the same answer with more syscalls and less portability across WSL versions.
     // If the project root is on a Linux filesystem inside WSL (e.g. /home/...), inotify works
     // fine and we leave use_poll false.
     // PB-21: Also detect //wsl.localhost/ and //wsl$/ UNC paths
+    // PB-3: Check /etc/wsl.conf for custom automount.root (default is /mnt/)
     let use_poll = poll
         || (cqs::config::is_wsl()
             && root
                 .to_str()
-                .is_some_and(|p| p.starts_with("/mnt/") || p.starts_with("//wsl")));
+                .is_some_and(|p| p.starts_with("//wsl") || is_under_wsl_automount(p)));
 
     if cqs::config::is_wsl() && !use_poll {
         tracing::warn!("WSL detected: inotify may be unreliable on Windows filesystem mounts. Use --poll or 'cqs index' periodically.");
@@ -700,6 +743,13 @@ fn reindex_files(
             to_embed.push((i, chunk));
         }
     }
+
+    // OB-11: Log cache hit/miss stats for observability
+    tracing::info!(
+        cached = cached.len(),
+        to_embed = to_embed.len(),
+        "Embedding cache stats"
+    );
 
     // Collect content hashes of NEWLY EMBEDDED chunks only (for incremental HNSW).
     // Unchanged chunks (cache hits) are already in the HNSW index from a prior cycle,

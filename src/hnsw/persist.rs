@@ -56,6 +56,28 @@ fn hnsw_max_data_bytes() -> u64 {
     })
 }
 
+/// SHL-30: Configurable HNSW ID map file size limit via `CQS_HNSW_MAX_ID_MAP_BYTES` env var.
+/// Defaults to 500MB. Cached in OnceLock for single parse.
+fn hnsw_max_id_map_bytes() -> u64 {
+    static MAX: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| match std::env::var("CQS_HNSW_MAX_ID_MAP_BYTES") {
+        Ok(val) => match val.parse::<u64>() {
+            Ok(n) if n > 0 => {
+                tracing::info!(max_bytes = n, "CQS_HNSW_MAX_ID_MAP_BYTES override");
+                n
+            }
+            _ => {
+                tracing::warn!(
+                    value = %val,
+                    "Invalid CQS_HNSW_MAX_ID_MAP_BYTES, using default 500MB"
+                );
+                500 * 1024 * 1024
+            }
+        },
+        Err(_) => 500 * 1024 * 1024,
+    })
+}
+
 /// Whether the WSL advisory locking warning has been emitted (once per process)
 static WSL_LOCK_WARNED: AtomicBool = AtomicBool::new(false);
 
@@ -513,8 +535,8 @@ impl HnswIndex {
         tracing::info!("Loading HNSW index from {}/{}", dir.display(), basename);
         verify_hnsw_checksums(dir, basename)?;
 
-        // Check ID map file size to prevent OOM (limit: 500MB for ~10M chunk IDs)
-        const MAX_ID_MAP_SIZE: u64 = 500 * 1024 * 1024;
+        // Check ID map file size to prevent OOM (limit configurable via CQS_HNSW_MAX_ID_MAP_BYTES)
+        let max_id_map_size = hnsw_max_id_map_bytes();
         let id_map_size = std::fs::metadata(&id_map_path)
             .map_err(|e| {
                 HnswError::Internal(format!(
@@ -524,11 +546,11 @@ impl HnswIndex {
                 ))
             })?
             .len();
-        if id_map_size > MAX_ID_MAP_SIZE {
+        if id_map_size > max_id_map_size {
             return Err(HnswError::Internal(format!(
                 "ID map too large: {}MB > {}MB limit",
                 id_map_size / (1024 * 1024),
-                MAX_ID_MAP_SIZE / (1024 * 1024)
+                max_id_map_size / (1024 * 1024)
             )));
         }
 

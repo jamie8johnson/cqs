@@ -226,8 +226,8 @@ pub(super) fn reverse_bfs_multi_attributed(
 /// **Limitation:** Equivalence classes are based solely on first-hop callees.
 /// Two tests that call different functions which converge at depth 2+ are
 /// treated as separate classes, so BFS runs once per class rather than being
-/// shared. This is correct (counts are accurate) but not maximally efficient
-/// for deep convergent call graphs.
+/// shared. Counts are approximate — tests with identical direct callees share
+/// BFS results, which may over-count when transitive paths diverge.
 pub(crate) fn test_reachability(
     graph: &CallGraph,
     test_names: &[&str],

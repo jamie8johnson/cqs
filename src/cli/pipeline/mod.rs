@@ -32,7 +32,7 @@ use cqs::{Parser as CqParser, Store};
 use embedding::{cpu_embed_stage, gpu_embed_stage};
 use parsing::{parser_stage, ParserStageContext};
 use types::{
-    EmbedStageContext, EmbeddedBatch, ParsedBatch, EMBED_CHANNEL_DEPTH, PARSE_CHANNEL_DEPTH,
+    embed_channel_depth, parse_channel_depth, EmbedStageContext, EmbeddedBatch, ParsedBatch,
 };
 use upsert::store_stage;
 
@@ -53,11 +53,11 @@ pub(crate) fn run_index_pipeline(
 
     // Channels
     let (parse_tx, parse_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) =
-        bounded(PARSE_CHANNEL_DEPTH);
+        bounded(parse_channel_depth());
     let (embed_tx, embed_rx): (Sender<EmbeddedBatch>, Receiver<EmbeddedBatch>) =
-        bounded(EMBED_CHANNEL_DEPTH);
+        bounded(embed_channel_depth());
     let (fail_tx, fail_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) =
-        bounded(EMBED_CHANNEL_DEPTH);
+        bounded(embed_channel_depth());
 
     // Shared state
     let parser = Arc::new(CqParser::new().context("Failed to initialize parser")?);

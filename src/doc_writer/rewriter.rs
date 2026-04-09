@@ -461,7 +461,12 @@ pub fn rewrite_file(
 }
 
 /// Write bytes to a file atomically: write to a temp file in the same
-/// directory, then rename. Falls back to direct write on cross-device errors.
+/// directory, then rename.
+///
+/// PB-4: On cross-device rename failure, falls back to copy-to-same-dir-then-rename
+/// instead of a bare `fs::write`. This copies the original file to a backup in
+/// the same directory, writes the new content to the original path, and removes
+/// the backup on success. If the write fails, the backup is renamed back.
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let suffix = crate::temp_suffix();
@@ -474,11 +479,50 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
 
     match std::fs::rename(&temp_path, path) {
         Ok(()) => Ok(()),
-        Err(_) => {
-            // Rename can fail cross-device (EXDEV on Unix, ERROR_NOT_SAME_DEVICE on Windows)
-            // or for other transient reasons. Fall back to direct write.
+        Err(rename_err) => {
+            // Rename can fail cross-device (EXDEV on Unix, ERROR_NOT_SAME_DEVICE on Windows).
+            // Fall back to: backup original → write new → remove backup.
             let _ = std::fs::remove_file(&temp_path);
-            std::fs::write(path, data)
+
+            let backup_path = dir.join(format!(".cqs-doc-{}-{}.bak", std::process::id(), suffix));
+
+            // If the original exists, back it up so we can restore on failure
+            let has_backup = if path.exists() {
+                std::fs::copy(path, &backup_path)
+                    .map(|_| true)
+                    .map_err(|e| {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "Cross-device fallback: failed to create backup"
+                        );
+                        e
+                    })?
+            } else {
+                false
+            };
+
+            match std::fs::write(path, data) {
+                Ok(()) => {
+                    if has_backup {
+                        let _ = std::fs::remove_file(&backup_path);
+                    }
+                    Ok(())
+                }
+                Err(write_err) => {
+                    // Restore from backup if we made one
+                    if has_backup {
+                        let _ = std::fs::rename(&backup_path, path);
+                    }
+                    tracing::warn!(
+                        path = %path.display(),
+                        rename_error = %rename_err,
+                        write_error = %write_err,
+                        "Atomic write failed: both rename and fallback write failed"
+                    );
+                    Err(write_err)
+                }
+            }
         }
     }
 }

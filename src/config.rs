@@ -89,6 +89,8 @@ pub struct ScoringOverrides {
     pub parent_boost_per_child: Option<f32>,
     pub parent_boost_cap: Option<f32>,
     pub splade_alpha: Option<f32>,
+    /// RRF fusion constant K (default 60.0). Override via config or `CQS_RRF_K` env var.
+    pub rrf_k: Option<f32>,
 }
 
 /// Configuration options loaded from config files
