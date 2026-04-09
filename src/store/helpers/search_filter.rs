@@ -250,4 +250,48 @@ mod tests {
         assert!(filter.validate().is_err());
         assert!(filter.validate().unwrap_err().contains("too long"));
     }
+
+    // TC-34: SPLADE NaN alpha guard
+    #[test]
+    fn tc34_splade_nan_alpha_rejected() {
+        let filter = SearchFilter {
+            enable_splade: true,
+            splade_alpha: f32::NAN,
+            ..Default::default()
+        };
+        let result = filter.validate();
+        assert!(result.is_err(), "NaN splade_alpha should be rejected");
+        assert!(
+            result.unwrap_err().contains("splade_alpha"),
+            "Error message should mention splade_alpha"
+        );
+    }
+
+    #[test]
+    fn tc34_splade_alpha_out_of_range_rejected() {
+        let filter = SearchFilter {
+            enable_splade: true,
+            splade_alpha: 1.5,
+            ..Default::default()
+        };
+        assert!(filter.validate().is_err());
+
+        let filter2 = SearchFilter {
+            enable_splade: true,
+            splade_alpha: -0.1,
+            ..Default::default()
+        };
+        assert!(filter2.validate().is_err());
+    }
+
+    #[test]
+    fn tc34_splade_alpha_valid_when_disabled() {
+        // NaN alpha should be ok when SPLADE is disabled (not validated)
+        let filter = SearchFilter {
+            enable_splade: false,
+            splade_alpha: f32::NAN,
+            ..Default::default()
+        };
+        assert!(filter.validate().is_ok());
+    }
 }

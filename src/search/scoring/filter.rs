@@ -402,4 +402,88 @@ mod tests {
             .map_or(true, |s| s.iter().any(|l| "rust".eq_ignore_ascii_case(l)));
         assert!(!passes);
     }
+
+    // ===== TC-27: exclude_types filter tests =====
+
+    #[test]
+    fn tc27_exclude_types_generates_not_in_condition() {
+        use crate::parser::ChunkType;
+        let filter = SearchFilter {
+            exclude_types: Some(vec![ChunkType::Function]),
+            ..Default::default()
+        };
+        let fsql = build_filter_sql(&filter);
+        assert_eq!(fsql.conditions.len(), 1);
+        assert!(
+            fsql.conditions[0].contains("NOT IN"),
+            "exclude_types should produce NOT IN, got: {}",
+            fsql.conditions[0]
+        );
+        assert_eq!(fsql.bind_values.len(), 1);
+        assert_eq!(fsql.bind_values[0].to_lowercase(), "function");
+    }
+
+    #[test]
+    fn tc27_exclude_types_multiple_types() {
+        use crate::parser::ChunkType;
+        let filter = SearchFilter {
+            exclude_types: Some(vec![
+                ChunkType::Function,
+                ChunkType::Test,
+                ChunkType::Variable,
+            ]),
+            ..Default::default()
+        };
+        let fsql = build_filter_sql(&filter);
+        assert_eq!(fsql.conditions.len(), 1);
+        assert!(fsql.conditions[0].contains("NOT IN"));
+        assert_eq!(fsql.bind_values.len(), 3);
+    }
+
+    #[test]
+    fn tc27_include_and_exclude_types_both_applied() {
+        use crate::parser::ChunkType;
+        // When both include_types and exclude_types are set, both SQL conditions
+        // should be generated. The SQL engine handles the overlap.
+        let filter = SearchFilter {
+            include_types: Some(vec![ChunkType::Function, ChunkType::Method]),
+            exclude_types: Some(vec![ChunkType::Function]),
+            ..Default::default()
+        };
+        let fsql = build_filter_sql(&filter);
+        assert_eq!(
+            fsql.conditions.len(),
+            2,
+            "Should have both IN and NOT IN conditions"
+        );
+        let has_in = fsql
+            .conditions
+            .iter()
+            .any(|c| c.starts_with("chunk_type IN"));
+        let has_not_in = fsql
+            .conditions
+            .iter()
+            .any(|c| c.starts_with("chunk_type NOT IN"));
+        assert!(has_in, "Should have include_types IN condition");
+        assert!(has_not_in, "Should have exclude_types NOT IN condition");
+        // include: Function + Method = 2 bind values, exclude: Function = 1 bind value
+        assert_eq!(fsql.bind_values.len(), 3);
+    }
+
+    #[test]
+    fn tc27_exclude_types_bind_params_contiguous() {
+        use crate::parser::{ChunkType, Language};
+        // Verify bind param indices are correct when combined with language filter
+        let filter = SearchFilter {
+            languages: Some(vec![Language::Rust]),
+            exclude_types: Some(vec![ChunkType::Test]),
+            ..Default::default()
+        };
+        let fsql = build_filter_sql(&filter);
+        assert_eq!(fsql.conditions.len(), 2);
+        // Language gets ?1, exclude_types gets ?2
+        assert!(fsql.conditions[0].contains("?1"));
+        assert!(fsql.conditions[1].contains("?2"));
+        assert_eq!(fsql.bind_values.len(), 2);
+    }
 }
