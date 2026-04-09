@@ -17,7 +17,7 @@ pub struct SearchFilter {
     /// Filter by programming language(s)
     pub languages: Option<Vec<Language>>,
     /// Include only these chunk types (function, method, class, struct, test, endpoint, etc.)
-    pub chunk_types: Option<Vec<ChunkType>>,
+    pub include_types: Option<Vec<ChunkType>>,
     /// Exclude these chunk types from results (e.g., test, variable, configkey)
     pub exclude_types: Option<Vec<ChunkType>>,
     /// Filter by file path glob pattern (e.g., `src/**/*.rs`)
@@ -56,7 +56,7 @@ impl Default for SearchFilter {
     fn default() -> Self {
         Self {
             languages: None,
-            chunk_types: None,
+            include_types: None,
             exclude_types: None,
             path_pattern: None,
             name_boost: 0.0,

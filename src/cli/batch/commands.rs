@@ -65,6 +65,30 @@ pub(crate) enum BatchCmd {
         /// Maximum token budget
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
+        /// Disable search-time demotion of test functions and underscore-prefixed names
+        #[arg(long)]
+        no_demote: bool,
+        /// Weight for name matching in hybrid search (0.0-1.0, default 0.2)
+        #[arg(long, default_value = "0.2")]
+        name_boost: f32,
+        /// Search only this reference index (skip project index)
+        #[arg(long = "ref")]
+        ref_name: Option<String>,
+        /// Include reference indexes in search results (default: project only)
+        #[arg(long)]
+        include_refs: bool,
+        /// Show only file:line, no code
+        #[arg(long)]
+        no_content: bool,
+        /// Show N lines of context before/after the chunk
+        #[arg(short = 'C', long)]
+        context: Option<usize>,
+        /// Expand results with parent context (small-to-big retrieval)
+        #[arg(long)]
+        expand: bool,
+        /// Disable staleness checks (skip per-file mtime comparison)
+        #[arg(long)]
+        no_stale_check: bool,
     },
     /// Semantic git blame: who changed a function, when, and why
     Blame {
@@ -378,6 +402,14 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             include_type,
             exclude_type,
             tokens,
+            no_demote,
+            name_boost,
+            ref_name,
+            include_refs,
+            no_content,
+            context,
+            expand,
+            no_stale_check,
         } => {
             log_query("search", &query);
             handlers::dispatch_search(
@@ -395,6 +427,14 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
                     include_type,
                     exclude_type,
                     tokens,
+                    no_demote,
+                    name_boost,
+                    ref_name,
+                    include_refs,
+                    no_content,
+                    context,
+                    expand,
+                    no_stale_check,
                 },
             )
         }
@@ -434,7 +474,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             &args.name,
             args.depth,
             args.suggest_tests,
-            args.include_types,
+            args.type_impact,
             args.cross_project,
         ),
         BatchCmd::TestMap {
@@ -651,7 +691,7 @@ mod tests {
                 assert_eq!(args.name, "foo");
                 assert_eq!(args.depth, 3);
                 assert!(args.suggest_tests);
-                assert!(!args.include_types);
+                assert!(!args.type_impact);
             }
             _ => panic!("Expected Impact command"),
         }

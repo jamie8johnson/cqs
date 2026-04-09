@@ -91,7 +91,7 @@ pub(crate) fn build_filter_sql(filter: &SearchFilter) -> FilterSql {
         }
     }
 
-    if let Some(ref types) = filter.chunk_types {
+    if let Some(ref types) = filter.include_types {
         let placeholders: Vec<_> = (0..types.len())
             .map(|i| format!("?{}", bind_values.len() + i + 1))
             .collect();
@@ -269,7 +269,7 @@ mod tests {
     fn test_build_filter_sql_chunk_type_filter() {
         use crate::parser::ChunkType;
         let filter = SearchFilter {
-            chunk_types: Some(vec![ChunkType::Function]),
+            include_types: Some(vec![ChunkType::Function]),
             ..Default::default()
         };
         let fsql = build_filter_sql(&filter);
@@ -283,14 +283,14 @@ mod tests {
         use crate::parser::{ChunkType, Language};
         let filter = SearchFilter {
             languages: Some(vec![Language::Rust]),
-            chunk_types: Some(vec![ChunkType::Function, ChunkType::Method]),
+            include_types: Some(vec![ChunkType::Function, ChunkType::Method]),
             ..Default::default()
         };
         let fsql = build_filter_sql(&filter);
         assert_eq!(fsql.conditions.len(), 2);
         // 1 language + 2 chunk types = 3 bind values
         assert_eq!(fsql.bind_values.len(), 3);
-        // Verify contiguous bind param indices: language gets ?1, chunk_types get ?2,?3
+        // Verify contiguous bind param indices: language gets ?1, include_types get ?2,?3
         assert!(fsql.conditions[0].contains("?1"));
         assert!(fsql.conditions[1].contains("?2"));
         assert!(fsql.conditions[1].contains("?3"));
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_type_filter_none_passes_all() {
-        // When filter.chunk_types is None, type_set is None and all candidates pass
+        // When filter.include_types is None, type_set is None and all candidates pass
         let type_set: Option<HashSet<String>> = None;
         let candidate_type = "struct";
         let passes = type_set.as_ref().map_or(true, |s| {

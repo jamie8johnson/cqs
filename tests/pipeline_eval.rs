@@ -1078,7 +1078,7 @@ fn test_holdout_eval() {
     for (i, case) in HOLDOUT_EVAL_CASES.iter().enumerate() {
         let filter = SearchFilter {
             languages: Some(vec![case.language]),
-            chunk_types: Some(ChunkType::code_types()),
+            include_types: Some(ChunkType::code_types()),
             name_boost: 0.2,
             query_text: case.query.to_string(),
             enable_demotion: true,
@@ -1369,7 +1369,7 @@ fn test_noise_eval_143q() {
         for (i, case) in HOLDOUT_EVAL_CASES.iter().enumerate() {
             let filter = SearchFilter {
                 languages: Some(vec![case.language]),
-                chunk_types: Some(ChunkType::code_types()),
+                include_types: Some(ChunkType::code_types()),
                 name_boost: boost,
                 query_text: case.query.to_string(),
                 enable_demotion: true,

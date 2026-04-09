@@ -41,7 +41,7 @@ pub(crate) struct ImpactArgs {
     pub suggest_tests: bool,
     /// Include type-impacted functions (via shared type dependencies)
     #[arg(long)]
-    pub include_types: bool,
+    pub type_impact: bool,
     /// Query callers/impact across all configured reference projects
     #[arg(long)]
     pub cross_project: bool,
