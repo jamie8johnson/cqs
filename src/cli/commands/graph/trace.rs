@@ -105,8 +105,81 @@ pub(crate) fn cmd_trace(
     cross_project: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_trace", source, target, cross_project).entered();
+
     if cross_project {
-        tracing::warn!("--cross-project for trace is not yet implemented, using local only");
+        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
+        let result = cqs::cross_project::trace_cross(&mut cross_ctx, source, target, max_depth)?;
+
+        let trace_result = cqs::cross_project::CrossProjectTraceResult {
+            source: source.to_string(),
+            target: target.to_string(),
+            depth: result.as_ref().map(|p| p.len().saturating_sub(1)),
+            found: result.is_some(),
+            path: result,
+        };
+
+        if matches!(format, OutputFormat::Json) {
+            println!("{}", serde_json::to_string_pretty(&trace_result)?);
+        } else if matches!(format, OutputFormat::Mermaid) {
+            if let Some(ref path) = trace_result.path {
+                println!("graph TD");
+                for (i, hop) in path.iter().enumerate() {
+                    let id = node_letter(i);
+                    let label = if hop.project.is_empty() {
+                        mermaid_escape(&hop.name)
+                    } else {
+                        format!(
+                            "{} [{}]",
+                            mermaid_escape(&hop.name),
+                            mermaid_escape(&hop.project)
+                        )
+                    };
+                    println!("    {}[\"{}\"]", id, label);
+                }
+                for i in 0..path.len().saturating_sub(1) {
+                    println!("    {} --> {}", node_letter(i), node_letter(i + 1));
+                }
+            } else {
+                println!("graph TD");
+                println!(
+                    "    %% No call path found from {} to {} within depth {}",
+                    source, target, max_depth
+                );
+            }
+        } else if let Some(ref path) = trace_result.path {
+            println!(
+                "Call path from {} to {} ({} hop{}, cross-project):",
+                source.cyan(),
+                target.cyan(),
+                path.len().saturating_sub(1),
+                if path.len().saturating_sub(1) == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            );
+            println!();
+            for (i, hop) in path.iter().enumerate() {
+                let prefix = if i == 0 {
+                    "  ".to_string()
+                } else {
+                    "  \u{2192} ".to_string()
+                };
+                if hop.project.is_empty() {
+                    println!("{}{}", prefix, hop.name.cyan());
+                } else {
+                    println!("{}{} [{}]", prefix, hop.name.cyan(), hop.project.dimmed());
+                }
+            }
+        } else {
+            println!(
+                "No call path found from {} to {} within depth {} (cross-project).",
+                source.cyan(),
+                target.cyan(),
+                max_depth
+            );
+        }
+        return Ok(());
     }
 
     let store = &ctx.store;

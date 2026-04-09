@@ -1,5 +1,19 @@
 {
   "enabledPlugins": {
     "fresh-eyes-review@2389-research-marketplace": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/pre-edit-impact.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }

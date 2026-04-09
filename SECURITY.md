@@ -30,7 +30,7 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 
 ## Architecture
 
-cqs runs locally by default. No network telemetry. Optional local command logging to `.cqs/telemetry.jsonl` when `CQS_TELEMETRY=1` (off by default, never transmitted). The optional `--llm-summaries` flag sends function code to the Anthropic API (see below).
+cqs runs locally by default. No network telemetry. Optional local command logging to `.cqs/telemetry.jsonl` — active when `CQS_TELEMETRY=1` is set OR when the telemetry file already exists (persists across shells/subprocesses). Never transmitted. Delete the file to opt out. The optional `--llm-summaries` flag sends function code to the Anthropic API (see below).
 
 ## Network Requests
 
@@ -84,7 +84,7 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 | `.cqs/index.hnsw.*` | Vector index + checksums | `cqs index` |
 | `.cqs/index.lock` | Process lock file | `cqs watch` |
 | `.cqs/audit-mode.json` | Audit mode state (on/off, expiry) | `cqs audit-mode on`, `cqs audit-mode off` |
-| `.cqs/telemetry*.jsonl` | Command usage logs (opt-in) | `CQS_TELEMETRY=1`, `cqs telemetry --reset` |
+| `.cqs/telemetry*.jsonl` | Command usage logs (opt-in, persists via file presence) | `CQS_TELEMETRY=1` or file exists, delete to opt out |
 | `docs/notes.toml` | Developer notes | `cqs notes add`, `cqs notes update`, `cqs notes remove` |
 | `.cqs.toml` | Reference configuration | `cqs ref add`, `cqs ref remove` |
 | `~/.config/cqs/projects.toml` | Project registry | `cqs project register`, `cqs project remove` |

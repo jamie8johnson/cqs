@@ -233,6 +233,39 @@ impl CrossProjectContext {
         }
         Ok(all_tests)
     }
+
+    /// Build a merged call graph from all projects.
+    ///
+    /// Unions the forward and reverse adjacency lists from every project's
+    /// call graph into a single `CallGraph`. Used by cross-project test-map
+    /// which needs a unified graph for BFS traversal.
+    pub fn merged_call_graph(&mut self) -> Result<CallGraph, StoreError> {
+        let _span =
+            tracing::info_span!("merged_call_graph", projects = self.stores.len()).entered();
+
+        self.ensure_all_graphs()?;
+
+        let mut forward: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
+        let mut reverse: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
+
+        for idx in 0..self.stores.len() {
+            let graph = &self.graphs[&idx];
+            for (caller, callees) in &graph.forward {
+                forward
+                    .entry(Arc::clone(caller))
+                    .or_default()
+                    .extend(callees.iter().cloned());
+            }
+            for (callee, callers) in &graph.reverse {
+                reverse
+                    .entry(Arc::clone(callee))
+                    .or_default()
+                    .extend(callers.iter().cloned());
+            }
+        }
+
+        Ok(CallGraph { forward, reverse })
+    }
 }
 
 #[cfg(test)]

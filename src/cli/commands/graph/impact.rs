@@ -20,12 +20,33 @@ pub(crate) fn cmd_impact(
     cross_project: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_impact", name, cross_project).entered();
-    if cross_project {
-        tracing::warn!("--cross-project for impact is not yet implemented, using local only");
-    }
     let store = &ctx.store;
     let root = &ctx.root;
     let depth = depth.clamp(1, 10);
+
+    if cross_project {
+        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(root)?;
+        let result = cqs::cross_project::analyze_impact_cross(
+            &mut cross_ctx,
+            name,
+            depth,
+            do_suggest_tests,
+            include_types,
+        )?;
+
+        if matches!(format, OutputFormat::Mermaid) {
+            println!("{}", impact_to_mermaid(&result));
+            return Ok(());
+        }
+        if matches!(format, OutputFormat::Json) {
+            let json = impact_to_json(&result);
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        } else {
+            let rel_file = "(cross-project)";
+            display_impact_text(&result, root, rel_file);
+        }
+        return Ok(());
+    }
 
     // Resolve target
     let resolved = resolve_target(store, name)?;

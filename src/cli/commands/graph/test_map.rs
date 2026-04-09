@@ -185,9 +185,39 @@ pub(crate) fn cmd_test_map(
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_test_map", name, cross_project).entered();
+
     if cross_project {
-        tracing::warn!("--cross-project for test-map is not yet implemented, using local only");
+        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
+        let test_chunks = cross_ctx.find_test_chunks_cross()?;
+
+        // Build a merged call graph from all projects
+        let graph = cross_ctx.merged_call_graph()?;
+        let summaries: Vec<cqs::store::ChunkSummary> =
+            test_chunks.iter().map(|tc| tc.chunk.clone()).collect();
+
+        let matches = build_test_map(name, &graph, &summaries, &ctx.root, max_depth);
+
+        if json {
+            let output = build_test_map_output(name, &matches);
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            use colored::Colorize;
+            println!("{} {} (cross-project)", "Tests for:".cyan(), name.bold());
+            if matches.is_empty() {
+                println!("  No tests found");
+            } else {
+                for m in &matches {
+                    println!("  {} ({}:{}) [depth {}]", m.name, m.file, m.line, m.depth);
+                    if m.chain.len() > 2 {
+                        println!("    chain: {}", m.chain.join(" -> "));
+                    }
+                }
+                println!("\n{} tests found", matches.len());
+            }
+        }
+        return Ok(());
     }
+
     let store = &ctx.store;
     let root = &ctx.root;
     let resolved = resolve_target(store, name)?;
