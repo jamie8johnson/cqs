@@ -485,9 +485,29 @@ test_rrf_merge_both_empty                   Both indexes return empty → return
 | v2 dual embed | 8 | 8 | 4 | — | 20 |
 | **Total** | **21** | **23** | **9** | **3** | **56** |
 
+## Phase 6: Explainable Search (depends on SPLADE-Code)
+
+Once SPLADE-Code sparse vectors are stored per chunk, explain *why* a result matched:
+
+**CLI:** `cqs "query" --explain`
+```
+fibonacci.py:fibonacci (score: 0.92)
+  matched: fibonacci(2.4) recursive(2.1) fib(1.8)
+  expanded: memoize(0.9) dynamic(0.7) cache(0.5)
+```
+
+**Graph UI:** Click search result → token activation heatmap showing which vocabulary terms drove the match, split into "matched" (present in input) vs "expanded" (learned semantic associations).
+
+**Implementation:** Decode sparse vector token IDs back to words via the SPLADE tokenizer's vocabulary. Split into input-present vs expansion tokens. ~50 lines of code once sparse vectors exist.
+
+**Unique value:** No production code search tool currently exposes token-level match attribution. Dense search gives opaque cosine scores. SPLADE's sparse vectors are inherently interpretable (each non-zero dimension maps to a vocabulary token), but no tool has surfaced this as a user-facing feature. The SPLADE-Code paper (arXiv 2603.22008, Figure 4) demonstrates the interpretability — we'd be the first to ship it as a feature.
+
 ## Open Questions
 
 - Should `--strategy` flag be exposed in batch mode too? (Yes)
 - Should type boost factor be configurable? (Later — hardcode 1.2x for v1)
 - Should base embeddings be optional? (Yes — only generated when LLM summaries exist)
 - Incremental reindex: if only some chunks have summaries, do we build both HNSW indexes? (Yes, base index includes all chunks, enriched index includes all chunks — the embeddings just differ for summary-enriched ones)
+- Should we expose `--strategy` as a CLI flag for debugging? (Yes — `cqs "query" --strategy dense_with_summaries`)
+- Should the classifier be trainable from user corrections? (v2 — start with heuristics)
+- Should we implement the "fallback on zero results" pattern from the start? (Yes — cheap insurance)
