@@ -29,8 +29,41 @@
 ### CPU Lane
 - [ ] **Paper v1.0** — clean rewrite done (~/training-data/paper/draft.md), needs review/polish
 - [ ] **Cross-project: wire remaining 4 commands** — impact, trace, test-map, deps have stubs. In progress.
-- [ ] **Agent adoption** — fewer commands in agent prompts (only `scout`/`task`)
+- [x] ~~**Agent adoption: telemetry analysis**~~ — mined 16,731 invocations across all sessions. Finding: main conversation uses search (60%) + context (28%). Subagents use the full toolkit (impact, callers, test-map). The gap is in the main conversation, not subagents.
+- [ ] **Agent adoption: pre-edit impact hook** — PreToolUse hook that runs `cqs impact` on every Edit, injects caller/test/risk as additionalContext. Prototype in `.claude/hooks/pre-edit-impact.sh`. Needs session restart to test.
+- [ ] **Agent adoption: slim CLAUDE.md** — reduce 30-command reference to top 5 (search, context, read, impact, review) + "see `cqs --help`". Measure with telemetry before/after.
+- [ ] **Agent adoption: composite search results** — `cqs search` returns mini-impact (caller count, test count) alongside each result. One call instead of search + impact.
 - [ ] **Move language** — blocked: no tree-sitter grammar on crates.io
+
+### Agent Adoption — Telemetry Data (2026-04-09)
+
+16,731 cqs invocations across all sessions. Two distinct usage profiles:
+
+**Main conversation (3,889 invocations via telemetry):**
+| Command | % | Count |
+|---------|---|-------|
+| search | 60.1% | 2336 |
+| context | 27.8% | 1080 |
+| notes | 1.9% | 74 |
+| batch | 1.8% | 70 |
+| review | 1.2% | 46 |
+| scout | 0.7% | 26 |
+| health | 0.4% | 14 |
+| impact | **0.2%** | 6 |
+| callers | **0.2%** | 7 |
+
+**Subagents (12,842 invocations via conversation log mining):**
+| Command | Count |
+|---------|-------|
+| impact | 825 |
+| callers | 589 |
+| test-map | 457 |
+| dead | 693 |
+| gather | 403 |
+| review | 370 |
+| scout | 377 |
+
+Key insight: impact/callers/test-map are used heavily by subagents but almost never by the main conversation. The pre-edit hook bridges this gap by running impact automatically.
 
 ### Cross-Project Architecture
 
