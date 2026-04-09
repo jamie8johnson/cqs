@@ -2,42 +2,53 @@
 
 ## Right Now
 
-**v1.20.0 released. Full audit complete. Clean slate. (2026-04-08 CDT)**
+**Adaptive retrieval planned. SPLADE v2 eval running. PR #866 in CI. (2026-04-09 14:00 CDT)**
 
 ### What happened this session
-- v1.18.0: Embedding cache, 5 chunk types, eval harness, query logging
-- v1.19.0: --include-type/--exclude-type, Java/C# detection, capture list unification
-- v1.20.0: 14-category audit (71 findings, 69 fixed), Elm, SPLADE training (null)
-- SPLADE code fine-tuning: completed, null result. Failure mode analyzed (weak reg, wrong vocab, wrong negatives). v2-v4 experiments planned.
-- Full ablation: BGE-large + LLM summaries = best config. SPLADE and reranker both null.
-- 265-query eval set across 8 categories, ground truth validated
-- All branches cleaned up (local + remote)
-- GitHub repo description updated
+- v1.21.0 released (PRs #850-865 merged). Cross-project, 29 chunk types, 14-category audit (40+ fixes), API renames, batch flags, write serializer mutex, path containment.
+- SPLADE v2 training complete (199,998 token-overlap negatives, reg_weight 1e-3, 3h43m). ONNX exported. Eval ablation running now (~1h 40m so far, per-query CLI calls are slow).
+- SPLADE-Code paper found (Naver Labs, arXiv 2603.22008) — 600M/8B code-specific SPLADE. Export script at ~/training-data/export_splade_code.py. May obsolete our v2/v3/v4 training.
+- Agent adoption telemetry analysis: main conversation = search 60% + context 28%. Subagents use impact/callers/test-map. Pre-edit impact hook built (.claude/hooks/pre-edit-impact.sh). Telemetry reset for baseline.
+- Adaptive retrieval spec complete: v1 mechanism routing (+2-4pp) + v2 dual embeddings (+10-15pp). 52 tests planned. Spec: docs/plans/adaptive-retrieval.md.
+- Graph visualization spec (parked): axum + Cytoscape.js. Spec: docs/plans/graph-visualization.md.
+- Research: paper v1.0 rewrite, research split to 7 files, HF model cards updated.
+- Notes groomed: 145 → 133.
 
-### Tracked issues
-- #843: PF-5 wire SPLADE encode_batch (blocked on SPLADE quality)
-- #844: AD-19 rename SearchFilter::chunk_types to include_types
+### Pending right now
+- **SPLADE v2 eval**: `evals/run_ablation.py` running with `CQS_SPLADE_MODEL=~/training-data/splade-code-v2/onnx`. Per-query CLI subprocess calls. Output will go to `evals/runs/`. Check with `ps aux | grep run_ablation`.
+- **PR #866**: docs/specs PR in CI. Merge when green, then start adaptive retrieval implementation.
 
-### What's next
-- SPLADE v2: token-overlap hard negative mining → reg sweep → CodeBERT vocab
-- Code-trained reranker (Reranker V2)
-- Paper v0.7
-- Cross-project call graph
-- New chunk types: Extern, Namespace, Middleware, Solidity modifier, Rust impl, CSS @rules
-- Remaining 6 audit categories run but findings not yet triaged into P1-P4
+### What to do next (in order)
+1. Check SPLADE v2 eval results — if null, proceed to SPLADE-Code 0.6B export
+2. Merge PR #866
+3. Create branch `feat/adaptive-retrieval`
+4. Implement Phase 1-5 of adaptive retrieval spec (docs/plans/adaptive-retrieval.md)
+5. Export SPLADE-Code 0.6B (~/training-data/export_splade_code.py) when GPU free
+6. Paper v1.0 polish with new results
+
+### Key files
+- Adaptive retrieval spec: `docs/plans/adaptive-retrieval.md`
+- Graph viz spec: `docs/plans/graph-visualization.md`
+- SPLADE v2 model: `~/training-data/splade-code-v2/onnx/`
+- SPLADE-Code export script: `~/training-data/export_splade_code.py`
+- Pre-edit hook: `.claude/hooks/pre-edit-impact.sh`
+- Telemetry baseline: `.cqs/telemetry.jsonl` (reset 2026-04-09)
 
 ## Parked
+- Graph visualization (`cqs serve`) — spec ready, parked
 - Wiki system — spec revised (agent-first)
-- Paper v0.7
+- Paper v1.0 — needs adaptive retrieval + SPLADE-Code results
 
 ## Open Issues
-- #843 (PF-5 SPLADE batch), #844 (AD-19 API rename)
+- #856 (PB-5 atexit UB)
 - #717 (HNSW mmap), #389 (CAGRA memory), #255 (pre-built refs), #106 (ort RC), #63 (paste)
 
 ## Architecture
-- Version: 1.20.0, Languages: 54, Tests: ~2375, Chunk types: 25
+- Version: 1.21.0, Languages: 54, Tests: ~2440, Chunk types: 29
 - BGE-large + LLM summaries = best production config
-- SPLADE null (off-the-shelf + code-trained). Reranker null (ms-marco-MiniLM).
+- SPLADE: v1 null (off-the-shelf + code-trained). v2 training complete, eval running. SPLADE-Code 0.6B export script ready.
 - Eval: v2 (265q), fixture (296q), noise (143q)
-- Embedding cache: SQLite at ~/.cache/cqs/embeddings.db
-- 14-category audit complete, 69/71 findings fixed
+- Cross-project: callers, callees, impact, trace, test-map wired
+- Write serializer mutex on all store transactions (#853)
+- Telemetry: file-presence activation (subagents captured)
+- Pre-edit impact hook active
