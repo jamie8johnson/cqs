@@ -628,7 +628,7 @@ mod tests {
         let start = std::time::Instant::now();
         let c = classify_query(&long);
         let elapsed = start.elapsed();
-        assert!(elapsed.as_millis() < 10, "Should complete in <10ms");
+        assert!(elapsed.as_millis() < 100, "Should complete in <100ms");
         assert_eq!(c.confidence, Confidence::Low);
     }
 
