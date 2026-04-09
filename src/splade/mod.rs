@@ -45,7 +45,8 @@ pub enum SpladeError {
 /// Loads a BertForMaskedLM model and produces sparse vectors via
 /// max pooling → ReLU → log(1+x) → threshold.
 pub struct SpladeEncoder {
-    session: Mutex<Session>,
+    session: Mutex<Option<Session>>,
+    model_path: std::path::PathBuf,
     tokenizer: tokenizers::Tokenizer,
     threshold: f32,
     vocab_size: usize,
@@ -93,7 +94,8 @@ impl SpladeEncoder {
         tracing::info!(threshold, vocab_size, "SPLADE encoder loaded");
 
         Ok(Self {
-            session: Mutex::new(session),
+            session: Mutex::new(Some(session)),
+            model_path: onnx_path,
             tokenizer,
             threshold,
             vocab_size,
@@ -155,8 +157,16 @@ impl SpladeEncoder {
         let mask_tensor = Tensor::from_array(mask_array)
             .map_err(|e| SpladeError::InferenceFailed(format!("Tensor: {e}")))?;
 
-        // Run inference
-        let mut session = self.session.lock().unwrap_or_else(|p| p.into_inner());
+        // Run inference — lazily re-create session if it was cleared (RM-3)
+        let mut session_guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
+        if session_guard.is_none() {
+            let provider = select_provider();
+            let new_session = create_session(&self.model_path, provider)
+                .map_err(|e| SpladeError::InferenceFailed(format!("ORT session re-init: {e}")))?;
+            *session_guard = Some(new_session);
+            tracing::debug!("SPLADE session re-created after clear");
+        }
+        let session = session_guard.as_mut().expect("session just initialized");
         let outputs = session
             .run(ort::inputs![
                 "input_ids" => ids_tensor,
@@ -221,6 +231,16 @@ impl SpladeEncoder {
     /// Decode a token ID to its string representation (for debugging).
     pub fn decode_token(&self, token_id: u32) -> Option<String> {
         self.tokenizer.decode(&[token_id], false).ok()
+    }
+
+    /// RM-3: Drop the ONNX session to free GPU/CPU memory.
+    /// The session is lazily re-created on the next `encode()` call.
+    pub fn clear_session(&self) {
+        let mut guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.is_some() {
+            *guard = None;
+            tracing::debug!("SPLADE session cleared");
+        }
     }
 }
 

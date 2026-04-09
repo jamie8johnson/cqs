@@ -24,7 +24,7 @@
     {"query": "detect file format from extension and content", "expected": "detect_format", "also_accept": ["detect_language", "from_extension"]},
     {"query": "batch embed multiple documents in a single pass", "expected": "embed_documents", "also_accept": ["embedding_batches"]},
     {"query": "count tokens in a text string using the model tokenizer", "expected": "token_count", "also_accept": ["token_counts_batch"]},
-    {"query": "open a store in read-only mode for search queries", "expected": "open_readonly", "also_accept": ["open_light"]},
+    {"query": "open a store in read-only mode for search queries", "expected": "open_readonly", "also_accept": ["open_readonly_pooled"]},
     {"query": "delete index entries for files that were removed from disk", "expected": "prune_missing", "also_accept": ["prune_all", "delete_by_origin"]},
     {"query": "clean up orphaned LLM summaries that no longer match any chunk", "expected": "prune_orphan_summaries", "also_accept": []},
     {"query": "remove stale call graph edges after file reparse", "expected": "prune_stale_calls", "also_accept": ["prune_stale_type_edges"]},

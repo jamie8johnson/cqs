@@ -495,7 +495,7 @@ fn test_eval_matrix() {
     let root = PathBuf::from(&manifest_dir);
     let cqs_dir = cqs::resolve_index_dir(&root);
     let db_path = cqs_dir.join("index.db");
-    let store = cqs::Store::open_light(&db_path).expect("Failed to open store");
+    let store = cqs::Store::open_readonly_pooled(&db_path).expect("Failed to open store");
     let model_config = cqs::embedder::ModelConfig::resolve(None, None);
     let embedder = cqs::Embedder::new_cpu(model_config).expect("Failed to init embedder");
 

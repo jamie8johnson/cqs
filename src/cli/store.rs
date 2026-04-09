@@ -34,11 +34,11 @@ pub(crate) fn open_project_store() -> Result<(cqs::Store, PathBuf, PathBuf)> {
 }
 
 /// Open the project store with a single-threaded runtime for read-only commands.
-/// Same as [`open_project_store`] but uses `Store::open_light()` which creates a
+/// Same as [`open_project_store`] but uses `Store::open_readonly_pooled()` which creates a
 /// `current_thread` tokio runtime (1 OS thread) instead of `multi_thread` (4 OS threads).
 /// Keeps full 256MB mmap and 16MB cache for search performance.
 pub(crate) fn open_project_store_readonly() -> Result<(cqs::Store, PathBuf, PathBuf)> {
-    open_store_with(cqs::Store::open_light)
+    open_store_with(cqs::Store::open_readonly_pooled)
 }
 
 /// Shared context for CLI commands that need an open store.

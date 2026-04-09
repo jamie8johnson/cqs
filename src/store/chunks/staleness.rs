@@ -155,6 +155,8 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
 
+            // PB-1: Same filtering logic as prune_missing — macOS case-fold
+            // and suffix-match fallback for absolute/relative path mismatches.
             let missing: Vec<String> = rows
                 .into_iter()
                 .filter(|(origin,)| {
@@ -168,7 +170,16 @@ impl Store {
                     }
                     #[cfg(not(target_os = "macos"))]
                     {
-                        !existing_files.contains(&origin_path)
+                        if existing_files.contains(&origin_path) {
+                            false // exact match — not missing
+                        } else {
+                            // Suffix match: catch absolute/relative mismatches
+                            !existing_files.iter().any(|p| {
+                                let p_str = p.to_string_lossy();
+                                let o_str = origin_path.to_string_lossy();
+                                p_str.ends_with(o_str.as_ref()) || o_str.ends_with(p_str.as_ref())
+                            })
+                        }
                     }
                 })
                 .map(|(origin,)| origin)
@@ -303,7 +314,26 @@ impl Store {
 
             for (origin, stored_mtime) in rows {
                 let path = PathBuf::from(&origin);
-                if !existing_files.contains(&path) {
+
+                // PB-2: On macOS (HFS+/APFS case-insensitive), PathBuf comparison
+                // is case-sensitive but the filesystem is not. Normalize both sides
+                // to lowercase so we don't falsely mark files as missing.
+                // Same pattern as prune_missing.
+                let found = {
+                    #[cfg(target_os = "macos")]
+                    {
+                        let origin_lower = origin.to_lowercase();
+                        existing_files
+                            .iter()
+                            .any(|p| p.to_string_lossy().to_lowercase() == origin_lower)
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        existing_files.contains(&path)
+                    }
+                };
+
+                if !found {
                     missing.push(path);
                     continue;
                 }

@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
@@ -308,12 +309,14 @@ pub(crate) fn bfs_expand(
     // Track visited nodes to prevent re-expansion from overlapping seeds.
     // Without this, if two seeds overlap (e.g., bridge results matching ref seeds
     // in gather_cross_index), the same node gets expanded twice, doubling neighbor lookups.
-    let mut visited: HashSet<String> = name_scores.keys().cloned().collect();
+    // PF-2: Use Arc<str> in visited/queue to avoid per-node String heap allocations.
+    let mut visited: HashSet<Arc<str>> =
+        name_scores.keys().map(|k| Arc::from(k.as_str())).collect();
     let initial_size = name_scores.len();
 
-    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-    for (name, &(_, _depth)) in name_scores.iter() {
-        queue.push_back((name.clone(), 0));
+    let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();
+    for name in name_scores.keys() {
+        queue.push_back((Arc::from(name.as_str()), 0));
     }
 
     while let Some((name, depth)) = queue.pop_front() {
@@ -326,7 +329,10 @@ pub(crate) fn bfs_expand(
         }
 
         let neighbors = get_neighbors(graph, &name, opts.direction);
-        let base_score = name_scores.get(&name).map(|(s, _)| *s).unwrap_or(0.5);
+        let base_score = name_scores
+            .get(name.as_ref())
+            .map(|(s, _)| *s)
+            .unwrap_or(0.5);
         let new_score = base_score * opts.decay_factor;
         for neighbor in neighbors {
             if name_scores.len() >= opts.max_expanded_nodes {
@@ -334,10 +340,11 @@ pub(crate) fn bfs_expand(
                 break;
             }
             if !visited.contains(&neighbor) {
-                visited.insert(neighbor.clone());
-                name_scores.insert(neighbor.clone(), (new_score, depth + 1));
+                visited.insert(Arc::clone(&neighbor));
+                let key: String = neighbor.to_string();
+                name_scores.insert(key, (new_score, depth + 1));
                 queue.push_back((neighbor, depth + 1));
-            } else if let Some(existing) = name_scores.get_mut(&neighbor) {
+            } else if let Some(existing) = name_scores.get_mut(neighbor.as_ref()) {
                 // Already visited — update score if higher, preserve minimum depth.
                 // AC-13: We intentionally do NOT re-enqueue the node. Re-enqueueing
                 // would propagate the higher score to neighbors (Dijkstra-like), but
@@ -736,13 +743,14 @@ pub fn gather_cross_index_with_index(
     })
 }
 
-/// Get neighbors in the specified direction
-fn get_neighbors(graph: &CallGraph, name: &str, direction: GatherDirection) -> Vec<String> {
+/// Get neighbors in the specified direction.
+/// Returns `Arc<str>` cloned from the CallGraph maps to avoid per-node String allocations (PF-1).
+fn get_neighbors(graph: &CallGraph, name: &str, direction: GatherDirection) -> Vec<Arc<str>> {
     let mut neighbors = Vec::new();
     match direction {
         GatherDirection::Callees | GatherDirection::Both => {
             if let Some(callees) = graph.forward.get(name) {
-                neighbors.extend(callees.iter().map(|s| s.to_string()));
+                neighbors.extend(callees.iter().map(Arc::clone));
             }
         }
         _ => {}
@@ -750,7 +758,7 @@ fn get_neighbors(graph: &CallGraph, name: &str, direction: GatherDirection) -> V
     match direction {
         GatherDirection::Callers | GatherDirection::Both => {
             if let Some(callers) = graph.reverse.get(name) {
-                neighbors.extend(callers.iter().map(|s| s.to_string()));
+                neighbors.extend(callers.iter().map(Arc::clone));
             }
         }
         _ => {}
@@ -822,8 +830,8 @@ mod tests {
         let graph = make_graph();
         let neighbors = get_neighbors(&graph, "A", GatherDirection::Callees);
         assert_eq!(neighbors.len(), 2);
-        assert!(neighbors.contains(&"B".to_string()));
-        assert!(neighbors.contains(&"C".to_string()));
+        assert!(neighbors.contains(&Arc::from("B")));
+        assert!(neighbors.contains(&Arc::from("C")));
     }
 
     #[test]
@@ -831,7 +839,7 @@ mod tests {
         let graph = make_graph();
         let neighbors = get_neighbors(&graph, "B", GatherDirection::Callers);
         assert_eq!(neighbors.len(), 1);
-        assert_eq!(neighbors[0], "A");
+        assert_eq!(&*neighbors[0], "A");
     }
 
     #[test]
@@ -840,8 +848,8 @@ mod tests {
         // B has callees [D] and callers [A]
         let neighbors = get_neighbors(&graph, "B", GatherDirection::Both);
         assert_eq!(neighbors.len(), 2);
-        assert!(neighbors.contains(&"D".to_string()));
-        assert!(neighbors.contains(&"A".to_string()));
+        assert!(neighbors.contains(&Arc::from("D")));
+        assert!(neighbors.contains(&Arc::from("A")));
     }
 
     #[test]
@@ -860,7 +868,7 @@ mod tests {
 
         let callers = get_neighbors(&graph, "D", GatherDirection::Callers);
         assert_eq!(callers.len(), 1);
-        assert_eq!(callers[0], "B");
+        assert_eq!(&*callers[0], "B");
     }
 
     #[test]

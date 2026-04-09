@@ -279,15 +279,29 @@ impl Store {
     /// (pointer bump) instead of deep-cloning all note strings. Notes are read-only
     /// during search, so shared ownership is safe and avoids O(notes * string_len)
     /// cloning on every search call.
+    ///
+    /// PF-7: Uses RwLock — read() for the warm path (concurrent readers OK),
+    /// write() only on cache miss or invalidation.
     pub fn cached_notes_summaries(&self) -> Result<Arc<Vec<NoteSummary>>, StoreError> {
-        let mut guard = self.notes_summaries_cache.lock().unwrap_or_else(|p| {
-            tracing::warn!("notes cache lock poisoned, recovering");
+        // Fast path: read lock, check if populated
+        {
+            let guard = self.notes_summaries_cache.read().unwrap_or_else(|p| {
+                tracing::warn!("notes cache read lock poisoned, recovering");
+                p.into_inner()
+            });
+            if let Some(ref ns) = *guard {
+                return Ok(Arc::clone(ns));
+            }
+        }
+        // Cache miss — upgrade to write lock, populate
+        let mut guard = self.notes_summaries_cache.write().unwrap_or_else(|p| {
+            tracing::warn!("notes cache write lock poisoned, recovering");
             p.into_inner()
         });
+        // Double-check: another thread may have populated while we waited for write lock
         if let Some(ref ns) = *guard {
             return Ok(Arc::clone(ns));
         }
-        // Cache miss — load from DB and populate (lock held, no race)
         let ns = Arc::new(self.list_notes_summaries()?);
         *guard = Some(Arc::clone(&ns));
         Ok(ns)
@@ -297,10 +311,10 @@ impl Store {
     /// Must be called after any operation that modifies notes (upsert, replace, delete)
     /// so subsequent reads see fresh data.
     pub(crate) fn invalidate_notes_cache(&self) {
-        match self.notes_summaries_cache.lock() {
+        match self.notes_summaries_cache.write() {
             Ok(mut guard) => *guard = None,
             Err(p) => {
-                tracing::warn!("notes cache lock poisoned during invalidation, recovering");
+                tracing::warn!("notes cache write lock poisoned during invalidation, recovering");
                 *p.into_inner() = None;
             }
         }

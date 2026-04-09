@@ -41,6 +41,7 @@ pub struct CrossProjectCallee {
     /// Which project this callee lives in.
     pub project: String,
     pub name: String,
+    #[serde(rename = "line_start")]
     pub line: u32,
 }
 

@@ -251,7 +251,8 @@ fn find_contrastive_neighbors(
     // PERF-43: Extract top-N neighbors per chunk using select_nth_unstable_by
     // for O(N) average per row instead of O(N log K) with BinaryHeap.
     // RM-5: Reuse a single candidates buffer to avoid N*(N-1) intermediate allocations.
-    let mut per_row_neighbors: Vec<Vec<(usize, f32)>> = Vec::with_capacity(n);
+    // PF-4: Build result map inline — no intermediate per_row_neighbors Vec, no candidates.clone().
+    let mut result: HashMap<String, Vec<String>> = HashMap::with_capacity(n);
     let mut candidates: Vec<(usize, f32)> = Vec::with_capacity(n);
     for i in 0..n {
         let row = sims.row(i);
@@ -260,27 +261,21 @@ fn find_contrastive_neighbors(
 
         if candidates.len() <= limit {
             candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-            per_row_neighbors.push(candidates.clone());
         } else {
             candidates.select_nth_unstable_by(limit - 1, |a, b| b.1.total_cmp(&a.1));
             candidates.truncate(limit);
             candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-            per_row_neighbors.push(candidates.clone());
         }
-    }
-    drop(sims); // RM-39: Free N*N*4 bytes (~550MB at 12k)
 
-    // Build result map from pre-extracted neighbors
-    let mut result: HashMap<String, Vec<String>> = HashMap::with_capacity(n);
-    for (i, neighbors) in per_row_neighbors.into_iter().enumerate() {
-        let names: Vec<String> = neighbors
-            .iter()
-            .map(|(idx, _)| valid_owned[*idx].1.clone())
-            .collect();
-        if !names.is_empty() {
+        if !candidates.is_empty() {
+            let names: Vec<String> = candidates
+                .iter()
+                .map(|(idx, _)| valid_owned[*idx].1.clone())
+                .collect();
             result.insert(valid_owned[i].0.clone(), names);
         }
     }
+    drop(sims); // RM-39: Free N*N*4 bytes (~550MB at 12k)
 
     let with_neighbors = result.len();
     tracing::info!(total = n, with_neighbors, "Contrastive neighbors computed");

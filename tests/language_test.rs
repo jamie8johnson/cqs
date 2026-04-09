@@ -8113,3 +8113,277 @@ fn css_supports_captured() {
     let chunks = parser.parse_file(file.path()).unwrap();
     assert!(!chunks.is_empty(), "Should capture @supports");
 }
+
+// -- TC-28: Solidity post_process tests ──────────────────────────────
+
+#[test]
+fn tc28_solidity_constructor_reclassified() {
+    // Solidity grammar captures function_definition nodes by name.
+    // The post_process reclassifies any Function/Method named "constructor" to Constructor.
+    // Use explicit `function constructor()` syntax (pre-0.5 Solidity style) so tree-sitter
+    // captures it as a function_definition with name "constructor".
+    let content = r#"
+contract Token {
+    function constructor() public {
+        // init
+    }
+}
+"#;
+    let file = write_temp_file(content, "sol");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let ctor = chunks.iter().find(|c| c.name == "constructor");
+    assert!(
+        ctor.is_some(),
+        "Should find constructor, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(ctor.unwrap().chunk_type, ChunkType::Constructor);
+}
+
+#[test]
+fn tc28_solidity_constant_reclassified() {
+    let content = r#"
+contract Token {
+    uint256 public constant MAX_SUPPLY = 1000000;
+}
+"#;
+    let file = write_temp_file(content, "sol");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let c = chunks.iter().find(|c| c.name == "MAX_SUPPLY");
+    assert!(
+        c.is_some(),
+        "Should find MAX_SUPPLY, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(c.unwrap().chunk_type, ChunkType::Constant);
+}
+
+// -- TC-29: PowerShell Pester test ───────────────────────────────────
+
+#[test]
+fn tc29_powershell_pester_describe_is_test() {
+    // The PowerShell grammar captures function_statement nodes.
+    // The post_process reclassifies Function/Method named Describe/It/Context/Test* to Test.
+    // A function named "Describe" triggers the Pester reclassification.
+    let content = r#"
+function Describe {
+    param([string]$Name, [scriptblock]$Fixture)
+    & $Fixture
+}
+"#;
+    let file = write_temp_file(content, "ps1");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let describe = chunks.iter().find(|c| c.name == "Describe");
+    assert!(
+        describe.is_some(),
+        "Should find Describe, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(describe.unwrap().chunk_type, ChunkType::Test);
+}
+
+// -- TC-30: Scala var → Variable test ────────────────────────────────
+
+#[test]
+fn tc30_scala_var_reclassified_to_variable() {
+    let content = r#"
+object Config {
+  var counter: Int = 0
+}
+"#;
+    let file = write_temp_file(content, "scala");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let counter = chunks.iter().find(|c| c.name == "counter");
+    assert!(
+        counter.is_some(),
+        "Should find counter, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(counter.unwrap().chunk_type, ChunkType::Variable);
+}
+
+// -- TC-31: Dart post_process tests ──────────────────────────────────
+
+#[cfg(feature = "lang-dart")]
+#[test]
+fn tc31_dart_test_function_reclassified() {
+    // Dart post_process reclassifies Function/Method chunks whose name starts with "test"
+    // to ChunkType::Test. The grammar captures top-level function_signature and class methods.
+    // A top-level function named testWidgetRenders triggers the reclassification.
+    let content = r#"
+void testWidgetRenders() {
+  expect(true, isTrue);
+}
+
+void helperSetup() {
+  // not a test
+}
+"#;
+    let file = write_temp_file(content, "dart");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let test_chunk = chunks.iter().find(|c| c.name == "testWidgetRenders");
+    assert!(
+        test_chunk.is_some(),
+        "Should find testWidgetRenders, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(test_chunk.unwrap().chunk_type, ChunkType::Test);
+    // helperSetup should remain Function, not Test
+    let helper = chunks.iter().find(|c| c.name == "helperSetup");
+    assert!(helper.is_some(), "Should find helperSetup");
+    assert_eq!(helper.unwrap().chunk_type, ChunkType::Function);
+}
+
+#[cfg(feature = "lang-dart")]
+#[test]
+fn tc31_dart_extension_reclassified() {
+    let content = r#"
+extension StringX on String {
+  bool get isBlank => trim().isEmpty;
+}
+"#;
+    let file = write_temp_file(content, "dart");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let ext = chunks.iter().find(|c| c.chunk_type == ChunkType::Extension);
+    assert!(
+        ext.is_some(),
+        "Should find extension reclassified to Extension, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+// -- TC-32: Bash variable-inside-function skip test ──────────────────
+
+#[test]
+fn tc32_bash_variable_inside_function_skipped() {
+    let content = r#"
+function deploy() {
+    export CONFIG="prod"
+    local DB_HOST="localhost"
+}
+"#;
+    let file = write_temp_file(content, "sh");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let config = chunks.iter().find(|c| c.name == "CONFIG");
+    assert!(
+        config.is_none(),
+        "CONFIG inside function should be skipped, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    // The function itself should still be captured
+    let deploy = chunks.iter().find(|c| c.name == "deploy");
+    assert!(deploy.is_some(), "deploy function should still be captured");
+    assert_eq!(deploy.unwrap().chunk_type, ChunkType::Function);
+}
+
+// -- TC-33: CUDA extern/constructor tests ────────────────────────────
+
+#[test]
+fn tc33_cuda_extern_c_reclassified() {
+    // The CUDA post_process reclassifies functions inside linkage_specification
+    // (extern "C") to Extern. The function needs a body so it matches the
+    // function_definition grammar rule (declarations without bodies are not captured).
+    let content = r#"
+extern "C" {
+    void cuda_bridge(float* data, int n) {
+        // bridge implementation
+    }
+}
+"#;
+    let file = write_temp_file(content, "cu");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let ext = chunks.iter().find(|c| c.name == "cuda_bridge");
+    assert!(
+        ext.is_some(),
+        "Should find cuda_bridge, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(ext.unwrap().chunk_type, ChunkType::Extern);
+}
+
+#[test]
+fn tc33_cuda_constructor_reclassified() {
+    let content = r#"
+class GpuBuffer {
+    float* data;
+public:
+    GpuBuffer(int size) {
+        cudaMalloc(&data, size * sizeof(float));
+    }
+    ~GpuBuffer() {
+        cudaFree(data);
+    }
+};
+"#;
+    let file = write_temp_file(content, "cu");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let ctor = chunks
+        .iter()
+        .find(|c| c.name == "GpuBuffer" && c.chunk_type == ChunkType::Constructor);
+    assert!(
+        ctor.is_some(),
+        "Should find GpuBuffer constructor, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+// -- TC-35: parse_file oversized file guard test ─────────────────────
+
+#[test]
+fn tc35_parse_file_returns_empty_for_deleted_file() {
+    // We can't create a real 50MB+ file in a unit test, but we can verify
+    // the error path: parse_file should return Err for a nonexistent file
+    // (metadata read fails).
+    let parser = Parser::new().unwrap();
+    let result = parser.parse_file(std::path::Path::new("/tmp/nonexistent_file_cqs_test.rs"));
+    assert!(
+        result.is_err(),
+        "parse_file should error on nonexistent file"
+    );
+}
+
+#[test]
+fn tc35_parse_file_normal_file_succeeds() {
+    // A normal small file should parse fine (not trigger the size guard)
+    let content = "fn small() {}\n";
+    let file = write_temp_file(content, "rs");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    assert!(!chunks.is_empty(), "Normal file should parse");
+}

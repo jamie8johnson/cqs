@@ -341,6 +341,11 @@ impl Store {
     /// Batches names into groups of 20 and issues a combined FTS OR query
     /// per batch, then post-filters results to assign to matching names.
     /// Used by `gather` BFS expansion to avoid N+1 query patterns.
+    ///
+    /// PF-6: Two-phase approach — first fetches lightweight id+name rows via FTS,
+    /// scores and assigns to query names, then hydrates only matched IDs with full
+    /// content via `fetch_chunks_by_ids_async`. Avoids loading full content for
+    /// rows that won't match any query name.
     pub fn search_by_names_batch(
         &self,
         names: &[&str],
@@ -385,10 +390,10 @@ impl Store {
                     .collect();
                 let combined_fts = fts_terms.join(" OR ");
 
-                // Single query for the batch with higher limit
+                // Phase 1: lightweight id+name fetch via FTS
                 let total_limit = limit_per_name * batch.len();
-                let rows: Vec<_> = sqlx::query(
-                    "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id, c.parent_type_name
+                let light_rows: Vec<_> = sqlx::query(
+                    "SELECT c.id, c.name
                      FROM chunks c
                      JOIN chunks_fts f ON c.id = f.id
                      WHERE chunks_fts MATCH ?1
@@ -400,25 +405,44 @@ impl Store {
                 .fetch_all(&self.pool)
                 .await?;
 
-                // Post-filter: assign each row to matching names.
-                // Complexity: O(results × batch.len()), but batch.len() ≤ BATCH_SIZE = 20
-                // and score_name_match does fuzzy substring/prefix scoring, so a HashMap
-                // on exact name is not applicable here. The bound is acceptable.
-                for row in rows {
-                    let chunk = ChunkSummary::from(ChunkRow::from_row(&row));
+                // Phase 2: score name matches and collect IDs to hydrate.
+                // Track (chunk_id, query_name, score) for matched rows.
+                let mut matched: Vec<(String, String, f32)> = Vec::new();
+                let mut ids_to_fetch: Vec<String> = Vec::new();
 
-                    // Find which query names this result matches
+                for row in &light_rows {
+                    let id: String = row.get("id");
+                    let chunk_name: String = row.get("name");
+
                     for (original_name, _normalized) in batch {
-                        let score = crate::store::score_name_match(&chunk.name, original_name);
+                        let score = crate::store::score_name_match(&chunk_name, original_name);
                         if score > 0.0 {
                             let entry = result.entry(original_name.to_string()).or_default();
                             if entry.len() < limit_per_name {
-                                entry.push(crate::store::SearchResult {
-                                    chunk: chunk.clone(),
-                                    score,
-                                });
+                                ids_to_fetch.push(id.clone());
+                                matched.push((id.clone(), original_name.to_string(), score));
                             }
                             break;
+                        }
+                    }
+                }
+
+                if ids_to_fetch.is_empty() {
+                    continue;
+                }
+
+                // Phase 3: hydrate matched IDs with full content
+                let id_refs: Vec<&str> = ids_to_fetch.iter().map(|s| s.as_str()).collect();
+                let full_chunks = self.fetch_chunks_by_ids_async(&id_refs).await?;
+
+                for (id, query_name, score) in matched {
+                    if let Some(chunk_row) = full_chunks.get(&id) {
+                        let entry = result.entry(query_name).or_default();
+                        if entry.len() < limit_per_name {
+                            entry.push(crate::store::SearchResult {
+                                chunk: ChunkSummary::from(chunk_row.clone()),
+                                score,
+                            });
                         }
                     }
                 }

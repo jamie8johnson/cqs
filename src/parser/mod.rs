@@ -881,4 +881,20 @@ mod tests {
         assert!(calls.is_empty());
         assert!(type_refs.is_empty());
     }
+
+    // TC-35: Verify the oversized file guard constant and behavior
+    #[test]
+    fn tc35_max_file_size_is_50mb() {
+        assert_eq!(MAX_FILE_SIZE, 50 * 1024 * 1024);
+    }
+
+    #[test]
+    fn tc35_parse_file_errors_on_missing_file() {
+        let parser = Parser::new().unwrap();
+        let result = parser.parse_file(std::path::Path::new("/tmp/cqs_nonexistent_tc35.rs"));
+        assert!(
+            result.is_err(),
+            "parse_file should error on nonexistent file"
+        );
+    }
 }

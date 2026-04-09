@@ -444,6 +444,12 @@ mod tests {
     }
 
     // ===== search_across_projects tests =====
+    // TC-36: Full end-to-end search_across_projects test with a temp registry
+    // is not feasible here because it requires controlling HOME/XDG env vars
+    // (which would break parallel test execution) and setting up multiple
+    // stores with valid embeddings. The constituent pieces are tested below.
+    // TODO: Add integration test with process-isolated temp HOME if coverage
+    // is needed beyond the unit tests here.
 
     /// Helper: create a fake project registry TOML pointing at the given entries.
     /// Returns a guard that restores HOME/XDG after the test.

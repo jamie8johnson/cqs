@@ -472,7 +472,10 @@ macro_rules! define_chunk_types {
         impl std::str::FromStr for ChunkType {
             type Err = ParseChunkTypeError;
             fn from_str(s: &str) -> Result<Self, Self::Err> {
-                match s.to_lowercase().as_str() {
+                // AD-6: Accept hyphenated aliases (e.g., "stored-proc", "type-alias", "config-key")
+                // by stripping hyphens after lowercasing, so both forms parse identically.
+                let normalized = s.to_lowercase().replace('-', "");
+                match normalized.as_str() {
                     $($name => Ok(ChunkType::$variant),)+
                     _ => Err(ParseChunkTypeError {
                         input: s.to_string(),
@@ -2192,6 +2195,67 @@ mod tests {
             capture_name_to_chunk_type("name"),
             None,
             "'name' is not a chunk type capture"
+        );
+    }
+
+    // ===== EXT-3: human_name() compile-time guard =====
+
+    /// Verify that `human_name()` returns a properly spaced, lowercase string for
+    /// every `ChunkType` variant. Catches CamelCase leaks like "TypeAlias" instead
+    /// of "type alias" — any uppercase letter immediately followed by a lowercase
+    /// letter indicates a missing `human_name()` match arm.
+    #[test]
+    fn test_all_chunk_types_have_human_name() {
+        let camel_case = regex::Regex::new(r"[A-Z][a-z]").unwrap();
+        for &ct in ChunkType::ALL {
+            let name = ct.human_name();
+            assert!(
+                !camel_case.is_match(&name),
+                "ChunkType::{ct:?}.human_name() returned \"{name}\" which contains CamelCase. \
+                 Add an explicit arm in human_name() to return a spaced lowercase form."
+            );
+        }
+    }
+
+    // ===== EXT-4: Language count guard =====
+
+    /// Hard-coded language count guard. When a new language is added, this test
+    /// fails and reminds the contributor to update the constant.
+    #[test]
+    fn test_language_variant_count() {
+        const EXPECTED_LANGUAGE_COUNT: usize = 54;
+        let actual = Language::all_variants().len();
+        assert_eq!(
+            actual, EXPECTED_LANGUAGE_COUNT,
+            "Language variant count changed: expected {EXPECTED_LANGUAGE_COUNT}, got {actual}. \
+             If you added a language, update EXPECTED_LANGUAGE_COUNT in this test."
+        );
+    }
+
+    // ===== AD-6: Hyphenated chunk type aliases =====
+
+    #[test]
+    fn test_chunk_type_from_str_hyphenated() {
+        assert_eq!(
+            "stored-proc".parse::<ChunkType>().unwrap(),
+            ChunkType::StoredProc
+        );
+        assert_eq!(
+            "type-alias".parse::<ChunkType>().unwrap(),
+            ChunkType::TypeAlias
+        );
+        assert_eq!(
+            "config-key".parse::<ChunkType>().unwrap(),
+            ChunkType::ConfigKey
+        );
+        // Non-hyphenated forms still work
+        assert_eq!(
+            "storedproc".parse::<ChunkType>().unwrap(),
+            ChunkType::StoredProc
+        );
+        assert_eq!(
+            "typealias".parse::<ChunkType>().unwrap(),
+            ChunkType::TypeAlias
         );
     }
 }
