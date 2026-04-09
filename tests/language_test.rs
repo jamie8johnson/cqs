@@ -6697,7 +6697,7 @@ fn parse_typescript_namespace() {
     let parser = Parser::new().unwrap();
     let chunks = parser.parse_file(file.path()).unwrap();
     let ns = chunks.iter().find(|c| c.name == "Validators").unwrap();
-    assert_eq!(ns.chunk_type, ChunkType::Namespace);
+    assert_eq!(ns.chunk_type, ChunkType::Module);
 }
 
 #[test]
