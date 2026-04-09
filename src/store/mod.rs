@@ -1,3 +1,6 @@
+// DS-5: WRITE_LOCK guard is held across .await inside block_on().
+// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+#![allow(clippy::await_holding_lock)]
 //! SQLite storage for chunks, embeddings, and call graph data.
 //!
 //! Provides sync methods that internally use tokio runtime to execute async sqlx operations.
@@ -30,7 +33,22 @@ pub(crate) mod helpers;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+
+/// Serialize all write transactions across Store instances within a process.
+///
+/// SQLite WAL mode allows concurrent readers, but only one writer at a time.
+/// `pool.begin()` issues `BEGIN DEFERRED` — two concurrent processes (e.g.,
+/// `cqs watch` + `cqs index`) can both acquire deferred transactions and race
+/// to upgrade to exclusive, causing SQLITE_BUSY (DS-5).
+///
+/// This mutex ensures at most one in-process write transaction is active at
+/// any time. The guard is held alongside the sqlx `Transaction` and dropped
+/// when the transaction commits/rolls back.
+///
+/// Note: this serializes writes within a single process only. Cross-process
+/// serialization relies on SQLite's busy_timeout (5s) and the index lock file.
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{ConnectOptions, SqlitePool};
@@ -453,13 +471,38 @@ impl Store {
         Ok(store)
     }
 
+    /// Begin a write transaction with in-process serialization (DS-5).
+    ///
+    /// Acquires `WRITE_LOCK` before calling `pool.begin()`, preventing two
+    /// concurrent write transactions from racing to upgrade their deferred
+    /// locks to exclusive (which causes SQLITE_BUSY).
+    ///
+    /// Returns both the mutex guard and the transaction. The guard must be
+    /// held (in scope) until the transaction commits or rolls back — dropping
+    /// the guard early re-enables concurrent writes.
+    ///
+    /// Read-only transactions should use `self.pool.begin()` directly.
+    pub(crate) async fn begin_write(
+        &self,
+    ) -> Result<
+        (
+            std::sync::MutexGuard<'static, ()>,
+            sqlx::Transaction<'_, sqlx::Sqlite>,
+        ),
+        sqlx::Error,
+    > {
+        let guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = self.pool.begin().await?;
+        Ok((guard, tx))
+    }
+
     /// Create a new index
     /// Wraps all DDL and metadata inserts in a single transaction so a
     /// crash mid-init cannot leave a partial schema.
     pub fn init(&self, model_info: &ModelInfo) -> Result<(), StoreError> {
         let _span = tracing::info_span!("Store::init").entered();
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
 
             // Create tables - execute each statement separately
             let schema = include_str!("../schema.sql");

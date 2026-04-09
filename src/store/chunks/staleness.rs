@@ -1,3 +1,6 @@
+// DS-5: WRITE_LOCK guard is held across .await inside block_on().
+// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+#![allow(clippy::await_holding_lock)]
 //! Staleness checks and pruning for missing/stale files.
 
 use std::collections::HashSet;
@@ -83,7 +86,7 @@ impl Store {
             const BATCH_SIZE: usize = 100;
             let mut deleted = 0u32;
 
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
 
             for batch in missing.chunks(BATCH_SIZE) {
                 let placeholder_str = crate::store::helpers::make_placeholders(batch.len());
@@ -186,7 +189,7 @@ impl Store {
                 .collect();
 
             // Phase 2: single transaction for ALL mutations
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
 
             // 2a. Delete chunks for missing files (batched for SQLite param limit)
             const BATCH_SIZE: usize = 100;

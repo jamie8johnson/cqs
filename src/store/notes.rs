@@ -1,3 +1,6 @@
+// DS-5: WRITE_LOCK guard is held across .await inside block_on().
+// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+#![allow(clippy::await_holding_lock)]
 //! Note CRUD operations
 
 use std::path::Path;
@@ -71,7 +74,7 @@ impl Store {
         );
 
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
 
             let now = chrono::Utc::now().to_rfc3339();
             for note in notes {
@@ -103,7 +106,7 @@ impl Store {
         );
 
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
 
             // Step 1: Delete existing notes + FTS for this file
             sqlx::query(

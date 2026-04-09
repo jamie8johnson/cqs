@@ -289,6 +289,24 @@ impl Config {
         for r in &mut self.references {
             clamp_config_f32(&mut r.weight, "reference.weight", 0.0, 1.0);
         }
+
+        // SEC-4: Warn if any reference path is outside project and home directories.
+        let home = dirs::home_dir();
+        let cwd = std::env::current_dir().ok();
+        for r in &self.references {
+            if let Ok(canonical) = r.path.canonicalize() {
+                let in_home = home.as_ref().is_some_and(|h| canonical.starts_with(h));
+                let in_project = cwd.as_ref().is_some_and(|p| canonical.starts_with(p));
+                let in_cqs_dir = canonical.components().any(|c| c.as_os_str() == ".cqs");
+                if !in_home && !in_project && !in_cqs_dir {
+                    tracing::warn!(
+                        name = %r.name,
+                        path = %canonical.display(),
+                        "Reference path is outside project and home directories"
+                    );
+                }
+            }
+        }
         if let Some(ref mut limit) = self.limit {
             clamp_config_usize(limit, "limit", 1, 100);
         }
