@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-04-09
+
 ### Added
 - **Cross-project call graph** — `--cross-project` flag on callers, callees, deps, impact, search, explain (#850).
 - **4 new chunk types** — Extern, Namespace, Middleware, Modifier (29 total) (#851).
+
+### Changed
+- **README eval numbers** — live eval table updated to v2 265q results (48.5%/66.7% baseline, 48.5%/67.9% with summaries). Fixture eval unchanged (91.2% R@1).
+- **Cargo.toml description** — updated to 91.2% R@1 / 0.951 MRR.
 
 ### Fixed
 - **Chunk type coverage gaps** across 15 languages — constructor, test, extern, extension reclassification (#852).
@@ -17,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **OB-8/9**: Watch mode tracing for skipped events and pending_files overflow.
 - **OB-10/12**: Missing tracing spans on `search_single_project` and `load_single_reference`.
 - **DOC-36**: Doc comments on 8 undocumented post_process functions.
+- **DOC-34**: `--include-types` corrected to `--type-impact` in README impact example.
+- **DOC-35**: `cross_project.rs` added to store/calls module listing in CONTRIBUTING.md.
 
 ## [1.20.0] - 2026-04-08
 
