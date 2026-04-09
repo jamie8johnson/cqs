@@ -1,9 +1,19 @@
 //! Optional usage telemetry for understanding how agents use cqs.
 //!
-//! Logs command invocations to `.cqs/telemetry.jsonl` when `CQS_TELEMETRY=1`.
-//! Each entry records: timestamp, command name, query (if any), and result count.
+//! Logs command invocations to `.cqs/telemetry.jsonl`. Each entry records:
+//! timestamp, command name, query (if any), and result count.
 //!
-//! Off by default. No network calls — local file only.
+//! **Activation:** Telemetry is active when either:
+//! - `CQS_TELEMETRY=1` env var is set, OR
+//! - `.cqs/telemetry.jsonl` already exists (created by a previous `cqs telemetry reset`)
+//!
+//! This means: once you opt in (via env var or `cqs telemetry reset`), telemetry
+//! stays on for all processes that use this project directory — including subagents
+//! and non-interactive shells that may not inherit the env var.
+//!
+//! **Opt out:** Delete `.cqs/telemetry.jsonl` and unset `CQS_TELEMETRY`.
+//!
+//! Local file only. No network calls. Auto-archives at 10 MB.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -23,7 +33,9 @@ pub fn log_command(
     query: Option<&str>,
     result_count: Option<usize>,
 ) {
-    if std::env::var("CQS_TELEMETRY").as_deref() != Ok("1") {
+    // Active if env var is set OR telemetry file already exists (opt-in persists)
+    let path = cqs_dir.join("telemetry.jsonl");
+    if std::env::var("CQS_TELEMETRY").as_deref() != Ok("1") && !path.exists() {
         return;
     }
 
@@ -39,7 +51,7 @@ pub fn log_command(
         "results": result_count,
     });
 
-    let path = cqs_dir.join("telemetry.jsonl");
+    // path already declared above for existence check
     let _ = (|| -> std::io::Result<()> {
         // DS-NEW-2: advisory lock to prevent races with concurrent telemetry reset.
         // Non-blocking try_lock — if reset holds it, skip this write silently.
