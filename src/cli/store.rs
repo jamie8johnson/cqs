@@ -140,7 +140,7 @@ impl<'a> CommandContext<'a> {
                 .map(|h| h.join(".cache/huggingface/splade-onnx"))
                 .unwrap_or_default();
             if !model_dir.join("model.onnx").exists() {
-                tracing::debug!("SPLADE model not found, hybrid search unavailable");
+                tracing::warn!("SPLADE model not found, hybrid search unavailable");
                 return None;
             }
             match cqs::splade::SpladeEncoder::new(

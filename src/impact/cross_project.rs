@@ -91,6 +91,17 @@ pub fn analyze_impact_cross(
     }
 
     // Build transitive callers (everything at depth > 0, excluding target)
+    // TODO: resolve file/line from CallGraph (cross-project stores don't track source locations in edges yet)
+    let caller_count = visited
+        .iter()
+        .filter(|(n, (d, _))| *d > 0 && n.as_str() != name)
+        .count();
+    if caller_count > 0 {
+        tracing::warn!(
+            count = caller_count,
+            "Cross-project callers have empty file/line; resolve from CallGraph when edge metadata is available"
+        );
+    }
     let mut transitive_callers: Vec<TransitiveCaller> = visited
         .iter()
         .filter(|(n, (d, _))| *d > 0 && n.as_str() != name)
@@ -124,7 +135,9 @@ pub fn analyze_impact_cross(
     };
 
     // Type impact is not supported cross-project (would need cross-store type edges)
-    let _ = include_types;
+    if include_types {
+        tracing::warn!("--include-types not supported in cross-project mode");
+    }
 
     Ok(ImpactResult {
         function_name: name.to_string(),
@@ -274,6 +287,7 @@ mod tests {
     use std::collections::HashMap as StdMap;
 
     /// Helper: build a NamedStore backed by a temp Store with synthetic call edges.
+    // NOTE: similar helper exists in store/calls/cross_project.rs
     fn make_named_store(name: &str, forward_edges: Vec<(&str, &str)>) -> NamedStore {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("index.db");
@@ -297,7 +311,9 @@ mod tests {
                 .unwrap();
         }
 
-        std::mem::forget(dir);
+        // Keep the tempdir alive so the db file survives for the test duration.
+        // `into_path` disables automatic cleanup; tests are short-lived so this is fine.
+        let _keep = dir.into_path();
 
         NamedStore {
             name: name.to_string(),

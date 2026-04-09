@@ -57,6 +57,7 @@ pub struct TaggedResult {
 
 /// Load a single reference index, returning None on failure.
 fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
+    let _span = tracing::info_span!("load_single_reference", name = %cfg.name).entered();
     if cfg
         .path
         .symlink_metadata()

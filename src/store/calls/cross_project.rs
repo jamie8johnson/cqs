@@ -71,17 +71,21 @@ impl CrossProjectContext {
     }
 
     /// Build from the local store and `.cqs.toml` reference config.
-    pub fn from_config(
-        _local: &Store,
-        root: &std::path::Path,
-    ) -> Result<Self, crate::store::helpers::StoreError> {
+    pub fn from_config(root: &std::path::Path) -> Result<Self, crate::store::helpers::StoreError> {
         let _span = tracing::info_span!("cross_project_from_config").entered();
         let config = crate::config::Config::load(root);
 
+        let db_path = root.join(".cqs/index.db");
+        let local_store = match Store::open_readonly(&db_path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "open_readonly failed, trying writable");
+                Store::open(&db_path)?
+            }
+        };
         let mut stores = vec![NamedStore {
             name: "local".to_string(),
-            store: Store::open_readonly(&root.join(".cqs/index.db"))
-                .unwrap_or_else(|_| Store::open(&root.join(".cqs/index.db")).expect("open local")),
+            store: local_store,
         }];
 
         for ref_cfg in &config.references {
@@ -235,7 +239,8 @@ mod tests {
     use super::*;
     use std::collections::HashMap as StdMap;
 
-    /// Helper: build a NamedStore backed by a temp in-memory Store with a synthetic call graph.
+    /// Helper: build a NamedStore backed by a temp Store with a synthetic call graph.
+    // NOTE: similar helper exists in impact/cross_project.rs
     fn make_named_store(
         name: &str,
         forward: StdMap<String, Vec<String>>,
@@ -285,9 +290,9 @@ mod tests {
             }
         }
 
-        // Leak the tempdir so the db file survives for the test duration.
-        // Tests are short-lived so this is fine.
-        std::mem::forget(dir);
+        // Keep the tempdir alive so the db file survives for the test duration.
+        // `into_path` disables automatic cleanup; tests are short-lived so this is fine.
+        let _keep = dir.into_path();
 
         NamedStore {
             name: name.to_string(),
