@@ -1,3 +1,6 @@
+// DS-5: WRITE_LOCK guard is held across .await inside block_on().
+// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+#![allow(clippy::await_holding_lock)]
 //! Call graph upsert, delete, batch operations, and basic stats.
 
 use std::path::Path;
@@ -17,7 +20,7 @@ impl Store {
         tracing::trace!(chunk_id, call_count = calls.len(), "upserting chunk calls");
 
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
 
             sqlx::query("DELETE FROM calls WHERE caller_id = ?1")
                 .bind(chunk_id)
@@ -61,7 +64,7 @@ impl Store {
         tracing::trace!(call_count = calls.len(), "upserting calls batch");
 
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
 
             // Collect unique chunk IDs to delete old calls
             let mut seen_ids = std::collections::HashSet::new();
@@ -189,7 +192,7 @@ impl Store {
         );
 
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
 
             sqlx::query("DELETE FROM function_calls WHERE file = ?1")
                 .bind(&file_str)

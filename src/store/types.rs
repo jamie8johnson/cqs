@@ -1,3 +1,6 @@
+// DS-5: WRITE_LOCK guard is held across .await inside block_on().
+// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+#![allow(clippy::await_holding_lock)]
 //! Type edge storage and queries
 //!
 //! Stores type-level dependency edges extracted by the parser (Phase 2b).
@@ -148,7 +151,7 @@ impl Store {
         tracing::trace!(chunk_id, count = type_refs.len(), "upserting type edges");
 
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
 
             sqlx::query("DELETE FROM type_edges WHERE source_chunk_id = ?1")
                 .bind(chunk_id)
@@ -208,7 +211,7 @@ impl Store {
 
         self.rt.block_on(async {
             // DS-14: Begin transaction before reading chunk IDs to prevent TOCTOU
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
             let inserted = upsert_type_edges_one_file(&mut tx, &file_str, chunk_type_refs).await?;
 
             if inserted > 0 {
@@ -240,7 +243,7 @@ impl Store {
         }
 
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
             let mut total_inserted = 0usize;
 
             for (file, chunk_type_refs) in file_edges {

@@ -1,3 +1,6 @@
+// DS-5: WRITE_LOCK guard is held across .await inside block_on().
+// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+#![allow(clippy::await_holding_lock)]
 //! Chunk upsert, metadata, delete, and summary operations.
 
 use std::path::Path;
@@ -49,7 +52,7 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
 
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
             let old_hashes = snapshot_content_hashes(&mut tx, chunks).await?;
             let now = chrono::Utc::now().to_rfc3339();
             batch_insert_chunks(&mut tx, chunks, &embedding_bytes, source_mtime, &now).await?;
@@ -122,7 +125,7 @@ impl Store {
         // PERF-40: Temp table + single UPDATE...FROM instead of N individual UPDATEs.
         // Reduces ~10K round-trips to ~100 batch INSERTs + 1 UPDATE.
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
 
             // 1. Create temp table for batch staging
             sqlx::query(
@@ -296,7 +299,7 @@ impl Store {
         }
         let now = chrono::Utc::now().to_rfc3339();
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
             const BATCH_SIZE: usize = 132; // 132 * 5 params = 660 < 999
             for batch in summaries.chunks(BATCH_SIZE) {
                 let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
@@ -413,7 +416,7 @@ impl Store {
         let origin_str = crate::normalize_path(origin);
 
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
 
             sqlx::query(
                 "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin = ?1)",
@@ -456,7 +459,7 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
 
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
             let old_hashes = snapshot_content_hashes(&mut tx, chunks).await?;
             let now = chrono::Utc::now().to_rfc3339();
             batch_insert_chunks(&mut tx, chunks, &embedding_bytes, source_mtime, &now).await?;
@@ -534,7 +537,7 @@ impl Store {
         }
 
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
 
             // Use a temp table to avoid SQLite's 999-parameter limit.
             // A file can have 1000+ chunks (e.g., large generated files).

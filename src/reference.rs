@@ -72,6 +72,23 @@ fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
         return None;
     }
 
+    // SEC-4: Warn if reference path is outside project and home directories.
+    // Canonicalize to resolve any `..` segments, then check containment.
+    if let Ok(canonical) = cfg.path.canonicalize() {
+        let home = dirs::home_dir();
+        let cwd = std::env::current_dir().ok();
+        let in_home = home.as_ref().is_some_and(|h| canonical.starts_with(h));
+        let in_project = cwd.as_ref().is_some_and(|p| canonical.starts_with(p));
+        let in_cqs_dir = canonical.components().any(|c| c.as_os_str() == ".cqs");
+        if !in_home && !in_project && !in_cqs_dir {
+            tracing::warn!(
+                name = %cfg.name,
+                path = %canonical.display(),
+                "Reference path is outside project and home directories"
+            );
+        }
+    }
+
     let db_path = cfg.path.join("index.db");
     let store = match Store::open_readonly(&db_path) {
         Ok(s) => s,

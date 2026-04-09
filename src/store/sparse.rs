@@ -1,3 +1,6 @@
+// DS-5: WRITE_LOCK guard is held across .await inside block_on().
+// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+#![allow(clippy::await_holding_lock)]
 //! Sparse vector storage for SPLADE hybrid search.
 
 use super::Store;
@@ -18,7 +21,7 @@ impl Store {
             return Ok(0);
         }
         self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
+            let (_guard, mut tx) = self.begin_write().await?;
             let mut total = 0usize;
 
             // Batched DELETE for all chunk IDs (PF-11: N→ceil(N/333) SQL statements)
