@@ -48,7 +48,7 @@
 
 ;; Namespaces
 (namespace_definition
-  name: (namespace_identifier) @name) @module
+  name: (namespace_identifier) @name) @namespace
 
 ;; Concepts (C++20)
 (concept_definition
@@ -74,3 +74,4 @@
 ;; Preprocessor function macros
 (preproc_function_def
   name: (identifier) @name) @macro
+

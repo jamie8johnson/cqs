@@ -48,7 +48,7 @@
 
 ;; Namespaces
 (namespace_definition
-  name: (namespace_identifier) @name) @module
+  name: (namespace_identifier) @name) @namespace
 
 ;; Type aliases — using X = Y (C++11)
 (alias_declaration

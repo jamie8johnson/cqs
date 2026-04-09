@@ -5793,6 +5793,18 @@ fn post_process_rust_rust(
         }
     }
 
+    // Functions inside extern blocks → Extern
+    if *chunk_type == ChunkType::Function {
+        let mut parent = node.parent();
+        while let Some(p) = parent {
+            if p.kind() == "extern_block" || p.kind() == "foreign_mod_item" {
+                *chunk_type = ChunkType::Extern;
+                break;
+            }
+            parent = p.parent();
+        }
+    }
+
     true
 }
 

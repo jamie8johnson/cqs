@@ -23,3 +23,10 @@
 (record_declaration name: (identifier) @name) @struct
 (interface_declaration name: (identifier) @name) @interface
 (enum_declaration name: (identifier) @name) @enum
+
+;; Namespaces
+(namespace_declaration
+  name: (identifier) @name) @namespace
+
+(namespace_declaration
+  name: (qualified_name) @name) @namespace
