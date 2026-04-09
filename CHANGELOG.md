@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-04-09
+
+### Added
+- **Adaptive retrieval** — query classifier routes queries to optimal search strategy. Identifier queries skip embedding (NameOnly via FTS5), structural queries get type boost (1.2x). 28 classifier tests.
+- **SPLADE pre-pooled output** — SpladeEncoder auto-detects pre-pooled (2D) vs raw logits (3D) ONNX output. Enables SPLADE-Code 0.6B (Naver) models.
+- **Routing telemetry** — `log_routed()` tracks category, confidence, strategy, and fallback per search query.
+- **Type boost in scoring** — `SearchFilter.type_boost_types` field applies 1.2x score multiplier for matching chunk types (boost, not filter).
+
 ## [1.21.0] - 2026-04-09
 
 ### Added

@@ -4,6 +4,7 @@
 //! search. See `math.rs` for similarity scoring.
 
 mod query;
+pub mod router;
 pub(crate) mod scoring;
 pub(crate) mod synonyms;
 

@@ -98,7 +98,7 @@ pub mod doc_writer;
 pub mod llm;
 pub mod plan;
 pub(crate) mod scout;
-pub(crate) mod search;
+pub mod search;
 pub(crate) mod structural;
 pub(crate) mod task;
 pub(crate) mod where_to_add;

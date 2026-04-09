@@ -174,44 +174,75 @@ impl SpladeEncoder {
             ])
             .map_err(ort_err)?;
 
-        // Get logits: shape [1, seq_len, vocab_size]
-        let logits_output = outputs.get("logits").ok_or_else(|| {
-            SpladeError::InferenceFailed(format!(
-                "No 'logits' output. Available: {:?}",
-                outputs.keys().collect::<Vec<_>>()
-            ))
-        })?;
-        let (shape, data) = logits_output.try_extract_tensor::<f32>().map_err(ort_err)?;
+        // Auto-detect output format by key name:
+        // - "sparse_vector" → pre-pooled (2D: [batch, vocab_size]) — SPLADE-Code 0.6B+
+        // - "logits" → raw logits (3D: [batch, seq_len, vocab_size]) — our trained models
+        let sparse = if let Some(sv_output) = outputs.get("sparse_vector") {
+            // Pre-pooled path: model already did splade_max internally
+            let (shape, data) = sv_output.try_extract_tensor::<f32>().map_err(ort_err)?;
+            if shape.len() != 2 {
+                return Err(SpladeError::InferenceFailed(format!(
+                    "Pre-pooled sparse_vector expected 2D [batch, vocab], got {}D",
+                    shape.len()
+                )));
+            }
+            let vocab = shape[1] as usize;
+            tracing::debug!(vocab, format = "pre_pooled", "SPLADE output detected");
 
-        if shape.len() != 3 {
+            // Threshold directly — values are already activated
+            let sv: SparseVector = data
+                .iter()
+                .enumerate()
+                .filter_map(|(id, &val)| {
+                    if val > self.threshold {
+                        Some((id as u32, val))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            sv
+        } else if let Some(logits_output) = outputs.get("logits") {
+            // Raw logits path: [1, seq_len, vocab_size] — apply max pool + ReLU + log(1+x)
+            let (shape, data) = logits_output.try_extract_tensor::<f32>().map_err(ort_err)?;
+            if shape.len() != 3 {
+                return Err(SpladeError::InferenceFailed(format!(
+                    "Expected 3D logits [batch, seq, vocab], got {}D",
+                    shape.len()
+                )));
+            }
+            let vocab = shape[2] as usize;
+            tracing::debug!(vocab, format = "raw_logits", "SPLADE output detected");
+
+            let logits = ArrayView2::from_shape((seq_len, vocab), data).map_err(|e| {
+                SpladeError::InferenceFailed(format!("Failed to reshape logits: {e}"))
+            })?;
+
+            // Max pool over sequence dimension → [vocab_size]
+            let pooled = logits.fold_axis(Axis(0), f32::NEG_INFINITY, |&a, &b| a.max(b));
+
+            // ReLU + log(1+x) + threshold
+            let sv: SparseVector = pooled
+                .iter()
+                .enumerate()
+                .filter_map(|(id, &val)| {
+                    let activated = (1.0 + val.max(0.0)).ln();
+                    if activated > self.threshold {
+                        Some((id as u32, activated))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            sv
+        } else {
             return Err(SpladeError::InferenceFailed(format!(
-                "Expected 3D logits [batch, seq, vocab], got {}D",
-                shape.len()
+                "No recognized SPLADE output. Expected 'sparse_vector' or 'logits'. Available: {:?}",
+                outputs.keys().collect::<Vec<_>>()
             )));
-        }
+        };
 
-        let vocab = shape[2] as usize;
-        let logits = ArrayView2::from_shape((seq_len, vocab), data)
-            .map_err(|e| SpladeError::InferenceFailed(format!("Failed to reshape logits: {e}")))?;
-
-        // Max pool over sequence dimension → [vocab_size]
-        let pooled = logits.fold_axis(Axis(0), f32::NEG_INFINITY, |&a, &b| a.max(b));
-
-        // ReLU + log(1+x) + threshold
-        let sparse: SparseVector = pooled
-            .iter()
-            .enumerate()
-            .filter_map(|(id, &val)| {
-                let activated = (1.0 + val.max(0.0)).ln();
-                if activated > self.threshold {
-                    Some((id as u32, activated))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        tracing::debug!(non_zero = sparse.len(), vocab, "SPLADE encoding complete");
+        tracing::debug!(non_zero = sparse.len(), "SPLADE encoding complete");
         Ok(sparse)
     }
 

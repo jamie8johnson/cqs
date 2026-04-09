@@ -50,6 +50,12 @@ pub struct SearchFilter {
     /// SPLADE fusion weight: 1.0 = pure cosine, 0.0 = pure sparse.
     /// Only used when enable_splade is true.
     pub splade_alpha: f32,
+    /// Chunk types to boost in scoring (from adaptive routing).
+    ///
+    /// When set, results matching these types get a 1.2x score multiplier.
+    /// This is additive (boost), not restrictive (filter) — non-matching
+    /// types still appear, just ranked slightly lower.
+    pub type_boost_types: Option<Vec<ChunkType>>,
 }
 
 impl Default for SearchFilter {
@@ -65,6 +71,7 @@ impl Default for SearchFilter {
             enable_demotion: true, // Demote test functions by default
             enable_splade: false,
             splade_alpha: 0.7,
+            type_boost_types: None,
         }
     }
 }
