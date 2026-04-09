@@ -80,7 +80,7 @@ pub(crate) fn cmd_deps(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_deps", name, reverse, cross_project).entered();
     if cross_project {
-        tracing::warn!("--cross-project for deps is not yet implemented, using local only");
+        tracing::warn!("cross-project deps not yet supported, returning local result");
     }
     let store = &ctx.store;
     let root = &ctx.root;

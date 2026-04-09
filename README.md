@@ -645,20 +645,49 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CQS_EMBEDDING_MODEL` | `bge-large` | Embedding model preset (`bge-large`, `v9-200k`, `e5-base`) or custom repo |
-| `CQS_ONNX_DIR` | (auto) | Custom ONNX model directory (must contain `model.onnx` + `tokenizer.json`) |
-| `CQS_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder model for `--rerank` |
-| `CQS_EMBED_BATCH_SIZE` | `64` | ONNX inference batch size (reduce if GPU OOM) |
-| `CQS_FILE_BATCH_SIZE` | `5000` | Files per parse batch in pipeline |
+| `CQS_API_BASE` | (none) | LLM API base URL (legacy alias for `CQS_LLM_API_BASE`) |
 | `CQS_CACHE_MAX_SIZE` | `1073741824` (1 GB) | Global embedding cache size limit |
-| `CQS_SPLADE_THRESHOLD` | `0.01` | SPLADE sparse activation threshold |
 | `CQS_CAGRA_MAX_BYTES` | (auto) | Max GPU memory for CAGRA index |
 | `CQS_CAGRA_THRESHOLD` | `50000` | Min chunks to trigger CAGRA over HNSW |
-| `CQS_TRACE_MAX_NODES` | `1000` | Max nodes in call chain trace |
+| `CQS_DEFERRED_FLUSH_INTERVAL` | `50` | Chunks between deferred flushes during indexing |
+| `CQS_EMBED_BATCH_SIZE` | `64` | ONNX inference batch size (reduce if GPU OOM) |
+| `CQS_EMBED_CHANNEL_DEPTH` | `64` | Embedding pipeline channel depth (bounds memory) |
+| `CQS_EMBEDDING_DIM` | (auto) | Override embedding dimension for custom ONNX models |
+| `CQS_EMBEDDING_MODEL` | `bge-large` | Embedding model preset (`bge-large`, `v9-200k`, `e5-base`) or custom repo |
+| `CQS_FILE_BATCH_SIZE` | `5000` | Files per parse batch in pipeline |
+| `CQS_GATHER_MAX_NODES` | `200` | Max BFS nodes in `gather` context assembly |
+| `CQS_HNSW_EF_CONSTRUCTION` | `200` | HNSW construction-time search width |
+| `CQS_HNSW_EF_SEARCH` | `100` | HNSW query-time search width |
+| `CQS_HNSW_M` | `24` | HNSW connections per node |
+| `CQS_HNSW_MAX_DATA_BYTES` | `1073741824` (1 GB) | Max HNSW data file size |
+| `CQS_HNSW_MAX_GRAPH_BYTES` | `524288000` (500 MB) | Max HNSW graph file size |
+| `CQS_HNSW_MAX_ID_MAP_BYTES` | `524288000` (500 MB) | Max HNSW ID map file size |
+| `CQS_HYDE_MAX_TOKENS` | (config) | Max tokens for HyDE query prediction |
+| `CQS_IMPACT_MAX_NODES` | `10000` | Max BFS nodes in impact analysis |
+| `CQS_LLM_API_BASE` | `https://api.anthropic.com/v1` | LLM API base URL |
+| `CQS_LLM_MAX_CONTENT_CHARS` | `8000` | Max content chars in LLM prompts |
+| `CQS_LLM_MAX_TOKENS` | `100` | Max tokens for LLM summary generation |
+| `CQS_LLM_MODEL` | `claude-haiku-4-5` | LLM model name for summaries |
+| `CQS_LLM_PROVIDER` | `anthropic` | LLM provider (`anthropic`) |
+| `CQS_MAX_CONTRASTIVE_CHUNKS` | `30000` | Max chunks for contrastive summary matrix (memory = N*N*4 bytes) |
+| `CQS_MAX_SEQ_LENGTH` | (auto) | Override max sequence length for custom ONNX models |
+| `CQS_MD_MAX_SECTION_LINES` | `150` | Max markdown section lines before overflow split |
+| `CQS_MD_MIN_SECTION_LINES` | `30` | Min markdown section lines (smaller sections merge) |
+| `CQS_ONNX_DIR` | (auto) | Custom ONNX model directory (must contain `model.onnx` + `tokenizer.json`) |
+| `CQS_PARSE_CHANNEL_DEPTH` | `512` | Parse pipeline channel depth |
+| `CQS_PDF_SCRIPT` | (auto) | Path to `pdf_to_md.py` for PDF conversion |
+| `CQS_QUERY_CACHE_SIZE` | `128` | Embedding query cache entries |
+| `CQS_RAYON_THREADS` | (auto) | Rayon thread pool size for parallel operations |
+| `CQS_RERANKER_MAX_LENGTH` | `512` | Max input length for cross-encoder reranker |
+| `CQS_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder model for `--rerank` |
 | `CQS_RRF_K` | `60` | RRF fusion constant (higher = more weight to top results) |
-| `CQS_WATCH_REBUILD_THRESHOLD` | `100` | Files changed before watch triggers full HNSW rebuild |
-| `CQS_WATCH_MAX_PENDING` | `1000` | Max pending file changes before watch forces flush |
+| `CQS_SKIP_ENRICHMENT` | (none) | Comma-separated enrichment layers to skip |
+| `CQS_SPLADE_THRESHOLD` | `0.01` | SPLADE sparse activation threshold |
 | `CQS_TELEMETRY` | `0` | Set to `1` to enable command usage telemetry |
+| `CQS_TEST_MAP_MAX_NODES` | `10000` | Max BFS nodes in test-map traversal |
+| `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
+| `CQS_WATCH_MAX_PENDING` | `1000` | Max pending file changes before watch forces flush |
+| `CQS_WATCH_REBUILD_THRESHOLD` | `100` | Files changed before watch triggers full HNSW rebuild |
 
 ## RAG Efficiency
 

@@ -29,7 +29,7 @@ pub(in crate::cli::batch) fn dispatch_deps(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_deps", name, reverse, cross_project).entered();
     if cross_project {
-        tracing::warn!("--cross-project for deps is not yet implemented, using local only");
+        tracing::warn!("cross-project deps not yet supported, returning local result");
     }
 
     if reverse {
@@ -134,13 +134,23 @@ pub(in crate::cli::batch) fn dispatch_impact(
     cross_project: bool,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_impact", name, cross_project).entered();
+    let depth = depth.clamp(1, 10);
+
     if cross_project {
-        tracing::warn!("--cross-project for impact is not yet implemented, using local only");
+        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
+        let result = cqs::cross_project::analyze_impact_cross(
+            &mut cross_ctx,
+            name,
+            depth,
+            do_suggest_tests,
+            include_types,
+        )?;
+        let json = cqs::impact_to_json(&result);
+        return Ok(json);
     }
 
     let resolved = cqs::resolve_target(&ctx.store(), name)?;
     let chunk = &resolved.chunk;
-    let depth = depth.clamp(1, 10);
 
     let result = cqs::analyze_impact(
         &ctx.store(),
@@ -190,8 +200,18 @@ pub(in crate::cli::batch) fn dispatch_test_map(
     cross_project: bool,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_test_map", name, cross_project).entered();
+
     if cross_project {
-        tracing::warn!("--cross-project for test-map is not yet implemented, using local only");
+        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
+        let test_chunks = cross_ctx.find_test_chunks_cross()?;
+        let graph = cross_ctx.merged_call_graph()?;
+        let summaries: Vec<cqs::store::ChunkSummary> =
+            test_chunks.iter().map(|tc| tc.chunk.clone()).collect();
+
+        let matches =
+            crate::cli::commands::build_test_map(name, &graph, &summaries, &ctx.root, max_depth);
+        let output = crate::cli::commands::build_test_map_output(name, &matches);
+        return Ok(serde_json::to_value(&output)?);
     }
 
     let resolved = cqs::resolve_target(&ctx.store(), name)?;
@@ -235,8 +255,19 @@ pub(in crate::cli::batch) fn dispatch_trace(
     cross_project: bool,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_trace", source, target, cross_project).entered();
+
     if cross_project {
-        tracing::warn!("--cross-project for trace is not yet implemented, using local only");
+        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
+        let result = cqs::cross_project::trace_cross(&mut cross_ctx, source, target, max_depth)?;
+
+        let trace_result = cqs::cross_project::CrossProjectTraceResult {
+            source: source.to_string(),
+            target: target.to_string(),
+            depth: result.as_ref().map(|p| p.len().saturating_sub(1)),
+            found: result.is_some(),
+            path: result,
+        };
+        return Ok(serde_json::to_value(&trace_result)?);
     }
 
     let source_resolved = cqs::resolve_target(&ctx.store(), source)?;
