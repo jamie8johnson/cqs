@@ -93,10 +93,27 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
             let results = store.search_by_name(query, cli.limit)?;
             if !results.is_empty() {
                 tracing::info!(results = results.len(), "NameOnly search succeeded");
-                // Display results using the existing name-only display path
+                crate::cli::telemetry::log_routed(
+                    cqs_dir,
+                    query,
+                    &c.category.to_string(),
+                    &c.confidence.to_string(),
+                    &c.strategy.to_string(),
+                    false,
+                    Some(results.len()),
+                );
                 return cmd_query_name_only(cli, store, query, root);
             }
             tracing::info!("NameOnly returned 0 results, falling back to dense");
+            crate::cli::telemetry::log_routed(
+                cqs_dir,
+                query,
+                &c.category.to_string(),
+                &c.confidence.to_string(),
+                &c.strategy.to_string(),
+                true, // fallback triggered
+                None,
+            );
         }
     }
 

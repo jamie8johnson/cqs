@@ -99,6 +99,47 @@ pub fn log_command(
     })();
 }
 
+/// Log a search command with adaptive routing classification.
+///
+/// Extends the standard telemetry entry with category, confidence, strategy,
+/// and whether fallback was triggered.
+pub fn log_routed(
+    cqs_dir: &Path,
+    query: &str,
+    category: &str,
+    confidence: &str,
+    strategy: &str,
+    fallback: bool,
+    result_count: Option<usize>,
+) {
+    let path = cqs_dir.join("telemetry.jsonl");
+    if std::env::var("CQS_TELEMETRY").as_deref() != Ok("1") && !path.exists() {
+        return;
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let entry = serde_json::json!({
+        "ts": timestamp,
+        "cmd": "search",
+        "query": query,
+        "category": category,
+        "confidence": confidence,
+        "strategy": strategy,
+        "fallback": fallback,
+        "results": result_count,
+    });
+
+    let _ = (|| -> std::io::Result<()> {
+        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        writeln!(file, "{}", entry)?;
+        Ok(())
+    })();
+}
+
 /// Extract command name and query from CLI args for telemetry.
 ///
 /// Derives known subcommands from `Cli`'s clap definition at runtime,
