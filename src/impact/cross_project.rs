@@ -136,7 +136,7 @@ pub fn analyze_impact_cross(
 
     // Type impact is not supported cross-project (would need cross-store type edges)
     if include_types {
-        tracing::warn!("--include-types not supported in cross-project mode");
+        tracing::warn!("--type-impact not supported in cross-project mode");
     }
 
     Ok(ImpactResult {

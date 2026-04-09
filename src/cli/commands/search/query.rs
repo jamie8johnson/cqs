@@ -89,7 +89,7 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         None => None,
     };
 
-    let chunk_types = match &cli.include_type {
+    let include_types = match &cli.include_type {
         Some(types) => {
             let parsed: Result<Vec<ChunkType>, _> = types.iter().map(|t| t.parse()).collect();
             Some(parsed.with_context(|| {
@@ -123,7 +123,7 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
     #[allow(clippy::needless_update)]
     let filter = SearchFilter {
         languages,
-        chunk_types,
+        include_types,
         exclude_types,
         path_pattern: cli.path.clone(),
         name_boost: cli.name_boost,

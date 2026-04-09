@@ -19,6 +19,14 @@ pub(in crate::cli::batch) struct SearchParams {
     pub include_type: Option<Vec<String>>,
     pub exclude_type: Option<Vec<String>>,
     pub tokens: Option<usize>,
+    pub no_demote: bool,
+    pub name_boost: f32,
+    pub ref_name: Option<String>,
+    pub include_refs: bool,
+    pub no_content: bool,
+    pub context: Option<usize>,
+    pub expand: bool,
+    pub no_stale_check: bool,
 }
 
 /// Dispatches a search query and returns results as JSON.
@@ -44,6 +52,9 @@ pub(in crate::cli::batch) fn dispatch_search(
     params: &SearchParams,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_search", query = %params.query).entered();
+
+    // Accepted for CLI parity; batch JSON doesn't use line-context or parent expansion yet
+    let _ = (params.context, params.expand, params.no_stale_check);
 
     if params.name_only {
         let results = ctx
@@ -86,7 +97,7 @@ pub(in crate::cli::batch) fn dispatch_search(
     };
 
     // Parse include/exclude type filters (CQ-5)
-    let chunk_types = match &params.include_type {
+    let include_types = match &params.include_type {
         Some(types) => {
             let parsed: Result<Vec<cqs::parser::ChunkType>, _> =
                 types.iter().map(|t| t.parse()).collect();
@@ -105,17 +116,62 @@ pub(in crate::cli::batch) fn dispatch_search(
 
     let filter = cqs::SearchFilter {
         languages,
-        chunk_types,
+        include_types,
         exclude_types,
         path_pattern: params.path.clone(),
-        name_boost: cqs::store::DEFAULT_NAME_BOOST,
+        name_boost: params.name_boost,
         query_text: params.query.clone(),
         enable_rrf: params.rrf,
+        enable_demotion: !params.no_demote,
         enable_splade: params.splade,
         splade_alpha: params.splade_alpha,
-        ..Default::default()
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
+
+    // --ref scoped search: search only the named reference
+    if let Some(ref ref_name) = params.ref_name {
+        let ref_idx = crate::cli::commands::resolve::find_reference(&ctx.root, ref_name)?;
+        let ref_limit = if params.rerank {
+            (limit * 4).min(100)
+        } else {
+            limit
+        };
+        let mut results = cqs::reference::search_reference(
+            &ref_idx,
+            &query_embedding,
+            &filter,
+            ref_limit,
+            0.3,
+            false,
+        )?;
+
+        // Re-rank ref results
+        if params.rerank && results.len() > 1 {
+            let reranker = ctx.reranker()?;
+            reranker
+                .rerank(&params.query, &mut results, limit)
+                .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
+        }
+
+        let show_content = !params.no_content;
+        let json_results: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| {
+                serde_json::to_value(ChunkOutput::from_search_result(r, show_content))
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, name = %r.chunk.name, "ChunkOutput serialization failed (NaN score?)");
+                        serde_json::json!({"error": "serialization failed", "name": r.chunk.name})
+                    })
+            })
+            .collect();
+
+        return Ok(serde_json::json!({
+            "results": json_results,
+            "query": params.query,
+            "total": json_results.len(),
+            "source": ref_name,
+        }));
+    }
 
     // SPLADE sparse encoding (if enabled)
     let splade_query = if params.splade {
@@ -188,6 +244,42 @@ pub(in crate::cli::batch) fn dispatch_search(
         results
     };
 
+    // --include-refs: merge reference results
+    let results = if params.include_refs {
+        let config = cqs::config::Config::load(&ctx.root);
+        let references = cqs::reference::load_references(&config.references);
+        if !references.is_empty() {
+            use rayon::prelude::*;
+            let ref_results: Vec<_> = references
+                .par_iter()
+                .filter_map(|ref_idx| {
+                    match cqs::reference::search_reference(
+                        ref_idx,
+                        &query_embedding,
+                        &filter,
+                        limit,
+                        0.3,
+                        true,
+                    ) {
+                        Ok(r) if !r.is_empty() => Some((ref_idx.name.clone(), r)),
+                        Err(e) => {
+                            tracing::warn!(reference = %ref_idx.name, error = %e, "Reference search failed");
+                            None
+                        }
+                        _ => None,
+                    }
+                })
+                .collect();
+            let tagged = cqs::reference::merge_results(results, ref_results, limit);
+            // Convert tagged results back to UnifiedResult for uniform handling
+            tagged.into_iter().map(|t| t.result).collect()
+        } else {
+            results
+        }
+    } else {
+        results
+    };
+
     // Token-budget packing (shared with CLI search)
     let (results, token_info) = if let Some(budget) = params.tokens {
         let embedder = ctx.embedder()?;
@@ -208,11 +300,12 @@ pub(in crate::cli::batch) fn dispatch_search(
         (results, None)
     };
 
+    let show_content = !params.no_content;
     let json_results: Vec<serde_json::Value> = results
         .iter()
         .map(|r| match r {
             cqs::store::UnifiedResult::Code(sr) => {
-                serde_json::to_value(ChunkOutput::from_search_result(sr, true))
+                serde_json::to_value(ChunkOutput::from_search_result(sr, show_content))
                     .unwrap_or_else(|e| {
                         tracing::warn!(error = %e, name = %sr.chunk.name, "ChunkOutput serialization failed (NaN score?)");
                         serde_json::json!({"error": "serialization failed", "name": sr.chunk.name})

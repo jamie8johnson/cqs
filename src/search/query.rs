@@ -341,15 +341,15 @@ impl Store {
 
         // Build chunk filter predicate
         let meta = self.chunk_type_language_map()?;
-        let chunk_types = filter.chunk_types.as_ref();
+        let include_types = filter.include_types.as_ref();
         let exclude_types = filter.exclude_types.as_ref();
         let languages = filter.languages.as_ref();
         let predicate = |chunk_id: &str| -> bool {
-            if chunk_types.is_none() && exclude_types.is_none() && languages.is_none() {
+            if include_types.is_none() && exclude_types.is_none() && languages.is_none() {
                 return true;
             }
             if let Some((ct, lang)) = meta.get(chunk_id) {
-                let type_ok = chunk_types.is_none_or(|types| types.contains(ct));
+                let type_ok = include_types.is_none_or(|types| types.contains(ct));
                 let exclude_ok = exclude_types.is_none_or(|types| !types.contains(ct));
                 let lang_ok = languages.is_none_or(|langs| langs.contains(lang));
                 type_ok && exclude_ok && lang_ok
@@ -477,19 +477,19 @@ impl Store {
             let _span = tracing::info_span!("search_index_guided", limit = limit).entered();
 
             let candidate_count = (limit * 5).max(100);
-            let has_type_or_lang_filter = filter.chunk_types.is_some()
+            let has_type_or_lang_filter = filter.include_types.is_some()
                 || filter.exclude_types.is_some()
                 || filter.languages.is_some();
 
             let index_results = if has_type_or_lang_filter {
                 // Build traversal-time filter from chunk metadata
                 let meta = self.chunk_type_language_map()?;
-                let chunk_types = filter.chunk_types.as_ref();
+                let include_types = filter.include_types.as_ref();
                 let exclude_types = filter.exclude_types.as_ref();
                 let languages = filter.languages.as_ref();
                 let predicate = |chunk_id: &str| -> bool {
                     if let Some((ct, lang)) = meta.get(chunk_id) {
-                        let type_ok = chunk_types.is_none_or(|types| types.contains(ct));
+                        let type_ok = include_types.is_none_or(|types| types.contains(ct));
                         let exclude_ok = exclude_types.is_none_or(|types| !types.contains(ct));
                         let lang_ok = languages.is_none_or(|langs| langs.contains(lang));
                         type_ok && exclude_ok && lang_ok
@@ -610,7 +610,7 @@ impl Store {
                 .as_ref()
                 .map(|langs| langs.iter().map(|l| l.to_string().to_lowercase()).collect());
             let type_set: Option<HashSet<String>> = filter
-                .chunk_types
+                .include_types
                 .as_ref()
                 .map(|types| types.iter().map(|t| t.to_string().to_lowercase()).collect());
 
@@ -781,7 +781,7 @@ mod tests {
             .unwrap();
 
         let filter = SearchFilter {
-            chunk_types: Some(vec![ChunkType::Struct]),
+            include_types: Some(vec![ChunkType::Struct]),
             ..Default::default()
         };
         let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();

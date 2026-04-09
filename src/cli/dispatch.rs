@@ -230,7 +230,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
                 args.depth,
                 &format,
                 args.suggest_tests,
-                args.include_types,
+                args.type_impact,
                 args.cross_project,
             )
         }

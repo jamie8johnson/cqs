@@ -619,7 +619,7 @@ impl ChunkType {
             )
     }
 
-    /// Returns all code chunk types (for use in SearchFilter::chunk_types).
+    /// Returns all code chunk types (for use in SearchFilter::include_types).
     pub fn code_types() -> Vec<ChunkType> {
         Self::ALL.iter().copied().filter(|t| t.is_code()).collect()
     }
