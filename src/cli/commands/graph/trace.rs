@@ -102,8 +102,12 @@ pub(crate) fn cmd_trace(
     target: &str,
     max_depth: usize,
     format: &OutputFormat,
+    cross_project: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_trace", source, target).entered();
+    let _span = tracing::info_span!("cmd_trace", source, target, cross_project).entered();
+    if cross_project {
+        tracing::warn!("--cross-project for trace is not yet implemented, using local only");
+    }
 
     let store = &ctx.store;
     let root = &ctx.root;

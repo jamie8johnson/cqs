@@ -5,6 +5,7 @@
 
 mod analysis;
 mod bfs;
+pub mod cross_project;
 mod diff;
 mod format;
 mod hints;

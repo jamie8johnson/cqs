@@ -25,8 +25,12 @@ pub(in crate::cli::batch) fn dispatch_deps(
     ctx: &BatchContext,
     name: &str,
     reverse: bool,
+    cross_project: bool,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_deps", name, reverse).entered();
+    let _span = tracing::info_span!("batch_deps", name, reverse, cross_project).entered();
+    if cross_project {
+        tracing::warn!("--cross-project for deps is not yet implemented, using local only");
+    }
 
     if reverse {
         let types = ctx.store().get_types_used_by(name)?;
@@ -54,8 +58,18 @@ pub(in crate::cli::batch) fn dispatch_deps(
 pub(in crate::cli::batch) fn dispatch_callers(
     ctx: &BatchContext,
     name: &str,
+    cross_project: bool,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_callers", name).entered();
+    let _span = tracing::info_span!("batch_callers", name, cross_project).entered();
+
+    if cross_project {
+        let store = ctx.store();
+        let mut cross_ctx =
+            cqs::cross_project::CrossProjectContext::from_config(&store, &ctx.root)?;
+        let callers = cross_ctx.get_callers_cross(name)?;
+        return Ok(serde_json::to_value(&callers)?);
+    }
+
     let callers = ctx.store().get_callers_full(name)?;
     let output = crate::cli::commands::build_callers(&callers);
     Ok(serde_json::to_value(&output)?)
@@ -81,8 +95,18 @@ pub(in crate::cli::batch) fn dispatch_callers(
 pub(in crate::cli::batch) fn dispatch_callees(
     ctx: &BatchContext,
     name: &str,
+    cross_project: bool,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_callees", name).entered();
+    let _span = tracing::info_span!("batch_callees", name, cross_project).entered();
+
+    if cross_project {
+        let store = ctx.store();
+        let mut cross_ctx =
+            cqs::cross_project::CrossProjectContext::from_config(&store, &ctx.root)?;
+        let callees = cross_ctx.get_callees_cross(name)?;
+        return Ok(serde_json::to_value(&callees)?);
+    }
+
     let callees = ctx.store().get_callees_full(name, None)?;
     let output = crate::cli::commands::build_callees(name, &callees);
     Ok(serde_json::to_value(&output)?)
@@ -111,8 +135,12 @@ pub(in crate::cli::batch) fn dispatch_impact(
     depth: usize,
     do_suggest_tests: bool,
     include_types: bool,
+    cross_project: bool,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_impact", name).entered();
+    let _span = tracing::info_span!("batch_impact", name, cross_project).entered();
+    if cross_project {
+        tracing::warn!("--cross-project for impact is not yet implemented, using local only");
+    }
 
     let resolved = cqs::resolve_target(&ctx.store(), name)?;
     let chunk = &resolved.chunk;
@@ -163,8 +191,12 @@ pub(in crate::cli::batch) fn dispatch_test_map(
     ctx: &BatchContext,
     name: &str,
     max_depth: usize,
+    cross_project: bool,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_test_map", name).entered();
+    let _span = tracing::info_span!("batch_test_map", name, cross_project).entered();
+    if cross_project {
+        tracing::warn!("--cross-project for test-map is not yet implemented, using local only");
+    }
 
     let resolved = cqs::resolve_target(&ctx.store(), name)?;
     let target_name = resolved.chunk.name.clone();
@@ -204,8 +236,12 @@ pub(in crate::cli::batch) fn dispatch_trace(
     source: &str,
     target: &str,
     max_depth: usize,
+    cross_project: bool,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_trace", source, target).entered();
+    let _span = tracing::info_span!("batch_trace", source, target, cross_project).entered();
+    if cross_project {
+        tracing::warn!("--cross-project for trace is not yet implemented, using local only");
+    }
 
     let source_resolved = cqs::resolve_target(&ctx.store(), source)?;
     let target_resolved = cqs::resolve_target(&ctx.store(), target)?;

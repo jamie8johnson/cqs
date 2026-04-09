@@ -75,9 +75,13 @@ pub(crate) fn cmd_deps(
     ctx: &crate::cli::CommandContext,
     name: &str,
     reverse: bool,
+    cross_project: bool,
     json: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_deps", name, reverse).entered();
+    let _span = tracing::info_span!("cmd_deps", name, reverse, cross_project).entered();
+    if cross_project {
+        tracing::warn!("--cross-project for deps is not yet implemented, using local only");
+    }
     let store = &ctx.store;
     let root = &ctx.root;
 

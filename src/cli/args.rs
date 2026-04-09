@@ -42,6 +42,9 @@ pub(crate) struct ImpactArgs {
     /// Include type-impacted functions (via shared type dependencies)
     #[arg(long)]
     pub include_types: bool,
+    /// Query callers/impact across all configured reference projects
+    #[arg(long)]
+    pub cross_project: bool,
 }
 
 /// Arguments shared between CLI `scout` and batch `scout`.
@@ -120,6 +123,9 @@ pub(crate) struct TraceArgs {
     /// Max search depth (1-50)
     #[arg(long, default_value = "10", value_parser = clap::value_parser!(u16).range(1..=50))]
     pub max_depth: u16,
+    /// Trace across all configured reference projects
+    #[arg(long)]
+    pub cross_project: bool,
 }
 
 /// Arguments for the `index` command.

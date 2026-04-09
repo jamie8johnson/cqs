@@ -64,10 +64,51 @@ pub(crate) fn build_callees(name: &str, callees: &[(String, u32)]) -> CalleesOut
 // ─── CLI commands ──────────────────────────────────────────────────────────
 
 /// Find functions that call the specified function
-pub(crate) fn cmd_callers(ctx: &crate::cli::CommandContext, name: &str, json: bool) -> Result<()> {
-    let _span = tracing::info_span!("cmd_callers", name).entered();
+pub(crate) fn cmd_callers(
+    ctx: &crate::cli::CommandContext,
+    name: &str,
+    cross_project: bool,
+    json: bool,
+) -> Result<()> {
+    let _span = tracing::info_span!("cmd_callers", name, cross_project).entered();
     let store = &ctx.store;
-    // Use full call graph (includes large functions)
+
+    if cross_project {
+        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(store, &ctx.root)?;
+        let callers = cross_ctx
+            .get_callers_cross(name)
+            .context("Failed to load cross-project callers")?;
+
+        if callers.is_empty() {
+            if json {
+                println!("[]");
+            } else {
+                println!("No callers found for '{}' (cross-project)", name);
+            }
+            return Ok(());
+        }
+
+        if json {
+            println!("{}", serde_json::to_string_pretty(&callers)?);
+        } else {
+            println!("Functions that call '{}' (cross-project):", name);
+            println!();
+            for c in &callers {
+                println!(
+                    "  {} ({}:{}) [{}]",
+                    c.caller.name.cyan(),
+                    c.caller.file.display(),
+                    c.caller.line,
+                    c.project.dimmed()
+                );
+            }
+            println!();
+            println!("Total: {} caller(s)", callers.len());
+        }
+        return Ok(());
+    }
+
+    // Standard single-project path
     let callers = store
         .get_callers_full(name)
         .context("Failed to load callers")?;
@@ -103,11 +144,40 @@ pub(crate) fn cmd_callers(ctx: &crate::cli::CommandContext, name: &str, json: bo
 }
 
 /// Find functions called by the specified function
-pub(crate) fn cmd_callees(ctx: &crate::cli::CommandContext, name: &str, json: bool) -> Result<()> {
-    let _span = tracing::info_span!("cmd_callees", name).entered();
+pub(crate) fn cmd_callees(
+    ctx: &crate::cli::CommandContext,
+    name: &str,
+    cross_project: bool,
+    json: bool,
+) -> Result<()> {
+    let _span = tracing::info_span!("cmd_callees", name, cross_project).entered();
     let store = &ctx.store;
-    // Use full call graph (includes large functions)
-    // No file context available from CLI input -- pass None
+
+    if cross_project {
+        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(store, &ctx.root)?;
+        let callees = cross_ctx
+            .get_callees_cross(name)
+            .context("Failed to load cross-project callees")?;
+
+        if json {
+            println!("{}", serde_json::to_string_pretty(&callees)?);
+        } else {
+            println!("Functions called by '{}' (cross-project):", name.cyan());
+            println!();
+            if callees.is_empty() {
+                println!("  (no function calls found)");
+            } else {
+                for c in &callees {
+                    println!("  {} [{}]", c.name, c.project.dimmed());
+                }
+            }
+            println!();
+            println!("Total: {} call(s)", callees.len());
+        }
+        return Ok(());
+    }
+
+    // Standard single-project path
     let callees = store
         .get_callees_full(name, None)
         .context("Failed to load callees")?;

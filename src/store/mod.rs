@@ -14,7 +14,7 @@
 //! - `metadata` - Metadata get/set and version validation
 //! - `search` - FTS search, name search, RRF fusion
 
-mod calls;
+pub mod calls;
 mod chunks;
 mod metadata;
 mod migrations;
@@ -37,6 +37,11 @@ use sqlx::{ConnectOptions, SqlitePool};
 use tokio::runtime::Runtime;
 
 // Re-export public types with documentation
+
+/// Cross-project call graph context and types.
+pub use calls::cross_project::{
+    CrossProjectCallee, CrossProjectCaller, CrossProjectContext, NamedStore,
+};
 
 /// In-memory call graph (forward + reverse adjacency lists).
 pub use helpers::CallGraph;

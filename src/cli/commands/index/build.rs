@@ -393,18 +393,38 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                     let mut sparse_vecs: Vec<(String, cqs::splade::SparseVector)> = Vec::new();
                     let mut encoded = 0usize;
                     let mut failed = 0usize;
-                    for (id, text) in &chunk_texts {
-                        match encoder.encode(text) {
-                            Ok(sv) if !sv.is_empty() => {
-                                sparse_vecs.push((id.clone(), sv));
-                                encoded += 1;
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                if failed == 0 {
-                                    tracing::warn!(error = %e, "SPLADE encoding failed");
+
+                    // PF-5: batch encode instead of per-chunk
+                    const SPLADE_BATCH: usize = 64;
+                    for batch in chunk_texts.chunks(SPLADE_BATCH) {
+                        let ids: Vec<&str> = batch.iter().map(|(id, _)| id.as_str()).collect();
+                        let texts: Vec<&str> = batch.iter().map(|(_, t)| t.as_str()).collect();
+                        match encoder.encode_batch(&texts) {
+                            Ok(svs) => {
+                                for (id, sv) in ids.into_iter().zip(svs) {
+                                    if !sv.is_empty() {
+                                        sparse_vecs.push((id.to_string(), sv));
+                                        encoded += 1;
+                                    }
                                 }
-                                failed += 1;
+                            }
+                            Err(e) => {
+                                // Fallback: encode individually to isolate failures
+                                if failed == 0 {
+                                    tracing::warn!(error = %e, "SPLADE batch failed, falling back to per-chunk");
+                                }
+                                for (id, text) in batch {
+                                    match encoder.encode(text) {
+                                        Ok(sv) if !sv.is_empty() => {
+                                            sparse_vecs.push((id.clone(), sv));
+                                            encoded += 1;
+                                        }
+                                        Ok(_) => {}
+                                        Err(_) => {
+                                            failed += 1;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

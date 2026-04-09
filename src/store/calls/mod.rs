@@ -7,6 +7,7 @@
 //! - `test_map` - test chunk discovery, pruning
 //! - `related` - batch counts, shared callers/callees, co-occurrence
 
+pub mod cross_project;
 mod crud;
 mod dead_code;
 mod query;
