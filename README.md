@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 91.2% Recall@1 on fixtures, 69.3% on live code with LLM summaries. 54 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 91.2% Recall@1 on fixtures, 50% R@1 on real code (100q lookup), 73% R@5 — the agent-relevant metric. 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -188,6 +188,7 @@ cqs deps <type>      # Who uses this type?
 cqs deps --reverse <fn>  # What types does this function use?
 cqs impact <name> --format mermaid   # Mermaid graph output
 cqs callers <name> --cross-project   # Callers across all reference projects
+cqs callees <name> --cross-project   # Callees across all reference projects
 cqs trace <a> <b>                    # Call chain between two functions (local project)
 ```
 
@@ -283,7 +284,7 @@ cqs trace cmd_query search_filtered --max-depth 5
 cqs impact search_filtered                # direct callers + affected tests
 cqs impact search_filtered --depth 3      # transitive callers
 cqs impact search_filtered --suggest-tests  # suggest tests for untested callers
-cqs impact search_filtered --include-types  # include type-level dependencies in impact
+cqs impact search_filtered --type-impact  # include type-level dependencies in impact
 
 # Map functions to their tests
 cqs test-map search_filtered
@@ -432,7 +433,7 @@ Without cqs, Claude uses grep/glob to find code and reads entire files for conte
 
 - **Fewer tool calls**: `gather`, `impact`, `trace`, `context`, `explain` each replace 5-10 sequential file reads with a single call
 - **Less context burn**: `cqs read --focus` returns a function + its type dependencies — not the whole file. Token budgeting (`--tokens N`) caps output across all commands.
-- **Find code by concept**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`. 91.2% Recall@1 on fixtures, 69.3% on live code (BGE-large + LLM summaries).
+- **Find code by concept**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`. 91.2% Recall@1 on fixtures, 50% R@1 on real code (100q lookup), 73% R@5.
 - **Understand dependencies**: Call graphs, type dependencies, impact analysis, and risk scoring answer "what breaks if I change X?" without manual tracing
 - **Navigate unfamiliar codebases**: Semantic search + `cqs scout` + `cqs where` provide instant orientation without knowing project structure
 
@@ -591,7 +592,7 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, interfaces, constants, tests, endpoints, modules, and 19 other chunk types across 54 languages (plus L5X/L5K PLC exports). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination (SQ-11). Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 91.2% Recall@1 on fixture eval (BGE-large, 296 queries across 7 languages). With LLM summaries, 69.3% on diverse real-codebase queries. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
+3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 91.2% Recall@1 on fixture eval (BGE-large, 296 queries across 7 languages). 50% R@1 on real-code lookup queries (100q), 73% R@5. Per-category: 100% identifier, 62% structural, 50% behavioral, 25% conceptual (265q eval across 8 categories). Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
@@ -631,14 +632,14 @@ Two eval suites measure different things:
 
 **Live codebase eval** (265 queries, 8 categories — real code, diverse query types):
 
-| Config | Recall@1 | Recall@5 |
-|--------|----------|----------|
-| BGE-large | 48.5% | 66.7% |
-| BGE-large + LLM summaries | 69.3% | 85.3% |
+| Config | Recall@1 (265q) | Recall@5 |
+|--------|-----------------|----------|
+| BGE-large baseline | 48.5% | 66.7% |
+| + LLM summaries | 48.5% | 67.9% |
 
-The fixture eval measures retrieval from small synthetic fixtures (high ceiling). The live eval measures retrieval from a real 11k-chunk codebase across identifier lookup (93.5% R@1), behavioral, conceptual, structural, negation, and multi-step queries. The gap reflects that real-world queries are harder than synthetic benchmarks.
+The fixture eval measures retrieval from small synthetic fixtures (high ceiling). The live eval measures retrieval from a real 11k-chunk codebase across identifier lookup, behavioral, conceptual, structural, negation, and multi-step queries. The gap reflects that real-world queries are harder than synthetic benchmarks.
 
-Best production config: **BGE-large + LLM summaries** (`cqs index --llm-summaries`). Use `CQS_EMBEDDING_MODEL=v9-200k` for resource-constrained environments.
+Best production config: **BGE-large** (`cqs index`). LLM summaries provide marginal R@5 improvement. Use `CQS_EMBEDDING_MODEL=v9-200k` for resource-constrained environments.
 
 ## Environment Variables
 

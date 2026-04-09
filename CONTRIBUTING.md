@@ -166,7 +166,7 @@ src/
       mod.rs, crud.rs, staleness.rs, embeddings.rs, query.rs, async_helpers.rs
     notes.rs    - Note CRUD, note_embeddings(), brute-force search
     calls/      - Call graph storage and queries
-      mod.rs, crud.rs, dead_code.rs, query.rs, related.rs, test_map.rs
+      mod.rs, crud.rs, cross_project.rs, dead_code.rs, query.rs, related.rs, test_map.rs
     types.rs    - Type edge storage and queries
     helpers/    - Types, embedding conversion, scoring, SQL utilities
       mod.rs, embeddings.rs, error.rs, rows.rs, scoring.rs, search_filter.rs, sql.rs, types.rs
@@ -458,6 +458,35 @@ All fields except `name`, `grammar`, `extensions`, `chunk_query` have defaults v
 
 - Update language count in README.md (Supported Languages section + TL;DR), lib.rs, Cargo.toml
 - Update `CHANGELOG.md`
+
+## Adding a New Chunk Type
+
+Chunk types are defined in a single macro invocation. Adding one is a data-entry task.
+
+### Steps
+
+**1. Add the variant to `define_chunk_types!` in `src/language/mod.rs`:**
+
+```rust
+/// Brief description of what this chunk type represents
+MyType => "mytype";
+```
+
+Use `capture = "alt"` if the tree-sitter capture name differs from the display name (e.g., `Constant => "constant", capture = "const"`).
+
+**2. Classify in `is_callable()` and `is_code()`** (same file):
+
+- **Callable + code**: appears in call graphs and default search (functions, methods, endpoints, etc.)
+- **Code but not callable**: in search but not call graphs (structs, enums, constants, etc.)
+- **Not code**: excluded from default search (sections, config keys, etc.)
+
+The `test_all_chunk_types_classified` test enforces exhaustive classification — it won't compile if you skip this.
+
+**3. Add tree-sitter query captures** in the relevant `.chunks.scm` files, or handle via `post_process_chunk` on the language's `LanguageDef`.
+
+**4. Add tests** — at minimum, verify a chunk with the new type is parsed from a sample file and classified correctly.
+
+**5. Update docs** — chunk type count in README.md (How It Works section) and CHANGELOG.md.
 
 ## Questions?
 
