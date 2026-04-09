@@ -3148,10 +3148,13 @@ helper_value = 42
     let file = write_temp_file(content, "lua");
     let parser = Parser::new().unwrap();
     let chunks = parser.parse_file(file.path()).unwrap();
-    // lowercase names should be filtered out by post_process
-    assert!(chunks.iter().find(|c| c.name == "counter").is_none());
-    assert!(chunks.iter().find(|c| c.name == "myTable").is_none());
-    assert!(chunks.iter().find(|c| c.name == "helper_value").is_none());
+    // lowercase names are now kept as Variable (not dropped)
+    let counter = chunks.iter().find(|c| c.name == "counter").unwrap();
+    assert_eq!(counter.chunk_type, ChunkType::Variable);
+    let my_table = chunks.iter().find(|c| c.name == "myTable").unwrap();
+    assert_eq!(my_table.chunk_type, ChunkType::Variable);
+    let helper = chunks.iter().find(|c| c.name == "helper_value").unwrap();
+    assert_eq!(helper.chunk_type, ChunkType::Variable);
 }
 
 #[test]
@@ -4826,15 +4829,13 @@ my_func <- function(x) { x }
     assert!(timeout.is_some(), "Should capture DEFAULT_TIMEOUT");
     assert_eq!(timeout.unwrap().chunk_type, ChunkType::Constant);
 
-    // lowercase and MixedCase should be filtered out
-    assert!(
-        chunks.iter().find(|c| c.name == "lowercase_var").is_none(),
-        "Should not capture lowercase_var"
-    );
-    assert!(
-        chunks.iter().find(|c| c.name == "MixedCase").is_none(),
-        "Should not capture MixedCase"
-    );
+    // lowercase and MixedCase are now kept as Variable
+    let lc = chunks.iter().find(|c| c.name == "lowercase_var");
+    assert!(lc.is_some(), "Should capture lowercase_var as Variable");
+    assert_eq!(lc.unwrap().chunk_type, ChunkType::Variable);
+    let mc = chunks.iter().find(|c| c.name == "MixedCase");
+    assert!(mc.is_some(), "Should capture MixedCase as Variable");
+    assert_eq!(mc.unwrap().chunk_type, ChunkType::Variable);
 
     // Function should still be captured
     let func = chunks.iter().find(|c| c.name == "my_func");

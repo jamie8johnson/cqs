@@ -72,8 +72,28 @@ static LANG_BASH: LanguageDef = LanguageDef {
     ],
     test_path_patterns: &["%/tests/%", "%\\_test.sh", "%.bats"],
     entry_point_names: &["main"],
+    post_process_chunk: Some(post_process_bash_bash as PostProcessChunkFn),
     ..DEFAULTS
 };
+
+fn post_process_bash_bash(
+    _name: &mut String,
+    chunk_type: &mut ChunkType,
+    node: tree_sitter::Node,
+    _source: &str,
+) -> bool {
+    // Skip export/declare inside function bodies — only capture top-level
+    if *chunk_type == ChunkType::Variable {
+        let mut parent = node.parent();
+        while let Some(p) = parent {
+            if p.kind() == "function_definition" {
+                return false;
+            }
+            parent = p.parent();
+        }
+    }
+    true
+}
 
 pub fn definition_bash() -> &'static LanguageDef {
     &LANG_BASH
@@ -253,12 +273,23 @@ fn post_process_cpp_cpp(
         return true;
     }
     // C++ constructors: function_definition with no return type before the declarator.
-    // Regular methods have a type child (e.g., primitive_type, type_identifier).
     if node.kind() == "function_definition" {
         let has_return_type = node.child_by_field_name("type").is_some();
         if !has_return_type {
             *chunk_type = ChunkType::Constructor;
         }
+    }
+    // extern "C" { } → Extern (walk parents for linkage_specification)
+    let mut parent = node.parent();
+    while let Some(p) = parent {
+        if p.kind() == "linkage_specification" {
+            *chunk_type = ChunkType::Extern;
+            break;
+        }
+        if p.kind() == "translation_unit" {
+            break;
+        }
+        parent = p.parent();
     }
     true
 }
@@ -521,6 +552,14 @@ fn post_process_csharp_csharp(
             || header.contains("[Route(")
         {
             *chunk_type = ChunkType::Endpoint;
+        }
+    }
+
+    // const or static readonly fields → Constant
+    if *chunk_type == ChunkType::Property {
+        let field_text = &source[node.byte_range()];
+        if field_text.contains("const ") || field_text.contains("static readonly ") {
+            *chunk_type = ChunkType::Constant;
         }
     }
 
@@ -967,8 +1006,41 @@ static LANG_CUDA: LanguageDef = LanguageDef {
         strip_prefixes: "static const volatile mutable virtual inline",
     },
     skip_line_prefixes: &["class ", "struct ", "union ", "enum ", "template"],
+    post_process_chunk: Some(post_process_cuda_cuda as PostProcessChunkFn),
     ..DEFAULTS
 };
+
+#[allow(clippy::ptr_arg)]
+fn post_process_cuda_cuda(
+    name: &mut String,
+    chunk_type: &mut ChunkType,
+    node: tree_sitter::Node,
+    _source: &str,
+) -> bool {
+    if !matches!(*chunk_type, ChunkType::Function | ChunkType::Method) {
+        return true;
+    }
+    if name.starts_with('~') {
+        return true;
+    }
+    // Constructor: function_definition with no return type
+    if node.kind() == "function_definition" && node.child_by_field_name("type").is_none() {
+        *chunk_type = ChunkType::Constructor;
+    }
+    // extern "C" → Extern
+    let mut parent = node.parent();
+    while let Some(p) = parent {
+        if p.kind() == "linkage_specification" {
+            *chunk_type = ChunkType::Extern;
+            break;
+        }
+        if p.kind() == "translation_unit" {
+            break;
+        }
+        parent = p.parent();
+    }
+    true
+}
 
 pub fn definition_cuda() -> &'static LanguageDef {
     &LANG_CUDA
@@ -1679,7 +1751,14 @@ fn post_process_gleam_gleam(
     _source: &str,
 ) -> bool {
     match node.kind() {
-        "function" => *chunk_type = ChunkType::Function,
+        "function" => {
+            *chunk_type = ChunkType::Function;
+            // @external attribute → Extern
+            let fn_text = &_source[node.byte_range()];
+            if fn_text.contains("@external") {
+                *chunk_type = ChunkType::Extern;
+            }
+        }
         "type_definition" => *chunk_type = ChunkType::Enum,
         "type_alias" => *chunk_type = ChunkType::TypeAlias,
         "constant" => *chunk_type = ChunkType::Constant,
@@ -3275,6 +3354,13 @@ fn post_process_julia_julia(
     if *chunk_type == ChunkType::Function && _name.starts_with("test_") {
         *chunk_type = ChunkType::Test;
     }
+    // const FOO = ... → Constant
+    if *chunk_type == ChunkType::Struct {
+        let node_text = &_source[node.byte_range()];
+        if node_text.trim_start().starts_with("const ") && !node_text.contains("struct") {
+            *chunk_type = ChunkType::Constant;
+        }
+    }
     true
 }
 
@@ -3877,7 +3963,10 @@ fn post_process_lua_lua(
         if has_function_value_lua(node) {
             return false;
         }
-        return is_upper_snake_case_lua(name);
+        if !is_upper_snake_case_lua(name) {
+            *chunk_type = ChunkType::Variable;
+        }
+        return true;
     }
     true
 }
@@ -4424,6 +4513,7 @@ fn post_process_ocaml_ocaml(
             }
         }
         "module_definition" => *chunk_type = ChunkType::Module,
+        "external" => *chunk_type = ChunkType::Extern,
         _ => {}
     }
     true
@@ -5068,6 +5158,22 @@ fn post_process_python_python(
         *chunk_type = ChunkType::Test;
     }
 
+    // class Foo(Enum) or class Foo(IntEnum) etc. → Enum
+    if *chunk_type == ChunkType::Class {
+        let node_text = &_source[node.byte_range()];
+        let header = &node_text[..node_text.len().min(200)];
+        if header.contains("(Enum)")
+            || header.contains("(IntEnum)")
+            || header.contains("(StrEnum)")
+            || header.contains("(Flag)")
+            || header.contains("(IntFlag)")
+            || header.contains("enum.Enum")
+            || header.contains("enum.IntEnum")
+        {
+            *chunk_type = ChunkType::Enum;
+        }
+    }
+
     // Flask/FastAPI/Sanic route decorators → Endpoint
     if *chunk_type == ChunkType::Function {
         let mut parent = node.parent();
@@ -5367,8 +5473,11 @@ fn post_process_r_r(
                 }
             }
 
-            // Not R6 — only keep UPPER_CASE constants
-            is_upper_snake_case_r(name)
+            // Not R6 — UPPER_CASE stays Constant, lowercase → Variable
+            if !is_upper_snake_case_r(name) {
+                *chunk_type = ChunkType::Variable;
+            }
+            true
         }
         _ => true,
     }
@@ -6347,8 +6456,29 @@ static LANG_SOLIDITY: LanguageDef = LanguageDef {
         strip_prefixes: "public private internal constant immutable",
     },
     skip_line_prefixes: &["contract ", "struct ", "enum ", "interface "],
+    post_process_chunk: Some(post_process_solidity_solidity as PostProcessChunkFn),
     ..DEFAULTS
 };
+
+fn post_process_solidity_solidity(
+    name: &mut String,
+    chunk_type: &mut ChunkType,
+    _node: tree_sitter::Node,
+    _source: &str,
+) -> bool {
+    // constructor() → Constructor
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) && name == "constructor" {
+        *chunk_type = ChunkType::Constructor;
+    }
+    // constant state variables → Constant
+    if *chunk_type == ChunkType::Property {
+        let text = &_source[_node.byte_range()];
+        if text.contains("constant ") || text.contains("immutable ") {
+            *chunk_type = ChunkType::Constant;
+        }
+    }
+    true
+}
 
 pub fn definition_solidity() -> &'static LanguageDef {
     &LANG_SOLIDITY
@@ -7939,8 +8069,20 @@ fn post_process_zig_zig(
         } else if text.contains("error{") || text.contains("error {") {
             *chunk_type = ChunkType::Enum;
         } else {
-            // Regular variable — not a significant definition
-            return false;
+            // Regular const/var — keep as Constant or Variable
+            if text.starts_with("pub const ") || text.starts_with("const ") {
+                *chunk_type = ChunkType::Constant;
+            } else {
+                *chunk_type = ChunkType::Variable;
+            }
+        }
+    }
+
+    // extern fn → Extern
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) {
+        let fn_text = &source[node.byte_range()];
+        if fn_text.starts_with("extern ") || fn_text.starts_with("pub extern ") {
+            *chunk_type = ChunkType::Extern;
         }
     }
 

@@ -21,3 +21,7 @@
 ;; Instance declaration: instance Foo Bar where ...
 (instance
   name: (name) @name) @impl
+
+;; Module declaration: module Foo.Bar where ...
+(header
+  module: (module) @name) @module
