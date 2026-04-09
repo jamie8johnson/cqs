@@ -27,3 +27,6 @@
 (structure_block name: (identifier) @name) @struct
 (interface_block name: (identifier) @name) @interface
 (enum_block name: (identifier) @name) @enum
+
+;; Namespaces
+(namespace_block name: (namespace_name) @name) @namespace

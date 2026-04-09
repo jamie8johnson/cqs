@@ -27,6 +27,10 @@
   (const_element
     (name) @name)) @const
 
+;; Namespaces
+(namespace_definition
+  name: (namespace_name) @name) @namespace
+
 ;; Properties
 (property_declaration
   (property_element

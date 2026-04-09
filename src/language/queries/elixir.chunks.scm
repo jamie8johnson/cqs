@@ -22,6 +22,14 @@
     (identifier) @name)
   (#any-of? @_keyword "def" "defp" "defmacro" "defmacrop" "defguard" "defguardp" "defdelegate")) @function
 
+;; ExUnit test: test "name" do ... end
+(call
+  target: (identifier) @_keyword
+  (arguments
+    (string
+      (quoted_content) @name))
+  (#any-of? @_keyword "test" "describe")) @test
+
 ;; Module definition: defmodule MyApp.Foo do ... end
 (call
   target: (identifier) @_keyword

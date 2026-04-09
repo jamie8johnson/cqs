@@ -1044,8 +1044,40 @@ static LANG_DART: LanguageDef = LanguageDef {
         strip_prefixes: "final late var static const",
     },
     extract_return_nl: extract_return_dart,
+    post_process_chunk: Some(post_process_dart_dart as PostProcessChunkFn),
     ..DEFAULTS
 };
+
+#[cfg(feature = "lang-dart")]
+fn post_process_dart_dart(
+    name: &mut String,
+    chunk_type: &mut ChunkType,
+    node: tree_sitter::Node,
+    source: &str,
+) -> bool {
+    // Dart test() and group() calls → Test
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method)
+        && (name.starts_with("test") || name == "group")
+    {
+        *chunk_type = ChunkType::Test;
+    }
+    // constructor → Constructor (named constructors: ClassName.name, unnamed: ClassName)
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) {
+        let node_text = &source[node.byte_range()];
+        if node_text.trim_start().starts_with("factory ") || node.kind() == "constructor_signature"
+        {
+            *chunk_type = ChunkType::Constructor;
+        }
+    }
+    // extension → Extension (captured as Class, reclassify)
+    if *chunk_type == ChunkType::Class {
+        let node_text = &source[node.byte_range()];
+        if node_text.trim_start().starts_with("extension ") {
+            *chunk_type = ChunkType::Extension;
+        }
+    }
+    true
+}
 
 #[cfg(feature = "lang-dart")]
 fn extract_return_dart(sig: &str) -> Option<String> {
@@ -1588,8 +1620,48 @@ static LANG_FSHARP: LanguageDef = LanguageDef {
         strip_prefixes: "mutable",
     },
     skip_line_prefixes: &["type "],
+    post_process_chunk: Some(post_process_fsharp_fsharp as PostProcessChunkFn),
     ..DEFAULTS
 };
+
+fn post_process_fsharp_fsharp(
+    name: &mut String,
+    chunk_type: &mut ChunkType,
+    node: tree_sitter::Node,
+    source: &str,
+) -> bool {
+    // [<Test>], [<Fact>], [<Theory>] attributes → Test
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) {
+        // Check preceding siblings for attribute lists
+        let mut prev = node.prev_named_sibling();
+        while let Some(sib) = prev {
+            let sib_text = &source[sib.byte_range()];
+            if sib_text.starts_with("[<") {
+                if sib_text.contains("Test")
+                    || sib_text.contains("Fact")
+                    || sib_text.contains("Theory")
+                {
+                    *chunk_type = ChunkType::Test;
+                    return true;
+                }
+            } else {
+                break;
+            }
+            prev = sib.prev_named_sibling();
+        }
+        // Also check first line of node text
+        let node_text = &source[node.byte_range()];
+        let header = &node_text[..node_text.len().min(200)];
+        if header.contains("[<Test>]")
+            || header.contains("[<Fact>]")
+            || header.contains("[<Theory>]")
+        {
+            *chunk_type = ChunkType::Test;
+        }
+    }
+    let _ = name;
+    true
+}
 
 pub fn definition_fsharp() -> &'static LanguageDef {
     &LANG_FSHARP
@@ -3026,6 +3098,10 @@ fn post_process_javascript_javascript(
             }
         }
     }
+    // constructor() in classes → Constructor
+    if *chunk_type == ChunkType::Method && _name == "constructor" {
+        *chunk_type = ChunkType::Constructor;
+    }
     true
 }
 
@@ -3186,7 +3262,18 @@ fn post_process_julia_julia(
         "abstract_definition" => *chunk_type = ChunkType::TypeAlias,
         "module_definition" => *chunk_type = ChunkType::Module,
         "macro_definition" => *chunk_type = ChunkType::Macro,
+        "macrocall_expression" => {
+            // @test, @testset → Test
+            let node_text = &_source[node.byte_range()];
+            if node_text.starts_with("@test") {
+                *chunk_type = ChunkType::Test;
+            }
+        }
         _ => {}
+    }
+    // test_ prefix → Test
+    if *chunk_type == ChunkType::Function && _name.starts_with("test_") {
+        *chunk_type = ChunkType::Test;
     }
     true
 }
@@ -3345,6 +3432,38 @@ fn post_process_kotlin_kotlin(
             return true;
         }
         _ => {}
+    }
+
+    // Kotlin annotations: @Test, @GetMapping, etc.
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) {
+        let node_text = &source[node.byte_range()];
+        let header = if let Some(brace) = node_text.find('{') {
+            &node_text[..brace]
+        } else {
+            &node_text[..node_text.len().min(200)]
+        };
+        if header.contains("@Test")
+            || header.contains("@ParameterizedTest")
+            || header.contains("@RepeatedTest")
+        {
+            *chunk_type = ChunkType::Test;
+        } else if header.contains("@GetMapping")
+            || header.contains("@PostMapping")
+            || header.contains("@PutMapping")
+            || header.contains("@DeleteMapping")
+            || header.contains("@PatchMapping")
+            || header.contains("@RequestMapping")
+        {
+            *chunk_type = ChunkType::Endpoint;
+        }
+    }
+
+    // const val → Constant
+    if *chunk_type == ChunkType::Property {
+        let prop_text = &source[node.byte_range()];
+        if prop_text.contains("const ") {
+            *chunk_type = ChunkType::Constant;
+        }
     }
 
     // Only reclassify class_declarations below
@@ -4154,10 +4273,17 @@ fn post_process_objc_objc(
         "class_interface" | "class_implementation" => {
             if node.child_by_field_name("category").is_some() {
                 *chunk_type = ChunkType::Extension;
-                tracing::debug!("Reclassified {} as Extension (has category)", node.kind());
             }
         }
         _ => {}
+    }
+    // XCTest: - (void)testFoo → Test
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) && _name.starts_with("test") {
+        *chunk_type = ChunkType::Test;
+    }
+    // init methods → Constructor
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) && _name.starts_with("init") {
+        *chunk_type = ChunkType::Constructor;
     }
     true
 }
@@ -4457,6 +4583,14 @@ fn post_process_perl_perl(
         }
         _ => {}
     }
+    // sub new → Constructor
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) && name == "new" {
+        *chunk_type = ChunkType::Constructor;
+    }
+    // Test::More subtest or test_ prefix
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) && name.starts_with("test_") {
+        *chunk_type = ChunkType::Test;
+    }
     true
 }
 
@@ -4521,6 +4655,10 @@ fn post_process_php_php(
     // PHP __construct is a constructor
     if *chunk_type == ChunkType::Method && name == "__construct" {
         *chunk_type = ChunkType::Constructor;
+    }
+    // PHPUnit: test prefix or @test annotation in docblock
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) && name.starts_with("test") {
+        *chunk_type = ChunkType::Test;
     }
     true
 }
@@ -4806,8 +4944,24 @@ static LANG_POWERSHELL: LanguageDef = LanguageDef {
     test_markers: &["Describe ", "It ", "Context "],
     test_path_patterns: &["%/Tests/%", "%/tests/%", "%.Tests.ps1"],
     doc_convention: "Use comment-based help: .SYNOPSIS, .PARAMETER, .OUTPUTS sections.",
+    post_process_chunk: Some(post_process_powershell_powershell as PostProcessChunkFn),
     ..DEFAULTS
 };
+
+fn post_process_powershell_powershell(
+    name: &mut String,
+    chunk_type: &mut ChunkType,
+    _node: tree_sitter::Node,
+    _source: &str,
+) -> bool {
+    // Pester: Describe/It/Context blocks → Test
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method)
+        && (name == "Describe" || name == "It" || name == "Context" || name.starts_with("Test"))
+    {
+        *chunk_type = ChunkType::Test;
+    }
+    true
+}
 
 pub fn definition_powershell() -> &'static LanguageDef {
     &LANG_POWERSHELL
@@ -5700,8 +5854,26 @@ static LANG_RUBY: LanguageDef = LanguageDef {
         strip_prefixes: "attr_accessor attr_reader attr_writer",
     },
     skip_line_prefixes: &["class ", "module "],
+    post_process_chunk: Some(post_process_ruby_ruby as PostProcessChunkFn),
     ..DEFAULTS
 };
+
+fn post_process_ruby_ruby(
+    name: &mut String,
+    chunk_type: &mut ChunkType,
+    _node: tree_sitter::Node,
+    _source: &str,
+) -> bool {
+    // initialize → Constructor
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) && name == "initialize" {
+        *chunk_type = ChunkType::Constructor;
+    }
+    // test_ prefix or RSpec-style → Test
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) && name.starts_with("test_") {
+        *chunk_type = ChunkType::Test;
+    }
+    true
+}
 
 pub fn definition_ruby() -> &'static LanguageDef {
     &LANG_RUBY
@@ -5965,6 +6137,31 @@ pub fn definition_rust() -> &'static LanguageDef {
 // Scala (scala)
 // ============================================================================
 
+#[allow(clippy::ptr_arg)]
+fn post_process_scala_scala(
+    name: &mut String,
+    chunk_type: &mut ChunkType,
+    node: tree_sitter::Node,
+    source: &str,
+) -> bool {
+    // JUnit @Test or ScalaTest test("name")
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) {
+        let node_text = &source[node.byte_range()];
+        let header = &node_text[..node_text.len().min(200)];
+        if header.contains("@Test") || name.starts_with("test") {
+            *chunk_type = ChunkType::Test;
+        }
+    }
+    // Scala var captured as @const — reclassify to Variable
+    if *chunk_type == ChunkType::Constant {
+        let node_text = &source[node.byte_range()];
+        if node_text.trim_start().starts_with("var ") {
+            *chunk_type = ChunkType::Variable;
+        }
+    }
+    true
+}
+
 /// Extracts the return type from a Scala function signature and formats it as a documentation string.
 /// Parses a Scala function signature to find the return type annotation (the type following `:` after the parameter list and before `=` or `{`), then formats it as a "Returns {type}" string suitable for documentation.
 /// # Arguments
@@ -6032,6 +6229,7 @@ static LANG_SCALA: LanguageDef = LanguageDef {
         strip_prefixes: "val var private protected override lazy",
     },
     skip_line_prefixes: &["class ", "case class", "sealed class", "trait ", "object "],
+    post_process_chunk: Some(post_process_scala_scala as PostProcessChunkFn),
     ..DEFAULTS
 };
 
@@ -6658,6 +6856,11 @@ fn post_process_swift_swift(
         *chunk_type = ChunkType::Constructor;
         return true;
     }
+    // XCTest: func testFoo() → Test
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) && name.starts_with("test") {
+        *chunk_type = ChunkType::Test;
+        return true;
+    }
 
     if node.kind() != "class_declaration" {
         return true;
@@ -6924,6 +7127,10 @@ fn post_process_typescript_typescript(
             }
         }
     }
+    // constructor() in classes → Constructor
+    if *chunk_type == ChunkType::Method && _name == "constructor" {
+        *chunk_type = ChunkType::Constructor;
+    }
     true
 }
 
@@ -7066,6 +7273,57 @@ fn post_process_vbnet_vbnet(
     if node.kind() == "constructor_declaration" {
         *name = "New".to_string();
         *kind = ChunkType::Constructor;
+        return true;
+    }
+    // VB.NET attributes: <Test>, <Fact>, <Theory>, <TestMethod>, <HttpGet>, etc.
+    if matches!(*kind, ChunkType::Function | ChunkType::Method) {
+        let node_text = &_source[node.byte_range()];
+        let header = if let Some(pos) = node_text.find('\n') {
+            &node_text[..node_text[..pos].len().min(300)]
+        } else {
+            &node_text[..node_text.len().min(300)]
+        };
+        // Walk backwards to check preceding attributes
+        let mut prev = node.prev_named_sibling();
+        while let Some(sib) = prev {
+            if sib.kind() == "attribute_list" || sib.kind() == "attribute" {
+                let attr_text = &_source[sib.byte_range()];
+                if attr_text.contains("Test")
+                    || attr_text.contains("Fact")
+                    || attr_text.contains("Theory")
+                    || attr_text.contains("TestMethod")
+                {
+                    *kind = ChunkType::Test;
+                    return true;
+                }
+                if attr_text.contains("HttpGet")
+                    || attr_text.contains("HttpPost")
+                    || attr_text.contains("HttpPut")
+                    || attr_text.contains("HttpDelete")
+                    || attr_text.contains("HttpPatch")
+                {
+                    *kind = ChunkType::Endpoint;
+                    return true;
+                }
+            } else {
+                break;
+            }
+            prev = sib.prev_named_sibling();
+        }
+        // Also check header text for inline attributes
+        if header.contains("<Test>")
+            || header.contains("<Fact>")
+            || header.contains("<Theory>")
+            || header.contains("<TestMethod>")
+        {
+            *kind = ChunkType::Test;
+        } else if header.contains("<HttpGet>")
+            || header.contains("<HttpPost>")
+            || header.contains("<HttpPut>")
+            || header.contains("<HttpDelete>")
+        {
+            *kind = ChunkType::Endpoint;
+        }
     }
     true
 }
@@ -7653,6 +7911,7 @@ fn post_process_zig_zig(
     let kind = node.kind();
 
     if kind == "test_declaration" {
+        *chunk_type = ChunkType::Test;
         // Extract test name from string child or identifier child
         for i in 0..node.named_child_count() {
             if let Some(child) = node.named_child(i as u32) {
