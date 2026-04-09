@@ -1102,10 +1102,10 @@ llm_max_tokens = 200
         let dir = TempDir::new().unwrap();
         let config_path = dir.path().join(".cqs.toml");
 
-        // Over max
-        std::fs::write(&config_path, "llm_max_tokens = 9999\n").unwrap();
+        // Over max (cap is 32768)
+        std::fs::write(&config_path, "llm_max_tokens = 99999\n").unwrap();
         let config = Config::load(dir.path());
-        assert_eq!(config.llm_max_tokens, Some(4096));
+        assert_eq!(config.llm_max_tokens, Some(32768));
 
         // Zero
         std::fs::write(&config_path, "llm_max_tokens = 0\n").unwrap();
