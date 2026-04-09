@@ -34,3 +34,16 @@
 (fragment_definition
   (fragment_name
     (name) @name)) @function
+
+;; Type extensions (extend type User { ... })
+(object_type_extension
+  (name) @name) @extension
+
+(input_object_type_extension
+  (name) @name) @extension
+
+(interface_type_extension
+  (name) @name) @extension
+
+(enum_type_extension
+  (name) @name) @extension

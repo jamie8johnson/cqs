@@ -3148,10 +3148,13 @@ helper_value = 42
     let file = write_temp_file(content, "lua");
     let parser = Parser::new().unwrap();
     let chunks = parser.parse_file(file.path()).unwrap();
-    // lowercase names should be filtered out by post_process
-    assert!(chunks.iter().find(|c| c.name == "counter").is_none());
-    assert!(chunks.iter().find(|c| c.name == "myTable").is_none());
-    assert!(chunks.iter().find(|c| c.name == "helper_value").is_none());
+    // lowercase names are now kept as Variable (not dropped)
+    let counter = chunks.iter().find(|c| c.name == "counter").unwrap();
+    assert_eq!(counter.chunk_type, ChunkType::Variable);
+    let my_table = chunks.iter().find(|c| c.name == "myTable").unwrap();
+    assert_eq!(my_table.chunk_type, ChunkType::Variable);
+    let helper = chunks.iter().find(|c| c.name == "helper_value").unwrap();
+    assert_eq!(helper.chunk_type, ChunkType::Variable);
 }
 
 #[test]
@@ -4826,15 +4829,13 @@ my_func <- function(x) { x }
     assert!(timeout.is_some(), "Should capture DEFAULT_TIMEOUT");
     assert_eq!(timeout.unwrap().chunk_type, ChunkType::Constant);
 
-    // lowercase and MixedCase should be filtered out
-    assert!(
-        chunks.iter().find(|c| c.name == "lowercase_var").is_none(),
-        "Should not capture lowercase_var"
-    );
-    assert!(
-        chunks.iter().find(|c| c.name == "MixedCase").is_none(),
-        "Should not capture MixedCase"
-    );
+    // lowercase and MixedCase are now kept as Variable
+    let lc = chunks.iter().find(|c| c.name == "lowercase_var");
+    assert!(lc.is_some(), "Should capture lowercase_var as Variable");
+    assert_eq!(lc.unwrap().chunk_type, ChunkType::Variable);
+    let mc = chunks.iter().find(|c| c.name == "MixedCase");
+    assert!(mc.is_some(), "Should capture MixedCase as Variable");
+    assert_eq!(mc.unwrap().chunk_type, ChunkType::Variable);
 
     // Function should still be captured
     let func = chunks.iter().find(|c| c.name == "my_func");
@@ -7961,4 +7962,154 @@ main =
     let model_alias = chunks.iter().find(|c| c.name == "Model");
     assert!(model_alias.is_some(), "Should find 'Model' type alias");
     assert_eq!(model_alias.unwrap().chunk_type, ChunkType::TypeAlias);
+}
+
+// -- chunk type reclassification tests ────────────────────────────────
+
+#[test]
+fn zig_test_declaration_gets_test_type() {
+    let content = "test \"addition works\" {\n    const x = 1 + 1;\n}\n";
+    let file = write_temp_file(content, "zig");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let t = chunks.iter().find(|c| c.name == "addition works").unwrap();
+    assert_eq!(t.chunk_type, ChunkType::Test);
+}
+
+#[test]
+fn kotlin_test_annotation_reclassified() {
+    let content = "class MyTest {\n    @Test\n    fun testAdd() { }\n}\n";
+    let file = write_temp_file(content, "kt");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let t = chunks.iter().find(|c| c.name == "testAdd");
+    assert!(t.is_some(), "Should find testAdd");
+    assert_eq!(t.unwrap().chunk_type, ChunkType::Test);
+}
+
+#[test]
+fn kotlin_const_val_reclassified() {
+    let content = "const val MAX_SIZE = 100\nval mutable = 42\n";
+    let file = write_temp_file(content, "kt");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let c = chunks.iter().find(|c| c.name == "MAX_SIZE");
+    assert!(c.is_some(), "Should find MAX_SIZE");
+    assert_eq!(c.unwrap().chunk_type, ChunkType::Constant);
+}
+
+#[test]
+fn php_test_prefix_reclassified() {
+    let content = "<?php\nclass FooTest {\n    public function testBar() { }\n    public function helper() { }\n}\n";
+    let file = write_temp_file(content, "php");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let t = chunks.iter().find(|c| c.name == "testBar").unwrap();
+    assert_eq!(t.chunk_type, ChunkType::Test);
+    let h = chunks.iter().find(|c| c.name == "helper").unwrap();
+    assert_eq!(h.chunk_type, ChunkType::Method);
+}
+
+#[test]
+fn php_namespace_captured() {
+    let content = "<?php\nnamespace App\\Http\\Controllers;\n\nclass FooController { }\n";
+    let file = write_temp_file(content, "php");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let ns = chunks.iter().find(|c| c.chunk_type == ChunkType::Namespace);
+    assert!(ns.is_some(), "Should find namespace");
+}
+
+#[test]
+fn elixir_test_keyword_reclassified() {
+    let content =
+        "defmodule MyTest do\n  test \"adds numbers\" do\n    assert 1 + 1 == 2\n  end\nend\n";
+    let file = write_temp_file(content, "ex");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let t = chunks.iter().find(|c| c.chunk_type == ChunkType::Test);
+    assert!(t.is_some(), "Should find test chunk");
+}
+
+#[test]
+fn swift_test_prefix_reclassified() {
+    let content =
+        "class FooTests: XCTestCase {\n    func testBar() { }\n    func helper() { }\n}\n";
+    let file = write_temp_file(content, "swift");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let t = chunks.iter().find(|c| c.name == "testBar").unwrap();
+    assert_eq!(t.chunk_type, ChunkType::Test);
+    let h = chunks.iter().find(|c| c.name == "helper").unwrap();
+    assert_eq!(h.chunk_type, ChunkType::Method);
+}
+
+#[test]
+fn ruby_initialize_is_constructor() {
+    let content =
+        "class Foo\n  def initialize(x)\n    @x = x\n  end\n  def bar\n    @x\n  end\nend\n";
+    let file = write_temp_file(content, "rb");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let ctor = chunks.iter().find(|c| c.name == "initialize").unwrap();
+    assert_eq!(ctor.chunk_type, ChunkType::Constructor);
+}
+
+#[test]
+fn ruby_test_prefix_reclassified() {
+    let content = "class FooTest\n  def test_bar\n    assert true\n  end\nend\n";
+    let file = write_temp_file(content, "rb");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let t = chunks.iter().find(|c| c.name == "test_bar").unwrap();
+    assert_eq!(t.chunk_type, ChunkType::Test);
+}
+
+#[test]
+fn js_constructor_reclassified() {
+    let content = "class Foo {\n  constructor(x) {\n    this.x = x;\n  }\n  bar() { }\n}\n";
+    let file = write_temp_file(content, "js");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let ctor = chunks.iter().find(|c| c.name == "constructor").unwrap();
+    assert_eq!(ctor.chunk_type, ChunkType::Constructor);
+}
+
+#[test]
+fn ts_constructor_reclassified() {
+    let content = "class Foo {\n  constructor(x: number) {\n    this.x = x;\n  }\n  bar() { }\n}\n";
+    let file = write_temp_file(content, "ts");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let ctor = chunks.iter().find(|c| c.name == "constructor").unwrap();
+    assert_eq!(ctor.chunk_type, ChunkType::Constructor);
+}
+
+#[test]
+fn perl_new_is_constructor() {
+    let content = "package Foo;\nsub new {\n  my $class = shift;\n  return bless {}, $class;\n}\nsub bar { 1 }\n";
+    let file = write_temp_file(content, "pl");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let ctor = chunks.iter().find(|c| c.name == "new").unwrap();
+    assert_eq!(ctor.chunk_type, ChunkType::Constructor);
+}
+
+#[test]
+fn vbnet_namespace_captured() {
+    let content = "Namespace MyApp.Models\n  Public Class User\n  End Class\nEnd Namespace\n";
+    let file = write_temp_file(content, "vb");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    let ns = chunks.iter().find(|c| c.chunk_type == ChunkType::Namespace);
+    assert!(ns.is_some(), "Should find VB.NET namespace");
+}
+
+#[test]
+fn css_supports_captured() {
+    let content = "@supports (display: grid) {\n  .container { display: grid; }\n}\n";
+    let file = write_temp_file(content, "css");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+    assert!(!chunks.is_empty(), "Should capture @supports");
 }

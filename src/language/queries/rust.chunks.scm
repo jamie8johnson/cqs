@@ -10,6 +10,10 @@
 (trait_item
   name: (type_identifier) @name) @trait
 
+;; Impl blocks
+(impl_item
+  type: (type_identifier) @name) @impl
+
 (const_item
   name: (identifier) @name) @const
 

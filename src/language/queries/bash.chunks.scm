@@ -7,3 +7,15 @@
   "readonly"
   (variable_assignment
     name: (variable_name) @name)) @const
+
+;; export FOO=bar declarations
+(declaration_command
+  "export"
+  (variable_assignment
+    name: (variable_name) @name)) @var
+
+;; declare FOO=bar declarations
+(declaration_command
+  "declare"
+  (variable_assignment
+    name: (variable_name) @name)) @var

@@ -50,6 +50,10 @@
 (namespace_definition
   name: (namespace_identifier) @name) @namespace
 
+;; Concepts (C++20)
+(concept_definition
+  name: (identifier) @name) @trait
+
 ;; Type aliases — using X = Y (C++11)
 (alias_declaration
   name: (type_identifier) @name) @typealias
