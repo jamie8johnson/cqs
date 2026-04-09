@@ -46,21 +46,21 @@ mentions = ["docs/notes.toml", "PROJECT_CONTINUITY.md"]
 
 (active task - update when starting something)
 
+### What happened this session
+
+### Tracked issues
+
+### What's next
+
 ## Parked
 
 (threads to revisit later)
 
-## Open Questions
+## Open Issues
 
-(decisions being weighed, with options)
+## Architecture
 
-## Blockers
-
-None.
-
-## Pending Changes
-
-(uncommitted work)
+(version, languages, tests, key tech decisions)
 ```
 
 #### ROADMAP.md
@@ -173,14 +173,17 @@ cqs gather "query" --json
 ```bash
 cqs "search query" --json
 cqs "function_name" --name-only --json
+cqs "query" --include-type function --json   # filter by chunk type (29 types)
+cqs "query" --exclude-type test --json       # exclude chunk types
 cqs read <path>
 cqs read --focus <function>
 ```
 
 ### Full command reference
 - `cqs explain <fn>` — function card: signature, callers, callees, similar
-- `cqs callers <fn>` / `cqs callees <fn>` — call graph navigation
+- `cqs callers <fn>` / `cqs callees <fn>` — call graph navigation (add `--cross-project` for multi-repo)
 - `cqs deps <type>` — type dependencies
+- `cqs impact <fn> --type-impact` — impact analysis with type dependencies
 - `cqs similar <fn>` — find similar code
 - `cqs related <fn>` — co-occurrence: shared callers, callees, types
 - `cqs where "description"` — placement suggestion
@@ -193,7 +196,7 @@ cqs read --focus <function>
 - `cqs dead` — find dead code
 - `cqs health` — codebase quality snapshot
 - `cqs stale` — check index freshness
-- `cqs notes add/update/remove` — manage project notes
+- `cqs notes add/update/remove/list` — manage project notes
 - `cqs stats` — index statistics
 - `cqs batch` — batch mode with pipeline syntax
 - `cqs brief <file>` — one-line-per-function summary
