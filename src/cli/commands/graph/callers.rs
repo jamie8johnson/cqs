@@ -74,7 +74,7 @@ pub(crate) fn cmd_callers(
     let store = &ctx.store;
 
     if cross_project {
-        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(store, &ctx.root)?;
+        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
         let callers = cross_ctx
             .get_callers_cross(name)
             .context("Failed to load cross-project callers")?;
@@ -154,7 +154,7 @@ pub(crate) fn cmd_callees(
     let store = &ctx.store;
 
     if cross_project {
-        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(store, &ctx.root)?;
+        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
         let callees = cross_ctx
             .get_callees_cross(name)
             .context("Failed to load cross-project callees")?;

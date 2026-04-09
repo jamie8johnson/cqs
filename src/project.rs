@@ -299,6 +299,7 @@ fn search_single_project(
     limit: usize,
     threshold: f32,
 ) -> Result<Vec<CrossProjectResult>, anyhow::Error> {
+    let _span = tracing::info_span!("search_single_project", project = %entry.name).entered();
     // Prefer .cqs, fall back to legacy .cq
     let index_path = {
         let new_path = entry.path.join(".cqs/index.db");

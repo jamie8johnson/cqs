@@ -440,11 +440,7 @@ impl Store {
                 }
             })
             .collect();
-        fused.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        fused.sort_by(|a, b| b.score.total_cmp(&a.score));
         fused.truncate(candidate_count);
 
         tracing::debug!(fused = fused.len(), alpha, "Hybrid fusion complete");

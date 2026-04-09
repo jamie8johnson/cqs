@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Cross-project call graph** — `--cross-project` flag on callers, callees, deps, impact, search, explain (#850).
+- **4 new chunk types** — Extern, Namespace, Middleware, Modifier (29 total) (#851).
+
+### Fixed
+- **Chunk type coverage gaps** across 15 languages — constructor, test, extern, extension reclassification (#852).
+- **OB-7**: SPLADE model-not-found log promoted from debug to warn.
+- **OB-8/9**: Watch mode tracing for skipped events and pending_files overflow.
+- **OB-10/12**: Missing tracing spans on `search_single_project` and `load_single_reference`.
+- **DOC-36**: Doc comments on 8 undocumented post_process functions.
+
 ## [1.20.0] - 2026-04-08
 
 14-category code audit: 71 findings, 69 fixed, 2 tracked issues (#843, #844).

@@ -206,6 +206,11 @@ impl Reranker {
         // 4. Extract logits, apply sigmoid
         // Cross-encoder output is typically "logits" with shape [batch, 1] or [batch]
         // ort rc.11 try_extract_tensor returns (Vec<i64>, Vec<f32>)
+        if outputs.len() == 0 {
+            return Err(RerankerError::Inference(
+                "ONNX model produced no outputs".to_string(),
+            ));
+        }
         let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
         let batch_size = results.len();
 

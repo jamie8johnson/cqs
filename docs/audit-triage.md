@@ -1,133 +1,115 @@
-# Audit Triage — v1.19.0
+# Audit Triage — v1.20.0
 
-54 findings across 8 categories. Triaged by impact × effort.
+~80 findings across 14 categories (both batches). 2026-04-08.
 
-## P1 — Easy + High Impact (fix immediately)
+## P1: Easy + High Impact (fix immediately)
 
-| ID | Category | Title | Status |
-|----|----------|-------|--------|
-| SEC-10 | Security | evict() negative size wraps u64, deletes entire cache | ✅ #841 |
-| SEC-7 | Security | Cache opens SQLite via unencoded path URL | ✅ #840 |
-| SEC-8 | Security | Cache DB created world-readable | ✅ #840 |
-| SEC-9 | Security | query_log.jsonl created world-readable | ✅ #841 |
-| RB-11 | Robustness | format_timestamp panics on negative created_at | ✅ #841 |
-| RB-12 | Robustness | splade_alpha NaN/OOR silently corrupts hybrid scores | ✅ #841 |
-| DS-45 | Data Safety | INSERT OR IGNORE retains stale entry on fingerprint fallback | ✅ #842 |
-| EH-16 | Error Handling | prune_orphan_sparse_vectors defined but never called | ✅ #842 |
+| ID | Finding | Status |
+|----|---------|--------|
+| RB-15 | `from_config` panics instead of returning Err (= CQ-4, EH-2) | fixing |
+| RB-17 | 8 post_process functions panic on multi-byte UTF-8 at byte boundary | fixing |
+| RB-18 | `find_insertion_point` OOB panic on stale index data | fixing |
+| DS-2 | INSERT OR REPLACE wipes enrichment_hash on every re-index | fixing |
+| DS-3 | GC ignores set_hnsw_dirty failure, crash leaves stale HNSW | fixing |
+| DS-4 | Migration hardcodes 768 dims, corrupts BGE-large installs | fixing |
+| EH-1 | Cache evict avg-entry query failure silently swallowed | fixing |
+| EH-3 | get_all_summaries_full failure silently discards all LLM summaries | fixing |
+| EH-4 | chunk_type_language_map silently drops chunks with unrecognized type | fixing |
+| CQ-9 | mem::forget(dir) leaks temp directories in tests | fixing |
+| RB-16 | reranker::score_passages panics on zero ONNX outputs | fixing |
+| AC-4 | paired_bootstrap p-value exceeds 1.0 | fixing |
+| AC-8 | SPLADE hybrid sort uses partial_cmp instead of total_cmp | fixing |
 
-## P2 — Medium + High Impact (fix in batch)
+## P2: Medium Effort + High Impact (fix in batch)
 
-| ID | Category | Title | Status |
-|----|----------|-------|--------|
-| CQ-5 | Code Quality | Batch search missing --include-type/--exclude-type | ✅ #842 |
-| CQ-7 | Code Quality | resolve_parent_context dedup uses child ID, never fires | ✅ #842 |
-| PF-5 | Performance | SPLADE single-threaded, encode_batch never used | issue #843 |
-| PF-12 | Performance | chunk_type_language_map scans all chunks per search | ✅ #842 |
-| PF-14 | Performance | SPLADE encode copies full logits tensor (15.6MB/call) | ✅ #840 |
-| DS-47 | Data Safety | Cache pool missing busy_timeout | ✅ #840 |
-| DS-49 | Data Safety | evict() measures physical pages, not logical data | ✅ #842 |
-| DS-50 | Data Safety | Concurrent block_on serializes GPU/CPU cache access | ✅ #840 |
-| RB-10 | Robustness | SPLADE session panics on poisoned Mutex | ✅ #840 |
-| RB-13 | Robustness | SPLADE encode no input length cap | ✅ #840 |
+| ID | Finding | Status |
+|----|---------|--------|
+| CQ-1 | --cross-project silently falls back on 4 commands (= CQ-2) | fixing |
+| CQ-3 | analyze_impact_cross returns empty file/line for all callers | fixing |
+| DS-1 | Orphan sparse_vectors after prune_missing | fixing |
+| DS-6 | prune_all omits sparse_vectors — split atomicity | fixing |
+| SEC-1 | Temp file world-readable before set_permissions | fixing |
+| SEC-2 | fs::copy fallback creates world-readable temp | fixing |
+| PF-3 | compute_risk_and_tests N separate reverse_bfs calls | defer |
+| PF-9 | suggest_tests reverse_bfs per direct caller | defer |
+| PF-4 | find_contrastive_neighbors clones Vec 12K times | defer |
+| PF-6 | search_by_names_batch full deserialization before name match | defer |
+| AD-3 | CrossProjectCallee.line vs line_start JSON inconsistency | defer |
+| AD-8 | CallerWithContext.line missing serde rename | defer |
+| PB-1 | prune_all missing absolute/relative path suffix fallback | defer |
 
-## P3 — Easy + Low Impact (fix if time)
+## P3: Easy + Low Impact (fix if time)
 
-| ID | Category | Title | Status |
-|----|----------|-------|--------|
-| OB-1 | Observability | stats() swallows 5 SQLite failures | ✅ #841 |
-| OB-2 | Observability | evict() PRAGMA failure silent | ✅ #841 |
-| OB-3 | Observability | read_batch blob mismatch silent | ✅ #841 |
-| OB-4 | Observability | log_query open failure silent | ✅ #841 |
-| OB-5 | Observability | dispatch() missing tracing span | ✅ #841 |
-| OB-6 | Observability | cache subcommand helpers missing spans | ✅ #841 |
-| EH-13 | Error Handling | SPLADE encode error silent in batch | ✅ #841 |
-| EH-14 | Error Handling | ensure_splade_index silently ignores DB error | ✅ #841 |
-| EH-15 | Error Handling | get_chunk_with_embedding errors silent in neighbors | ✅ #841 |
-| PF-6 | Performance | write_batch allocates per-embedding Vec<u8> | ✅ #841 |
-| PF-7 | Performance | read_batch rebuilds SQL placeholder per sub-batch | ✅ #841 |
-| PF-8 | Performance | prepare_for_embedding collects hash list twice | ✅ #841 |
-| PF-9 | Performance | GPU embed 3 passes for one debug log | ✅ #841 |
-| PF-10 | Performance | as_slice().to_vec() clones embeddings for cache write | ✅ #841 |
-| PF-11 | Performance | upsert_sparse_vectors one DELETE per chunk | ✅ #841 |
-| PF-13 | Performance | SpladeIndex bounds-checked get in hot loop | ✅ #841 |
-| CQ-1/DS-48/TC-19 | Multiple | VerifyReport dead type (3 findings, 1 fix) | ✅ #840 |
-| CQ-2 | Code Quality | SearchFilter::new() dead method | ✅ #841 |
-| CQ-3 | Code Quality | test_eviction duplicates open internals | ✅ #841 |
-| CQ-4 | Code Quality | cache_path_display recomputes default_path | ✅ #841 |
-| CQ-6 | Code Quality | Double rerank guard unreachable | ✅ #841 |
-| CQ-8 | Code Quality | search_hybrid bare unwrap | ✅ #841 |
-| DS-44 | Data Safety | write_batch no dim validation | ✅ #841 |
-| DS-46 | Data Safety | Negative dim wraps to usize | ✅ #841 |
-| RB-14 | Robustness | token_id negative wraps to u32 | ✅ #841 |
+| ID | Finding | Status |
+|----|---------|--------|
+| CQ-5 | _local parameter ignored, duplicate store opened (= PF-5) | fixing |
+| CQ-6 | include_types silently ignored in analyze_impact_cross | fixing |
+| CQ-8 | Duplicate make_named_store test helpers | fixing |
+| PF-8 | Inline placeholder duplicates make_placeholders | fixing |
+| PF-10 | GatherOptions::default reads env var every time | fixing |
+| SEC-3 | llm_api_base logged verbatim at debug level | fixing |
+| SHL-26 | llm_max_tokens capped at 4096 below model limits | fixing |
+| SHL-27 | ENRICH_EMBED_BATCH ignores CQS_EMBED_BATCH_SIZE | fixing |
+| SHL-28 | MAX_REFERENCES=20 no env override | fixing |
+| OB-7 | search_hybrid silently falls back when SPLADE unavailable | fixing |
+| OB-8 | collect_events in watch zero tracing | fixing |
+| OB-9 | pending_files overflow silently drops events | fixing |
+| OB-10 | search_single_project has no span | fixing |
+| OB-12 | load_single_reference has no span | fixing |
+| AC-5 | bootstrap_ci lower bound wrong index | fixing |
+| AC-6 | bfs_expand false expansion_capped | fixing |
+| RM-4 | Cache uses wrong tokio runtime | fixing |
+| RM-5 | Cache pool missing idle_timeout | fixing |
+| PB-2 | list_stale_files missing macOS case-fold | defer |
+| PB-3 | WSL watch auto-poll hardcodes /mnt/ | defer |
+| PB-4 | atomic_write non-atomic fallback on Windows | defer |
 
-## P4 — Test Coverage (add tests)
+## P4: Hard or Low Impact (create issues / defer)
 
-| ID | Category | Title | Status |
-|----|----------|-------|--------|
-| TC-17 | Test Coverage | HnswIndex::search_filtered zero unit tests | ✅ #841 |
-| TC-18 | Test Coverage | find_rank matches name only, file unused | ✅ #841 |
-| TC-20 | Test Coverage | read_batch >100 hashes path untested | ✅ #841 |
-| TC-21 | Test Coverage | NaN/Inf embeddings untested | ✅ #841 |
-| TC-22 | Test Coverage | log_query zero tests | ✅ #841 |
-| TC-23 | Test Coverage | New chunk types missing from filter tests | ✅ #841 |
-| TC-24 | Test Coverage | prune edge cases untested | ✅ #841 |
-| TC-25 | Test Coverage | Eval harness helpers untested | ✅ #841 |
-| TC-26 | Test Coverage | write_batch duplicate hash untested | ✅ #841 |
+| ID | Finding | Status |
+|----|---------|--------|
+| CQ-7 | ScoringConfig::with_overrides dead code | defer |
+| DS-5 | DEFERRED transactions → SQLITE_BUSY (recurring) | issue |
+| SEC-4 | Reference path accepts any filesystem path | issue |
+| SEC-5 | FTS5 operator injection (low severity) | defer |
+| EXT-3 | human_name() no compile-time guard | defer |
+| EXT-4 | Language count hardcoded in 5+ docs | defer |
+| EXT-5 | rrf_k not in ScoringOverrides | defer |
+| SHL-25 | 25 env vars undocumented in README | issue |
+| SHL-29 | Pipeline channel depths not configurable | defer |
+| SHL-30 | HNSW ID map limit not env-readable | defer |
+| PF-1 | get_neighbors Vec<String> in BFS | defer |
+| PF-2 | bfs_expand double-clones seeds | defer |
+| PF-7 | cached_notes_summaries Mutex on warm read | defer |
+| RM-3 | SpladeEncoder can't be freed during idle | defer |
+| RM-6 | load_all_sparse_vectors 3x peak memory | defer |
+| AC-7 | VectorIndex default 3x over-fetch under-returns | defer |
+| AC-9 | test_reachability equivalence class over-counts | defer |
+| PB-5 | libc::atexit allocates via Mutex (UB) | issue |
+| AD-1 | Store::open_light misleading name | defer |
+| AD-2 | --include-type vs --include-types collision | issue |
+| AD-4 | Batch mode missing 8 CLI flags | issue |
+| AD-5 | SearchFilter.chunk_types naming (= #844) | existing #844 |
+| AD-6 | storedproc/configkey/typealias squashed names | defer |
+| AD-7 | Write commands bypass CommandContext | defer |
+| DOC-32 | CHANGELOG empty for shipped PRs | fixing |
+| DOC-33 | ROADMAP unchecked items | fixing |
+| DOC-34 | CONTRIBUTING.md missing cross_project.rs | fixing |
+| DOC-35 | README shows trace --cross-project as working | fixing |
+| DOC-36 | 8 post_process functions undocumented | fixing |
+| DOC-37 | No "Adding a Chunk Type" section in CONTRIBUTING | defer |
+| DOC-38 | callees --cross-project not shown in README | fixing |
+| DOC-39 | README "How It Works" lists only 7 types | fixing |
+| OB-11 | watch reindex_files no cache hit/miss log | defer |
+| TC-27–TC-36 | 10 test coverage gaps | batch later |
 
-## Summary
+## Notes
 
-- **P1**: 8 findings (all easy, security + robustness + data safety)
-- **P2**: 10 findings (medium effort, performance + data safety + robustness)
-- **P3**: 25 findings (easy, observability + error handling + performance + code quality)
-- **P4**: 9 findings (test coverage gaps)
-- **Total**: 52 unique findings (3 duplicates merged: CQ-1 = DS-48 = TC-19)
-
-## Batch 2 — 7 remaining categories (2026-04-08)
-
-19 findings across Documentation, API Design, Scaling, Algorithm Correctness, Extensibility, Platform Behavior, Resource Management.
-
-### P1
-
-| ID | Category | Title | Status |
-|----|----------|-------|--------|
-| AC-2 | Algorithm | Watch mode absolute-path chunk IDs | ✅ #842 |
-| EXT-1 | Extensibility | New ChunkType silently excluded from search | ✅ #842 |
-
-### P2
-
-| ID | Category | Title | Status |
-|----|----------|-------|--------|
-| AC-1 | Algorithm | evict() minimum 100 deletions over-evicts | ✅ #842 |
-| AC-3 | Algorithm | bootstrap_ci weak PRNG seed | ✅ #842 |
-| PB-1 | Platform | open_light() 4 connections on 1-thread runtime | ✅ #842 |
-| RM-2 | Resource | Cache pool max_connections(2) but only 1 used | ✅ #842 |
-
-### P3
-
-| ID | Category | Title | Status |
-|----|----------|-------|--------|
-| DOC-27 | Documentation | Language count 53→54 | ✅ #842 |
-| DOC-28 | Documentation | Chunk type count 27→25 | ✅ #842 |
-| DOC-29 | Documentation | README eval baselines stale | ✅ #842 |
-| DOC-30 | Documentation | with_query() stale doc comment | ✅ #842 |
-| DOC-31 | Documentation | lib.rs batch size comment wrong | ✅ #842 |
-| PB-2 | Platform | idle_timeout WAL lock retention | ✅ #842 |
-| SHL-22 | Scaling | SPLADE threshold hardcoded | ✅ #842 |
-| SHL-24 | Scaling | Env vars undocumented in README | ✅ #842 |
-
-### P4 (deferred)
-
-| ID | Category | Title | Status |
-|----|----------|-------|--------|
-| AD-19 | API Design | chunk_types/exclude_types asymmetric naming | issue #844 |
-| EXT-2 | Extensibility | CLI/batch dual registration, no sync test | design issue |
-| RM-1 | Resource | Two tokio runtimes during index | low priority |
-| SHL-23 | Scaling | Channel depths not configurable | low priority |
-
-### Batch 2 Summary
-
-- **P1**: 2 fixed
-- **P2**: 4 fixed
-- **P3**: 8 fixed
-- **P4**: 4 deferred (1 tracked issue, 3 low priority)
-- **Total**: 14 fixed, 4 deferred, 1 tracked issue
+- Duplicates collapsed: CQ-4=RB-15=EH-2, CQ-2⊂CQ-1, CQ-5=PF-5
+- DS-1+DS-6 fixed together (sparse_vectors in prune transaction)
+- "fixing" = dispatched to fix agents
+- "defer" = low impact, tracked for future
+- "issue" = create GitHub issue
+- PF-3/4/6/9 deferred — performance optimizations need benchmarking first
+- PB-2/3/4 deferred — platform-specific, need platform testing
+- TC items batched separately as test-only commit

@@ -12,6 +12,7 @@ mod upsert;
 mod windowing;
 
 // Re-export public items
+pub(crate) use types::embed_batch_size;
 pub(crate) use types::PipelineStats;
 pub(crate) use windowing::apply_windowing;
 

@@ -392,6 +392,7 @@ fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchSta
         let norm_path = cqs::normalize_path(&path);
         let norm_cqs = cqs::normalize_path(cfg.cqs_dir);
         if norm_path.starts_with(&norm_cqs) {
+            tracing::debug!(path = %norm_path, "Skipping .cqs directory event");
             continue;
         }
 
@@ -407,6 +408,7 @@ fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchSta
         let ext_raw = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let ext = ext_raw.to_ascii_lowercase();
         if !cfg.supported_ext.contains(ext.as_str()) {
+            tracing::debug!(path = %path.display(), ext = %ext, "Skipping unsupported extension");
             continue;
         }
 
@@ -419,11 +421,18 @@ fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchSta
                     .get(rel)
                     .is_some_and(|last| mtime <= *last)
                 {
+                    tracing::trace!(path = %rel.display(), "Skipping unchanged mtime");
                     continue;
                 }
             }
             if state.pending_files.len() < max_pending_files() {
                 state.pending_files.insert(rel.to_path_buf());
+            } else {
+                tracing::warn!(
+                    max = max_pending_files(),
+                    path = %rel.display(),
+                    "Watch pending_files full, dropping file event"
+                );
             }
             state.last_event = std::time::Instant::now();
         }

@@ -100,7 +100,7 @@ pub(super) const EMBED_CHANNEL_DEPTH: usize = 64;
 /// Restored to 64 with debug logging (PERF-45 investigation). If it crashes again,
 /// run with RUST_LOG=debug to capture batch_size/max_char_len/total_chars at failure.
 /// Configurable via `CQS_EMBED_BATCH_SIZE` environment variable.
-pub(super) fn embed_batch_size() -> usize {
+pub(crate) fn embed_batch_size() -> usize {
     match std::env::var("CQS_EMBED_BATCH_SIZE") {
         Ok(val) => match val.parse::<usize>() {
             Ok(size) if size > 0 => {

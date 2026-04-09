@@ -110,6 +110,20 @@ impl Store {
                 deleted += result.rows_affected() as u32;
             }
 
+            // DS-1/DS-6: Delete orphan sparse_vectors inside the same transaction.
+            if deleted > 0 {
+                let sparse_result = sqlx::query(
+                    "DELETE FROM sparse_vectors WHERE chunk_id NOT IN \
+                     (SELECT id FROM chunks)",
+                )
+                .execute(&mut *tx)
+                .await?;
+                let pruned_sparse = sparse_result.rows_affected();
+                if pruned_sparse > 0 {
+                    tracing::debug!(pruned_sparse, "Pruned orphan sparse vectors in prune_missing tx");
+                }
+            }
+
             tx.commit().await?;
 
             if deleted > 0 {
@@ -216,6 +230,20 @@ impl Store {
             .execute(&mut *tx)
             .await?;
             let pruned_summaries = summaries_result.rows_affected() as usize;
+
+            // 2e. DS-1/DS-6: Delete orphan sparse_vectors inside the same transaction.
+            // Previously these were pruned in a separate call after commit, leaving a
+            // window where stale sparse vectors could inflate the SPLADE index.
+            let sparse_result = sqlx::query(
+                "DELETE FROM sparse_vectors WHERE chunk_id NOT IN \
+                 (SELECT id FROM chunks)",
+            )
+            .execute(&mut *tx)
+            .await?;
+            let pruned_sparse = sparse_result.rows_affected() as usize;
+            if pruned_sparse > 0 {
+                tracing::debug!(pruned_sparse, "Pruned orphan sparse vectors in prune_all tx");
+            }
 
             tx.commit().await?;
 

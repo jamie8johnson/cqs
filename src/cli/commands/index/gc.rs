@@ -98,9 +98,11 @@ pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<(
     // concurrent searches fall back to brute-force during the rebuild window
     // rather than returning orphan IDs from the old index (RT-DATA-2).
     let hnsw_vectors = if pruned_chunks > 0 {
-        if let Err(e) = store.set_hnsw_dirty(true) {
-            tracing::warn!(error = %e, "Failed to mark HNSW dirty before rebuild");
-        }
+        // DS-3: failing to mark HNSW dirty means concurrent searches could
+        // return stale results from the old index during rebuild. Abort.
+        store
+            .set_hnsw_dirty(true)
+            .context("Failed to mark HNSW dirty before GC rebuild")?;
         let hnsw_path = cqs_dir.join("index.hnsw.graph");
         if hnsw_path.exists() {
             for file_name in cqs::hnsw::HNSW_ALL_EXTENSIONS

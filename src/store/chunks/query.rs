@@ -455,8 +455,20 @@ impl Store {
                 let id: String = row.get("id");
                 let ct: String = row.get("chunk_type");
                 let lang: String = row.get("language");
-                if let (Ok(chunk_type), Ok(language)) = (ct.parse(), lang.parse()) {
-                    map.insert(id, (chunk_type, language));
+                match (ct.parse(), lang.parse()) {
+                    (Ok(chunk_type), Ok(language)) => {
+                        map.insert(id, (chunk_type, language));
+                    }
+                    (ct_result, lang_result) => {
+                        tracing::warn!(
+                            chunk_id = %id,
+                            chunk_type = %ct,
+                            language = %lang,
+                            ct_err = ?ct_result.err(),
+                            lang_err = ?lang_result.err(),
+                            "Skipping chunk with unparseable chunk_type or language"
+                        );
+                    }
                 }
             }
             Ok::<_, StoreError>(map)

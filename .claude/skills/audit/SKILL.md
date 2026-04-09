@@ -13,7 +13,11 @@ Run the 14-category code audit. Full design: `docs/plans/2026-02-04-20-category-
 
 - `$ARGUMENTS` — batch number (1-2) or `all` for full audit
 
+**`all` means run BOTH batches** — all 16 categories. Run batch 1, then batch 2, then triage all findings together. Do NOT stop after batch 1.
+
 ## Batches
+
+There are 16 categories split into 2 batches of 8. Each batch spawns 8 parallel agents (one per category). `all` runs both batches sequentially.
 
 | Batch | Categories |
 |-------|-----------|

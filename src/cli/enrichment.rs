@@ -70,7 +70,8 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
 
     // (chunk_id, enriched_nl, enrichment_hash)
     let mut embed_batch: Vec<(String, String, String)> = Vec::new();
-    const ENRICH_EMBED_BATCH: usize = 64;
+    // SHL-27: Use shared embed_batch_size() so CQS_EMBED_BATCH_SIZE env var is respected
+    let enrich_embed_batch: usize = super::pipeline::embed_batch_size();
     let mut skipped_count = 0usize;
 
     // Pre-fetch all LLM summaries once before the page loop (PERF-18).
@@ -196,7 +197,7 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                 embed_batch.push((cs.id.clone(), enriched_nl, enrichment_hash));
 
                 // Flush batch when full
-                if embed_batch.len() >= ENRICH_EMBED_BATCH {
+                if embed_batch.len() >= enrich_embed_batch {
                     enriched_count += flush_enrichment_batch(store, embedder, &mut embed_batch)?;
                 }
             }

@@ -192,7 +192,15 @@ pub(super) async fn snapshot_content_hashes(
     Ok(old_hashes)
 }
 
-/// Batch INSERT chunks (55 rows × 18 params = 990 < SQLite's 999 limit).
+/// Batch INSERT chunks (52 rows × 19 params = 988 < SQLite's 999 limit).
+///
+/// Uses `ON CONFLICT(id) DO UPDATE` (upsert) instead of `INSERT OR REPLACE`
+/// to preserve `enrichment_hash` and `enrichment_version` columns that are
+/// set by the enrichment pass. `INSERT OR REPLACE` deletes and re-inserts the
+/// row, wiping those columns back to NULL/default (DS-2).
+///
+/// The WHERE clause on content_hash skips the UPDATE when the content is
+/// unchanged, avoiding unnecessary write amplification.
 pub(super) async fn batch_insert_chunks(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     chunks: &[(Chunk, Embedding)],
@@ -204,7 +212,7 @@ pub(super) async fn batch_insert_chunks(
     for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
         let emb_offset = batch_idx * CHUNK_INSERT_BATCH;
         let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-            "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name)",
+            "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name)",
         );
         qb.push_values(batch.iter().enumerate(), |mut b, (i, (chunk, _))| {
             b.push_bind(&chunk.id)
@@ -227,6 +235,29 @@ pub(super) async fn batch_insert_chunks(
                 .push_bind(chunk.window_idx.map(|i| i as i64))
                 .push_bind(&chunk.parent_type_name);
         });
+        // DS-2: ON CONFLICT upsert preserves enrichment_hash and enrichment_version.
+        // Only update when content_hash changed (avoids write amplification for unchanged chunks).
+        qb.push(
+            " ON CONFLICT(id) DO UPDATE SET \
+             origin=excluded.origin, \
+             source_type=excluded.source_type, \
+             language=excluded.language, \
+             chunk_type=excluded.chunk_type, \
+             name=excluded.name, \
+             signature=excluded.signature, \
+             content=excluded.content, \
+             content_hash=excluded.content_hash, \
+             doc=excluded.doc, \
+             line_start=excluded.line_start, \
+             line_end=excluded.line_end, \
+             embedding=excluded.embedding, \
+             source_mtime=excluded.source_mtime, \
+             updated_at=excluded.updated_at, \
+             parent_id=excluded.parent_id, \
+             window_idx=excluded.window_idx, \
+             parent_type_name=excluded.parent_type_name \
+             WHERE chunks.content_hash != excluded.content_hash",
+        );
         qb.build().execute(&mut **tx).await?;
     }
     Ok(())
@@ -259,14 +290,9 @@ pub(super) async fn upsert_fts_conditional(
         return Ok(());
     }
 
-    // Batch DELETE: remove old FTS entries for changed chunks
+    // Batch DELETE: remove old FTS entries for changed chunks (PF-8: reuse make_placeholders)
     for batch in changed.chunks(500) {
-        let placeholders: String = batch
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = crate::store::helpers::make_placeholders(batch.len());
         let sql = format!("DELETE FROM chunks_fts WHERE id IN ({})", placeholders);
         let mut query = sqlx::query(&sql);
         for chunk in batch {

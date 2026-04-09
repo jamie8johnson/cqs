@@ -62,6 +62,9 @@ pub fn find_insertion_point(line_start: usize, file_lines: &[&str], language: La
 
             // Start at the line above the function (0-based index)
             let mut idx = line_start - 2; // line_start is 1-based, so -2 for 0-based line above
+            if idx >= file_lines.len() {
+                return line_start;
+            }
             let mut seen_decorator = false;
 
             // Scan upward: skip decorator/attribute lines (and blank lines

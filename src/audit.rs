@@ -117,15 +117,25 @@ pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
     // Atomic write: temp file + rename
     let suffix = crate::temp_suffix();
     let tmp_path = path.with_extension(format!("json.{:016x}.tmp", suffix));
-    std::fs::write(&tmp_path, &content).context("Failed to write temp audit-mode file")?;
-
-    // Restrict permissions BEFORE rename so the file is never world-readable
-    #[cfg(unix)]
+    // SEC-1: Write with mode 0o600 from creation so file is never world-readable
     {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))
+        #[cfg(unix)]
         {
-            tracing::debug!(path = %tmp_path.display(), error = %e, "Failed to set file permissions");
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp_path)
+                .context("Failed to write temp audit-mode file")?;
+            f.write_all(content.as_bytes())
+                .context("Failed to write temp audit-mode file")?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&tmp_path, &content).context("Failed to write temp audit-mode file")?;
         }
     }
 
@@ -141,6 +151,12 @@ pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
                 copy_err
             );
         }
+        // SEC-2: Restrict permissions on copy fallback target
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dest_tmp, std::fs::Permissions::from_mode(0o600));
+        }
         if let Err(rename2_err) = std::fs::rename(&dest_tmp, &path) {
             let _ = std::fs::remove_file(&dest_tmp);
             let _ = std::fs::remove_file(&tmp_path);
@@ -151,14 +167,6 @@ pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
             );
         }
         let _ = std::fs::remove_file(&tmp_path);
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
-            tracing::debug!(path = %path.display(), error = %e, "Failed to set file permissions");
-        }
     }
     Ok(())
 }

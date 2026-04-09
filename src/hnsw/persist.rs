@@ -239,7 +239,24 @@ impl HnswIndex {
         // serializing to an in-memory JSON string first.
         let id_map_temp = temp_dir.join(format!("{}.hnsw.ids", basename));
         {
-            let file = std::fs::File::create(&id_map_temp).map_err(|e| {
+            // SEC-1: Create with mode 0o600 so file is never world-readable
+            let file = {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .mode(0o600)
+                        .open(&id_map_temp)
+                }
+                #[cfg(not(unix))]
+                {
+                    std::fs::File::create(&id_map_temp)
+                }
+            }
+            .map_err(|e| {
                 HnswError::Internal(format!("Failed to create {}: {}", id_map_temp.display(), e))
             })?;
             let writer = std::io::BufWriter::new(file);
@@ -290,22 +307,52 @@ impl HnswIndex {
             }
         }
 
-        // Write checksum to temp directory
+        // SEC-1: Write checksum with mode 0o600 from creation
         let checksum_temp = temp_dir.join(format!("{}.hnsw.checksum", basename));
-        std::fs::write(&checksum_temp, checksums.join("\n")).map_err(|e| {
-            HnswError::Internal(format!(
-                "Failed to write {}: {}",
-                checksum_temp.display(),
-                e
-            ))
-        })?;
+        {
+            #[cfg(unix)]
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&checksum_temp)
+                    .map_err(|e| {
+                        HnswError::Internal(format!(
+                            "Failed to write {}: {}",
+                            checksum_temp.display(),
+                            e
+                        ))
+                    })?;
+                f.write_all(checksums.join("\n").as_bytes()).map_err(|e| {
+                    HnswError::Internal(format!(
+                        "Failed to write {}: {}",
+                        checksum_temp.display(),
+                        e
+                    ))
+                })?;
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::write(&checksum_temp, checksums.join("\n")).map_err(|e| {
+                    HnswError::Internal(format!(
+                        "Failed to write {}: {}",
+                        checksum_temp.display(),
+                        e
+                    ))
+                })?;
+            }
+        }
 
-        // Set restrictive permissions in temp dir (Unix only)
+        // Set restrictive permissions on remaining temp files (graph/data written by library)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let restrictive = std::fs::Permissions::from_mode(0o600);
-            for ext in &["hnsw.ids", "hnsw.graph", "hnsw.data", "hnsw.checksum"] {
+            for ext in &["hnsw.graph", "hnsw.data"] {
                 let path = temp_dir.join(format!("{}.{}", basename, ext));
                 if path.exists() {
                     if let Err(e) = std::fs::set_permissions(&path, restrictive.clone()) {
@@ -348,17 +395,26 @@ impl HnswIndex {
                             dir.join(format!(".{}.{}.{:016x}.tmp", basename, ext, fb_suffix));
                         std::fs::copy(&temp_path, &target_tmp).map_err(|copy_err| {
                             HnswError::Internal(format!(
-                                "Failed to rename {} → {} ({}), copy fallback also failed: {}",
+                                "Failed to rename {} -> {} ({}), copy fallback also failed: {}",
                                 temp_path.display(),
                                 final_path.display(),
                                 rename_err,
                                 copy_err
                             ))
                         })?;
+                        // SEC-2: Restrict permissions on copy fallback target
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(
+                                &target_tmp,
+                                std::fs::Permissions::from_mode(0o600),
+                            );
+                        }
                         std::fs::rename(&target_tmp, &final_path).map_err(|e| {
                             let _ = std::fs::remove_file(&target_tmp);
                             HnswError::Internal(format!(
-                                "Failed to rename {} → {} after cross-device copy: {}",
+                                "Failed to rename {} -> {} after cross-device copy: {}",
                                 target_tmp.display(),
                                 final_path.display(),
                                 e

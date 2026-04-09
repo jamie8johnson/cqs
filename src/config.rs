@@ -107,7 +107,7 @@ pub struct ScoringOverrides {
 /// source = "/home/user/code/tokio"
 /// weight = 0.8
 /// ```
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Default result limit (overridden by -n)
@@ -145,6 +145,52 @@ pub struct Config {
     /// Reference indexes for multi-index search
     #[serde(default, rename = "reference")]
     pub references: Vec<ReferenceConfig>,
+}
+
+/// SEC-3: Redact a URL for logging — masks credentials (user:pass@host) and
+/// returns only the scheme + host. Returns "[redacted]" for unparseable URLs.
+fn redact_url(url: &str) -> String {
+    // Strip credentials if present (scheme://user:pass@host/path -> scheme://host/path)
+    if let Some(scheme_end) = url.find("://") {
+        let after_scheme = &url[scheme_end + 3..];
+        let host_part = if let Some(at_pos) = after_scheme.find('@') {
+            &after_scheme[at_pos + 1..]
+        } else {
+            after_scheme
+        };
+        // Keep only scheme + host (strip path)
+        let host_only = host_part.split('/').next().unwrap_or(host_part);
+        format!("{}://{}/...", &url[..scheme_end], host_only)
+    } else {
+        "[redacted]".to_string()
+    }
+}
+
+/// Custom Debug impl for Config that redacts llm_api_base to avoid logging credentials.
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("limit", &self.limit)
+            .field("threshold", &self.threshold)
+            .field("name_boost", &self.name_boost)
+            .field("quiet", &self.quiet)
+            .field("verbose", &self.verbose)
+            .field("stale_check", &self.stale_check)
+            .field("ef_search", &self.ef_search)
+            .field("llm_model", &self.llm_model)
+            .field(
+                "llm_api_base",
+                &self.llm_api_base.as_deref().map(redact_url),
+            )
+            .field("llm_max_tokens", &self.llm_max_tokens)
+            .field("llm_hyde_max_tokens", &self.llm_hyde_max_tokens)
+            .field("embedding", &self.embedding)
+            .field("reranker_model", &self.reranker_model)
+            .field("reranker_max_length", &self.reranker_max_length)
+            .field("scoring", &self.scoring)
+            .field("references", &self.references)
+            .finish()
+    }
 }
 
 /// Clamp f32 config value to valid range and warn if out of bounds.
@@ -217,9 +263,18 @@ impl Config {
     /// Adding a new field? Add its clamping here — this is the single
     /// validation choke point.
     fn validate(&mut self) {
-        // Limit reference count
+        // SHL-28: Cap reference count. Each reference opens a separate SQLite DB +
+        // HNSW index, consuming ~50-100MB RAM. 20 references = ~1-2GB baseline memory.
+        // If you need more, consider consolidating related libraries into fewer indexes.
         const MAX_REFERENCES: usize = 20;
         if self.references.len() > MAX_REFERENCES {
+            eprintln!(
+                "Warning: {} references configured, exceeding limit of {}. \
+                 Only the first {} will be loaded. Each reference consumes ~50-100MB RAM.",
+                self.references.len(),
+                MAX_REFERENCES,
+                MAX_REFERENCES
+            );
             tracing::warn!(
                 count = self.references.len(),
                 max = MAX_REFERENCES,
@@ -244,14 +299,15 @@ impl Config {
         if let Some(ref mut ef) = self.ef_search {
             clamp_config_usize(ef, "ef_search", 10, 1000);
         }
+        // SHL-26: Models like Claude support up to 64k output tokens; 4096 was too restrictive.
         if let Some(ref mut mt) = self.llm_max_tokens {
-            if *mt == 0 || *mt > 4096 {
+            if *mt == 0 || *mt > 32768 {
                 tracing::warn!(
                     field = "llm_max_tokens",
                     value = *mt,
-                    "Config value out of bounds, clamping to [1, 4096]"
+                    "Config value out of bounds, clamping to [1, 32768]"
                 );
-                *mt = (*mt).clamp(1, 4096);
+                *mt = (*mt).clamp(1, 32768);
             }
         }
         if let Some(ref mut s) = self.scoring {
@@ -446,15 +502,23 @@ pub fn add_reference_to_config(
     let suffix = crate::temp_suffix();
     let tmp_path = config_path.with_extension(format!("toml.{:016x}.tmp", suffix));
     let serialized = toml::to_string_pretty(&table)?;
-    std::fs::write(&tmp_path, &serialized)?;
-
-    // Restrict permissions BEFORE rename so the file is never world-readable
-    #[cfg(unix)]
+    // SEC-1: Write with mode 0o600 from creation so file is never world-readable
     {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))
+        #[cfg(unix)]
         {
-            tracing::debug!(path = %tmp_path.display(), error = %e, "Failed to set file permissions");
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp_path)?;
+            f.write_all(serialized.as_bytes())?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&tmp_path, &serialized)?;
         }
     }
 
@@ -470,6 +534,12 @@ pub fn add_reference_to_config(
                 "rename failed ({}), copy fallback failed: {}",
                 rename_err, copy_err
             ))));
+        }
+        // SEC-2: Restrict permissions on copy fallback target
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&fallback_tmp, std::fs::Permissions::from_mode(0o600));
         }
         let _ = std::fs::remove_file(&tmp_path);
         if let Err(e) = std::fs::rename(&fallback_tmp, config_path) {
@@ -530,16 +600,23 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> Result<bo
         let suffix = crate::temp_suffix();
         let tmp_path = config_path.with_extension(format!("toml.{:016x}.tmp", suffix));
         let serialized = toml::to_string_pretty(&table)?;
-        std::fs::write(&tmp_path, &serialized)?;
-
-        // Restrict permissions BEFORE rename so the file is never world-readable
-        #[cfg(unix)]
+        // SEC-1: Write with mode 0o600 from creation so file is never world-readable
         {
-            use std::os::unix::fs::PermissionsExt;
-            if let Err(e) =
-                std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))
+            #[cfg(unix)]
             {
-                tracing::debug!(path = %tmp_path.display(), error = %e, "Failed to set file permissions");
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&tmp_path)?;
+                f.write_all(serialized.as_bytes())?;
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::write(&tmp_path, &serialized)?;
             }
         }
 
@@ -555,6 +632,13 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> Result<bo
                     "rename failed ({}), copy fallback failed: {}",
                     rename_err, copy_err
                 ))));
+            }
+            // SEC-2: Restrict permissions on copy fallback target
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ =
+                    std::fs::set_permissions(&fallback_tmp, std::fs::Permissions::from_mode(0o600));
             }
             let _ = std::fs::remove_file(&tmp_path);
             if let Err(e) = std::fs::rename(&fallback_tmp, config_path) {
@@ -1018,10 +1102,10 @@ llm_max_tokens = 200
         let dir = TempDir::new().unwrap();
         let config_path = dir.path().join(".cqs.toml");
 
-        // Over max
-        std::fs::write(&config_path, "llm_max_tokens = 9999\n").unwrap();
+        // Over max (cap is 32768)
+        std::fs::write(&config_path, "llm_max_tokens = 99999\n").unwrap();
         let config = Config::load(dir.path());
-        assert_eq!(config.llm_max_tokens, Some(4096));
+        assert_eq!(config.llm_max_tokens, Some(32768));
 
         // Zero
         std::fs::write(&config_path, "llm_max_tokens = 0\n").unwrap();
