@@ -554,6 +554,14 @@ define_chunk_types! {
     Service => "service";
     /// SQL stored procedure, view, or trigger
     StoredProc => "storedproc";
+    /// FFI declaration without implementation (Rust extern fn, TS declare, C prototype, Java native)
+    Extern => "extern";
+    /// Namespace or package scope (C++ namespace, C# namespace)
+    Namespace => "namespace";
+    /// Middleware handler (Express app.use, Django middleware)
+    Middleware => "middleware";
+    /// Solidity access control modifier (modifier onlyOwner)
+    Modifier => "modifier";
 }
 
 impl ChunkType {
@@ -585,11 +593,13 @@ impl ChunkType {
                 | ChunkType::Test
                 | ChunkType::Endpoint
                 | ChunkType::StoredProc
+                | ChunkType::Middleware
+                | ChunkType::Modifier
         )
     }
 
     /// Returns true if this is a code chunk type (callable + type definitions).
-    /// Excludes Section (markdown), Module (file-level), Object (misc), ConfigKey (data).
+    /// Excludes Section (markdown), Module (file-level), Object (misc), ConfigKey (data), Namespace (container).
     /// Matches the CLI default search filter.
     pub fn is_code(self) -> bool {
         self.is_callable()
@@ -605,6 +615,7 @@ impl ChunkType {
                     | ChunkType::Impl
                     | ChunkType::Variable
                     | ChunkType::Service
+                    | ChunkType::Extern
             )
     }
 
@@ -960,7 +971,9 @@ mod tests {
                 | ChunkType::Extension
                 | ChunkType::Test
                 | ChunkType::Endpoint
-                | ChunkType::StoredProc => {
+                | ChunkType::StoredProc
+                | ChunkType::Middleware
+                | ChunkType::Modifier => {
                     assert!(ct.is_callable(), "{ct} should be callable");
                     assert!(ct.is_code(), "{ct} should be code");
                 }
@@ -974,7 +987,8 @@ mod tests {
                 | ChunkType::Constant
                 | ChunkType::Impl
                 | ChunkType::Variable
-                | ChunkType::Service => {
+                | ChunkType::Service
+                | ChunkType::Extern => {
                     assert!(!ct.is_callable(), "{ct} should not be callable");
                     assert!(ct.is_code(), "{ct} should be code");
                 }
@@ -984,7 +998,8 @@ mod tests {
                 | ChunkType::Object
                 | ChunkType::Delegate
                 | ChunkType::Event
-                | ChunkType::ConfigKey => {
+                | ChunkType::ConfigKey
+                | ChunkType::Namespace => {
                     assert!(!ct.is_code(), "{ct} should not be code");
                 }
             };

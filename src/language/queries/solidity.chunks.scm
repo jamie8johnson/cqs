@@ -27,9 +27,9 @@
 (function_definition
   name: (identifier) @name) @function
 
-;; Modifiers
+;; Modifiers (access control decorators)
 (modifier_definition
-  name: (identifier) @name) @function
+  name: (identifier) @name) @modifier
 
 ;; Events
 (event_definition

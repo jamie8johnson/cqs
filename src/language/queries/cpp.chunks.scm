@@ -74,3 +74,7 @@
 ;; Preprocessor function macros
 (preproc_function_def
   name: (identifier) @name) @macro
+
+;; Namespaces
+(namespace_definition
+  name: (identifier) @name) @namespace
