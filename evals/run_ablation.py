@@ -1,17 +1,55 @@
 #!/usr/bin/env python3
 """Run the dense × sparse ablation matrix on the v2 eval query set.
 
-Cells: {BGE-large, E5-LoRA v9-200k} × {no-sparse, SPLADE}
-Reports R@1, R@5, R@20 per cell and per category.
+Usage:
+    python3 evals/run_ablation.py                              # full 2×2 matrix
+    python3 evals/run_ablation.py --config bge-large           # BGE-large only
+    python3 evals/run_ablation.py --config bge-large+splade    # BGE + SPLADE only
+    python3 evals/run_ablation.py --config e5-lora             # E5-LoRA only
+    python3 evals/run_ablation.py --config e5-lora+splade      # E5-LoRA + SPLADE only
+
+Available configs: bge-large, bge-large+splade, e5-lora, e5-lora+splade
+Default (no --config): all four cells + verification cell.
 """
 
+import argparse
 import json
+import os
 import subprocess
 import sys
 import time
 from collections import defaultdict
 
 QUERY_SET = "evals/queries/v2_300q.json"
+
+VALID_CONFIGS = {
+    "bge-large",
+    "bge-large+splade",
+    "e5-lora",
+    "e5-lora+splade",
+}
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Run v2 eval ablation matrix")
+    p.add_argument(
+        "--config",
+        action="append",
+        dest="configs",
+        choices=sorted(VALID_CONFIGS),
+        help="Which configs to run (repeatable). Default: all.",
+    )
+    p.add_argument(
+        "--split",
+        default="train",
+        choices=["train", "test", "all"],
+        help="Query split to evaluate. Default: train.",
+    )
+    args = p.parse_args()
+    if not args.configs:
+        args.configs = sorted(VALID_CONFIGS)
+    return args
+
 
 def run_search(query, n=20, splade=False):
     """Run a cqs search and return list of result names."""
@@ -37,24 +75,26 @@ def evaluate(queries, splade=False, label=""):
 
         results = run_search(q["query"], n=20, splade=splade)
         names = [r[0] for r in results]
-        expected = q["primary_answer"]["name"]
-        acceptable = [a["name"] for a in q.get("acceptable_answers", [])]
 
-        rank = None
+        expected = q["expected_function"]
+        also_accept = q.get("also_accept", [])
+        all_valid = {expected} | set(also_accept)
+
+        hit_at = None
         for i, name in enumerate(names):
-            if name == expected or name in acceptable:
-                rank = i + 1
+            if name in all_valid:
+                hit_at = i + 1
                 break
 
-        if rank:
+        if hit_at is not None:
             found += 1
             by_cat[cat]["r20"] += 1
-        if rank == 1:
-            r1 += 1
-            by_cat[cat]["r1"] += 1
-        if rank and rank <= 5:
-            r5 += 1
-            by_cat[cat]["r5"] += 1
+            if hit_at <= 5:
+                r5 += 1
+                by_cat[cat]["r5"] += 1
+            if hit_at <= 1:
+                r1 += 1
+                by_cat[cat]["r1"] += 1
 
         if total % 10 == 0:
             print(f"  {label}: {total}/{len(queries)} queries...", file=sys.stderr)
@@ -65,11 +105,10 @@ def evaluate(queries, splade=False, label=""):
     }
 
 def reindex(model=None):
-    """Reindex with optional model override. Returns (duration_secs, cache_stats)."""
+    """Reindex with optional model override. Returns (duration_secs, before_stats, after_stats)."""
     cmd = ["cqs", "index"]
     env = None
     if model:
-        import os
         env = os.environ.copy()
         env["CQS_EMBEDDING_MODEL"] = model
 
@@ -78,7 +117,7 @@ def reindex(model=None):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         before_stats = json.loads(before.stdout)
-    except:
+    except Exception:
         before_stats = {}
 
     start = time.time()
@@ -90,10 +129,11 @@ def reindex(model=None):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         after_stats = json.loads(after.stdout)
-    except:
+    except Exception:
         after_stats = {}
 
     return duration, before_stats, after_stats
+
 
 def format_results(results, label):
     """Format results as a table row."""
@@ -122,57 +162,74 @@ def format_category_table(all_results):
 
 
 def main():
+    args = parse_args()
+
     with open(QUERY_SET) as f:
         qs = json.load(f)
 
-    train_queries = [q for q in qs["queries"] if q["split"] == "train"]
-    print(f"Loaded {len(train_queries)} train queries", file=sys.stderr)
+    if args.split == "all":
+        queries = qs["queries"]
+    else:
+        queries = [q for q in qs["queries"] if q["split"] == args.split]
+    print(f"Loaded {len(queries)} {args.split} queries", file=sys.stderr)
+    print(f"Configs: {', '.join(args.configs)}", file=sys.stderr)
 
     all_results = {}
     index_times = {}
+    needs_e5 = any("e5" in c for c in args.configs)
+    needs_bge = any("bge" in c for c in args.configs)
+    current_model = "bge-large"  # assume BGE-large is currently indexed
 
-    # ── Cell 1: BGE-large, no SPLADE (current index) ─────────────────
-    print("\n=== Cell 1: BGE-large, no SPLADE ===", file=sys.stderr)
-    results = evaluate(train_queries, splade=False, label="BGE-large")
-    all_results["BGE-large"] = results
+    def run_cell(label, splade, results_dict):
+        """Run one eval cell and print results immediately."""
+        print(f"\n=== {label} ===", file=sys.stderr)
+        results = evaluate(queries, splade=splade, label=label)
+        results_dict[label] = results
+        # Print metrics immediately
+        r1 = results["r1"] / results["n"] * 100
+        r5 = results["r5"] / results["n"] * 100
+        r20 = results["r20"] / results["n"] * 100
+        print(f"  → R@1={r1:.1f}%  R@5={r5:.1f}%  R@20={r20:.1f}%  (N={results['n']})", file=sys.stderr)
+        # Per-category summary for top categories
+        cats_sorted = sorted(results["by_cat"].items(), key=lambda x: -x[1]["n"])
+        for cat, c in cats_sorted[:5]:
+            if c["n"] > 0:
+                cr1 = c["r1"] / c["n"] * 100
+                print(f"     {cat:25s} R@1={cr1:5.1f}%  (N={c['n']})", file=sys.stderr)
+        return results
 
-    # ── Cell 2: BGE-large + SPLADE ────────────────────────────────────
-    print("\n=== Cell 2: BGE-large + SPLADE ===", file=sys.stderr)
-    results = evaluate(train_queries, splade=True, label="BGE-large+SPLADE")
-    all_results["BGE-large + SPLADE"] = results
+    # ── BGE-large cells ──────────────────────────────────────────────
+    if "bge-large" in args.configs:
+        run_cell("BGE-large", splade=False, results_dict=all_results)
 
-    # ── Reindex with E5-LoRA v9-200k ─────────────────────────────────
-    print("\n=== Reindexing with E5-LoRA v9-200k ===", file=sys.stderr)
-    duration, before, after = reindex(model="v9-200k")
-    index_times["E5-LoRA reindex"] = duration
-    print(f"  Reindex took {duration:.1f}s", file=sys.stderr)
-    print(f"  Cache: {before.get('total_entries', '?')} → {after.get('total_entries', '?')} entries", file=sys.stderr)
+    if "bge-large+splade" in args.configs:
+        run_cell("BGE-large + SPLADE", splade=True, results_dict=all_results)
 
-    # ── Cell 3: E5-LoRA v9-200k, no SPLADE ───────────────────────────
-    print("\n=== Cell 3: E5-LoRA v9-200k, no SPLADE ===", file=sys.stderr)
-    results = evaluate(train_queries, splade=False, label="E5-LoRA-v9-200k")
-    all_results["E5-LoRA v9-200k"] = results
+    # ── E5-LoRA cells (requires reindex) ─────────────────────────────
+    if needs_e5:
+        print("\n=== Reindexing with E5-LoRA v9-200k ===", file=sys.stderr)
+        duration, before, after = reindex(model="v9-200k")
+        index_times["E5-LoRA reindex"] = duration
+        current_model = "e5-lora"
+        print(f"  Reindex took {duration:.1f}s", file=sys.stderr)
+        print(f"  Cache: {before.get('total_entries', '?')} → {after.get('total_entries', '?')} entries", file=sys.stderr)
 
-    # ── Cell 4: E5-LoRA v9-200k + SPLADE ─────────────────────────────
-    print("\n=== Cell 4: E5-LoRA v9-200k + SPLADE ===", file=sys.stderr)
-    results = evaluate(train_queries, splade=True, label="E5-LoRA+SPLADE")
-    all_results["E5-LoRA v9-200k + SPLADE"] = results
+        if "e5-lora" in args.configs:
+            run_cell("E5-LoRA v9-200k", splade=False, results_dict=all_results)
 
-    # ── Reindex back to BGE-large (cache test) ────────────────────────
-    print("\n=== Reindexing back to BGE-large (cache test) ===", file=sys.stderr)
-    duration, before, after = reindex()  # default model = BGE-large
-    index_times["BGE-large reindex (cached)"] = duration
-    print(f"  Reindex took {duration:.1f}s", file=sys.stderr)
-    print(f"  Cache: {before.get('total_entries', '?')} → {after.get('total_entries', '?')} entries", file=sys.stderr)
+        if "e5-lora+splade" in args.configs:
+            run_cell("E5-LoRA v9-200k + SPLADE", splade=True, results_dict=all_results)
 
-    # ── Cell 5: BGE-large again (verify no regression) ────────────────
-    print("\n=== Cell 5: BGE-large again (verification) ===", file=sys.stderr)
-    results = evaluate(train_queries, splade=False, label="BGE-large (verify)")
-    all_results["BGE-large (verify)"] = results
+    # ── Restore BGE-large if we switched ─────────────────────────────
+    if current_model != "bge-large":
+        print("\n=== Restoring BGE-large index ===", file=sys.stderr)
+        duration, before, after = reindex()
+        index_times["BGE-large restore"] = duration
+        print(f"  Reindex took {duration:.1f}s", file=sys.stderr)
 
     # ── Report ────────────────────────────────────────────────────────
     print("\n" + "=" * 70)
-    print(f"Dense × Sparse Ablation Matrix ({len(train_queries)} train queries, v2 eval)")
+    print(f"Dense × Sparse Ablation ({len(queries)} {args.split} queries, v2 eval)")
     print("=" * 70)
     print()
     print(f"| {'Config':35s} | {'R@1':>6s} | {'R@5':>6s} | {'R@20':>6s} | {'N':>3s} |")
@@ -185,10 +242,11 @@ def main():
     print()
     print(format_category_table(all_results))
 
-    print()
-    print("Index times:")
-    for label, t in index_times.items():
-        print(f"  {label}: {t:.1f}s")
+    if index_times:
+        print()
+        print("Index times:")
+        for label, t in index_times.items():
+            print(f"  {label}: {t:.1f}s")
 
     print()
     print("Cache stats:")
@@ -197,7 +255,7 @@ def main():
     try:
         cs = json.loads(cache.stdout)
         print(f"  Entries: {cs['total_entries']}, Size: {cs['total_size_mb']} MB, Models: {cs['unique_models']}")
-    except:
+    except Exception:
         print("  (unavailable)")
 
 
