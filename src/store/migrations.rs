@@ -177,7 +177,10 @@ async fn migrate_v13_to_v14(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 /// - Sets hnsw_dirty to trigger HNSW rebuild (old index has 769-dim vectors)
 /// - Notes embedding column is left as-is (we write empty blobs now, old data is harmless)
 async fn migrate_v14_to_v15(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
-    sqlx::query("UPDATE metadata SET value = '768' WHERE key = 'dimensions'")
+    // DS-4: Only update dimensions from 769→768 (the old sentiment-augmented size).
+    // Databases already using a different model dim (e.g. 1024 for BGE-large) must
+    // not be overwritten to 768.
+    sqlx::query("UPDATE metadata SET value = '768' WHERE key = 'dimensions' AND value = '769'")
         .execute(&mut *conn)
         .await?;
 

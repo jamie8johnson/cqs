@@ -184,7 +184,7 @@ pub fn bootstrap_ci(values: &[f64], n_resamples: usize) -> MetricWithCI {
     }
     estimates.sort_by(|a, b| a.total_cmp(b));
 
-    let lo_idx = (n_resamples as f64 * 0.025) as usize;
+    let lo_idx = ((n_resamples as f64 * 0.025).ceil() as usize).saturating_sub(1);
     let hi_idx = (n_resamples as f64 * 0.975).ceil() as usize - 1;
 
     MetricWithCI {
@@ -241,7 +241,7 @@ pub fn paired_bootstrap(
         observed_delta,
         boot_deltas[lo_idx.min(boot_deltas.len() - 1)],
         boot_deltas[hi_idx.min(boot_deltas.len() - 1)],
-        p_value * 2.0, // two-sided
+        (p_value * 2.0).min(1.0), // two-sided, clamped
     )
 }
 

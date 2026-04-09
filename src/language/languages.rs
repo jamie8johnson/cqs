@@ -76,6 +76,7 @@ static LANG_BASH: LanguageDef = LanguageDef {
     ..DEFAULTS
 };
 
+/// Post-process Bash chunks: skip Variable captures inside function bodies (top-level only).
 fn post_process_bash_bash(
     _name: &mut String,
     chunk_type: &mut ChunkType,
@@ -535,7 +536,7 @@ fn post_process_csharp_csharp(
         let header = if let Some(brace) = node_text.find('{') {
             &node_text[..brace]
         } else {
-            &node_text[..node_text.len().min(200)]
+            &node_text[..node_text.floor_char_boundary(200)]
         };
 
         if header.contains("[Test]")
@@ -1010,6 +1011,7 @@ static LANG_CUDA: LanguageDef = LanguageDef {
     ..DEFAULTS
 };
 
+/// Post-process CUDA chunks: reclassify constructors (no return type) and `extern "C"` linkage to Extern.
 #[allow(clippy::ptr_arg)]
 fn post_process_cuda_cuda(
     name: &mut String,
@@ -1120,6 +1122,7 @@ static LANG_DART: LanguageDef = LanguageDef {
     ..DEFAULTS
 };
 
+/// Post-process Dart chunks: test()/group() to Test, factory/constructor to Constructor, extension to Extension.
 #[cfg(feature = "lang-dart")]
 fn post_process_dart_dart(
     name: &mut String,
@@ -1696,6 +1699,7 @@ static LANG_FSHARP: LanguageDef = LanguageDef {
     ..DEFAULTS
 };
 
+/// Post-process F# chunks: reclassify functions with `[<Test>]`, `[<Fact>]`, or `[<Theory>]` attributes to Test.
 fn post_process_fsharp_fsharp(
     name: &mut String,
     chunk_type: &mut ChunkType,
@@ -1723,7 +1727,7 @@ fn post_process_fsharp_fsharp(
         }
         // Also check first line of node text
         let node_text = &source[node.byte_range()];
-        let header = &node_text[..node_text.len().min(200)];
+        let header = &node_text[..node_text.floor_char_boundary(200)];
         if header.contains("[<Test>]")
             || header.contains("[<Fact>]")
             || header.contains("[<Theory>]")
@@ -2958,7 +2962,7 @@ fn post_process_java_java(
         let header = if let Some(brace) = node_text.find('{') {
             &node_text[..brace]
         } else {
-            &node_text[..node_text.len().min(200)]
+            &node_text[..node_text.floor_char_boundary(200)]
         };
 
         if header.contains("@Test")
@@ -3526,7 +3530,7 @@ fn post_process_kotlin_kotlin(
         let header = if let Some(brace) = node_text.find('{') {
             &node_text[..brace]
         } else {
-            &node_text[..node_text.len().min(200)]
+            &node_text[..node_text.floor_char_boundary(200)]
         };
         if header.contains("@Test")
             || header.contains("@ParameterizedTest")
@@ -5038,6 +5042,7 @@ static LANG_POWERSHELL: LanguageDef = LanguageDef {
     ..DEFAULTS
 };
 
+/// Post-process PowerShell chunks: reclassify Pester blocks (Describe/It/Context/Test*) to Test.
 fn post_process_powershell_powershell(
     name: &mut String,
     chunk_type: &mut ChunkType,
@@ -5161,7 +5166,7 @@ fn post_process_python_python(
     // class Foo(Enum) or class Foo(IntEnum) etc. → Enum
     if *chunk_type == ChunkType::Class {
         let node_text = &_source[node.byte_range()];
-        let header = &node_text[..node_text.len().min(200)];
+        let header = &node_text[..node_text.floor_char_boundary(200)];
         if header.contains("(Enum)")
             || header.contains("(IntEnum)")
             || header.contains("(StrEnum)")
@@ -5527,7 +5532,7 @@ fn detect_razor_element_language_razor(
 ) -> Option<&'static str> {
     let text = &source[node.byte_range()];
     // Only check the opening tag (first ~200 bytes) to avoid scanning large elements
-    let prefix = &text[..text.len().min(200)];
+    let prefix = &text[..text.floor_char_boundary(200)];
     let lower = prefix.to_ascii_lowercase();
     if lower.starts_with("<script") {
         if lower.contains("lang=\"ts\"") || lower.contains("type=\"text/typescript\"") {
@@ -5967,6 +5972,7 @@ static LANG_RUBY: LanguageDef = LanguageDef {
     ..DEFAULTS
 };
 
+/// Post-process Ruby chunks: reclassify `initialize` to Constructor and `test_*` methods to Test.
 fn post_process_ruby_ruby(
     name: &mut String,
     chunk_type: &mut ChunkType,
@@ -6246,6 +6252,7 @@ pub fn definition_rust() -> &'static LanguageDef {
 // Scala (scala)
 // ============================================================================
 
+/// Post-process Scala chunks: reclassify `@Test`/`test*` to Test and `var` constants to Variable.
 #[allow(clippy::ptr_arg)]
 fn post_process_scala_scala(
     name: &mut String,
@@ -6256,7 +6263,7 @@ fn post_process_scala_scala(
     // JUnit @Test or ScalaTest test("name")
     if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) {
         let node_text = &source[node.byte_range()];
-        let header = &node_text[..node_text.len().min(200)];
+        let header = &node_text[..node_text.floor_char_boundary(200)];
         if header.contains("@Test") || name.starts_with("test") {
             *chunk_type = ChunkType::Test;
         }
@@ -6460,6 +6467,7 @@ static LANG_SOLIDITY: LanguageDef = LanguageDef {
     ..DEFAULTS
 };
 
+/// Post-process Solidity chunks: reclassify `constructor()` to Constructor and constant/immutable properties to Constant.
 fn post_process_solidity_solidity(
     name: &mut String,
     chunk_type: &mut ChunkType,
@@ -7409,9 +7417,9 @@ fn post_process_vbnet_vbnet(
     if matches!(*kind, ChunkType::Function | ChunkType::Method) {
         let node_text = &_source[node.byte_range()];
         let header = if let Some(pos) = node_text.find('\n') {
-            &node_text[..node_text[..pos].len().min(300)]
+            &node_text[..node_text.floor_char_boundary(pos.min(300))]
         } else {
-            &node_text[..node_text.len().min(300)]
+            &node_text[..node_text.floor_char_boundary(300)]
         };
         // Walk backwards to check preceding attributes
         let mut prev = node.prev_named_sibling();

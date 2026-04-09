@@ -62,8 +62,9 @@ impl EmbeddingCache {
             }
         }
 
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
+        // RM-4: single-threaded runtime is sufficient — the cache only needs
+        // blocking SQLite I/O, not multi-thread scheduling overhead.
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| CacheError::Io(std::io::Error::other(e)))?;
@@ -79,6 +80,7 @@ impl EmbeddingCache {
         let pool = rt.block_on(async {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
                 .max_connections(1) // RM-2: single worker thread can only use 1 connection
+                .idle_timeout(std::time::Duration::from_secs(30)) // RM-5: release idle connections
                 .connect_with(connect_opts)
                 .await?;
 
@@ -321,7 +323,10 @@ impl EmbeddingCache {
             )
             .fetch_one(&self.pool)
             .await
-            .unwrap_or(4200);
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Cache evict avg-entry query failed, using default");
+                4200
+            });
             // AC-1: don't force minimum 100 deletions — delete only what's needed
             let entries_to_delete = (excess / avg_entry.max(1) as u64).max(1);
 

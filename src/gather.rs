@@ -149,6 +149,31 @@ impl GatherOptions {
     }
 }
 
+/// PF-10: Read CQS_GATHER_MAX_NODES once via OnceLock, not on every GatherOptions::default().
+fn gather_max_nodes() -> usize {
+    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| match std::env::var("CQS_GATHER_MAX_NODES") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(n) if n > 0 => {
+                tracing::info!(
+                    max_nodes = n,
+                    "BFS node cap overridden via CQS_GATHER_MAX_NODES"
+                );
+                n
+            }
+            _ => {
+                tracing::warn!(
+                    value = %val,
+                    "Invalid CQS_GATHER_MAX_NODES, using default {}",
+                    DEFAULT_MAX_EXPANDED_NODES
+                );
+                DEFAULT_MAX_EXPANDED_NODES
+            }
+        },
+        Err(_) => DEFAULT_MAX_EXPANDED_NODES,
+    })
+}
+
 impl Default for GatherOptions {
     /// Creates a new instance with default configuration values for graph traversal and expansion.
     ///
@@ -158,28 +183,6 @@ impl Default for GatherOptions {
     ///
     /// A new `Self` instance initialized with sensible defaults for graph expansion operations.
     fn default() -> Self {
-        let max_expanded_nodes = match std::env::var("CQS_GATHER_MAX_NODES") {
-            Ok(val) => match val.parse::<usize>() {
-                Ok(n) => {
-                    tracing::info!(
-                        max_nodes = n,
-                        "BFS node cap overridden via CQS_GATHER_MAX_NODES"
-                    );
-                    n
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        value = %val,
-                        error = %e,
-                        "Invalid CQS_GATHER_MAX_NODES, using default {}",
-                        DEFAULT_MAX_EXPANDED_NODES
-                    );
-                    DEFAULT_MAX_EXPANDED_NODES
-                }
-            },
-            Err(_) => DEFAULT_MAX_EXPANDED_NODES,
-        };
-
         Self {
             expand_depth: 1,
             direction: GatherDirection::Both,
@@ -187,7 +190,7 @@ impl Default for GatherOptions {
             seed_limit: 5,
             seed_threshold: 0.3,
             decay_factor: 0.8,
-            max_expanded_nodes,
+            max_expanded_nodes: gather_max_nodes(),
             query_embedding: None,
         }
     }
@@ -306,6 +309,7 @@ pub(crate) fn bfs_expand(
     // Without this, if two seeds overlap (e.g., bridge results matching ref seeds
     // in gather_cross_index), the same node gets expanded twice, doubling neighbor lookups.
     let mut visited: HashSet<String> = name_scores.keys().cloned().collect();
+    let initial_size = name_scores.len();
 
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
     for (name, &(_, _depth)) in name_scores.iter() {
@@ -316,7 +320,7 @@ pub(crate) fn bfs_expand(
         if depth >= opts.expand_depth {
             continue;
         }
-        if name_scores.len() >= opts.max_expanded_nodes {
+        if name_scores.len() >= opts.max_expanded_nodes && visited.len() > initial_size {
             expansion_capped = true;
             break;
         }

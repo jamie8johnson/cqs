@@ -126,7 +126,13 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         let saved_summaries = if index_path.exists() {
             match Store::open(&index_path) {
                 Ok(old_store) => {
-                    let summaries = old_store.get_all_summaries_full().unwrap_or_default();
+                    let summaries = match old_store.get_all_summaries_full() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to read LLM summaries");
+                            Vec::new()
+                        }
+                    };
                     if !summaries.is_empty() {
                         tracing::info!(
                             count = summaries.len(),
