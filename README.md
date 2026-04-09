@@ -187,6 +187,8 @@ cqs callees <name>   # Functions called by <name>
 cqs deps <type>      # Who uses this type?
 cqs deps --reverse <fn>  # What types does this function use?
 cqs impact <name> --format mermaid   # Mermaid graph output
+cqs callers <name> --cross-project   # Callers across all reference projects
+cqs trace <a> <b> --cross-project    # Call chain that may cross project boundaries
 ```
 
 Use cases:

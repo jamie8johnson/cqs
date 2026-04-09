@@ -228,6 +228,7 @@ src/
     types.rs    - Impact types (CallerDetail, RiskScore, etc.)
     analysis.rs - suggest_tests, find_transitive_callers, extract_call_snippet_from_cache
     diff.rs     - analyze_diff_impact, map_hunks_to_functions
+    cross_project.rs - Cross-project impact analysis and trace
     bfs.rs      - Reverse BFS, reverse_bfs_multi_attributed, test_reachability
     format.rs   - JSON/Mermaid formatting
     hints.rs    - compute_hints, compute_hints_batch, compute_risk_batch, risk scoring
