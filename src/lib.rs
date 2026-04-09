@@ -127,7 +127,16 @@ pub use store::{ModelInfo, SearchFilter, Store};
 pub use diff::*;
 pub use focused_read::COMMON_TYPES;
 pub use gather::*;
-pub use impact::cross_project;
+/// Cross-project call graph types and context.
+pub mod cross_project {
+    pub use crate::impact::cross_project::{
+        analyze_impact_cross, trace_cross, CrossProjectHop, CrossProjectTraceResult,
+    };
+    pub use crate::store::calls::cross_project::{
+        CrossProjectCallee, CrossProjectCaller, CrossProjectContext, CrossProjectTestChunk,
+        NamedStore,
+    };
+}
 pub use impact::*;
 pub use nl::*;
 pub use onboard::*;

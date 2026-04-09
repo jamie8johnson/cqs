@@ -64,7 +64,8 @@ pub(in crate::cli::batch) fn dispatch_callers(
 
     if cross_project {
         let store = ctx.store();
-        let cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&store, &ctx.root)?;
+        let mut cross_ctx =
+            cqs::cross_project::CrossProjectContext::from_config(&store, &ctx.root)?;
         let callers = cross_ctx.get_callers_cross(name)?;
         return Ok(serde_json::to_value(&callers)?);
     }
@@ -100,7 +101,8 @@ pub(in crate::cli::batch) fn dispatch_callees(
 
     if cross_project {
         let store = ctx.store();
-        let cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&store, &ctx.root)?;
+        let mut cross_ctx =
+            cqs::cross_project::CrossProjectContext::from_config(&store, &ctx.root)?;
         let callees = cross_ctx.get_callees_cross(name)?;
         return Ok(serde_json::to_value(&callees)?);
     }

@@ -74,7 +74,7 @@ pub(crate) fn cmd_callers(
     let store = &ctx.store;
 
     if cross_project {
-        let cross_ctx = cqs::cross_project::CrossProjectContext::from_config(store, &ctx.root)?;
+        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(store, &ctx.root)?;
         let callers = cross_ctx
             .get_callers_cross(name)
             .context("Failed to load cross-project callers")?;
@@ -99,7 +99,7 @@ pub(crate) fn cmd_callers(
                     c.caller.name.cyan(),
                     c.caller.file.display(),
                     c.caller.line,
-                    c.source.dimmed()
+                    c.project.dimmed()
                 );
             }
             println!();
@@ -154,7 +154,7 @@ pub(crate) fn cmd_callees(
     let store = &ctx.store;
 
     if cross_project {
-        let cross_ctx = cqs::cross_project::CrossProjectContext::from_config(store, &ctx.root)?;
+        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(store, &ctx.root)?;
         let callees = cross_ctx
             .get_callees_cross(name)
             .context("Failed to load cross-project callees")?;
@@ -168,7 +168,7 @@ pub(crate) fn cmd_callees(
                 println!("  (no function calls found)");
             } else {
                 for c in &callees {
-                    println!("  {} [{}]", c.name, c.source.dimmed());
+                    println!("  {} [{}]", c.name, c.project.dimmed());
                 }
             }
             println!();

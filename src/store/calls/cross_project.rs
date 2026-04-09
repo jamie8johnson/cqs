@@ -70,6 +70,40 @@ impl CrossProjectContext {
         }
     }
 
+    /// Build from the local store and `.cqs.toml` reference config.
+    pub fn from_config(
+        _local: &Store,
+        root: &std::path::Path,
+    ) -> Result<Self, crate::store::helpers::StoreError> {
+        let _span = tracing::info_span!("cross_project_from_config").entered();
+        let config = crate::config::Config::load(root);
+
+        let mut stores = vec![NamedStore {
+            name: "local".to_string(),
+            store: Store::open_readonly(&root.join(".cqs/index.db"))
+                .unwrap_or_else(|_| Store::open(&root.join(".cqs/index.db")).expect("open local")),
+        }];
+
+        for ref_cfg in &config.references {
+            let db_path = ref_cfg.path.join("index.db");
+            match Store::open_readonly(&db_path) {
+                Ok(store) => {
+                    tracing::debug!(name = %ref_cfg.name, "Reference store opened");
+                    stores.push(NamedStore {
+                        name: ref_cfg.name.clone(),
+                        store,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(name = %ref_cfg.name, error = %e, "Failed to open reference, skipping");
+                }
+            }
+        }
+
+        tracing::info!(projects = stores.len(), "Cross-project context loaded");
+        Ok(Self::new(stores))
+    }
+
     /// Number of projects in this context.
     pub fn project_count(&self) -> usize {
         self.stores.len()
