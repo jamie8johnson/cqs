@@ -378,12 +378,16 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         }
     }
 
-    // SPLADE sparse encoding (if model available)
+    // SPLADE sparse encoding (if model available).
+    //
+    // Path resolution is delegated to cqs::splade::resolve_splade_model_dir
+    // so the env var (CQS_SPLADE_MODEL) and vocab-mismatch probe stay
+    // consistent with the search-time encoder loaders. Critical for index
+    // correctness: if the index pass and search pass use different SPLADE
+    // models, the sparse vectors are token-incompatible and search-time
+    // queries return garbage. Single source of truth.
     if !check_interrupted() {
-        let splade_dir = dirs::home_dir()
-            .map(|h| h.join(".cache/huggingface/splade-onnx"))
-            .unwrap_or_default();
-        if splade_dir.join("model.onnx").exists() {
+        if let Some(splade_dir) = cqs::splade::resolve_splade_model_dir() {
             if !cli.quiet {
                 println!("Encoding SPLADE sparse vectors...");
             }

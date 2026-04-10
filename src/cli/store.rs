@@ -132,24 +132,30 @@ impl<'a> CommandContext<'a> {
     }
 
     /// Get or lazily load the SPLADE encoder.
-    /// Returns None if the SPLADE model is not available.
+    ///
+    /// Path resolution is delegated to [`cqs::splade::resolve_splade_model_dir`]
+    /// — see that function's docs for env-var override and fallback rules.
+    /// `SpladeEncoder::new` runs a vocab-mismatch probe at construction time,
+    /// so a hot-swapped `model.onnx` with a stale `tokenizer.json` will fail
+    /// fast here rather than silently producing garbage embeddings.
+    ///
+    /// Returns `None` when no usable model dir exists or the load fails —
+    /// callers fall back to dense-only.
     pub fn splade_encoder(&self) -> Option<&cqs::splade::SpladeEncoder> {
         let opt = self.splade_encoder.get_or_init(|| {
             let _span = tracing::debug_span!("command_context_splade_encoder_init").entered();
-            let model_dir = dirs::home_dir()
-                .map(|h| h.join(".cache/huggingface/splade-onnx"))
-                .unwrap_or_default();
-            if !model_dir.join("model.onnx").exists() {
-                tracing::warn!("SPLADE model not found, hybrid search unavailable");
-                return None;
-            }
+            let model_dir = cqs::splade::resolve_splade_model_dir()?;
             match cqs::splade::SpladeEncoder::new(
                 &model_dir,
                 cqs::splade::SpladeEncoder::default_threshold(),
             ) {
                 Ok(enc) => Some(enc),
                 Err(e) => {
-                    tracing::warn!(error = %e, "Failed to load SPLADE encoder");
+                    tracing::warn!(
+                        path = %model_dir.display(),
+                        error = %e,
+                        "Failed to load SPLADE encoder"
+                    );
                     None
                 }
             }
