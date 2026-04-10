@@ -341,6 +341,14 @@ pub fn classify_query(query: &str) -> Classification {
     //    Phase 5: behavioral queries use verbs the query author chose; enriched
     //    summaries standardize those verbs ("handles" → "processes"), which
     //    washes out the specific verb the user asked about. Route to base.
+    //
+    //    2026-04-10 update: same-corpus A/B at 50% summary coverage shows
+    //    behavioral routing produces 0pp delta — the routing fires but the
+    //    affected queries' gold answers are mostly callable types where
+    //    base ≈ enriched after enrichment_hash dedupe. Keeping the route on
+    //    base because the historical research data still says behavioral
+    //    is hurt by summaries; we just can't measure the effect on this
+    //    corpus shape. See research/enrichment.md for the data.
     if is_behavioral_query(&query_lower, &words) {
         return Classification {
             category: QueryCategory::Behavioral,
@@ -351,13 +359,31 @@ pub fn classify_query(query: &str) -> Classification {
     }
 
     // 7. Conceptual — abstract nouns, short non-identifier queries.
-    //    Phase 5: conceptual matches benefit from raw NL embeddings because
-    //    summaries flatten nuance into canonical phrasing. Route to base.
+    //
+    //    2026-04-10 update: ROUTING REVERSED. Phase 5 originally routed
+    //    conceptual to DenseBase based on the historical research finding
+    //    "summaries hurt conceptual −15pp". That finding was measured on a
+    //    corpus where only callable types were summarized.
+    //
+    //    After the eligibility expansion in PR #878 (summaries now cover
+    //    structs / enums / impls / traits / classes / etc.), conceptual
+    //    queries' gold answers are mostly type definitions where the
+    //    summary actively helps bridge code → concept ("a service container
+    //    that resolves dependencies" → "dependency injection"). Routing
+    //    those queries to the base index strips the helpful signal.
+    //
+    //    Same-corpus A/B at 50% coverage measured −3.7pp R@1 on conceptual
+    //    when routing was on. Keeping conceptual on the enriched index
+    //    until / unless the summary coverage shape changes again.
+    //
+    //    The lesson: routing rules are coupled to corpus shape, not to
+    //    a category-intrinsic property. They need to be re-validated any
+    //    time summary coverage changes meaningfully.
     if is_conceptual_query(&query_lower, &words) {
         return Classification {
             category: QueryCategory::Conceptual,
             confidence: Confidence::Medium,
-            strategy: SearchStrategy::DenseBase,
+            strategy: SearchStrategy::DenseDefault,
             type_hints: None,
         };
     }
@@ -571,11 +597,21 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_conceptual_routes_to_base() {
-        // Phase 5: conceptual also routes to base for similar reasons.
+    fn test_classify_conceptual_routes_to_enriched() {
+        // 2026-04-10: ROUTING REVERSED. Originally Phase 5 routed conceptual
+        // to DenseBase based on the historical research finding "summaries
+        // hurt conceptual −15pp". Same-corpus A/B at 50% summary coverage
+        // measured −3.7pp R@1 from that routing — the historical finding
+        // was for a different corpus shape (only callables summarized).
+        // After PR #878 expanded summaries to type definitions, conceptual
+        // queries' gold answers benefit from the enrichment (the summary
+        // bridges code → concept on struct/enum chunks).
+        //
+        // See research/enrichment.md "Same-corpus A/B/C/D matrix (50% coverage)"
+        // for the data that drove this revision.
         let c = classify_query("dependency injection pattern");
         assert_eq!(c.category, QueryCategory::Conceptual);
-        assert_eq!(c.strategy, SearchStrategy::DenseBase);
+        assert_eq!(c.strategy, SearchStrategy::DenseDefault);
     }
 
     #[test]
