@@ -261,6 +261,7 @@ pub(crate) fn build_vector_index_with_config(
 /// Returns `Ok(None)` when:
 /// - The `index_base.hnsw.*` files don't exist (e.g. fresh v17→v18 migration)
 /// - The store is flagged `hnsw_dirty` (interrupted write)
+/// - `CQS_DISABLE_BASE_INDEX=1` is set in the environment (eval A/B testing)
 /// - CAGRA is preferred for the enriched index; we never build CAGRA for the
 ///   base — the base path is a narrow router decision, not a hot path, so
 ///   plain HNSW is sufficient
@@ -271,6 +272,15 @@ pub(crate) fn build_base_vector_index(
     cqs_dir: &Path,
 ) -> Result<Option<Box<dyn cqs::index::VectorIndex>>> {
     let _span = tracing::info_span!("build_base_vector_index").entered();
+
+    // Eval A/B bypass: forces fallback to enriched even when index_base exists.
+    // Lets us measure the marginal contribution of routing on the same corpus
+    // without rebuilding the index.
+    if std::env::var("CQS_DISABLE_BASE_INDEX").as_deref() == Ok("1") {
+        tracing::info!("CQS_DISABLE_BASE_INDEX=1 — base index bypass active");
+        return Ok(None);
+    }
+
     if store.is_hnsw_dirty().unwrap_or(true) {
         tracing::warn!(
             "Base HNSW index may be stale (dirty flag set) — router falls back to enriched"
