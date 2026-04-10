@@ -9,7 +9,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/pre-edit-impact.sh",
+            "command": "python3 .claude/hooks/pre-edit-impact.py",
             "timeout": 10
           }
         ]
