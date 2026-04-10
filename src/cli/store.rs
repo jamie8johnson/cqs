@@ -293,3 +293,113 @@ pub(crate) fn build_base_vector_index(
         Some(store.dim()),
     ))
 }
+
+#[cfg(test)]
+mod base_index_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Process-wide lock — env-touching tests must serialize so they don't
+    /// race against each other (env::set_var/remove_var are global state).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Build a deterministic L2-normalized embedding from a seed value.
+    /// Inlined here because cqs::test_helpers is `#[cfg(test)]`-gated in the
+    /// library crate and bin-crate test code can't reach it.
+    fn make_embedding(seed: f32, dim: usize) -> cqs::embedder::Embedding {
+        let mut v = vec![seed; dim];
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in &mut v {
+                *x /= norm;
+            }
+        }
+        cqs::embedder::Embedding::new(v)
+    }
+
+    /// Phase 5 invariant: `CQS_DISABLE_BASE_INDEX=1` short-circuits
+    /// `build_base_vector_index` to return `None` even when the
+    /// `index_base.hnsw.*` files exist on disk and the store is clean.
+    /// This is the load-bearing behavior for same-corpus A/B eval.
+    #[test]
+    fn test_disable_base_index_env_short_circuits_with_files_present() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // Set up a real Store + a real index_base.hnsw.* fixture so we
+        // exercise the actual file-load path, not just the early return.
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = cqs::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+        // Mark the store as clean so we don't get filtered out by the
+        // hnsw_dirty branch — that branch fires before the file load but
+        // AFTER the env-var check, so we still test the early return.
+        store.set_hnsw_dirty(false).unwrap();
+
+        let dim = store.dim();
+        let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..10)
+            .map(|i| (format!("vec{i}"), make_embedding(i as f32 + 0.1, dim)))
+            .collect();
+        let index = cqs::HnswIndex::build_with_dim(embeddings, dim).unwrap();
+        index.save(dir.path(), "index_base").unwrap();
+
+        // ── Sanity: without the bypass, the function loads the base index ──
+        std::env::remove_var("CQS_DISABLE_BASE_INDEX");
+        let loaded = build_base_vector_index(&store, dir.path()).unwrap();
+        assert!(
+            loaded.is_some(),
+            "without bypass, base files present + store clean → should load"
+        );
+        assert_eq!(loaded.unwrap().len(), 10);
+
+        // ── With the bypass, the function returns None despite files existing ──
+        std::env::set_var("CQS_DISABLE_BASE_INDEX", "1");
+        let bypassed = build_base_vector_index(&store, dir.path()).unwrap();
+        assert!(
+            bypassed.is_none(),
+            "with CQS_DISABLE_BASE_INDEX=1, base files exist + store clean \
+             → must return None (this is the load-bearing A/B-eval behavior)"
+        );
+        std::env::remove_var("CQS_DISABLE_BASE_INDEX");
+
+        // ── And that the bypass is reset cleanly: removing it brings the
+        //    function back to its normal load behavior ──
+        let after_unset = build_base_vector_index(&store, dir.path()).unwrap();
+        assert!(
+            after_unset.is_some(),
+            "after env var unset, normal load path should resume"
+        );
+    }
+
+    /// `CQS_DISABLE_BASE_INDEX` only triggers for the literal value "1".
+    /// Any other value (including "true", "yes", "0", empty) must NOT activate
+    /// the bypass — we don't want a stray export accidentally suppressing
+    /// the base index.
+    #[test]
+    fn test_disable_base_index_env_strict_value_match() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = cqs::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+        store.set_hnsw_dirty(false).unwrap();
+
+        let dim = store.dim();
+        let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..5)
+            .map(|i| (format!("v{i}"), make_embedding(i as f32 + 0.1, dim)))
+            .collect();
+        let index = cqs::HnswIndex::build_with_dim(embeddings, dim).unwrap();
+        index.save(dir.path(), "index_base").unwrap();
+
+        for non_one in ["", "0", "true", "yes", "on", "TRUE", " 1", "1 ", "false"] {
+            std::env::set_var("CQS_DISABLE_BASE_INDEX", non_one);
+            let result = build_base_vector_index(&store, dir.path()).unwrap();
+            assert!(
+                result.is_some(),
+                "CQS_DISABLE_BASE_INDEX={non_one:?} must NOT activate bypass"
+            );
+        }
+        std::env::remove_var("CQS_DISABLE_BASE_INDEX");
+    }
+}
