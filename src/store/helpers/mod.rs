@@ -56,14 +56,16 @@ pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};
 /// against the stored version and returns StoreError::SchemaMismatch if different.
 ///
 /// History:
-/// - v16: Current (composite PK on llm_summaries: content_hash + purpose)
+/// - v18: embedding_base column for dual embeddings (adaptive retrieval Phase 5)
+/// - v17: sparse_vectors table + enrichment_version column
+/// - v16: composite PK on llm_summaries (content_hash + purpose)
 /// - v15: 768-dim embeddings -- dropped sentiment dimension (SQ-9)
 /// - v14: llm_summaries table for SQ-6
 /// - v13: enrichment_hash for idempotent enrichment, hnsw_dirty flag
 /// - v12: parent_type_name column for method->class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 17;
+pub const CURRENT_SCHEMA_VERSION: i32 = 18;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.

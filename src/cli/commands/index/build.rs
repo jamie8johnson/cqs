@@ -466,6 +466,27 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                 println!("  HNSW index: {} vectors", total);
             }
         }
+
+        // Phase 5: also build the base (non-enriched) HNSW index. Non-fatal
+        // if it fails — fall back to enriched-only at query time.
+        match build_hnsw_base_index(&store, &cqs_dir) {
+            Ok(Some(total)) => {
+                if !cli.quiet {
+                    println!("  HNSW base index: {} vectors", total);
+                }
+            }
+            Ok(None) => {
+                if !cli.quiet {
+                    println!("  HNSW base index: skipped (no base embeddings yet)");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Base HNSW build failed, enriched index still usable");
+                if !cli.quiet {
+                    eprintln!("  Warning: base HNSW build failed ({e}); using enriched-only");
+                }
+            }
+        }
     }
 
     // Clean up backup from --force (rebuild succeeded)
@@ -548,3 +569,45 @@ pub(crate) fn build_hnsw_index_owned(store: &Store, cqs_dir: &Path) -> Result<Op
 
     Ok(Some(hnsw))
 }
+
+/// Build the Phase 5 base HNSW index from `embedding_base` and save as
+/// `index_base.hnsw.{graph,data,ids}`.
+///
+/// The base index contains the raw-NL embedding for each chunk (no LLM summary,
+/// no call-graph enrichment). It's queried by the router when classification
+/// picks a [`SearchStrategy::DenseBase`] — typically conceptual, behavioral,
+/// and negation queries, where enrichment hurts signal.
+///
+/// Returns `Ok(None)` when the column is entirely NULL (e.g. just after the
+/// v17→v18 migration before the next index pass has populated it). In that
+/// case the router silently falls back to the enriched index.
+pub(crate) fn build_hnsw_base_index(store: &Store, cqs_dir: &Path) -> Result<Option<usize>> {
+    let _span = tracing::info_span!("build_hnsw_base_index").entered();
+
+    // If the column hasn't been populated yet (e.g. fresh v17→v18 migration
+    // before the next index pass), skip the build so we don't write an empty
+    // HNSW file that misleads readers into thinking dual indexing is active.
+    let base_count = store
+        .base_embedding_count()
+        .context("Failed to count rows with embedding_base")? as usize;
+
+    if base_count == 0 {
+        tracing::info!("No embedding_base rows yet — skipping base HNSW build");
+        return Ok(None);
+    }
+
+    const HNSW_BATCH_SIZE: usize = 10_000;
+
+    let chunk_batches = store.embedding_base_batches(HNSW_BATCH_SIZE);
+    let hnsw = HnswIndex::build_batched_with_dim(chunk_batches, base_count, store.dim())?;
+    hnsw.save(cqs_dir, "index_base")?;
+
+    tracing::info!(base_count, "Base HNSW index built");
+    Ok(Some(hnsw.len()))
+}
+
+// The data-flow for the dual HNSW build is covered by
+// `store::chunks::async_helpers::tests::test_embedding_base_batches_*` in
+// the library crate — those tests exercise populate-on-insert and
+// NULL-row skipping, which are the two branches that matter here.
+// The HNSW builder itself is covered by `hnsw::build` unit tests.

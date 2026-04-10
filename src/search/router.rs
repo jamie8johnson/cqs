@@ -71,12 +71,17 @@ impl std::fmt::Display for Confidence {
 pub enum SearchStrategy {
     /// FTS5 name search — skip embedding entirely (~1ms)
     NameOnly,
-    /// Standard dense embedding search (current default path)
+    /// Standard dense embedding search (current default path, enriched HNSW)
     DenseDefault,
-    /// Dense search with type boost for matching chunk types
+    /// Dense search with type boost for matching chunk types (enriched HNSW)
     DenseWithTypeHints,
     /// Dense + SPLADE sparse-dense hybrid (if SPLADE model available)
     DenseWithSplade,
+    /// Phase 5: dense search against the base (non-enriched) HNSW — LLM
+    /// summaries tend to hurt conceptual/behavioral/negation signal because
+    /// they inject canonical vocabulary that drowns out query semantics.
+    /// Falls back to [`Self::DenseDefault`] when the base index is missing.
+    DenseBase,
 }
 
 impl std::fmt::Display for SearchStrategy {
@@ -86,6 +91,7 @@ impl std::fmt::Display for SearchStrategy {
             Self::DenseDefault => write!(f, "dense"),
             Self::DenseWithTypeHints => write!(f, "dense_type_hints"),
             Self::DenseWithSplade => write!(f, "dense_splade"),
+            Self::DenseBase => write!(f, "dense_base"),
         }
     }
 }
@@ -276,12 +282,14 @@ pub fn classify_query(query: &str) -> Classification {
         };
     }
 
-    // 1. Negation trumps everything — "sort without allocating"
+    // 1. Negation trumps everything — "sort without allocating".
+    //    Phase 5: enriched summaries inject positive vocabulary ("allocates",
+    //    "uses heap") that fights the negation, so route to the base index.
     if NEGATION_WORDS.iter().any(|w| query_lower.contains(w)) {
         return Classification {
             category: QueryCategory::Negation,
             confidence: Confidence::High,
-            strategy: SearchStrategy::DenseDefault,
+            strategy: SearchStrategy::DenseBase,
             type_hints: None,
         };
     }
@@ -296,7 +304,9 @@ pub fn classify_query(query: &str) -> Classification {
         };
     }
 
-    // 3. Cross-language — mentions 2+ language names or "equivalent"/"translate"
+    // 3. Cross-language — mentions 2+ language names or "equivalent"/"translate".
+    //    These benefit from the enriched index (summaries add canonical
+    //    vocabulary that bridges language-specific syntax).
     if is_cross_language_query(&query_lower, &words) {
         return Classification {
             category: QueryCategory::CrossLanguage,
@@ -327,22 +337,27 @@ pub fn classify_query(query: &str) -> Classification {
         };
     }
 
-    // 6. Behavioral — action verbs, "code that does X"
+    // 6. Behavioral — action verbs, "code that does X".
+    //    Phase 5: behavioral queries use verbs the query author chose; enriched
+    //    summaries standardize those verbs ("handles" → "processes"), which
+    //    washes out the specific verb the user asked about. Route to base.
     if is_behavioral_query(&query_lower, &words) {
         return Classification {
             category: QueryCategory::Behavioral,
             confidence: Confidence::Medium,
-            strategy: SearchStrategy::DenseDefault,
+            strategy: SearchStrategy::DenseBase,
             type_hints: None,
         };
     }
 
-    // 7. Conceptual — abstract nouns, short non-identifier queries
+    // 7. Conceptual — abstract nouns, short non-identifier queries.
+    //    Phase 5: conceptual matches benefit from raw NL embeddings because
+    //    summaries flatten nuance into canonical phrasing. Route to base.
     if is_conceptual_query(&query_lower, &words) {
         return Classification {
             category: QueryCategory::Conceptual,
             confidence: Confidence::Medium,
-            strategy: SearchStrategy::DenseDefault,
+            strategy: SearchStrategy::DenseBase,
             type_hints: None,
         };
     }
@@ -540,7 +555,9 @@ mod tests {
         let c = classify_query("validates user input");
         assert_eq!(c.category, QueryCategory::Behavioral);
         assert_eq!(c.confidence, Confidence::Medium);
-        assert_eq!(c.strategy, SearchStrategy::DenseDefault);
+        // Phase 5: behavioral routes to the base (non-enriched) index because
+        // LLM summaries flatten the specific verbs users ask about.
+        assert_eq!(c.strategy, SearchStrategy::DenseBase);
     }
 
     #[test]
@@ -548,6 +565,35 @@ mod tests {
         let c = classify_query("sort without allocating");
         assert_eq!(c.category, QueryCategory::Negation);
         assert_eq!(c.confidence, Confidence::High);
+        // Phase 5: negation routes to base — summaries inject positive
+        // vocabulary that fights the "without" clause.
+        assert_eq!(c.strategy, SearchStrategy::DenseBase);
+    }
+
+    #[test]
+    fn test_classify_conceptual_routes_to_base() {
+        // Phase 5: conceptual also routes to base for similar reasons.
+        let c = classify_query("dependency injection pattern");
+        assert_eq!(c.category, QueryCategory::Conceptual);
+        assert_eq!(c.strategy, SearchStrategy::DenseBase);
+    }
+
+    #[test]
+    fn test_classify_structural_stays_on_enriched() {
+        // Phase 5 regression: structural queries benefit from enrichment,
+        // so they keep the DenseWithTypeHints (enriched HNSW) strategy.
+        let c = classify_query("functions that return Result");
+        assert_eq!(c.category, QueryCategory::Structural);
+        assert_eq!(c.strategy, SearchStrategy::DenseWithTypeHints);
+    }
+
+    #[test]
+    fn test_classify_cross_language_stays_on_enriched() {
+        // Phase 5 regression: cross-language queries rely on canonical
+        // vocabulary that summaries provide, so they stay on enriched.
+        let c = classify_query("Python equivalent of map in Rust");
+        assert_eq!(c.category, QueryCategory::CrossLanguage);
+        assert_eq!(c.strategy, SearchStrategy::DenseDefault);
     }
 
     #[test]

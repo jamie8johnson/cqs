@@ -26,6 +26,23 @@ impl Store {
         })
     }
 
+    /// Phase 5: count chunks with a non-NULL `embedding_base` column.
+    ///
+    /// Returns 0 right after the v17→v18 migration (column added but not
+    /// populated) and climbs to [`chunk_count`] once the next index pass
+    /// has run. Used by the dual HNSW builder to decide whether to build
+    /// the base index at all.
+    pub fn base_embedding_count(&self) -> Result<u64, StoreError> {
+        let _span = tracing::debug_span!("base_embedding_count").entered();
+        self.rt.block_on(async {
+            let row: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM chunks WHERE embedding_base IS NOT NULL")
+                    .fetch_one(&self.pool)
+                    .await?;
+            Ok(row.0 as u64)
+        })
+    }
+
     /// Get index statistics
     /// Uses batched queries to minimize database round trips:
     /// 1. Single query for counts with GROUP BY using CTEs

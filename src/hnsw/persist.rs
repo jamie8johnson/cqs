@@ -767,19 +767,50 @@ impl HnswIndex {
         ef_search: Option<usize>,
         dim: Option<usize>,
     ) -> Option<Box<dyn VectorIndex>> {
-        if Self::exists(cq_dir, "index") {
+        Self::try_load_named(cq_dir, "index", ef_search, dim)
+    }
+
+    /// Phase 5: load the base (non-enriched) HNSW index.
+    ///
+    /// Returns `None` when `index_base.hnsw.*` files are absent or corrupt —
+    /// the router treats that as a signal to fall back to the enriched index.
+    pub fn try_load_base_with_ef(
+        cq_dir: &Path,
+        ef_search: Option<usize>,
+        dim: Option<usize>,
+    ) -> Option<Box<dyn VectorIndex>> {
+        Self::try_load_named(cq_dir, "index_base", ef_search, dim)
+    }
+
+    /// Internal: load any named HNSW index (enriched, base, or future variants).
+    fn try_load_named(
+        cq_dir: &Path,
+        basename: &str,
+        ef_search: Option<usize>,
+        dim: Option<usize>,
+    ) -> Option<Box<dyn VectorIndex>> {
+        if Self::exists(cq_dir, basename) {
             let load_dim = dim.unwrap_or(crate::EMBEDDING_DIM);
-            match Self::load_with_dim(cq_dir, "index", load_dim) {
+            match Self::load_with_dim(cq_dir, basename, load_dim) {
                 Ok(mut index) => {
                     if let Some(ef) = ef_search {
                         index.set_ef_search(ef);
-                        tracing::debug!(ef_search = ef, "Applied config ef_search override");
+                        tracing::debug!(
+                            basename = basename,
+                            ef_search = ef,
+                            "Applied config ef_search override"
+                        );
                     }
-                    tracing::info!("HNSW index loaded ({} vectors)", index.len());
+                    tracing::info!(
+                        basename = basename,
+                        vectors = index.len(),
+                        "HNSW index loaded"
+                    );
                     Some(Box::new(index))
                 }
                 Err(e) => {
                     tracing::warn!(
+                        basename = basename,
                         error = %e,
                         "HNSW index corrupted or incomplete — falling back to brute-force search. \
                          Run 'cqs index' to rebuild."
@@ -788,7 +819,7 @@ impl HnswIndex {
                 }
             }
         } else {
-            tracing::debug!("No HNSW index found");
+            tracing::debug!(basename = basename, "No HNSW index found");
             None
         }
     }

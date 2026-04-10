@@ -35,7 +35,8 @@ pub(crate) use signal::{check_interrupted, reset_interrupted};
 
 // Re-export store openers, context, and vector index builders
 pub(crate) use store::{
-    build_vector_index, build_vector_index_with_config, open_project_store, CommandContext,
+    build_base_vector_index, build_vector_index, build_vector_index_with_config,
+    open_project_store, CommandContext,
 };
 
 #[cfg(test)]
