@@ -28,11 +28,15 @@
 - [ ] **Reranker V2** — code-trained cross-encoder (ms-marco was catastrophic)
 
 ### CPU Lane (next up)
-- [ ] **Adaptive retrieval** — smart hybrid routing. +10-15pp estimated. No new models needed. Spec: `docs/plans/adaptive-retrieval.md`
-  - Phase 1: QueryClassifier (heuristics) + confidence scoring (~1 day)
-  - Phase 2: Ensemble search for ambiguous queries (RRF merge of dense ± summaries) (~1 day)
-  - Phase 3: SpladeEncoder update for pre-pooled ONNX output (~0.5 day)
-  - Phase 4: Eval + iterate
+- [x] ~~**Adaptive retrieval** Phases 1-4~~ — classifier + routing + telemetry shipped in v1.22.0
+- [x] ~~**Adaptive retrieval** Phase 5~~ — dual embeddings (base + enriched HNSW) shipped in PR #876 + #877 + #878
+- [ ] **Selective SPLADE routing** — `classify_query` should pick `SearchStrategy::DenseWithSplade` for `QueryCategory::CrossLanguage`. SPLADE-Code 0.6B got **+20pp R@1 on cross_language** in isolation (30% → 50%) but only +1.2pp overall — the gain is concentrated entirely in that category. Currently SPLADE is flag-driven (`--splade` enables for all queries). Routing it to cross_language only:
+  - Strict improvement vs always-on SPLADE: same +20pp on the category that matters, zero cost on other queries
+  - Encoder is already lazy-loaded on first SPLADE query — sessions with no cross-language queries never pay the load
+  - Code: derive `want_splade = cli.splade || matches!(c.category, CrossLanguage)`, plumb through encoder + index loading, graceful fallback when encoder unavailable
+  - Open: should the routed strategy compose with `DenseBase` for cross-language + negation queries? Probably not in v1 — keep enums mutually exclusive, revisit if data demands
+  - Validate: same-corpus A/B on cross_language category specifically
+- [ ] **Phase 6: Explainable search** — depends on SPLADE-Code being the production default. Spec: `docs/plans/adaptive-retrieval.md`
 - [ ] **Paper v1.0** — clean rewrite done, needs review/polish + adaptive retrieval results
 - [x] ~~**Cross-project: wire remaining commands**~~ — impact, trace, test-map wired in #864. Deps local-only.
 - [x] ~~**Agent adoption: telemetry analysis**~~ — mined 16,731 invocations across all sessions. Finding: main conversation uses search (60%) + context (28%). Subagents use the full toolkit (impact, callers, test-map). The gap is in the main conversation, not subagents.
