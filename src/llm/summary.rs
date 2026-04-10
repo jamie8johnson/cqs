@@ -334,34 +334,44 @@ mod tests {
         );
     }
 
-    /// Condition 2: non-callable chunk types should be skipped.
+    /// Condition 2 (Phase 5 follow-up): the eligibility filter now uses
+    /// `is_code()` instead of `is_callable()`, so type-definition chunks
+    /// (struct, enum, trait, interface, class, constant, impl, etc.) are
+    /// summarizable. Only Section (markdown) and Module (file-level) and
+    /// ConfigKey/Object/Namespace are still skipped.
     #[test]
-    fn filter_skips_non_callable_chunks() {
-        let non_callable_types = [
-            ChunkType::Struct,
-            ChunkType::Enum,
-            ChunkType::Trait,
-            ChunkType::Interface,
-            ChunkType::Class,
-            ChunkType::Constant,
-            ChunkType::Section,
-            ChunkType::Module,
-            ChunkType::TypeAlias,
-        ];
-        for ct in non_callable_types {
-            assert!(!ct.is_callable(), "{:?} should not be callable", ct);
-        }
-        // Callable types should NOT be skipped
-        let callable_types = [
+    fn filter_accepts_code_chunk_types() {
+        // Code chunk types — should pass the filter
+        let code_types = [
             ChunkType::Function,
             ChunkType::Method,
             ChunkType::Constructor,
             ChunkType::Property,
             ChunkType::Macro,
             ChunkType::Extension,
+            ChunkType::Test,
+            ChunkType::Struct,
+            ChunkType::Enum,
+            ChunkType::Trait,
+            ChunkType::Interface,
+            ChunkType::Class,
+            ChunkType::Constant,
+            ChunkType::Impl,
+            ChunkType::TypeAlias,
+            ChunkType::Variable,
         ];
-        for ct in callable_types {
-            assert!(ct.is_callable(), "{:?} should be callable", ct);
+        for ct in code_types {
+            assert!(
+                ct.is_code(),
+                "{ct:?} should be considered a code chunk and eligible for summary"
+            );
+        }
+
+        // Non-code types — should be filtered out (markdown sections,
+        // file-level modules, raw config keys are not worth summarizing)
+        let non_code_types = [ChunkType::Section, ChunkType::Module, ChunkType::ConfigKey];
+        for ct in non_code_types {
+            assert!(!ct.is_code(), "{ct:?} should not be eligible for summary");
         }
     }
 
