@@ -68,6 +68,7 @@ pub(crate) use review::cmd_review;
 pub(crate) use review::cmd_suggest;
 
 // -- index --
+pub(crate) use index::build_hnsw_base_index;
 pub(crate) use index::build_hnsw_index_owned;
 pub(crate) use index::build_stale;
 pub(crate) use index::build_stats;

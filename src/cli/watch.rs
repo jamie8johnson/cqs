@@ -575,7 +575,30 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                             if path.exists() {
                                 let _ = std::fs::remove_file(&path);
                             }
+                            let base_path = cfg.cqs_dir.join(format!("index_base.{}", ext));
+                            if base_path.exists() {
+                                let _ = std::fs::remove_file(&base_path);
+                            }
                         }
+                    }
+                }
+
+                // Phase 5: also rebuild the base (non-enriched) HNSW. Not held
+                // in memory by watch state — the search process loads it fresh
+                // from disk. Incremental path skips base updates; they catch
+                // up on the next full rebuild.
+                match super::commands::build_hnsw_base_index(store, cfg.cqs_dir) {
+                    Ok(Some(n)) => {
+                        info!(vectors = n, "Base HNSW index rebuilt");
+                        if !cfg.quiet {
+                            println!("  HNSW base index: {} vectors (full rebuild)", n);
+                        }
+                    }
+                    Ok(None) => {
+                        // No base embeddings yet — skip silently
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Base HNSW rebuild failed, router falls back to enriched-only");
                     }
                 }
             } else if !content_hashes.is_empty() {

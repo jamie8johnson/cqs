@@ -1,4 +1,7 @@
--- cq index schema v16
+-- cq index schema v18
+-- v18: embedding_base column for dual embeddings (adaptive retrieval Phase 5)
+-- v17: sparse_vectors table + enrichment_version column
+-- v16: composite PK on llm_summaries
 -- v10: Generalized for multiple sources (filesystem, SQL Server, etc.)
 --   file → origin (unique identifier like "file:src/main.rs" or "mssql:server/db/dbo.MyProc")
 --   file_mtime → source_mtime (nullable for sources without mtime)
@@ -23,6 +26,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     line_start INTEGER NOT NULL,
     line_end INTEGER NOT NULL,
     embedding BLOB NOT NULL,
+    embedding_base BLOB,            -- v18 dual embeddings — NL only, no enrichment, NULL until re-indexed
     source_mtime INTEGER,           -- nullable: not all sources have mtime
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,

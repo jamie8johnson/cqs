@@ -238,6 +238,7 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         reranker,
         splade_query,
         splade_index,
+        routed_strategy: classification.as_ref().map(|c| c.strategy),
     })
 }
 
@@ -255,6 +256,9 @@ struct QueryContext<'a> {
     reranker: Option<&'a cqs::Reranker>,
     splade_query: Option<cqs::splade::SparseVector>,
     splade_index: Option<&'a cqs::splade::index::SpladeIndex>,
+    /// Phase 5: strategy picked by the classifier (if adaptive routing ran).
+    /// Drives whether we load the enriched or base HNSW.
+    routed_strategy: Option<cqs::search::router::SearchStrategy>,
 }
 
 /// Project search: search project index, optionally include references (--include-refs).
@@ -268,7 +272,54 @@ fn cmd_query_project(ctx: &QueryContext<'_>) -> Result<()> {
     let root = ctx.root;
     let embedder = ctx.embedder;
     let effective_limit = ctx.effective_limit;
-    let index = crate::cli::build_vector_index(store, cqs_dir)?;
+
+    // Phase 5: when the classifier picked DenseBase, try loading the
+    // base (non-enriched) HNSW. If it's absent or corrupt, silently fall
+    // back to the enriched index so the query still works.
+    let use_base = matches!(
+        ctx.routed_strategy,
+        Some(cqs::search::router::SearchStrategy::DenseBase)
+    );
+    let mut base_fallback = false;
+    let index = if use_base {
+        match crate::cli::build_base_vector_index(store, cqs_dir)? {
+            Some(base_idx) => {
+                tracing::info!(
+                    basename = "index_base",
+                    "Router selected base HNSW for non-enriched query"
+                );
+                Some(base_idx)
+            }
+            None => {
+                tracing::info!(
+                    "Base HNSW unavailable — falling back to enriched index for DenseBase query"
+                );
+                base_fallback = true;
+                crate::cli::build_vector_index(store, cqs_dir)?
+            }
+        }
+    } else {
+        crate::cli::build_vector_index(store, cqs_dir)?
+    };
+
+    // Phase 5 telemetry: record DenseBase routing outcome (including fallback).
+    // Other strategies are logged elsewhere; this fires only for DenseBase to
+    // avoid double-counting.
+    if use_base {
+        crate::cli::telemetry::log_routed(
+            cqs_dir,
+            query,
+            "routed_to_base",
+            "medium",
+            if base_fallback {
+                "dense_base_fallback_to_enriched"
+            } else {
+                "dense_base"
+            },
+            base_fallback,
+            None,
+        );
+    }
 
     let audit_mode = cqs::audit::load_audit_state(cqs_dir);
 

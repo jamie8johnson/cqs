@@ -71,6 +71,7 @@ async fn run_migration(
         (14, 15) => migrate_v14_to_v15(conn).await,
         (15, 16) => migrate_v15_to_v16(conn).await,
         (16, 17) => migrate_v16_to_v17(conn).await,
+        (17, 18) => migrate_v17_to_v18(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -272,6 +273,27 @@ async fn migrate_v16_to_v17(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// Migrate from v17 to v18: add embedding_base column to chunks
+///
+/// Phase 5 of adaptive retrieval: dual embeddings. Each chunk gets a second
+/// embedding built from the raw NL description (without LLM summary or call-graph
+/// enrichment). Conceptual/behavioral/negation queries route to the base index,
+/// structural/multi-step queries keep the enriched index.
+///
+/// NULL is a valid state post-migration — chunks haven't been re-embedded yet.
+/// The base HNSW index is only built once the column is populated; until then
+/// the router silently falls back to the enriched index.
+async fn migrate_v17_to_v18(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v17_to_v18").entered();
+
+    sqlx::query("ALTER TABLE chunks ADD COLUMN embedding_base BLOB")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!("Migrated to v18: embedding_base column (NULL until next index pass)");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,7 +311,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 17);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 18);
     }
 
     #[test]
@@ -1031,6 +1053,184 @@ mod tests {
                 }
                 other => panic!("Expected MigrationNotSupported, got: {:?}", other),
             }
+        });
+    }
+
+    /// Phase 5 regression: v17→v18 adds embedding_base column without touching
+    /// existing rows, and the migration is idempotent-ish in the sense that a
+    /// follow-up attempt errors on the duplicate ALTER (caller must not re-run).
+    #[test]
+    fn test_migrate_v17_to_v18_adds_embedding_base_column() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+
+            // Minimal v17 schema (chunks + metadata); only the columns
+            // touched by the v17→v18 migration matter here.
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    enrichment_version INTEGER NOT NULL DEFAULT 0
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '17')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // Insert a row with a non-trivial embedding so we can verify it
+            // survives the migration untouched.
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 created_at, updated_at) \
+                 VALUES ('chunk-1', 'file:lib.rs', 'file', 'rust', 'function', 'foo', \
+                 'fn foo()', 'fn foo() {}', 'hash1', 10, 20, X'deadbeef', \
+                 '2026-04-10', '2026-04-10')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            migrate(&pool, 17, 18).await.unwrap();
+
+            // Column exists and defaults to NULL for pre-existing rows.
+            let (embedding_existing, embedding_base): (Vec<u8>, Option<Vec<u8>>) =
+                sqlx::query_as("SELECT embedding, embedding_base FROM chunks WHERE id = 'chunk-1'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                embedding_existing,
+                vec![0xde, 0xad, 0xbe, 0xef],
+                "existing embedding must survive migration untouched"
+            );
+            assert!(
+                embedding_base.is_none(),
+                "embedding_base must be NULL for pre-existing rows (base pass hasn't run yet)"
+            );
+
+            // Schema version bumped.
+            let version: (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(version.0, "18");
+
+            // NULL is a writeable state — caller can populate it later.
+            sqlx::query("UPDATE chunks SET embedding_base = X'cafef00d' WHERE id = 'chunk-1'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let (base_after,): (Option<Vec<u8>>,) =
+                sqlx::query_as("SELECT embedding_base FROM chunks WHERE id = 'chunk-1'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(base_after, Some(vec![0xca, 0xfe, 0xf0, 0x0d]));
+        });
+    }
+
+    /// Phase 5: full migrate() chain is idempotent at the dispatcher level.
+    /// Calling `migrate(pool, 18, 18)` after a successful upgrade must be a
+    /// no-op — the schema_version metadata gates re-execution of the ALTER.
+    /// (The raw migration function itself is NOT idempotent — `ALTER TABLE
+    /// ADD COLUMN` errors on duplicate column. This test exercises the
+    /// dispatcher contract that protects users from the underlying limitation.)
+    #[test]
+    fn test_migrate_v17_to_v18_dispatcher_is_idempotent() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    enrichment_version INTEGER NOT NULL DEFAULT 0
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '17')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // First call: 17→18 succeeds.
+            migrate(&pool, 17, 18).await.unwrap();
+
+            // Second call at the same target version: should be a no-op.
+            // This is the property users actually depend on — re-running
+            // `cqs index` should not fail just because the schema is current.
+            migrate(&pool, 18, 18).await.unwrap();
         });
     }
 }

@@ -255,3 +255,31 @@ pub(crate) fn build_vector_index_with_config(
         Some(store.dim()),
     ))
 }
+
+/// Phase 5: load the base (non-enriched) HNSW index for adaptive routing.
+///
+/// Returns `Ok(None)` when:
+/// - The `index_base.hnsw.*` files don't exist (e.g. fresh v17→v18 migration)
+/// - The store is flagged `hnsw_dirty` (interrupted write)
+/// - CAGRA is preferred for the enriched index; we never build CAGRA for the
+///   base — the base path is a narrow router decision, not a hot path, so
+///   plain HNSW is sufficient
+///
+/// The router falls back to the enriched index when this returns `None`.
+pub(crate) fn build_base_vector_index(
+    store: &cqs::Store,
+    cqs_dir: &Path,
+) -> Result<Option<Box<dyn cqs::index::VectorIndex>>> {
+    let _span = tracing::info_span!("build_base_vector_index").entered();
+    if store.is_hnsw_dirty().unwrap_or(true) {
+        tracing::warn!(
+            "Base HNSW index may be stale (dirty flag set) — router falls back to enriched"
+        );
+        return Ok(None);
+    }
+    Ok(cqs::HnswIndex::try_load_base_with_ef(
+        cqs_dir,
+        None,
+        Some(store.dim()),
+    ))
+}
