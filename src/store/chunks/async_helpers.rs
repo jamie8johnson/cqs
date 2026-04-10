@@ -611,4 +611,100 @@ mod tests {
         let batches: Vec<_> = store.embedding_base_batches(10).collect();
         assert!(batches.is_empty());
     }
+
+    /// Phase 5 invariant: the enrichment pass (`update_embeddings_batch` /
+    /// `update_embeddings_with_hashes_batch`) writes ONLY to the `embedding`
+    /// column. `embedding_base` must survive the enrichment update untouched
+    /// — that's what makes dual indexing meaningful, since otherwise both
+    /// columns would converge after the first enrichment cycle.
+    #[test]
+    fn test_enrichment_does_not_overwrite_base() {
+        let (store, _dir) = setup_store();
+
+        // Insert one chunk; both columns now hold the same base bytes.
+        let chunk = make_chunk("victim", "src/victim.rs");
+        let original_base = mock_embedding(0.42);
+        store
+            .upsert_chunks_batch(&[(chunk.clone(), original_base.clone())], Some(100))
+            .unwrap();
+
+        let base_before: Vec<_> = store
+            .embedding_base_batches(10)
+            .filter_map(|b| b.ok())
+            .flatten()
+            .collect();
+        assert_eq!(base_before.len(), 1);
+
+        // Simulate enrichment: rewrite `embedding` with a totally different
+        // vector (the "enriched" embedding) and a fresh enrichment_hash.
+        let enriched = mock_embedding(99.0);
+        let updates = vec![(
+            chunk.id.clone(),
+            enriched.clone(),
+            Some("enrichment-hash-v1".to_string()),
+        )];
+        let updated = store.update_embeddings_with_hashes_batch(&updates).unwrap();
+        assert_eq!(updated, 1);
+
+        // After enrichment: `embedding` reflects the enriched vector, but
+        // `embedding_base` is byte-identical to the original.
+        let enriched_after: Vec<_> = store
+            .embedding_batches(10)
+            .filter_map(|b| b.ok())
+            .flatten()
+            .collect();
+        let base_after: Vec<_> = store
+            .embedding_base_batches(10)
+            .filter_map(|b| b.ok())
+            .flatten()
+            .collect();
+        assert_eq!(enriched_after.len(), 1);
+        assert_eq!(base_after.len(), 1);
+        // `embedding` was overwritten by enrichment.
+        assert_eq!(enriched_after[0].1.as_slice(), enriched.as_slice());
+        // `embedding_base` survived untouched — this is the dual-indexing invariant.
+        assert_eq!(base_after[0].1.as_slice(), original_base.as_slice());
+    }
+
+    /// Phase 5: when content changes, the re-upsert path must refresh BOTH
+    /// columns (new content → new base NL → new base embedding). The
+    /// ON CONFLICT clause includes `embedding_base = excluded.embedding_base`
+    /// to enforce this.
+    #[test]
+    fn test_content_change_refreshes_both_columns() {
+        let (store, _dir) = setup_store();
+
+        // First insert: original content, original embedding bytes.
+        let mut chunk = make_chunk("evolving", "src/evolving.rs");
+        let original = mock_embedding(0.1);
+        store
+            .upsert_chunks_batch(&[(chunk.clone(), original.clone())], Some(100))
+            .unwrap();
+
+        // Mutate the chunk: new content + new content_hash → triggers the
+        // ON CONFLICT WHERE clause (only updates rows where hash changed).
+        chunk.content = "fn evolving() { /* changed */ }".to_string();
+        chunk.content_hash = "new-hash-v2".to_string();
+        let new_embedding = mock_embedding(0.9);
+
+        store
+            .upsert_chunks_batch(&[(chunk.clone(), new_embedding.clone())], Some(200))
+            .unwrap();
+
+        // Both columns must reflect the new bytes.
+        let enriched: Vec<_> = store
+            .embedding_batches(10)
+            .filter_map(|b| b.ok())
+            .flatten()
+            .collect();
+        let base: Vec<_> = store
+            .embedding_base_batches(10)
+            .filter_map(|b| b.ok())
+            .flatten()
+            .collect();
+        assert_eq!(enriched.len(), 1);
+        assert_eq!(base.len(), 1);
+        assert_eq!(enriched[0].1.as_slice(), new_embedding.as_slice());
+        assert_eq!(base[0].1.as_slice(), new_embedding.as_slice());
+    }
 }

@@ -1166,4 +1166,71 @@ mod tests {
             assert_eq!(base_after, Some(vec![0xca, 0xfe, 0xf0, 0x0d]));
         });
     }
+
+    /// Phase 5: full migrate() chain is idempotent at the dispatcher level.
+    /// Calling `migrate(pool, 18, 18)` after a successful upgrade must be a
+    /// no-op — the schema_version metadata gates re-execution of the ALTER.
+    /// (The raw migration function itself is NOT idempotent — `ALTER TABLE
+    /// ADD COLUMN` errors on duplicate column. This test exercises the
+    /// dispatcher contract that protects users from the underlying limitation.)
+    #[test]
+    fn test_migrate_v17_to_v18_dispatcher_is_idempotent() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    enrichment_version INTEGER NOT NULL DEFAULT 0
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '17')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // First call: 17→18 succeeds.
+            migrate(&pool, 17, 18).await.unwrap();
+
+            // Second call at the same target version: should be a no-op.
+            // This is the property users actually depend on — re-running
+            // `cqs index` should not fail just because the schema is current.
+            migrate(&pool, 18, 18).await.unwrap();
+        });
+    }
 }
