@@ -87,7 +87,20 @@ pub(crate) fn collect_eligible_chunks(
                 cached += 1;
                 continue;
             }
-            if !cs.chunk_type.is_callable() {
+            // Phase 5 follow-up: summarize all code chunk types, not just callable
+            // ones. Structs, enums, traits, impls, classes, constants etc. all
+            // benefit from a one-line summary because the dual-index router
+            // routes conceptual/behavioral queries to the base (non-summary)
+            // index — and that routing has zero effect when the gold answer is
+            // a struct that doesn't have a summary to strip in the first place.
+            //
+            // NOTE: this filter is shared with hyde_query_pass. The HyDE pass
+            // is currently disabled (--hyde-queries default is false) and
+            // research data (training-data/research/enrichment.md) shows HyDE
+            // is net-negative across most categories, so we don't worry about
+            // it here. If HyDE is ever re-enabled, split this gate per-purpose
+            // because HyDE should NOT broaden to type definitions.
+            if !cs.chunk_type.is_code() {
                 skipped += 1;
                 continue;
             }
