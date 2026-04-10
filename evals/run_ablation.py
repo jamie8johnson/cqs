@@ -76,9 +76,9 @@ def evaluate(queries, splade=False, label=""):
         results = run_search(q["query"], n=20, splade=splade)
         names = [r[0] for r in results]
 
-        expected = q["expected_function"]
-        also_accept = q.get("also_accept", [])
-        all_valid = {expected} | set(also_accept)
+        expected = q["primary_answer"]["name"]
+        acceptable = [a["name"] for a in q.get("acceptable_answers", [])]
+        all_valid = {expected} | set(acceptable)
 
         hit_at = None
         for i, name in enumerate(names):
