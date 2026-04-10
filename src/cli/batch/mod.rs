@@ -245,21 +245,25 @@ impl BatchContext {
     }
 
     /// Get or lazily load the SPLADE encoder. Returns None if model unavailable.
+    ///
+    /// Path resolution is delegated to [`cqs::splade::resolve_splade_model_dir`]
+    /// so the env-var override (`CQS_SPLADE_MODEL`) and vocab-mismatch probe
+    /// stay consistent across the interactive (`cqs query`) and batch
+    /// (`cqs search`) paths.
     pub fn splade_encoder(&self) -> Option<&cqs::splade::SpladeEncoder> {
         let opt = self.splade_encoder.get_or_init(|| {
-            let model_dir = dirs::home_dir()
-                .map(|h| h.join(".cache/huggingface/splade-onnx"))
-                .unwrap_or_default();
-            if !model_dir.join("model.onnx").exists() {
-                return None;
-            }
+            let model_dir = cqs::splade::resolve_splade_model_dir()?;
             match cqs::splade::SpladeEncoder::new(
                 &model_dir,
                 cqs::splade::SpladeEncoder::default_threshold(),
             ) {
                 Ok(enc) => Some(enc),
                 Err(e) => {
-                    tracing::warn!(error = %e, "SPLADE encoder unavailable in batch mode");
+                    tracing::warn!(
+                        path = %model_dir.display(),
+                        error = %e,
+                        "SPLADE encoder unavailable in batch mode"
+                    );
                     None
                 }
             }
