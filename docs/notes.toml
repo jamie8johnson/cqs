@@ -1123,3 +1123,12 @@ mentions = [
     ".claude/hooks",
     "telemetry",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "Phase 5 dual embeddings: schema migration v17→v18 + dual HNSW index works end-to-end. Initial smoke test confirms behavioral/conceptual queries route to base index, structural stays on enriched. Pending eval results to confirm pp gains."
+mentions = [
+    "src/search/router.rs",
+    "src/store/migrations.rs",
+    "src/cli/commands/index/build.rs",
+]
