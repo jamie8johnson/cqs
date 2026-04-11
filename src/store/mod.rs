@@ -408,16 +408,37 @@ impl Store {
             "Database connected"
         );
 
-        // Quick integrity check — catches B-tree corruption early
-        rt.block_on(async {
-            let result: (String,) = sqlx::query_as("PRAGMA integrity_check(1)")
-                .fetch_one(&pool)
-                .await?;
-            if result.0 != "ok" {
-                return Err(StoreError::Corruption(result.0));
-            }
-            Ok::<_, StoreError>(())
-        })?;
+        // Cheap B-tree sanity check — write opens only.
+        //
+        // The previous `PRAGMA integrity_check(1)` walked every page and took
+        // 85s+ on a 1.1GB database over WSL /mnt/c, dominating every CLI
+        // invocation and blocking the eval harness (each `cqs search` shelled
+        // out, each open re-paid the cost). Two changes fix that:
+        //
+        // 1. Skip the check entirely on read-only opens. Reads cannot
+        //    introduce corruption, and if a read encounters corrupt pages the
+        //    query will fail naturally — an upfront walk of the whole file
+        //    just to pre-discover that is not earning its cost for a
+        //    rebuildable search index.
+        // 2. On write opens, use `PRAGMA quick_check` instead of
+        //    `integrity_check`. quick_check validates the B-tree structure
+        //    without the slower cross-checks of index content vs table
+        //    content, which is the right tradeoff for a startup canary.
+        //
+        // Opt-out for either path is available via CQS_SKIP_INTEGRITY_CHECK=1
+        // if the quick_check itself becomes a problem on huge write opens.
+        let skip_integrity = std::env::var("CQS_SKIP_INTEGRITY_CHECK").as_deref() == Ok("1");
+        if !config.read_only && !skip_integrity {
+            rt.block_on(async {
+                let result: (String,) = sqlx::query_as("PRAGMA quick_check(1)")
+                    .fetch_one(&pool)
+                    .await?;
+                if result.0 != "ok" {
+                    return Err(StoreError::Corruption(result.0));
+                }
+                Ok::<_, StoreError>(())
+            })?;
+        }
 
         // Read dim from metadata before constructing Store (avoid unsafe mutation).
         // Defaults to EMBEDDING_DIM for fresh/pre-v15 databases without dimensions key.
