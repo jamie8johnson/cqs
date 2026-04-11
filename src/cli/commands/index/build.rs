@@ -458,7 +458,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                                 batches_done += 1;
 
                                 // Periodic arena reset
-                                if reset_every > 0 && batches_done % reset_every == 0 {
+                                if reset_every > 0 && batches_done.is_multiple_of(reset_every) {
                                     encoder.clear_session();
                                     tracing::debug!(batches_done, "SPLADE periodic session reset");
                                 }
