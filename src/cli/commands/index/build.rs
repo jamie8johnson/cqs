@@ -404,11 +404,37 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                     let mut encoded = 0usize;
                     let mut failed = 0usize;
 
-                    // PF-5: batch encode instead of per-chunk
-                    const SPLADE_BATCH: usize = 64;
-                    for batch in chunk_texts.chunks(SPLADE_BATCH) {
+                    // PF-5: batch encode instead of per-chunk.
+                    //
+                    // Default batch size 64 works for the off-the-shelf 110M
+                    // BERT model. SPLADE-Code 0.6B (5.5x larger) overflows GPU
+                    // memory at that size. CQS_SPLADE_BATCH overrides the
+                    // initial batch — set to 8-16 for SPLADE-Code 0.6B.
+                    //
+                    // The inner loop is also adaptive: on OOM (or any other
+                    // batch failure), we halve the current batch and retry,
+                    // down to a minimum of 1. This means a too-large initial
+                    // value still completes — slowly, but without falling all
+                    // the way back to per-chunk encoding.
+                    let initial_batch: usize = std::env::var("CQS_SPLADE_BATCH")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .filter(|&n: &usize| n >= 1)
+                        .unwrap_or(64);
+                    tracing::info!(
+                        initial_batch,
+                        total_chunks = chunk_texts.len(),
+                        "SPLADE encoding starting"
+                    );
+
+                    let mut current_batch_size = initial_batch;
+                    let mut idx = 0;
+                    while idx < chunk_texts.len() {
+                        let end = (idx + current_batch_size).min(chunk_texts.len());
+                        let batch = &chunk_texts[idx..end];
                         let ids: Vec<&str> = batch.iter().map(|(id, _)| id.as_str()).collect();
                         let texts: Vec<&str> = batch.iter().map(|(_, t)| t.as_str()).collect();
+
                         match encoder.encode_batch(&texts) {
                             Ok(svs) => {
                                 for (id, sv) in ids.into_iter().zip(svs) {
@@ -417,32 +443,55 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                                         encoded += 1;
                                     }
                                 }
+                                idx = end;
+                                // Optionally tick batch size up over time? Not
+                                // for now — once shrunk, stay there to avoid
+                                // oscillation under steady OOM.
+                            }
+                            Err(e) if current_batch_size > 1 => {
+                                let new_size = (current_batch_size / 2).max(1);
+                                tracing::warn!(
+                                    old_batch = current_batch_size,
+                                    new_batch = new_size,
+                                    error = %e,
+                                    "SPLADE batch failed (likely OOM) — halving batch size and retrying"
+                                );
+                                current_batch_size = new_size;
+                                // Don't advance idx — retry the same range.
                             }
                             Err(e) => {
-                                // Fallback: encode individually to isolate failures
-                                if failed == 0 {
-                                    tracing::warn!(error = %e, "SPLADE batch failed, falling back to per-chunk");
-                                }
-                                for (id, text) in batch {
-                                    match encoder.encode(text) {
-                                        Ok(sv) if !sv.is_empty() => {
-                                            sparse_vecs.push((id.clone(), sv));
-                                            encoded += 1;
-                                        }
-                                        Ok(_) => {}
-                                        Err(_) => {
-                                            failed += 1;
-                                        }
-                                    }
-                                }
+                                // batch_size already at 1: this chunk truly
+                                // can't be encoded. Skip it and move on.
+                                tracing::warn!(
+                                    chunk_id = ?ids[0],
+                                    error = %e,
+                                    "SPLADE encoding failed at batch_size=1, skipping chunk"
+                                );
+                                failed += 1;
+                                idx += 1;
                             }
+                        }
+
+                        // Progress every ~10% so the user has SOMETHING to look at
+                        // during long encodes (SPLADE-Code 0.6B on a corpus is slow
+                        // even at the right batch size).
+                        if encoded > 0 && encoded % (chunk_texts.len() / 10).max(1) == 0 {
+                            tracing::info!(
+                                encoded,
+                                total = chunk_texts.len(),
+                                batch_size = current_batch_size,
+                                "SPLADE encoding progress"
+                            );
                         }
                     }
                     if !sparse_vecs.is_empty() {
                         store.upsert_sparse_vectors(&sparse_vecs)?;
                     }
                     if !cli.quiet {
-                        println!("  SPLADE: {} chunks encoded", encoded);
+                        println!(
+                            "  SPLADE: {} chunks encoded (final batch={})",
+                            encoded, current_batch_size
+                        );
                         if failed > 0 {
                             println!("  SPLADE: {} chunks failed", failed);
                         }
