@@ -499,11 +499,22 @@ impl SpladeEncoder {
 
     /// Batch encode multiple texts in a single forward pass.
     ///
-    /// Tokenizes all inputs, pads to the longest sequence in the batch,
-    /// runs one ONNX inference call, and extracts per-example sparse vectors.
-    /// For SPLADE-Code 0.6B (600M parameters), this is the difference between
-    /// ~3-hour and ~10-minute corpus encoding — the per-call ORT overhead
-    /// dominates inference time on large models.
+    /// Tokenizes all inputs, pads to a CONSTANT max_seq_len (configurable
+    /// via `CQS_SPLADE_MAX_SEQ`, default 256), runs one ONNX inference call,
+    /// and extracts per-example sparse vectors.
+    ///
+    /// **Why constant padding (not per-batch max)?** ORT's BFC arena caches
+    /// allocations by tensor shape. If consecutive batches have different
+    /// shapes (which they would with per-batch-max padding), the arena
+    /// allocates new slots and never frees old ones — observed leak of
+    /// 7.4 → 30 GB GPU memory over 60 minutes encoding 11k chunks with
+    /// SPLADE-Code 0.6B. Padding to a fixed length keeps every input
+    /// tensor at the same shape so ORT can reuse the same arena slots.
+    ///
+    /// Tradeoff: short inputs get padded more (median chunk is ~16 tokens,
+    /// so padding to 256 is ~16x overhead). For SPLADE-Code 0.6B that's
+    /// fine — the activation memory at batch=8, seq=256 is ~600 MB which
+    /// fits comfortably and stays stable across all batches.
     ///
     /// Output handling matches the single-input `encode` path:
     /// - `sparse_vector` (pre-pooled, 2D): slice rows directly, threshold-filter
@@ -559,23 +570,33 @@ impl SpladeEncoder {
             .collect::<Result<_, _>>()?;
 
         let batch_size = encodings.len();
-        let max_seq_len = encodings
-            .iter()
-            .map(|e| e.get_ids().len())
-            .max()
-            .unwrap_or(0);
-        if max_seq_len == 0 {
-            return Ok(vec![Vec::new(); texts.len()]);
-        }
 
-        // Step 3: pad to [batch_size, max_seq_len]. Pad token is 0; mask is 0
-        // for padding positions so they don't influence attention.
+        // Step 3: pad to a CONSTANT max_seq_len (configurable via
+        // CQS_SPLADE_MAX_SEQ, default 256). Constant shape is critical for
+        // ORT BFC arena reuse — varying shapes leak GPU memory over time.
+        //
+        // Inputs longer than max_seq_len are truncated. The 256 default is
+        // larger than the cqs corpus p99 (180 tokens) so truncation is rare,
+        // but if a different corpus has many long chunks, bump CQS_SPLADE_MAX_SEQ.
+        let max_seq_len: usize = std::env::var("CQS_SPLADE_MAX_SEQ")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n: &usize| n >= 8)
+            .unwrap_or(256);
+
+        // Pad token is 0; mask is 0 for padding positions so they don't
+        // influence attention. Truncation: if a real input is longer than
+        // max_seq_len, we keep only the first max_seq_len tokens.
         let mut input_ids: Vec<i64> = Vec::with_capacity(batch_size * max_seq_len);
         let mut attention_mask: Vec<i64> = Vec::with_capacity(batch_size * max_seq_len);
+        let mut truncations = 0usize;
         for enc in &encodings {
             let ids = enc.get_ids();
             let mask = enc.get_attention_mask();
             let n = ids.len();
+            if n > max_seq_len {
+                truncations += 1;
+            }
             for i in 0..max_seq_len {
                 if i < n {
                     input_ids.push(ids[i] as i64);
@@ -585,6 +606,14 @@ impl SpladeEncoder {
                     attention_mask.push(0);
                 }
             }
+        }
+        if truncations > 0 {
+            tracing::debug!(
+                truncations,
+                batch_size,
+                max_seq_len,
+                "SPLADE batch had truncated inputs"
+            );
         }
 
         let ids_array =
@@ -698,7 +727,9 @@ impl SpladeEncoder {
                         .expect("shape derived from data length");
 
                     // Build a -inf mask for padded positions so they can't win max-pool.
-                    let real_seq_len = encodings[b].get_ids().len();
+                    // Clamp real_seq_len to max_seq_len in case the input was
+                    // truncated to fit the constant padding length.
+                    let real_seq_len = encodings[b].get_ids().len().min(max_seq_len);
                     let pooled: Vec<f32> = (0..vocab)
                         .map(|v| {
                             let mut max_val = f32::NEG_INFINITY;
