@@ -51,12 +51,35 @@ def parse_args():
     return args
 
 
+# Per-query timeout. SPLADE queries pay the full SpladeIndex build cost on
+# every invocation (load all sparse rows → HashMap → inverted index). With
+# SPLADE-Code 0.6B at threshold 1.6 (7.58M rows), this is ~45s per query.
+# Non-SPLADE queries settle around 7s. 300s leaves headroom for worst-case
+# queries without letting genuine hangs wedge the eval.
+CQS_TIMEOUT_SECS = int(os.environ.get("CQS_EVAL_TIMEOUT_SECS", "300"))
+
+
 def run_search(query, n=20, splade=False):
     """Run a cqs search and return list of result names."""
-    cmd = ["cqs", query, "--json", "-n", str(n)]
+    # Put all flags before `--`, then the query as a positional arg. Without
+    # the separator, a single-token query that looks like a subcommand name
+    # (e.g. "prepare_for_embedding") makes clap try to parse it as an unknown
+    # subcommand and the search never runs.
+    cmd = ["cqs", "--json", "-n", str(n)]
     if splade:
         cmd.append("--splade")
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+    cmd.extend(["--", query])
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=CQS_TIMEOUT_SECS,
+        )
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(f"[timeout {CQS_TIMEOUT_SECS}s] {query!r}\n")
+        return []
     try:
         data = json.loads(result.stdout)
         return [(r["name"], r.get("score", 0)) for r in data.get("results", [])]
