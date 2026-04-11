@@ -265,21 +265,19 @@ Ship it as soon as the criteria are satisfied. Re-evaluate whether to continue t
 
 2. **RNG cannot be reproduced bit-exact**. Same as above, mitigated by Strategy 2 fallback.
 
-3. **Global state translation intractable**. Decided in 0e. Worst case: the operator chooses a mapping that doesn't fit the upstream architecture and must refactor the Rust port partway through. Mitigation: revisit the 0e decision after module 1.4 completes, when enough Rust exists to test the assumption.
+3. **Global state translation intractable**. Decided in 0e. Worst case: the chosen mapping doesn't fit the upstream architecture and the Rust port has to refactor partway through. Mitigation: revisit the 0e decision after module 1.4 completes, when enough Rust exists to test the assumption.
 
 4. **Upstream changes invalidate the harness**. Mitigation: pin to a tagged release and treat as immutable. Do not chase upstream changes during Phase 1 or Phase 2.
 
-5. **Operator fatigue or interest drift**. The minimum publishable artifact (Phase 0 + three modules, see above) exists specifically to mitigate this. Even if the full port never finishes, the experiment publishes.
+5. **Single-operator confound**. The same human directs both trails. Operator priors, time of day, and recent context affect both trails. Acknowledged as a limitation; alternating between trails reduces but doesn't eliminate the bias. Independent replication would strengthen external validity.
 
-6. **Single-operator confound**. The same human directs both trails, which means operator skill, time of day, mood, and recent learning all affect both trails. This is acknowledged as a limitation of the experimental design. Alternating between trails session-to-session reduces but doesn't eliminate the bias. Future replication by independent operators would strengthen external validity.
+6. **Trail B advantage from cqs design lessons**. The operator built cqs and has strong priors about what code intelligence should provide. Trail B might benefit from those priors even without the tool. Mitigation: pre-commit to Trail B's tool list before Phase 1 and do not modify it during the experiment.
 
-7. **Trail B advantage from cqs design lessons**. The operator built cqs and has strong priors about what code intelligence should provide. Trail B might benefit from those priors (the operator knows what to look for even without the tool). Mitigation: pre-commit to Trail B's tool list before Phase 1 starts and do not modify it during the experiment.
+7. **Trail A disadvantage from cqs maintenance overhead**. Time spent debugging cqs itself counts as Trail A overhead even though it's not translation work. Mitigation: track cqs maintenance time separately so it can be excluded or included in the analysis as appropriate.
 
-8. **Trail A disadvantage from cqs maintenance overhead**. Time spent debugging cqs itself counts as Trail A overhead even though it's not "translation work." Mitigation: track cqs maintenance time separately so it can be excluded or included in the analysis as appropriate.
+8. **Token measurement noise**. Anthropic API token counts include cache reads, which behave differently across sessions. Mitigation: report both raw and cache-adjusted token counts. The cache-adjusted number is the better proxy for agent work done.
 
-9. **Token measurement noise**. Anthropic API token counts include cache reads, which behave differently across sessions. Mitigation: report both raw token counts and cache-adjusted token counts. The cache-adjusted number is the better proxy for "agent work done."
-
-10. **Project becomes more interesting than the experiment**. Easy failure mode: the operator starts caring about the port itself and stops tracking metrics rigorously. Mitigation: the spec mandates `metrics.tsv` updates per session. Sessions without metrics updates are not counted toward the experiment. This is the operator's main discipline-enforcement mechanism.
+9. **Metric tracking lapses**. The dual-trail comparison requires `metrics.tsv` updates after every module in both trails. If tracking lapses, the experiment loses its publishable result even though the port keeps progressing. Mitigation: sessions without a corresponding metrics row do not count toward the experiment, period. This is a hard rule, not a soft preference.
 
 ## Repository layout
 
