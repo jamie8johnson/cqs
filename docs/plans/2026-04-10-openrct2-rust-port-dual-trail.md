@@ -18,7 +18,7 @@ If the cqs trail wins on the pre-registered metrics, that validates the entire r
 
 **H2 (cqs trail consumes fewer agent tokens per validated module.)** Structural retrieval reduces the amount of file content the agent has to read into context to understand a function. Predicted effect: ≥20% token reduction per validated module.
 
-**H3 (cqs trail completes modules in fewer wall-clock hours.)** Faster context assembly + fewer regression cycles. Predicted effect: ≥25% wall-clock reduction.
+**H3 (cqs trail completes modules in less wall-clock time.)** Faster context assembly + fewer regression cycles. Predicted effect: ≥25% wall-clock reduction (measured per-module from "module started" to "module passes validation").
 
 **H0 (no significant difference.)** Both trails perform within ±10% on all three metrics. This would be a meaningful negative result — the structural advantages don't manifest at translation-task scale.
 
@@ -90,7 +90,7 @@ The choice between Strategy 1 and Strategy 2 is decided in Phase 0c. **Do not be
 
 Phase 0 deliverables are the go/no-go gate. Do not write any Rust until all five are complete.
 
-### 0a — Prior art check (1 day)
+### 0a — Prior art check
 
 Search GitHub, crates.io, GitLab, Codeberg, and the web for existing Rust ports of OpenRCT2 or RCT2. Document findings:
 - Any prior attempt at any completion level
@@ -100,7 +100,7 @@ Search GitHub, crates.io, GitLab, Codeberg, and the web for existing Rust ports 
 
 If a viable prior attempt exists at meaningful completion, **stop** and re-evaluate: join, fork, or proceed knowing the comparison's external validity is reduced.
 
-### 0b — Codebase recon (3–5 days)
+### 0b — Codebase recon
 
 - Pin upstream to the latest tagged release. Record the commit hash.
 - Build OpenRCT2 from the pinned commit, verify it runs with legal asset files.
@@ -114,20 +114,20 @@ If a viable prior attempt exists at meaningful completion, **stop** and re-evalu
   - Game action system reference
   - Multiplayer sync hash extraction location (used in 0c)
 
-### 0c — Validation harness verification (3–7 days)
+### 0c — Validation harness verification
 
 - **First** verify Strategy 1 (state-dump diff). Patch upstream to emit deterministic state dumps. Run two upstream instances from the same save for 10,000 ticks. Diff the dumps. **They must be byte-identical.** If yes, Strategy 1 is the validation strategy and Phase 1 can begin.
 - If Strategy 1 fails, identify why (float ordering? uninitialized memory? OS scheduler?). Document. Verify Strategy 2 (behavioral equivalence) by running two upstream instances and confirming the invariant thresholds hold. If yes, Phase 1 begins with Strategy 2 validation.
 - If Strategy 2 fails, escalate to Strategy 3 and re-evaluate whether the project should continue at all.
 
-### 0d — RNG verification (1–2 days)
+### 0d — RNG verification
 
 - Locate the upstream RNG. Document algorithm and seeding.
 - Implement the RNG in Rust (the smallest possible standalone test).
 - Run both with identical seeds for 10,000 iterations.
 - Sequences must match exactly (Strategy 1) or produce statistically equivalent distributions (Strategy 2).
 
-### 0e — Architectural decision: global state (1 day)
+### 0e — Architectural decision: global state
 
 OpenRCT2's heritage from x86 assembly means it's full of file-scope and global mutable state. Choose the Rust mapping based on the inventory from 0b:
 
@@ -139,7 +139,7 @@ Document the decision and rationale in `RECON.md`. Both trails must use the same
 
 ### Phase 0 deliverable
 
-`RECON.md` containing all five outputs, the validation strategy choice, the global state decision, the pinned commit hash, and a sign-off section the operator initials before Phase 1 begins. Estimated effort: **2–4 weeks** of evening work.
+`RECON.md` containing all five outputs, the validation strategy choice, the global state decision, the pinned commit hash, and a sign-off section the operator initials before Phase 1 begins.
 
 ## Phase 1 — Simulation core port
 
@@ -160,7 +160,7 @@ Modules 1.5 and 1.6 are dramatically larger than the others. Acknowledged up fro
 | 1.7 | Staff (mechanics, handymen, security, entertainers) | ~10% |
 | 1.8 | Park economics, ratings, loans, scenarios, win conditions | ~5% |
 
-Modules 1.5 and 1.6 together are ~60% of Phase 1's total effort. Each is itself a multi-week project with sub-milestones. The spec deliberately does not break them into sub-modules at this stage because the right decomposition depends on what 0b's recon reveals about upstream's actual structure.
+Modules 1.5 and 1.6 together are roughly 60% of Phase 1's total work. Each will likely require its own internal milestone breakdown. The spec deliberately does not break them into sub-modules at this stage because the right decomposition depends on what 0b's recon reveals about upstream's actual structure.
 
 ### Per-module workflow (both trails)
 
@@ -186,9 +186,9 @@ A module is "done" when:
 
 ## Phase 2 — Rendering, input, audio, UI
 
-**Phase 2 has effort parity with Phase 1.** Do not scope it down to "bolt rendering on top of the simulation." The rendering, asset loading, audio, and UI together represent another 12–18 months of evening work for one operator plus agent.
+**Phase 2 has effort parity with Phase 1.** Do not scope it down to "bolt rendering on top of the simulation." Rendering, asset loading, audio, and UI together represent a body of work comparable to Phase 1 in scope.
 
-Sub-components (each is itself a multi-week project):
+Sub-components (each is its own substantial sub-project):
 
 - **DAT format asset loader**: Port from upstream. The DAT format is a 25-year-old binary asset bundle that took the OpenRCT2 community years to fully reverse-engineer. The port reuses upstream's loader logic, not the original Sawyer asset format work.
 - **Sprite renderer (wgpu)**: Match upstream's software renderer pixel-for-pixel where possible; document any GPU-specific divergence.
@@ -212,7 +212,7 @@ impl Simulation {
 }
 ```
 
-This is a refactor, not a rewrite. The validation harness must continue to pass after the refactor with no behavioral change. Estimated effort: **2–6 weeks**.
+This is a refactor, not a rewrite. The validation harness must continue to pass after the refactor with no behavioral change.
 
 ## Phase 4 — Optional follow-ups
 
@@ -225,58 +225,39 @@ Each is a separate project gated on Phase 3 completion, with its own spec when r
 
 None of these are part of the core experiment. They exist to make the spec's "this is worth doing" argument bigger, and to attract contributors after publication.
 
-## Effort estimate
+## Phase ordering and exit criteria
 
-The author of this spec is a frontier LLM and is bad at predicting its own throughput. Earlier drafts of this estimate were off by 1–2 orders of magnitude in the slow direction, anchored on traditional team-of-humans timelines. **A core deliverable of the dual-trail experiment is a calibrated number for how wrong these estimates are.** Track the actual time spent per module and treat the spec's numbers as priors to update, not commitments.
+The experiment is gated on deliverables, not durations. A phase is "done" when its exit criteria are satisfied, not when a time budget elapses.
 
-The estimates below are agent execution time. They do not include arbitrary calendar padding for review loops or session boundaries. The session is left running. The agent just does the work.
+- **Phase 0**: All five 0a–0e deliverables complete. Validation strategy verified (Strategy 1, 2, or 3 chosen and proven to work on a real diff). Gate to Phase 1.
+- **Phase 1**: All eight modules pass validation in both trails. The experiment can publish before Phase 1 is complete — see "minimum publishable artifact" below.
+- **Phase 2**: Playable scenario indistinguishable from upstream by an experienced player.
+- **Phase 3**: `rct-sim` crate compiles cleanly, validation harness still passes after the refactor.
+- **Phase 4**: Per-project specs.
 
-| Phase | Estimate | Gate criterion |
-|---|---|---|
-| Phase 0 (recon + harness verification) | hours | All five 0a–0e deliverables complete; validation strategy verified |
-| Phase 1.1 (foundational types) | ≤1 hour | Types, RNG, fixed-point math compile and pass tests |
-| Phase 1.2–1.4 (map, one stationary ride, one walking guest) | a few hours | Minimum viable port runs and validates |
-| Phase 1.5 (vehicles & tracked rides) | ~1 day | All ride types pass validation |
-| Phase 1.6 (full guest AI) | ~1 day | Guest needs, decision making, pathfinding pass validation |
-| Phase 1.7–1.8 (staff, economics) | hours | Staff AI and park economics pass validation |
-| **Phase 1 total** | **3–7 days** | All eight modules pass validation in both trails |
-| Phase 2 (rendering, audio, UI) | 1–2 weeks | Playable scenario indistinguishable from upstream |
-| Phase 3 (library extraction refactor) | hours | `rct-sim` compiles, validation passes |
-| **Total to Phase 3** | **2–3 weeks** | Phase 1 + Phase 2 + Phase 3 done in both trails |
+## Calibration as a deliverable
 
-**The experiment publishes after three modules in both trails.** That's Phase 0 + modules 1.1–1.3, which is **1–3 days** of work. That is the actual primary deliverable. Phases 2+ exist to make the substrate larger and more interesting, and to give the dual-trail metrics more sample size before the writeup ships.
+The dual-trail experiment produces real per-module measurements: tokens consumed, agent invocations, validation iterations, regression bugs, lines of Rust generated. These measurements are the primary outputs of the experiment, and they're also the only credible answer to "how long does agent-directed translation actually take."
 
-### Why the v1 estimate (24–48 months) was wrong
+Treat the first three modules as the calibration run. Whatever throughput numbers come out of those modules are the basis for any future estimate of the work remaining. Do not write estimates into this spec; record measured numbers in `metrics.tsv` and update the writeup when the data exists.
 
-OpenRCT2 → Rust translation is mechanical. The pinned upstream commit is the spec; the agent reads C++, writes Rust, the harness diffs the output, the agent fixes divergence. Each module is hundreds to a few thousand lines. Generation is bounded by the model's tokens-per-second, not by anything that takes weeks.
+## Minimum publishable artifact
 
-The historical OpenRCT2 effort (12+ years of community work) is not a precedent. That work was reverse-engineering hand-written x86 assembly into readable C++ *without a spec*. This work is faithful translation between two memory-managed systems languages *with the C++ as the spec*. Different problem class. The dual-trail experiment will quantify how different.
+The experiment publishes when these are all true:
 
-### What could make these numbers wrong (slower)
+- Phase 0 complete (validation strategy verified)
+- Phase 1 modules 1.1–1.3 complete in both trails
+- `metrics.tsv` populated with per-module numbers for both trails
+- Writeup drafted as a technical report or blog post
 
-- The validation harness cannot be made deterministic (Strategy 1 fails). Strategy 2 is weaker; every regression takes longer to isolate.
-- The cqs MCP integration breaks on the upstream codebase shape (cross-language, no Cargo.toml at the C++ root). Trail A loses its structural advantages until cqs is patched. Patching time counts against Trail A.
-- Modules 1.5 and 1.6 hide undocumented behavior in the original assembly that's faithfully reproduced in upstream C++ but not explained anywhere readable. Each undocumented edge case adds a debug cycle.
-- The dual-trail metric tracking adds friction. The spec mandates `metrics.tsv` updates per module — if the operator stops tracking, the experiment loses its publishable result even though the port keeps progressing.
-
-### What could make them wrong (faster)
-
-- Validation harness works first try. Iteration runs at full agent speed.
-- Many modules turn out to be smaller than anticipated because the upstream complexity is in UI and asset handling, not the simulation core.
-- Later modules go faster, not slower, as the agent (and the operator) accumulate context about the upstream codebase shape.
-
-## Scope-down: minimum publishable artifact
-
-**Minimum scope**: Phase 0 complete, Phase 1 modules 1.1–1.3 complete in both trails, `metrics.tsv` populated, writeup published as a technical report or blog post.
-
-This is **1–3 days of work** and produces:
+The publishable result contains:
 
 - A working subset of the Rust port (foundational types, map, one stationary ride)
 - A pre-registered head-to-head comparison of cqs-augmented vs unaugmented agent-directed translation
-- Concrete per-module numbers on tokens, agent invocations, validation iterations, regression bugs
-- A research finding on whether code intelligence augmentation measurably helps agents on a sustained, real-world translation task — with the smallest sample size that still produces a defensible result
+- Per-module numbers on tokens, agent invocations, validation iterations, regression bugs
+- A research finding on whether code intelligence augmentation measurably helps agents on a sustained, real-world translation task
 
-Ship it. Re-evaluate whether to continue to Phase 1.4+ based on what the metrics show and whether the experiment is still teaching new things.
+Ship it as soon as the criteria are satisfied. Re-evaluate whether to continue to Phase 1.4+ based on what the metrics show.
 
 ## Risks
 
@@ -288,7 +269,7 @@ Ship it. Re-evaluate whether to continue to Phase 1.4+ based on what the metrics
 
 4. **Upstream changes invalidate the harness**. Mitigation: pin to a tagged release and treat as immutable. Do not chase upstream changes during Phase 1 or Phase 2.
 
-5. **Operator fatigue over multi-year timeline**. The minimum publishable artifact (3–6 months, three modules) exists specifically to mitigate this. Even if the full port never finishes, the experiment publishes.
+5. **Operator fatigue or interest drift**. The minimum publishable artifact (Phase 0 + three modules, see above) exists specifically to mitigate this. Even if the full port never finishes, the experiment publishes.
 
 6. **Single-operator confound**. The same human directs both trails, which means operator skill, time of day, mood, and recent learning all affect both trails. This is acknowledged as a limitation of the experimental design. Alternating between trails session-to-session reduces but doesn't eliminate the bias. Future replication by independent operators would strengthen external validity.
 
@@ -331,4 +312,4 @@ mkdir -p ~/openrct2-rust-port && cd ~/openrct2-rust-port && \
   date >> RECON-0a.md
 ```
 
-Then web search for existing Rust ports of OpenRCT2 or RCT2. Document findings in `RECON-0a.md`. Estimated effort: 1 day. **Do not proceed to 0b until 0a is complete and the findings have been reviewed.**
+Then web search for existing Rust ports of OpenRCT2 or RCT2. Document findings in `RECON-0a.md`. **Do not proceed to 0b until 0a is complete and the findings have been reviewed.**
