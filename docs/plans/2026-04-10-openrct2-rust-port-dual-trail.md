@@ -230,7 +230,7 @@ None of these are part of the core experiment. They exist to make the spec's "th
 The experiment is gated on deliverables, not durations. A phase is "done" when its exit criteria are satisfied, not when a time budget elapses.
 
 - **Phase 0**: All five 0a–0e deliverables complete. Validation strategy verified (Strategy 1, 2, or 3 chosen and proven to work on a real diff). Gate to Phase 1.
-- **Phase 1**: All eight modules pass validation in both trails. The experiment can publish before Phase 1 is complete — see "minimum publishable artifact" below.
+- **Phase 1**: All eight modules pass validation in both trails. An interim writeup based on the first three modules is a valid milestone (see "First publishable milestone" below) but is not a substitute for completing Phase 1.
 - **Phase 2**: Playable scenario indistinguishable from upstream by an experienced player.
 - **Phase 3**: `rct-sim` crate compiles cleanly, validation harness still passes after the refactor.
 - **Phase 4**: Per-project specs.
@@ -241,23 +241,16 @@ The dual-trail experiment produces real per-module measurements: tokens consumed
 
 Treat the first three modules as the calibration run. Whatever throughput numbers come out of those modules are the basis for any future estimate of the work remaining. Do not write estimates into this spec; record measured numbers in `metrics.tsv` and update the writeup when the data exists.
 
-## Minimum publishable artifact
+## First publishable milestone
 
-The experiment publishes when these are all true:
-
-- Phase 0 complete (validation strategy verified)
-- Phase 1 modules 1.1–1.3 complete in both trails
-- `metrics.tsv` populated with per-module numbers for both trails
-- Writeup drafted as a technical report or blog post
-
-The publishable result contains:
+The dual-trail comparison is meaningful as soon as three modules are complete in both trails. After Phase 0 + modules 1.1–1.3, the operator can publish an interim writeup containing:
 
 - A working subset of the Rust port (foundational types, map, one stationary ride)
 - A pre-registered head-to-head comparison of cqs-augmented vs unaugmented agent-directed translation
 - Per-module numbers on tokens, agent invocations, validation iterations, regression bugs
-- A research finding on whether code intelligence augmentation measurably helps agents on a sustained, real-world translation task
+- The first calibration-grade evidence on whether code intelligence augmentation measurably helps agents on a sustained, real-world translation task
 
-Ship it as soon as the criteria are satisfied. Re-evaluate whether to continue to Phase 1.4+ based on what the metrics show.
+This is a milestone, not a stopping point. The full Phase 1, Phase 2, and Phase 3 are still the deliverables. The interim writeup exists to start gathering external feedback on the methodology while the rest of the work continues.
 
 ## Risks
 
