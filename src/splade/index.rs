@@ -3,12 +3,60 @@
 //! Loaded from SQLite at startup, queried during search.
 //! Supports filtered search with the same chunk_type/language predicate
 //! used by HNSW traversal-time filtering.
+//!
+//! ## Persistence
+//!
+//! The index also has an on-disk format mirroring the HNSW persistence
+//! pattern. Build-from-SQLite is slow (7.58M postings for SPLADE-Code 0.6B
+//! = ~45s per CLI invocation), so we serialize the built index alongside
+//! the HNSW files and load it in a single read on subsequent invocations.
+//! Invalidation is driven by a `splade_generation` counter in the `metadata`
+//! table, bumped on every write to `sparse_vectors`; the generation is
+//! embedded in the file header so loads from a stale file are detected
+//! and fall back to rebuild-from-SQLite.
 
 use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::path::Path;
 
 use crate::index::IndexResult;
 
 use super::SparseVector;
+
+/// File magic for the SPLADE persisted index.
+const SPLADE_INDEX_MAGIC: &[u8; 4] = b"SPDX";
+
+/// Format version. Bump when the on-disk layout changes.
+const SPLADE_INDEX_VERSION: u32 = 1;
+
+/// Canonical filename for the persisted SPLADE index inside the project's
+/// `.cqs/` directory. Lives alongside the HNSW files so the whole index
+/// dir moves as a unit.
+pub const SPLADE_INDEX_FILENAME: &str = "splade.index.bin";
+
+/// Fixed header size in bytes: magic(4) + version(4) + generation(8)
+/// + chunk_count(8) + token_count(8) + body_checksum(32) = 64 bytes.
+const SPLADE_INDEX_HEADER_LEN: usize = 64;
+
+/// Errors specific to SpladeIndex persistence.
+#[derive(thiserror::Error, Debug)]
+pub enum SpladeIndexPersistError {
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("SPLADE index file has wrong magic (not a SPLADE index)")]
+    BadMagic,
+    #[error("SPLADE index file version {0} not supported by this build (expected {1})")]
+    UnsupportedVersion(u32, u32),
+    #[error(
+        "SPLADE index generation {disk} does not match store generation {store} — \
+         sparse_vectors have been modified since the index was persisted"
+    )]
+    GenerationMismatch { disk: u64, store: u64 },
+    #[error("SPLADE index body checksum mismatch — file is corrupt")]
+    ChecksumMismatch,
+    #[error("SPLADE index file truncated — expected more data at offset {0}")]
+    Truncated(u64),
+}
 
 /// In-memory inverted index for sparse vector search.
 ///
@@ -122,6 +170,377 @@ impl SpladeIndex {
     pub fn unique_tokens(&self) -> usize {
         self.postings.len()
     }
+
+    /// Serialize the index to `path` with the given generation counter.
+    ///
+    /// Writes atomically via a temp file + rename so a crash mid-save leaves
+    /// the old file untouched. The file layout is:
+    ///
+    /// ```text
+    /// Header (64 bytes):
+    ///   [0..4]   magic "SPDX"
+    ///   [4..8]   format version (u32 LE)
+    ///   [8..16]  generation (u64 LE)
+    ///   [16..24] chunk count (u64 LE)
+    ///   [24..32] unique token count (u64 LE)
+    ///   [32..64] blake3-256 of body
+    ///
+    /// Body:
+    ///   id_map section:
+    ///     for each chunk in insertion order:
+    ///       u32 LE  id length (bytes)
+    ///       N bytes id (utf-8, not null-terminated)
+    ///   postings section:
+    ///     for each unique token (HashMap iteration order — non-deterministic
+    ///     across builds; the body checksum still matches because we hash
+    ///     what we actually wrote):
+    ///       u32 LE  token_id
+    ///       u32 LE  posting count
+    ///       for each posting (count times):
+    ///         u32 LE  chunk_idx
+    ///         f32 LE  weight
+    /// ```
+    ///
+    /// The body is built in memory (~60-100MB for SPLADE-Code 0.6B on a
+    /// cqs-sized project) so we can hash and write in one pass. That's the
+    /// same memory footprint we already hold for the in-memory index itself,
+    /// so no new budget is introduced.
+    pub fn save(&self, path: &Path, generation: u64) -> Result<(), SpladeIndexPersistError> {
+        let _span = tracing::info_span!(
+            "splade_index_save",
+            path = %path.display(),
+            generation,
+            chunks = self.id_map.len(),
+            tokens = self.postings.len(),
+        )
+        .entered();
+
+        // Build the body into a Vec<u8> so we can hash it in one pass and
+        // write it without an extra seek-back step on the real file.
+        let mut body: Vec<u8> = Vec::with_capacity(Self::estimate_body_size(
+            self.id_map.len(),
+            self.postings.values().map(|v| v.len()).sum::<usize>(),
+        ));
+
+        // id_map
+        for id in &self.id_map {
+            let len_u32: u32 = id.len().try_into().map_err(|_| {
+                SpladeIndexPersistError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("chunk id exceeds u32::MAX bytes: {}", id.len()),
+                ))
+            })?;
+            body.extend_from_slice(&len_u32.to_le_bytes());
+            body.extend_from_slice(id.as_bytes());
+        }
+
+        // postings
+        for (&token_id, posting_list) in &self.postings {
+            body.extend_from_slice(&token_id.to_le_bytes());
+            let count_u32: u32 = posting_list.len().try_into().map_err(|_| {
+                SpladeIndexPersistError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "posting list for token {} exceeds u32::MAX entries: {}",
+                        token_id,
+                        posting_list.len()
+                    ),
+                ))
+            })?;
+            body.extend_from_slice(&count_u32.to_le_bytes());
+            for &(chunk_idx, weight) in posting_list {
+                let idx_u32: u32 = chunk_idx.try_into().map_err(|_| {
+                    SpladeIndexPersistError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("chunk_idx exceeds u32::MAX: {}", chunk_idx),
+                    ))
+                })?;
+                body.extend_from_slice(&idx_u32.to_le_bytes());
+                body.extend_from_slice(&weight.to_le_bytes());
+            }
+        }
+
+        // Hash the body.
+        let body_hash = blake3::hash(&body);
+
+        // Build the header.
+        let mut header = [0u8; SPLADE_INDEX_HEADER_LEN];
+        header[0..4].copy_from_slice(SPLADE_INDEX_MAGIC);
+        header[4..8].copy_from_slice(&SPLADE_INDEX_VERSION.to_le_bytes());
+        header[8..16].copy_from_slice(&generation.to_le_bytes());
+        header[16..24].copy_from_slice(&(self.id_map.len() as u64).to_le_bytes());
+        header[24..32].copy_from_slice(&(self.postings.len() as u64).to_le_bytes());
+        header[32..64].copy_from_slice(body_hash.as_bytes());
+
+        // Atomic write: write to a same-directory temp file, fsync, rename.
+        let parent = path.parent().ok_or_else(|| {
+            SpladeIndexPersistError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("SPLADE index path has no parent: {}", path.display()),
+            ))
+        })?;
+        std::fs::create_dir_all(parent)?;
+
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("splade.index");
+        // Randomized suffix so two concurrent saves don't clobber each other's
+        // temp file. Same pattern as the HNSW save path.
+        let suffix = crate::temp_suffix();
+        let tmp_path = parent.join(format!(".{}.{:016x}.tmp", file_name, suffix));
+
+        {
+            let file = {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .mode(0o600)
+                        .open(&tmp_path)?
+                }
+                #[cfg(not(unix))]
+                {
+                    std::fs::File::create(&tmp_path)?
+                }
+            };
+            let mut writer = std::io::BufWriter::new(file);
+            writer.write_all(&header)?;
+            writer.write_all(&body)?;
+            writer.flush()?;
+            writer.get_ref().sync_all()?;
+        }
+
+        // Atomic rename. On Windows (not our target but keep it correct) the
+        // rename may fail if the destination exists; remove then rename.
+        #[cfg(windows)]
+        {
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
+        }
+        std::fs::rename(&tmp_path, path)?;
+
+        tracing::info!(
+            path = %path.display(),
+            bytes = SPLADE_INDEX_HEADER_LEN + body.len(),
+            "SPLADE index persisted"
+        );
+        Ok(())
+    }
+
+    /// Attempt to load a persisted index from `path`.
+    ///
+    /// If the file is missing the function returns `Ok(None)`. If the file
+    /// exists but is unreadable, corrupt, or stale relative to
+    /// `expected_generation`, returns an `Err` describing the reason; the
+    /// caller is expected to fall back to rebuild-from-SQLite and re-persist.
+    pub fn load(
+        path: &Path,
+        expected_generation: u64,
+    ) -> Result<Option<Self>, SpladeIndexPersistError> {
+        let _span = tracing::info_span!(
+            "splade_index_load",
+            path = %path.display(),
+            expected_generation,
+        )
+        .entered();
+
+        let file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!("SPLADE index file absent, will rebuild");
+                return Ok(None);
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let mut reader = std::io::BufReader::new(file);
+
+        // Header.
+        let mut header = [0u8; SPLADE_INDEX_HEADER_LEN];
+        reader.read_exact(&mut header).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                SpladeIndexPersistError::Truncated(0)
+            } else {
+                SpladeIndexPersistError::Io(e)
+            }
+        })?;
+
+        if &header[0..4] != SPLADE_INDEX_MAGIC {
+            return Err(SpladeIndexPersistError::BadMagic);
+        }
+        let version = u32::from_le_bytes(header[4..8].try_into().unwrap());
+        if version != SPLADE_INDEX_VERSION {
+            return Err(SpladeIndexPersistError::UnsupportedVersion(
+                version,
+                SPLADE_INDEX_VERSION,
+            ));
+        }
+        let disk_generation = u64::from_le_bytes(header[8..16].try_into().unwrap());
+        if disk_generation != expected_generation {
+            return Err(SpladeIndexPersistError::GenerationMismatch {
+                disk: disk_generation,
+                store: expected_generation,
+            });
+        }
+        let chunk_count = u64::from_le_bytes(header[16..24].try_into().unwrap());
+        let token_count = u64::from_le_bytes(header[24..32].try_into().unwrap());
+        let stored_hash: [u8; 32] = header[32..64].try_into().unwrap();
+
+        // Read the whole body. At ~60-100MB this is fine for an interactive
+        // CLI — HNSW loads are a similar order of magnitude.
+        let mut body = Vec::new();
+        reader.read_to_end(&mut body)?;
+
+        // Verify the body hash before trusting any of the parsed contents.
+        let actual_hash = blake3::hash(&body);
+        if actual_hash.as_bytes() != &stored_hash {
+            return Err(SpladeIndexPersistError::ChecksumMismatch);
+        }
+
+        // Parse body.
+        let chunk_count_usize: usize = chunk_count.try_into().map_err(|_| {
+            SpladeIndexPersistError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("chunk_count {} does not fit in usize", chunk_count),
+            ))
+        })?;
+        let mut id_map: Vec<String> = Vec::with_capacity(chunk_count_usize);
+        let mut cursor: usize = 0;
+
+        fn need(body: &[u8], cursor: usize, n: usize) -> Result<(), SpladeIndexPersistError> {
+            if cursor.saturating_add(n) > body.len() {
+                Err(SpladeIndexPersistError::Truncated(cursor as u64))
+            } else {
+                Ok(())
+            }
+        }
+
+        for _ in 0..chunk_count_usize {
+            need(&body, cursor, 4)?;
+            let len = u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()) as usize;
+            cursor += 4;
+            need(&body, cursor, len)?;
+            let id = std::str::from_utf8(&body[cursor..cursor + len])
+                .map_err(|e| {
+                    SpladeIndexPersistError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("chunk id is not valid utf-8: {}", e),
+                    ))
+                })?
+                .to_string();
+            cursor += len;
+            id_map.push(id);
+        }
+
+        let token_count_usize: usize = token_count.try_into().map_err(|_| {
+            SpladeIndexPersistError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("token_count {} does not fit in usize", token_count),
+            ))
+        })?;
+        let mut postings: HashMap<u32, Vec<(usize, f32)>> =
+            HashMap::with_capacity(token_count_usize);
+
+        for _ in 0..token_count_usize {
+            need(&body, cursor, 8)?;
+            let token_id = u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap());
+            cursor += 4;
+            let posting_count =
+                u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()) as usize;
+            cursor += 4;
+            need(&body, cursor, posting_count.saturating_mul(8))?;
+            let mut postings_for_token: Vec<(usize, f32)> = Vec::with_capacity(posting_count);
+            for _ in 0..posting_count {
+                let chunk_idx =
+                    u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()) as usize;
+                cursor += 4;
+                let weight = f32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap());
+                cursor += 4;
+                if chunk_idx >= id_map.len() {
+                    return Err(SpladeIndexPersistError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "posting chunk_idx {} out of bounds for id_map len {}",
+                            chunk_idx,
+                            id_map.len()
+                        ),
+                    )));
+                }
+                postings_for_token.push((chunk_idx, weight));
+            }
+            postings.insert(token_id, postings_for_token);
+        }
+
+        if cursor != body.len() {
+            tracing::warn!(
+                parsed = cursor,
+                body_len = body.len(),
+                "SPLADE index body has trailing bytes after parse — tolerating but format may be wrong"
+            );
+        }
+
+        tracing::info!(
+            chunks = id_map.len(),
+            tokens = postings.len(),
+            "SPLADE index loaded from disk"
+        );
+        Ok(Some(Self { postings, id_map }))
+    }
+
+    /// Convenience: load from disk if present and matching; otherwise build
+    /// from the provided SQLite rows and persist. Returns the index and a
+    /// flag indicating whether a rebuild happened.
+    ///
+    /// The caller is responsible for reading `expected_generation` from the
+    /// store and passing the path next to the rest of the index files.
+    pub fn load_or_build(
+        path: &Path,
+        expected_generation: u64,
+        rows: impl FnOnce() -> Vec<(String, SparseVector)>,
+    ) -> (Self, bool) {
+        match Self::load(path, expected_generation) {
+            Ok(Some(idx)) => return (idx, false),
+            Ok(None) => {
+                tracing::debug!("SPLADE index not on disk, building from store");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "SPLADE index on-disk load failed, rebuilding from store"
+                );
+            }
+        }
+        let vectors = rows();
+        let idx = Self::build(vectors);
+        // Best-effort persist; failure is logged and tolerated so search can
+        // still proceed on the freshly-built in-memory index. Skip if the
+        // index is empty — persisting an empty index creates a stub file
+        // that gets reloaded as "no vectors" on next invocation, which is
+        // correct but clutters the directory.
+        if !idx.is_empty() {
+            if let Err(e) = idx.save(path, expected_generation) {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "SPLADE index persist failed, continuing with in-memory index only"
+                );
+            }
+        }
+        (idx, true)
+    }
+
+    /// Rough upper bound on the serialized body size so `save()` can allocate
+    /// once. 4 bytes per chunk header + average id length (~60) +
+    /// 8 bytes per posting + 8 bytes per token header.
+    fn estimate_body_size(n_chunks: usize, n_postings: usize) -> usize {
+        let id_estimate = n_chunks * (4 + 64);
+        let postings_estimate = n_postings * 8 + n_chunks * 8;
+        id_estimate + postings_estimate
+    }
 }
 
 #[cfg(test)]
@@ -201,5 +620,134 @@ mod tests {
         let index = make_test_index();
         let results = index.search(&vec![(1, 1.0), (2, 1.0), (3, 1.0)], 2);
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_persist_roundtrip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("splade.index.bin");
+        let original = make_test_index();
+
+        original.save(&path, 42).unwrap();
+        let loaded = SpladeIndex::load(&path, 42).unwrap().unwrap();
+
+        // Structural equivalence: id_map order + postings content.
+        assert_eq!(loaded.id_map, original.id_map);
+        assert_eq!(loaded.postings.len(), original.postings.len());
+        for (token_id, postings) in &original.postings {
+            let loaded_postings = loaded.postings.get(token_id).unwrap();
+            assert_eq!(loaded_postings.len(), postings.len());
+            // Each posting list is order-preserved within save/load so we can
+            // compare element-wise.
+            for (a, b) in loaded_postings.iter().zip(postings.iter()) {
+                assert_eq!(a.0, b.0);
+                assert!((a.1 - b.1).abs() < f32::EPSILON);
+            }
+        }
+
+        // Query parity: running the same search on loaded vs original yields
+        // identical results in both order and score.
+        let q = vec![(1u32, 1.0f32), (2, 0.5)];
+        let r_orig = original.search(&q, 10);
+        let r_load = loaded.search(&q, 10);
+        assert_eq!(r_orig.len(), r_load.len());
+        for (a, b) in r_orig.iter().zip(r_load.iter()) {
+            assert_eq!(a.id, b.id);
+            assert!((a.score - b.score).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn test_persist_generation_mismatch_rejected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("splade.index.bin");
+        let original = make_test_index();
+        original.save(&path, 7).unwrap();
+
+        match SpladeIndex::load(&path, 8) {
+            Err(SpladeIndexPersistError::GenerationMismatch { disk, store }) => {
+                assert_eq!(disk, 7);
+                assert_eq!(store, 8);
+            }
+            Ok(_) => panic!("expected GenerationMismatch, got Ok"),
+            Err(e) => panic!("expected GenerationMismatch, got {}", e),
+        }
+
+        // And a matching generation still loads.
+        let reloaded = SpladeIndex::load(&path, 7).unwrap();
+        assert!(reloaded.is_some());
+    }
+
+    #[test]
+    fn test_persist_bad_magic_rejected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("splade.index.bin");
+        std::fs::write(&path, vec![0u8; SPLADE_INDEX_HEADER_LEN + 16]).unwrap();
+
+        match SpladeIndex::load(&path, 0) {
+            Err(SpladeIndexPersistError::BadMagic) => {}
+            Ok(_) => panic!("expected BadMagic, got Ok"),
+            Err(e) => panic!("expected BadMagic, got {}", e),
+        }
+    }
+
+    #[test]
+    fn test_persist_corrupt_body_rejected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("splade.index.bin");
+        let original = make_test_index();
+        original.save(&path, 1).unwrap();
+
+        // Flip a byte in the body (past the header).
+        let mut bytes = std::fs::read(&path).unwrap();
+        let target = SPLADE_INDEX_HEADER_LEN + 4;
+        bytes[target] ^= 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+
+        match SpladeIndex::load(&path, 1) {
+            Err(SpladeIndexPersistError::ChecksumMismatch) => {}
+            Ok(_) => panic!("expected ChecksumMismatch, got Ok"),
+            Err(e) => panic!("expected ChecksumMismatch, got {}", e),
+        }
+    }
+
+    #[test]
+    fn test_persist_missing_file_returns_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("does-not-exist.bin");
+        let result = SpladeIndex::load(&path, 0).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_load_or_build_persists_on_first_call() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("splade.index.bin");
+
+        // First call: no file exists, should build and persist.
+        let (_idx1, rebuilt1) = SpladeIndex::load_or_build(&path, 5, || {
+            vec![
+                ("chunk_a".to_string(), vec![(1u32, 0.5f32)]),
+                ("chunk_b".to_string(), vec![(1, 0.3), (2, 0.9)]),
+            ]
+        });
+        assert!(rebuilt1, "first call should rebuild");
+        assert!(path.exists(), "first call should persist the file");
+
+        // Second call: file exists with matching generation, should load.
+        let (idx2, rebuilt2) = SpladeIndex::load_or_build(&path, 5, || {
+            panic!("closure should not run when the file is reusable")
+        });
+        assert!(!rebuilt2, "second call should load from disk");
+        assert_eq!(idx2.len(), 2);
+
+        // Third call with bumped generation: should rebuild from the closure.
+        let rebuilt_called = std::sync::atomic::AtomicBool::new(false);
+        let (_idx3, rebuilt3) = SpladeIndex::load_or_build(&path, 6, || {
+            rebuilt_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            vec![("chunk_c".to_string(), vec![(3u32, 0.7f32)])]
+        });
+        assert!(rebuilt3);
+        assert!(rebuilt_called.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

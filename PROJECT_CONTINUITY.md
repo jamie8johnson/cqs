@@ -2,6 +2,45 @@
 
 ## Right Now
 
+**SPLADE-Code 0.6B re-eval run to completion with persisted SpladeIndex. Flag-driven SPLADE is −0.6pp R@1 net — selective routing is now mandatory. (2026-04-11 14:15 CDT)**
+
+### SPLADE-Code 0.6B re-eval result (2026-04-11, 165q v2 eval, threshold 1.6)
+
+| Config | R@1 | R@5 | R@20 | N |
+|--------|-----|-----|------|---|
+| BGE-large | 42.4% | 67.9% | 85.5% | 165 |
+| BGE-large + SPLADE-Code 0.6B | 41.8% | 66.1% | 86.1% | 165 |
+
+**Flag-driven SPLADE on every query: −0.6pp R@1 net, reverses the 2026-04-09 +1.2pp headline.**
+
+Per-category deltas (same-corpus baseline vs +SPLADE):
+- **cross_language +10pp** (30 → 40%, N=10) — only category where SPLADE pays off, same direction as prior +20pp
+- conceptual_search −3.7pp (22.2 → 18.5%, N=27)
+- multi_step −4.6pp (36.4 → 31.8%, N=22)
+- identifier_lookup, behavioral, negation, structural, type_filtered: unchanged
+
+R@5 damage is bigger: cross_language +20pp, conceptual −7.4pp, type_filtered −6.2pp, negation −5.6pp. SPLADE displaces good dense hits at positions 2-5 on categories where lexical expansion isn't the missing signal.
+
+**Conclusion**: Selective SPLADE routing (roadmap CPU lane) is now required, not optional. Route `CrossLanguage` → `DenseWithSplade`, leave every other category on dense. Predicted outcome: cross_language +10pp stays, conceptual/multi_step noise disappears, total 41.8% → ~43.0% (net **+1.2pp** vs always-on, **+0.6pp** vs baseline).
+
+Research writeup: `~/training-data/research/sparse.md` § SPLADE-Code 0.6B Eval Re-run (FLAG-DRIVEN IS NET LOSS).
+
+### Session unblock chain (three layered blockers removed)
+
+1. **`PRAGMA integrity_check(1)` on every `Store::open`** — 85s per CLI invocation on 1.1 GB DB over WSL `/mnt/c`. Every `cqs search` paid it, eval harness was unusable. Shipped in #893: skip on read-only opens, quick_check on write opens. **86s → 6.9s per query.**
+2. **`run_ablation.py` passed query as first positional** — single-token queries parsed as unknown subcommands. Shipped in #894: `cqs --json -n 20 -- <query>` form, `CQS_EVAL_TIMEOUT_SECS` env override, per-query timeout handling.
+3. **SpladeIndex rebuilt from SQLite on every CLI invocation** — ~45s at 7.58M rows. Shipped in this PR: persist-alongside-HNSW pattern with generation counter and blake3 body checksum. 46.8s cold → 9.7s warm per SPLADE query.
+
+Combined: full 2×165 ablation matrix now runs in ~55 min instead of the 4+ h the naive implementation would have taken.
+
+### Session PRs
+- #893 fix: integrity check skip on read-only opens
+- #894 fix: eval harness query separator + timeout handling
+- This PR: SPLADE index on-disk persistence (new format, generation counter, eager + lazy persist)
+- #895 or similar (next): OpenRCT2 spec rewrite (pending)
+
+### Old session log (2026-04-10, preserved for context)
+
 **SPLADE-Code 0.6B encoding cleared. v8 reindex bulk-inserting. Eval is the next concrete step. (2026-04-10 22:15 CDT)**
 
 ### Total this session: 14 PRs merged to main
