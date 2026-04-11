@@ -521,6 +521,45 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                             println!("  SPLADE: {} chunks failed", failed);
                         }
                     }
+                    // Persist the SpladeIndex to disk so query-time SPLADE
+                    // doesn't have to rebuild it from SQLite on every CLI
+                    // invocation. `sparse_vecs` already holds every chunk
+                    // we just encoded, so building the in-memory index here
+                    // costs only the HashMap insertion loop — no reload from
+                    // SQLite. The first search after reindex then skips the
+                    // ~45s load step.
+                    //
+                    // Failure is warned, not fatal — the query-time rebuild
+                    // path still works; users just pay the rebuild cost on
+                    // first query until the persist is rerun.
+                    if !sparse_vecs.is_empty() {
+                        let generation = store.splade_generation().unwrap_or(0);
+                        let splade_path = cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);
+                        // std::mem::take avoids cloning the 60-100MB of
+                        // sparse vectors. After this point sparse_vecs is
+                        // empty and must not be reused in the same scope.
+                        let idx = cqs::splade::index::SpladeIndex::build(std::mem::take(
+                            &mut sparse_vecs,
+                        ));
+                        match idx.save(&splade_path, generation) {
+                            Ok(()) => {
+                                if !cli.quiet {
+                                    println!(
+                                        "  SPLADE index: persisted ({} chunks, {} tokens)",
+                                        idx.len(),
+                                        idx.unique_tokens()
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    path = %splade_path.display(),
+                                    "SPLADE index persist failed; query-time rebuild will still work"
+                                );
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "SPLADE encoder unavailable, skipping sparse encoding");

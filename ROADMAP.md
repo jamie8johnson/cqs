@@ -30,12 +30,14 @@
 ### CPU Lane (next up)
 - [x] ~~**Adaptive retrieval** Phases 1-4~~ — classifier + routing + telemetry shipped in v1.22.0
 - [x] ~~**Adaptive retrieval** Phase 5~~ — dual embeddings (base + enriched HNSW) shipped in PR #876 + #877 + #878
-- [ ] **Selective SPLADE routing** — `classify_query` should pick `SearchStrategy::DenseWithSplade` for `QueryCategory::CrossLanguage`. SPLADE-Code 0.6B got **+20pp R@1 on cross_language** in isolation (30% → 50%) but only +1.2pp overall — the gain is concentrated entirely in that category. Currently SPLADE is flag-driven (`--splade` enables for all queries). Routing it to cross_language only:
-  - Strict improvement vs always-on SPLADE: same +20pp on the category that matters, zero cost on other queries
+- [ ] **Selective SPLADE routing** — `classify_query` should pick `SearchStrategy::DenseWithSplade` for `QueryCategory::CrossLanguage`. **Now mandatory, not optional**: the 2026-04-11 re-run measured flag-driven SPLADE-Code 0.6B at **−0.6pp R@1 net** on the 165q eval (41.8% vs 42.4% baseline). Per-category: cross_language +10pp (30 → 40%, N=10), conceptual −3.7pp, multi_step −4.6pp, others flat. R@5 damage bigger (conceptual −7.4pp, type_filtered −6.2pp, negation −5.6pp). Flag-driven SPLADE displaces good dense hits at positions 2-5 on categories where lexical expansion isn't the missing signal. Routing SPLADE to cross_language only:
+  - Predicted: +10pp on cross_language stays, −3.7pp conceptual and −4.6pp multi_step disappear, total 41.8% → ~43.0% (net **+1.2pp** vs always-on, **+0.6pp** vs baseline)
+  - Strict improvement vs both "always off" and "always on"
   - Encoder is already lazy-loaded on first SPLADE query — sessions with no cross-language queries never pay the load
+  - Persisted SpladeIndex (shipped this session) means the cross_language queries that do activate SPLADE load in ~5 s from disk instead of rebuilding for 45 s
   - Code: derive `want_splade = cli.splade || matches!(c.category, CrossLanguage)`, plumb through encoder + index loading, graceful fallback when encoder unavailable
   - Open: should the routed strategy compose with `DenseBase` for cross-language + negation queries? Probably not in v1 — keep enums mutually exclusive, revisit if data demands
-  - Validate: same-corpus A/B on cross_language category specifically
+  - Validate: re-run just cross_language + conceptual + multi_step cells with the router patched in, compare against 2026-04-11 v3 numbers
 - [ ] **Phase 6: Explainable search** — depends on SPLADE-Code being the production default. Spec: `docs/plans/adaptive-retrieval.md`
 - [ ] **OpenRCT2 → Rust dual-trail experiment** — substrate for measuring whether structural code intelligence augmentation improves agent-directed translation in a sustained, real-world task. Two parallel translations on the same upstream commit, one with cqs in the loop, one without. Pre-registered metrics (regression bugs, tokens, wall clock). Publishable after three modules in both trails. Spec: `docs/plans/2026-04-10-openrct2-rust-port-dual-trail.md`
 - [ ] **Paper v1.0** — clean rewrite done, needs review/polish + adaptive retrieval results
@@ -45,6 +47,7 @@
 - [ ] **Agent adoption: slim CLAUDE.md** — reduce 30-command reference to top 5 (search, context, read, impact, review) + "see `cqs --help`". Measure with telemetry before/after.
 - [ ] **Agent adoption: composite search results** — `cqs search` returns mini-impact (caller count, test count) alongside each result. One call instead of search + impact.
 - [ ] **Move language** — blocked: no tree-sitter grammar on crates.io
+- [ ] **`PRAGMA quick_check` on write opens is 40 s on 1.1 GB DB / WSL /mnt/c** — the read-only path already skips it (shipped in #893). Write opens still pay it on every `cqs notes add`, `cqs index`, and `cqs-watch` batch. Options: skip entirely on WSL, make it opt-in via `CQS_INTEGRITY_CHECK=1`, run it once per session (cached via sentinel file), or off-thread it. Low risk of corruption on a rebuildable index — "off by default, opt-in" is probably right.
 
 ### Agent Adoption — Telemetry Data (2026-04-09)
 

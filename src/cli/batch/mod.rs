@@ -273,21 +273,50 @@ impl BatchContext {
 
     /// Ensure SPLADE index is loaded, then borrow it.
     /// Call `ensure_splade_index()` first, then `borrow_splade_index()`.
+    ///
+    /// Uses the same persist-and-load path as the single-shot CLI: tries
+    /// `splade.index.bin` first, falls back to SQLite rebuild + persist if
+    /// the file is absent, stale, or corrupt. Staleness is detected via
+    /// the `splade_generation` metadata counter.
     pub fn ensure_splade_index(&self) {
         self.check_index_staleness();
         if self.splade_index.borrow().is_some() {
             return;
         }
-        match self.store().load_all_sparse_vectors() {
-            Ok(vectors) if !vectors.is_empty() => {
-                let idx = cqs::splade::index::SpladeIndex::build(vectors);
-                *self.splade_index.borrow_mut() = Some(idx);
-            }
-            Ok(_) => {} // no vectors — cosine-only
+        let generation = match self.store().splade_generation() {
+            Ok(g) => g,
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to load sparse vectors, falling back to cosine-only");
+                tracing::warn!(error = %e, "Failed to read splade_generation, forcing rebuild");
+                0
             }
+        };
+        let splade_path = self.cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);
+        let store = self.store();
+        let (idx, rebuilt) = cqs::splade::index::SpladeIndex::load_or_build(
+            &splade_path,
+            generation,
+            || match store.load_all_sparse_vectors() {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to load sparse vectors, falling back to cosine-only"
+                    );
+                    Vec::new()
+                }
+            },
+        );
+        if idx.is_empty() {
+            // no vectors — cosine-only; leave the RefCell as None
+            return;
         }
+        tracing::info!(
+            chunks = idx.len(),
+            tokens = idx.unique_tokens(),
+            rebuilt,
+            "SPLADE index ready (batch)"
+        );
+        *self.splade_index.borrow_mut() = Some(idx);
     }
 
     /// Borrow the SPLADE index (call ensure_splade_index first).

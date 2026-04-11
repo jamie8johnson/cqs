@@ -163,26 +163,48 @@ impl<'a> CommandContext<'a> {
         opt.as_ref()
     }
 
-    /// Get or lazily load the SPLADE inverted index from SQLite.
-    /// Returns None if no sparse vectors are stored.
+    /// Get or lazily load the SPLADE inverted index.
+    ///
+    /// Tries the persisted on-disk index first (`splade.index.bin` next to
+    /// the HNSW files). Falls back to building from SQLite and persisting
+    /// the result if the file is absent, stale, corrupt, or version-mismatched.
+    /// Returns `None` only when the store contains no sparse vectors at all.
     pub fn splade_index(&self) -> Option<&cqs::splade::index::SpladeIndex> {
         let opt = self.splade_index.get_or_init(|| {
             let _span = tracing::debug_span!("command_context_splade_index_init").entered();
-            match self.store.load_all_sparse_vectors() {
-                Ok(vectors) if !vectors.is_empty() => {
-                    let idx = cqs::splade::index::SpladeIndex::build(vectors);
-                    tracing::info!(chunks = idx.len(), "SPLADE index loaded");
-                    Some(idx)
-                }
-                Ok(_) => {
-                    tracing::debug!("No sparse vectors in store, SPLADE index unavailable");
-                    None
-                }
+            let generation = match self.store.splade_generation() {
+                Ok(g) => g,
                 Err(e) => {
-                    tracing::warn!(error = %e, "Failed to load sparse vectors");
-                    None
+                    tracing::warn!(error = %e, "Failed to read splade_generation, forcing rebuild");
+                    0
                 }
+            };
+            let splade_path = self.cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);
+            // load_or_build returns an index unconditionally. It may be
+            // None-worthy (no vectors in the store) — we detect that via a
+            // zero-length id_map and skip.
+            let store = &self.store;
+            let (idx, rebuilt) =
+                cqs::splade::index::SpladeIndex::load_or_build(&splade_path, generation, || {
+                    match store.load_all_sparse_vectors() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to load sparse vectors");
+                            Vec::new()
+                        }
+                    }
+                });
+            if idx.is_empty() {
+                tracing::debug!("No sparse vectors in store, SPLADE index unavailable");
+                return None;
             }
+            tracing::info!(
+                chunks = idx.len(),
+                tokens = idx.unique_tokens(),
+                rebuilt,
+                "SPLADE index ready"
+            );
+            Some(idx)
         });
         opt.as_ref()
     }
