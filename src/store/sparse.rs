@@ -37,22 +37,58 @@ impl Store {
                 qb.build().execute(&mut *tx).await?;
             }
 
+            // Insert in batches sized to the SQLite variable limit.
+            //
+            // SQLite caps the number of bind variables per statement.
+            // SQLITE_MAX_VARIABLE_NUMBER was 999 before v3.32 (2020) and
+            // is 32766 in current SQLite. The previous BATCH_SIZE constant
+            // was tuned for the old 999 limit and produced ~10x more INSERT
+            // statements than necessary with the modern limit. With
+            // SPLADE-Code 0.6B's denser sparse vectors (~1000+ tokens per
+            // chunk vs ~134 for BERT 110M), the per-statement sqlx overhead
+            // compounded into 30+ minute upserts that looked like a hang.
+            //
+            // The new batch size is derived from the constraint, not picked:
+            // each row uses VARS_PER_ROW bind variables, the maximum rows
+            // per statement is therefore (limit / VARS_PER_ROW), and we
+            // leave a safety margin for any future schema addition that
+            // adds another bound column to the row tuple.
+            //
+            // Iterate across chunks AND rows together so each batch fills
+            // close to capacity, instead of starting a fresh batch per chunk
+            // and producing tiny INSERTs for chunks with few tokens.
+            const SQLITE_MAX_VARIABLES: usize = 32766; // SQLite default since v3.32
+            const VARS_PER_ROW: usize = 3; // chunk_id, token_id, weight
+            const SAFETY_MARGIN_VARS: usize = 300; // headroom for one extra column on a max-size batch
+            const ROWS_PER_INSERT: usize =
+                (SQLITE_MAX_VARIABLES - SAFETY_MARGIN_VARS) / VARS_PER_ROW;
+            let mut pending: Vec<(&str, u32, f32)> = Vec::with_capacity(ROWS_PER_INSERT);
             for (chunk_id, sparse) in vectors {
-                // Insert new entries in batches
-                // 3 params per row, batch of 333 = 999 < SQLite 999 limit
-                const BATCH_SIZE: usize = 333;
-                for batch in sparse.chunks(BATCH_SIZE) {
-                    let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-                        "INSERT INTO sparse_vectors (chunk_id, token_id, weight)",
-                    );
-                    qb.push_values(batch.iter(), |mut b, &(token_id, weight)| {
-                        b.push_bind(chunk_id)
-                            .push_bind(token_id as i64)
-                            .push_bind(weight);
-                    });
-                    qb.build().execute(&mut *tx).await?;
-                    total += batch.len();
+                for &(token_id, weight) in sparse {
+                    pending.push((chunk_id.as_str(), token_id, weight));
+                    if pending.len() >= ROWS_PER_INSERT {
+                        let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                            "INSERT INTO sparse_vectors (chunk_id, token_id, weight)",
+                        );
+                        qb.push_values(pending.iter(), |mut b, &(cid, tid, w)| {
+                            b.push_bind(cid).push_bind(tid as i64).push_bind(w);
+                        });
+                        qb.build().execute(&mut *tx).await?;
+                        total += pending.len();
+                        pending.clear();
+                    }
                 }
+            }
+            // Flush remaining rows
+            if !pending.is_empty() {
+                let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                    "INSERT INTO sparse_vectors (chunk_id, token_id, weight)",
+                );
+                qb.push_values(pending.iter(), |mut b, &(cid, tid, w)| {
+                    b.push_bind(cid).push_bind(tid as i64).push_bind(w);
+                });
+                qb.build().execute(&mut *tx).await?;
+                total += pending.len();
             }
 
             tx.commit().await?;
