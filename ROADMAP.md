@@ -20,11 +20,11 @@
 
 ### GPU Lane
 - [x] ~~SPLADE v1~~ — **NULL**. 0pp R@1. Weak reg, wrong vocab, wrong negatives.
-- [x] ~~SPLADE v2 data mining~~ — 199,998 token-overlap pairs. Complete.
-- [x] ~~SPLADE v2 training~~ — Complete. Token-overlap negs + reg_weight 1e-3. Awaiting eval.
-- [ ] **SPLADE v2 eval** — ablation running now
-- [ ] **SPLADE-Code 0.6B** — Naver Labs code-specific SPLADE (arXiv 2603.22008). Export script ready. Eval after v2.
-- [ ] **SPLADE v3: reg sweep** — Only if v2 shows signal AND SPLADE-Code doesn't work.
+- [x] ~~SPLADE v2 data mining~~ — 199,998 token-overlap pairs.
+- [x] ~~SPLADE v2 training~~ — Token-overlap negs + reg_weight 1e-3.
+- [x] ~~SPLADE v2 eval~~ — **NULL**. 0pp R@1. 110M BERT capacity ceiling confirmed.
+- [x] ~~SPLADE v3 / v4 (reg sweep, CodeBERT vocab)~~ — Cancelled. Capacity is the bottleneck.
+- [ ] **SPLADE-Code 0.6B eval** — perf blockers cleared (PRs #881, #884, #886, #889, #891). Encoding pipeline now runs end-to-end with proper vocab probe, batched encoder, constant-padding arena reuse, and SQLite-limit-derived sparse insert batches. Reindex in flight; eval runs immediately after. Previous result on a different corpus state: +1.2pp R@1, +20pp cross_language. This eval reproduces or refutes that on the current corpus.
 - [ ] **Reranker V2** — code-trained cross-encoder (ms-marco was catastrophic)
 
 ### CPU Lane (next up)
@@ -37,6 +37,7 @@
   - Open: should the routed strategy compose with `DenseBase` for cross-language + negation queries? Probably not in v1 — keep enums mutually exclusive, revisit if data demands
   - Validate: same-corpus A/B on cross_language category specifically
 - [ ] **Phase 6: Explainable search** — depends on SPLADE-Code being the production default. Spec: `docs/plans/adaptive-retrieval.md`
+- [ ] **OpenRCT2 → Rust dual-trail experiment** — substrate for measuring whether structural code intelligence augmentation improves agent-directed translation in a sustained, real-world task. Two parallel translations on the same upstream commit, one with cqs in the loop, one without. Pre-registered metrics (regression bugs, tokens, wall clock). Publishable after three modules in both trails. Spec: `docs/plans/2026-04-10-openrct2-rust-port-dual-trail.md`
 - [ ] **Paper v1.0** — clean rewrite done, needs review/polish + adaptive retrieval results
 - [x] ~~**Cross-project: wire remaining commands**~~ — impact, trace, test-map wired in #864. Deps local-only.
 - [x] ~~**Agent adoption: telemetry analysis**~~ — mined 16,731 invocations across all sessions. Finding: main conversation uses search (60%) + context (28%). Subagents use the full toolkit (impact, callers, test-map). The gap is in the main conversation, not subagents.
