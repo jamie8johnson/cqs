@@ -666,6 +666,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_HNSW_MAX_ID_MAP_BYTES` | `524288000` (500 MB) | Max HNSW ID map file size |
 | `CQS_HYDE_MAX_TOKENS` | (config) | Max tokens for HyDE query prediction |
 | `CQS_IDLE_TIMEOUT_SECS` | `30` | SQLite connection idle timeout in seconds |
+| `CQS_INTEGRITY_CHECK` | `0` | Set to `1` to enable PRAGMA quick_check on write-mode store opens |
 | `CQS_IMPACT_MAX_NODES` | `10000` | Max BFS nodes in impact analysis |
 | `CQS_LLM_API_BASE` | `https://api.anthropic.com/v1` | LLM API base URL |
 | `CQS_LLM_MAX_CONTENT_CHARS` | `8000` | Max content chars in LLM prompts |

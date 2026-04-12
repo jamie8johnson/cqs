@@ -448,15 +448,20 @@ impl Store {
         //    without the slower cross-checks of index content vs table
         //    content, which is the right tradeoff for a startup canary.
         //
-        // Opt-out for either path is available via CQS_SKIP_INTEGRITY_CHECK=1
-        // if the quick_check itself becomes a problem on huge write opens.
-        let skip_integrity = std::env::var("CQS_SKIP_INTEGRITY_CHECK").as_deref() == Ok("1");
+        // Opt-in via CQS_INTEGRITY_CHECK=1. The quick_check takes ~40s on
+        // WSL /mnt/c (NTFS over 9P) which dominated every write-open. For a
+        // rebuildable search index the risk/cost tradeoff favors skipping by
+        // default. Legacy CQS_SKIP_INTEGRITY_CHECK=1 still works (forces skip
+        // even when CQS_INTEGRITY_CHECK=1 is set).
+        let opt_in = std::env::var("CQS_INTEGRITY_CHECK").as_deref() == Ok("1");
+        let force_skip = std::env::var("CQS_SKIP_INTEGRITY_CHECK").as_deref() == Ok("1");
+        let run_check = opt_in && !force_skip && !config.read_only;
         if config.read_only {
             tracing::debug!("Skipping integrity check (read-only open)");
-        } else if skip_integrity {
-            tracing::debug!("Skipping integrity check (CQS_SKIP_INTEGRITY_CHECK=1)");
+        } else if !run_check {
+            tracing::debug!("Integrity check skipped (set CQS_INTEGRITY_CHECK=1 to enable)");
         }
-        if !config.read_only && !skip_integrity {
+        if run_check {
             rt.block_on(async {
                 let result: (String,) = sqlx::query_as("PRAGMA quick_check(1)")
                     .fetch_one(&pool)
