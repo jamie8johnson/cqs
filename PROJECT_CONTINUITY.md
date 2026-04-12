@@ -28,7 +28,7 @@
 
 ### Remaining P1 items
 
-- **DS-W5**: `cqs index --force` inter-process lock — medium. Issue to create.
+None. All P1s addressed in PRs #910 (AC-1) and #911 (DS-W5 + 16 P2/P3s).
 
 ### AC-1 fix (PR #910)
 

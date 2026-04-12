@@ -377,6 +377,7 @@ The P1-severity hard items (AC-1, DS-W5, PB-NEW-6) stay in P1 for triage-severit
 | SHL-39 | #911 | ⏳ CI |
 | SHL-40 | #911 | ⏳ CI |
 
-**78 findings fixed out of ~136 triaged.**
-Remaining P1: DS-W5 (inter-process lock).
-AC-1 fusion rewrite in PR #910.
+| DS-W5 | #911 | ⏳ CI |
+
+**79 findings fixed out of ~136 triaged.**
+All P1 items addressed. AC-1 in PR #910, DS-W5 in PR #911.
