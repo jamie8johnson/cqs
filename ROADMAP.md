@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v1.21.0
+## Current: v1.22.0
 
-54 languages. 29 chunk types. 265-query v2 eval. BGE-large = best config.
+54 languages. 29 chunk types. 265-query v2 eval. BGE-large = best config. Adaptive retrieval Phases 1-5 shipped (classifier + routing + dual HNSW). SPLADE-Code 0.6B evaluated (flag-driven is a net loss; selective routing is next).
 
 ### Eval Baselines
 
@@ -24,7 +24,7 @@
 - [x] ~~SPLADE v2 training~~ — Token-overlap negs + reg_weight 1e-3.
 - [x] ~~SPLADE v2 eval~~ — **NULL**. 0pp R@1. 110M BERT capacity ceiling confirmed.
 - [x] ~~SPLADE v3 / v4 (reg sweep, CodeBERT vocab)~~ — Cancelled. Capacity is the bottleneck.
-- [ ] **SPLADE-Code 0.6B eval** — perf blockers cleared (PRs #881, #884, #886, #889, #891). Encoding pipeline now runs end-to-end with proper vocab probe, batched encoder, constant-padding arena reuse, and SQLite-limit-derived sparse insert batches. Reindex in flight; eval runs immediately after. Previous result on a different corpus state: +1.2pp R@1, +20pp cross_language. This eval reproduces or refutes that on the current corpus.
+- [x] ~~**SPLADE-Code 0.6B eval**~~ — **Flag-driven is a net loss.** 2026-04-11 re-run: 41.8% R@1 (+SPLADE) vs 42.4% R@1 (baseline) on 165q, N=165. Reverses the 2026-04-09 +1.2pp headline. cross_language is the only category where SPLADE pays off (+10pp, N=10). conceptual_search −3.7pp and multi_step −4.6pp from cross-category R@5 displacement. Full breakdown in `~/training-data/research/sparse.md` § SPLADE-Code 0.6B Eval Re-run. Next: selective routing (below).
 - [ ] **Reranker V2** — code-trained cross-encoder (ms-marco was catastrophic)
 
 ### CPU Lane (next up)
@@ -148,6 +148,7 @@ Current implementation: N-project via `[[reference]]` entries in `.cqs.toml` →
 
 | Version | Highlights |
 |---------|-----------|
+| v1.22.0 (in progress) | Adaptive retrieval Phases 1-5 (#876/#877/#878), SPLADE-Code 0.6B unblock chain (#881 vocab probe, #884 padding tolerance, #886 batched encode, #889 arena leak fix, #891 bulk insert, #895 on-disk persistence), eval-side fixes (#893 integrity_check skip, #894 eval harness -- separator), OpenRCT2 dual-trail spec (#890, #896) |
 | v1.21.0 | Cross-project call graph (#850), 4 new chunk types to 29 (#851), chunk type coverage across 15 languages (#852), 14-category audit 40+ fixes (#859), API renames + 8 batch flags (#860), remaining audit sweep (#863), paper v1.0, docs refresh |
 | v1.20.0 | 14-category audit (71 findings, 69 fixed), Elm (54th), batch --include-type/--exclude-type, SPLADE code training (null), env var docs, README eval rewrite |
 | v1.19.0 | `--include-type`/`--exclude-type`, Java/C# test+endpoint, batch `--rrf`, capture list unification, Phase 2 chunks, 265q eval, store dim check |
