@@ -189,18 +189,23 @@ const CONCEPTUAL_NOUNS: &[&str] = &[
     "methodology",
 ];
 
-/// Negation words (must include trailing space to avoid matching prefixes)
-const NEGATION_WORDS: &[&str] = &[
-    "not ",
-    "without ",
-    "except ",
-    "never ",
-    "avoid ",
-    "no ",
-    "don't ",
-    "doesn't ",
-    "shouldn't ",
-    "exclude ",
+/// Negation tokens matched against word-split query tokens (not substrings).
+///
+/// v1.22.0 audit AC-2: the previous pattern used trailing-space substring
+/// matching (`query.contains("not ")`) which false-fired on words like
+/// `cannot`, `piano`, `nano`, `volcano`, `casino`. Switched to exact
+/// word-token matching against the `words` vec already computed upstream.
+const NEGATION_TOKENS: &[&str] = &[
+    "not",
+    "without",
+    "except",
+    "never",
+    "avoid",
+    "no",
+    "don't",
+    "doesn't",
+    "shouldn't",
+    "exclude",
 ];
 
 /// Structural keywords from programming languages
@@ -285,7 +290,7 @@ pub fn classify_query(query: &str) -> Classification {
     // 1. Negation trumps everything — "sort without allocating".
     //    Phase 5: enriched summaries inject positive vocabulary ("allocates",
     //    "uses heap") that fights the negation, so route to the base index.
-    if NEGATION_WORDS.iter().any(|w| query_lower.contains(w)) {
+    if words.iter().any(|w| NEGATION_TOKENS.contains(w)) {
         return Classification {
             category: QueryCategory::Negation,
             confidence: Confidence::High,

@@ -4,7 +4,7 @@
 
 cqs processes your code locally by default. With `--llm-summaries`, function code is sent to Anthropic's API for one-sentence summary generation. With `--improve-docs`, LLM-generated doc comments are written back to your source files. With `--hyde-queries`, function descriptions are sent to Anthropic's API for synthetic search query generation. See [Anthropic's privacy policy](https://www.anthropic.com/privacy). Without these flags, nothing is transmitted externally and no source files are modified.
 
-- **No telemetry by default**: Optional local-only command logging when `CQS_TELEMETRY=1` is set. Stored in `.cqs/telemetry.jsonl`, never transmitted
+- **No telemetry by default**: Optional local-only command logging when `CQS_TELEMETRY=1` is set OR when `.cqs/telemetry.jsonl` already exists (persists opt-in across shells/subprocesses). Stored in `.cqs/telemetry.jsonl`, never transmitted. Delete the file and unset the env var to opt out
 - **No analytics**: No tracking of any kind
 - **No cloud sync**: Index stays in your project directory
 

@@ -19,7 +19,7 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 
 1. **Path traversal**: Commands cannot read files outside project root
 2. **FTS injection**: Search queries sanitized before SQLite FTS5 MATCH operations
-3. **Database corruption**: `PRAGMA integrity_check(1)` on every database open
+3. **Database corruption**: `PRAGMA quick_check(1)` on write-mode opens (opt-out via `CQS_SKIP_INTEGRITY_CHECK=1`). Read-only opens skip the check entirely — reads cannot introduce corruption and the index is rebuildable via `cqs index --force`
 4. **Reference config trust**: Warnings logged when reference configs override project settings
 
 ### What We Don't Protect Against
@@ -68,7 +68,9 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 |------|---------|------|
 | Project source files | Parsing and embedding | `cqs index`, `cqs watch` |
 | `.cqs/index.db` | SQLite database | All operations |
-| `.cqs/index.hnsw.*` | Vector index files | Search operations |
+| `.cqs/index.hnsw.*` | HNSW vector index files | Search operations |
+| `.cqs/index_base.hnsw.*` | Base (non-enriched) HNSW index | Search operations (Phase 5 dual routing) |
+| `.cqs/splade.index.bin` | SPLADE sparse inverted index | Search operations (`--splade` or routed cross-language) |
 | `docs/notes.toml` | Developer notes | Search, `cqs read` |
 | `~/.cache/huggingface/` | ML model cache | Embedding operations |
 | `~/.config/cqs/` | Config file (user-level defaults) | All operations |
@@ -81,7 +83,9 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 |------|---------|------|
 | `.cqs/` directory | Index storage | `cqs init` |
 | `.cqs/index.db` | SQLite database | `cqs index`, note operations |
-| `.cqs/index.hnsw.*` | Vector index + checksums | `cqs index` |
+| `.cqs/index.hnsw.*` | HNSW vector index + checksums | `cqs index` |
+| `.cqs/index_base.hnsw.*` | Base HNSW index + checksums | `cqs index` |
+| `.cqs/splade.index.bin` | SPLADE sparse inverted index | `cqs index` (with `CQS_SPLADE_MODEL` set), lazy rebuild on first `--splade` query |
 | `.cqs/index.lock` | Process lock file | `cqs watch` |
 | `.cqs/audit-mode.json` | Audit mode state (on/off, expiry) | `cqs audit-mode on`, `cqs audit-mode off` |
 | `.cqs/telemetry*.jsonl` | Command usage logs (opt-in, persists via file presence) | `CQS_TELEMETRY=1` or file exists, delete to opt out |

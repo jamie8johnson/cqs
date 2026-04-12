@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **SPLADE index persistence** — on-disk `splade.index.bin` with blake3 integrity, generation-counter invalidation, and lazy rebuild. Warm SPLADE query: 45s → 9.7s (#895).
+- **v19 migration** — `sparse_vectors` gains FK `ON DELETE CASCADE` to `chunks`. Orphan sparse rows from chunk deletion are structurally impossible (#898).
+- **v20 migration** — `AFTER DELETE` trigger on `chunks` auto-bumps `splade_generation`, closing the watch-mode SPLADE drift (#899).
+- `CQS_SKIP_INTEGRITY_CHECK` env var — opt-out from `PRAGMA quick_check` on write opens.
+- `CQS_SPLADE_MAX_INDEX_BYTES` env var — cap on persisted SPLADE index file size (default 2 GB).
+- `CQS_EVAL_TIMEOUT_SECS` env var — per-query timeout for the eval harness (default 300s).
+
+### Fixed
+- **86s → 6.9s per search query** — `PRAGMA integrity_check(1)` on every `Store::open` was walking the full 1.1 GB database. Read-only opens now skip the check entirely; write opens use `quick_check` (#893).
+- **Eval harness query-as-subcommand** — single-token queries like `prepare_for_embedding` were parsed as unknown subcommands. Fixed with `cqs --json -n 20 -- <query>` form (#894).
+- **OpenRCT2 dual-trail spec revision** — removed time estimates, off-ramps, and substrate grading per session feedback (#896).
+
+### Performance
+- SPLADE persistence: 45s cold → 9.7s warm per SPLADE query (on-disk load instead of rebuild from SQLite) (#895).
+- Sparse DELETE batch size: `chunks(333)` → derived from SQLite variable limit (SHL-31 fix in #898).
+- SPLADE body `Vec::new()` → `Vec::with_capacity(body_len)` from file metadata (PF-4 fix in #898).
+
 ## [1.22.0] - 2026-04-09
 
 ### Added

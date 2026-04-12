@@ -457,9 +457,17 @@ mod tests {
 
     #[test]
     fn test_chunk_importance_test_upper() {
-        // Go convention: TestFoo
+        // v1.22.0 audit AC-4: `TestParseConfig` in `src/lib.go` is NOT a Go
+        // test — Go tests live in `_test.go` files, not regular `.go` files.
+        // The previous assertion (importance_test = 0.70) was wrong: it
+        // demoted production helpers named `TestFoo` in non-test Go files.
+        // After the fix, `TestParseConfig` in `src/lib.go` gets normal
+        // importance (1.0), but `TestParseConfig` in `src/lib_test.go`
+        // gets the test demotion via path-based detection.
+        assert_eq!(chunk_importance("TestParseConfig", "src/lib.go"), 1.0);
+        // In an actual _test.go file, the path pattern catches it.
         assert_eq!(
-            chunk_importance("TestParseConfig", "src/lib.go"),
+            chunk_importance("TestParseConfig", "src/lib_test.go"),
             ScoringConfig::DEFAULT.importance_test
         );
     }
