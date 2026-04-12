@@ -245,6 +245,9 @@ struct StoreOpenConfig {
     max_connections: u32,
     mmap_size: String,
     cache_size: &'static str,
+    /// Pre-existing runtime to reuse. If `Some`, skips runtime creation
+    /// (~15ms saving). If `None`, creates a new one per `use_current_thread`.
+    runtime: Option<Runtime>,
 }
 
 /// Read `CQS_MMAP_SIZE` env var, falling back to `default_bytes`.
@@ -283,6 +286,7 @@ impl Store {
                 max_connections,
                 mmap_size: mmap_size_from_env("268435456"), // 256MB default
                 cache_size: "-16384",                       // 16MB
+                runtime: None,
             },
         )
     }
@@ -302,9 +306,10 @@ impl Store {
             StoreOpenConfig {
                 read_only: true,
                 use_current_thread: true,
-                max_connections: 1, // PB-1: single-thread runtime can only use 1 connection
-                mmap_size: mmap_size_from_env("268435456"), // 256MB default
-                cache_size: "-16384", // 16MB
+                max_connections: 1,
+                mmap_size: mmap_size_from_env("268435456"),
+                cache_size: "-16384",
+                runtime: None,
             },
         )
     }
@@ -321,6 +326,26 @@ impl Store {
                 max_connections: 1,
                 mmap_size: mmap_size_from_env("67108864"), // 64MB default
                 cache_size: "-4096",                       // 4MB
+                runtime: None,
+            },
+        )
+    }
+
+    /// Open in read-only pooled mode using a pre-existing tokio runtime.
+    /// Saves ~15ms per invocation by avoiding runtime creation.
+    pub fn open_readonly_pooled_with_runtime(
+        path: &Path,
+        runtime: Runtime,
+    ) -> Result<Self, StoreError> {
+        Self::open_with_config(
+            path,
+            StoreOpenConfig {
+                read_only: true,
+                use_current_thread: true,
+                max_connections: 1,
+                mmap_size: mmap_size_from_env("268435456"),
+                cache_size: "-16384",
+                runtime: Some(runtime),
             },
         )
     }
@@ -330,9 +355,10 @@ impl Store {
         let mode = if config.read_only { "readonly" } else { "open" };
         let _span = tracing::info_span!("store_open", %mode, path = %path.display()).entered();
 
-        // Build runtime: multi-thread for write (RM-14: match pool size),
-        // current-thread for read-only (minimal overhead).
-        let rt = if config.use_current_thread {
+        // Reuse provided runtime or build a new one.
+        let rt = if let Some(rt) = config.runtime {
+            rt
+        } else if config.use_current_thread {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?

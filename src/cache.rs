@@ -50,9 +50,16 @@ impl EmbeddingCache {
 
     /// Open or create the embedding cache.
     pub fn open(path: &Path) -> Result<Self, CacheError> {
+        Self::open_with_runtime(path, None)
+    }
+
+    /// Open with a pre-existing runtime (saves ~15ms by avoiding runtime creation).
+    pub fn open_with_runtime(
+        path: &Path,
+        runtime: Option<tokio::runtime::Runtime>,
+    ) -> Result<Self, CacheError> {
         let _span = tracing::info_span!("embedding_cache_open", path = %path.display()).entered();
 
-        // Create parent directories with restricted permissions
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
             #[cfg(unix)]
@@ -62,12 +69,14 @@ impl EmbeddingCache {
             }
         }
 
-        // RM-4: single-threaded runtime is sufficient — the cache only needs
-        // blocking SQLite I/O, not multi-thread scheduling overhead.
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| CacheError::Io(std::io::Error::other(e)))?;
+        let rt = if let Some(rt) = runtime {
+            rt
+        } else {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| CacheError::Io(std::io::Error::other(e)))?
+        };
 
         // Use SqliteConnectOptions to avoid URL-encoding issues with special paths
         let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
