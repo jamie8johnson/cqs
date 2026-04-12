@@ -17,20 +17,6 @@ pub enum OutputFormat {
 }
 
 /// Parse an `OutputFormat` that only allows text or json (rejects mermaid at parse time).
-///
-/// Used by `review` and `ci` commands which accept `--format` but don't support mermaid output.
-/// Catches the error at argument parsing rather than failing at runtime.
-fn parse_text_or_json_format(s: &str) -> std::result::Result<OutputFormat, String> {
-    match s.to_ascii_lowercase().as_str() {
-        "text" => Ok(OutputFormat::Text),
-        "json" => Ok(OutputFormat::Json),
-        "mermaid" => {
-            Err("mermaid output is not supported for this command — use text or json".into())
-        }
-        other => Err(format!("invalid format '{other}' — expected text or json")),
-    }
-}
-
 impl std::fmt::Display for OutputFormat {
     /// Formats the enum variant as a human-readable string representation.
     ///
@@ -72,24 +58,25 @@ impl OutputArgs {
     }
 }
 
-/// AD-49: Output format arguments for commands that only support text/json (no mermaid).
+/// AD-49 + v1.22.0 audit API-1: Output format for commands that only support
+/// text or JSON. Previously exposed `--format text|json` alongside `--json`,
+/// but 25+ command handlers read `output.json` directly and never checked
+/// `output.format`, so `--format json` was silently accepted and ignored.
+/// Removed `--format`; commands that genuinely support multiple output formats
+/// (e.g. `--format mermaid`) use [`OutputArgs`] instead.
 #[derive(Clone, Debug, clap::Args)]
 pub struct TextJsonArgs {
-    /// Output format: text, json (use --json as shorthand for --format json; mermaid not supported)
-    #[arg(long, default_value = "text", value_parser = parse_text_or_json_format)]
-    pub format: OutputFormat,
-    /// Shorthand for --format json
-    #[arg(long, conflicts_with = "format")]
+    /// Output as JSON
+    #[arg(long)]
     pub json: bool,
 }
 
 impl TextJsonArgs {
-    /// Resolve the effective format (--json overrides --format).
     pub fn effective_format(&self) -> OutputFormat {
         if self.json {
             OutputFormat::Json
         } else {
-            self.format.clone()
+            OutputFormat::Text
         }
     }
 }

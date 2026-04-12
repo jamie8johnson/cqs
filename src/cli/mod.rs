@@ -687,7 +687,6 @@ mod tests {
             }) => {
                 assert!(base.is_none());
                 assert!(!stdin);
-                assert!(matches!(output.format, OutputFormat::Text));
                 assert!(!output.json);
                 assert!(tokens.is_none());
             }
@@ -707,14 +706,15 @@ mod tests {
     }
 
     #[test]
-    fn test_cmd_review_stdin_format_json() {
-        let cli = Cli::try_parse_from(["cqs", "review", "--stdin", "--format", "json"]).unwrap();
+    fn test_cmd_review_stdin_json() {
+        // v1.22.0 audit API-1: --format removed from TextJsonArgs, use --json
+        let cli = Cli::try_parse_from(["cqs", "review", "--stdin", "--json"]).unwrap();
         match cli.command {
             Some(Commands::Review {
                 stdin, ref output, ..
             }) => {
                 assert!(stdin);
-                assert!(matches!(output.format, OutputFormat::Json));
+                assert!(output.json);
             }
             _ => panic!("Expected Review command"),
         }
@@ -784,7 +784,6 @@ mod tests {
         match cli.command {
             Some(Commands::Review { ref output, .. }) => {
                 assert!(output.json);
-                assert!(matches!(output.format, OutputFormat::Text));
             }
             _ => panic!("Expected Review command"),
         }
@@ -802,16 +801,9 @@ mod tests {
         match cli.command {
             Some(Commands::Ci { ref output, .. }) => {
                 assert!(output.json);
-                assert!(matches!(output.format, OutputFormat::Text));
             }
             _ => panic!("Expected Ci command"),
         }
-    }
-
-    #[test]
-    fn test_ci_json_conflicts_with_format() {
-        let result = Cli::try_parse_from(["cqs", "ci", "--json", "--format", "json"]);
-        assert!(result.is_err(), "--json and --format should conflict");
     }
 
     #[test]
@@ -965,7 +957,6 @@ mod tests {
             }) => {
                 assert!(base.is_none());
                 assert!(!stdin);
-                assert!(matches!(output.format, OutputFormat::Text));
                 assert!(!output.json);
                 assert!(matches!(gate, GateThreshold::High));
                 assert!(tokens.is_none());
@@ -997,11 +988,10 @@ mod tests {
     }
 
     #[test]
-    fn test_cmd_ci_stdin_format_json_tokens() {
-        let cli = Cli::try_parse_from([
-            "cqs", "ci", "--stdin", "--format", "json", "--tokens", "5000",
-        ])
-        .unwrap();
+    fn test_cmd_ci_stdin_json_tokens() {
+        // v1.22.0 audit API-1: --format removed from TextJsonArgs, use --json
+        let cli =
+            Cli::try_parse_from(["cqs", "ci", "--stdin", "--json", "--tokens", "5000"]).unwrap();
         match cli.command {
             Some(Commands::Ci {
                 stdin,
@@ -1010,7 +1000,7 @@ mod tests {
                 ..
             }) => {
                 assert!(stdin);
-                assert!(matches!(output.format, OutputFormat::Json));
+                assert!(output.json);
                 assert_eq!(tokens, Some(5000));
             }
             _ => panic!("Expected Ci command"),
