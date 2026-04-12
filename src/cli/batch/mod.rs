@@ -32,7 +32,7 @@ use cqs::reference::ReferenceIndex;
 use cqs::store::Store;
 use cqs::Embedder;
 
-use super::open_project_store;
+use super::{open_project_store, open_project_store_readonly};
 
 /// Maximum batch stdin line length (1MB). Lines exceeding this are rejected
 /// to prevent unbounded memory allocation from malicious input.
@@ -162,7 +162,7 @@ impl BatchContext {
             self.invalidate_mutable_caches();
 
             // Re-open the Store to reset its internal OnceLock caches
-            match Store::open(&index_path) {
+            match Store::open_readonly_pooled(&index_path) {
                 Ok(new_store) => {
                     // DS-43: Check if index dimension changed — OnceLock model_config
                     // can't be cleared, so warn the user to restart the batch session.
@@ -212,7 +212,7 @@ impl BatchContext {
         self.invalidate_mutable_caches();
 
         let index_path = self.cqs_dir.join("index.db");
-        let new_store = Store::open(&index_path)
+        let new_store = Store::open_readonly_pooled(&index_path)
             .map_err(|e| anyhow::anyhow!("Failed to re-open Store: {e}"))?;
         *self.store.borrow_mut() = new_store;
 
@@ -603,7 +603,7 @@ fn write_json_line(
 ///
 /// Used by both `cmd_batch` and `cmd_chat`.
 pub(crate) fn create_context() -> Result<BatchContext> {
-    let (store, root, cqs_dir) = open_project_store()?;
+    let (store, root, cqs_dir) = open_project_store_readonly()?;
 
     // Capture initial index.db mtime
     let index_mtime = std::fs::metadata(cqs_dir.join("index.db"))
