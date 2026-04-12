@@ -332,7 +332,18 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
                 info!(vectors = index.len(), "Loaded existing HNSW index");
                 (Some(index), hnsw_rebuild_threshold() / 2)
             }
-            Err(_) => (None, 0),
+            Err(ref e) if matches!(e, cqs::hnsw::HnswError::NotFound(_)) => {
+                tracing::debug!("No prior HNSW index, starting fresh");
+                (None, 0)
+            }
+            Err(e) => {
+                // v1.22.0 audit EH-7: previously `Err(_) => (None, 0)` treated
+                // DimensionMismatch, IO errors, and corruption the same as
+                // "first run." Now logs so the operator sees why the prior
+                // index was discarded.
+                tracing::warn!(error = %e, "Existing HNSW index unusable, rebuilding from scratch");
+                (None, 0)
+            }
         };
 
     let model_config = cli.try_model_config()?;

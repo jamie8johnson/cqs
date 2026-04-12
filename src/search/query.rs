@@ -700,17 +700,19 @@ impl Store {
             let mut scored: Vec<(CandidateRow, f32)> = candidates
                 .into_iter()
                 .filter_map(|(candidate, embedding_bytes)| {
-                    // PERF-27: Use HashSet::contains with lowercased value instead of
-                    // linear scan with eq_ignore_ascii_case. Values in the sets are
-                    // already lowercased at construction above.
+                    // v1.22.0 audit PF-7: previously called `.to_lowercase()`
+                    // per candidate (500+ String allocations per search). DB
+                    // values are already canonical lowercase from
+                    // Language::to_string / ChunkType::to_string, so use
+                    // direct contains on the pre-lowercased set.
                     if let Some(ref langs) = lang_set {
-                        if !langs.contains(&candidate.language.to_lowercase()) {
+                        if !langs.contains(&candidate.language) {
                             return None;
                         }
                     }
 
                     if let Some(ref types) = type_set {
-                        if !types.contains(&candidate.chunk_type.to_lowercase()) {
+                        if !types.contains(&candidate.chunk_type) {
                             return None;
                         }
                     }

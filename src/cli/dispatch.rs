@@ -27,6 +27,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     let (telem_cmd, telem_query) = telemetry::describe_command(&telem_args);
     telemetry::log_command(&cqs_dir, &telem_cmd, telem_query.as_deref(), None);
 
+    // v1.22.0 audit OB-14: root span so all per-command logs have a parent.
+    let _root = tracing::info_span!("cqs", cmd = %telem_cmd).entered();
+
     // Load config and apply defaults (CLI flags override config)
     let config = cqs::config::Config::load(&find_project_root());
     apply_config_defaults(&mut cli, &config);
