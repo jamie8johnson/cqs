@@ -141,7 +141,18 @@ impl BatchContext {
         let index_path = self.cqs_dir.join("index.db");
         let current_mtime = match std::fs::metadata(&index_path).and_then(|m| m.modified()) {
             Ok(t) => t,
-            Err(_) => return, // Can't stat — skip check
+            Err(e) => {
+                // v1.22.0 audit EH-8: previously silent return. If the DB
+                // becomes temporarily unstattable (permissions, concurrent
+                // rebuild, NFS glitch), every subsequent command in the batch
+                // session keeps using stale caches forever.
+                tracing::warn!(
+                    error = %e,
+                    path = %index_path.display(),
+                    "Cannot stat index.db for staleness check — caches may remain stale"
+                );
+                return;
+            }
         };
 
         let last = self.index_mtime.get();

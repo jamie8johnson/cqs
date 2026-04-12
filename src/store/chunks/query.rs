@@ -344,7 +344,7 @@ impl Store {
                             result.insert(id, Embedding::new(emb));
                         }
                         Err(e) => {
-                            tracing::trace!(chunk_id = %id, error = %e, "Skipping embedding");
+                            tracing::warn!(chunk_id = %id, error = %e, "Corrupt embedding blob, skipping — run 'cqs index --force' to rebuild");
                         }
                     }
                 }

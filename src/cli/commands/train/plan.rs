@@ -37,8 +37,16 @@ pub(crate) fn cmd_plan(
 fn display_plan_text(
     result: &cqs::plan::PlanResult,
     root: &std::path::Path,
-    _tokens: Option<usize>,
+    tokens: Option<usize>,
 ) {
+    // v1.22.0 audit API-11: --tokens was accepted and silently ignored in
+    // text mode. Warn so the user knows their budget isn't being applied.
+    if tokens.is_some() {
+        tracing::warn!(
+            tokens,
+            "--tokens is not yet applied in text mode (only JSON). Output may exceed budget."
+        );
+    }
     use colored::Colorize;
 
     println!("{}", format!("Plan: {}", result.template).bold());

@@ -49,7 +49,7 @@ impl Store {
                             result.insert(hash, Embedding::new(embedding));
                         }
                         Err(e) => {
-                            tracing::trace!(hash = %hash, error = %e, "Skipping embedding");
+                            tracing::warn!(hash = %hash, error = %e, "Corrupt embedding blob, skipping — run 'cqs index --force' to rebuild");
                         }
                     }
                 }
