@@ -408,6 +408,40 @@ mod tests {
         (store, dir)
     }
 
+    /// Insert a chunk with explicit name, signature, and optional doc.
+    /// Used by chunk_splade_texts tests that need control over those fields.
+    fn insert_chunk_with_fields(
+        store: &Store,
+        id: &str,
+        name: &str,
+        signature: &str,
+        doc: Option<&str>,
+    ) {
+        store.rt.block_on(async {
+            let embedding = crate::embedder::Embedding::new(vec![0.0f32; crate::EMBEDDING_DIM]);
+            let embedding_bytes =
+                crate::store::helpers::embedding_to_bytes(&embedding, crate::EMBEDDING_DIM)
+                    .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name,
+                     signature, content, content_hash, doc, line_start, line_end, embedding,
+                     source_mtime, created_at, updated_at)
+                     VALUES (?1, ?1, 'file', 'rust', 'function', ?2,
+                     ?3, '', '', ?4, 1, 10, ?5, 0, ?6, ?6)",
+            )
+            .bind(id)
+            .bind(name)
+            .bind(signature)
+            .bind(doc)
+            .bind(&embedding_bytes)
+            .bind(&now)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        });
+    }
+
     #[test]
     fn test_sparse_roundtrip() {
         let (store, _dir) = setup_store();
@@ -538,5 +572,98 @@ mod tests {
             "cascade should have dropped c1's sparse rows"
         );
         assert_eq!(loaded[0].0, "c2");
+    }
+
+    // ── Gap 1: chunk_splade_texts concatenation format ──────────────
+
+    #[test]
+    fn test_chunk_splade_texts_with_doc() {
+        let (store, _dir) = setup_store();
+        insert_chunk_with_fields(&store, "c1", "foo", "fn foo()", Some("does things"));
+        let texts = store.chunk_splade_texts().unwrap();
+        assert_eq!(texts.len(), 1);
+        assert_eq!(texts[0].1, "foo fn foo() does things");
+    }
+
+    #[test]
+    fn test_chunk_splade_texts_no_doc() {
+        let (store, _dir) = setup_store();
+        insert_chunk_with_fields(&store, "c1", "foo", "fn foo()", None);
+        let texts = store.chunk_splade_texts().unwrap();
+        assert_eq!(texts.len(), 1);
+        assert_eq!(texts[0].1, "foo fn foo()");
+    }
+
+    #[test]
+    fn test_chunk_splade_texts_empty_doc_treated_as_missing() {
+        let (store, _dir) = setup_store();
+        insert_chunk_with_fields(&store, "c1", "foo", "fn foo()", Some(""));
+        let texts = store.chunk_splade_texts().unwrap();
+        assert_eq!(texts.len(), 1);
+        assert_eq!(
+            texts[0].1, "foo fn foo()",
+            "empty doc should not be appended"
+        );
+    }
+
+    // ── Gap 2: chunk_splade_texts_missing ───────────────────────────
+
+    #[test]
+    fn test_chunk_splade_texts_missing_skips_encoded() {
+        let (store, _dir) = setup_store();
+        insert_chunk_with_fields(&store, "c1", "alpha", "fn alpha()", None);
+        insert_chunk_with_fields(&store, "c2", "beta", "fn beta()", None);
+        insert_chunk_with_fields(&store, "c3", "gamma", "fn gamma()", None);
+
+        // Encode c1 and c3, leave c2 without sparse vectors.
+        store
+            .upsert_sparse_vectors(&[
+                ("c1".to_string(), vec![(1u32, 0.5f32)]),
+                ("c3".to_string(), vec![(2u32, 0.7f32)]),
+            ])
+            .unwrap();
+
+        let missing = store.chunk_splade_texts_missing().unwrap();
+        assert_eq!(missing.len(), 1, "only the un-encoded chunk should appear");
+        assert_eq!(missing[0].0, "c2");
+        assert_eq!(missing[0].1, "beta fn beta()");
+    }
+
+    // ── Gap 3: load_all_sparse_vectors grouping ─────────────────────
+
+    #[test]
+    fn test_load_all_sparse_vectors_groups_multiple_tokens() {
+        let (store, _dir) = setup_store();
+        insert_test_chunk(&store, "c1");
+        insert_test_chunk(&store, "c2");
+        insert_test_chunk(&store, "c3");
+
+        store
+            .upsert_sparse_vectors(&[
+                (
+                    "c1".to_string(),
+                    vec![(10u32, 0.1f32), (11, 0.2), (12, 0.3)],
+                ),
+                (
+                    "c2".to_string(),
+                    vec![(20u32, 0.4f32), (21, 0.5), (22, 0.6), (23, 0.7)],
+                ),
+                (
+                    "c3".to_string(),
+                    vec![(30u32, 0.8f32), (31, 0.9), (32, 1.0)],
+                ),
+            ])
+            .unwrap();
+
+        let loaded = store.load_all_sparse_vectors().unwrap();
+        assert_eq!(loaded.len(), 3);
+
+        // Find each chunk and verify token counts.
+        let c1 = loaded.iter().find(|(id, _)| id == "c1").unwrap();
+        let c2 = loaded.iter().find(|(id, _)| id == "c2").unwrap();
+        let c3 = loaded.iter().find(|(id, _)| id == "c3").unwrap();
+        assert_eq!(c1.1.len(), 3, "c1 should have 3 tokens");
+        assert_eq!(c2.1.len(), 4, "c2 should have 4 tokens");
+        assert_eq!(c3.1.len(), 3, "c3 should have 3 tokens");
     }
 }
