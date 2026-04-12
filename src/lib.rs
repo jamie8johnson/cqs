@@ -255,25 +255,69 @@ pub fn is_test_chunk(name: &str, file: &str) -> bool {
     if name_match {
         return true;
     }
-    // File-based patterns (by filename, not full path)
-    // Split on both `/` and `\` for cross-platform paths
-    let filename = file.rsplit(['/', '\\']).next().unwrap_or(file);
-    if filename.contains("_test.")
-        || filename.contains(".test.")
-        || filename.contains(".spec.")
-        || filename.contains("_spec.")
-        || filename.starts_with("test_")
-    {
-        return true;
+    // Path-based patterns from the language registry (all 52+ languages).
+    // Patterns use SQL LIKE syntax: `%` = any chars, `\_` = literal underscore.
+    // Normalize backslashes to forward slashes for cross-platform matching.
+    let normalized = file.replace('\\', "/");
+    for pattern in language::REGISTRY.all_test_path_patterns() {
+        if sql_like_matches(&normalized, pattern) {
+            return true;
+        }
+        // Registry patterns assume a prefix (e.g. `%/tests/%` needs something
+        // before `/tests/`). Relative paths like `tests/foo.rs` lack that prefix,
+        // so also try with a synthetic `/` prepended.
+        if !normalized.starts_with('/') {
+            let prefixed = format!("/{normalized}");
+            if sql_like_matches(&prefixed, pattern) {
+                return true;
+            }
+        }
     }
-    // Path-based patterns (mirrors TEST_PATH_PATTERNS in store/calls.rs)
-    // Check both separator styles for cross-platform support
-    file.contains("/tests/")
-        || file.contains("\\tests\\")
-        || file.starts_with("tests/")
-        || file.starts_with("tests\\")
-        || file.ends_with("_test.go")
-        || file.ends_with("_test.py")
+    false
+}
+
+/// Match a path against a SQL `LIKE` pattern.
+///
+/// Supports `%` (any sequence of characters) and `\_` (literal underscore).
+/// All other characters are matched literally. Used by `is_test_chunk` to
+/// evaluate the registry's `test_path_patterns`.
+fn sql_like_matches(path: &str, pattern: &str) -> bool {
+    // Convert SQL LIKE pattern to segments split on `%`.
+    // `\_` is an escaped literal underscore in SQL LIKE — unescape it first.
+    let unescaped = pattern.replace("\\_", "_");
+    let parts: Vec<&str> = unescaped.split('%').collect();
+
+    // Single segment (no wildcards) — exact match.
+    if parts.len() == 1 {
+        return path == parts[0];
+    }
+
+    let mut pos = 0;
+
+    for (i, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if i == 0 {
+            // First segment must be a prefix.
+            if !path.starts_with(part) {
+                return false;
+            }
+            pos = part.len();
+        } else if i == parts.len() - 1 {
+            // Last segment must be a suffix, and must not overlap with what we've consumed.
+            if !path[pos..].ends_with(part) {
+                return false;
+            }
+        } else {
+            // Interior segment — find it after `pos`.
+            match path[pos..].find(part) {
+                Some(offset) => pos += offset + part.len(),
+                None => return false,
+            }
+        }
+    }
+    true
 }
 
 use std::path::Path;
