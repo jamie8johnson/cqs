@@ -13,7 +13,9 @@ mod filter;
 mod name_match;
 mod note_boost;
 
-pub(crate) use candidate::{apply_parent_boost, score_candidate, BoundedScoreHeap, ScoringContext};
+pub(crate) use candidate::{
+    apply_parent_boost, apply_scoring_pipeline, score_candidate, BoundedScoreHeap, ScoringContext,
+};
 pub(crate) use filter::{build_filter_sql, compile_glob_filter, extract_file_from_chunk_id};
 pub(crate) use name_match::NameMatcher;
 pub(crate) use note_boost::NoteBoostIndex;

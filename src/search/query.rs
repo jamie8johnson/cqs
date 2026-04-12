@@ -20,8 +20,9 @@ use crate::store::sanitize_fts_query;
 use crate::store::{NoteSummary, Store, StoreError};
 
 use super::scoring::{
-    apply_parent_boost, build_filter_sql, compile_glob_filter, extract_file_from_chunk_id,
-    score_candidate, BoundedScoreHeap, NameMatcher, NoteBoostIndex, ScoringContext,
+    apply_parent_boost, apply_scoring_pipeline, build_filter_sql, compile_glob_filter,
+    extract_file_from_chunk_id, score_candidate, BoundedScoreHeap, NameMatcher, NoteBoostIndex,
+    ScoringContext,
 };
 use super::synonyms::expand_query_for_fts;
 
@@ -528,6 +529,8 @@ impl Store {
 
         tracing::debug!(fused = fused.len(), alpha, "Hybrid fusion complete");
 
+        let fused_map: std::collections::HashMap<String, f32> =
+            fused.iter().map(|r| (r.id.clone(), r.score)).collect();
         let candidate_ids: Vec<&str> = fused.iter().map(|r| r.id.as_str()).collect();
         self.search_by_candidate_ids_with_notes(
             &candidate_ids,
@@ -536,6 +539,7 @@ impl Store {
             limit,
             threshold,
             &notes,
+            Some(&fused_map),
         )
     }
 
@@ -600,6 +604,7 @@ impl Store {
                 limit,
                 threshold,
                 &notes,
+                None,
             );
         }
 
@@ -630,10 +635,17 @@ impl Store {
             limit,
             threshold,
             &notes,
+            None,
         )
     }
 
-    /// Inner implementation of `search_by_candidate_ids` that accepts pre-loaded notes.
+    /// Inner implementation of `search_by_candidate_ids` that accepts pre-loaded notes
+    /// and optional pre-fused scores from hybrid search.
+    ///
+    /// When `fused_scores` is `Some`, candidates with a fused score entry use that
+    /// score as the base (replacing cosine similarity) while still applying name
+    /// boost, note boost, demotion, and threshold filtering.
+    #[allow(clippy::too_many_arguments)]
     fn search_by_candidate_ids_with_notes(
         &self,
         candidate_ids: &[&str],
@@ -642,6 +654,7 @@ impl Store {
         limit: usize,
         threshold: f32,
         notes: &[NoteSummary],
+        fused_scores: Option<&std::collections::HashMap<String, f32>>,
     ) -> Result<Vec<SearchResult>, StoreError> {
         let _span = tracing::info_span!(
             "search_by_candidates",
@@ -717,14 +730,23 @@ impl Store {
                         }
                     }
 
-                    let embedding = embedding_slice(&embedding_bytes, self.dim).ok()?;
-
-                    let score = score_candidate(
-                        embedding,
-                        Some(&candidate.name),
-                        &candidate.origin,
-                        &scoring_ctx,
-                    )?;
+                    let score =
+                        if let Some(&fused) = fused_scores.and_then(|fs| fs.get(&candidate.id)) {
+                            apply_scoring_pipeline(
+                                fused,
+                                Some(&candidate.name),
+                                &candidate.origin,
+                                &scoring_ctx,
+                            )?
+                        } else {
+                            let embedding = embedding_slice(&embedding_bytes, self.dim).ok()?;
+                            score_candidate(
+                                embedding,
+                                Some(&candidate.name),
+                                &candidate.origin,
+                                &scoring_ctx,
+                            )?
+                        };
 
                     Some((candidate, score))
                 })

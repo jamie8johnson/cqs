@@ -216,20 +216,17 @@ pub(crate) struct ScoringContext<'a> {
     pub threshold: f32,
 }
 
-/// Score a single candidate chunk against the query.
+/// Apply the scoring pipeline to a pre-computed base score (name boost, glob
+/// filter, note boost, test demotion, threshold).
 ///
-/// Pure function — no database access. Combines embedding similarity, optional
-/// name boosting, glob filtering, note boosting, and test-function demotion.
-///
-/// Returns `None` if the candidate is filtered out (glob mismatch or below threshold).
-pub(crate) fn score_candidate(
-    embedding: &[f32],
+/// Used by `score_candidate` (base = cosine) and the hybrid search path
+/// (base = alpha-weighted dense+sparse fusion).
+pub(crate) fn apply_scoring_pipeline(
+    embedding_score: f32,
     name: Option<&str>,
     file_part: &str,
     ctx: &ScoringContext<'_>,
 ) -> Option<f32> {
-    let embedding_score = cosine_similarity(ctx.query, embedding)?;
-
     let base_score = if let Some(matcher) = ctx.name_matcher {
         let n = name.unwrap_or("");
         let name_score = matcher.score(n);
@@ -244,13 +241,9 @@ pub(crate) fn score_candidate(
         }
     }
 
-    // Apply note-based boost: notes mentioning this chunk's file or name
-    // adjust its score by up to ±15%. Clamp base_score to non-negative first —
-    // negative cosine scores invert multiplicative boost/demotion semantics.
     let chunk_name = name.unwrap_or("");
     let mut score = base_score.max(0.0) * ctx.note_index.boost(file_part, chunk_name);
 
-    // Apply demotion for test functions and underscore-prefixed names
     if ctx.filter.enable_demotion {
         score *= chunk_importance(chunk_name, file_part);
     }
@@ -260,6 +253,22 @@ pub(crate) fn score_candidate(
     } else {
         None
     }
+}
+
+/// Score a single candidate chunk against the query.
+///
+/// Pure function — no database access. Combines embedding similarity, optional
+/// name boosting, glob filtering, note boosting, and test-function demotion.
+///
+/// Returns `None` if the candidate is filtered out (glob mismatch or below threshold).
+pub(crate) fn score_candidate(
+    embedding: &[f32],
+    name: Option<&str>,
+    file_part: &str,
+    ctx: &ScoringContext<'_>,
+) -> Option<f32> {
+    let base = cosine_similarity(ctx.query, embedding)?;
+    apply_scoring_pipeline(base, name, file_part, ctx)
 }
 
 #[cfg(test)]
@@ -895,5 +904,91 @@ mod tests {
                 "score_candidate with zero query must return finite score, got {v}"
             ),
         }
+    }
+
+    #[test]
+    fn apply_scoring_pipeline_preserves_fused_score() {
+        let filter = SearchFilter::default();
+        let query = test_embedding(1.0);
+        let note_index = NoteBoostIndex::new(&[]);
+        let ctx = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.0,
+        };
+
+        let fused = 0.75;
+        let result = apply_scoring_pipeline(fused, Some("my_fn"), "src/lib.rs", &ctx);
+        assert_eq!(result, Some(0.75));
+    }
+
+    #[test]
+    fn apply_scoring_pipeline_applies_name_boost_to_fused() {
+        let mut filter = SearchFilter::default();
+        filter.name_boost = 0.3;
+        filter.query_text = "my_fn".to_string();
+        let query = test_embedding(1.0);
+        let note_index = NoteBoostIndex::new(&[]);
+        let matcher = NameMatcher::new("my_fn");
+        let ctx = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: Some(&matcher),
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.0,
+        };
+
+        let fused = 0.6;
+        let result = apply_scoring_pipeline(fused, Some("my_fn"), "src/lib.rs", &ctx).unwrap();
+        assert!(
+            result > fused,
+            "name boost should increase fused score for exact match"
+        );
+    }
+
+    #[test]
+    fn apply_scoring_pipeline_applies_demotion_to_fused() {
+        let mut filter = SearchFilter::default();
+        filter.enable_demotion = true;
+        let query = test_embedding(1.0);
+        let note_index = NoteBoostIndex::new(&[]);
+        let ctx = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.0,
+        };
+
+        let fused = 0.8;
+        let prod = apply_scoring_pipeline(fused, Some("real_fn"), "src/lib.rs", &ctx).unwrap();
+        let test = apply_scoring_pipeline(fused, Some("test_foo"), "src/lib.rs", &ctx).unwrap();
+        assert!(
+            test < prod,
+            "test function should be demoted even with fused score"
+        );
+    }
+
+    #[test]
+    fn apply_scoring_pipeline_respects_threshold() {
+        let filter = SearchFilter::default();
+        let query = test_embedding(1.0);
+        let note_index = NoteBoostIndex::new(&[]);
+        let ctx = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: None,
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.9,
+        };
+
+        let result = apply_scoring_pipeline(0.5, Some("fn"), "src/lib.rs", &ctx);
+        assert!(result.is_none());
     }
 }
