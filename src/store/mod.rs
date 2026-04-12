@@ -254,8 +254,17 @@ struct StoreOpenConfig {
     read_only: bool,
     use_current_thread: bool,
     max_connections: u32,
-    mmap_size: &'static str,
+    mmap_size: String,
     cache_size: &'static str,
+}
+
+/// Read `CQS_MMAP_SIZE` env var, falling back to `default_bytes`.
+/// The env var is the raw byte count (e.g. `268435456` for 256 MB).
+fn mmap_size_from_env(default_bytes: &str) -> String {
+    std::env::var("CQS_MMAP_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok().map(|n| n.to_string()))
+        .unwrap_or_else(|| default_bytes.to_string())
 }
 
 impl Store {
@@ -273,14 +282,18 @@ impl Store {
 
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
+        let max_connections = std::env::var("CQS_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(4);
         Self::open_with_config(
             path,
             StoreOpenConfig {
                 read_only: false,
                 use_current_thread: false,
-                max_connections: 4,
-                mmap_size: "268435456", // 256MB
-                cache_size: "-16384",   // 16MB
+                max_connections,
+                mmap_size: mmap_size_from_env("268435456"), // 256MB default
+                cache_size: "-16384",                       // 16MB
             },
         )
     }
@@ -301,7 +314,7 @@ impl Store {
                 read_only: true,
                 use_current_thread: true,
                 max_connections: 1, // PB-1: single-thread runtime can only use 1 connection
-                mmap_size: "268435456", // 256MB
+                mmap_size: mmap_size_from_env("268435456"), // 256MB default
                 cache_size: "-16384", // 16MB
             },
         )
@@ -317,8 +330,8 @@ impl Store {
                 read_only: true,
                 use_current_thread: true,
                 max_connections: 1,
-                mmap_size: "67108864", // 64MB
-                cache_size: "-4096",   // 4MB
+                mmap_size: mmap_size_from_env("67108864"), // 64MB default
+                cache_size: "-4096",                       // 4MB
             },
         )
     }
@@ -347,7 +360,12 @@ impl Store {
             .filename(path)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(std::time::Duration::from_secs(5))
+            .busy_timeout(std::time::Duration::from_millis(
+                std::env::var("CQS_BUSY_TIMEOUT_MS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(5000),
+            ))
             // NORMAL synchronous in WAL mode: fsync on checkpoint, not every commit.
             // Trade-off: a crash can lose the last few committed transactions (WAL
             // tail not yet fsynced), but the database remains consistent. Acceptable
@@ -369,7 +387,12 @@ impl Store {
         let pool = rt.block_on(async {
             SqlitePoolOptions::new()
                 .max_connections(config.max_connections)
-                .idle_timeout(std::time::Duration::from_secs(30)) // PB-2: shorter timeout to release WAL locks
+                .idle_timeout(std::time::Duration::from_secs(
+                    std::env::var("CQS_IDLE_TIMEOUT_SECS")
+                        .ok()
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(30), // PB-2: shorter timeout to release WAL locks
+                ))
                 .after_connect(move |conn, _meta| {
                     let pragma = cache_pragma.clone();
                     Box::pin(async move {
@@ -428,6 +451,11 @@ impl Store {
         // Opt-out for either path is available via CQS_SKIP_INTEGRITY_CHECK=1
         // if the quick_check itself becomes a problem on huge write opens.
         let skip_integrity = std::env::var("CQS_SKIP_INTEGRITY_CHECK").as_deref() == Ok("1");
+        if config.read_only {
+            tracing::debug!("Skipping integrity check (read-only open)");
+        } else if skip_integrity {
+            tracing::debug!("Skipping integrity check (CQS_SKIP_INTEGRITY_CHECK=1)");
+        }
         if !config.read_only && !skip_integrity {
             rt.block_on(async {
                 let result: (String,) = sqlx::query_as("PRAGMA quick_check(1)")
