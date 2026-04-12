@@ -205,8 +205,8 @@ impl Store {
         }
         self.rt.block_on(async {
             let mut result = std::collections::HashMap::new();
-            // Process in batches to stay under SQLite parameter limit
-            for batch in chunk_ids.chunks(500) {
+            use crate::store::helpers::sql::max_rows_per_statement;
+            for batch in chunk_ids.chunks(max_rows_per_statement(1)) {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT id, enrichment_hash FROM chunks WHERE id IN ({}) AND enrichment_hash IS NOT NULL",
@@ -263,8 +263,9 @@ impl Store {
         }
         self.rt.block_on(async {
             let mut result = std::collections::HashMap::new();
-            // Reserve one param slot for purpose, so 499 per batch
-            for batch in content_hashes.chunks(499) {
+            use crate::store::helpers::sql::max_rows_per_statement;
+            // Reserve one param for the purpose bind, so (limit - 1) per batch
+            for batch in content_hashes.chunks(max_rows_per_statement(1) - 1) {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT content_hash, summary FROM llm_summaries WHERE content_hash IN ({}) AND purpose = ?{}",
@@ -300,7 +301,8 @@ impl Store {
         let now = chrono::Utc::now().to_rfc3339();
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
-            const BATCH_SIZE: usize = 132; // 132 * 5 params = 660 < 999
+            use crate::store::helpers::sql::max_rows_per_statement;
+            const BATCH_SIZE: usize = max_rows_per_statement(5);
             for batch in summaries.chunks(BATCH_SIZE) {
                 let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
                     "INSERT OR REPLACE INTO llm_summaries (content_hash, summary, model, purpose, created_at)",
@@ -481,7 +483,9 @@ impl Store {
                         })
                         .collect()
                 };
-                for batch in unique_ids.chunks(500) {
+                for batch in
+                    unique_ids.chunks(crate::store::helpers::sql::max_rows_per_statement(1))
+                {
                     let placeholders: String = batch
                         .iter()
                         .enumerate()
@@ -548,8 +552,7 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
 
-            // Batch inserts into temp table at 500 to stay under SQLite limits.
-            for batch in live_ids.chunks(500) {
+            for batch in live_ids.chunks(crate::store::helpers::sql::max_rows_per_statement(1)) {
                 let placeholders: Vec<String> =
                     batch.iter().enumerate().map(|(i, _)| format!("(?{})", i + 1)).collect();
                 let insert_sql = format!(

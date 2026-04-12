@@ -217,7 +217,13 @@ pub(super) async fn snapshot_content_hashes(
     Ok(old_hashes)
 }
 
-/// Batch INSERT chunks (49 rows × 20 params = 980 < SQLite's 999 limit).
+/// Batch INSERT chunks — derived from the modern SQLite variable limit.
+///
+/// v1.22.0 audit SHL-32: the previous `CHUNK_INSERT_BATCH = 49` (49 × 20
+/// params = 980) was sized for the pre-3.32 SQLite 999-variable limit. On
+/// a 12k-chunk reindex this produced ~245 INSERT statements. The modern
+/// limit (32766) permits ~1622 rows per statement, reducing to ~8 INSERTs
+/// for the same corpus — a 30× reduction in SQL round-trips.
 ///
 /// Uses `ON CONFLICT(id) DO UPDATE` (upsert) instead of `INSERT OR REPLACE`
 /// to preserve `enrichment_hash` and `enrichment_version` columns that are
@@ -239,7 +245,8 @@ pub(super) async fn batch_insert_chunks(
     source_mtime: Option<i64>,
     now: &str,
 ) -> Result<(), StoreError> {
-    const CHUNK_INSERT_BATCH: usize = 49;
+    use crate::store::helpers::sql::max_rows_per_statement;
+    const CHUNK_INSERT_BATCH: usize = max_rows_per_statement(20);
     for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
         let emb_offset = batch_idx * CHUNK_INSERT_BATCH;
         let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
@@ -330,8 +337,9 @@ pub(super) async fn upsert_fts_conditional(
         return Ok(());
     }
 
+    use crate::store::helpers::sql::max_rows_per_statement;
     // Batch DELETE: remove old FTS entries for changed chunks (PF-8: reuse make_placeholders)
-    for batch in changed.chunks(500) {
+    for batch in changed.chunks(max_rows_per_statement(1)) {
         let placeholders = crate::store::helpers::make_placeholders(batch.len());
         let sql = format!("DELETE FROM chunks_fts WHERE id IN ({})", placeholders);
         let mut query = sqlx::query(&sql);
@@ -342,8 +350,7 @@ pub(super) async fn upsert_fts_conditional(
     }
 
     // Batch INSERT: add new FTS entries
-    for batch in changed.chunks(180) {
-        // 180 chunks × 5 bind params = 900, under SQLite 999 limit
+    for batch in changed.chunks(max_rows_per_statement(5)) {
         let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> =
             sqlx::QueryBuilder::new("INSERT INTO chunks_fts (id, name, signature, content, doc) ");
         qb.push_values(batch.iter(), |mut b, chunk| {

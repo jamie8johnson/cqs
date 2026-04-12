@@ -111,7 +111,8 @@ impl Store {
             // finding SHL-31: PR #891 fixed the sibling INSERT loop but left
             // the DELETE on the old constant, paying ~30x the statement
             // count. One bind variable per chunk_id, minus the safety margin.
-            const DELETE_BATCH: usize = SQLITE_MAX_VARIABLES - SAFETY_MARGIN_VARS;
+            use crate::store::helpers::sql::max_rows_per_statement;
+            const DELETE_BATCH: usize = max_rows_per_statement(1);
             let chunk_ids: Vec<&str> = vectors.iter().map(|(id, _)| id.as_str()).collect();
             for batch in chunk_ids.chunks(DELETE_BATCH) {
                 let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> =
@@ -147,9 +148,7 @@ impl Store {
             // Iterate across chunks AND rows together so each batch fills
             // close to capacity, instead of starting a fresh batch per chunk
             // and producing tiny INSERTs for chunks with few tokens.
-            const VARS_PER_ROW: usize = 3; // chunk_id, token_id, weight
-            const ROWS_PER_INSERT: usize =
-                (SQLITE_MAX_VARIABLES - SAFETY_MARGIN_VARS) / VARS_PER_ROW;
+            const ROWS_PER_INSERT: usize = max_rows_per_statement(3);
             let mut pending: Vec<(&str, u32, f32)> = Vec::with_capacity(ROWS_PER_INSERT);
             for (chunk_id, sparse) in vectors {
                 for &(token_id, weight) in sparse {
@@ -358,17 +357,6 @@ impl Store {
         })
     }
 }
-
-/// SQLite's `SQLITE_MAX_VARIABLE_NUMBER` since v3.32 (2020). The audit chain
-/// SHL-31/32/33 found 15 call sites still using the pre-3.32 999 assumption;
-/// this constant is the single source of truth we migrate them towards.
-const SQLITE_MAX_VARIABLES: usize = 32766;
-
-/// Generic headroom so one extra bind variable in a future caller doesn't
-/// instantly trip the SQLite limit. Does NOT absorb a full extra column;
-/// adding a new bind column requires increasing `VARS_PER_ROW` at the call
-/// site (SHL-41 audit rationale correction).
-const SAFETY_MARGIN_VARS: usize = 300;
 
 #[cfg(test)]
 mod tests {
