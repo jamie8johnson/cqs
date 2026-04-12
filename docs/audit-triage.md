@@ -356,16 +356,24 @@ The P1-severity hard items (AC-1, DS-W5, PB-NEW-6) stay in P1 for triage-severit
 | SHL-32 | #904 | ✅ merged |
 | SHL-33 | #904 | ✅ merged |
 
-| AC-1 | #910 | ⏳ CI |
+| AC-1 | #910 | ✅ merged |
 | AC-3 | #911 | ⏳ CI |
 | API-12 | #911 | ⏳ CI |
+| CQ-4 | #911 | ⏳ CI |
+| Doc-5 | #911 | ⏳ CI |
 | Doc-10 | #911 | ⏳ CI |
+| DS-W5 | #911 | ⏳ CI |
 | EH-6 | #911 | ⏳ CI |
+| EXT-7 | #911 | ⏳ CI |
+| EXT-8 | #911 | ⏳ CI |
+| EXT-9 | #911 | ⏳ CI |
 | OB-13 | #911 | ⏳ CI |
 | OB-15 | #911 | ⏳ CI |
 | OB-16 | #911 | ⏳ CI |
 | OB-18 | #911 | ⏳ CI |
 | OB-20 | #908 | ✅ merged |
+| PB-NEW-9 | #911 | ⏳ CI |
+| PF-5 | — | won't-fix (inherent to binary format) |
 | PF-6 | #911 | ⏳ CI |
 | PF-8 | #911 | ⏳ CI |
 | SEC-NEW-2 | #911 | ⏳ CI |
@@ -377,7 +385,5 @@ The P1-severity hard items (AC-1, DS-W5, PB-NEW-6) stay in P1 for triage-severit
 | SHL-39 | #911 | ⏳ CI |
 | SHL-40 | #911 | ⏳ CI |
 
-| DS-W5 | #911 | ⏳ CI |
-
-**79 findings fixed out of ~136 triaged.**
-All P1 items addressed. AC-1 in PR #910, DS-W5 in PR #911.
+**84 findings fixed (+ 1 won't-fix) out of ~136 triaged.**
+All P1 items addressed. AC-1 merged in #910, DS-W5 + 24 P2/P3s in #911.
