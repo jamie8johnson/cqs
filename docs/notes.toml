@@ -1132,3 +1132,22 @@ mentions = [
     "src/store/migrations.rs",
     "src/cli/commands/index/build.rs",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "bin-crate tests can't access pub(crate) types from lib — need explicit re-exports in lib.rs for ReviewedFunction, RiskSummary etc. Agent-generated tests hit this; fix is to add pub use review::{Type} in lib.rs"
+mentions = [
+    "lib.rs",
+    "review.rs",
+    "diff_review.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "worktree agent cherry-pick workflow: git diff main..worktree-branch -- files | git apply works better than git cherry-pick when the agent's base differs from the current branch"
+mentions = ["agents"]
+
+[[note]]
+sentiment = -0.5
+text = "GH Actions free tier queues test jobs 20+ minutes on Sunday afternoons — plan around this for CI-dependent workflows"
+mentions = ["ci"]

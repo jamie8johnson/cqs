@@ -384,6 +384,10 @@ The P1-severity hard items (AC-1, DS-W5, PB-NEW-6) stay in P1 for triage-severit
 | SHL-38 | #911 | ⏳ CI |
 | SHL-39 | #911 | ⏳ CI |
 | SHL-40 | #911 | ⏳ CI |
+| Roadmap CPU | #911 | ⏳ CI |
+| RM-6 | #911 | ⏳ CI |
+| RM-7 | #911 | ⏳ CI |
 
-**84 findings fixed (+ 1 won't-fix) out of ~136 triaged.**
-All P1 items addressed. AC-1 merged in #910, DS-W5 + 24 P2/P3s in #911.
+**87 findings fixed (+ 1 won't-fix) out of ~136 triaged.**
+All P1 items addressed. AC-1 merged in #910. 28 P2/P3s + 3 issue fixes in #911.
+Issues #912–#925 created for architectural items. #913/#915 scoped into daemon plan (#912).
