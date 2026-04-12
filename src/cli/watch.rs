@@ -34,6 +34,21 @@ use cqs::store::Store;
 
 use super::{check_interrupted, find_project_root, try_acquire_index_lock, Cli};
 
+/// Opaque identity of a database file for detecting replacements (DS-W5).
+/// On Unix uses (device, inode) — survives renames that preserve the inode
+/// and detects replacements where `index --force` creates a new file.
+#[cfg(unix)]
+fn db_file_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn db_file_identity(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
 /// Full HNSW rebuild after this many incremental inserts to clean orphaned vectors.
 /// Override with CQS_WATCH_REBUILD_THRESHOLD env var.
 fn hnsw_rebuild_threshold() -> usize {
@@ -318,6 +333,11 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
     let mut store = Store::open(&index_path)
         .with_context(|| format!("Failed to open store at {}", index_path.display()))?;
 
+    // DS-W5: Track the database file identity so we detect when `cqs index --force`
+    // replaces it. Without this check, watch's Store handle would point at the
+    // orphaned (renamed) inode and writes would silently vanish.
+    let mut db_id = db_file_identity(&index_path);
+
     // Persistent HNSW state for incremental updates.
     // On first file change, does a full build and keeps the Owned index in memory.
     // Subsequent changes insert only changed chunks via insert_batch.
@@ -402,6 +422,24 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
                         }
                     };
 
+                    // DS-W5: Detect if `cqs index --force` replaced the database
+                    // while we were waiting. If so, reopen the Store before processing
+                    // any changes — otherwise writes go to the orphaned inode.
+                    let current_id = db_file_identity(&index_path);
+                    if current_id != db_id {
+                        info!("index.db replaced (likely cqs index --force), reopening store");
+                        drop(store);
+                        store = Store::open(&index_path).with_context(|| {
+                            format!(
+                                "Failed to re-open store at {} after DB replacement",
+                                index_path.display()
+                            )
+                        })?;
+                        // db_id updated below in the DS-9 reopen path
+                        state.hnsw_index = None;
+                        state.incremental_count = 0;
+                    }
+
                     if !state.pending_files.is_empty() {
                         process_file_changes(&watch_cfg, &store, &mut state);
                     }
@@ -418,6 +456,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
                     store = Store::open(&index_path).with_context(|| {
                         format!("Failed to re-open store at {}", index_path.display())
                     })?;
+                    db_id = db_file_identity(&index_path);
 
                     // DS-1: Release lock after all reindex work (including HNSW rebuild)
                     drop(lock);
