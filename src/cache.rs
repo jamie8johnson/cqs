@@ -855,3 +855,136 @@ mod tests {
         assert_eq!(stats.total_entries, 3); // only fresh ones survive
     }
 }
+
+// ─── Query Cache ────────────────────────────────────────────────────────────
+
+/// Persistent query embedding cache backed by SQLite.
+///
+/// Stores `(query_text, model_fingerprint) → embedding` on disk so that
+/// repeated queries across CLI invocations don't re-run ONNX inference.
+/// Best-effort: all failures are logged and silently skipped.
+pub struct QueryCache {
+    pool: sqlx::SqlitePool,
+    rt: tokio::runtime::Runtime,
+}
+
+impl QueryCache {
+    /// Default cache location (same directory as the embedding cache).
+    pub fn default_path() -> std::path::PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".cache/cqs/query_cache.db")
+    }
+
+    /// Open or create the query cache.
+    pub fn open(path: &Path) -> Result<Self, CacheError> {
+        let _span = tracing::info_span!("query_cache_open", path = %path.display()).entered();
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+            }
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CacheError::Io(std::io::Error::other(e)))?;
+
+        let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .busy_timeout(std::time::Duration::from_secs(2))
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+
+        let pool = rt.block_on(async {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .idle_timeout(std::time::Duration::from_secs(30))
+                .connect_with(connect_opts)
+                .await?;
+
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS query_cache (
+                    query TEXT NOT NULL,
+                    model_fp TEXT NOT NULL,
+                    embedding BLOB NOT NULL,
+                    ts INTEGER NOT NULL DEFAULT (unixepoch()),
+                    PRIMARY KEY (query, model_fp)
+                )",
+            )
+            .execute(&pool)
+            .await?;
+
+            Ok::<_, sqlx::Error>(pool)
+        })?;
+
+        tracing::debug!(path = %path.display(), "Query cache opened");
+        Ok(Self { pool, rt })
+    }
+
+    /// Look up a cached query embedding.
+    pub fn get(&self, query: &str, model_fp: &str) -> Option<crate::embedder::Embedding> {
+        self.rt.block_on(async {
+            let row: Option<(Vec<u8>,)> = sqlx::query_as(
+                "SELECT embedding FROM query_cache WHERE query = ?1 AND model_fp = ?2",
+            )
+            .bind(query)
+            .bind(model_fp)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()?;
+
+            let (bytes,) = row?;
+            if bytes.len() % std::mem::size_of::<f32>() != 0 {
+                return None;
+            }
+            let floats: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            Some(crate::embedder::Embedding::new(floats))
+        })
+    }
+
+    /// Store a query embedding (write-through).
+    pub fn put(&self, query: &str, model_fp: &str, embedding: &crate::embedder::Embedding) {
+        let bytes: Vec<u8> = embedding
+            .as_slice()
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        if let Err(e) = self.rt.block_on(async {
+            sqlx::query(
+                "INSERT OR REPLACE INTO query_cache (query, model_fp, embedding, ts)
+                 VALUES (?1, ?2, ?3, unixepoch())",
+            )
+            .bind(query)
+            .bind(model_fp)
+            .bind(&bytes)
+            .execute(&self.pool)
+            .await
+        }) {
+            tracing::debug!(error = %e, "Query cache write failed (non-fatal)");
+        }
+    }
+
+    /// Prune entries older than `days` days. Returns count deleted.
+    pub fn prune_older_than(&self, days: u32) -> Result<u64, CacheError> {
+        let rows = self.rt.block_on(async {
+            let result = sqlx::query("DELETE FROM query_cache WHERE ts < unixepoch() - ?1 * 86400")
+                .bind(days)
+                .execute(&self.pool)
+                .await?;
+            Ok::<_, sqlx::Error>(result.rows_affected())
+        })?;
+        if rows > 0 {
+            tracing::info!(pruned = rows, days, "Query cache pruned");
+        }
+        Ok(rows)
+    }
+}
