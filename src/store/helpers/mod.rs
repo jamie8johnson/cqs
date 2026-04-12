@@ -57,6 +57,12 @@ pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};
 ///
 /// History:
 /// - v18: embedding_base column for dual embeddings (adaptive retrieval Phase 5)
+/// - v20: AFTER DELETE trigger on chunks bumps splade_generation in metadata
+///   (v1.22.0 audit DS-W2 / OB-22 / PB-NEW-6 — `cqs watch` never touched
+///   SPLADE, so deletes that cascade to sparse_vectors left the persisted
+///   `splade.index.bin` stale. The trigger fires once per deleted chunk
+///   (1-200 fires per watch cycle, tolerable) and invalidates the cached
+///   index without requiring instrumentation at every chunks-delete site.)
 /// - v19: sparse_vectors gains FK(chunk_id) → chunks(id) ON DELETE CASCADE
 ///   (v1.22.0 audit DS-W3 — orphan sparse rows previously leaked on every
 ///   chunks-delete path; CASCADE makes the invariant structural)
@@ -69,7 +75,7 @@ pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};
 /// - v12: parent_type_name column for method->class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 19;
+pub const CURRENT_SCHEMA_VERSION: i32 = 20;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.
