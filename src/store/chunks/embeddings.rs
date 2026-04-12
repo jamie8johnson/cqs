@@ -112,3 +112,101 @@ impl Store {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::embedder::Embedding;
+    use crate::parser::{Chunk, ChunkType, Language};
+    use crate::store::{ModelInfo, Store};
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn mock_embedding(seed: f32) -> Embedding {
+        let mut v = vec![seed; crate::EMBEDDING_DIM];
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in &mut v {
+                *x /= norm;
+            }
+        }
+        Embedding::new(v)
+    }
+
+    fn test_chunk(name: &str, content: &str) -> Chunk {
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        Chunk {
+            id: format!("test.rs:1:{}", &hash[..8]),
+            file: PathBuf::from("test.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {}()", name),
+            content: content.to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash: hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        }
+    }
+
+    fn make_store() -> (Store, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+        (store, dir)
+    }
+
+    #[test]
+    fn test_get_chunk_ids_and_embeddings_by_hashes_roundtrip() {
+        let (store, _dir) = make_store();
+
+        let chunk1 = test_chunk("alpha", "fn alpha() { 1 }");
+        let chunk2 = test_chunk("beta", "fn beta() { 2 }");
+        let chunk3 = test_chunk("gamma", "fn gamma() { 3 }");
+
+        let emb1 = mock_embedding(1.0);
+        let emb2 = mock_embedding(2.0);
+        let emb3 = mock_embedding(3.0);
+
+        store.upsert_chunk(&chunk1, &emb1, Some(100)).unwrap();
+        store.upsert_chunk(&chunk2, &emb2, Some(100)).unwrap();
+        store.upsert_chunk(&chunk3, &emb3, Some(100)).unwrap();
+
+        let hashes: Vec<&str> = vec![
+            chunk1.content_hash.as_str(),
+            chunk2.content_hash.as_str(),
+            chunk3.content_hash.as_str(),
+        ];
+        let result = store
+            .get_chunk_ids_and_embeddings_by_hashes(&hashes)
+            .unwrap();
+
+        assert_eq!(result.len(), 3, "Should return all 3 inserted chunks");
+
+        // Build a lookup by chunk id for order-independent assertions
+        let by_id: std::collections::HashMap<&str, &Embedding> =
+            result.iter().map(|(id, emb)| (id.as_str(), emb)).collect();
+
+        assert!(by_id.contains_key(chunk1.id.as_str()));
+        assert!(by_id.contains_key(chunk2.id.as_str()));
+        assert!(by_id.contains_key(chunk3.id.as_str()));
+
+        // Verify embeddings match (cosine similarity ~1.0 with themselves)
+        let cos1 =
+            crate::math::cosine_similarity(by_id[chunk1.id.as_str()].as_slice(), emb1.as_slice())
+                .unwrap();
+        let cos2 =
+            crate::math::cosine_similarity(by_id[chunk2.id.as_str()].as_slice(), emb2.as_slice())
+                .unwrap();
+        let cos3 =
+            crate::math::cosine_similarity(by_id[chunk3.id.as_str()].as_slice(), emb3.as_slice())
+                .unwrap();
+        assert!(cos1 > 0.99, "emb1 round-trip similarity: {cos1}");
+        assert!(cos2 > 0.99, "emb2 round-trip similarity: {cos2}");
+        assert!(cos3 > 0.99, "emb3 round-trip similarity: {cos3}");
+    }
+}
