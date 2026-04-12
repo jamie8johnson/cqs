@@ -326,32 +326,49 @@ fn parse_server_code_calls(
         })
         .collect();
 
+    // v1.22.0 audit EH-5: mirror the sibling `parse_server_code`'s warn
+    // calls. The old code silently returned vec![] on every failure point,
+    // making missing call-graph data for ASPX server code invisible.
     let grammar = match language.try_def().and_then(|d| d.grammar) {
         Some(grammar_fn) => grammar_fn(),
-        None => return vec![],
+        None => {
+            tracing::warn!(%language, "No grammar for ASPX server language (calls), skipping");
+            return vec![];
+        }
     };
 
     let mut ts_parser = tree_sitter::Parser::new();
     if ts_parser.set_language(&grammar).is_err() {
+        tracing::warn!(%language, "Failed to set language for ASPX call parser");
         return vec![];
     }
     if ts_parser.set_included_ranges(&ts_ranges).is_err() {
+        tracing::warn!(%language, "Failed to set included ranges for ASPX call parser");
         return vec![];
     }
 
     let tree = match ts_parser.parse(source, None) {
         Some(t) => t,
-        None => return vec![],
+        None => {
+            tracing::warn!(%language, "ASPX call parser returned no tree");
+            return vec![];
+        }
     };
 
     let chunk_query = match cqs_parser.get_query(language) {
         Ok(q) => q,
-        Err(_) => return vec![],
+        Err(e) => {
+            tracing::warn!(%language, error = %e, "No chunk query for ASPX server language (calls)");
+            return vec![];
+        }
     };
 
     let call_query = match cqs_parser.get_call_query(language) {
         Ok(q) => q,
-        Err(_) => return vec![],
+        Err(e) => {
+            tracing::warn!(%language, error = %e, "No call query for ASPX server language");
+            return vec![];
+        }
     };
 
     let capture_names = chunk_query.capture_names();
@@ -450,20 +467,28 @@ fn parse_server_code_types(
 
     let grammar = match language.try_def().and_then(|d| d.grammar) {
         Some(grammar_fn) => grammar_fn(),
-        None => return vec![],
+        None => {
+            tracing::warn!(%language, "No grammar for ASPX server language (types), skipping");
+            return vec![];
+        }
     };
 
     let mut ts_parser = tree_sitter::Parser::new();
     if ts_parser.set_language(&grammar).is_err() {
+        tracing::warn!(%language, "Failed to set language for ASPX type parser");
         return vec![];
     }
     if ts_parser.set_included_ranges(&ts_ranges).is_err() {
+        tracing::warn!(%language, "Failed to set included ranges for ASPX type parser");
         return vec![];
     }
 
     let tree = match ts_parser.parse(source, None) {
         Some(t) => t,
-        None => return vec![],
+        None => {
+            tracing::warn!(%language, "ASPX type parser returned no tree");
+            return vec![];
+        }
     };
 
     // Extract types across all regions using the full byte span of each region
