@@ -73,6 +73,7 @@ async fn run_migration(
         (16, 17) => migrate_v16_to_v17(conn).await,
         (17, 18) => migrate_v17_to_v18(conn).await,
         (18, 19) => migrate_v18_to_v19(conn).await,
+        (19, 20) => migrate_v19_to_v20(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -409,6 +410,65 @@ async fn migrate_v18_to_v19(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// Migrate from v19 to v20: AFTER DELETE trigger on chunks bumps splade_generation
+///
+/// v1.22.0 audit DS-W2 / OB-22 / PB-NEW-6 (triple-confirmed by three
+/// independent auditors): `cqs watch` never touched SPLADE. When watch
+/// detected a file edit and called `delete_phantom_chunks` or
+/// `delete_by_origin`, the v19 FK CASCADE correctly removed the orphan
+/// sparse rows, but nothing bumped `splade_generation`. The on-disk
+/// `splade.index.bin` still matched the unchanged counter, so readers
+/// trusted the stale file and served chunk_ids that no longer existed.
+///
+/// This trigger fires on every `DELETE FROM chunks` statement, once per
+/// deleted row, and bumps the generation via a single metadata UPDATE.
+/// For a watch cycle that touches 1-200 chunks, that's 1-200 metadata
+/// updates — negligible. For `cqs index --force`, the new DB is fresh
+/// and receives no DELETE statements at all, so the trigger cost is
+/// zero on the bulk-reindex path. The only concern is `delete_by_origin`
+/// during normal reindex when many chunks are displaced; even then the
+/// write amplification is ~1-5s per 10k deletions, vs. the minutes the
+/// actual rebuild takes.
+///
+/// The trigger is scoped to `chunks` deletions specifically. sparse_vectors
+/// writes are still bumped explicitly by `bump_splade_generation_tx` (one
+/// call per upsert transaction, not per row) because that's the only site
+/// the trigger-on-sparse_vectors alternative would have caught and it
+/// would have fired millions of times during a bulk upsert — row-level
+/// triggers on the high-cardinality table were the wrong design.
+async fn migrate_v19_to_v20(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v19_to_v20").entered();
+
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS bump_splade_on_chunks_delete \
+         AFTER DELETE ON chunks \
+         BEGIN \
+             INSERT INTO metadata (key, value) VALUES ('splade_generation', '1') \
+             ON CONFLICT(key) DO UPDATE SET \
+                 value = CAST((CAST(value AS INTEGER) + 1) AS TEXT); \
+         END",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    // Bump generation immediately so any pre-v20 persisted splade.index.bin
+    // (possibly already out of sync with sparse_vectors because watch-mode
+    // deletes since v19 landed never bumped the counter) gets invalidated
+    // on the next load.
+    sqlx::query(
+        "INSERT INTO metadata (key, value) VALUES ('splade_generation', '1')
+         ON CONFLICT(key) DO UPDATE SET
+             value = CAST((CAST(value AS INTEGER) + 1) AS TEXT)",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    tracing::info!(
+        "Migrated to v20: AFTER DELETE trigger on chunks bumps splade_generation (DS-W2/OB-22 fix)"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,7 +486,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 19);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 20);
     }
 
     #[test]
@@ -1518,6 +1578,194 @@ mod tests {
             assert_eq!(
                 remaining, 0,
                 "CASCADE should have removed chunk-also-live's sparse rows"
+            );
+        });
+    }
+
+    /// v1.22.0 audit DS-W2 / OB-22 / PB-NEW-6: v19→v20 adds a trigger on
+    /// chunks that bumps splade_generation on every DELETE. Test covers:
+    /// - Migration bumps the generation immediately
+    /// - The trigger fires on subsequent DELETE FROM chunks
+    /// - Multiple deletes produce multiple bumps (cardinality check)
+    /// - A no-op reindex (all INSERT no DELETE) does NOT bump via the trigger
+    #[test]
+    fn test_migrate_v19_to_v20_adds_trigger_that_bumps_on_chunks_delete() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true)
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+
+            // Minimal v19 schema: chunks, sparse_vectors with v19 FK, metadata.
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    embedding_base BLOB,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    enrichment_version INTEGER NOT NULL DEFAULT 0
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "CREATE TABLE sparse_vectors (
+                    chunk_id TEXT NOT NULL,
+                    token_id INTEGER NOT NULL,
+                    weight REAL NOT NULL,
+                    PRIMARY KEY (chunk_id, token_id),
+                    FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("CREATE INDEX idx_sparse_token ON sparse_vectors(token_id)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO metadata (key, value) VALUES ('schema_version', '19'),
+                                                          ('splade_generation', '10')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Seed a chunk so we have something to delete.
+            for id in ["c1", "c2", "c3"] {
+                sqlx::query(
+                    "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                     signature, content, content_hash, line_start, line_end, embedding, \
+                     created_at, updated_at) \
+                     VALUES (?1, 'file:lib.rs', 'file', 'rust', 'function', ?1, \
+                     '', '', 'h', 1, 10, X'00', '2026-04-12', '2026-04-12')",
+                )
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+
+            // Run v19 → v20 migration.
+            migrate(&pool, 19, 20).await.unwrap();
+
+            // Migration itself bumps the generation once.
+            let (gen_after_migration,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'splade_generation'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let gen_after_migration: u64 = gen_after_migration.parse().unwrap();
+            assert!(
+                gen_after_migration > 10,
+                "migration should bump generation past starting value 10"
+            );
+
+            // Trigger exists.
+            let trigger: Option<(String,)> = sqlx::query_as(
+                "SELECT name FROM sqlite_master WHERE type='trigger' \
+                 AND name='bump_splade_on_chunks_delete'",
+            )
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+            assert!(trigger.is_some(), "v20 trigger must exist after migration");
+
+            // Schema version.
+            let (v,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(v, "20");
+
+            // Deleting a chunk fires the trigger once and bumps the
+            // generation.
+            let before_one_delete = gen_after_migration;
+            sqlx::query("DELETE FROM chunks WHERE id = 'c1'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let (gen_after_one_delete,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'splade_generation'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let gen_after_one_delete: u64 = gen_after_one_delete.parse().unwrap();
+            assert_eq!(
+                gen_after_one_delete,
+                before_one_delete + 1,
+                "one chunk delete should bump generation by exactly one"
+            );
+
+            // Deleting two chunks bumps by two (trigger is row-level).
+            sqlx::query("DELETE FROM chunks WHERE id IN ('c2', 'c3')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let (gen_after_two_delete,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'splade_generation'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let gen_after_two_delete: u64 = gen_after_two_delete.parse().unwrap();
+            assert_eq!(
+                gen_after_two_delete,
+                gen_after_one_delete + 2,
+                "two chunk deletes should bump generation by exactly two"
+            );
+
+            // INSERTs do NOT bump via this trigger (new chunks don't
+            // invalidate existing sparse data).
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 created_at, updated_at) \
+                 VALUES ('c4', 'file:lib.rs', 'file', 'rust', 'function', 'c4', \
+                 '', '', 'h', 1, 10, X'00', '2026-04-12', '2026-04-12')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let (gen_after_insert,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'splade_generation'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let gen_after_insert: u64 = gen_after_insert.parse().unwrap();
+            assert_eq!(
+                gen_after_insert, gen_after_two_delete,
+                "INSERT should NOT bump the generation (no DELETE happened)"
             );
         });
     }
