@@ -178,10 +178,6 @@ pub struct Cli {
     #[arg(long)]
     pub name_only: bool,
 
-    /// Pure semantic similarity, disable RRF hybrid search (deprecated — RRF now off by default)
-    #[arg(long)]
-    pub semantic_only: bool,
-
     /// Enable RRF hybrid search (keyword + semantic fusion). Off by default — pure cosine is faster and scores higher on expanded eval.
     #[arg(long)]
     pub rrf: bool,

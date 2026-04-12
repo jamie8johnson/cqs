@@ -31,6 +31,14 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     let config = cqs::config::Config::load(&find_project_root());
     apply_config_defaults(&mut cli, &config);
 
+    // v1.22.0 audit CQ-1: wire the [scoring] config section to the
+    // RRF K override. Previously `set_rrf_k_from_config` existed but
+    // nothing called it — a user writing `[scoring] rrf_k = 40` in
+    // `.cqs.toml` had their value silently ignored.
+    if let Some(ref scoring) = config.scoring {
+        cqs::store::set_rrf_k_from_config(scoring);
+    }
+
     // Resolve embedding model config once (CLI > env > config > default),
     // then apply env var overrides (CQS_MAX_SEQ_LENGTH, CQS_EMBEDDING_DIM)
     cli.resolved_model = Some(
