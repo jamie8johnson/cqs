@@ -2,7 +2,7 @@
 
 ## Current: v1.22.0
 
-54 languages. 29 chunk types. 265-query v2 eval. BGE-large = best config. Adaptive retrieval Phases 1-5 shipped (classifier + routing + dual HNSW). SPLADE-Code 0.6B evaluated (flag-driven is a net loss; selective routing is next).
+54 languages. 29 chunk types. 265-query v2 eval. BGE-large = best config. Adaptive retrieval Phases 1-5 shipped. **Daemon mode** (`cqs watch --serve`, 3-19ms queries). AC-1 fusion fix + 88 audit findings addressed. Persistent query cache. SPLADE-Code 0.6B evaluated (flag-driven net loss; selective routing next).
 
 ### Eval Baselines
 
@@ -47,7 +47,14 @@
 - [ ] **Agent adoption: slim CLAUDE.md** — reduce 30-command reference to top 5 (search, context, read, impact, review) + "see `cqs --help`". Measure with telemetry before/after.
 - [ ] **Agent adoption: composite search results** — `cqs search` returns mini-impact (caller count, test count) alongside each result. One call instead of search + impact.
 - [ ] **Move language** — blocked: no tree-sitter grammar on crates.io
-- [ ] **`PRAGMA quick_check` on write opens is 40 s on 1.1 GB DB / WSL /mnt/c** — the read-only path already skips it (shipped in #893). Write opens still pay it on every `cqs notes add`, `cqs index`, and `cqs-watch` batch. Options: skip entirely on WSL, make it opt-in via `CQS_INTEGRITY_CHECK=1`, run it once per session (cached via sentinel file), or off-thread it. Low risk of corruption on a rebuildable index — "off by default, opt-in" is probably right.
+- [x] ~~**`PRAGMA quick_check` opt-in**~~ — flipped to opt-in via `CQS_INTEGRITY_CHECK=1` (#924/#911). Default: skip. Saves ~40s on WSL `/mnt/c` write opens.
+- [x] ~~**Persistent daemon**~~ — `cqs watch --serve` (#926). Unix socket, dedicated query thread, 3-19ms graph queries. Plan: `docs/plans/2026-04-12-persistent-daemon.md`.
+- [x] ~~**Persistent query cache**~~ — `~/.cache/cqs/query_cache.db` (#928). Disk-backed query embeddings, 7-day eviction. Saves ~500ms on repeated queries.
+- [x] ~~**Shared runtime support**~~ — `Store::open_readonly_pooled_with_runtime()` + `EmbeddingCache::open_with_runtime()` (#929). Optional runtime injection, backward compatible.
+- [x] ~~**AC-1 fusion rewrite**~~ — `apply_scoring_pipeline()` preserves fused scores through scoring (#910). Alpha knob now functional.
+- [x] ~~**Audit mega-batch**~~ — 28 findings + 10 tests + 13 issues (#911). All P1s addressed (88 total).
+- [ ] **SPLADE re-eval** — AC-1 fix means prior eval measured candidate-set expansion, not fusion. Need fresh numbers with alpha functional.
+- [ ] **Daemon: full CLI parity** — batch parser subset differs from CLI (missing some flags). Need either unified parser or more comprehensive arg translation.
 
 ### Agent Adoption — Telemetry Data (2026-04-09)
 
@@ -148,7 +155,7 @@ Current implementation: N-project via `[[reference]]` entries in `.cqs.toml` →
 
 | Version | Highlights |
 |---------|-----------|
-| v1.22.0 (in progress) | Adaptive retrieval Phases 1-5 (#876/#877/#878), SPLADE-Code 0.6B unblock chain (#881 vocab probe, #884 padding tolerance, #886 batched encode, #889 arena leak fix, #891 bulk insert, #895 on-disk persistence), eval-side fixes (#893 integrity_check skip, #894 eval harness -- separator), OpenRCT2 dual-trail spec (#890, #896) |
+| v1.22.0 (in progress) | Adaptive retrieval Phases 1-5, SPLADE-Code 0.6B eval chain, **daemon mode** (#926, 3-19ms queries), AC-1 fusion fix (#910), 88 audit findings (#911), persistent query cache (#928), shared runtime (#929), integrity check opt-in (#924), read-only batch store (#919), Store::clear_caches (#918), 13 issues created (#912-#925), daemon plan doc |
 | v1.21.0 | Cross-project call graph (#850), 4 new chunk types to 29 (#851), chunk type coverage across 15 languages (#852), 14-category audit 40+ fixes (#859), API renames + 8 batch flags (#860), remaining audit sweep (#863), paper v1.0, docs refresh |
 | v1.20.0 | 14-category audit (71 findings, 69 fixed), Elm (54th), batch --include-type/--exclude-type, SPLADE code training (null), env var docs, README eval rewrite |
 | v1.19.0 | `--include-type`/`--exclude-type`, Java/C# test+endpoint, batch `--rrf`, capture list unification, Phase 2 chunks, 265q eval, store dim check |

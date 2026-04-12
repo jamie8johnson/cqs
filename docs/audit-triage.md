@@ -357,37 +357,41 @@ The P1-severity hard items (AC-1, DS-W5, PB-NEW-6) stay in P1 for triage-severit
 | SHL-33 | #904 | ✅ merged |
 
 | AC-1 | #910 | ✅ merged |
-| AC-3 | #911 | ⏳ CI |
-| API-12 | #911 | ⏳ CI |
-| CQ-4 | #911 | ⏳ CI |
-| Doc-5 | #911 | ⏳ CI |
-| Doc-10 | #911 | ⏳ CI |
-| DS-W5 | #911 | ⏳ CI |
-| EH-6 | #911 | ⏳ CI |
-| EXT-7 | #911 | ⏳ CI |
-| EXT-8 | #911 | ⏳ CI |
-| EXT-9 | #911 | ⏳ CI |
-| OB-13 | #911 | ⏳ CI |
-| OB-15 | #911 | ⏳ CI |
-| OB-16 | #911 | ⏳ CI |
-| OB-18 | #911 | ⏳ CI |
+| AC-3 | #911 | ✅ merged |
+| API-12 | #911 | ✅ merged |
+| CQ-4 | #911 | ✅ merged |
+| Doc-5 | #911 | ✅ merged |
+| Doc-10 | #911 | ✅ merged |
+| DS-W5 | #911 | ✅ merged |
+| EH-6 | #911 | ✅ merged |
+| EXT-7 | #911 | ✅ merged |
+| EXT-8 | #911 | ✅ merged |
+| EXT-9 | #911 | ✅ merged |
+| OB-13 | #911 | ✅ merged |
+| OB-15 | #911 | ✅ merged |
+| OB-16 | #911 | ✅ merged |
+| OB-18 | #911 | ✅ merged |
 | OB-20 | #908 | ✅ merged |
-| PB-NEW-9 | #911 | ⏳ CI |
+| PB-NEW-9 | #911 | ✅ merged |
 | PF-5 | — | won't-fix (inherent to binary format) |
-| PF-6 | #911 | ⏳ CI |
-| PF-8 | #911 | ⏳ CI |
-| SEC-NEW-2 | #911 | ⏳ CI |
-| SHL-34 | #911 | ⏳ CI |
-| SHL-35 | #911 | ⏳ CI |
-| SHL-36 | #911 | ⏳ CI |
-| SHL-37 | #911 | ⏳ CI |
-| SHL-38 | #911 | ⏳ CI |
-| SHL-39 | #911 | ⏳ CI |
-| SHL-40 | #911 | ⏳ CI |
-| Roadmap CPU | #911 | ⏳ CI |
-| RM-6 | #911 | ⏳ CI |
-| RM-7 | #911 | ⏳ CI |
+| PF-6 | #911 | ✅ merged |
+| PF-8 | #911 | ✅ merged |
+| SEC-NEW-2 | #911 | ✅ merged |
+| SHL-34 | #911 | ✅ merged |
+| SHL-35 | #911 | ✅ merged |
+| SHL-36 | #911 | ✅ merged |
+| SHL-37 | #911 | ✅ merged |
+| SHL-38 | #911 | ✅ merged |
+| SHL-39 | #911 | ✅ merged |
+| SHL-40 | #911 | ✅ merged |
+| Roadmap CPU | #911 | ✅ merged |
+| RM-6 | #911 | ✅ merged |
+| RM-7 | #911 | ✅ merged |
 
-**87 findings fixed (+ 1 won't-fix) out of ~136 triaged.**
-All P1 items addressed. AC-1 merged in #910. 28 P2/P3s + 3 issue fixes in #911.
-Issues #912–#925 created for architectural items. #913/#915 scoped into daemon plan (#912).
+| PF-1 | #926 | ✅ merged (daemon mode) |
+| PF-2 | #928 | ✅ merged (query cache) |
+| PF-10 | #929 | ✅ merged (shared runtime) |
+
+**90 findings fixed (+ 1 won't-fix) out of ~136 triaged.**
+All P1 items addressed. Daemon (#926), query cache (#928), shared runtime (#929) shipped.
+Issues #912–#925 created for architectural items.
