@@ -134,6 +134,26 @@ CREATE TABLE IF NOT EXISTS sparse_vectors (
 
 CREATE INDEX IF NOT EXISTS idx_sparse_token ON sparse_vectors(token_id);
 
+-- v20 (v1.22.0 audit DS-W2 / OB-22 / PB-NEW-6): trigger that bumps the
+-- SPLADE generation counter whenever a chunk is deleted. Fires per-row on
+-- explicit DELETE FROM chunks AND on CASCADE delete (which actually comes
+-- from type_edges.source_chunk_id, calls.source_chunk_id, and now
+-- sparse_vectors.chunk_id since v19). This makes the persisted
+-- `splade.index.bin` file invalidation structural instead of instrumented —
+-- `cqs watch` no longer needs to call `bump_splade_generation` explicitly
+-- because every delete_phantom_chunks / delete_by_origin statement bumps
+-- the counter automatically. Scoped to deletion specifically because
+-- chunks INSERT doesn't invalidate existing sparse data (new chunks have
+-- no sparse rows yet) and UPDATE-without-ID-change doesn't affect
+-- sparse_vectors at all.
+CREATE TRIGGER IF NOT EXISTS bump_splade_on_chunks_delete
+AFTER DELETE ON chunks
+BEGIN
+    INSERT INTO metadata (key, value) VALUES ('splade_generation', '1')
+    ON CONFLICT(key) DO UPDATE SET
+        value = CAST((CAST(value AS INTEGER) + 1) AS TEXT);
+END;
+
 -- LLM-generated summaries cache (SQ-6, v16: composite PK)
 -- Keyed by (content_hash, purpose) so the same code can have multiple summary types
 -- (e.g., 'summary', 'doc-comment'). Summaries survive chunk deletion and --force rebuilds.

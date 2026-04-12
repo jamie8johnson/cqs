@@ -263,6 +263,28 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
     );
     println!("Also watching: docs/notes.toml");
 
+    // v1.22.0 audit DS-W2 / OB-22 / PB-NEW-6: watch does not run SPLADE
+    // encoding on new chunks. The v20 trigger on `chunks` DELETE ensures
+    // sparse correctness (the persisted splade.index.bin gets invalidated
+    // when chunks are removed), but newly-added chunks have no sparse
+    // vectors until a manual `cqs index` runs. If a user has
+    // CQS_SPLADE_MODEL set expecting full SPLADE coverage to be
+    // maintained live, tell them up front that they still need to rerun
+    // `cqs index` for fresh coverage on new chunks.
+    if cqs::splade::resolve_splade_model_dir().is_some() {
+        println!(
+            "⚠ SPLADE model configured but watch mode does not refresh sparse vectors for \
+             newly-added chunks. Run 'cqs index' after a stable edit session to restore \
+             full SPLADE coverage. Sparse correctness for removed chunks is maintained \
+             automatically via the v20 schema trigger."
+        );
+        tracing::warn!(
+            "Watch mode does not re-run SPLADE encoding — new chunks will have no sparse \
+             vectors until manual 'cqs index'. Removals are handled via the v20 chunks-delete \
+             trigger."
+        );
+    }
+
     let (tx, rx) = mpsc::channel();
 
     let config = Config::default().with_poll_interval(Duration::from_millis(debounce_ms));

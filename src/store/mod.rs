@@ -525,22 +525,18 @@ impl Store {
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
 
-            // Create tables - execute each statement separately
+            // Create tables + indexes + triggers. A naive `schema.split(';')`
+            // would cut trigger bodies in half because `CREATE TRIGGER ...
+            // BEGIN ... END` contains an embedded semicolon. The loop below
+            // tracks whether we're inside a BEGIN/END block (case-insensitive
+            // keyword match at word boundaries) and folds the body into a
+            // single statement.
             let schema = include_str!("../schema.sql");
-            for statement in schema.split(';') {
-                let stmt: String = statement
-                    .lines()
-                    .skip_while(|line| {
-                        let trimmed = line.trim();
-                        trimmed.is_empty() || trimmed.starts_with("--")
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let stmt = stmt.trim();
+            for stmt in split_sql_statements(schema) {
                 if stmt.is_empty() {
                     continue;
                 }
-                sqlx::query(stmt).execute(&mut *tx).await?;
+                sqlx::query(&stmt).execute(&mut *tx).await?;
             }
 
             // Store metadata (OR REPLACE handles re-init after incomplete cleanup)
@@ -599,6 +595,129 @@ impl Store {
             self.pool.close().await;
             Ok(())
         })
+    }
+}
+
+/// Split a SQL script into individual statements, honoring `CREATE TRIGGER
+/// ... BEGIN ... END` blocks so embedded semicolons inside a trigger body
+/// don't cause the parser to cut the statement in half.
+///
+/// This is a minimal implementation — it doesn't handle quoted strings,
+/// nested parentheses, or comments beyond line-comments. It's only called
+/// on `src/schema.sql`, which is hand-written and trusted.
+///
+/// Rules:
+/// - Skip empty lines and `--` comments at the start of each statement
+/// - Semicolons outside a `BEGIN`/`END` block end the statement
+/// - Semicolons inside a `BEGIN`/`END` block are part of the body
+/// - Case-insensitive keyword matching at word boundaries
+fn split_sql_statements(sql: &str) -> Vec<String> {
+    let mut statements: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_trigger_body = false;
+    // Walk the text line-by-line. This is good enough for our schema, which
+    // places one statement per logical block with comments above.
+    for raw_line in sql.lines() {
+        let trimmed = raw_line.trim();
+        // Strip pure comment / empty lines at the start of a statement.
+        if current.trim().is_empty() && (trimmed.is_empty() || trimmed.starts_with("--")) {
+            continue;
+        }
+        // Detect entry into a trigger body via a standalone `BEGIN` token.
+        let upper = trimmed.to_ascii_uppercase();
+        if !in_trigger_body && (upper == "BEGIN" || upper.ends_with(" BEGIN")) {
+            in_trigger_body = true;
+        }
+        current.push_str(raw_line);
+        current.push('\n');
+        // Detect end of trigger body via a standalone `END` token (possibly
+        // followed by a trailing semicolon on the same line).
+        if in_trigger_body && (upper.starts_with("END;") || upper == "END" || upper == "END;") {
+            in_trigger_body = false;
+            // The trailing semicolon after END closes the whole CREATE
+            // TRIGGER statement. Flush.
+            statements.push(current.trim().trim_end_matches(';').trim().to_string());
+            current.clear();
+            continue;
+        }
+        // Outside a trigger body: split on `;` at end-of-line.
+        if !in_trigger_body && trimmed.ends_with(';') {
+            // Strip the trailing semicolon from the flushed statement.
+            let stmt = current.trim().trim_end_matches(';').trim().to_string();
+            if !stmt.is_empty() {
+                statements.push(stmt);
+            }
+            current.clear();
+        }
+    }
+    // Flush any trailing statement with no final semicolon.
+    let tail = current.trim().to_string();
+    if !tail.is_empty() {
+        statements.push(tail);
+    }
+    statements
+}
+
+#[cfg(test)]
+mod sql_split_tests {
+    use super::split_sql_statements;
+
+    #[test]
+    fn test_split_single_table() {
+        let sql = "CREATE TABLE foo (id INTEGER);";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 1);
+        assert!(stmts[0].starts_with("CREATE TABLE foo"));
+    }
+
+    #[test]
+    fn test_split_multiple_statements() {
+        let sql = "CREATE TABLE foo (id INTEGER);\nCREATE INDEX idx_foo ON foo(id);";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_split_trigger_body_preserved() {
+        // A trigger body contains an embedded `;` that would split naively.
+        let sql = "\
+CREATE TABLE foo (id INTEGER);
+
+CREATE TRIGGER bump_on_delete
+AFTER DELETE ON foo
+BEGIN
+    INSERT INTO bar (x) VALUES (1);
+END;
+
+CREATE TABLE baz (id INTEGER);
+";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(
+            stmts.len(),
+            3,
+            "foo + trigger + baz — trigger body must not be cut"
+        );
+        assert!(stmts[1].contains("CREATE TRIGGER"));
+        assert!(
+            stmts[1].contains("INSERT INTO bar"),
+            "trigger body must be preserved intact"
+        );
+        assert!(stmts[1].contains("END"), "trigger END must be included");
+    }
+
+    #[test]
+    fn test_split_skips_leading_comments() {
+        let sql = "-- comment\n-- another\nCREATE TABLE foo (id INTEGER);";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 1);
+        assert!(stmts[0].starts_with("CREATE TABLE"));
+    }
+
+    #[test]
+    fn test_split_empty_input() {
+        assert!(split_sql_statements("").is_empty());
+        assert!(split_sql_statements("-- just a comment\n").is_empty());
+        assert!(split_sql_statements("\n\n\n").is_empty());
     }
 }
 
