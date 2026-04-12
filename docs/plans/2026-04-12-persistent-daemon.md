@@ -2,7 +2,7 @@
 
 **Issue:** #912 (PF-1)
 **Date:** 2026-04-12
-**Status:** Design
+**Status:** Design (reviewed)
 
 ## Problem
 
@@ -33,26 +33,37 @@ Adding a socket listener to watch means one process, one set of resources, one s
                                     ┌─────────────────────────────┐
  cqs search "foo" ──┐               │      cqs watch+serve        │
  cqs callers bar ───┤  Unix socket  │                             │
- cqs impact baz ────┤──────────────>│  Socket listener (async)    │
+ cqs impact baz ────┤──────────────>│  Socket listener (nonblock) │
  cqs gather "q" ────┘  JSON req/    │    │                        │
                        resp         │    ▼                        │
                                     │  BatchContext dispatch       │
                                     │    │                        │
-                                    │    ├─> Store (shared)       │
+                                    │    ├─> Store (read-only)    │
                                     │    ├─> HNSW index (shared)  │
                                     │    ├─> SPLADE index (shared)│
-                                    │    └─> Embedder (shared)    │
+                                    │    └─> Embedder (Arc shared)│
                                     │                             │
                                     │  File watcher loop          │
-                                    │  (existing, unchanged)      │
+                                    │  (existing, uses write Store│
+                                    │   + shared Arc<Embedder>)   │
                                     └─────────────────────────────┘
 ```
 
+### Resource sharing (Phase 0 prerequisite)
+
+Watch and BatchContext both need an Embedder (~500MB). Two instances = 1GB.
+
+**Embedder:** Refactor from `OnceCell<Embedder>` to `Arc<Embedder>`. Pass the same Arc into both WatchConfig and BatchContext. The Embedder is already internally synchronized (`session: Mutex<Session>`).
+
+**Store:** BatchContext opens a **separate read-only Store** for queries. Watch keeps the existing write Store for indexing. Read-only Store skips quick_check and uses a smaller connection pool — cheap to keep alongside the write Store.
+
+**HNSW/SPLADE:** BatchContext loads its own copies (same as current batch mode). Future optimization: share via `Arc<RwLock<HnswIndex>>` and `Arc<RwLock<SpladeIndex>>`.
+
 ### Protocol
 
-Socket path: `$CQS_DIR/cqs.sock` (Unix domain socket).
+Socket path: `$CQS_DIR/cqs.sock` (Unix domain socket, permissions `0o600`).
 
-Request (one JSON object per line):
+Request (one JSON object per line, max 1MB):
 ```json
 {"command": "search", "args": ["query text", "-n", "5", "--json"]}
 ```
@@ -67,7 +78,7 @@ Error:
 {"status": "error", "message": "..."}
 ```
 
-This is the same format as `cqs batch` stdin/stdout. The `BatchContext` + `batch/handlers/*` dispatch logic is reused verbatim.
+This is the same format as `cqs batch` stdin/stdout. The `BatchContext` + `batch/handlers/*` dispatch logic is reused verbatim. Output is routed to the socket stream via `write_json_line(&mut socket, ...)` (the function already takes `&mut impl Write`).
 
 ### Client mode
 
@@ -75,43 +86,70 @@ In `cli/dispatch.rs`, before the normal dispatch path:
 
 ```rust
 if let Some(response) = try_daemon_query(&cli) {
-    // Daemon handled it — print response and exit
     print!("{}", response);
     return Ok(());
 }
-// Fall through to normal CLI path
 ```
 
 `try_daemon_query`:
-1. Check if `$CQS_DIR/cqs.sock` exists
-2. Try to connect (non-blocking, 100ms timeout)
-3. If connected: serialize CLI args → send → read response → return `Some`
-4. If not: return `None` (fall back to CLI)
+1. If `CQS_NO_DAEMON=1`, return `None`
+2. If command is not batch-dispatchable (`index`, `watch`, `gc`, `init`), return `None`
+3. Check if `$CQS_DIR/cqs.sock` exists
+4. Try to connect (non-blocking, timeout from `CQS_DAEMON_TIMEOUT_MS`, default 30s)
+5. If connected: serialize CLI args → send → read response → return `Some`
+6. If not: return `None` (fall back to CLI)
 
-Env var `CQS_NO_DAEMON=1` skips the check entirely.
+### Socket listener integration
+
+The watch loop is synchronous (`recv_timeout(100ms)`). The socket listener uses **non-blocking accept** in the timeout branch:
+
+```rust
+// In the timeout branch, after file-change processing:
+if let Some(ref listener) = socket_listener {
+    listener.set_nonblocking(true)?;
+    match listener.accept() {
+        Ok((stream, _)) => handle_socket_query(&batch_ctx, stream),
+        Err(ref e) if e.kind() == WouldBlock => {} // no pending connection
+        Err(e) => warn!(error = %e, "Socket accept failed"),
+    }
+}
+```
+
+Long queries (e.g., `cqs gather` ~500ms) block the file event loop. The channel buffers events — they're processed on the next cycle. Acceptable for agent burst patterns (serial queries).
 
 ### Concurrency model
 
-Single-threaded async (tokio). The socket listener accepts connections on the same runtime as the file watcher. Queries are processed sequentially — the Store is not `Send` across threads (SQLite pool is thread-safe, but the block_on runtime is per-Store).
+Single-threaded. Queries processed sequentially. The Store is not `Send` (block_on runtime is per-Store). For agent burst patterns this is fine — queries are serial within a turn.
 
-For agent burst patterns (serial queries), sequential processing is fine. If parallel queries become needed later, the daemon can spawn per-connection tasks with a shared `Arc<Store>`.
+If parallel queries become needed later: spawn per-connection tasks with `Arc<Store>` (requires making Store's block_on pattern thread-safe).
 
 ### Index freshness
 
-The daemon holds resources long-term. Index freshness is handled by:
-
-1. **File watcher** — already detects changes and reindexes
-2. **DS-W5 inode check** — already detects `cqs index --force` DB replacement
+No new mechanism needed:
+1. **File watcher** — detects changes, reindexes
+2. **DS-W5 inode check** — detects `cqs index --force` DB replacement
 3. **DS-9 cache clearing** — Store reopened after each reindex cycle
-4. **SPLADE generation** — already tracks invalidation
+4. **SPLADE generation** — tracks invalidation
+5. **BatchContext mtime check** — detects concurrent index updates
 
-No new freshness mechanism needed.
+### Startup / shutdown
 
-### Shutdown
+**Start:**
+1. Try bind socket. If `EADDRINUSE`: try connect to check liveness
+   - If alive: bail with "daemon already running on this cqs_dir"
+   - If stale: remove socket file, rebind
+2. Set socket permissions to `0o600`
+3. Log `info!(socket = %path, pid = std::process::id(), "Daemon listening")`
 
-- `SIGTERM` / `SIGINT` — clean shutdown (close socket, flush Store)
-- Socket file removed on clean exit
-- Stale socket detected by client (connect fails → fall back to CLI)
+**Shutdown (SIGTERM/SIGINT):**
+1. Close socket listener
+2. Remove socket file (RAII guard)
+3. Flush Store
+4. Log `info!("Daemon shutting down")`
+
+**Crash recovery:**
+- Stale socket file: client detects (connect fails) → falls back to CLI
+- Next `watch --serve` start cleans up stale socket (step 1 above)
 
 ### systemd integration
 
@@ -128,36 +166,89 @@ Without `--serve`, watch behaves exactly as today (backward compatible).
 
 | Phase | What | Lines | Depends on |
 |---|---|---|---|
-| 1 | `--serve` flag + Unix socket accept loop in `watch.rs` | ~80 | — |
-| 2 | Request parsing + BatchContext dispatch for socket clients | ~40 | Phase 1 |
-| 3 | `try_daemon_query` client in `dispatch.rs` | ~50 | Phase 1 |
-| 4 | Socket cleanup on shutdown (RAII guard) | ~20 | Phase 1 |
-| 5 | Embedder sharing (watch lazy-loads, queries need it immediately) | ~30 | Phase 2 |
-| 6 | systemd unit rename + docs | ~10 | Phase 3 |
+| 0 | Refactor Embedder to `Arc<Embedder>`, share between watch + batch | ~40 | — |
+| 1 | `--serve` flag + non-blocking Unix socket accept in watch loop | ~80 | Phase 0 |
+| 2 | Request parsing + BatchContext dispatch for socket clients | ~50 | Phase 1 |
+| 3 | `try_daemon_query` client in `dispatch.rs` | ~60 | Phase 1 |
+| 4 | Socket cleanup on shutdown (RAII guard) + stale detection on start | ~30 | Phase 1 |
+| 5 | systemd unit rename + docs | ~10 | Phase 3 |
 
-**Total: ~230 lines of new code.**
+**Total: ~270 lines of new code.**
 
 ## What we reuse (zero new logic)
 
 - `BatchContext` — command dispatch, cache management, staleness detection
 - `batch/handlers/*` — all command implementations (search, callers, impact, etc.)
 - `batch/commands.rs` — arg parsing for batch-format commands
+- `write_json_line` — already takes `&mut impl Write` (route to socket instead of stdout)
+- `is_batch_dispatchable()` — already classifies which commands the batch handler supports
 - Watch file-change loop — runs alongside socket listener
 - DS-W5 inode check — DB replacement detection
 - DS-9 cache clearing — post-reindex Store reopen
+
+## Tracing
+
+| Where | Level | Content |
+|---|---|---|
+| Socket accept | `info_span!("daemon_query")` | command name, peer |
+| Request parse | `debug!` | raw command |
+| Dispatch complete | `info!` | command, latency_ms |
+| Client connect | `debug!` | socket path |
+| Client fallback | `debug!` | "daemon unavailable" |
+| Daemon start | `info!` | socket path, pid |
+| Daemon shutdown | `info!` | "removing socket" |
+| Accept error | `warn!` | error |
+| Dispatch panic | `error!` | panic payload |
+
+## Error handling
+
+| Case | Response |
+|---|---|
+| Malformed request JSON | `{"status":"error","message":"invalid JSON: ..."}` |
+| Unknown/non-dispatchable command | `{"status":"error","message":"command not supported in daemon mode"}` |
+| Query dispatch panics | `catch_unwind` → `{"status":"error","message":"internal error"}`, daemon survives |
+| Socket write fails mid-response | `warn!`, drop connection, daemon continues |
+| Oversized request (>1MB) | `{"status":"error","message":"request too large"}` |
+| Client timeout | Configurable `CQS_DAEMON_TIMEOUT_MS` (default 30s) |
+| Socket bind fails (EADDRINUSE) | Check liveness, remove stale or bail |
+| Socket permissions | `chmod 0o600` on create |
+
+## Test plan
+
+### Unit tests (no socket needed)
+- Request JSON parse: valid, malformed, unknown command, oversized (>1MB)
+- Response serialization: ok response, error response
+- `is_batch_dispatchable()` returns false for `index`/`watch`/`gc`/`init`
+- Socket path derivation from cqs_dir
+
+### Integration tests (tempdir + real socket)
+- Start listener → send search query → get valid JSON response
+- Send malformed JSON → get error response, daemon survives
+- Two sequential queries on same connection
+- `CQS_NO_DAEMON=1` → skips socket check, falls back to CLI
+- Stale socket file → cleaned up on start
+- `SIGTERM` → socket file removed
+
+### Negative / adversarial tests
+- Connect when no daemon running → `try_daemon_query` returns `None`, CLI works
+- Daemon busy with long query → client waits up to timeout
+- Dispatch panics → error response returned, daemon stays alive for next query
+- Non-dispatchable command (`cqs index`) → client skips daemon, runs CLI directly
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| Store not `Send` — can't share across threads | Sequential dispatch on main thread; async yields between queries |
-| Embedder lazy-load blocks first query ~500ms | Pre-load on daemon start if `CQS_SPLADE_MODEL` is set |
-| Socket file leaked on crash | Client detects stale socket (connect fails); `watch --serve` cleans up on start |
-| Memory growth over long uptime | Same as current `cqs watch` — already handles idle cleanup after 5min |
+| Two Embedder instances (1GB) | Phase 0 — `Arc<Embedder>` shared between watch + batch |
+| Long query blocks file events | Channel buffers events; max query time ~500ms (gather BFS) |
+| Socket file leaked on crash | Client fallback + stale detection on restart |
+| Memory growth over long uptime | Same as current watch — idle cleanup after 5min |
+| Store not `Send` across threads | Sequential dispatch; future: `Arc<Store>` if needed |
 
 ## Not in scope
 
-- TCP/HTTP server (Unix socket is sufficient for local agents)
+- TCP/HTTP server (Unix socket sufficient for local agents)
 - gRPC or complex protocol (JSON lines matches existing batch format)
 - Multi-tenant / auth (single-user tool)
 - Windows named pipes (WSL uses Unix sockets)
+- Parallel query dispatch (serial is fine for agent burst patterns)
