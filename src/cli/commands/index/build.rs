@@ -397,9 +397,11 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
             ) {
                 Ok(encoder) => {
                     let _span = tracing::info_span!("splade_index_encode").entered();
-                    // Fetch name + signature + doc for SPLADE encoding
-                    // These are the most informative NL-like fields without regenerating full NL
-                    let chunk_texts = store.chunk_splade_texts()?;
+                    // CQ-4: Only encode chunks that don't already have sparse
+                    // vectors. On --force the DB is fresh so all chunks are
+                    // "missing"; on incremental runs this skips the ~95% of
+                    // chunks that haven't changed.
+                    let chunk_texts = store.chunk_splade_texts_missing()?;
                     let mut sparse_vecs: Vec<(String, cqs::splade::SparseVector)> = Vec::new();
                     let mut encoded = 0usize;
                     let mut failed = 0usize;
@@ -533,25 +535,22 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                     // path still works; users just pay the rebuild cost on
                     // first query until the persist is rerun.
                     if !sparse_vecs.is_empty() {
-                        // Audit EH-2: the previous `unwrap_or(0)` on
-                        // generation read would let a transient metadata
-                        // query failure produce a persisted file labeled
-                        // gen-0 while the in-DB counter is at gen-N. The
-                        // next load would see a mismatch, rebuild, re-save
-                        // gen-0, and mismatch forever. Skip the persist
-                        // entirely on error — the next query will rebuild
-                        // from SQLite and save with the correct generation.
                         match store.splade_generation() {
                             Ok(generation) => {
                                 let splade_path =
                                     cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);
-                                // std::mem::take avoids cloning the
-                                // 60-100MB of sparse vectors. After this
-                                // point sparse_vecs is empty and must not
-                                // be reused in the same scope.
-                                let idx = cqs::splade::index::SpladeIndex::build(std::mem::take(
-                                    &mut sparse_vecs,
-                                ));
+                                // CQ-4: Load ALL sparse vectors for the
+                                // persist (not just the delta we encoded).
+                                // On --force this equals sparse_vecs; on
+                                // incremental it merges prior + new.
+                                let all_vecs = match store.load_all_sparse_vectors() {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "Failed to load sparse vectors for persist");
+                                        std::mem::take(&mut sparse_vecs)
+                                    }
+                                };
+                                let idx = cqs::splade::index::SpladeIndex::build(all_vecs);
                                 match idx.save(&splade_path, generation) {
                                     Ok(()) => {
                                         if !cli.quiet {

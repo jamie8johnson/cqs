@@ -251,11 +251,23 @@ impl Store {
     /// Get (id, text) pairs for SPLADE encoding.
     /// Text is name + signature + doc comment — the most informative NL-like fields.
     pub fn chunk_splade_texts(&self) -> Result<Vec<(String, String)>, StoreError> {
+        self.chunk_splade_texts_query("SELECT id, name, signature, doc FROM chunks")
+    }
+
+    /// Like `chunk_splade_texts` but only returns chunks that don't yet have
+    /// sparse vectors in the `sparse_vectors` table. For incremental indexing
+    /// (CQ-4): avoids re-encoding the entire corpus on every `cqs index` run.
+    pub fn chunk_splade_texts_missing(&self) -> Result<Vec<(String, String)>, StoreError> {
+        self.chunk_splade_texts_query(
+            "SELECT c.id, c.name, c.signature, c.doc FROM chunks c \
+             WHERE c.id NOT IN (SELECT DISTINCT chunk_id FROM sparse_vectors)",
+        )
+    }
+
+    fn chunk_splade_texts_query(&self, sql: &str) -> Result<Vec<(String, String)>, StoreError> {
         let _span = tracing::info_span!("chunk_splade_texts").entered();
         self.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query("SELECT id, name, signature, doc FROM chunks")
-                .fetch_all(&self.pool)
-                .await?;
+            let rows: Vec<_> = sqlx::query(sql).fetch_all(&self.pool).await?;
             let result: Vec<(String, String)> = rows
                 .iter()
                 .map(|row| {
