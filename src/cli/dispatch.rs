@@ -397,7 +397,8 @@ fn cmd_completions(shell: clap_complete::Shell) {
 /// Returns `Some(output)` if the daemon handled it, `None` if no daemon or
 /// the command is not daemon-dispatchable (index, watch, gc, init, etc.).
 fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
-    // Only forward commands that the batch handler can dispatch
+    // Only forward commands that the batch handler can dispatch.
+    // None = default search (most common invocation: `cqs "query"`)
     match &cli.command {
         Some(Commands::Init)
         | Some(Commands::Index { .. })
@@ -408,9 +409,8 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
         | Some(Commands::TrainData { .. })
         | Some(Commands::TrainPairs { .. })
         | Some(Commands::Cache { .. })
-        | Some(Commands::Doctor { .. })
-        | None => return None,
-        _ => {}
+        | Some(Commands::Doctor { .. }) => return None,
+        None | Some(_) => {}
     }
 
     let sock_path = super::daemon_socket_path(cqs_dir);
@@ -470,9 +470,18 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
         }
         args.push(arg.clone());
     }
+    // Default search (no subcommand): `cqs "query"` → args after stripping
+    // are just the query + flags. Prepend "search" so the batch parser sees it.
+    let (command, cmd_args): (&str, &[String]) = if cli.command.is_none() {
+        ("search", &args)
+    } else if let Some((first, rest)) = args.split_first() {
+        (first.as_str(), rest)
+    } else {
+        ("", &[])
+    };
     let request = serde_json::json!({
-        "command": args.first().map(|s| s.as_str()).unwrap_or(""),
-        "args": &args[1..],
+        "command": command,
+        "args": cmd_args,
     });
 
     let mut stream = stream;

@@ -49,7 +49,12 @@ cqs index
 cqs "retry with exponential backoff"
 cqs "validate email with regex"
 cqs "database connection pool"
+
+# Daemon mode (3-19ms queries instead of 2s CLI startup)
+cqs watch --serve   # keeps index fresh + serves queries via Unix socket
 ```
+
+When the daemon is running, all `cqs` commands auto-connect via the socket. No code changes needed — the CLI detects the daemon and forwards queries transparently. Set `CQS_NO_DAEMON=1` to force CLI mode.
 
 ### Embedding Model
 
