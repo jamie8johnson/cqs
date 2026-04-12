@@ -229,8 +229,8 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         );
     }
 
-    // SPLADE sparse encoding (if enabled and model available)
-    let splade_query = if cli.splade {
+    // SPLADE sparse encoding (if enabled by --splade flag OR per-category routing)
+    let splade_query = if use_splade {
         ctx.splade_encoder().and_then(|enc| {
             match enc.encode(query) {
                 Ok(sv) => Some(sv),
@@ -243,7 +243,7 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
     } else {
         None
     };
-    let splade_index = if cli.splade { ctx.splade_index() } else { None };
+    let splade_index = if use_splade { ctx.splade_index() } else { None };
 
     cmd_query_project(&QueryContext {
         cli,
