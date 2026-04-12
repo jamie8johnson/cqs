@@ -128,7 +128,7 @@ If parallel queries become needed later: spawn per-connection tasks with `Arc<St
 No new mechanism needed:
 1. **File watcher** — detects changes, reindexes
 2. **DS-W5 inode check** — detects `cqs index --force` DB replacement
-3. **DS-9 cache clearing** — Store reopened after each reindex cycle
+3. **DS-9 / RM-6 cache clearing** — `Store::clear_caches()` (no longer re-opens; #918)
 4. **SPLADE generation** — tracks invalidation
 5. **BatchContext mtime check** — detects concurrent index updates
 
@@ -164,16 +164,34 @@ Without `--serve`, watch behaves exactly as today (backward compatible).
 
 ## Implementation phases
 
-| Phase | What | Lines | Depends on |
-|---|---|---|---|
-| 0 | Refactor Embedder to `Arc<Embedder>`, share between watch + batch | ~40 | — |
-| 1 | `--serve` flag + non-blocking Unix socket accept in watch loop | ~80 | Phase 0 |
-| 2 | Request parsing + BatchContext dispatch for socket clients | ~50 | Phase 1 |
-| 3 | `try_daemon_query` client in `dispatch.rs` | ~60 | Phase 1 |
-| 4 | Socket cleanup on shutdown (RAII guard) + stale detection on start | ~30 | Phase 1 |
-| 5 | systemd unit rename + docs | ~10 | Phase 3 |
+| Phase | What | Lines | Depends on | Issue |
+|---|---|---|---|---|
+| 0a | Refactor Embedder to `Arc<Embedder>`, share between watch + batch | ~40 | — | — |
+| 0b | Single tokio runtime shared by Store + Cache + Embedder (eliminates 2 redundant runtimes per invocation) | ~30 | — | #915 |
+| 0c | Persistent query embedding cache — disk-backed LRU keyed by `(query_text, model_fingerprint)`, loaded on daemon start, write-through on query | ~60 | 0a | #913 |
+| 1 | `--serve` flag + non-blocking Unix socket accept in watch loop | ~80 | Phase 0a | #912 |
+| 2 | Request parsing + BatchContext dispatch for socket clients | ~50 | Phase 1 | #912 |
+| 3 | `try_daemon_query` client in `dispatch.rs` | ~60 | Phase 1 | #912 |
+| 4 | Socket cleanup on shutdown (RAII guard) + stale detection on start | ~30 | Phase 1 | #912 |
+| 5 | systemd unit rename + docs | ~10 | Phase 3 | #912 |
 
-**Total: ~270 lines of new code.**
+**Total: ~360 lines of new code.**
+
+### Phase 0b detail (#915)
+
+Currently Store, EmbeddingCache, and Embedder each create their own tokio runtime (~15ms each). The daemon has a single long-lived runtime. Phase 0b refactors the constructors to accept an optional `tokio::runtime::Handle` — if provided, use the existing runtime; if not, create one (backward compatible for CLI mode).
+
+### Phase 0c detail (#913)
+
+The in-memory `LruCache<String, Embedding>` in Embedder is empty on every CLI invocation. Agents repeat the same queries across turns. Phase 0c adds a disk-backed layer:
+
+- Location: `~/.cache/cqs/query_cache.db` (same dir as the existing `embeddings.db`)
+- Schema: `CREATE TABLE query_cache (query TEXT, model_fp TEXT, embedding BLOB, ts INTEGER, PRIMARY KEY (query, model_fp))`
+- On `embed_query` miss: check SQLite before ONNX inference
+- On `embed_query` compute: write-through to SQLite
+- In daemon mode: the SQLite connection stays open (no per-query overhead)
+- In CLI mode: open → check → close adds ~2ms, but saves ~500ms on hit
+- Eviction: prune entries older than 7 days on startup (background, non-blocking)
 
 ## What we reuse (zero new logic)
 
