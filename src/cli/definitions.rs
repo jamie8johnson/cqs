@@ -299,6 +299,9 @@ pub(super) enum Commands {
         /// Use polling instead of inotify (reliable on WSL /mnt/ paths)
         #[arg(long)]
         poll: bool,
+        /// Also listen on a Unix socket for query requests (daemon mode)
+        #[arg(long)]
+        serve: bool,
     },
     /// What functions, callers, and tests are affected by current diff
     Affected {

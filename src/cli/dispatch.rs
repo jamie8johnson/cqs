@@ -52,6 +52,14 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     // Clamp limit to prevent usize::MAX wrapping to -1 in SQLite queries
     cli.limit = cli.limit.clamp(1, 100);
 
+    // ── Daemon client: forward to running daemon if available ──────────────
+    if std::env::var("CQS_NO_DAEMON").as_deref() != Ok("1") {
+        if let Some(output) = try_daemon_query(&cqs_dir, &cli) {
+            print!("{}", output);
+            return Ok(());
+        }
+    }
+
     // ── Group A: no-store commands (early return before CommandContext) ──────
     match cli.command {
         Some(Commands::Init) => return cmd_init(&cli),
@@ -62,7 +70,8 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             debounce,
             no_ignore,
             poll,
-        }) => return watch::cmd_watch(&cli, debounce, no_ignore, poll),
+            serve,
+        }) => return watch::cmd_watch(&cli, debounce, no_ignore, poll, serve),
         Some(Commands::Batch) => return batch::cmd_batch(),
         Some(Commands::Chat) => return chat::cmd_chat(),
         Some(Commands::Completions { shell }) => {
@@ -382,4 +391,86 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
 fn cmd_completions(shell: clap_complete::Shell) {
     use clap::CommandFactory;
     clap_complete::generate(shell, &mut Cli::command(), "cqs", &mut std::io::stdout());
+}
+
+/// Try to forward the current command to a running daemon.
+/// Returns `Some(output)` if the daemon handled it, `None` if no daemon or
+/// the command is not daemon-dispatchable (index, watch, gc, init, etc.).
+fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
+    // Only forward commands that the batch handler can dispatch
+    match &cli.command {
+        Some(Commands::Init)
+        | Some(Commands::Index { .. })
+        | Some(Commands::Watch { .. })
+        | Some(Commands::Batch)
+        | Some(Commands::Chat)
+        | Some(Commands::Completions { .. })
+        | Some(Commands::TrainData { .. })
+        | Some(Commands::TrainPairs { .. })
+        | Some(Commands::Cache { .. })
+        | Some(Commands::Doctor { .. })
+        | None => return None,
+        _ => {}
+    }
+
+    let sock_path = super::daemon_socket_path(cqs_dir);
+    if !sock_path.exists() {
+        return None;
+    }
+
+    use std::io::{BufRead, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let stream = match UnixStream::connect(&sock_path) {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::debug!(path = %sock_path.display(), "Daemon socket exists but connect failed");
+            return None;
+        }
+    };
+
+    stream
+        .set_read_timeout(Some(Duration::from_secs(
+            std::env::var("CQS_DAEMON_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(|ms| ms / 1000)
+                .unwrap_or(30),
+        )))
+        .ok();
+    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+
+    // Build the batch-format command line from CLI args
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let request = serde_json::json!({
+        "command": args.first().map(|s| s.as_str()).unwrap_or(""),
+        "args": &args[1..],
+    });
+
+    let mut stream = stream;
+    if writeln!(stream, "{}", request).is_err() {
+        return None;
+    }
+    if stream.flush().is_err() {
+        return None;
+    }
+
+    let mut reader = std::io::BufReader::new(&stream);
+    let mut response_line = String::new();
+    if reader.read_line(&mut response_line).is_err() {
+        return None;
+    }
+
+    let resp: serde_json::Value = serde_json::from_str(response_line.trim()).ok()?;
+    if resp.get("status")?.as_str()? == "ok" {
+        Some(resp.get("output")?.as_str()?.to_string())
+    } else {
+        let msg = resp
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("daemon error");
+        tracing::warn!(error = msg, "Daemon returned error, falling back to CLI");
+        None
+    }
 }

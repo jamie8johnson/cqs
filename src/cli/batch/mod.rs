@@ -225,6 +225,42 @@ impl BatchContext {
         Ok(())
     }
 
+    /// Dispatch a single command line (e.g. "search foo -n 5 --json") and
+    /// write the JSON result to `out`. Used by the daemon socket handler.
+    pub(crate) fn dispatch_line(&self, line: &str, out: &mut impl std::io::Write) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let tokens = match shell_words::split(trimmed) {
+            Ok(t) => t,
+            Err(e) => {
+                let err = serde_json::json!({"error": format!("Parse error: {e}")});
+                let _ = write_json_line(out, &err);
+                return;
+            }
+        };
+        if tokens.is_empty() {
+            return;
+        }
+        self.check_idle_timeout();
+        match commands::BatchInput::try_parse_from(&tokens) {
+            Ok(input) => match commands::dispatch(self, input.cmd) {
+                Ok(value) => {
+                    let _ = write_json_line(out, &value);
+                }
+                Err(e) => {
+                    let err = serde_json::json!({"error": format!("{e}")});
+                    let _ = write_json_line(out, &err);
+                }
+            },
+            Err(e) => {
+                let err = serde_json::json!({"error": format!("{e}")});
+                let _ = write_json_line(out, &err);
+            }
+        }
+    }
+
     /// Borrow the Store, checking for index staleness first.
     pub fn store(&self) -> std::cell::Ref<'_, Store> {
         self.check_index_staleness();

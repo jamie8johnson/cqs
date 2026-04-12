@@ -17,6 +17,7 @@
 
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
@@ -33,6 +34,122 @@ use cqs::parser::{ChunkTypeRefs, Parser as CqParser};
 use cqs::store::Store;
 
 use super::{check_interrupted, find_project_root, try_acquire_index_lock, Cli};
+
+/// RAII guard that removes the Unix socket file on drop.
+struct SocketCleanupGuard(PathBuf);
+
+impl Drop for SocketCleanupGuard {
+    fn drop(&mut self) {
+        if self.0.exists() {
+            if let Err(e) = std::fs::remove_file(&self.0) {
+                tracing::warn!(path = %self.0.display(), error = %e, "Failed to remove socket file");
+            } else {
+                tracing::info!(path = %self.0.display(), "Daemon socket removed");
+            }
+        }
+    }
+}
+
+/// Handle a single client connection on the daemon socket.
+/// Reads one JSON-line request, dispatches via the shared BatchContext, writes response.
+fn handle_socket_client(
+    mut stream: std::os::unix::net::UnixStream,
+    batch_ctx: &super::batch::BatchContext,
+) {
+    let _span = tracing::info_span!("daemon_query").entered();
+    let start = std::time::Instant::now();
+
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(30))).ok();
+
+    // Read request (max 1MB)
+    let mut reader = std::io::BufReader::new(&stream);
+    let mut line = String::new();
+    match std::io::BufRead::read_line(&mut reader, &mut line) {
+        Ok(0) => return,
+        Ok(n) if n > 1_048_576 => {
+            let _ = write_daemon_error(&mut stream, "request too large");
+            return;
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "Socket read failed");
+            return;
+        }
+        Ok(_) => {}
+    }
+
+    let request: serde_json::Value = match serde_json::from_str(line.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = write_daemon_error(&mut stream, &format!("invalid JSON: {e}"));
+            return;
+        }
+    };
+
+    let command = request
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let args: Vec<String> = request
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    tracing::debug!(command, args = ?args, "Daemon request");
+
+    if command.is_empty() {
+        let _ = write_daemon_error(&mut stream, "missing 'command' field");
+        return;
+    }
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let full_line = if args.is_empty() {
+            command.to_string()
+        } else {
+            format!("{} {}", command, shell_words::join(&args))
+        };
+        let mut output = Vec::new();
+        batch_ctx.dispatch_line(&full_line, &mut output);
+        String::from_utf8(output).map_err(|e| format!("non-UTF-8 output: {e}"))
+    }));
+
+    match result {
+        Ok(Ok(output)) => {
+            let resp = serde_json::json!({
+                "status": "ok",
+                "output": output.trim_end(),
+            });
+            let _ = writeln!(stream, "{}", resp);
+        }
+        Ok(Err(e)) => {
+            let _ = write_daemon_error(&mut stream, &e);
+        }
+        Err(_) => {
+            let _ = write_daemon_error(&mut stream, "internal error (panic in dispatch)");
+            tracing::error!("Daemon query panicked — daemon continues");
+        }
+    }
+
+    tracing::info!(
+        command,
+        latency_ms = start.elapsed().as_millis() as u64,
+        "Daemon query complete"
+    );
+}
+
+fn write_daemon_error(
+    stream: &mut std::os::unix::net::UnixStream,
+    message: &str,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let resp = serde_json::json!({ "status": "error", "message": message });
+    writeln!(stream, "{}", resp)
+}
 
 /// Opaque identity of a database file for detecting replacements (DS-W5).
 /// On Unix uses (device, inode) — survives renames that preserve the inode
@@ -230,8 +347,14 @@ fn parse_wsl_automount_root() -> Option<String> {
 ///
 /// * If the project index is not found (user should run `cqs index` first)
 /// * If setting up file system watching fails
-pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Result<()> {
-    let _span = tracing::info_span!("cmd_watch", debounce_ms, poll).entered();
+pub fn cmd_watch(
+    cli: &Cli,
+    debounce_ms: u64,
+    no_ignore: bool,
+    poll: bool,
+    serve: bool,
+) -> Result<()> {
+    let _span = tracing::info_span!("cmd_watch", debounce_ms, poll, serve).entered();
     if no_ignore {
         tracing::warn!("--no-ignore is not yet implemented for watch mode");
     }
@@ -264,6 +387,84 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
     if !index_path.exists() {
         bail!("No index found. Run 'cqs index' first.");
     }
+
+    // Socket listener BEFORE watcher scan — daemon is immediately queryable
+    // while the (potentially slow) poll watcher initializes.
+    let mut socket_listener = if serve {
+        let sock_path = super::daemon_socket_path(&cqs_dir);
+        if sock_path.exists() {
+            match std::os::unix::net::UnixStream::connect(&sock_path) {
+                Ok(_) => {
+                    anyhow::bail!(
+                        "Another daemon is already listening on {}",
+                        sock_path.display()
+                    );
+                }
+                Err(_) => {
+                    std::fs::remove_file(&sock_path).ok();
+                    tracing::debug!(path = %sock_path.display(), "Removed stale socket file");
+                }
+            }
+        }
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path)
+            .with_context(|| format!("Failed to bind socket at {}", sock_path.display()))?;
+        listener.set_nonblocking(true)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600)).ok();
+        }
+        tracing::info!(
+            socket = %sock_path.display(),
+            pid = std::process::id(),
+            "Daemon listening"
+        );
+        if !cli.quiet {
+            println!("Daemon listening on {}", sock_path.display());
+        }
+        Some((listener, sock_path))
+    } else {
+        None
+    };
+    let _socket_guard = socket_listener
+        .as_ref()
+        .map(|(_, path)| SocketCleanupGuard(path.clone()));
+
+    // Spawn dedicated socket handler thread — runs independently of the file
+    // watcher so queries are served immediately, even during the slow poll scan.
+    let _socket_thread = if serve {
+        if let Some((listener, _)) = socket_listener.take() {
+            listener.set_nonblocking(false)?;
+            let thread = std::thread::spawn(move || {
+                // BatchContext created inside the thread — RefCell is !Send
+                // but thread-local ownership is fine.
+                let ctx = match super::batch::create_context() {
+                    Ok(ctx) => {
+                        ctx.warm();
+                        ctx
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Daemon BatchContext creation failed");
+                        return;
+                    }
+                };
+                tracing::info!("Daemon query thread ready");
+                for stream in listener.incoming() {
+                    match stream {
+                        Ok(s) => handle_socket_client(s, &ctx),
+                        Err(e) => {
+                            tracing::debug!(error = %e, "Socket accept error");
+                        }
+                    }
+                }
+            });
+            Some(thread)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let parser = CqParser::new()?;
     let supported_ext: HashSet<_> = parser.supported_extensions().iter().cloned().collect();
@@ -473,6 +674,8 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
                         cycles_since_clear = 0;
                     }
                 }
+
+                // Socket queries handled by dedicated thread (see _socket_thread above).
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 bail!(
