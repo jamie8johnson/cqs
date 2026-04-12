@@ -175,12 +175,21 @@ impl BatchContext {
     }
 
     /// Clear all mutable caches. Called on index mtime change or manual refresh.
+    ///
+    /// v1.22.0 audit (CQ-2 / RM-3 / EH-8 / TC-2, quintuple-confirmed across
+    /// five independent auditors): previously this omitted `splade_index`,
+    /// so a long-lived batch session that had loaded the SPLADE posting
+    /// map once would serve results from the pre-reindex generation forever
+    /// after a concurrent `cqs index`. Clearing the RefCell here lets
+    /// `ensure_splade_index` see `None` on the next call and rebuild from
+    /// the freshly persisted `splade.index.bin` (or SQLite fallback).
     fn invalidate_mutable_caches(&self) {
         *self.hnsw.borrow_mut() = None;
         *self.call_graph.borrow_mut() = None;
         *self.test_chunks.borrow_mut() = None;
         *self.file_set.borrow_mut() = None;
         *self.notes_cache.borrow_mut() = None;
+        *self.splade_index.borrow_mut() = None;
         // Also clear LRU refs — reference indexes may also be stale
         self.refs.borrow_mut().clear();
     }
@@ -277,7 +286,11 @@ impl BatchContext {
     /// Uses the same persist-and-load path as the single-shot CLI: tries
     /// `splade.index.bin` first, falls back to SQLite rebuild + persist if
     /// the file is absent, stale, or corrupt. Staleness is detected via
-    /// the `splade_generation` metadata counter.
+    /// the `splade_generation` metadata counter. If the generation cannot
+    /// be read at all (audit EH-3), this returns without populating the
+    /// RefCell — falling through with `0` would let a later persist write
+    /// a gen-0 file whose header lies about the DB state, creating a
+    /// self-perpetuating cache-poison loop.
     pub fn ensure_splade_index(&self) {
         self.check_index_staleness();
         if self.splade_index.borrow().is_some() {
@@ -286,8 +299,12 @@ impl BatchContext {
         let generation = match self.store().splade_generation() {
             Ok(g) => g,
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to read splade_generation, forcing rebuild");
-                0
+                tracing::warn!(
+                    error = %e,
+                    "Failed to read splade_generation — skipping SPLADE entirely for this \
+                     batch session; search will fall back to dense-only"
+                );
+                return;
             }
         };
         let splade_path = self.cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);

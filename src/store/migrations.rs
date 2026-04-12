@@ -72,6 +72,7 @@ async fn run_migration(
         (15, 16) => migrate_v15_to_v16(conn).await,
         (16, 17) => migrate_v16_to_v17(conn).await,
         (17, 18) => migrate_v17_to_v18(conn).await,
+        (18, 19) => migrate_v18_to_v19(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -294,6 +295,120 @@ async fn migrate_v17_to_v18(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// Migrate from v18 to v19: add FK(chunk_id) ON DELETE CASCADE to sparse_vectors
+///
+/// v1.22.0 audit finding DS-W3: the v17 `sparse_vectors` table was declared
+/// without a foreign key to `chunks`, so three code paths in
+/// `src/store/chunks/crud.rs` (`delete_by_origin`, `delete_phantom_chunks`,
+/// `upsert_chunks_and_calls`) leaked orphan sparse rows — every chunks-delete
+/// produced sparse_vectors rows that no query could reach, and `prune_missing`
+/// / `prune_all` had to clean them up manually. Worse, the cleanup paths
+/// forgot to bump `splade_generation` (DS-W1), so the persisted
+/// `splade.index.bin` kept serving stale chunk_ids after a GC.
+///
+/// This migration makes the invariant structural: any delete from `chunks`
+/// now cascades to `sparse_vectors` automatically, the same way
+/// `calls.source_chunk_id` and `type_edges.source_chunk_id` already cascade
+/// since v10/v11. Memory rule: invalidation counters attached to mutable
+/// state must be enforced at the schema layer, not instrumented at specific
+/// call sites.
+///
+/// SQLite does not support `ALTER TABLE ADD FOREIGN KEY`, so we rebuild the
+/// table in place. Orphan rows (sparse_vectors whose chunk_id no longer
+/// exists in `chunks`) are dropped during the copy — they were leaked data
+/// by definition. Row count before and after is logged for transparency.
+///
+/// After the table swap, the SPLADE generation counter is bumped
+/// unconditionally so any persisted `splade.index.bin` from a pre-v19 schema
+/// is invalidated on the next load (the on-disk file's embedded generation
+/// won't match, forcing a clean rebuild from the new FK-protected table).
+async fn migrate_v18_to_v19(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v18_to_v19").entered();
+
+    // Count rows before the rebuild so the migration log makes any silent
+    // orphan purge visible instead of invisible.
+    let (before_rows,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM sparse_vectors")
+        .fetch_one(&mut *conn)
+        .await?;
+
+    // Create the new table with the FK constraint. Same PRIMARY KEY shape as
+    // v17 so the idx_sparse_token rebuild below is a drop-in replacement.
+    sqlx::query(
+        "CREATE TABLE sparse_vectors_v19 (
+            chunk_id TEXT NOT NULL,
+            token_id INTEGER NOT NULL,
+            weight REAL NOT NULL,
+            PRIMARY KEY (chunk_id, token_id),
+            FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+        )",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    // Copy only rows whose chunk_id exists in chunks — the INNER JOIN is the
+    // orphan filter. Any row that doesn't match was already unreachable; the
+    // migration is the right place to drop them.
+    sqlx::query(
+        "INSERT INTO sparse_vectors_v19 (chunk_id, token_id, weight)
+         SELECT s.chunk_id, s.token_id, s.weight
+         FROM sparse_vectors s
+         INNER JOIN chunks c ON c.id = s.chunk_id",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    let (after_rows,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM sparse_vectors_v19")
+        .fetch_one(&mut *conn)
+        .await?;
+    let dropped = before_rows - after_rows;
+    if dropped > 0 {
+        tracing::warn!(
+            before = before_rows,
+            after = after_rows,
+            dropped_orphans = dropped,
+            "v18→v19 migration dropped orphan sparse_vectors rows (chunks no longer exist). \
+             These were leaks from pre-v19 delete paths."
+        );
+    } else {
+        tracing::info!(
+            rows = before_rows,
+            "v18→v19 sparse_vectors row count unchanged after FK filter"
+        );
+    }
+
+    // Drop the old idx_sparse_token first (it's tied to the old table) so the
+    // swap doesn't trip the UNIQUE-index-name constraint.
+    sqlx::query("DROP INDEX IF EXISTS idx_sparse_token")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("DROP TABLE sparse_vectors")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("ALTER TABLE sparse_vectors_v19 RENAME TO sparse_vectors")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("CREATE INDEX idx_sparse_token ON sparse_vectors(token_id)")
+        .execute(&mut *conn)
+        .await?;
+
+    // Bump splade_generation so any on-disk splade.index.bin from pre-v19
+    // is invalidated — its header generation won't match the new value.
+    // The UPSERT seeds the row if it wasn't present (older DBs predating
+    // the PR #895 counter never had this metadata key).
+    sqlx::query(
+        "INSERT INTO metadata (key, value) VALUES ('splade_generation', '1')
+         ON CONFLICT(key) DO UPDATE SET
+             value = CAST((CAST(value AS INTEGER) + 1) AS TEXT)",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    tracing::info!(
+        "Migrated to v19: sparse_vectors has FK(chunk_id) → chunks(id) ON DELETE CASCADE"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,7 +426,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 18);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 19);
     }
 
     #[test]
@@ -1231,6 +1346,179 @@ mod tests {
             // This is the property users actually depend on — re-running
             // `cqs index` should not fail just because the schema is current.
             migrate(&pool, 18, 18).await.unwrap();
+        });
+    }
+
+    /// v1.22.0 audit DS-W3: v18→v19 migration adds FK(chunk_id) ON DELETE
+    /// CASCADE on sparse_vectors. Test covers:
+    /// - Orphan sparse rows (chunks no longer exist) are dropped during
+    ///   the rebuild
+    /// - Non-orphan sparse rows survive the rebuild
+    /// - The idx_sparse_token index is recreated
+    /// - splade_generation is bumped so any pre-v19 persisted index file
+    ///   is invalidated
+    /// - FK CASCADE works after the migration: deleting a chunk auto-deletes
+    ///   its sparse rows
+    #[test]
+    fn test_migrate_v18_to_v19_adds_fk_cascade_and_purges_orphans() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true)
+                        // PRAGMA foreign_keys must be ON for ON DELETE CASCADE to fire.
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+
+            // Minimal v18 schema — chunks with embedding_base, sparse_vectors
+            // WITHOUT the FK constraint (as shipped in v17).
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    embedding_base BLOB,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    enrichment_version INTEGER NOT NULL DEFAULT 0
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "CREATE TABLE sparse_vectors (
+                    chunk_id TEXT NOT NULL,
+                    token_id INTEGER NOT NULL,
+                    weight REAL NOT NULL,
+                    PRIMARY KEY (chunk_id, token_id)
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("CREATE INDEX idx_sparse_token ON sparse_vectors(token_id)")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            sqlx::query(
+                "INSERT INTO metadata (key, value) VALUES ('schema_version', '18'),
+                                                          ('splade_generation', '5')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Insert two chunks and sparse rows for both of them.
+            for id in ["chunk-live", "chunk-also-live"] {
+                sqlx::query(
+                    "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                     signature, content, content_hash, line_start, line_end, embedding, \
+                     created_at, updated_at) \
+                     VALUES (?1, 'file:lib.rs', 'file', 'rust', 'function', ?1, \
+                     '', '', 'hash', 1, 10, X'00', '2026-04-11', '2026-04-11')",
+                )
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            sqlx::query(
+                "INSERT INTO sparse_vectors (chunk_id, token_id, weight) VALUES
+                    ('chunk-live', 1, 0.5),
+                    ('chunk-live', 2, 0.3),
+                    ('chunk-also-live', 3, 0.8),
+                    ('chunk-orphan', 4, 0.9),
+                    ('chunk-orphan', 5, 0.1)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Run the migration.
+            migrate(&pool, 18, 19).await.unwrap();
+
+            // Orphan rows dropped, live rows survive.
+            let (count,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM sparse_vectors WHERE chunk_id = 'chunk-orphan'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(count, 0, "orphan rows should have been dropped");
+            let (count_live,): (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM sparse_vectors WHERE chunk_id = 'chunk-live'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(count_live, 2, "chunk-live rows should survive");
+
+            // idx_sparse_token exists after the rebuild.
+            let idx: Option<(String,)> = sqlx::query_as(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_sparse_token'",
+            )
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+            assert!(idx.is_some(), "idx_sparse_token must be recreated");
+
+            // splade_generation bumped.
+            let (gen_val,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'splade_generation'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let gen_parsed: u64 = gen_val.parse().unwrap();
+            assert!(gen_parsed > 5, "splade_generation must be bumped past 5");
+
+            // schema_version updated.
+            let (v,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(v, "19");
+
+            // FK CASCADE contract: deleting a chunk removes its sparse rows.
+            sqlx::query("DELETE FROM chunks WHERE id = 'chunk-also-live'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let (remaining,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM sparse_vectors WHERE chunk_id = 'chunk-also-live'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                remaining, 0,
+                "CASCADE should have removed chunk-also-live's sparse rows"
+            );
         });
     }
 }

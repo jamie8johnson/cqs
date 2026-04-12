@@ -57,6 +57,10 @@ pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};
 ///
 /// History:
 /// - v18: embedding_base column for dual embeddings (adaptive retrieval Phase 5)
+/// - v19: sparse_vectors gains FK(chunk_id) → chunks(id) ON DELETE CASCADE
+///   (v1.22.0 audit DS-W3 — orphan sparse rows previously leaked on every
+///   chunks-delete path; CASCADE makes the invariant structural)
+/// - v18: embedding_base column on chunks (Phase 5 dual embeddings)
 /// - v17: sparse_vectors table + enrichment_version column
 /// - v16: composite PK on llm_summaries (content_hash + purpose)
 /// - v15: 768-dim embeddings -- dropped sentiment dimension (SQ-9)
@@ -65,7 +69,7 @@ pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};
 /// - v12: parent_type_name column for method->class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 18;
+pub const CURRENT_SCHEMA_VERSION: i32 = 19;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.

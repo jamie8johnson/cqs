@@ -119,13 +119,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
     tokenize='unicode61'
 );
 
--- SPLADE sparse vectors for hybrid search (v17)
+-- SPLADE sparse vectors for hybrid search (v17, FK cascade added v19)
 -- Each chunk gets a set of (token_id, weight) pairs from the learned sparse encoder.
+-- FK + ON DELETE CASCADE added in v19 (v1.22.0 audit DS-W3) so every delete
+-- from `chunks` automatically removes the matching sparse rows. Before v19,
+-- three delete paths in src/store/chunks/crud.rs leaked orphan sparse rows.
 CREATE TABLE IF NOT EXISTS sparse_vectors (
     chunk_id TEXT NOT NULL,
     token_id INTEGER NOT NULL,
     weight REAL NOT NULL,
-    PRIMARY KEY (chunk_id, token_id)
+    PRIMARY KEY (chunk_id, token_id),
+    FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_sparse_token ON sparse_vectors(token_id);
