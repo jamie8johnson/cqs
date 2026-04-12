@@ -176,3 +176,40 @@ pub(crate) fn acquire_index_lock(cqs_dir: &Path) -> Result<std::fs::File> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_socket_path_deterministic() {
+        let p1 = daemon_socket_path(Path::new("/mnt/c/Projects/cqs/.cqs"));
+        let p2 = daemon_socket_path(Path::new("/mnt/c/Projects/cqs/.cqs"));
+        assert_eq!(p1, p2, "Same cqs_dir should produce the same socket path");
+    }
+
+    #[test]
+    fn daemon_socket_path_differs_per_project() {
+        let p1 = daemon_socket_path(Path::new("/mnt/c/ProjectA/.cqs"));
+        let p2 = daemon_socket_path(Path::new("/mnt/c/ProjectB/.cqs"));
+        assert_ne!(p1, p2, "Different projects should get different sockets");
+    }
+
+    #[test]
+    fn daemon_socket_path_ends_with_sock() {
+        let p = daemon_socket_path(Path::new("/tmp/test/.cqs"));
+        assert!(
+            p.extension().is_some_and(|e| e == "sock"),
+            "Socket path should end with .sock"
+        );
+    }
+
+    #[test]
+    fn daemon_socket_path_not_on_project_dir() {
+        let p = daemon_socket_path(Path::new("/mnt/c/Projects/cqs/.cqs"));
+        assert!(
+            !p.starts_with("/mnt/c"),
+            "Socket should be on native filesystem, not /mnt/c/"
+        );
+    }
+}

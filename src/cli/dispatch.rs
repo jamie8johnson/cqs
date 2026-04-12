@@ -441,8 +441,35 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
         .ok();
     stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
 
-    // Build the batch-format command line from CLI args
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // Build batch-format request from CLI args.
+    // Strip global flags (--json, -q, --quiet, --model, etc.) — they live
+    // on the top-level Cli struct, not on the subcommand. The batch handler
+    // always outputs JSON, so --json is implicit.
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let global_flags: &[&str] = &["--json", "-q", "--quiet"];
+    let global_with_value: &[&str] = &["--model", "-n", "--limit"];
+    let mut args: Vec<String> = Vec::new();
+    let mut skip_next = false;
+    for arg in &raw_args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if global_flags.contains(&arg.as_str()) {
+            continue;
+        }
+        if global_with_value.contains(&arg.as_str()) {
+            // Remap -n/--limit: the batch parser uses --limit on the subcommand
+            if arg == "-n" || arg == "--limit" {
+                args.push("--limit".to_string());
+                // Next arg is the value — pass it through
+                continue;
+            }
+            skip_next = true;
+            continue;
+        }
+        args.push(arg.clone());
+    }
     let request = serde_json::json!({
         "command": args.first().map(|s| s.as_str()).unwrap_or(""),
         "args": &args[1..],
