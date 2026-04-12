@@ -2,9 +2,9 @@
 
 ## Right Now
 
-**v1.22.0 audit — 72 findings fixed across 10 PRs (9 merged, #907 in CI). (2026-04-12 11:25 CDT)**
+**v1.22.0 audit — 78 findings fixed across 14 PRs (12 merged, #910 + #911 in CI). (2026-04-12 12:20 CDT)**
 
-### Session PRs (this session = continuation from compacted context)
+### Session PRs
 
 | PR | Theme | Findings | Status |
 |---|---|---|---|
@@ -21,29 +21,35 @@
 | #904 | SHL-32/33: 15 pre-3.32 SQLite batch sizes | 15 | **merged** |
 | #905 | API-1: remove misleading --format from TextJsonArgs | 1 | **merged** |
 | #906 | OB-14 + EH-7 + EH-9 + PF-7 + OB-21 | 5 | **merged** |
-| #907 | OB-19 + EH-8 + API-11 | 3 | CI running |
+| #907 | OB-19 + EH-8 + API-11 | 3 | **merged** |
+| #908 | Triage status + OB-20 begin_write span | 1 | **merged** |
+| #910 | AC-1: SPLADE hybrid fusion score preservation | 1 | CI running |
+| #911 | P2/P3 batch: 16 findings (4 parallel agents + main) | 16 | CI running |
 
 ### Remaining P1 items
 
-- **AC-1**: SPLADE hybrid fusion rewrite — hard, needs own session. `search_hybrid` discards fused scores; alpha is a no-op on final ranking.
-- **DS-W5**: `cqs index --force` inter-process lock — medium.
+- **DS-W5**: `cqs index --force` inter-process lock — medium. Issue to create.
 
-### Remaining P2/P3/P4 (~65 items)
+### AC-1 fix (PR #910)
+
+Extracted `apply_scoring_pipeline()` from `score_candidate()`. Hybrid search now passes pre-fused scores through the full scoring pipeline instead of discarding them and recomputing pure cosine. Alpha knob is now functional.
+
+### Remaining P2/P3/P4 (~45 items)
 
 See `docs/audit-triage.md`. Main buckets:
 - Test coverage: ~24 gaps (adversarial + happy-path)
-- API hygiene: API-2/3/4/5/6/7/12/13
-- Extensibility: EXT-7/8/9/10/11/12/13 (hardcoded lists next to registries)
-- Performance: PF-1 persistent daemon (hard), PF-2/3/5/6/8/9/10/11
-- Observability: OB-13/18/20
-- Error handling: EH-6 (embedding batch drops)
+- API hygiene: API-2/3/4/5/6/7/13
+- Extensibility: EXT-7/8/9/10/11/12/13
+- Performance: PF-1 (daemon), PF-2/3/5/9/10/11
+- Resource: RM-5/6/7
+- Scaling: Roadmap CPU (integrity check opt-in)
 
 ### SPLADE eval result
 
-Flag-driven SPLADE-Code 0.6B: −0.6pp R@1 net (41.8% vs 42.4%). cross_language +10pp. AC-1 finding means all evals measure candidate-set expansion, not fusion. Selective routing is next after the fusion rewrite.
+Flag-driven SPLADE-Code 0.6B: −0.6pp R@1 net (41.8% vs 42.4%). cross_language +10pp. AC-1 fix means re-eval will now measure actual fusion quality. Selective routing is next.
 
 ## Open Issues
-- #856, #717, #389, #255, #106, #63
+- #909 (PF-9 borrow checker), #856, #717, #389, #255, #106, #63
 
 ## Architecture
 - Version: 1.22.0
@@ -51,3 +57,4 @@ Flag-driven SPLADE-Code 0.6B: −0.6pp R@1 net (41.8% vs 42.4%). cross_language 
 - Tests: 1351 lib + integration
 - `max_rows_per_statement(N)` in `store/helpers/sql.rs` — all 15 SQLite batch sites migrated
 - Three on-disk indexes: `index.hnsw.*` + `index_base.hnsw.*` + `splade.index.bin`
+- New env vars: CQS_BUSY_TIMEOUT_MS, CQS_IDLE_TIMEOUT_SECS, CQS_MAX_CONNECTIONS, CQS_MMAP_SIZE, CQS_SPLADE_MAX_CHARS, CQS_MAX_QUERY_BYTES, CQS_HNSW_BATCH_SIZE
