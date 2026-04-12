@@ -168,15 +168,27 @@ impl<'a> CommandContext<'a> {
     /// Tries the persisted on-disk index first (`splade.index.bin` next to
     /// the HNSW files). Falls back to building from SQLite and persisting
     /// the result if the file is absent, stale, corrupt, or version-mismatched.
-    /// Returns `None` only when the store contains no sparse vectors at all.
+    /// Returns `None` when the store contains no sparse vectors, or when the
+    /// generation counter cannot be read at all (audit EH-3: substituting 0
+    /// there would let a later successful `save()` write a gen-0 file whose
+    /// header disagrees with whatever the DB actually holds, creating a
+    /// self-perpetuating cache-poison loop).
     pub fn splade_index(&self) -> Option<&cqs::splade::index::SpladeIndex> {
         let opt = self.splade_index.get_or_init(|| {
             let _span = tracing::debug_span!("command_context_splade_index_init").entered();
+            // Read the generation FIRST. If it fails, bail out — falling through
+            // with generation=0 would let a later persist write a file labeled
+            // gen-0 while the DB is at gen-N, and the next load would mismatch
+            // and rebuild forever (audit EH-3).
             let generation = match self.store.splade_generation() {
                 Ok(g) => g,
                 Err(e) => {
-                    tracing::warn!(error = %e, "Failed to read splade_generation, forcing rebuild");
-                    0
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to read splade_generation — skipping SPLADE entirely for this \
+                         invocation; search will fall back to dense-only"
+                    );
+                    return None;
                 }
             };
             let splade_path = self.cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);

@@ -533,29 +533,50 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                     // path still works; users just pay the rebuild cost on
                     // first query until the persist is rerun.
                     if !sparse_vecs.is_empty() {
-                        let generation = store.splade_generation().unwrap_or(0);
-                        let splade_path = cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);
-                        // std::mem::take avoids cloning the 60-100MB of
-                        // sparse vectors. After this point sparse_vecs is
-                        // empty and must not be reused in the same scope.
-                        let idx = cqs::splade::index::SpladeIndex::build(std::mem::take(
-                            &mut sparse_vecs,
-                        ));
-                        match idx.save(&splade_path, generation) {
-                            Ok(()) => {
-                                if !cli.quiet {
-                                    println!(
-                                        "  SPLADE index: persisted ({} chunks, {} tokens)",
-                                        idx.len(),
-                                        idx.unique_tokens()
-                                    );
+                        // Audit EH-2: the previous `unwrap_or(0)` on
+                        // generation read would let a transient metadata
+                        // query failure produce a persisted file labeled
+                        // gen-0 while the in-DB counter is at gen-N. The
+                        // next load would see a mismatch, rebuild, re-save
+                        // gen-0, and mismatch forever. Skip the persist
+                        // entirely on error — the next query will rebuild
+                        // from SQLite and save with the correct generation.
+                        match store.splade_generation() {
+                            Ok(generation) => {
+                                let splade_path =
+                                    cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);
+                                // std::mem::take avoids cloning the
+                                // 60-100MB of sparse vectors. After this
+                                // point sparse_vecs is empty and must not
+                                // be reused in the same scope.
+                                let idx = cqs::splade::index::SpladeIndex::build(std::mem::take(
+                                    &mut sparse_vecs,
+                                ));
+                                match idx.save(&splade_path, generation) {
+                                    Ok(()) => {
+                                        if !cli.quiet {
+                                            println!(
+                                                "  SPLADE index: persisted ({} chunks, {} tokens)",
+                                                idx.len(),
+                                                idx.unique_tokens()
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            path = %splade_path.display(),
+                                            "SPLADE index persist failed; query-time rebuild \
+                                             will still work"
+                                        );
+                                    }
                                 }
                             }
                             Err(e) => {
                                 tracing::warn!(
                                     error = %e,
-                                    path = %splade_path.display(),
-                                    "SPLADE index persist failed; query-time rebuild will still work"
+                                    "Failed to read splade_generation for eager persist — \
+                                     skipping. Next SPLADE query will rebuild from SQLite."
                                 );
                             }
                         }

@@ -17,7 +17,7 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 18); // v18: embedding_base column for dual HNSW
+    assert_eq!(stats.schema_version, 19); // v19: sparse_vectors FK CASCADE (DS-W3)
     assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 
@@ -1103,7 +1103,7 @@ fn test_open_readonly_on_initialized_store() {
     let ro = cqs::store::Store::open_readonly(&db_path).unwrap();
     let stats = ro.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
-    assert_eq!(stats.schema_version, 18);
+    assert_eq!(stats.schema_version, 19);
     assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 

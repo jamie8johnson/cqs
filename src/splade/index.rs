@@ -38,7 +38,49 @@ pub const SPLADE_INDEX_FILENAME: &str = "splade.index.bin";
 /// + chunk_count(8) + token_count(8) + body_checksum(32) = 64 bytes.
 const SPLADE_INDEX_HEADER_LEN: usize = 64;
 
+/// Default cap on `splade.index.bin` file size read at load time.
+/// Audit RB-2: without an upper bound `read_to_end` could unbounded-alloc
+/// from a corrupted or maliciously-grown file. 2 GB leaves ~20× headroom
+/// over SPLADE-Code 0.6B on a cqs-sized project (~100 MB). Env override:
+/// `CQS_SPLADE_MAX_INDEX_BYTES`.
+const DEFAULT_SPLADE_MAX_INDEX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Read `CQS_SPLADE_MAX_INDEX_BYTES` env var, fall back to default. Cached
+/// via `OnceLock` to avoid re-parsing per load call.
+fn splade_max_index_bytes() -> u64 {
+    static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| match std::env::var("CQS_SPLADE_MAX_INDEX_BYTES") {
+        Ok(val) => match val.parse::<u64>() {
+            Ok(n) if n > 0 => {
+                tracing::info!(max_bytes = n, "CQS_SPLADE_MAX_INDEX_BYTES override");
+                n
+            }
+            _ => {
+                tracing::warn!(
+                    value = %val,
+                    "Invalid CQS_SPLADE_MAX_INDEX_BYTES, using default 2GB"
+                );
+                DEFAULT_SPLADE_MAX_INDEX_BYTES
+            }
+        },
+        Err(_) => DEFAULT_SPLADE_MAX_INDEX_BYTES,
+    })
+}
+
 /// Errors specific to SpladeIndex persistence.
+///
+/// Audit EH-4 / API-8 / API-9: prior to v1.22.0 audit, five distinct
+/// structural corruption conditions (chunk id > u32::MAX, posting list >
+/// u32::MAX, chunk_idx > u32::MAX, chunk_count overflow, invalid utf-8 in
+/// chunk id, out-of-bounds posting chunk_idx) were all wrapped as
+/// `Io(io::Error::new(InvalidData, ...))`. That made the enum less
+/// expressive than the dedicated variants already in place and produced
+/// nonsense Display output ("io: chunk id exceeds u32::MAX bytes: …").
+/// They now route through [`CorruptData`], which is structurally distinct
+/// from actual I/O failures. The [`ChecksumMismatch`] variant gained
+/// `path`, `expected`, `actual` fields to match `HnswError::ChecksumMismatch`.
+/// [`FileTooLarge`] is new and covers audit RB-2 (unbounded allocation from
+/// an oversized on-disk file).
 #[derive(thiserror::Error, Debug)]
 pub enum SpladeIndexPersistError {
     #[error("io: {0}")]
@@ -52,10 +94,24 @@ pub enum SpladeIndexPersistError {
          sparse_vectors have been modified since the index was persisted"
     )]
     GenerationMismatch { disk: u64, store: u64 },
-    #[error("SPLADE index body checksum mismatch — file is corrupt")]
-    ChecksumMismatch,
+    #[error(
+        "SPLADE index body checksum mismatch — file {path} is corrupt \
+         (expected {expected}, got {actual})"
+    )]
+    ChecksumMismatch {
+        path: String,
+        expected: String,
+        actual: String,
+    },
     #[error("SPLADE index file truncated — expected more data at offset {0}")]
     Truncated(u64),
+    #[error("SPLADE index payload corrupt: {0}")]
+    CorruptData(String),
+    #[error(
+        "SPLADE index file {path} is {size} bytes, exceeds maximum {limit} bytes. \
+         Set CQS_SPLADE_MAX_INDEX_BYTES to override."
+    )]
+    FileTooLarge { path: String, size: u64, limit: u64 },
 }
 
 /// In-memory inverted index for sparse vector search.
@@ -225,9 +281,10 @@ impl SpladeIndex {
         // id_map
         for id in &self.id_map {
             let len_u32: u32 = id.len().try_into().map_err(|_| {
-                SpladeIndexPersistError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("chunk id exceeds u32::MAX bytes: {}", id.len()),
+                // Audit EH-4: these are structural invariants, not I/O errors.
+                SpladeIndexPersistError::CorruptData(format!(
+                    "chunk id exceeds u32::MAX bytes: {}",
+                    id.len()
                 ))
             })?;
             body.extend_from_slice(&len_u32.to_le_bytes());
@@ -238,21 +295,18 @@ impl SpladeIndex {
         for (&token_id, posting_list) in &self.postings {
             body.extend_from_slice(&token_id.to_le_bytes());
             let count_u32: u32 = posting_list.len().try_into().map_err(|_| {
-                SpladeIndexPersistError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "posting list for token {} exceeds u32::MAX entries: {}",
-                        token_id,
-                        posting_list.len()
-                    ),
+                SpladeIndexPersistError::CorruptData(format!(
+                    "posting list for token {} exceeds u32::MAX entries: {}",
+                    token_id,
+                    posting_list.len()
                 ))
             })?;
             body.extend_from_slice(&count_u32.to_le_bytes());
             for &(chunk_idx, weight) in posting_list {
                 let idx_u32: u32 = chunk_idx.try_into().map_err(|_| {
-                    SpladeIndexPersistError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("chunk_idx exceeds u32::MAX: {}", chunk_idx),
+                    SpladeIndexPersistError::CorruptData(format!(
+                        "chunk_idx exceeds u32::MAX: {}",
+                        chunk_idx
                     ))
                 })?;
                 body.extend_from_slice(&idx_u32.to_le_bytes());
@@ -260,17 +314,26 @@ impl SpladeIndex {
             }
         }
 
-        // Hash the body.
-        let body_hash = blake3::hash(&body);
-
-        // Build the header.
+        // Build the header FIRST (without the checksum), so we can include it
+        // in the hash — audit RB-1: previously only the body was hashed, which
+        // meant a single bit flip in the unhashed header `chunk_count` could
+        // pass integrity checks and cause `Vec::with_capacity(usize::MAX)` to
+        // panic inside `load()`. Now the hash covers bytes [0..32] of the
+        // header AND the body, so any header corruption is detected at load
+        // time. The hash field itself (bytes [32..64]) can't cover itself.
         let mut header = [0u8; SPLADE_INDEX_HEADER_LEN];
         header[0..4].copy_from_slice(SPLADE_INDEX_MAGIC);
         header[4..8].copy_from_slice(&SPLADE_INDEX_VERSION.to_le_bytes());
         header[8..16].copy_from_slice(&generation.to_le_bytes());
         header[16..24].copy_from_slice(&(self.id_map.len() as u64).to_le_bytes());
         header[24..32].copy_from_slice(&(self.postings.len() as u64).to_le_bytes());
-        header[32..64].copy_from_slice(body_hash.as_bytes());
+
+        // Hash header[0..32] || body in one go.
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&header[0..32]);
+        hasher.update(&body);
+        let combined_hash = hasher.finalize();
+        header[32..64].copy_from_slice(combined_hash.as_bytes());
 
         // Atomic write: write to a same-directory temp file, fsync, rename.
         let parent = path.parent().ok_or_else(|| {
@@ -314,15 +377,65 @@ impl SpladeIndex {
             writer.get_ref().sync_all()?;
         }
 
-        // Atomic rename. On Windows (not our target but keep it correct) the
-        // rename may fail if the destination exists; remove then rename.
-        #[cfg(windows)]
+        // Atomic rename. Audit PB-NEW-3: the previous Windows branch did
+        // `remove_file` then `rename`, which was (a) redundant — Rust's
+        // `std::fs::rename` on Windows uses `MoveFileExW` with
+        // `MOVEFILE_REPLACE_EXISTING` since 1.46, so rename-over-existing
+        // works natively; (b) actively harmful — the remove+rename
+        // sequence opened a crash window where neither the old nor the new
+        // file existed, and a `SHARING_VIOLATION` on the remove (from
+        // another process mmapping the target) broke the save entirely.
+        // Deleted the whole `#[cfg(windows)]` block.
+        //
+        // Audit PB-NEW-4: cross-device rename fallback — on WSL 9P / Docker
+        // overlayfs / NFS the rename can fail with `CrossesDevices` or
+        // permission errors even within a single path. Mirror the
+        // `src/hnsw/persist.rs:412-445` pattern: try rename first, fall
+        // back to `fs::copy` + `set_permissions(0o600)` + remove(tmp) on
+        // error.
+        if let Err(rename_err) = std::fs::rename(&tmp_path, path) {
+            tracing::warn!(
+                error = %rename_err,
+                from = %tmp_path.display(),
+                to = %path.display(),
+                "SPLADE index rename failed, attempting fs::copy fallback"
+            );
+            std::fs::copy(&tmp_path, path).map_err(|copy_err| {
+                SpladeIndexPersistError::Io(std::io::Error::new(
+                    copy_err.kind(),
+                    format!(
+                        "rename failed ({}) AND copy fallback failed ({})",
+                        rename_err, copy_err
+                    ),
+                ))
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            }
+            // Best-effort temp cleanup — we already got the target file in
+            // place, so a leftover tmp is non-fatal.
+            let _ = std::fs::remove_file(&tmp_path);
+        }
+
+        // Audit PB-NEW-5: fsync the parent directory on unix so the rename
+        // is durable across a power cut. NTFS journals metadata with the
+        // rename itself, so Windows doesn't need this. Best-effort; logged
+        // on failure because the rebuild path handles lost persists.
+        #[cfg(unix)]
         {
-            if path.exists() {
-                std::fs::remove_file(path)?;
+            if let Ok(dir) = std::fs::File::open(parent) {
+                if let Err(e) = dir.sync_all() {
+                    tracing::debug!(
+                        error = %e,
+                        parent = %parent.display(),
+                        "parent dir fsync failed after SPLADE save — save is persisted but not \
+                         guaranteed durable across power loss (rebuildable, so low severity)"
+                    );
+                }
             }
         }
-        std::fs::rename(&tmp_path, path)?;
 
         tracing::info!(
             path = %path.display(),
@@ -338,6 +451,19 @@ impl SpladeIndex {
     /// exists but is unreadable, corrupt, or stale relative to
     /// `expected_generation`, returns an `Err` describing the reason; the
     /// caller is expected to fall back to rebuild-from-SQLite and re-persist.
+    ///
+    /// Safety guards (audit cluster):
+    /// - RB-2: file size capped at `CQS_SPLADE_MAX_INDEX_BYTES` (default 2 GB)
+    ///   before `read_to_end`, so an attacker or corruption can't trigger an
+    ///   unbounded allocation
+    /// - RB-1: blake3 hash covers header[0..32] + body, so any header bit
+    ///   flip (not just body) is detected before `Vec::with_capacity` is
+    ///   called on chunk_count / token_count
+    /// - RM-4: orphan temp files from previous crashed saves are cleaned up
+    ///   at the top of `load()`, mirroring the HNSW pattern
+    /// - EH-4 / API-8: corrupt-data conditions route through the dedicated
+    ///   `CorruptData` variant, and `ChecksumMismatch` carries `path` /
+    ///   `expected` / `actual` hex fields instead of a unit variant
     pub fn load(
         path: &Path,
         expected_generation: u64,
@@ -349,14 +475,36 @@ impl SpladeIndex {
         )
         .entered();
 
-        let file = match std::fs::File::open(path) {
-            Ok(f) => f,
+        // Audit RM-4: clean up orphan `.splade.index.bin.*.tmp` temp files
+        // left by previous crashed saves, mirroring HNSW's cleanup loop.
+        // Best-effort: errors are logged but don't fail the load.
+        Self::cleanup_orphan_temp_files(path);
+
+        // Audit RB-2: cap file size BEFORE read_to_end. Env override
+        // `CQS_SPLADE_MAX_INDEX_BYTES` for cases where a genuine 2+ GB
+        // index is expected (huge corpus with SPLADE-Code 0.6B).
+        let metadata = match std::fs::metadata(path) {
+            Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 tracing::debug!("SPLADE index file absent, will rebuild");
                 return Ok(None);
             }
             Err(e) => return Err(e.into()),
         };
+        let file_size = metadata.len();
+        let size_limit = splade_max_index_bytes();
+        if file_size > size_limit {
+            return Err(SpladeIndexPersistError::FileTooLarge {
+                path: path.display().to_string(),
+                size: file_size,
+                limit: size_limit,
+            });
+        }
+        if (file_size as usize) < SPLADE_INDEX_HEADER_LEN {
+            return Err(SpladeIndexPersistError::Truncated(file_size));
+        }
+
+        let file = std::fs::File::open(path)?;
         let mut reader = std::io::BufReader::new(file);
 
         // Header.
@@ -390,24 +538,53 @@ impl SpladeIndex {
         let token_count = u64::from_le_bytes(header[24..32].try_into().unwrap());
         let stored_hash: [u8; 32] = header[32..64].try_into().unwrap();
 
-        // Read the whole body. At ~60-100MB this is fine for an interactive
-        // CLI — HNSW loads are a similar order of magnitude.
-        let mut body = Vec::new();
+        // Audit PF-4: pre-allocate the body Vec from known file size. The
+        // previous `Vec::new()` caused ~log₂(59MB) reallocations on a typical
+        // SPLADE-Code 0.6B index, ~100ms of wasted memcpy per warm query.
+        let body_len = (file_size as usize).saturating_sub(SPLADE_INDEX_HEADER_LEN);
+        let mut body = Vec::with_capacity(body_len);
         reader.read_to_end(&mut body)?;
 
-        // Verify the body hash before trusting any of the parsed contents.
-        let actual_hash = blake3::hash(&body);
+        // Audit RB-1: hash covers header[0..32] + body. Previously only the
+        // body was hashed, so flipping a bit in `chunk_count` (header bytes
+        // [16..24]) passed the integrity check and reached
+        // `Vec::with_capacity(usize::MAX)` → process panic.
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&header[0..32]);
+        hasher.update(&body);
+        let actual_hash = hasher.finalize();
         if actual_hash.as_bytes() != &stored_hash {
-            return Err(SpladeIndexPersistError::ChecksumMismatch);
+            // Use blake3::Hash::to_hex for the expected hex encoding so we
+            // don't pull in the `hex` crate just for this one call.
+            let expected_hex = blake3::Hash::from_bytes(stored_hash).to_hex().to_string();
+            return Err(SpladeIndexPersistError::ChecksumMismatch {
+                path: path.display().to_string(),
+                expected: expected_hex,
+                actual: actual_hash.to_hex().to_string(),
+            });
         }
 
-        // Parse body.
+        // Parse body. After the combined-header-hash check above, both
+        // chunk_count and token_count are known to be authentic from the
+        // author's perspective — but we still apply a loose sanity bound
+        // to defend against pre-v1.22.0 files that were written under the
+        // old unhashed-header scheme and may have been corrupted in that
+        // window. Every chunk consumes >= 4 bytes for its length prefix
+        // and every token entry consumes >= 8 bytes, so these are hard
+        // upper bounds on feasible counts given the body length.
         let chunk_count_usize: usize = chunk_count.try_into().map_err(|_| {
-            SpladeIndexPersistError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("chunk_count {} does not fit in usize", chunk_count),
+            SpladeIndexPersistError::CorruptData(format!(
+                "chunk_count {} does not fit in usize",
+                chunk_count
             ))
         })?;
+        if chunk_count_usize > body.len() / 4 {
+            return Err(SpladeIndexPersistError::CorruptData(format!(
+                "chunk_count {} exceeds feasible bound from body length {}",
+                chunk_count_usize,
+                body.len()
+            )));
+        }
         let mut id_map: Vec<String> = Vec::with_capacity(chunk_count_usize);
         let mut cursor: usize = 0;
 
@@ -426,9 +603,9 @@ impl SpladeIndex {
             need(&body, cursor, len)?;
             let id = std::str::from_utf8(&body[cursor..cursor + len])
                 .map_err(|e| {
-                    SpladeIndexPersistError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("chunk id is not valid utf-8: {}", e),
+                    SpladeIndexPersistError::CorruptData(format!(
+                        "chunk id is not valid utf-8: {}",
+                        e
                     ))
                 })?
                 .to_string();
@@ -437,11 +614,18 @@ impl SpladeIndex {
         }
 
         let token_count_usize: usize = token_count.try_into().map_err(|_| {
-            SpladeIndexPersistError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("token_count {} does not fit in usize", token_count),
+            SpladeIndexPersistError::CorruptData(format!(
+                "token_count {} does not fit in usize",
+                token_count
             ))
         })?;
+        if token_count_usize > body.len() / 8 {
+            return Err(SpladeIndexPersistError::CorruptData(format!(
+                "token_count {} exceeds feasible bound from body length {}",
+                token_count_usize,
+                body.len()
+            )));
+        }
         let mut postings: HashMap<u32, Vec<(usize, f32)>> =
             HashMap::with_capacity(token_count_usize);
 
@@ -461,13 +645,10 @@ impl SpladeIndex {
                 let weight = f32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap());
                 cursor += 4;
                 if chunk_idx >= id_map.len() {
-                    return Err(SpladeIndexPersistError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!(
-                            "posting chunk_idx {} out of bounds for id_map len {}",
-                            chunk_idx,
-                            id_map.len()
-                        ),
+                    return Err(SpladeIndexPersistError::CorruptData(format!(
+                        "posting chunk_idx {} out of bounds for id_map len {}",
+                        chunk_idx,
+                        id_map.len()
                     )));
                 }
                 postings_for_token.push((chunk_idx, weight));
@@ -489,6 +670,53 @@ impl SpladeIndex {
             "SPLADE index loaded from disk"
         );
         Ok(Some(Self { postings, id_map }))
+    }
+
+    /// Audit RM-4: clean up `.splade.index.bin.*.tmp` orphan files left by
+    /// crashed saves. Mirrors the HNSW cleanup at `hnsw/persist.rs:498-510`.
+    /// Best-effort — errors are logged and not propagated, because a
+    /// leftover tmp file is annoying but not fatal.
+    fn cleanup_orphan_temp_files(path: &Path) {
+        let parent = match path.parent() {
+            Some(p) => p,
+            None => return,
+        };
+        let target_name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(n) => n,
+            None => return,
+        };
+        // Temp files are named `.<target>.<hex>.tmp`.
+        let prefix = format!(".{}.", target_name);
+        let entries = match std::fs::read_dir(parent) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    parent = %parent.display(),
+                    "read_dir for orphan cleanup failed, skipping"
+                );
+                return;
+            }
+        };
+        for entry in entries.flatten() {
+            let name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue, // non-utf8 filename, leave it alone
+            };
+            if name.starts_with(&prefix) && name.ends_with(".tmp") {
+                match std::fs::remove_file(entry.path()) {
+                    Ok(_) => tracing::debug!(
+                        orphan = %name,
+                        "Removed orphan SPLADE temp file"
+                    ),
+                    Err(e) => tracing::debug!(
+                        error = %e,
+                        orphan = %name,
+                        "Failed to remove orphan SPLADE temp file"
+                    ),
+                }
+            }
+        }
     }
 
     /// Convenience: load from disk if present and matching; otherwise build
@@ -705,7 +933,7 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
 
         match SpladeIndex::load(&path, 1) {
-            Err(SpladeIndexPersistError::ChecksumMismatch) => {}
+            Err(SpladeIndexPersistError::ChecksumMismatch { .. }) => {}
             Ok(_) => panic!("expected ChecksumMismatch, got Ok"),
             Err(e) => panic!("expected ChecksumMismatch, got {}", e),
         }
