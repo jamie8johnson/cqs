@@ -32,7 +32,7 @@ use cqs::reference::ReferenceIndex;
 use cqs::store::Store;
 use cqs::Embedder;
 
-use super::{open_project_store, open_project_store_readonly};
+use super::open_project_store_readonly;
 
 /// Maximum batch stdin line length (1MB). Lines exceeding this are rejected
 /// to prevent unbounded memory allocation from malicious input.
