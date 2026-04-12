@@ -716,13 +716,17 @@ Benchmarked on a 4,110-chunk Rust project (202 files, 12 languages) with CUDA GP
 
 | Metric | Value |
 |--------|-------|
-| **Search latency (hot, p50)** | 45ms |
-| **Search latency (cold, p50)** | 1,767ms |
+| **Daemon query (graph ops)** | 3–19ms |
+| **Daemon query (search, warm)** | ~500ms |
+| **CLI search (hot, p50)** | 45ms |
+| **CLI search (cold, p50)** | 1,767ms |
 | **Throughput (batch mode)** | 22 queries/sec |
 | **Index build (203 files)** | 36 sec |
 | **Index size** | ~8 KB/chunk (31 MB for 4,110 chunks) |
 
-Cold latency includes process startup, model init, and DB open. Batch mode (`cqs batch`) amortizes startup across queries — use it for pipelines and agent workloads.
+**Daemon mode** (`cqs watch --serve`) keeps the store, HNSW index, and embedder loaded. Graph queries (`callers`, `callees`, `impact`) run in 3–19ms. Embedding queries (`search`) pay ONNX inference on first run (~500ms), then hit the persistent query cache on repeats.
+
+CLI cold latency includes process startup, model init, and DB open. Batch mode (`cqs batch`) amortizes startup across queries.
 
 **Embedding latency (GPU vs CPU):**
 
