@@ -520,17 +520,22 @@ impl Embedder {
 
     /// Embed documents (code chunks). Adds model-specific document prefix.
     ///
-    /// Large inputs are processed in batches of 64 to cap GPU memory usage.
+    /// Large inputs are processed in batches to cap GPU memory usage.
+    /// Batch size configurable via `CQS_EMBED_BATCH_SIZE` (default 64).
     pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbedderError> {
         let _span = tracing::info_span!("embed_documents", count = texts.len()).entered();
         let prefix = &self.model_config.doc_prefix;
-        const MAX_BATCH: usize = 64;
-        if texts.len() <= MAX_BATCH {
+        let max_batch: usize = std::env::var("CQS_EMBED_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n: &usize| n > 0)
+            .unwrap_or(64);
+        if texts.len() <= max_batch {
             let prefixed: Vec<String> = texts.iter().map(|t| format!("{}{}", prefix, t)).collect();
             return self.embed_batch(&prefixed);
         }
         let mut all = Vec::with_capacity(texts.len());
-        for chunk in texts.chunks(MAX_BATCH) {
+        for chunk in texts.chunks(max_batch) {
             let prefixed: Vec<String> = chunk.iter().map(|t| format!("{}{}", prefix, t)).collect();
             all.extend(self.embed_batch(&prefixed)?);
         }
@@ -547,7 +552,14 @@ impl Embedder {
     /// Maximum input bytes before truncation (RT-RES-5).
     /// The tokenizer will further truncate to max_seq_length tokens, but this
     /// prevents O(n) tokenization work on megabyte-sized inputs.
-    const MAX_QUERY_BYTES: usize = 32 * 1024;
+    /// Configurable via `CQS_MAX_QUERY_BYTES` (default 32768).
+    fn max_query_bytes() -> usize {
+        std::env::var("CQS_MAX_QUERY_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n: &usize| n > 0)
+            .unwrap_or(32 * 1024)
+    }
 
     pub fn embed_query(&self, text: &str) -> Result<Embedding, EmbedderError> {
         let _span = tracing::info_span!("embed_query").entered();
@@ -556,14 +568,15 @@ impl Embedder {
             return Err(EmbedderError::EmptyQuery);
         }
         // RT-RES-5: Truncate oversized input before tokenization to bound CPU work.
-        let text = if text.len() > Self::MAX_QUERY_BYTES {
+        let max_query_bytes = Self::max_query_bytes();
+        let text = if text.len() > max_query_bytes {
             tracing::warn!(
                 len = text.len(),
-                max = Self::MAX_QUERY_BYTES,
+                max = max_query_bytes,
                 "Query text truncated before embedding"
             );
             // Truncate at a char boundary
-            let mut end = Self::MAX_QUERY_BYTES;
+            let mut end = max_query_bytes;
             while !text.is_char_boundary(end) && end > 0 {
                 end -= 1;
             }

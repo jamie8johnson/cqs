@@ -222,6 +222,16 @@ pub fn resolve_splade_model_dir() -> Option<std::path::PathBuf> {
     Some(dir)
 }
 
+/// Maximum characters for SPLADE input truncation.
+/// Configurable via `CQS_SPLADE_MAX_CHARS` (default 4000).
+fn splade_max_chars() -> usize {
+    std::env::var("CQS_SPLADE_MAX_CHARS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n: &usize| n > 0)
+        .unwrap_or(4000)
+}
+
 impl SpladeEncoder {
     /// Default SPLADE threshold, overridable via `CQS_SPLADE_THRESHOLD` env var.
     pub fn default_threshold() -> f32 {
@@ -365,16 +375,18 @@ impl SpladeEncoder {
         }
 
         // Truncate overly long input to avoid excessive tokenization/inference cost
-        let text = if text.len() > 4000 {
+        let max_chars = splade_max_chars();
+        let text = if text.len() > max_chars {
             let truncated = &text[..text
                 .char_indices()
-                .nth(4000)
+                .nth(max_chars)
                 .map(|(i, _)| i)
                 .unwrap_or(text.len())];
             tracing::debug!(
                 original_len = text.len(),
                 truncated_len = truncated.len(),
-                "Truncated SPLADE input to 4000 chars"
+                max_chars,
+                "Truncated SPLADE input"
             );
             truncated
         } else {
@@ -530,14 +542,15 @@ impl SpladeEncoder {
             return Ok(Vec::new());
         }
 
-        // Step 1: truncate each input to MAX_CHARS, matching `encode` behavior.
+        // Step 1: truncate each input to max chars, matching `encode` behavior.
+        let max_chars = splade_max_chars();
         let truncated: Vec<&str> = texts
             .iter()
             .map(|t| {
-                if t.len() > 4000 {
+                if t.len() > max_chars {
                     let end = t
                         .char_indices()
-                        .nth(4000)
+                        .nth(max_chars)
                         .map(|(i, _)| i)
                         .unwrap_or(t.len());
                     &t[..end]

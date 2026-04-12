@@ -675,6 +675,16 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
     }
 }
 
+/// HNSW insert batch size.
+/// Configurable via `CQS_HNSW_BATCH_SIZE` (default 10000).
+fn hnsw_batch_size() -> usize {
+    std::env::var("CQS_HNSW_BATCH_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n: &usize| n > 0)
+        .unwrap_or(10_000)
+}
+
 /// Build HNSW index from store embeddings
 ///
 /// Creates an HNSW index containing chunk embeddings only.
@@ -698,9 +708,9 @@ pub(crate) fn build_hnsw_index_owned(store: &Store, cqs_dir: &Path) -> Result<Op
         return Ok(None);
     }
 
-    const HNSW_BATCH_SIZE: usize = 10_000;
+    let batch_size = hnsw_batch_size();
 
-    let chunk_batches = store.embedding_batches(HNSW_BATCH_SIZE);
+    let chunk_batches = store.embedding_batches(batch_size);
 
     let hnsw = HnswIndex::build_batched_with_dim(chunk_batches, chunk_count, store.dim())?;
     hnsw.save(cqs_dir, "index")?;
@@ -734,9 +744,9 @@ pub(crate) fn build_hnsw_base_index(store: &Store, cqs_dir: &Path) -> Result<Opt
         return Ok(None);
     }
 
-    const HNSW_BATCH_SIZE: usize = 10_000;
+    let batch_size = hnsw_batch_size();
 
-    let chunk_batches = store.embedding_base_batches(HNSW_BATCH_SIZE);
+    let chunk_batches = store.embedding_base_batches(batch_size);
     let hnsw = HnswIndex::build_batched_with_dim(chunk_batches, base_count, store.dim())?;
     hnsw.save(cqs_dir, "index_base")?;
 
