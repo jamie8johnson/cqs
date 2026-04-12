@@ -169,7 +169,7 @@ impl BoundedScoreHeap {
     /// Push a scored result. If at capacity, evicts the lowest score.
     pub fn push(&mut self, id: String, score: f32) {
         if !score.is_finite() {
-            tracing::warn!("BoundedScoreHeap: ignoring non-finite score");
+            tracing::warn!(id = %id, score = ?score, "BoundedScoreHeap: ignoring non-finite score");
             return;
         }
 

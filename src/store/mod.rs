@@ -737,7 +737,9 @@ impl Drop for Store {
         // Errors are logged but not propagated (Drop can't fail).
         // catch_unwind guards against block_on panicking when called from
         // within an async context (e.g., if Store is dropped inside a tokio runtime).
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // v1.22.0 audit EH-9: previously `let _ =` silently swallowed the
+        // panic payload. Now logs it so the caught panic is visible.
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if let Err(e) = self.rt.block_on(async {
                 sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
                     .execute(&self.pool)
@@ -745,7 +747,17 @@ impl Drop for Store {
             }) {
                 tracing::warn!(error = %e, "WAL checkpoint on drop failed (non-fatal)");
             }
-        }));
+        })) {
+            let msg = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                .unwrap_or("unknown panic");
+            tracing::warn!(
+                panic = msg,
+                "WAL checkpoint panic caught in Store::drop (non-fatal)"
+            );
+        }
         // Pool closes automatically when dropped
     }
 }
