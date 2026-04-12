@@ -91,6 +91,8 @@ impl ModelConfig {
     /// Look up a preset by short name ("e5-base") or repo ID ("intfloat/e5-base-v2").
     ///
     /// Returns `None` for unknown names.
+    pub const PRESET_NAMES: &'static [&'static str] = &["e5-base", "v9-200k", "bge-large"];
+
     pub fn from_preset(name: &str) -> Option<Self> {
         match name {
             "e5-base" | "intfloat/e5-base-v2" => Some(Self::e5_base()),

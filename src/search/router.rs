@@ -4,7 +4,7 @@
 //! behavioral search, etc.) and routes to the best retrieval strategy.
 //! Pure logic — no I/O, no store access, infallible.
 
-use crate::language::ChunkType;
+use crate::language::{ChunkType, REGISTRY};
 
 /// Query categories for adaptive routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,8 +75,6 @@ pub enum SearchStrategy {
     DenseDefault,
     /// Dense search with type boost for matching chunk types (enriched HNSW)
     DenseWithTypeHints,
-    /// Dense + SPLADE sparse-dense hybrid (if SPLADE model available)
-    DenseWithSplade,
     /// Phase 5: dense search against the base (non-enriched) HNSW — LLM
     /// summaries tend to hurt conceptual/behavioral/negation signal because
     /// they inject canonical vocabulary that drowns out query semantics.
@@ -90,7 +88,6 @@ impl std::fmt::Display for SearchStrategy {
             Self::NameOnly => write!(f, "name_only"),
             Self::DenseDefault => write!(f, "dense"),
             Self::DenseWithTypeHints => write!(f, "dense_type_hints"),
-            Self::DenseWithSplade => write!(f, "dense_splade"),
             Self::DenseBase => write!(f, "dense_base"),
         }
     }
@@ -222,30 +219,24 @@ const STRUCTURAL_KEYWORDS: &[&str] = &[
     "type",
 ];
 
-/// Programming language names for cross-language detection
-const LANGUAGE_NAMES: &[&str] = &[
-    "python",
-    "rust",
-    "javascript",
-    "typescript",
-    "java",
-    "go",
-    "ruby",
-    "c++",
-    "cpp",
-    "csharp",
-    "c#",
-    "swift",
-    "kotlin",
-    "scala",
-    "elixir",
-    "haskell",
-    "ocaml",
-    "php",
-    "perl",
-    "lua",
-    "sql",
-];
+/// Common aliases that users type but don't match registry names.
+/// Registry names cover the canonical forms ("cpp", "csharp", etc.);
+/// these add the human-written variants.
+const LANGUAGE_ALIASES: &[&str] = &["c++", "c#"];
+
+/// Build the set of language names for cross-language detection.
+///
+/// Combines all registered language names from `REGISTRY.all()` with
+/// common aliases that don't appear as registry keys.
+fn language_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = REGISTRY.all().map(|def| def.name).collect();
+    for alias in LANGUAGE_ALIASES {
+        if !names.contains(alias) {
+            names.push(alias);
+        }
+    }
+    names
+}
 
 /// Structural query patterns
 const STRUCTURAL_PATTERNS: &[&str] = &[
@@ -460,7 +451,8 @@ fn is_identifier_query(_query: &str, words: &[&str]) -> bool {
 
 /// Check if query mentions multiple programming languages or translation.
 fn is_cross_language_query(query: &str, words: &[&str]) -> bool {
-    let lang_count = LANGUAGE_NAMES
+    let names = language_names();
+    let lang_count = names
         .iter()
         .filter(|l| words.iter().any(|w| *w == **l))
         .count();
@@ -521,10 +513,17 @@ pub fn extract_type_hints(query: &str) -> Option<Vec<ChunkType>> {
     let mut types = Vec::new();
 
     let patterns: &[(&str, ChunkType)] = &[
+        // Test
         ("test function", ChunkType::Test),
         ("test method", ChunkType::Test),
         ("all tests", ChunkType::Test),
         ("every test", ChunkType::Test),
+        // Function / Method
+        ("all functions", ChunkType::Function),
+        ("every function", ChunkType::Function),
+        ("all methods", ChunkType::Method),
+        ("every method", ChunkType::Method),
+        // Type definitions
         ("all structs", ChunkType::Struct),
         ("every struct", ChunkType::Struct),
         ("all enums", ChunkType::Enum),
@@ -535,9 +534,57 @@ pub fn extract_type_hints(query: &str) -> Option<Vec<ChunkType>> {
         ("every interface", ChunkType::Interface),
         ("all classes", ChunkType::Class),
         ("every class", ChunkType::Class),
-        ("endpoint", ChunkType::Endpoint),
-        ("all constants", ChunkType::Constant),
+        ("type alias", ChunkType::TypeAlias),
+        ("all type aliases", ChunkType::TypeAlias),
+        // OOP / module constructs
         ("all modules", ChunkType::Module),
+        ("every module", ChunkType::Module),
+        ("all objects", ChunkType::Object),
+        ("every object", ChunkType::Object),
+        ("all namespaces", ChunkType::Namespace),
+        ("every namespace", ChunkType::Namespace),
+        ("all impl blocks", ChunkType::Impl),
+        ("implementation block", ChunkType::Impl),
+        ("extension method", ChunkType::Extension),
+        ("all extensions", ChunkType::Extension),
+        // Members
+        ("all constants", ChunkType::Constant),
+        ("every constant", ChunkType::Constant),
+        ("all variables", ChunkType::Variable),
+        ("every variable", ChunkType::Variable),
+        ("all properties", ChunkType::Property),
+        ("every property", ChunkType::Property),
+        ("constructor", ChunkType::Constructor),
+        ("all constructors", ChunkType::Constructor),
+        // C# specific
+        ("all delegates", ChunkType::Delegate),
+        ("every delegate", ChunkType::Delegate),
+        ("all events", ChunkType::Event),
+        ("every event", ChunkType::Event),
+        // Macros
+        ("all macros", ChunkType::Macro),
+        ("every macro", ChunkType::Macro),
+        ("macro_rules", ChunkType::Macro),
+        // Web / API
+        ("endpoint", ChunkType::Endpoint),
+        ("all endpoints", ChunkType::Endpoint),
+        ("all services", ChunkType::Service),
+        ("every service", ChunkType::Service),
+        ("middleware", ChunkType::Middleware),
+        ("all middleware", ChunkType::Middleware),
+        // Database / FFI / config
+        ("stored procedure", ChunkType::StoredProc),
+        ("all stored procedures", ChunkType::StoredProc),
+        ("extern function", ChunkType::Extern),
+        ("all externs", ChunkType::Extern),
+        ("ffi declaration", ChunkType::Extern),
+        ("config key", ChunkType::ConfigKey),
+        ("all config keys", ChunkType::ConfigKey),
+        // Docs / Solidity
+        ("all sections", ChunkType::Section),
+        ("every section", ChunkType::Section),
+        ("all modifiers", ChunkType::Modifier),
+        ("every modifier", ChunkType::Modifier),
     ];
 
     for (pattern, chunk_type) in patterns {

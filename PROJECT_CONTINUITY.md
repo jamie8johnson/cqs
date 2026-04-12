@@ -2,52 +2,48 @@
 
 ## Right Now
 
-**v1.22.0 audit — 72 findings fixed across 10 PRs (9 merged, #907 in CI). (2026-04-12 11:25 CDT)**
+**v1.22.0 audit — 87 findings fixed + 1 won't-fix + 13 issues created. PR #911 in CI. (2026-04-12 14:00 CDT)**
 
-### Session PRs (this session = continuation from compacted context)
+Branch: `fix/audit-p2p3-batch`
+
+### Session PRs
 
 | PR | Theme | Findings | Status |
 |---|---|---|---|
-| #893 | Integrity check skip (86s → 6.9s) | 1 | **merged** (prior session) |
-| #894 | Eval harness -- separator + timeout | 1 | **merged** (prior session) |
-| #895 | SPLADE index persistence (45s → 9.7s) | 1 | **merged** (prior session) |
-| #896 | OpenRCT2 spec rewrite | 0 | **merged** (prior session) |
-| #897 | Audit docs (136 findings + triage) | — | **merged** |
-| #898 | v19 FK CASCADE + generation bump + SPLADE file safety | 22 | **merged** |
-| #900 | P3/P4: docs + router + dim + security + resource | 14 | **merged** |
-| #901 | v20 AFTER DELETE trigger + watch warn | 3 | **merged** |
-| #902 | rrf_k config wiring + dead --semantic-only | 2 | **merged** |
-| #903 | SEC-NEW-1 + DS-W6 + RM-2 + EH-5 | 4 | **merged** |
-| #904 | SHL-32/33: 15 pre-3.32 SQLite batch sizes | 15 | **merged** |
-| #905 | API-1: remove misleading --format from TextJsonArgs | 1 | **merged** |
-| #906 | OB-14 + EH-7 + EH-9 + PF-7 + OB-21 | 5 | **merged** |
-| #907 | OB-19 + EH-8 + API-11 | 3 | CI running |
+| #893–#908 | Prior session audit fixes | 59 | **all merged** |
+| #910 | AC-1: SPLADE hybrid fusion score preservation | 1 | **merged** |
+| #911 | Mega-batch: 28 findings + 10 tests + 3 perf issues + daemon plan | 28 | CI running |
 
-### Remaining P1 items
+### What's in #911 (28 findings + 3 issue fixes)
 
-- **AC-1**: SPLADE hybrid fusion rewrite — hard, needs own session. `search_hybrid` discards fused scores; alpha is a no-op on final ranking.
-- **DS-W5**: `cqs index --force` inter-process lock — medium.
+**Audit findings (25 from prior push + 3 new):**
+- All prior P2/P3 items (DS-W5, CQ-4, SHL-*, OB-*, EXT-*, PF-*, etc.)
+- #924: Integrity check flipped to opt-in (CQS_INTEGRITY_CHECK=1)
+- #919: Batch/chat store opened read-only (skip write pool + quick_check)
+- #918: Store::clear_caches replaces drop+reopen churn in watch
 
-### Remaining P2/P3/P4 (~65 items)
+**Tests (10):** sparse store, embeddings, drift, token budget
 
-See `docs/audit-triage.md`. Main buckets:
-- Test coverage: ~24 gaps (adversarial + happy-path)
-- API hygiene: API-2/3/4/5/6/7/12/13
-- Extensibility: EXT-7/8/9/10/11/12/13 (hardcoded lists next to registries)
-- Performance: PF-1 persistent daemon (hard), PF-2/3/5/6/8/9/10/11
-- Observability: OB-13/18/20
-- Error handling: EH-6 (embedding batch drops)
+**Daemon plan:** `docs/plans/2026-04-12-persistent-daemon.md` — extend `cqs watch` with Unix socket. Fresh-eyes reviewed. #913 + #915 scoped into Phase 0.
 
-### SPLADE eval result
+### Issues created (#912–#925)
 
-Flag-driven SPLADE-Code 0.6B: −0.6pp R@1 net (41.8% vs 42.4%). cross_language +10pp. AC-1 finding means all evals measure candidate-set expansion, not fusion. Selective routing is next after the fusion rewrite.
+14 issues total. Top 3 by ROI (#924, #919, #918) now fixed in #911.
+
+### Next session
+
+- **Daemon implementation** (#912) — Phase 0a/0b/0c then Phases 1-5. ~360 lines.
+- **SPLADE re-eval** — AC-1 merged, alpha knob now functional. Re-run eval.
+- **Remaining audit items** (~22): API hygiene, extensibility, happy-path test gaps.
 
 ## Open Issues
-- #856, #717, #389, #255, #106, #63
+- #909–#925, #856, #717, #389, #255, #106, #63
 
 ## Architecture
 - Version: 1.22.0
 - Schema: v20 (v19 FK CASCADE, v20 AFTER DELETE trigger on chunks)
-- Tests: 1351 lib + integration
-- `max_rows_per_statement(N)` in `store/helpers/sql.rs` — all 15 SQLite batch sites migrated
+- Tests: ~1375 (pending #911 merge for exact count)
 - Three on-disk indexes: `index.hnsw.*` + `index_base.hnsw.*` + `splade.index.bin`
+- New env vars: CQS_BUSY_TIMEOUT_MS, CQS_IDLE_TIMEOUT_SECS, CQS_MAX_CONNECTIONS, CQS_MMAP_SIZE, CQS_SPLADE_MAX_CHARS, CQS_MAX_QUERY_BYTES, CQS_HNSW_BATCH_SIZE, CQS_INTEGRITY_CHECK
+- Store::clear_caches() replaces drop+reopen in watch (RM-6/#918)
+- Batch/chat opens read-only store (RM-7/#919)

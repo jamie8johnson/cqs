@@ -48,13 +48,13 @@ impl Store {
     ///   heavy weighting on the name column. Returns full `SearchResult` with scores.
     ///   Best for: "Where is X defined?" queries.
     ///
-    /// - **`search_filtered`** (in search.rs): Semantic search with optional language/path
-    ///   filters. Can use RRF hybrid search combining semantic + FTS scores.
+    /// - **`search_filtered`** (in `search/query.rs`): Semantic search with optional
+    ///   language/path filters. Can use RRF hybrid search combining semantic + FTS scores.
     ///   Best for: Natural language queries like "retry with exponential backoff".
     ///
-    /// - **`search_filtered_with_index`** (in search.rs): Like `search_filtered` but uses
-    ///   HNSW/CAGRA vector index for O(log n) candidate retrieval instead of brute force.
-    ///   Best for: Large indexes (>5k chunks) where brute force is slow.
+    /// - **`search_filtered_with_index`** (in `search/query.rs`): Like `search_filtered`
+    ///   but uses HNSW/CAGRA vector index for O(log n) candidate retrieval instead of
+    ///   brute force. Best for: Large indexes (>5k chunks) where brute force is slow.
     pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<String>, StoreError> {
         let _span = tracing::info_span!("search_fts", limit).entered();
         let normalized_query = sanitize_fts_query(&normalize_for_fts(query));

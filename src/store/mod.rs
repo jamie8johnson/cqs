@@ -224,22 +224,11 @@ pub struct Store {
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
     notes_summaries_cache: RwLock<Option<Arc<Vec<NoteSummary>>>>,
-    /// Cached call graph — populated on first access, valid for Store lifetime.
-    /// **No invalidation mechanism by design.** `OnceLock` is intentionally write-once:
-    /// once populated the cache is never cleared. This is safe because `Store` is opened
-    /// per-command (one `open()` → use → `close()` cycle), so the index cannot change
-    /// while the cache is live. Long-lived `Store` instances (batch mode, watch mode)
-    /// must be re-opened to pick up index changes; the caller is responsible for that
-    /// lifecycle. Do not add invalidation logic here — it would be dead code for the
-    /// normal case and racy for the long-lived case (use a fresh `Store` instead).
+    /// Cached call graph — populated on first access, valid until `clear_caches()`.
+    /// `OnceLock` is write-once within a cache epoch. `clear_caches(&mut self)` swaps
+    /// in a fresh OnceLock, which is safe because `&mut self` guarantees exclusive access.
     call_graph_cache: std::sync::OnceLock<std::sync::Arc<CallGraph>>,
-    /// Cached test chunks — populated on first access, valid for Store lifetime.
-    /// Same no-invalidation contract as `call_graph_cache` above: intentionally
-    /// write-once for the per-command `Store` lifetime. Re-open the `Store` if the
-    /// underlying index has been updated (e.g., after `cqs index` in watch mode).
     test_chunks_cache: std::sync::OnceLock<std::sync::Arc<Vec<ChunkSummary>>>,
-    /// Cached chunk_type+language map — populated on first filtered search, valid for Store lifetime.
-    /// Same no-invalidation contract as above.
     chunk_type_map_cache: std::sync::OnceLock<std::sync::Arc<ChunkTypeMap>>,
 }
 
@@ -254,8 +243,17 @@ struct StoreOpenConfig {
     read_only: bool,
     use_current_thread: bool,
     max_connections: u32,
-    mmap_size: &'static str,
+    mmap_size: String,
     cache_size: &'static str,
+}
+
+/// Read `CQS_MMAP_SIZE` env var, falling back to `default_bytes`.
+/// The env var is the raw byte count (e.g. `268435456` for 256 MB).
+fn mmap_size_from_env(default_bytes: &str) -> String {
+    std::env::var("CQS_MMAP_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok().map(|n| n.to_string()))
+        .unwrap_or_else(|| default_bytes.to_string())
 }
 
 impl Store {
@@ -273,14 +271,18 @@ impl Store {
 
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
+        let max_connections = std::env::var("CQS_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(4);
         Self::open_with_config(
             path,
             StoreOpenConfig {
                 read_only: false,
                 use_current_thread: false,
-                max_connections: 4,
-                mmap_size: "268435456", // 256MB
-                cache_size: "-16384",   // 16MB
+                max_connections,
+                mmap_size: mmap_size_from_env("268435456"), // 256MB default
+                cache_size: "-16384",                       // 16MB
             },
         )
     }
@@ -301,7 +303,7 @@ impl Store {
                 read_only: true,
                 use_current_thread: true,
                 max_connections: 1, // PB-1: single-thread runtime can only use 1 connection
-                mmap_size: "268435456", // 256MB
+                mmap_size: mmap_size_from_env("268435456"), // 256MB default
                 cache_size: "-16384", // 16MB
             },
         )
@@ -317,8 +319,8 @@ impl Store {
                 read_only: true,
                 use_current_thread: true,
                 max_connections: 1,
-                mmap_size: "67108864", // 64MB
-                cache_size: "-4096",   // 4MB
+                mmap_size: mmap_size_from_env("67108864"), // 64MB default
+                cache_size: "-4096",                       // 4MB
             },
         )
     }
@@ -347,7 +349,12 @@ impl Store {
             .filename(path)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(std::time::Duration::from_secs(5))
+            .busy_timeout(std::time::Duration::from_millis(
+                std::env::var("CQS_BUSY_TIMEOUT_MS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(5000),
+            ))
             // NORMAL synchronous in WAL mode: fsync on checkpoint, not every commit.
             // Trade-off: a crash can lose the last few committed transactions (WAL
             // tail not yet fsynced), but the database remains consistent. Acceptable
@@ -369,7 +376,12 @@ impl Store {
         let pool = rt.block_on(async {
             SqlitePoolOptions::new()
                 .max_connections(config.max_connections)
-                .idle_timeout(std::time::Duration::from_secs(30)) // PB-2: shorter timeout to release WAL locks
+                .idle_timeout(std::time::Duration::from_secs(
+                    std::env::var("CQS_IDLE_TIMEOUT_SECS")
+                        .ok()
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(30), // PB-2: shorter timeout to release WAL locks
+                ))
                 .after_connect(move |conn, _meta| {
                     let pragma = cache_pragma.clone();
                     Box::pin(async move {
@@ -425,10 +437,20 @@ impl Store {
         //    without the slower cross-checks of index content vs table
         //    content, which is the right tradeoff for a startup canary.
         //
-        // Opt-out for either path is available via CQS_SKIP_INTEGRITY_CHECK=1
-        // if the quick_check itself becomes a problem on huge write opens.
-        let skip_integrity = std::env::var("CQS_SKIP_INTEGRITY_CHECK").as_deref() == Ok("1");
-        if !config.read_only && !skip_integrity {
+        // Opt-in via CQS_INTEGRITY_CHECK=1. The quick_check takes ~40s on
+        // WSL /mnt/c (NTFS over 9P) which dominated every write-open. For a
+        // rebuildable search index the risk/cost tradeoff favors skipping by
+        // default. Legacy CQS_SKIP_INTEGRITY_CHECK=1 still works (forces skip
+        // even when CQS_INTEGRITY_CHECK=1 is set).
+        let opt_in = std::env::var("CQS_INTEGRITY_CHECK").as_deref() == Ok("1");
+        let force_skip = std::env::var("CQS_SKIP_INTEGRITY_CHECK").as_deref() == Ok("1");
+        let run_check = opt_in && !force_skip && !config.read_only;
+        if config.read_only {
+            tracing::debug!("Skipping integrity check (read-only open)");
+        } else if !run_check {
+            tracing::debug!("Integrity check skipped (set CQS_INTEGRITY_CHECK=1 to enable)");
+        }
+        if run_check {
             rt.block_on(async {
                 let result: (String,) = sqlx::query_as("PRAGMA quick_check(1)")
                     .fetch_one(&pool)
@@ -517,6 +539,27 @@ impl Store {
         let guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tx = self.pool.begin().await?;
         Ok((guard, tx))
+    }
+
+    /// Reset all in-memory caches without closing the connection pool.
+    ///
+    /// Cheaper than `drop` + `open`: avoids pool teardown, runtime creation,
+    /// PRAGMA setup, and integrity check. Designed for long-lived Store
+    /// instances (watch mode, future daemon) that need to pick up index
+    /// changes without paying full re-open cost.
+    ///
+    /// Requires `&mut self` — exclusive access guarantees no concurrent
+    /// readers see a half-cleared state.
+    pub fn clear_caches(&mut self) {
+        let _span = tracing::debug_span!("store_clear_caches").entered();
+        *self
+            .notes_summaries_cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        self.call_graph_cache = std::sync::OnceLock::new();
+        self.test_chunks_cache = std::sync::OnceLock::new();
+        self.chunk_type_map_cache = std::sync::OnceLock::new();
+        tracing::debug!("Store caches cleared");
     }
 
     /// Create a new index

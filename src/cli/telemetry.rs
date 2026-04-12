@@ -94,7 +94,9 @@ pub fn log_command(
                 tracing::debug!(path = %path.display(), error = %e, "Failed to set file permissions");
             }
         }
-        writeln!(file, "{}", entry)?;
+        if let Err(e) = writeln!(file, "{}", entry) {
+            tracing::warn!(error = %e, "Failed to write telemetry entry");
+        }
         Ok(())
     })();
 }
@@ -134,8 +136,50 @@ pub fn log_routed(
     });
 
     let _ = (|| -> std::io::Result<()> {
+        // Advisory lock to prevent races with concurrent telemetry reset.
+        // Non-blocking try_lock — if reset holds it, skip this write silently.
+        let lock_path = cqs_dir.join("telemetry.lock");
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)?;
+        if lock_file.try_lock().is_err() {
+            return Ok(());
+        }
+
+        // Auto-archive if file exceeds 10 MB to prevent unbounded growth
+        if let Ok(meta) = fs::metadata(&path) {
+            if meta.len() > MAX_TELEMETRY_BYTES {
+                let archive_name = format!("telemetry_{timestamp}.jsonl");
+                let archive_path = cqs_dir.join(&archive_name);
+                if let Err(e) = fs::rename(&path, &archive_path) {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to auto-archive telemetry file"
+                    );
+                } else {
+                    tracing::info!(
+                        archived = %archive_name,
+                        "Auto-archived telemetry file (exceeded 10 MB)"
+                    );
+                }
+            }
+        }
+
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-        writeln!(file, "{}", entry)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            {
+                tracing::debug!(path = %path.display(), error = %e, "Failed to set file permissions");
+            }
+        }
+        if let Err(e) = writeln!(file, "{}", entry) {
+            tracing::warn!(error = %e, "Failed to write telemetry entry");
+        }
         Ok(())
     })();
 }

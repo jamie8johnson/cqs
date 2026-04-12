@@ -356,5 +356,38 @@ The P1-severity hard items (AC-1, DS-W5, PB-NEW-6) stay in P1 for triage-severit
 | SHL-32 | #904 | ✅ merged |
 | SHL-33 | #904 | ✅ merged |
 
-**58 findings fixed out of ~136 triaged.**
-Remaining P1: AC-1 (fusion rewrite), DS-W5 (inter-process lock).
+| AC-1 | #910 | ✅ merged |
+| AC-3 | #911 | ⏳ CI |
+| API-12 | #911 | ⏳ CI |
+| CQ-4 | #911 | ⏳ CI |
+| Doc-5 | #911 | ⏳ CI |
+| Doc-10 | #911 | ⏳ CI |
+| DS-W5 | #911 | ⏳ CI |
+| EH-6 | #911 | ⏳ CI |
+| EXT-7 | #911 | ⏳ CI |
+| EXT-8 | #911 | ⏳ CI |
+| EXT-9 | #911 | ⏳ CI |
+| OB-13 | #911 | ⏳ CI |
+| OB-15 | #911 | ⏳ CI |
+| OB-16 | #911 | ⏳ CI |
+| OB-18 | #911 | ⏳ CI |
+| OB-20 | #908 | ✅ merged |
+| PB-NEW-9 | #911 | ⏳ CI |
+| PF-5 | — | won't-fix (inherent to binary format) |
+| PF-6 | #911 | ⏳ CI |
+| PF-8 | #911 | ⏳ CI |
+| SEC-NEW-2 | #911 | ⏳ CI |
+| SHL-34 | #911 | ⏳ CI |
+| SHL-35 | #911 | ⏳ CI |
+| SHL-36 | #911 | ⏳ CI |
+| SHL-37 | #911 | ⏳ CI |
+| SHL-38 | #911 | ⏳ CI |
+| SHL-39 | #911 | ⏳ CI |
+| SHL-40 | #911 | ⏳ CI |
+| Roadmap CPU | #911 | ⏳ CI |
+| RM-6 | #911 | ⏳ CI |
+| RM-7 | #911 | ⏳ CI |
+
+**87 findings fixed (+ 1 won't-fix) out of ~136 triaged.**
+All P1 items addressed. AC-1 merged in #910. 28 P2/P3s + 3 issue fixes in #911.
+Issues #912–#925 created for architectural items. #913/#915 scoped into daemon plan (#912).

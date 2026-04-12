@@ -169,6 +169,14 @@ pub fn bootstrap_ci(values: &[f64], n_resamples: usize) -> MetricWithCI {
         h.finish()
     };
 
+    if n_resamples == 0 {
+        return MetricWithCI {
+            value: point,
+            ci_lower: point,
+            ci_upper: point,
+        };
+    }
+
     let mut estimates: Vec<f64> = Vec::with_capacity(n_resamples);
     for _ in 0..n_resamples {
         let mut sum = 0.0;
