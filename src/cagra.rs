@@ -90,7 +90,7 @@ impl CagraIndex {
         let (id_map, flat_data, n_vectors) = crate::hnsw::prepare_index_data(embeddings, dim)
             .map_err(|e| CagraError::Build(e.to_string()))?;
 
-        tracing::info!("Building CAGRA index with {} vectors", n_vectors);
+        tracing::info!(n_vectors, "Building CAGRA index");
 
         // Create cuVS resources
         let resources = cuvs::Resources::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
@@ -143,7 +143,7 @@ impl CagraIndex {
                 tracing::debug!("CAGRA index rebuilt successfully");
             }
             Err(e) => {
-                tracing::error!("Failed to rebuild CAGRA index: {}", e);
+                tracing::error!(error = %e, "Failed to rebuild CAGRA index");
             }
         }
     }
@@ -202,7 +202,7 @@ impl CagraIndex {
                 match self.rebuild_index_with_resources(&resources) {
                     Ok(idx) => idx,
                     Err(e) => {
-                        tracing::error!("Failed to rebuild CAGRA index: {}", e);
+                        tracing::error!(error = %e, "Failed to rebuild CAGRA index");
                         return Vec::new();
                     }
                 }
@@ -223,7 +223,7 @@ impl CagraIndex {
         let search_params = match cuvs::cagra::SearchParams::new() {
             Ok(params) => params.set_itopk_size(itopk_size),
             Err(e) => {
-                tracing::error!("Failed to create search params: {}", e);
+                tracing::error!(error = %e, "Failed to create search params");
                 let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
                     tracing::debug!("CAGRA index mutex poisoned, recovering");
                     poisoned.into_inner()
@@ -237,7 +237,7 @@ impl CagraIndex {
         let query_host = match Array2::from_shape_vec((1, self.dim), query.as_slice().to_vec()) {
             Ok(arr) => arr,
             Err(e) => {
-                tracing::error!("Invalid query shape (expected {} dims): {}", self.dim, e);
+                tracing::error!(expected_dim = self.dim, error = %e, "Invalid query shape");
                 let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
                     tracing::debug!("CAGRA index mutex poisoned, recovering");
                     poisoned.into_inner()
@@ -258,7 +258,7 @@ impl CagraIndex {
         let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&resources) {
             Ok(t) => t,
             Err(e) => {
-                tracing::error!("Failed to copy query to device: {}", e);
+                tracing::error!(error = %e, "Failed to copy query to device");
                 let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
                     tracing::debug!("CAGRA index mutex poisoned, recovering");
                     poisoned.into_inner()
@@ -272,7 +272,7 @@ impl CagraIndex {
             match cuvs::ManagedTensor::from(&neighbors_host).to_device(&resources) {
                 Ok(t) => t,
                 Err(e) => {
-                    tracing::error!("Failed to allocate neighbors on device: {}", e);
+                    tracing::error!(error = %e, "Failed to allocate neighbors on device");
                     let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
                         tracing::debug!("CAGRA index mutex poisoned, recovering");
                         poisoned.into_inner()
@@ -286,7 +286,7 @@ impl CagraIndex {
             match cuvs::ManagedTensor::from(&distances_host).to_device(&resources) {
                 Ok(t) => t,
                 Err(e) => {
-                    tracing::error!("Failed to allocate distances on device: {}", e);
+                    tracing::error!(error = %e, "Failed to allocate distances on device");
                     let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
                         tracing::debug!("CAGRA index mutex poisoned, recovering");
                         poisoned.into_inner()
@@ -310,17 +310,17 @@ impl CagraIndex {
             &neighbors_device,
             &distances_device,
         ) {
-            tracing::error!("CAGRA search failed: {}", e);
+            tracing::error!(error = %e, "CAGRA search failed");
             return Vec::new();
         }
 
         // Copy results back to host — reuse the same arrays allocated for to_device() (RM-12)
         if let Err(e) = neighbors_device.to_host(&resources, &mut neighbors_host) {
-            tracing::error!("Failed to copy neighbors from device: {}", e);
+            tracing::error!(error = %e, "Failed to copy neighbors from device");
             return Vec::new();
         }
         if let Err(e) = distances_device.to_host(&resources, &mut distances_host) {
-            tracing::error!("Failed to copy distances from device: {}", e);
+            tracing::error!(error = %e, "Failed to copy distances from device");
             return Vec::new();
         }
 
@@ -440,7 +440,7 @@ impl CagraIndex {
             return Err(CagraError::Cuvs("No embeddings in store".into()));
         }
 
-        tracing::info!("Building CAGRA index from {} chunk embeddings", chunk_count,);
+        tracing::info!(chunk_count, "Building CAGRA index from chunk embeddings");
 
         // Guard against OOM: estimate CPU memory needed for flat data + id map
         let max_bytes = cagra_max_bytes();
@@ -504,7 +504,7 @@ impl CagraIndex {
             return Err(CagraError::Cuvs("Cannot build empty index".into()));
         }
 
-        tracing::info!("Building CAGRA index with {} vectors", n_vectors);
+        tracing::info!(n_vectors, "Building CAGRA index");
 
         let resources = cuvs::Resources::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
 

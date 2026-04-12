@@ -53,7 +53,7 @@ pub(crate) enum ProjectCommand {
         /// Search query
         query: String,
         /// Max results
-        #[arg(short = 'n', long, default_value = "10")]
+        #[arg(short = 'n', long, default_value = "5")]
         limit: usize,
         /// Min similarity threshold
         #[arg(short = 't', long, default_value = "0.3")]

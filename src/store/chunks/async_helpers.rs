@@ -442,9 +442,13 @@ impl<'a> Iterator for EmbeddingBatchIterator<'a> {
                         if rowid > max_rowid {
                             max_rowid = rowid;
                         }
-                        bytes_to_embedding(&bytes, self.store.dim)
-                            .ok()
-                            .map(|emb| (id, Embedding::new(emb)))
+                        match bytes_to_embedding(&bytes, self.store.dim) {
+                            Ok(emb) => Some((id, Embedding::new(emb))),
+                            Err(e) => {
+                                tracing::warn!(chunk_id = %id, error = %e, "Skipping corrupt embedding in batch iterator");
+                                None
+                            }
+                        }
                     })
                     .collect();
 
