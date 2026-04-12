@@ -25,7 +25,15 @@ use super::helpers::StoreError;
 #[allow(unused_imports)]
 use super::helpers::CURRENT_SCHEMA_VERSION;
 
-/// Run all migrations from stored version to current version
+/// Run all migrations from stored version to current version.
+///
+/// v1.22.0 audit DS-W6: re-reads `schema_version` inside the migration
+/// transaction before executing DDL. Two concurrent processes both reading
+/// version=17 from the pool, then both running `ALTER TABLE ADD COLUMN`,
+/// would crash the second with "duplicate column name" on a perfectly
+/// healthy DB. The double-check under the transaction's implicit exclusive
+/// lock prevents this: the second process sees the version has already
+/// advanced and short-circuits.
 pub async fn migrate(pool: &SqlitePool, from: i32, to: i32) -> Result<(), StoreError> {
     if from == to {
         return Ok(()); // Already at target version
@@ -41,7 +49,28 @@ pub async fn migrate(pool: &SqlitePool, from: i32, to: i32) -> Result<(), StoreE
     );
 
     let mut tx = pool.begin().await?;
-    for version in from..to {
+
+    // DS-W6: re-read version under the write lock. A concurrent process may
+    // have already migrated between our caller's pool-level read and our
+    // transaction start. If the version is already at or past `to`, bail.
+    let current_in_tx: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+            .fetch_optional(&mut *tx)
+            .await?;
+    let actual_from: i32 = current_in_tx
+        .and_then(|(s,)| s.parse().ok())
+        .unwrap_or(from);
+    if actual_from >= to {
+        tracing::info!(
+            actual_from,
+            to,
+            "Schema already migrated by another process, skipping"
+        );
+        tx.rollback().await?;
+        return Ok(());
+    }
+
+    for version in actual_from..to {
         tracing::info!(from = version, to = version + 1, "Running migration step");
         run_migration(&mut tx, version, version + 1).await?;
     }

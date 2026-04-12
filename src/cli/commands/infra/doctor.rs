@@ -240,7 +240,7 @@ pub(crate) fn cmd_doctor(model_override: Option<&str>, fix: bool) -> Result<()> 
                 any_failed = true;
                 continue;
             }
-            match Store::open(&db_path) {
+            match Store::open_readonly(&db_path) {
                 Ok(store) => {
                     let chunks = store.chunk_count().unwrap_or_else(|e| {
                         tracing::warn!(name = %r.name, error = %e, "Failed to count chunks in reference store");

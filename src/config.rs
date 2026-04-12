@@ -290,20 +290,38 @@ impl Config {
             clamp_config_f32(&mut r.weight, "reference.weight", 0.0, 1.0);
         }
 
-        // SEC-4: Warn if any reference path is outside project and home directories.
+        // SEC-4 + SEC-NEW-1: Warn if reference `path` OR `source` is outside
+        // project and home directories. SEC-4 covered `r.path` only; SEC-NEW-1
+        // (v1.22.0 audit) found that `r.source` was never validated, so a
+        // malicious checked-in `.cqs.toml` with `source = "/home/user/.ssh"`
+        // would cause `cqs ref update` to index arbitrary files into the
+        // reference DB (data exfiltration).
         let home = dirs::home_dir();
         let cwd = std::env::current_dir().ok();
         for r in &self.references {
-            if let Ok(canonical) = r.path.canonicalize() {
-                let in_home = home.as_ref().is_some_and(|h| canonical.starts_with(h));
-                let in_project = cwd.as_ref().is_some_and(|p| canonical.starts_with(p));
-                let in_cqs_dir = canonical.components().any(|c| c.as_os_str() == ".cqs");
-                if !in_home && !in_project && !in_cqs_dir {
-                    tracing::warn!(
-                        name = %r.name,
-                        path = %canonical.display(),
-                        "Reference path is outside project and home directories"
-                    );
+            // Check both path and source (if present)
+            let paths_to_check: Vec<(&str, &std::path::Path)> = {
+                let mut v = vec![("path", r.path.as_path())];
+                if let Some(ref src) = r.source {
+                    v.push(("source", src.as_path()));
+                }
+                v
+            };
+            for (field, p) in paths_to_check {
+                if let Ok(canonical) = p.canonicalize() {
+                    let in_home = home.as_ref().is_some_and(|h| canonical.starts_with(h));
+                    let in_project = cwd.as_ref().is_some_and(|p| canonical.starts_with(p));
+                    let in_cqs_dir = canonical.components().any(|c| c.as_os_str() == ".cqs");
+                    if !in_home && !in_project && !in_cqs_dir {
+                        tracing::warn!(
+                            name = %r.name,
+                            field,
+                            path = %canonical.display(),
+                            "Reference {field} is outside project and home directories — \
+                             a malicious .cqs.toml could use this to index arbitrary files. \
+                             Verify the source is intentional."
+                        );
+                    }
                 }
             }
         }

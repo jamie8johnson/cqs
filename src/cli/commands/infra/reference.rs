@@ -197,7 +197,7 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
             .references
             .iter()
             .map(|r| {
-                let chunks = Store::open(&r.path.join("index.db"))
+                let chunks = Store::open_readonly(&r.path.join("index.db"))
                     .map_err(|e| {
                         tracing::warn!(
                             name = %r.name,
