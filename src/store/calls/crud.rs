@@ -27,9 +27,9 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
 
-            // Batch insert calls (300 rows * 3 binds = 900 < SQLite's 999 limit)
             if !calls.is_empty() {
-                const INSERT_BATCH: usize = 300;
+                use crate::store::helpers::sql::max_rows_per_statement;
+                const INSERT_BATCH: usize = max_rows_per_statement(3);
                 for batch in calls.chunks(INSERT_BATCH) {
                     let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> =
                         sqlx::QueryBuilder::new(
@@ -77,8 +77,8 @@ impl Store {
                 }
             }
 
-            // Batch insert all calls (300 rows * 3 binds = 900 < SQLite's 999 limit)
-            const INSERT_BATCH: usize = 300;
+            use crate::store::helpers::sql::max_rows_per_statement;
+            const INSERT_BATCH: usize = max_rows_per_statement(3);
             for batch in calls.chunks(INSERT_BATCH) {
                 let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
                     "INSERT INTO calls (caller_id, callee_name, line_number) ",
@@ -109,8 +109,8 @@ impl Store {
         self.rt.block_on(async {
             let mut found = std::collections::HashSet::new();
             let id_vec: Vec<&str> = ids.iter().copied().collect();
-            // 200 per batch keeps bind count well under SQLite's 999 limit
-            for batch in id_vec.chunks(200) {
+            use crate::store::helpers::sql::max_rows_per_statement;
+            for batch in id_vec.chunks(max_rows_per_statement(1)) {
                 let placeholders: String = (0..batch.len())
                     .map(|i| format!("?{}", i + 1))
                     .collect::<Vec<_>>()
@@ -210,8 +210,8 @@ impl Store {
                 .collect();
 
             if !all_calls.is_empty() {
-                // 190 rows * 5 binds = 950 < SQLite's 999 limit
-                const INSERT_BATCH: usize = 190;
+                use crate::store::helpers::sql::max_rows_per_statement;
+                const INSERT_BATCH: usize = max_rows_per_statement(5);
                 for batch in all_calls.chunks(INSERT_BATCH) {
                     let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> =
                         sqlx::QueryBuilder::new(

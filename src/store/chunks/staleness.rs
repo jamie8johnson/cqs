@@ -398,8 +398,8 @@ impl Store {
         self.rt.block_on(async {
             let mut stale = HashSet::new();
 
-            // Batch in groups of 900 to stay under SQLite's 999-parameter limit
-            const BATCH_SIZE: usize = 900;
+            use crate::store::helpers::sql::max_rows_per_statement;
+            const BATCH_SIZE: usize = max_rows_per_statement(1);
             for batch in origins.chunks(BATCH_SIZE) {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 let sql = format!(

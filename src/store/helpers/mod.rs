@@ -14,7 +14,7 @@ mod error;
 mod rows;
 mod scoring;
 mod search_filter;
-mod sql;
+pub(crate) mod sql;
 mod types;
 
 // ============ Re-exports ============
