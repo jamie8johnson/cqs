@@ -226,6 +226,9 @@ pub struct Embedder {
     max_length: usize,
     /// LRU cache for query embeddings (avoids re-computing same queries)
     query_cache: Mutex<LruCache<String, Embedding>>,
+    /// Disk-backed query cache (persists across CLI invocations).
+    /// Best-effort: failures are logged and silently skipped.
+    disk_query_cache: Option<crate::cache::QueryCache>,
     /// Detected embedding dimension from the model. Set on first inference.
     detected_dim: std::sync::OnceLock<usize>,
     /// Model configuration (repo, paths, prefixes, dimensions)
@@ -292,6 +295,21 @@ impl Embedder {
             NonZeroUsize::new(cache_size).expect("cache_size is non-zero"),
         ));
 
+        // Best-effort disk cache for query embeddings. Opens a small SQLite
+        // DB at ~/.cache/cqs/query_cache.db. Failure is non-fatal.
+        let disk_query_cache =
+            match crate::cache::QueryCache::open(&crate::cache::QueryCache::default_path()) {
+                Ok(c) => {
+                    // Prune entries older than 7 days (background, non-blocking)
+                    let _ = c.prune_older_than(7);
+                    Some(c)
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, "Disk query cache unavailable (non-fatal)");
+                    None
+                }
+            };
+
         Ok(Self {
             session: Mutex::new(None),
             tokenizer: OnceCell::new(),
@@ -299,6 +317,7 @@ impl Embedder {
             provider,
             max_length,
             query_cache,
+            disk_query_cache,
             detected_dim: std::sync::OnceLock::new(),
             model_config,
             model_fingerprint: std::sync::OnceLock::new(),
@@ -585,18 +604,31 @@ impl Embedder {
             text
         };
 
-        // Check cache first (lock released after check to allow parallel computation)
+        // Check in-memory LRU first
         {
             let mut cache = self.query_cache.lock().unwrap_or_else(|poisoned| {
                 tracing::warn!("Query cache lock poisoned (prior panic), recovering");
                 poisoned.into_inner()
             });
             if let Some(cached) = cache.get(text) {
-                tracing::trace!(query = text, "Embedding cache hit");
+                tracing::trace!(query = text, "Query cache hit (memory)");
                 return Ok(cached.clone());
             }
-            tracing::trace!(query = text, "Embedding cache miss");
         }
+
+        // Check disk cache (survives across CLI invocations)
+        let model_fp = self.model_fingerprint();
+        if let Some(ref disk) = self.disk_query_cache {
+            if let Some(cached) = disk.get(text, model_fp) {
+                tracing::trace!(query = text, "Query cache hit (disk)");
+                // Populate in-memory LRU for fast subsequent hits
+                let mut cache = self.query_cache.lock().unwrap_or_else(|p| p.into_inner());
+                cache.put(text.to_string(), cached.clone());
+                return Ok(cached);
+            }
+        }
+
+        tracing::trace!(query = text, "Query cache miss");
 
         // Compute embedding (outside lock - allows parallel queries)
         let prefixed = format!("{}{}", self.model_config.query_prefix, text);
@@ -607,14 +639,16 @@ impl Embedder {
 
         let embedding = base_embedding;
 
-        // Store in cache (idempotent - duplicate puts for same key are harmless)
+        // Store in memory LRU + disk cache (write-through)
         {
             let mut cache = self.query_cache.lock().unwrap_or_else(|poisoned| {
                 tracing::warn!("Query cache lock poisoned (prior panic), recovering");
                 poisoned.into_inner()
             });
             cache.put(text.to_string(), embedding.clone());
-            tracing::trace!(query = text, cache_len = cache.len(), "Embedding cached");
+        }
+        if let Some(ref disk) = self.disk_query_cache {
+            disk.put(text, model_fp, &embedding);
         }
 
         Ok(embedding)
