@@ -81,10 +81,8 @@ impl NameMatcher {
     pub fn new(query: &str) -> Self {
         Self {
             query_lower: query.to_lowercase(),
-            query_words: tokenize_identifier(query)
-                .into_iter()
-                .map(|w| w.to_lowercase())
-                .collect(),
+            // tokenize_identifier already lowercases all tokens internally
+            query_words: tokenize_identifier(query),
         }
     }
 
@@ -118,10 +116,8 @@ impl NameMatcher {
         // (increasing schema complexity and storage ~20%). Given name_words are
         // typically 1-5 words and this only runs for top-N results after filtering,
         // the per-result allocation is acceptable.
-        let name_words: Vec<String> = tokenize_identifier(name)
-            .into_iter()
-            .map(|w| w.to_lowercase())
-            .collect();
+        // tokenize_identifier already lowercases all tokens internally
+        let name_words: Vec<String> = tokenize_identifier(name);
 
         if name_words.is_empty() {
             return 0.0;

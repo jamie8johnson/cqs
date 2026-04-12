@@ -252,7 +252,7 @@ impl Store {
                     &filter.query_text,
                     fsql.use_rrf,
                     limit,
-                    filter.path_pattern.as_deref(),
+                    glob_matcher.as_ref(),
                     filter.type_boost_types.as_deref(),
                 )
                 .await?;
@@ -277,7 +277,7 @@ impl Store {
         query_text: &str,
         use_rrf: bool,
         limit: usize,
-        path_pattern: Option<&str>,
+        glob_matcher: Option<&globset::GlobMatcher>,
         type_boost_types: Option<&[ChunkType]>,
     ) -> Result<Vec<SearchResult>, StoreError> {
         // Step 1: RRF fusion with FTS keyword search, or plain truncate
@@ -302,14 +302,14 @@ impl Store {
                 .fetch_all(&self.pool)
                 .await?;
                 // Apply path filter to FTS results (FTS5 doesn't support JOIN filtering)
+                // Reuses the pre-compiled glob matcher from the caller (PF-8).
                 let fts_all: Vec<String> = fts_rows.into_iter().map(|(id,)| id).collect();
-                let path_owned = path_pattern.map(String::from);
-                if let Some(fts_glob) = compile_glob_filter(path_owned.as_ref()) {
+                if let Some(gm) = glob_matcher {
                     fts_all
                         .into_iter()
                         .filter(|id| {
                             let file = extract_file_from_chunk_id(id);
-                            fts_glob.is_match(file)
+                            gm.is_match(file)
                         })
                         .collect()
                 } else {
@@ -405,6 +405,11 @@ impl Store {
     ) -> Result<Vec<SearchResult>, StoreError> {
         // If SPLADE is not enabled or not available, delegate to standard path
         if !filter.enable_splade || splade.is_none() {
+            if filter.enable_splade && splade.is_none() {
+                tracing::debug!(
+                    "SPLADE requested but index unavailable, falling back to dense-only search"
+                );
+            }
             return self.search_filtered_with_index(query, filter, limit, threshold, index);
         }
 
@@ -740,7 +745,7 @@ impl Store {
                 &filter.query_text,
                 use_rrf,
                 limit,
-                filter.path_pattern.as_deref(),
+                glob_matcher.as_ref(),
                 filter.type_boost_types.as_deref(),
             )
             .await
