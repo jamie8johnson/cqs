@@ -7,6 +7,25 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
+/// Derive the daemon socket path for a given cqs_dir.
+///
+/// Unix domain sockets don't work on WSL 9P mounts (/mnt/c/), so the socket
+/// is placed on the native Linux filesystem ($XDG_RUNTIME_DIR or /tmp).
+/// The filename is derived from a hash of cqs_dir to support multiple projects.
+pub(crate) fn daemon_socket_path(cqs_dir: &Path) -> PathBuf {
+    let sock_dir = std::env::var("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let sock_name = format!("cqs-{:x}.sock", {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        cqs_dir.hash(&mut h);
+        h.finish()
+    });
+    sock_dir.join(sock_name)
+}
+
 /// Enumerate files to index (delegates to library implementation)
 pub(crate) fn enumerate_files(
     root: &Path,
