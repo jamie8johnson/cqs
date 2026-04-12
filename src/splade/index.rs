@@ -344,10 +344,14 @@ impl SpladeIndex {
         })?;
         std::fs::create_dir_all(parent)?;
 
+        // Audit PB-NEW-9: use `to_string_lossy()` instead of
+        // `to_str().unwrap_or(...)` so non-UTF-8 path components produce a
+        // unique-ish temp name rather than collapsing to a shared fallback
+        // that could collide across concurrent saves.
         let file_name = path
             .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("splade.index");
+            .map(|s| s.to_string_lossy())
+            .unwrap_or_else(|| "splade.index".into());
         // Randomized suffix so two concurrent saves don't clobber each other's
         // temp file. Same pattern as the HNSW save path.
         let suffix = crate::temp_suffix();
@@ -601,6 +605,11 @@ impl SpladeIndex {
             let len = u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()) as usize;
             cursor += 4;
             need(&body, cursor, len)?;
+            // Audit PF-5: `.to_string()` here allocates an owned String from
+            // a `&str` borrow into `body`. This is inherent — `id_map` owns
+            // its strings and the source is a transient byte-slice reference.
+            // `String::from` would be equivalent; there is no zero-copy path
+            // because `body` is dropped after parsing completes.
             let id = std::str::from_utf8(&body[cursor..cursor + len])
                 .map_err(|e| {
                     SpladeIndexPersistError::CorruptData(format!(
