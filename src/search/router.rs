@@ -75,8 +75,6 @@ pub enum SearchStrategy {
     DenseDefault,
     /// Dense search with type boost for matching chunk types (enriched HNSW)
     DenseWithTypeHints,
-    /// Dense + SPLADE sparse-dense hybrid (if SPLADE model available)
-    DenseWithSplade,
     /// Phase 5: dense search against the base (non-enriched) HNSW — LLM
     /// summaries tend to hurt conceptual/behavioral/negation signal because
     /// they inject canonical vocabulary that drowns out query semantics.
@@ -90,7 +88,6 @@ impl std::fmt::Display for SearchStrategy {
             Self::NameOnly => write!(f, "name_only"),
             Self::DenseDefault => write!(f, "dense"),
             Self::DenseWithTypeHints => write!(f, "dense_type_hints"),
-            Self::DenseWithSplade => write!(f, "dense_splade"),
             Self::DenseBase => write!(f, "dense_base"),
         }
     }
