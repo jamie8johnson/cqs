@@ -512,6 +512,8 @@ impl Store {
         ),
         sqlx::Error,
     > {
+        // v1.22.0 audit OB-20: span so write-lock contention is visible.
+        let _span = tracing::debug_span!("begin_write").entered();
         let guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tx = self.pool.begin().await?;
         Ok((guard, tx))

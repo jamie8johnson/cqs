@@ -290,3 +290,71 @@ The P1-severity hard items (AC-1, DS-W5, PB-NEW-6) stay in P1 for triage-severit
 - Generate fix prompts for all P1 items (grouped by PR above). Each prompt: file paths, current code verbatim, replacement code, one-line why.
 - Review the fix prompts against source (second-pass agent) to catch drift.
 - Execute fixes P1-A through P1-J in dependency order: PR-A (schema+persistence hardening) goes first because META-2 is the foundation the rest assume; PR-B depends on META-2.
+
+---
+
+## Fixed items (session 2026-04-11/12)
+
+| Finding | PR | Status |
+|---|---|---|
+| AC-2 | #900 | ✅ merged |
+| AC-4 | #900 | ✅ merged |
+| API-1 | #905 | ✅ merged |
+| API-10 | #902 | ✅ merged |
+| API-11 | #907 | ✅ merged |
+| API-14 | #898 | ✅ merged |
+| API-8 | #898 | ✅ merged |
+| API-9 | #898 | ✅ merged |
+| CQ-1 | #902 | ✅ merged |
+| CQ-2 | #898 | ✅ merged |
+| CQ-3 | #898 | ✅ merged |
+| CQ-5 | #900 | ✅ merged |
+| DS-W1 | #898 | ✅ merged |
+| DS-W2 | #901 | ✅ merged |
+| DS-W3 | #898 | ✅ merged |
+| DS-W4 | #898 | ✅ merged |
+| DS-W6 | #903 | ✅ merged |
+| Doc-1 | #900 | ✅ merged |
+| Doc-11 | #900 | ✅ merged |
+| Doc-2 | #900 | ✅ merged |
+| Doc-3 | #900 | ✅ merged |
+| Doc-4 | #900 | ✅ merged |
+| Doc-6 | #900 | ✅ merged |
+| Doc-7 | #900 | ✅ merged |
+| Doc-8 | #900 | ✅ merged |
+| Doc-9 | #900 | ✅ merged |
+| EH-1 | #898 | ✅ merged |
+| EH-2 | #898 | ✅ merged |
+| EH-3 | #898 | ✅ merged |
+| EH-4 | #898 | ✅ merged |
+| EH-5 | #903 | ✅ merged |
+| EH-7 | #906 | ✅ merged |
+| EH-8 | #907 | ✅ merged |
+| EH-9 | #906 | ✅ merged |
+| OB-14 | #906 | ✅ merged |
+| OB-17 | #898 | ✅ merged |
+| OB-19 | #907 | ✅ merged |
+| OB-21 | #906 | ✅ merged |
+| OB-22 | #901 | ✅ merged |
+| PB-NEW-1 | #898 | ✅ merged |
+| PB-NEW-2 | #898 | ✅ merged |
+| PB-NEW-3 | #898 | ✅ merged |
+| PB-NEW-4 | #898 | ✅ merged |
+| PB-NEW-5 | #898 | ✅ merged |
+| PB-NEW-6 | #901 | ✅ merged |
+| PF-4 | #898 | ✅ merged |
+| PF-7 | #906 | ✅ merged |
+| RB-1 | #898 | ✅ merged |
+| RB-2 | #898 | ✅ merged |
+| RM-1 | #900 | ✅ merged |
+| RM-2 | #903 | ✅ merged |
+| RM-3 | #898 | ✅ merged |
+| RM-4 | #898 | ✅ merged |
+| SEC-NEW-1 | #903 | ✅ merged |
+| SEC-NEW-3 | #900 | ✅ merged |
+| SHL-31 | #898 | ✅ merged |
+| SHL-32 | #904 | ✅ merged |
+| SHL-33 | #904 | ✅ merged |
+
+**58 findings fixed out of ~136 triaged.**
+Remaining P1: AC-1 (fusion rewrite), DS-W5 (inter-process lock).
