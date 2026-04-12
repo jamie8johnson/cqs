@@ -452,10 +452,10 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
                     // DS-9: Re-open Store to clear stale OnceLock caches
                     // (call_graph_cache, test_chunks_cache). The documented contract
                     // in store/mod.rs requires re-opening after index changes.
-                    drop(store);
-                    store = Store::open(&index_path).with_context(|| {
-                        format!("Failed to re-open store at {}", index_path.display())
-                    })?;
+                    // DS-9 / RM-6: Clear caches instead of full re-open.
+                    // Avoids pool teardown + runtime creation + PRAGMA setup
+                    // on every reindex cycle over 24/7 systemd lifetime.
+                    store.clear_caches();
                     db_id = db_file_identity(&index_path);
 
                     // DS-1: Release lock after all reindex work (including HNSW rebuild)

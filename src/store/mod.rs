@@ -224,22 +224,11 @@ pub struct Store {
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
     notes_summaries_cache: RwLock<Option<Arc<Vec<NoteSummary>>>>,
-    /// Cached call graph — populated on first access, valid for Store lifetime.
-    /// **No invalidation mechanism by design.** `OnceLock` is intentionally write-once:
-    /// once populated the cache is never cleared. This is safe because `Store` is opened
-    /// per-command (one `open()` → use → `close()` cycle), so the index cannot change
-    /// while the cache is live. Long-lived `Store` instances (batch mode, watch mode)
-    /// must be re-opened to pick up index changes; the caller is responsible for that
-    /// lifecycle. Do not add invalidation logic here — it would be dead code for the
-    /// normal case and racy for the long-lived case (use a fresh `Store` instead).
+    /// Cached call graph — populated on first access, valid until `clear_caches()`.
+    /// `OnceLock` is write-once within a cache epoch. `clear_caches(&mut self)` swaps
+    /// in a fresh OnceLock, which is safe because `&mut self` guarantees exclusive access.
     call_graph_cache: std::sync::OnceLock<std::sync::Arc<CallGraph>>,
-    /// Cached test chunks — populated on first access, valid for Store lifetime.
-    /// Same no-invalidation contract as `call_graph_cache` above: intentionally
-    /// write-once for the per-command `Store` lifetime. Re-open the `Store` if the
-    /// underlying index has been updated (e.g., after `cqs index` in watch mode).
     test_chunks_cache: std::sync::OnceLock<std::sync::Arc<Vec<ChunkSummary>>>,
-    /// Cached chunk_type+language map — populated on first filtered search, valid for Store lifetime.
-    /// Same no-invalidation contract as above.
     chunk_type_map_cache: std::sync::OnceLock<std::sync::Arc<ChunkTypeMap>>,
 }
 
@@ -550,6 +539,27 @@ impl Store {
         let guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tx = self.pool.begin().await?;
         Ok((guard, tx))
+    }
+
+    /// Reset all in-memory caches without closing the connection pool.
+    ///
+    /// Cheaper than `drop` + `open`: avoids pool teardown, runtime creation,
+    /// PRAGMA setup, and integrity check. Designed for long-lived Store
+    /// instances (watch mode, future daemon) that need to pick up index
+    /// changes without paying full re-open cost.
+    ///
+    /// Requires `&mut self` — exclusive access guarantees no concurrent
+    /// readers see a half-cleared state.
+    pub fn clear_caches(&mut self) {
+        let _span = tracing::debug_span!("store_clear_caches").entered();
+        *self
+            .notes_summaries_cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        self.call_graph_cache = std::sync::OnceLock::new();
+        self.test_chunks_cache = std::sync::OnceLock::new();
+        self.chunk_type_map_cache = std::sync::OnceLock::new();
+        tracing::debug!("Store caches cleared");
     }
 
     /// Create a new index
