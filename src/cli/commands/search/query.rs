@@ -169,6 +169,26 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
     // Type boost from adaptive routing (boost, not filter — won't exclude results)
     let type_boost_types = classification.as_ref().and_then(|c| c.type_hints.clone());
 
+    // Resolve per-category SPLADE alpha. --splade flag overrides (uses cli.splade_alpha
+    // for all categories). Otherwise, resolve from env → config → default (1.0 = off).
+    let (use_splade, splade_alpha) = if cli.splade {
+        (true, cli.splade_alpha)
+    } else if let Some(ref c) = classification {
+        let alpha = cqs::search::router::resolve_splade_alpha(&c.category);
+        if alpha < 1.0 {
+            tracing::info!(
+                category = %c.category,
+                alpha,
+                "SPLADE activated by per-category alpha"
+            );
+            (true, alpha)
+        } else {
+            (false, 1.0)
+        }
+    } else {
+        (false, cli.splade_alpha)
+    };
+
     #[allow(clippy::needless_update)]
     let filter = SearchFilter {
         languages,
@@ -177,10 +197,10 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
         path_pattern: cli.path.clone(),
         name_boost: cli.name_boost,
         query_text: query.to_string(),
-        enable_rrf: cli.rrf, // RRF off by default (pure cosine is faster + higher R@1), enable with --rrf
+        enable_rrf: cli.rrf,
         enable_demotion: !cli.no_demote,
-        enable_splade: cli.splade,
-        splade_alpha: cli.splade_alpha,
+        enable_splade: use_splade,
+        splade_alpha,
         type_boost_types,
         ..Default::default()
     };
