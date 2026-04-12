@@ -339,20 +339,36 @@ impl Embedder {
                             fp
                         }
                         _ => {
-                            // Hash the ONNX file
-                            match std::fs::read(model_path) {
-                                Ok(bytes) => {
-                                    let hash = blake3::hash(&bytes).to_hex().to_string();
-                                    tracing::info!(
-                                        hash = &hash[..16],
-                                        "Model fingerprint computed"
-                                    );
-                                    hash
+                            // v1.22.0 audit RM-1: previously `std::fs::read`
+                            // loaded the entire ONNX into heap (~1.3 GB for
+                            // BGE-large) just to hash it. Use streaming
+                            // `update_reader` (same pattern as HNSW checksum
+                            // at hnsw/persist.rs:298-306) — constant memory.
+                            match std::fs::File::open(model_path) {
+                                Ok(file) => {
+                                    let mut hasher = blake3::Hasher::new();
+                                    match hasher.update_reader(file) {
+                                        Ok(_) => {
+                                            let hash =
+                                                hasher.finalize().to_hex().to_string();
+                                            tracing::info!(
+                                                hash = &hash[..16],
+                                                "Model fingerprint computed (streaming)"
+                                            );
+                                            hash
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, "Failed to stream-hash model, using repo+timestamp fallback");
+                                            let ts = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_secs();
+                                            format!("{}:{}", self.model_config.repo, ts)
+                                        }
+                                    }
                                 }
                                 Err(e) => {
-                                    tracing::warn!(error = %e, "Failed to read model for fingerprint, using repo+timestamp fallback");
-                                    // DS-45: append timestamp to prevent cache key collisions
-                                    // between different model files with the same repo name
+                                    tracing::warn!(error = %e, "Failed to open model for fingerprint, using repo+timestamp fallback");
                                     let ts = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .unwrap_or_default()

@@ -158,10 +158,12 @@ src/
     queries/    - Tree-sitter queries (.scm files, loaded via include_str!())
       <lang>.chunks.scm, <lang>.calls.scm, <lang>.types.scm
   test_helpers.rs - Shared test fixtures module
-  store/        - SQLite storage layer (Schema v16, WAL mode)
-    mod.rs      - Store struct, open/init, FTS5
+  store/        - SQLite storage layer (Schema v20, WAL mode)
+    mod.rs      - Store struct, open/init, FTS5, split_sql_statements (BEGIN/END-aware)
     metadata.rs - Chunk metadata queries, file-level operations
     search.rs   - RRF fusion, search_filtered, search_unified_with_index
+    sparse.rs   - Sparse vector CRUD (SPLADE), upsert_sparse_vectors, prune_orphan,
+                  bump_splade_generation_tx, splade_generation()
     chunks/     - Chunk storage and retrieval
       mod.rs, crud.rs, staleness.rs, embeddings.rs, query.rs, async_helpers.rs
     notes.rs    - Note CRUD, note_embeddings(), brute-force search
@@ -170,7 +172,7 @@ src/
     types.rs    - Type edge storage and queries
     helpers/    - Types, embedding conversion, scoring, SQL utilities
       mod.rs, embeddings.rs, error.rs, rows.rs, scoring.rs, search_filter.rs, sql.rs, types.rs
-    migrations.rs - Schema migration framework
+    migrations.rs - Schema migration framework (v10-v20, including v19 FK cascade + v20 trigger)
   parser/       - Code parsing (tree-sitter + custom parsers, delegates to language/ registry)
     mod.rs      - Parser struct, parse_file(), parse_file_all(), supported_extensions()
     types.rs    - Chunk (incl. parent_type_name), CallSite, FunctionCalls, TypeRef, ParserError
@@ -191,7 +193,12 @@ src/
     scoring/    - ScoringConfig, score normalization, RRF fusion constants
       mod.rs, candidate.rs, config.rs, filter.rs, name_match.rs, note_boost.rs
     query.rs    - Query parsing, filter extraction
+    router.rs   - Query classifier (QueryCategory + SearchStrategy), adaptive routing for
+                  identifier/structural/behavioral/conceptual/multi_step/negation/type_filtered/cross_language
     synonyms.rs - Query synonym expansion
+  splade/       - SPLADE sparse encoder + persisted inverted index
+    mod.rs      - SpladeEncoder, SparseVector type, encode()/encode_batch(), resolve_splade_model_dir()
+    index.rs    - SpladeIndex with persist/load (splade.index.bin + metadata.splade_generation)
   math.rs       - Vector math utilities (cosine similarity, SIMD)
   hnsw/         - HNSW index with batched build, atomic writes
     mod.rs      - HnswIndex, LoadedHnsw (self_cell), HnswError, VectorIndex impl

@@ -88,6 +88,21 @@ fn run_git_log_line_range(
         );
     }
 
+    // v1.22.0 audit SEC-NEW-3: reject absolute paths and `..` components.
+    // Store-indexed chunks always have project-relative file paths, but this
+    // is defense-in-depth for any future path where the store gets content
+    // from an untrusted source (reference-index merge, imported chunks).
+    let p = std::path::Path::new(rel_file);
+    if p.is_absolute()
+        || p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        anyhow::bail!(
+            "Invalid file path '{}': must be project-relative (no absolute paths or '..')",
+            rel_file
+        );
+    }
+
     // Ensure valid line range (start <= end); swap if inverted
     let (start, end) = if start > end {
         tracing::warn!(start, end, "Inverted line range, swapping");

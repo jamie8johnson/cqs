@@ -236,9 +236,17 @@ pub const EMBEDDING_DIM: usize = embedder::DEFAULT_DIM;
 /// detection (`TEST_NAME_PATTERNS`, `TEST_CONTENT_MARKERS`, `TEST_PATH_PATTERNS`)
 /// that also checks content markers like `#[test]` and `@Test`.
 pub fn is_test_chunk(name: &str, file: &str) -> bool {
-    // Name-based patterns (language-agnostic)
+    // Name-based patterns (language-agnostic).
+    //
+    // v1.22.0 audit AC-4: previously `name.starts_with("Test")` demoted
+    // production types like TestRegistry, TestHarness, TestContext by 30%.
+    // Tightened to require `Test` followed by underscore or end-of-name
+    // (catches `test_foo`, `Test_bar`, but not `TestHarness`). The xUnit
+    // `TestFoo` naming convention would still be caught but Go's and
+    // Rust's `test_` prefix is the dominant pattern in practice.
     let name_match = name.starts_with("test_")
-        || name.starts_with("Test")
+        || name.starts_with("Test_")
+        || name == "Test"
         || name.starts_with("spec_")
         || name.ends_with("_test")
         || name.ends_with("_spec")
@@ -467,11 +475,19 @@ mod tests {
     fn test_is_test_chunk_name_patterns() {
         // Positive: name-based
         assert!(is_test_chunk("test_foo", "src/lib.rs"));
-        assert!(is_test_chunk("TestSuite", "src/lib.rs"));
+        assert!(is_test_chunk("Test_suite", "src/lib.rs"));
+        assert!(is_test_chunk("Test", "src/lib.rs")); // bare "Test" name
         assert!(is_test_chunk("foo_test", "src/lib.rs"));
         assert!(is_test_chunk("foo_test_bar", "src/lib.rs"));
         assert!(is_test_chunk("foo.test", "src/lib.rs"));
         // Negative: name-based
+        // v1.22.0 audit AC-4: "TestSuite", "TestHarness", "TestRegistry" etc.
+        // are NOT tests — they're test-framework API types that should not be
+        // demoted 30% in search results. Only `test_` and `Test_` prefixes
+        // (with underscore) are treated as test chunks by name.
+        assert!(!is_test_chunk("TestSuite", "src/lib.rs"));
+        assert!(!is_test_chunk("TestHarness", "src/lib.rs"));
+        assert!(!is_test_chunk("TestRegistry", "src/lib.rs"));
         assert!(!is_test_chunk("search_filtered", "src/lib.rs"));
         assert!(!is_test_chunk("testing_util", "src/lib.rs"));
     }

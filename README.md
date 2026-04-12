@@ -32,7 +32,7 @@ cargo install cqs
 
 **Upgrading?** Schema changes require rebuilding the index:
 ```bash
-cqs index --force  # Run after upgrading from older versions (current schema: v16)
+cqs index --force  # Run after upgrading from older versions (current schema: v20)
 ```
 
 ## Quick Start
@@ -686,7 +686,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_TELEMETRY` | `0` | Set to `1` to enable command usage telemetry |
 | `CQS_TEST_MAP_MAX_NODES` | `10000` | Max BFS nodes in test-map traversal |
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
-| `CQS_WATCH_MAX_PENDING` | `1000` | Max pending file changes before watch forces flush |
+| `CQS_WATCH_MAX_PENDING` | `10000` | Max pending file changes before watch forces flush |
 | `CQS_WATCH_REBUILD_THRESHOLD` | `100` | Files changed before watch triggers full HNSW rebuild |
 
 ## RAG Efficiency

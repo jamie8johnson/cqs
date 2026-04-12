@@ -493,8 +493,16 @@ mod tests {
             classify_role(0.3, "test_helper", "src/lib.rs", 0.5),
             ChunkRole::TestToUpdate
         );
+        // v1.22.0 audit AC-4: `TestSuite` in non-test paths is a production
+        // type, not a test. After the `is_test_chunk` fix, this correctly
+        // classifies as a modification target, not a test to update.
         assert_eq!(
             classify_role(0.8, "TestSuite", "src/lib.rs", 0.5),
+            ChunkRole::ModifyTarget
+        );
+        // But `TestSuite` in an actual test path IS a test:
+        assert_eq!(
+            classify_role(0.8, "TestSuite", "tests/lib.rs", 0.5),
             ChunkRole::TestToUpdate
         );
         // File-based test detection

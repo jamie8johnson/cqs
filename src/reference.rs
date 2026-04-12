@@ -103,7 +103,11 @@ fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
         }
     };
 
-    let index = HnswIndex::try_load_with_ef(&cfg.path, None, None);
+    // v1.22.0 audit CQ-5: previously passed `dim=None` which defaulted to
+    // `EMBEDDING_DIM` (1024 for BGE-large). A reference built with a 768-dim
+    // model (E5-base or v9-200k) would load as 1024-dim garbage. Pass the
+    // store's actual dim so the HNSW loader trusts the right byte layout.
+    let index = HnswIndex::try_load_with_ef(&cfg.path, None, Some(store.dim()));
 
     Some(ReferenceIndex {
         name: cfg.name.clone(),
