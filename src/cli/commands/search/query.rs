@@ -72,7 +72,9 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
     }
 
     // Adaptive routing: classify query BEFORE embedding to potentially skip it
-    let has_explicit_flags = cli.splade || cli.rrf || cli.rerank || cli.ref_name.is_some();
+    // --splade intentionally NOT here: it only controls SPLADE fusion,
+    // not adaptive routing. --rrf/--rerank/--ref override the search strategy.
+    let has_explicit_flags = cli.rrf || cli.rerank || cli.ref_name.is_some();
     let classification = if !has_explicit_flags {
         let c = cqs::search::router::classify_query(query);
         tracing::info!(
