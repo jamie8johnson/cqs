@@ -53,6 +53,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     cli.limit = cli.limit.clamp(1, 100);
 
     // ── Daemon client: forward to running daemon if available ──────────────
+    #[cfg(unix)]
     if std::env::var("CQS_NO_DAEMON").as_deref() != Ok("1") {
         if let Some(output) = try_daemon_query(&cqs_dir, &cli) {
             print!("{}", output);
@@ -396,6 +397,7 @@ fn cmd_completions(shell: clap_complete::Shell) {
 /// Try to forward the current command to a running daemon.
 /// Returns `Some(output)` if the daemon handled it, `None` if no daemon or
 /// the command is not daemon-dispatchable (index, watch, gc, init, etc.).
+#[cfg(unix)]
 fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
     // Only forward commands that the batch handler can dispatch.
     // None = default search (most common invocation: `cqs "query"`)

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
+#[cfg(unix)]
 /// Derive the daemon socket path for a given cqs_dir.
 ///
 /// Unix domain sockets don't work on WSL 9P mounts (/mnt/c/), so the socket
@@ -181,6 +182,7 @@ pub(crate) fn acquire_index_lock(cqs_dir: &Path) -> Result<std::fs::File> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn daemon_socket_path_deterministic() {
         let p1 = daemon_socket_path(Path::new("/mnt/c/Projects/cqs/.cqs"));
@@ -188,6 +190,7 @@ mod tests {
         assert_eq!(p1, p2, "Same cqs_dir should produce the same socket path");
     }
 
+    #[cfg(unix)]
     #[test]
     fn daemon_socket_path_differs_per_project() {
         let p1 = daemon_socket_path(Path::new("/mnt/c/ProjectA/.cqs"));
@@ -195,6 +198,7 @@ mod tests {
         assert_ne!(p1, p2, "Different projects should get different sockets");
     }
 
+    #[cfg(unix)]
     #[test]
     fn daemon_socket_path_ends_with_sock() {
         let p = daemon_socket_path(Path::new("/tmp/test/.cqs"));
@@ -204,6 +208,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn daemon_socket_path_not_on_project_dir() {
         let p = daemon_socket_path(Path::new("/mnt/c/Projects/cqs/.cqs"));
