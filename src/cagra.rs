@@ -424,7 +424,7 @@ impl VectorIndex for CagraIndex {
 
         // Build bitset on host: evaluate predicate for each vector
         let n = self.id_map.len();
-        let n_words = (n + 31) / 32;
+        let n_words = n.div_ceil(32);
         let mut bitset = vec![0u32; n_words];
         let mut included = 0usize;
         for (i, id) in self.id_map.iter().enumerate() {
