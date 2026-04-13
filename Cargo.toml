@@ -99,7 +99,7 @@ keyring = { version = "3", optional = true }
 # Vector search (HNSW default, cuVS optional)
 hnsw_rs = "0.3"
 simsimd = "6"
-cuvs = { version = "=26.4", optional = true }  # pinned — 26.4 requires CUDA <13, we run CUDA 13.1
+cuvs = { version = "=26.4", optional = true }  # pinned — strict version coupling with conda libcuvs
 
 # Text processing
 regex = "1"

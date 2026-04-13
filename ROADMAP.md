@@ -33,6 +33,7 @@
 - [x] ~~**Adaptive retrieval** Phases 1-4~~ — classifier + routing + telemetry shipped in v1.22.0
 - [x] ~~**Adaptive retrieval** Phase 5~~ — dual embeddings (base + enriched HNSW) shipped in PR #876 + #877 + #878
 - [x] ~~**SPLADE alpha sweep + ship defaults**~~ — 11-point sweep + single-category verification. Per-category optimal alphas shipped: identifier 0.9, structural 0.7, conceptual 0.9, type_filtered 0.9, behavioral 0.1, rest 1.0. Expected **+4.9pp R@1** (47.2% vs 42.3%). Cross-language excluded (N=21 noise). Plan: `docs/plans/2026-04-12-selective-splade-routing.md`
+- [x] ~~**Enrichment ablation + routing update**~~ — 2-arm eval at 78% summary coverage with SPLADE. Oracle routing = 43.8% R@1 (+1.9pp). Updated router: type_filtered/multi_step → DenseBase (previously enriched). Research: `~/training-data/research/enrichment.md`.
 - [ ] **Config file support** — `[splade.alpha]` per-category overrides in `.cqs.toml`
 - [ ] **Phase 6: Explainable search** — depends on SPLADE-Code being the production default. Spec: `docs/plans/adaptive-retrieval.md`
 - [ ] **OpenRCT2 → Rust dual-trail experiment** — substrate for measuring whether structural code intelligence augmentation improves agent-directed translation in a sustained, real-world task. Two parallel translations on the same upstream commit, one with cqs in the loop, one without. Pre-registered metrics (regression bugs, tokens, wall clock). Publishable after three modules in both trails. Spec: `docs/plans/2026-04-10-openrct2-rust-port-dual-trail.md`
@@ -49,8 +50,13 @@
 - [x] ~~**Shared runtime support**~~ — `Store::open_readonly_pooled_with_runtime()` + `EmbeddingCache::open_with_runtime()` (#929). Optional runtime injection, backward compatible.
 - [x] ~~**AC-1 fusion rewrite**~~ — `apply_scoring_pipeline()` preserves fused scores through scoring (#910). Alpha knob now functional.
 - [x] ~~**Audit mega-batch**~~ — 28 findings + 10 tests + 13 issues (#911). All P1s addressed (88 total).
-- [ ] **SPLADE re-eval** — AC-1 fix means prior eval measured candidate-set expansion, not fusion. Need fresh numbers with alpha functional.
+- [x] ~~**SPLADE re-eval**~~ — done via 11-point alpha sweep (PR #932). AC-1 fusion fix confirmed working: α=0.9 is +1.1pp R@1 globally, per-category optimal alphas shipped in `resolve_splade_alpha()`.
 - [ ] **Daemon: full CLI parity** — batch parser subset differs from CLI (missing some flags). Need either unified parser or more comprehensive arg translation.
+- [ ] **Daemon: incremental SPLADE in watch mode** — watch currently skips SPLADE encoding for new/changed chunks. Needs: (1) keep SPLADE ONNX model loaded in daemon, (2) encode only new chunks, (3) incremental insert into in-memory `SpladeIndex` (current impl rebuilds from scratch ~18s for 68k chunks). Without this, `cqs index` is still required after edits for full SPLADE coverage.
+- [ ] **cuVS bump: cuvs 26.2→26.4** — PR #935 (dependabot). Strict version coupling: `cuvs-sys` build.rs calls `find_package(cuvs "26.04.00" REQUIRED)`. Steps: (1) `conda install -c rapidsai libcuvs=26.04` (cuda13 build exists), (2) merge #935, (3) rebuild, (4) fix stale Cargo.toml comment ("26.4 requires CUDA <13" is wrong — 26.04 added CUDA 13 JIT support). Dual-CUDA setup unchanged: CUDA 13 (conda, cuVS) + CUDA 12 (`/usr/local/cuda-12/`, ORT).
+  - **Non-consuming search** — 26.4 changes `Index::search(self, ...)` to `search(&self, ...)`. Eliminates entire `IndexRebuilder` / `Mutex<Option<Index>>` / rebuild-after-search machinery in `cagra.rs`. Major simplification.
+  - **CAGRA persistence fix** — PR rapidsai/cuvs#1800, directly relevant to our persist/load path.
+- [ ] **cuVS filtered CAGRA search** — C FFI already supports `cuvsFilter` (BITSET/BITMAP) in `cuvsCagraSearch()`, but Rust bindings hardcode `NO_FILTER`. Plan: fork `cuvs` crate → add `search_with_filter(filter: cuvsFilter)` method (small change, Rust wrapper just stops hardcoding NO_FILTER) → PR upstream → use fork via `git` dep until merged. Enables GPU-side type filtering for type_filtered/structural queries instead of post-retrieval boost. PCA preprocessor and float16 are C++/Python only — no Rust bindings available.
 
 ### Agent Adoption — Telemetry Data (2026-04-09)
 

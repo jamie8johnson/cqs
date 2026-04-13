@@ -217,7 +217,7 @@ impl CagraIndex {
         // Trade-off: larger itopk_size = better recall, more GPU memory/compute
         let itopk_size = (k * 2).clamp(128, 512);
         if k * 2 > 512 {
-            tracing::warn!(k, "CAGRA itopk_size clamped to 512, recall may degrade");
+            tracing::debug!(k, "CAGRA itopk_size clamped to 512, recall may degrade");
         }
 
         let search_params = match cuvs::cagra::SearchParams::new() {
