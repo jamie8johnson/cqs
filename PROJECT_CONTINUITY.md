@@ -2,58 +2,49 @@
 
 ## Right Now
 
-**Enrichment ablation complete, router updated, ready to commit. (2026-04-13 15:10 CDT)**
+**Session complete. CAGRA stabilized, enrichment ablated, upstream PR filed. (2026-04-13 17:00 CDT)**
 
-### Enrichment ablation results (78% summary coverage, SPLADE active)
+### Session eval results
 
-| Category | N | Base | Enriched | Best | Δ |
-|---|---|---|---|---|---|
-| identifier_lookup | 50 | **100.0%** | 98.0% | base | +2.0pp |
-| type_filtered | 24 | **41.7%** | 33.3% | base | +8.4pp |
-| behavioral_search | 44 | **29.5%** | 27.3% | base | +2.2pp |
-| multi_step | 34 | **23.5%** | 20.6% | base | +2.9pp |
-| structural_search | 27 | 48.1% | **51.9%** | enriched | −3.8pp |
-| conceptual_search | 36 | 27.8% | **33.3%** | enriched | −5.5pp |
-| cross_language | 21 | 19.0% | **23.8%** | enriched | −4.8pp |
-| negation | 29 | 13.8% | 13.8% | either | 0 |
+| Config | R@1 | Notes |
+|--------|-----|-------|
+| Original production baseline | 41.5% | Pre-session |
+| Base only (no summaries) | 42.3% | All queries → base HNSW |
+| Enriched only (HNSW over-fetch) | 41.9% | All queries → enriched, 3x over-fetch |
+| Enriched only (CAGRA filter) | 42.6% | All queries → enriched, GPU bitset filter |
+| Oracle routing (theoretical) | 43.8% | Best arm per category |
+| Fully routed (clean index) | 41.5% | Router + CAGRA filter — net zero vs baseline |
 
-Oracle routing: **43.8% R@1** (+1.9pp over enriched-only, +1.5pp over base-only)
+**CAGRA filtering helps some categories but regresses others.** Negation +10pp, multi_step +3pp, but conceptual −5.5pp, structural −3.8pp. Investigation needed: CAGRA bitset vs HNSW traversal filtering return different candidates on enriched index.
 
-### Router updated
-- type_filtered → DenseBase (was DenseWithTypeHints enriched)
-- multi_step → DenseBase (was DenseDefault enriched)
-- Tests updated, all passing
+### What shipped
+1. Enrichment ablation — 2-arm eval, per-category summary impact
+2. Router update — type_filtered + multi_step → DenseBase
+3. Batch base index support — daemon routes to base/enriched correctly
+4. cuVS 26.2→26.4 — fixed daemon segfault
+5. CAGRA simplified — removed IndexRebuilder (−357 lines), non-consuming search
+6. CAGRA native bitset filtering — GPU-side type/language filter
+7. Upstream PR — rapidsai/cuvs#2019 (search_with_filter)
+8. Dependabot PRs merged — #935 (cuvs), #936 (rand), #937 (clap_complete), #938 (libc)
 
-### Code changes this session (uncommitted)
-- `src/search/router.rs` — type_filtered + multi_step → DenseBase, updated comments + tests
-- `src/cli/batch/handlers/search.rs` — base/enriched HNSW routing in batch handler
-- `src/cli/batch/mod.rs` — `base_hnsw` field + `base_vector_index()` method
-- `src/cli/commands/search/query.rs` — `CQS_FORCE_BASE_INDEX` env var check
-- `src/cagra.rs` — itopk_size warning demoted to debug
-- `Cargo.toml` — fixed stale cuvs comment
-- `Cargo.lock` — dep bumps from merged PRs (#935-#938)
+### PR #939 (open, 4 commits)
+All changes on `feat/enrichment-ablation-routing` branch.
 
-### Session work
-- cuVS bumped 26.2→26.4 (conda + PR #935 merged). Fixed daemon CAGRA segfault.
-- Dependabot PRs merged: #935 (cuvs), #936 (rand), #937 (clap_complete), #938 (libc)
-- Enrichment ablation: batch handler lacked base index support → fixed properly
-- cuVS 26.04 investigation: non-consuming search, filtered CAGRA (FFI only), persistence fix
-
-### What's next
-- Commit + PR this session's changes
-- Per-category hyde eval (assess impact with SPLADE)
-- Config file support for `[splade.alpha]`
-- cuVS: simplify cagra.rs (non-consuming search), upstream filtered search PR
-- Daemon: incremental SPLADE in watch mode
+### Next session priorities
+1. **Investigate CAGRA filtering regression** — conceptual −5.5pp, structural −3.8pp on enriched. Hypothesis: CAGRA graph walk strands in filtered-out regions. Options: HNSW for enriched + CAGRA for base, or increase itopk_size for filtered queries.
+2. **Merge PR #939** after CI passes
+3. **Alpha re-sweep** — only after retrieval path is stable
+4. **Query-time HyDE** for structural queries
+5. **Simplify CLAUDE.md** — slim agent adoption
 
 ## Open Issues
 - #909, #912-#925, #856, #717, #389, #255, #106, #63
 
 ## Architecture
 - Version: 1.23.0, Schema: v20
-- Daemon: `cqs watch --serve` (3-19ms graph queries, cuVS 26.4 stable)
+- Daemon: `cqs watch --serve` (cuVS 26.4, non-consuming CAGRA, stable)
+- Router: id→NameOnly, type/behavioral/multi/negation→DenseBase, structural/conceptual/cross_lang→enriched
+- CAGRA: GPU bitset filtering via patched cuvs (upstream PR rapidsai/cuvs#2019)
 - Per-category SPLADE alpha defaults in resolve_splade_alpha()
-- Dual HNSW routing: base (id/type/behavioral/multi/negation) + enriched (structural/conceptual/cross_lang)
-- Query cache: `~/.cache/cqs/query_cache.db`
 - LLM summary coverage: 78% of code chunks (6,275 summaries)
 - cuVS: 26.4 (libcuvs 26.04, conda, CUDA 13)
