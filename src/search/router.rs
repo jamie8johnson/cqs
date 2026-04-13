@@ -262,6 +262,40 @@ const MULTISTEP_PATTERNS: &[&str] = &[
 
 /// Classify a query into a category with confidence level and recommended strategy.
 ///
+/// Resolve the SPLADE fusion alpha for a query category.
+///
+/// Precedence: per-category env (`CQS_SPLADE_ALPHA_{CATEGORY}`) > global env
+/// (`CQS_SPLADE_ALPHA`) > hardcoded default (1.0 = pure dense, SPLADE off).
+///
+/// Returns a value in [0.0, 1.0] where 1.0 means pure dense and < 1.0 activates
+/// SPLADE with that fusion weight.
+pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
+    // Per-category env override: CQS_SPLADE_ALPHA_CONCEPTUAL_SEARCH etc.
+    let cat_key = format!("CQS_SPLADE_ALPHA_{}", category.to_string().to_uppercase());
+    if let Ok(val) = std::env::var(&cat_key) {
+        if let Ok(alpha) = val.parse::<f32>() {
+            if alpha.is_finite() {
+                return alpha.clamp(0.0, 1.0);
+            }
+            tracing::warn!(var = %cat_key, value = %val, "Non-finite alpha, using default");
+        } else {
+            tracing::warn!(var = %cat_key, value = %val, "Invalid alpha, using default");
+        }
+    }
+
+    // Global env override: CQS_SPLADE_ALPHA
+    if let Ok(val) = std::env::var("CQS_SPLADE_ALPHA") {
+        if let Ok(alpha) = val.parse::<f32>() {
+            if alpha.is_finite() {
+                return alpha.clamp(0.0, 1.0);
+            }
+        }
+    }
+
+    // Default: 1.0 = pure dense (SPLADE off)
+    1.0
+}
+
 /// Pure function — no I/O, cannot fail, completes in <1ms.
 /// Priority order: Negation > Identifier > CrossLanguage > TypeFiltered >
 /// Structural > Behavioral > Conceptual > MultiStep > Unknown.
