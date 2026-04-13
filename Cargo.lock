@@ -914,8 +914,6 @@ dependencies = [
 [[package]]
 name = "cuvs"
 version = "26.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abc05a465fc106bc0782fb975009ff38f50faedca6adf4dfecea08932be2f3fc"
 dependencies = [
  "cuvs-sys",
  "ndarray 0.15.6",

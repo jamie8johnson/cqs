@@ -408,6 +408,206 @@ impl VectorIndex for CagraIndex {
     fn dim(&self) -> usize {
         self.dim
     }
+
+    /// GPU-native filtered search: builds a bitset from the predicate and
+    /// passes it to CAGRA for traversal-time filtering. No over-fetching needed.
+    fn search_with_filter(
+        &self,
+        query: &Embedding,
+        k: usize,
+        filter: &dyn Fn(&str) -> bool,
+    ) -> Vec<IndexResult> {
+        let _span = tracing::debug_span!("cagra_search_filtered", k).entered();
+        if self.id_map.is_empty() || k == 0 {
+            return Vec::new();
+        }
+
+        // Build bitset on host: evaluate predicate for each vector
+        let n = self.id_map.len();
+        let n_words = (n + 31) / 32;
+        let mut bitset = vec![0u32; n_words];
+        let mut included = 0usize;
+        for (i, id) in self.id_map.iter().enumerate() {
+            if filter(id) {
+                bitset[i / 32] |= 1u32 << (i % 32);
+                included += 1;
+            }
+        }
+
+        // If everything passes the filter, use unfiltered search (faster)
+        if included == n {
+            return CagraIndex::search(self, query, k);
+        }
+
+        // If nothing passes, no results
+        if included == 0 {
+            return Vec::new();
+        }
+
+        tracing::debug!(
+            total = n,
+            included,
+            excluded = n - included,
+            "CAGRA bitset filter"
+        );
+
+        // Lock resources
+        let resources = self.resources.lock().unwrap_or_else(|poisoned| {
+            tracing::debug!("CAGRA resources mutex poisoned, recovering");
+            poisoned.into_inner()
+        });
+
+        // Get or rebuild index
+        let index = {
+            let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                tracing::debug!("CAGRA index mutex poisoned, recovering");
+                poisoned.into_inner()
+            });
+            guard.take()
+        };
+        let index = match index {
+            Some(idx) => idx,
+            None => match self.rebuild_index_with_resources(&resources) {
+                Ok(idx) => idx,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to rebuild CAGRA index");
+                    return Vec::new();
+                }
+            },
+        };
+
+        let itopk_size = (k * 2).clamp(128, 512);
+        let search_params = match cuvs::cagra::SearchParams::new() {
+            Ok(params) => params.set_itopk_size(itopk_size),
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to create search params");
+                let mut guard = self
+                    .index
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *guard = Some(index);
+                return Vec::new();
+            }
+        };
+
+        // Prepare query
+        let query_host = match Array2::from_shape_vec((1, self.dim), query.as_slice().to_vec()) {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!(error = %e, "Invalid query shape");
+                let mut guard = self
+                    .index
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *guard = Some(index);
+                return Vec::new();
+            }
+        };
+
+        let mut neighbors_host: Array2<u32> = Array2::zeros((1, k));
+        let mut distances_host: Array2<f32> = Array2::zeros((1, k));
+
+        // Upload bitset to device
+        let bitset_host = ndarray_015::Array1::from_vec(bitset);
+        let bitset_device = match cuvs::ManagedTensor::from(&bitset_host).to_device(&resources) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to upload bitset to device");
+                let mut guard = self
+                    .index
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *guard = Some(index);
+                return Vec::new();
+            }
+        };
+
+        let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&resources) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to copy query to device");
+                let mut guard = self
+                    .index
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *guard = Some(index);
+                return Vec::new();
+            }
+        };
+
+        let neighbors_device =
+            match cuvs::ManagedTensor::from(&neighbors_host).to_device(&resources) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to allocate neighbors on device");
+                    let mut guard = self
+                        .index
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    *guard = Some(index);
+                    return Vec::new();
+                }
+            };
+
+        let distances_device =
+            match cuvs::ManagedTensor::from(&distances_host).to_device(&resources) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to allocate distances on device");
+                    let mut guard = self
+                        .index
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    *guard = Some(index);
+                    return Vec::new();
+                }
+            };
+
+        let _rebuilder = IndexRebuilder {
+            cagra: self,
+            resources: &resources,
+        };
+
+        // Filtered search — filter applied during graph traversal
+        if let Err(e) = index.search_with_filter(
+            &resources,
+            &search_params,
+            &query_device,
+            &neighbors_device,
+            &distances_device,
+            &bitset_device,
+        ) {
+            tracing::error!(error = %e, "CAGRA filtered search failed");
+            return Vec::new();
+        }
+
+        if let Err(e) = neighbors_device.to_host(&resources, &mut neighbors_host) {
+            tracing::error!(error = %e, "Failed to copy neighbors from device");
+            return Vec::new();
+        }
+        if let Err(e) = distances_device.to_host(&resources, &mut distances_host) {
+            tracing::error!(error = %e, "Failed to copy distances from device");
+            return Vec::new();
+        }
+
+        let mut results = Vec::with_capacity(k);
+        let neighbor_row = neighbors_host.row(0);
+        let distance_row = distances_host.row(0);
+
+        for i in 0..k {
+            let idx = neighbor_row[i] as usize;
+            if idx < self.id_map.len() {
+                let dist = distance_row[i];
+                let score = 1.0 - dist / 2.0;
+                results.push(IndexResult {
+                    id: self.id_map[idx].clone(),
+                    score,
+                });
+            }
+        }
+
+        results
+    }
 }
 
 // SAFETY: CagraIndex is thread-safe because:
