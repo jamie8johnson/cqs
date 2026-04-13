@@ -2,56 +2,71 @@
 
 ## Right Now
 
-**Daemon shipped + audit fixes + perf features. 2 PRs in CI. (2026-04-12 16:20 CDT)**
+**Alpha sweep running. 8 PRs merged this session. (2026-04-12 21:45 CDT)**
 
-Branches: `feat/shared-runtime` (#929), `feat/query-cache-persist` (#928)
+Branch: `fix/eval-batch-runner` (PR #931, CI running)
 
-### Session PRs (this session)
+### Alpha sweep in progress
+
+α=0.5 at 40/265 queries. Batch runner mode (single cqs process per alpha). 9 alphas total. Results will fill the alpha×category matrix for routing defaults.
+
+### Session PRs
 
 | PR | Theme | Status |
 |---|---|---|
 | #910 | AC-1: SPLADE fusion score preservation | **merged** |
-| #911 | Audit P2/P3 mega-batch: 28 findings + 10 tests | **merged** |
-| #926 | Daemon: `cqs watch --serve` (3ms queries) | **merged** |
-| #927 | Daemon follow-up: arg translation + tests + systemd | **merged** |
-| #928 | Persistent query embedding cache (#913) | CI |
-| #929 | Shared tokio runtime for Store + Cache (#915) + CQ-4 audit fix | CI |
+| #911 | Audit P2/P3 mega-batch (28 findings) | **merged** |
+| #926 | Daemon: `cqs watch --serve` (3-19ms) | **merged** |
+| #927 | Daemon follow-up: arg translation + tests | **merged** |
+| #928 | Persistent query embedding cache | **merged** |
+| #929 | Shared runtime + routing + eval + docs | **merged** |
+| #930 | SPLADE routing fixes + batch eval | **merged** |
+| #931 | Eval batch runner + daemon follow-up | CI running |
 
-### Daemon is live
+### Bugs found and fixed this session
 
-`cqs watch --serve` runs via systemd. Socket at `$XDG_RUNTIME_DIR/cqs-{hash}.sock`. Graph queries (callers, callees, impact) in 3-19ms. Search ~500ms warm. Query cache saves ~500ms on repeated queries.
+1. AC-1: fused scores discarded in scoring pipeline
+2. CQ-4: incomplete persist fallback (silent data loss)
+3. SPLADE model loading gated on cli.splade not use_splade
+4. Batch handler missing routing entirely
+5. --splade flag silently disabling all adaptive routing
+6. Eval batch runner pipe buffering (stdbuf doesn't work on Rust)
+7. CRLF line endings in sweep script on WSL
 
-Key implementation details:
-- Socket on native Linux fs (WSL 9P doesn't support AF_UNIX)
-- Dedicated query thread with own BatchContext (not shared with watch)
-- `daemon_socket_path()` shared helper hashes cqs_dir for per-project sockets
-- Client in `dispatch.rs` strips global CLI flags before forwarding to batch parser
-- RAII guard cleans socket on shutdown, stale detection on startup
+### Clean eval results (post all fixes)
 
-### Correctness audit (post-implementation)
+| Category | Baseline | +SPLADE α=0.7 | Delta | N |
+|---|---|---|---|---|
+| structural_search | 51.9% | 66.7% | +14.8pp | 27 |
+| conceptual_search | 33.3% | 41.7% | +8.4pp | 36 |
+| identifier_lookup | 94.0% | 96.0% | +2.0pp | 50 |
+| type_filtered | 33.3% | 29.2% | −4.1pp | 24 |
+| behavioral_search | 25.0% | 20.5% | −4.5pp | 44 |
+| negation | 13.8% | 6.9% | −6.9pp | 29 |
+| cross_language | 23.8% | 14.3% | −9.5pp | 21 |
+| multi_step | 32.4% | 20.6% | −11.8pp | 34 |
+| **Overall** | **42.3%** | **41.1%** | **−1.2pp** | 265 |
 
-Audited all changes since last full audit. Found 1 bug:
-- **CQ-4 incomplete persist fallback**: `load_all_sparse_vectors` failure fell back to delta-only persist → silent data loss. Fixed: skip persist entirely on failure.
+### After sweep
 
-### What's next
+- Fill alpha×category matrix in research
+- Pick per-category optimal alpha
+- Add config file support ([splade.alpha] in .cqs.toml)
+- Ship defaults
 
-- **SPLADE re-eval** — AC-1 fix means alpha knob now functional. Need fresh numbers.
-- **Remaining audit items** (~22): API hygiene (API-2/3/4/5/6/7/13), extensibility (EXT-10/12), happy-path test gaps
-- **Daemon optimization**: client-side arg translation handles `=` form, warm embedder on daemon start
+### Plan docs
+
+- `docs/plans/2026-04-12-persistent-daemon.md` — shipped
+- `docs/plans/2026-04-12-selective-splade-routing.md` — in progress (alpha-only design)
 
 ## Open Issues
-- #909, #912–#925, #856, #717, #389, #255, #106, #63
-- #912 (daemon) has plan doc, implementation shipped in #926
-- #913 (query cache) in PR #928
-- #915 (shared runtime) in PR #929
+- #909, #912-#925 (7 shipped, 6 open, 1 won't-fix), #856, #717, #389, #255, #106, #63
 
 ## Architecture
-- Version: 1.22.0
-- Schema: v20 (v19 FK CASCADE, v20 AFTER DELETE trigger on chunks)
-- Tests: 1361 lib + ~13 ignored
-- Daemon: `cqs watch --serve` → Unix socket → BatchContext dispatch (3-19ms)
-- Query cache: `~/.cache/cqs/query_cache.db` (disk-backed, 7-day eviction)
-- Store::clear_caches() replaces drop+reopen in watch
-- Batch/chat opens read-only store
-- Integrity check opt-in via CQS_INTEGRITY_CHECK=1
-- New env vars: CQS_BUSY_TIMEOUT_MS, CQS_IDLE_TIMEOUT_SECS, CQS_MAX_CONNECTIONS, CQS_MMAP_SIZE, CQS_SPLADE_MAX_CHARS, CQS_MAX_QUERY_BYTES, CQS_HNSW_BATCH_SIZE, CQS_INTEGRITY_CHECK
+- Version: 1.22.0, Schema: v20
+- Daemon: `cqs watch --serve` (systemd, 3-19ms graph queries)
+- Per-category SPLADE alpha: `resolve_splade_alpha()` in router.rs + batch handler
+- --splade flag adds SPLADE without disabling adaptive routing
+- Query cache: `~/.cache/cqs/query_cache.db`
+- Eval: batch runner (persistent cqs batch process) with CQS_NO_DAEMON=1
+- 90 audit findings fixed + 1 won't-fix
