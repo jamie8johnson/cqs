@@ -2,22 +2,32 @@
 
 ## Right Now
 
-**Alpha sweep complete. α=0.9 is the optimal default. 9 PRs merged this session. (2026-04-13 00:40 CDT)**
+**Per-category SPLADE defaults shipped. +4.9pp R@1 expected. (2026-04-13 08:45 CDT)**
 
-### Sweep result: α=0.9 → +1.1pp R@1
+### Shipped defaults (in resolve_splade_alpha)
 
-11-point alpha sweep (0.0-1.0) × 265 queries × 8 categories. α=0.9 (90% dense, 10% sparse) is the only alpha that beats baseline overall: 43.4% vs 42.3%.
+| Category | α | R@1 | Δ vs baseline | Verified? |
+|---|---|---|---|---|
+| identifier_lookup | 0.9 | 98.0% | +4.0pp | sweep |
+| structural_search | 0.7 | 66.7% | +14.8pp | **yes** |
+| conceptual_search | 0.9 | 41.7% | +8.4pp | sweep |
+| type_filtered | 0.9 | 37.5% | +4.2pp | sweep |
+| behavioral_search | 0.1 | 31.8% | +6.8pp | **yes** |
+| multi_step | 1.0 | 32.4% | 0 | — |
+| cross_language | 1.0 | 23.8% | 0 | noise (N=21) |
+| negation | 1.0 | 13.8% | 0 | — |
 
-Per-category at α=0.9: identifier +4pp, conceptual +8.4pp, structural +11pp, type_filtered +4.2pp. Multi_step/cross_language/negation: SPLADE off (1.0) is best.
+Expected overall: **47.2% R@1** (+4.9pp over 42.3% baseline)
 
 ### Session PRs (all merged)
 
-#910, #911, #926, #927, #928, #929, #930, #931. PR #932 (sweep results) in progress.
+#910, #911, #926, #927, #928, #929, #930, #931. PR #932 (sweep results) in CI.
 
 ### What's next
 
-- Ship α=0.9 as default (change hardcoded 1.0 → 0.9 in resolve_splade_alpha)
-- Config file support for [splade.alpha] per-category overrides
+- Merge #932 (sweep results)
+- PR the shipped defaults
+- Config file support for [splade.alpha]
 - Release v1.23.0
 
 ## Open Issues
@@ -26,6 +36,6 @@ Per-category at α=0.9: identifier +4pp, conceptual +8.4pp, structural +11pp, ty
 ## Architecture
 - Version: 1.22.0, Schema: v20
 - Daemon: `cqs watch --serve` (3-19ms graph queries)
-- Per-category SPLADE alpha: `resolve_splade_alpha()`, default 1.0 (ship 0.9 pending)
+- Per-category SPLADE alpha defaults shipped in resolve_splade_alpha()
 - Query cache: `~/.cache/cqs/query_cache.db`
 - 90 audit findings fixed + 1 won't-fix

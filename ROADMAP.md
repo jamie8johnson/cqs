@@ -32,8 +32,8 @@
 ### CPU Lane (next up)
 - [x] ~~**Adaptive retrieval** Phases 1-4~~ — classifier + routing + telemetry shipped in v1.22.0
 - [x] ~~**Adaptive retrieval** Phase 5~~ — dual embeddings (base + enriched HNSW) shipped in PR #876 + #877 + #878
-- [x] ~~**SPLADE alpha sweep**~~ — **COMPLETE.** 11-point sweep (α=0.0-1.0). α=0.9 is global optimum: **+1.1pp R@1** (43.4% vs 42.3%). Per-category routing implemented via `resolve_splade_alpha()`. Ship α=0.9 as default. Plan: `docs/plans/2026-04-12-selective-splade-routing.md`
-- [ ] **Ship α=0.9 default** — set `CQS_SPLADE_ALPHA=0.9` as the shipped default (currently 1.0). Config file support for `[splade.alpha]`.
+- [x] ~~**SPLADE alpha sweep + ship defaults**~~ — 11-point sweep + single-category verification. Per-category optimal alphas shipped: identifier 0.9, structural 0.7, conceptual 0.9, type_filtered 0.9, behavioral 0.1, rest 1.0. Expected **+4.9pp R@1** (47.2% vs 42.3%). Cross-language excluded (N=21 noise). Plan: `docs/plans/2026-04-12-selective-splade-routing.md`
+- [ ] **Config file support** — `[splade.alpha]` per-category overrides in `.cqs.toml`
 - [ ] **Phase 6: Explainable search** — depends on SPLADE-Code being the production default. Spec: `docs/plans/adaptive-retrieval.md`
 - [ ] **OpenRCT2 → Rust dual-trail experiment** — substrate for measuring whether structural code intelligence augmentation improves agent-directed translation in a sustained, real-world task. Two parallel translations on the same upstream commit, one with cqs in the loop, one without. Pre-registered metrics (regression bugs, tokens, wall clock). Publishable after three modules in both trails. Spec: `docs/plans/2026-04-10-openrct2-rust-port-dual-trail.md`
 - [ ] **Paper v1.0** — clean rewrite done, needs review/polish + adaptive retrieval results

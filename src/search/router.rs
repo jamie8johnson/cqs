@@ -292,8 +292,16 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
         }
     }
 
-    // Default: 1.0 = pure dense (SPLADE off)
-    1.0
+    // Per-category defaults from 11-point alpha sweep (2026-04-13).
+    // 265 queries × 8 categories. Verified with single-category reruns.
+    match category {
+        QueryCategory::IdentifierLookup => 0.9, // +4.0pp (98.0% vs 94.0%)
+        QueryCategory::Structural => 0.7,       // +14.8pp (66.7% vs 51.9%) — verified
+        QueryCategory::Conceptual => 0.9,       // +8.4pp (41.7% vs 33.3%)
+        QueryCategory::TypeFiltered => 0.9,     // +4.2pp (37.5% vs 33.3%)
+        QueryCategory::Behavioral => 0.1,       // +6.8pp (31.8% vs 25.0%) — verified
+        _ => 1.0,                               // multi_step, cross_language, negation, unknown
+    }
 }
 
 /// Pure function — no I/O, cannot fail, completes in <1ms.
