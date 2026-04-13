@@ -299,6 +299,43 @@ def main():
     except Exception:
         print("  (unavailable)")
 
+    # ── Save structured results ──────────────────────────────────────
+    run_dir = os.path.join("evals", "runs", time.strftime("run_%Y%m%d_%H%M%S"))
+    os.makedirs(run_dir, exist_ok=True)
+    results_path = os.path.join(run_dir, "results.json")
+    save_data = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "split": args.split,
+        "n_queries": len(queries),
+        "splade_alpha": _splade_alpha,
+        "configs": {},
+    }
+    for label, results in all_results.items():
+        r = {
+            "r1": results["r1"],
+            "r5": results["r5"],
+            "r20": results["r20"],
+            "n": results["n"],
+            "r1_pct": round(results["r1"] / results["n"] * 100, 1),
+            "r5_pct": round(results["r5"] / results["n"] * 100, 1),
+            "r20_pct": round(results["r20"] / results["n"] * 100, 1),
+            "by_category": {},
+        }
+        for cat, c in results["by_cat"].items():
+            if c["n"] > 0:
+                r["by_category"][cat] = {
+                    "r1": c["r1"],
+                    "r5": c["r5"],
+                    "r20": c.get("r20", 0),
+                    "n": c["n"],
+                    "r1_pct": round(c["r1"] / c["n"] * 100, 1),
+                    "r5_pct": round(c["r5"] / c["n"] * 100, 1),
+                }
+        save_data["configs"][label] = r
+    with open(results_path, "w") as f:
+        json.dump(save_data, f, indent=2)
+    print(f"\nResults saved to {results_path}")
+
 
 if __name__ == "__main__":
     main()
