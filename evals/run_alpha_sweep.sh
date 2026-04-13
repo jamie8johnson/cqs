@@ -10,7 +10,7 @@
 # Order: 0.5 first to verify the fix works (should differ from baseline),
 # then 0.9 to bracket, then fill inward.
 
-set -e
+# No set -e: one failed alpha shouldn't kill the sweep
 
 ALPHAS="0.5 0.9 0.8 0.3 0.6 0.4 0.1 0.2 0.0"
 
@@ -18,9 +18,9 @@ for alpha in $ALPHAS; do
     echo "=========================================="
     echo "  Alpha = $alpha"
     echo "=========================================="
-    # Eval uses batch mode (single cqs process) — env vars reach
-    # resolve_splade_alpha directly. No CQS_NO_DAEMON needed.
-    CQS_SPLADE_ALPHA="$alpha" python3 evals/run_ablation.py --config bge-large --split all 2>&1 | tee "/tmp/eval_alpha_${alpha}.log"
+    # CQS_NO_DAEMON=1: per-process mode so each cqs invocation gets the env var.
+    # Daemon process has its own env and won't see per-sweep alpha changes.
+    CQS_NO_DAEMON=1 CQS_SPLADE_ALPHA="$alpha" python3 evals/run_ablation.py --config bge-large --split all 2>&1 | tee "/tmp/eval_alpha_${alpha}.log"
     echo ""
 done
 

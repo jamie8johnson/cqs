@@ -15,7 +15,6 @@ Default (no --config): all four cells + verification cell.
 import argparse
 import json
 import os
-import shlex
 import subprocess
 import sys
 import time
@@ -60,58 +59,28 @@ def parse_args():
 CQS_TIMEOUT_SECS = int(os.environ.get("CQS_EVAL_TIMEOUT_SECS", "300"))
 
 
-class BatchRunner:
-    """Persistent cqs batch process. One ONNX load, all queries streamed."""
-
-    def __init__(self):
-        self.proc = subprocess.Popen(
-            ["cqs", "batch"],
-            stdin=subprocess.PIPE,
+def run_search(query, n=20, splade=False):
+    """Run a cqs search. Uses per-process invocation for reliability."""
+    cmd = ["cqs", "--json", "-n", str(n)]
+    if splade:
+        cmd.append("--splade")
+    cmd.extend(["--", query])
+    try:
+        result = subprocess.run(
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            timeout=CQS_TIMEOUT_SECS,
         )
-
-    def search(self, query, n=20, splade=False):
-        if self.proc.poll() is not None:
-            return []
-        cmd = f'search {shlex.quote(query)} --limit {n}'
-        if splade:
-            cmd += " --splade"
-        try:
-            self.proc.stdin.write(cmd + "\n")
-            self.proc.stdin.flush()
-            line = self.proc.stdout.readline()
-            if not line:
-                return []
-            data = json.loads(line)
-            return [(r["name"], r.get("score", 0)) for r in data.get("results", [])]
-        except Exception:
-            return []
-
-    def close(self):
-        if self.proc.poll() is None:
-            try:
-                self.proc.stdin.write("quit\n")
-                self.proc.stdin.flush()
-                self.proc.wait(timeout=5)
-            except Exception:
-                self.proc.kill()
-
-
-_batch_runner = None
-
-
-def get_batch_runner():
-    global _batch_runner
-    if _batch_runner is None or _batch_runner.proc.poll() is not None:
-        _batch_runner = BatchRunner()
-    return _batch_runner
-
-
-def run_search(query, n=20, splade=False):
-    """Run a cqs search via batch mode. Single process, env vars work."""
-    return get_batch_runner().search(query, n=n, splade=splade)
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(f"[timeout {CQS_TIMEOUT_SECS}s] {query!r}\n")
+        return []
+    try:
+        data = json.loads(result.stdout)
+        return [(r["name"], r.get("score", 0)) for r in data.get("results", [])]
+    except Exception:
+        return []
 
 def evaluate(queries, splade=False, label=""):
     """Evaluate queries and return per-query results."""
@@ -310,8 +279,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    finally:
-        if _batch_runner is not None:
-            _batch_runner.close()
+    main()
