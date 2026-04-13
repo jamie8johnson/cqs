@@ -36,8 +36,10 @@ use cqs::store::Store;
 use super::{check_interrupted, find_project_root, try_acquire_index_lock, Cli};
 
 /// RAII guard that removes the Unix socket file on drop.
+#[cfg(unix)]
 struct SocketCleanupGuard(PathBuf);
 
+#[cfg(unix)]
 impl Drop for SocketCleanupGuard {
     fn drop(&mut self) {
         if self.0.exists() {
@@ -51,6 +53,7 @@ impl Drop for SocketCleanupGuard {
 }
 
 /// Handle a single client connection on the daemon socket.
+#[cfg(unix)]
 /// Reads one JSON-line request, dispatches via the shared BatchContext, writes response.
 fn handle_socket_client(
     mut stream: std::os::unix::net::UnixStream,
@@ -390,6 +393,8 @@ pub fn cmd_watch(
 
     // Socket listener BEFORE watcher scan — daemon is immediately queryable
     // while the (potentially slow) poll watcher initializes.
+    // Unix domain sockets are not available on Windows.
+    #[cfg(unix)]
     let mut socket_listener = if serve {
         let sock_path = super::daemon_socket_path(&cqs_dir);
         if sock_path.exists() {
@@ -409,7 +414,6 @@ pub fn cmd_watch(
         let listener = std::os::unix::net::UnixListener::bind(&sock_path)
             .with_context(|| format!("Failed to bind socket at {}", sock_path.display()))?;
         listener.set_nonblocking(true)?;
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600)).ok();
@@ -426,12 +430,18 @@ pub fn cmd_watch(
     } else {
         None
     };
+    #[cfg(unix)]
     let _socket_guard = socket_listener
         .as_ref()
         .map(|(_, path)| SocketCleanupGuard(path.clone()));
+    #[cfg(not(unix))]
+    if serve {
+        tracing::warn!("--serve is not supported on Windows (no Unix domain sockets)");
+    }
 
     // Spawn dedicated socket handler thread — runs independently of the file
     // watcher so queries are served immediately, even during the slow poll scan.
+    #[cfg(unix)]
     let _socket_thread = if serve {
         if let Some((listener, _)) = socket_listener.take() {
             listener.set_nonblocking(false)?;
