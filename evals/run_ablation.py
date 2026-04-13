@@ -51,6 +51,11 @@ def parse_args():
         default=None,
         help="Override SPLADE alpha for all queries (enables SPLADE). For sweep.",
     )
+    p.add_argument(
+        "--category",
+        default=None,
+        help="Filter to a single query category (e.g. structural_search).",
+    )
     args = p.parse_args()
     if not args.configs:
         args.configs = sorted(VALID_CONFIGS)
@@ -212,7 +217,9 @@ def main():
         queries = qs["queries"]
     else:
         queries = [q for q in qs["queries"] if q["split"] == args.split]
-    print(f"Loaded {len(queries)} {args.split} queries", file=sys.stderr)
+    if args.category:
+        queries = [q for q in queries if q["category"] == args.category]
+    print(f"Loaded {len(queries)} {args.split} queries{f' ({args.category})' if args.category else ''}", file=sys.stderr)
     print(f"Configs: {', '.join(args.configs)}", file=sys.stderr)
 
     all_results = {}

@@ -11,8 +11,10 @@
 | Fixture (296q) | BGE-large FT | 91.9% | Synthetic fixtures |
 | Fixture (296q) | BGE-large | 91.2% | Production model |
 | Real code (100q) | BGE-large | 50.0% | R@5 = 73% (agent-relevant) |
-| V2 (265q, live) | BGE-large | 48.5% | 8 categories, bootstrap CIs |
-| V2 (265q, live) | + LLM summaries | 48.5% | +18pp multi_step, -15pp conceptual, net 0pp |
+| V2 (265q, live) | BGE-large | 42.3% | 8 categories, clean A/B (2026-04-12) |
+| V2 (265q, live) | + SPLADE α=0.9 | **43.4%** | **+1.1pp** — global optimum from 11-point sweep |
+| V2 (265q, live) | + SPLADE α=0.7 | 41.1% | −1.2pp — too much sparse weight |
+| V2 (265q, live) | + LLM summaries | 48.5% | +18pp multi_step, -15pp conceptual, net 0pp (old eval) |
 
 ---
 
@@ -30,14 +32,8 @@
 ### CPU Lane (next up)
 - [x] ~~**Adaptive retrieval** Phases 1-4~~ — classifier + routing + telemetry shipped in v1.22.0
 - [x] ~~**Adaptive retrieval** Phase 5~~ — dual embeddings (base + enriched HNSW) shipped in PR #876 + #877 + #878
-- [ ] **Selective SPLADE routing** — `classify_query` should pick `SearchStrategy::DenseWithSplade` for `QueryCategory::CrossLanguage`. **Now mandatory, not optional**: the 2026-04-11 re-run measured flag-driven SPLADE-Code 0.6B at **−0.6pp R@1 net** on the 165q eval (41.8% vs 42.4% baseline). Per-category: cross_language +10pp (30 → 40%, N=10), conceptual −3.7pp, multi_step −4.6pp, others flat. R@5 damage bigger (conceptual −7.4pp, type_filtered −6.2pp, negation −5.6pp). Flag-driven SPLADE displaces good dense hits at positions 2-5 on categories where lexical expansion isn't the missing signal. Routing SPLADE to cross_language only:
-  - Predicted: +10pp on cross_language stays, −3.7pp conceptual and −4.6pp multi_step disappear, total 41.8% → ~43.0% (net **+1.2pp** vs always-on, **+0.6pp** vs baseline)
-  - Strict improvement vs both "always off" and "always on"
-  - Encoder is already lazy-loaded on first SPLADE query — sessions with no cross-language queries never pay the load
-  - Persisted SpladeIndex (shipped this session) means the cross_language queries that do activate SPLADE load in ~5 s from disk instead of rebuilding for 45 s
-  - Code: derive `want_splade = cli.splade || matches!(c.category, CrossLanguage)`, plumb through encoder + index loading, graceful fallback when encoder unavailable
-  - Open: should the routed strategy compose with `DenseBase` for cross-language + negation queries? Probably not in v1 — keep enums mutually exclusive, revisit if data demands
-  - Validate: re-run just cross_language + conceptual + multi_step cells with the router patched in, compare against 2026-04-11 v3 numbers
+- [x] ~~**SPLADE alpha sweep + ship defaults**~~ — 11-point sweep + single-category verification. Per-category optimal alphas shipped: identifier 0.9, structural 0.7, conceptual 0.9, type_filtered 0.9, behavioral 0.1, rest 1.0. Expected **+4.9pp R@1** (47.2% vs 42.3%). Cross-language excluded (N=21 noise). Plan: `docs/plans/2026-04-12-selective-splade-routing.md`
+- [ ] **Config file support** — `[splade.alpha]` per-category overrides in `.cqs.toml`
 - [ ] **Phase 6: Explainable search** — depends on SPLADE-Code being the production default. Spec: `docs/plans/adaptive-retrieval.md`
 - [ ] **OpenRCT2 → Rust dual-trail experiment** — substrate for measuring whether structural code intelligence augmentation improves agent-directed translation in a sustained, real-world task. Two parallel translations on the same upstream commit, one with cqs in the loop, one without. Pre-registered metrics (regression bugs, tokens, wall clock). Publishable after three modules in both trails. Spec: `docs/plans/2026-04-10-openrct2-rust-port-dual-trail.md`
 - [ ] **Paper v1.0** — clean rewrite done, needs review/polish + adaptive retrieval results

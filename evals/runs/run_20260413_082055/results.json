@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-04-13T08:20:55-0500",
+  "split": "all",
+  "n_queries": 27,
+  "splade_alpha": 0.7,
+  "configs": {
+    "BGE-large": {
+      "r1": 18,
+      "r5": 19,
+      "r20": 20,
+      "n": 27,
+      "r1_pct": 66.7,
+      "r5_pct": 70.4,
+      "r20_pct": 74.1,
+      "by_category": {
+        "structural_search": {
+          "r1": 18,
+          "r5": 19,
+          "r20": 20,
+          "n": 27,
+          "r1_pct": 66.7,
+          "r5_pct": 70.4
+        }
+      }
+    }
+  }
+}
