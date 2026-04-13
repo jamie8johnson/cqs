@@ -546,28 +546,36 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                                 let all_vecs = match store.load_all_sparse_vectors() {
                                     Ok(v) => v,
                                     Err(e) => {
-                                        tracing::warn!(error = %e, "Failed to load sparse vectors for persist");
-                                        std::mem::take(&mut sparse_vecs)
+                                        // Don't fall back to delta-only: persisting
+                                        // just the newly-encoded subset would silently
+                                        // drop all previously-encoded chunks from the
+                                        // on-disk index (correctness audit 2026-04-12).
+                                        tracing::warn!(error = %e,
+                                            "Failed to load sparse vectors for persist — \
+                                             skipping. Next query will rebuild from SQLite.");
+                                        Vec::new()
                                     }
                                 };
-                                let idx = cqs::splade::index::SpladeIndex::build(all_vecs);
-                                match idx.save(&splade_path, generation) {
-                                    Ok(()) => {
-                                        if !cli.quiet {
-                                            println!(
-                                                "  SPLADE index: persisted ({} chunks, {} tokens)",
-                                                idx.len(),
-                                                idx.unique_tokens()
+                                if !all_vecs.is_empty() {
+                                    let idx = cqs::splade::index::SpladeIndex::build(all_vecs);
+                                    match idx.save(&splade_path, generation) {
+                                        Ok(()) => {
+                                            if !cli.quiet {
+                                                println!(
+                                                    "  SPLADE index: persisted ({} chunks, {} tokens)",
+                                                    idx.len(),
+                                                    idx.unique_tokens()
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                error = %e,
+                                                path = %splade_path.display(),
+                                                "SPLADE index persist failed; query-time rebuild \
+                                                 will still work"
                                             );
                                         }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            error = %e,
-                                            path = %splade_path.display(),
-                                            "SPLADE index persist failed; query-time rebuild \
-                                             will still work"
-                                        );
                                     }
                                 }
                             }

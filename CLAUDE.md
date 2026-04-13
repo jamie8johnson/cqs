@@ -133,7 +133,7 @@ cqs read --focus <function>          # Function + type dependencies only
 
 Run `cqs --help` for all commands. Key commands: `search`, `impact`, `scout`, `gather`, `task`, `callers/callees`, `test-map`, `review`, `health`, `dead`, `explain`, `context`, `trace`, `where`, `onboard`, `notes`. All support `--json` and `--tokens N` for budget packing.
 
-Run `cqs watch` in a separate terminal to keep the index fresh, or `cqs index` for one-time refresh.
+Run `cqs watch --serve` to keep the index fresh AND serve daemon queries (3-19ms vs 2s CLI startup). The systemd service already uses `--serve`. CLI commands auto-connect to the daemon when available; set `CQS_NO_DAEMON=1` to force CLI mode.
 
 ## Audit Mode
 
