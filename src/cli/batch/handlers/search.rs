@@ -114,6 +114,25 @@ pub(in crate::cli::batch) fn dispatch_search(
         None => None,
     };
 
+    // Per-category SPLADE routing: if --splade flag is set, use it directly.
+    // Otherwise, classify the query and resolve per-category alpha.
+    let (use_splade, splade_alpha) = if params.splade {
+        (true, params.splade_alpha)
+    } else {
+        let classification = cqs::search::router::classify_query(&params.query);
+        let alpha = cqs::search::router::resolve_splade_alpha(&classification.category);
+        if alpha < 1.0 {
+            tracing::info!(
+                category = %classification.category,
+                alpha,
+                "SPLADE activated by per-category alpha (batch)"
+            );
+            (true, alpha)
+        } else {
+            (false, 1.0)
+        }
+    };
+
     let filter = cqs::SearchFilter {
         languages,
         include_types,
@@ -123,8 +142,8 @@ pub(in crate::cli::batch) fn dispatch_search(
         query_text: params.query.clone(),
         enable_rrf: params.rrf,
         enable_demotion: !params.no_demote,
-        enable_splade: params.splade,
-        splade_alpha: params.splade_alpha,
+        enable_splade: use_splade,
+        splade_alpha,
         type_boost_types: None,
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
@@ -174,8 +193,8 @@ pub(in crate::cli::batch) fn dispatch_search(
         }));
     }
 
-    // SPLADE sparse encoding (if enabled)
-    let splade_query = if params.splade {
+    // SPLADE sparse encoding (if enabled by --splade flag OR per-category routing)
+    let splade_query = if use_splade {
         ctx.splade_encoder()
             .and_then(|enc| match enc.encode(&params.query) {
                 Ok(sv) => Some(sv),
@@ -187,7 +206,7 @@ pub(in crate::cli::batch) fn dispatch_search(
     } else {
         None
     };
-    if params.splade {
+    if use_splade {
         ctx.ensure_splade_index();
     }
     let splade_index_ref = ctx.borrow_splade_index();
