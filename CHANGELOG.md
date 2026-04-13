@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.0] - 2026-04-13
+
+### Added
+- **Daemon mode** — `cqs watch --serve` accepts queries via Unix socket. Graph queries in 3-19ms vs 2-3s CLI startup. Client auto-detects daemon and forwards transparently (#926, #927).
+- **Per-category SPLADE routing** — `resolve_splade_alpha()` applies data-driven fusion weights per query category. 11-point alpha sweep found optimal defaults: +4.9pp R@1 expected (47.2% vs 42.3% baseline). Overridable via `CQS_SPLADE_ALPHA_{CATEGORY}` env vars (#930, #932).
+- **Persistent query cache** — `~/.cache/cqs/query_cache.db` stores query embeddings across CLI invocations. Saves ~500ms on repeated queries (#928).
+- **Shared runtime** — `Store::open_readonly_pooled_with_runtime()` and `EmbeddingCache::open_with_runtime()` accept pre-existing tokio runtime (#929).
+- 8 new `CQS_*` env vars: `CQS_BUSY_TIMEOUT_MS`, `CQS_IDLE_TIMEOUT_SECS`, `CQS_MAX_CONNECTIONS`, `CQS_MMAP_SIZE`, `CQS_SPLADE_MAX_CHARS`, `CQS_MAX_QUERY_BYTES`, `CQS_HNSW_BATCH_SIZE`, `CQS_INTEGRITY_CHECK`.
+
+### Fixed
+- **AC-1: SPLADE fusion scores preserved** — `search_hybrid` was discarding fused scores and re-scoring with pure cosine. Alpha knob was a no-op on final ranking. Every prior SPLADE eval measured the wrong thing (#910).
+- **90 audit findings** across 12 files — DS-W5 watch inode detection, CQ-4 incremental SPLADE encoding, integrity check opt-in, read-only batch store, Store::clear_caches, extensibility (EXT-7/8/9/11/13), observability, error handling, security (#911).
+- **--splade flag** no longer silently disables adaptive routing (NameOnly, DenseBase, type boost) (#930).
+- CQ-4 persist fallback: skip instead of writing incomplete index on load failure.
+
+### Performance
+- Daemon: 3-19ms graph queries, ~500ms warm search (vs 2-3s CLI startup).
+- Integrity check flipped to opt-in via `CQS_INTEGRITY_CHECK=1` (saves ~40s on WSL).
+- Batch/chat store opened read-only (skip write pool + quick_check).
+- Store::clear_caches() replaces drop+reopen churn in watch mode.
+- SPLADE encoding skips already-encoded chunks (CQ-4 incremental).
+
 ## [Unreleased]
 
 ### Added
