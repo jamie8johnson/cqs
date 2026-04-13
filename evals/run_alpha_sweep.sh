@@ -18,7 +18,9 @@ for alpha in $ALPHAS; do
     echo "=========================================="
     echo "  Alpha = $alpha"
     echo "=========================================="
-    CQS_NO_DAEMON=1 CQS_SPLADE_ALPHA="$alpha" python3 evals/run_ablation.py --config bge-large --split all 2>&1 | tee "/tmp/eval_alpha_${alpha}.log"
+    # Eval uses batch mode (single cqs process) — env vars reach
+    # resolve_splade_alpha directly. No CQS_NO_DAEMON needed.
+    CQS_SPLADE_ALPHA="$alpha" python3 evals/run_ablation.py --config bge-large --split all 2>&1 | tee "/tmp/eval_alpha_${alpha}.log"
     echo ""
 done
 
