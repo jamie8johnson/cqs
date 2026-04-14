@@ -588,9 +588,16 @@ impl SpladeEncoder {
         // CQS_SPLADE_MAX_SEQ, default 256). Constant shape is critical for
         // ORT BFC arena reuse — varying shapes leak GPU memory over time.
         //
-        // Inputs longer than max_seq_len are truncated. The 256 default is
-        // larger than the cqs corpus p99 (180 tokens) so truncation is rare,
-        // but if a different corpus has many long chunks, bump CQS_SPLADE_MAX_SEQ.
+        // Inputs longer than max_seq_len are truncated.
+        //
+        // SHL-V1.25-15: the 256 default was chosen for code corpora where
+        // p99 is typically ~150-200 tokens. Prose-heavy corpora (docs,
+        // notes) and languages with long import headers (Java, Kotlin
+        // monorepos) can have p99 well above 400 tokens, silently
+        // truncating a meaningful fraction of chunks. The truncation
+        // counter below promotes to `info` whenever >1% of a batch is
+        // truncated so users discover `CQS_SPLADE_MAX_SEQ` the moment
+        // it matters.
         let max_seq_len: usize = std::env::var("CQS_SPLADE_MAX_SEQ")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -621,12 +628,29 @@ impl SpladeEncoder {
             }
         }
         if truncations > 0 {
-            tracing::debug!(
-                truncations,
-                batch_size,
-                max_seq_len,
-                "SPLADE batch had truncated inputs"
-            );
+            // SHL-V1.25-15: promote to info when >1% of the batch was
+            // truncated — that's the threshold where max_seq_len is
+            // likely too small for the corpus and the user should bump
+            // CQS_SPLADE_MAX_SEQ. Small batches need at least one
+            // truncation plus batch_size > 1 to avoid screaming at every
+            // single oversized query.
+            let trunc_pct = (truncations as f64 * 100.0) / batch_size as f64;
+            if trunc_pct > 1.0 && batch_size > 1 {
+                tracing::info!(
+                    truncations,
+                    batch_size,
+                    trunc_pct = format!("{:.1}%", trunc_pct),
+                    max_seq_len,
+                    "SPLADE truncated >1% of batch — bump CQS_SPLADE_MAX_SEQ if your corpus has long chunks"
+                );
+            } else {
+                tracing::debug!(
+                    truncations,
+                    batch_size,
+                    max_seq_len,
+                    "SPLADE batch had truncated inputs"
+                );
+            }
         }
 
         let ids_array =
