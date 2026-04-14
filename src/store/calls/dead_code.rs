@@ -187,8 +187,12 @@ impl Store {
         let mut content_map: std::collections::HashMap<String, (String, Option<String>)> =
             std::collections::HashMap::new();
 
-        const BATCH_SIZE: usize = 500;
-        for batch in candidate_ids.chunks(BATCH_SIZE) {
+        // PF-V1.25-8: 500 was the pre-3.32 SQLite-limit-safe constant for
+        // a single-bind IN query. Modern SQLite permits 32766 variables;
+        // `max_rows_per_statement(1)` returns ~32466 here (1 var/row).
+        use crate::store::helpers::sql::max_rows_per_statement;
+        let batch_size = max_rows_per_statement(1);
+        for batch in candidate_ids.chunks(batch_size) {
             let placeholders = super::super::helpers::make_placeholders(batch.len());
             let sql = format!(
                 "SELECT id, content, doc FROM chunks WHERE id IN ({})",
