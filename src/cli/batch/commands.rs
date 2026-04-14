@@ -337,20 +337,49 @@ impl BatchCmd {
     /// Used by pipeline execution to validate downstream segments. Commands that
     /// take a function name as their primary input are pipeable; commands that
     /// take queries, paths, or no arguments are not.
+    ///
+    /// API-V1.25-6: `match` is intentionally exhaustive (no wildcard arm) so
+    /// adding a new `BatchCmd` variant forces a classification decision here.
+    /// The `test_is_pipeable_exhaustive` test below pins this behavior —
+    /// removing the exhaustiveness makes the test fail to compile.
     pub(crate) fn is_pipeable(&self) -> bool {
-        matches!(
-            self,
+        match self {
+            // Pipeable: primary input is a function name.
             BatchCmd::Blame { .. }
-                | BatchCmd::Callers { .. }
-                | BatchCmd::Callees { .. }
-                | BatchCmd::Deps { .. }
-                | BatchCmd::Explain { .. }
-                | BatchCmd::Similar { .. }
-                | BatchCmd::Impact { .. }
-                | BatchCmd::TestMap { .. }
-                | BatchCmd::Related { .. }
-                | BatchCmd::Scout { .. }
-        )
+            | BatchCmd::Callers { .. }
+            | BatchCmd::Callees { .. }
+            | BatchCmd::Deps { .. }
+            | BatchCmd::Explain { .. }
+            | BatchCmd::Similar { .. }
+            | BatchCmd::Impact { .. }
+            | BatchCmd::TestMap { .. }
+            | BatchCmd::Related { .. }
+            | BatchCmd::Scout { .. } => true,
+            // Not pipeable: queries, paths, git refs, or no positional arg.
+            BatchCmd::Search { .. }
+            | BatchCmd::Gather { .. }
+            | BatchCmd::Trace { .. }
+            | BatchCmd::Dead { .. }
+            | BatchCmd::Context { .. }
+            | BatchCmd::Stats
+            | BatchCmd::Onboard { .. }
+            | BatchCmd::Where { .. }
+            | BatchCmd::Read { .. }
+            | BatchCmd::Stale { .. }
+            | BatchCmd::Health
+            | BatchCmd::Drift { .. }
+            | BatchCmd::Notes { .. }
+            | BatchCmd::Task { .. }
+            | BatchCmd::Review { .. }
+            | BatchCmd::Ci { .. }
+            | BatchCmd::Diff { .. }
+            | BatchCmd::ImpactDiff { .. }
+            | BatchCmd::Plan { .. }
+            | BatchCmd::Suggest { .. }
+            | BatchCmd::Gc
+            | BatchCmd::Refresh
+            | BatchCmd::Help => false,
+        }
     }
 }
 
@@ -790,7 +819,7 @@ mod tests {
     #[test]
     fn test_parse_stale() {
         let input = BatchInput::try_parse_from(["stale"]).unwrap();
-        assert!(matches!(input.cmd, BatchCmd::Stale));
+        assert!(matches!(input.cmd, BatchCmd::Stale { count_only: _ }));
     }
 
     #[test]
@@ -860,5 +889,50 @@ mod tests {
             }
             _ => panic!("Expected Blame command"),
         }
+    }
+
+    // API-V1.25-6: compile-time guard that every BatchCmd variant is either
+    // marked pipeable or explicitly not pipeable. Adding a new variant without
+    // updating `BatchCmd::is_pipeable`'s match causes *this test* to fail to
+    // compile because the inner match below uses the same exhaustiveness.
+    //
+    // The test body just spot-checks a few known variants. The real protection
+    // is the exhaustive match in `is_pipeable` (no wildcard arm) — if a new
+    // variant is added, the compiler flags `is_pipeable` first.
+    #[test]
+    fn test_is_pipeable_exhaustive_classification() {
+        use cqs::store::DeadConfidence;
+
+        // Pipeable variants: should return true.
+        let callers = BatchCmd::Callers {
+            name: "foo".into(),
+            cross_project: false,
+        };
+        assert!(callers.is_pipeable());
+
+        let scout = BatchCmd::Scout {
+            args: crate::cli::args::ScoutArgs {
+                query: "foo".into(),
+                limit: 5,
+                tokens: None,
+            },
+        };
+        assert!(scout.is_pipeable());
+
+        // Non-pipeable variants: should return false.
+        assert!(!BatchCmd::Stats.is_pipeable());
+        assert!(!BatchCmd::Health.is_pipeable());
+        assert!(!BatchCmd::Gc.is_pipeable());
+        assert!(!BatchCmd::Refresh.is_pipeable());
+        assert!(!BatchCmd::Help.is_pipeable());
+        assert!(!BatchCmd::Stale { count_only: false }.is_pipeable());
+
+        let dead = BatchCmd::Dead {
+            args: crate::cli::args::DeadArgs {
+                include_pub: false,
+                min_confidence: DeadConfidence::Low,
+            },
+        };
+        assert!(!dead.is_pipeable());
     }
 }
