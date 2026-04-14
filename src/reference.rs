@@ -247,8 +247,15 @@ pub fn merge_results(
         }
     }
 
-    // Sort by score descending (highest first)
-    tagged.sort_by(|a, b| b.result.score().total_cmp(&a.result.score()));
+    // Sort by score descending (highest first). Secondary sort on chunk id
+    // keeps equal-score candidates deterministically ordered across process
+    // invocations so the dedup + truncate below pick the same survivors.
+    tagged.sort_by(|a, b| {
+        b.result
+            .score()
+            .total_cmp(&a.result.score())
+            .then(a.result.id().cmp(b.result.id()))
+    });
 
     // Deduplicate code results by content hash (keeps highest-scoring occurrence).
     // Dedup must happen before truncation for correctness — otherwise duplicates

@@ -250,7 +250,16 @@ pub fn search_across_projects(
                 .collect();
             let mut all_results: Vec<CrossProjectResult> =
                 project_results.into_iter().flatten().collect();
-            all_results.sort_by(|a, b| b.score.total_cmp(&a.score));
+            // Secondary sort on (project, file, line_start, name) keeps equal-
+            // score results deterministically ordered across process invocations.
+            all_results.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then(a.project_name.cmp(&b.project_name))
+                    .then(a.file.cmp(&b.file))
+                    .then(a.line_start.cmp(&b.line_start))
+                    .then(a.name.cmp(&b.name))
+            });
             all_results.truncate(limit);
             tracing::info!(
                 result_count = all_results.len(),
@@ -277,8 +286,18 @@ pub fn search_across_projects(
 
     let mut all_results: Vec<CrossProjectResult> = project_results.into_iter().flatten().collect();
 
-    // Sort by score descending, take top N
-    all_results.sort_by(|a, b| b.score.total_cmp(&a.score));
+    // Sort by score descending, take top N. Secondary sort on
+    // (project, file, line_start, name) keeps equal-score results
+    // deterministically ordered across process invocations so the
+    // truncate() picks the same survivors on every run.
+    all_results.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then(a.project_name.cmp(&b.project_name))
+            .then(a.file.cmp(&b.file))
+            .then(a.line_start.cmp(&b.line_start))
+            .then(a.name.cmp(&b.name))
+    });
     all_results.truncate(limit);
 
     tracing::info!(

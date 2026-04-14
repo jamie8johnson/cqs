@@ -135,8 +135,14 @@ impl Store {
                 })
                 .collect::<Vec<_>>();
 
-            // Re-sort by name-match score (FTS bm25 ordering may differ)
-            results.sort_by(|a, b| b.score.total_cmp(&a.score));
+            // Re-sort by name-match score (FTS bm25 ordering may differ).
+            // Secondary sort on chunk id ensures equal-score candidates have a
+            // deterministic order across process invocations.
+            results.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then(a.chunk.id.cmp(&b.chunk.id))
+            });
 
             Ok(results)
         })

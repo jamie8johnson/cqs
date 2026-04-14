@@ -377,8 +377,13 @@ impl Store {
                     result.score *= boost;
                 }
             }
-            // Re-sort after boost
-            results.sort_by(|a, b| b.score.total_cmp(&a.score));
+            // Re-sort after boost. Secondary sort on chunk id keeps ties
+            // deterministic across process invocations.
+            results.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then(a.chunk.id.cmp(&b.chunk.id))
+            });
         }
 
         // Step 5: Truncate back to requested limit after parent dedup
@@ -769,7 +774,9 @@ impl Store {
                 })
                 .collect();
 
-            scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+            // Secondary sort on candidate id keeps ties deterministic across
+            // process invocations.
+            scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.id.cmp(&b.0.id)));
 
             let scored: Vec<(String, f32)> =
                 scored.into_iter().map(|(c, score)| (c.id, score)).collect();

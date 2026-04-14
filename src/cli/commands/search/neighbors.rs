@@ -103,8 +103,11 @@ fn find_neighbors(
         }
     }
 
-    // Sort descending by similarity
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    // Sort descending by similarity. Secondary sort on chunk id ensures
+    // equal-score candidates have a deterministic order across process
+    // invocations — otherwise the truncate() below would drop different
+    // candidates on each run.
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     scored.truncate(limit);
 
     if scored.is_empty() {

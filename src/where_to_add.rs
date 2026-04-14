@@ -184,7 +184,10 @@ fn suggest_placement_with_options_core(
             (file, total_score, chunks)
         })
         .collect();
-    file_scores.sort_by(|a, b| b.1.total_cmp(&a.1));
+    // Secondary sort on file path keeps equal-score files deterministically
+    // ordered across process invocations so the truncate() below picks the
+    // same files on every run.
+    file_scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     file_scores.truncate(limit);
 
     // Batch-fetch all file chunks upfront (single query instead of per-file N+1)

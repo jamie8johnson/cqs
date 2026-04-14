@@ -241,8 +241,14 @@ impl Reranker {
             result.score = sigmoid(logit);
         }
 
-        // 5. Sort descending by score, truncate
-        results.sort_by(|a, b| b.score.total_cmp(&a.score));
+        // 5. Sort descending by score, truncate. Secondary sort on chunk id
+        // keeps equal-score candidates deterministically ordered so the
+        // truncate() drops the same candidates on every invocation.
+        results.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then(a.chunk.id.cmp(&b.chunk.id))
+        });
         results.truncate(limit);
 
         tracing::info!(reranked = results.len(), batch_size, "Re-ranking complete");

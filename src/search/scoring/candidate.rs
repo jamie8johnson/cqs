@@ -96,7 +96,11 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
     }
 
     if boosted {
-        results.sort_by(|a, b| b.score.total_cmp(&a.score));
+        results.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then(a.chunk.id.cmp(&b.chunk.id))
+        });
     }
 }
 
@@ -167,6 +171,12 @@ impl BoundedScoreHeap {
     }
 
     /// Push a scored result. If at capacity, evicts the lowest score.
+    ///
+    /// Tie-breaking at the eviction boundary is deterministic on id
+    /// (ascending) — when scores are equal, the smaller id wins. This keeps
+    /// the final top-K set independent of insertion order, which matters for
+    /// callers that feed results from a HashMap or other randomly-ordered
+    /// source (e.g. `rrf_fuse`).
     pub fn push(&mut self, id: String, score: f32) {
         if !score.is_finite() {
             tracing::warn!(id = %id, score = ?score, "BoundedScoreHeap: ignoring non-finite score");
@@ -179,12 +189,14 @@ impl BoundedScoreHeap {
             return;
         }
 
-        // At capacity - only insert if strictly better than current minimum.
-        // Using > (not >=) gives first-indexed stability: when scores are equal,
-        // earlier items are kept. This prevents last-wins bias where later-indexed
-        // chunks systematically replace earlier ones at equal scores.
-        if let Some(Reverse((OrderedFloat(min_score), _))) = self.heap.peek() {
-            if score > *min_score {
+        // At capacity - evict current min if the incoming pair is a better
+        // (score, id) under the final sort order: score desc, id asc.
+        // Strict ">" on score keeps first-seen on pure score ties at the
+        // non-boundary cases; at the eviction boundary we additionally break
+        // score ties on id ascending so the surviving set is deterministic.
+        if let Some(Reverse((OrderedFloat(min_score), min_id))) = self.heap.peek() {
+            let better = score > *min_score || (score == *min_score && id < *min_id);
+            if better {
                 self.heap.pop();
                 self.heap.push(Reverse((OrderedFloat(score), id)));
             }
@@ -192,13 +204,18 @@ impl BoundedScoreHeap {
     }
 
     /// Drain into a sorted Vec (highest score first).
+    ///
+    /// Secondary sort on id (ascending) ensures equal-score candidates
+    /// have a deterministic order across process invocations — the
+    /// internal `BinaryHeap` iterates in arbitrary order, so we can't
+    /// rely on push-order stability here.
     pub fn into_sorted_vec(self) -> Vec<(String, f32)> {
         let mut results: Vec<_> = self
             .heap
             .into_iter()
             .map(|Reverse((OrderedFloat(score), id))| (id, score))
             .collect();
-        results.sort_by(|a, b| b.1.total_cmp(&a.1));
+        results.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         results
     }
 }

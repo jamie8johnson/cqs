@@ -199,8 +199,16 @@ pub fn onboard(
         callee_chunks.into_iter().map(gathered_to_onboard).collect();
 
     let (mut caller_chunks, _) = fetch_and_assemble(store, &caller_scores, root);
-    // Sort callers by score desc
-    caller_chunks.sort_by(|a, b| b.score.total_cmp(&a.score));
+    // Sort callers by score desc. Secondary sort on (file, line_start, name)
+    // keeps equal-score callers deterministically ordered across process
+    // invocations.
+    caller_chunks.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then(a.file.cmp(&b.file))
+            .then(a.line_start.cmp(&b.line_start))
+            .then(a.name.cmp(&b.name))
+    });
     let callers: Vec<OnboardEntry> = caller_chunks.into_iter().map(gathered_to_onboard).collect();
 
     // 7. Type dependencies — filter common types

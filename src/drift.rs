@@ -86,8 +86,15 @@ pub fn detect_drift(
         })
         .collect();
 
-    // Sort by drift desc (most changed first)
-    drifted.sort_by(|a, b| b.drift.total_cmp(&a.drift));
+    // Sort by drift desc (most changed first). Secondary sort on (file, name)
+    // keeps equal-drift entries deterministically ordered across process
+    // invocations.
+    drifted.sort_by(|a, b| {
+        b.drift
+            .total_cmp(&a.drift)
+            .then(a.file.cmp(&b.file))
+            .then(a.name.cmp(&b.name))
+    });
 
     tracing::info!(
         drifted = drifted.len(),

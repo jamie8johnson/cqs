@@ -401,10 +401,21 @@ pub(crate) fn fetch_and_assemble(
     (chunks, search_degraded)
 }
 
-/// Sort chunks by score desc (name tiebreak), truncate to limit,
+/// Sort chunks by score desc (file/line/name tiebreak), truncate to limit,
 /// then re-sort to file/line reading order.
+///
+/// The tiebreak cascade (name → file → line_start) is full — two chunks can
+/// collide on `name` when they're from different files (e.g., two `new`
+/// functions), so we also compare `file` and `line_start` to keep the
+/// truncate() boundary deterministic across process invocations.
 pub(crate) fn sort_and_truncate(chunks: &mut Vec<GatheredChunk>, limit: usize) {
-    chunks.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.name.cmp(&b.name)));
+    chunks.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then(a.name.cmp(&b.name))
+            .then(a.file.cmp(&b.file))
+            .then(a.line_start.cmp(&b.line_start))
+    });
     chunks.truncate(limit);
     chunks.sort_by(|a, b| {
         a.file
@@ -720,7 +731,17 @@ pub fn gather_cross_index_with_index(
     let mut all_chunks = ref_chunks;
     all_chunks.extend(project_chunks);
 
-    all_chunks.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.name.cmp(&b.name)));
+    // Sort by score desc with a full tiebreak cascade (name → file → line_start).
+    // Name alone isn't unique — two chunks named `new` from different files
+    // collide — so we also compare file and line_start to keep the truncate()
+    // boundary deterministic across process invocations.
+    all_chunks.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then(a.name.cmp(&b.name))
+            .then(a.file.cmp(&b.file))
+            .then(a.line_start.cmp(&b.line_start))
+    });
     all_chunks.truncate(opts.limit);
     // Sort: ref chunks first (by source name), then project chunks, each group in file/line order
     all_chunks.sort_by(|a, b| {

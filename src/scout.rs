@@ -322,8 +322,14 @@ pub(crate) fn scout_core(res: &ScoutResources<'_>) -> Result<ScoutResult, Analys
         })
         .collect();
 
-    // Sort by relevance, take top N
-    groups.sort_by(|a, b| b.relevance_score.total_cmp(&a.relevance_score));
+    // Sort by relevance, take top N. Secondary sort on file path keeps
+    // equal-score file groups deterministically ordered across process
+    // invocations so the truncate() below picks the same files on every run.
+    groups.sort_by(|a, b| {
+        b.relevance_score
+            .total_cmp(&a.relevance_score)
+            .then(a.file.cmp(&b.file))
+    });
     groups.truncate(limit);
 
     // 7. Find relevant notes by mention overlap
