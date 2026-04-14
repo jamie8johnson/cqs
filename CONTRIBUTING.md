@@ -194,7 +194,8 @@ src/
       mod.rs, candidate.rs, config.rs, filter.rs, name_match.rs, note_boost.rs
     query.rs    - Query parsing, filter extraction
     router.rs   - Query classifier (QueryCategory + SearchStrategy), adaptive routing for
-                  identifier/structural/behavioral/conceptual/multi_step/negation/type_filtered/cross_language
+                  identifier/structural/behavioral/conceptual/multi_step/negation/type_filtered/cross_language/unknown;
+                  resolve_splade_alpha() for per-category SPLADE fusion weights (env override precedence)
     synonyms.rs - Query synonym expansion
   splade/       - SPLADE sparse encoder + persisted inverted index
     mod.rs      - SpladeEncoder, SparseVector type, encode()/encode_batch(), resolve_splade_model_dir()
