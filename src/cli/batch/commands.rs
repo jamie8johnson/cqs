@@ -215,7 +215,11 @@ pub(crate) enum BatchCmd {
         focus: Option<String>,
     },
     /// Check index freshness
-    Stale,
+    Stale {
+        /// Show counts only, skip file list
+        #[arg(long)]
+        count_only: bool,
+    },
     /// Codebase quality snapshot
     Health,
     /// Semantic drift detection between reference and project
@@ -223,7 +227,10 @@ pub(crate) enum BatchCmd {
         /// Reference name to compare against
         reference: String,
         /// Similarity threshold (default: 0.95)
-        #[arg(long, default_value = "0.95")]
+        ///
+        /// `-t` alias matches the CLI subcommand so forwarded invocations
+        /// (`cqs drift ref -t 0.9`) parse cleanly on the daemon side.
+        #[arg(short = 't', long, default_value = "0.95")]
         threshold: f32,
         /// Minimum drift to show (default: 0.0)
         #[arg(long, default_value = "0.0")]
@@ -283,7 +290,10 @@ pub(crate) enum BatchCmd {
         /// Target reference (default: project)
         target: Option<String>,
         /// Similarity threshold
-        #[arg(long, default_value = "0.95")]
+        ///
+        /// `-t` alias matches the CLI subcommand so forwarded invocations
+        /// (`cqs diff a b -t 0.9`) parse cleanly on the daemon side.
+        #[arg(short = 't', long, default_value = "0.95")]
         threshold: f32,
         /// Filter by language
         #[arg(short = 'l', long)]
@@ -514,7 +524,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             handlers::dispatch_where(ctx, &description, limit)
         }
         BatchCmd::Read { path, focus } => handlers::dispatch_read(ctx, &path, focus.as_deref()),
-        BatchCmd::Stale => handlers::dispatch_stale(ctx),
+        BatchCmd::Stale { count_only } => handlers::dispatch_stale(ctx, count_only),
         BatchCmd::Health => handlers::dispatch_health(ctx),
         BatchCmd::Drift {
             reference,

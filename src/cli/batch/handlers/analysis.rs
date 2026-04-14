@@ -46,23 +46,37 @@ pub(in crate::cli::batch) fn dispatch_dead(
 /// Retrieves the file set from the batch context and queries the store for files whose modification times have changed or are no longer present on disk. Returns a JSON report containing lists of stale files with their stored and current modification times, missing files, and summary statistics.
 /// # Arguments
 /// * `ctx` - The batch context containing the store and file set information.
+/// * `count_only` - If true, emits only count fields (stale_count, missing_count,
+///   total_indexed), omitting the per-file arrays. Matches the CLI `--count-only`
+///   flag so forwarded invocations parse cleanly.
 /// # Returns
 /// A JSON object containing:
-/// - `stale`: Array of stale files with their origin path, stored mtime, and current mtime
-/// - `missing`: Array of missing file paths
+/// - `stale`: Array of stale files with their origin path, stored mtime, and current mtime (omitted if `count_only`)
+/// - `missing`: Array of missing file paths (omitted if `count_only`)
 /// - `total_indexed`: Total number of indexed files
 /// - `stale_count`: Count of stale files
 /// - `missing_count`: Count of missing files
 /// # Errors
 /// Returns an error if the file set cannot be retrieved from the context or if the store query fails.
-pub(in crate::cli::batch) fn dispatch_stale(ctx: &BatchContext) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_stale").entered();
+pub(in crate::cli::batch) fn dispatch_stale(
+    ctx: &BatchContext,
+    count_only: bool,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_stale", count_only).entered();
 
     let file_set = ctx.file_set()?;
-    let report = ctx.store().list_stale_files(&file_set)?;
+    let report = ctx.store().list_stale_files(&file_set, &ctx.root)?;
 
     let output = crate::cli::commands::build_stale(&report);
-    Ok(serde_json::to_value(&output)?)
+    if count_only {
+        Ok(serde_json::json!({
+            "stale_count": output.stale_count,
+            "missing_count": output.missing_count,
+            "total_indexed": output.total_indexed,
+        }))
+    } else {
+        Ok(serde_json::to_value(&output)?)
+    }
 }
 
 /// Performs a health check on the batch processing system and returns the results as JSON.
@@ -77,7 +91,7 @@ pub(in crate::cli::batch) fn dispatch_health(ctx: &BatchContext) -> Result<serde
     let _span = tracing::info_span!("batch_health").entered();
 
     let file_set = ctx.file_set()?;
-    let report = cqs::health::health_check(&ctx.store(), &file_set, &ctx.cqs_dir)?;
+    let report = cqs::health::health_check(&ctx.store(), &file_set, &ctx.cqs_dir, &ctx.root)?;
 
     Ok(serde_json::to_value(&report)?)
 }
