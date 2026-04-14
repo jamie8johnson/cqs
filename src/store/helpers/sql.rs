@@ -10,6 +10,17 @@
 //! helper centralizes the derivation so call sites don't need to
 //! re-derive the constant.
 
+/// Read `CQS_BUSY_TIMEOUT_MS` env var, falling back to `default_ms`. Single
+/// source of truth so every SQLite pool (store, embedding cache, query
+/// cache) honours the same tuning knob.
+pub fn busy_timeout_from_env(default_ms: u64) -> std::time::Duration {
+    let ms = std::env::var("CQS_BUSY_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default_ms);
+    std::time::Duration::from_millis(ms)
+}
+
 /// SQLite's `SQLITE_MAX_VARIABLE_NUMBER` since v3.32 (2020).
 /// Single source of truth — all batch-size derivations reference this.
 pub const SQLITE_MAX_VARIABLES: usize = 32766;

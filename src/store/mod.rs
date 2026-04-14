@@ -390,12 +390,7 @@ impl Store {
             .filename(path)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(std::time::Duration::from_millis(
-                std::env::var("CQS_BUSY_TIMEOUT_MS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(5000),
-            ))
+            .busy_timeout(helpers::sql::busy_timeout_from_env(5000))
             // NORMAL synchronous in WAL mode: fsync on checkpoint, not every commit.
             // Trade-off: a crash can lose the last few committed transactions (WAL
             // tail not yet fsynced), but the database remains consistent. Acceptable
