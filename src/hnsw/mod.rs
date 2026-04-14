@@ -27,7 +27,7 @@ mod persist;
 mod safety;
 mod search;
 
-pub use persist::HNSW_ALL_EXTENSIONS;
+pub use persist::{verify_hnsw_checksums, HNSW_ALL_EXTENSIONS};
 
 use std::cell::UnsafeCell;
 

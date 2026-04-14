@@ -281,13 +281,30 @@ pub(crate) fn build_vector_index_with_config(
             tracing::debug!("GPU not available, using HNSW");
         }
     }
-    // Check for crash between SQLite commit and HNSW save (RT-DATA-6)
+    // Check for crash between SQLite commit and HNSW save (RT-DATA-6).
+    // When dirty flag is set, verify the HNSW files pass their checksum before
+    // falling back to brute-force. If checksum passes, the crash happened AFTER
+    // the files were written — the dirty flag is a false positive, clear it
+    // and proceed. If checksum fails, the files are genuinely stale.
     if store.is_hnsw_dirty().unwrap_or(true) {
-        tracing::warn!(
-            "HNSW index may be stale (interrupted write detected). \
-             Falling back to brute-force search. Run 'cqs index' to rebuild."
-        );
-        return Ok(None);
+        match cqs::hnsw::verify_hnsw_checksums(cqs_dir, "index") {
+            Ok(()) => {
+                tracing::info!(
+                    "HNSW dirty flag set but checksums pass — clearing flag (self-heal)"
+                );
+                if let Err(e) = store.set_hnsw_dirty(false) {
+                    tracing::warn!(error = %e, "Failed to clear dirty flag");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "HNSW index stale (checksum mismatch). \
+                     Falling back to brute-force search. Run 'cqs index' to rebuild."
+                );
+                return Ok(None);
+            }
+        }
     }
     Ok(cqs::HnswIndex::try_load_with_ef(
         cqs_dir,
@@ -321,11 +338,26 @@ pub(crate) fn build_base_vector_index(
         return Ok(None);
     }
 
+    // Same self-heal logic as enriched: if checksums pass, clear the dirty
+    // flag; otherwise fall back to enriched via the router.
     if store.is_hnsw_dirty().unwrap_or(true) {
-        tracing::warn!(
-            "Base HNSW index may be stale (dirty flag set) — router falls back to enriched"
-        );
-        return Ok(None);
+        match cqs::hnsw::verify_hnsw_checksums(cqs_dir, "index_base") {
+            Ok(()) => {
+                tracing::info!(
+                    "Base HNSW dirty flag set but checksums pass — clearing flag (self-heal)"
+                );
+                if let Err(e) = store.set_hnsw_dirty(false) {
+                    tracing::warn!(error = %e, "Failed to clear dirty flag");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Base HNSW index stale (checksum mismatch) — router falls back to enriched"
+                );
+                return Ok(None);
+            }
+        }
     }
     Ok(cqs::HnswIndex::try_load_base_with_ef(
         cqs_dir,
