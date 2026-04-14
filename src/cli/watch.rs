@@ -532,14 +532,48 @@ pub fn cmd_watch(
                     );
                 }
                 Err(_) => {
-                    if let Err(e) = std::fs::remove_file(&sock_path) {
-                        tracing::warn!(
-                            error = %e,
-                            path = %sock_path.display(),
-                            "Failed to remove stale socket file"
-                        );
-                    } else {
-                        tracing::debug!(path = %sock_path.display(), "Removed stale socket file");
+                    // SEC-V1.25-15 / PB-V1.25-19: don't blindly unlink whatever
+                    // is at sock_path — an attacker (or a stale test artifact)
+                    // could leave a symlink or regular file there and trick us
+                    // into deleting something we shouldn't. Use symlink_metadata
+                    // (no follow) and refuse to remove anything that isn't a
+                    // socket or a plain file in the cqs dir.
+                    use std::os::unix::fs::FileTypeExt;
+                    match std::fs::symlink_metadata(&sock_path) {
+                        Ok(md) => {
+                            let ft = md.file_type();
+                            if ft.is_symlink() || ft.is_dir() {
+                                anyhow::bail!(
+                                    "Refusing to remove non-socket path {} (symlink/dir); resolve manually before starting daemon",
+                                    sock_path.display()
+                                );
+                            }
+                            if !(ft.is_socket() || ft.is_file()) {
+                                anyhow::bail!(
+                                    "Refusing to remove non-socket path {} (unexpected file type); resolve manually before starting daemon",
+                                    sock_path.display()
+                                );
+                            }
+                            if let Err(e) = std::fs::remove_file(&sock_path) {
+                                tracing::warn!(
+                                    error = %e,
+                                    path = %sock_path.display(),
+                                    "Failed to remove stale socket file"
+                                );
+                            } else {
+                                tracing::debug!(path = %sock_path.display(), "Removed stale socket file");
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            // Raced with another cleanup — nothing to do.
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                path = %sock_path.display(),
+                                "Failed to stat socket path before cleanup"
+                            );
+                        }
                     }
                 }
             }
