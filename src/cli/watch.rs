@@ -410,8 +410,15 @@ pub fn cmd_watch(
                     );
                 }
                 Err(_) => {
-                    std::fs::remove_file(&sock_path).ok();
-                    tracing::debug!(path = %sock_path.display(), "Removed stale socket file");
+                    if let Err(e) = std::fs::remove_file(&sock_path) {
+                        tracing::warn!(
+                            error = %e,
+                            path = %sock_path.display(),
+                            "Failed to remove stale socket file"
+                        );
+                    } else {
+                        tracing::debug!(path = %sock_path.display(), "Removed stale socket file");
+                    }
                 }
             }
         }
@@ -420,7 +427,15 @@ pub fn cmd_watch(
         listener.set_nonblocking(true)?;
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600)).ok();
+            if let Err(e) =
+                std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))
+            {
+                tracing::warn!(
+                    error = %e,
+                    path = %sock_path.display(),
+                    "Failed to set socket permissions to 0o600"
+                );
+            }
         }
         tracing::info!(
             socket = %sock_path.display(),
