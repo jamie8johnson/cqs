@@ -27,7 +27,15 @@ pub(in crate::cli::batch) struct SearchParams {
     pub context: Option<usize>,
     pub expand: bool,
     pub no_stale_check: bool,
+    /// CQ-V1.25-1: user-specified threshold. `None` means use the built-in
+    /// 0.3 floor. Plumbed through to every `search_*` call site that used
+    /// to hardcode 0.3.
+    pub threshold: Option<f32>,
 }
+
+/// Default min-similarity floor applied when the caller did not pass
+/// `--threshold`. Matches the CLI's `Cli.threshold` default (`0.3`).
+const DEFAULT_SEARCH_THRESHOLD: f32 = 0.3;
 
 /// Dispatches a search query and returns results as JSON.
 /// Performs either a name-only search or a full semantic search using embeddings. For name-only searches, queries the store directly by name. For semantic searches, embeds the query and retrieves results, optionally reranking them.
@@ -172,12 +180,13 @@ pub(in crate::cli::batch) fn dispatch_search(
         } else {
             limit
         };
+        let threshold = params.threshold.unwrap_or(DEFAULT_SEARCH_THRESHOLD);
         let mut results = cqs::reference::search_reference(
             &ref_idx,
             &query_embedding,
             &filter,
             ref_limit,
-            0.3,
+            threshold,
             false,
         )?;
 
@@ -262,12 +271,13 @@ pub(in crate::cli::batch) fn dispatch_search(
         .as_ref()
         .and_then(|sq| splade_index_ref.as_ref().map(|si| (si, sq)));
 
+    let threshold = params.threshold.unwrap_or(DEFAULT_SEARCH_THRESHOLD);
     let results = if audit_mode.is_active() || splade_arg.is_some() {
         let code_results = ctx.store().search_hybrid(
             &query_embedding,
             &filter,
             effective_limit,
-            0.3,
+            threshold,
             index,
             splade_arg,
         )?;
@@ -280,7 +290,7 @@ pub(in crate::cli::batch) fn dispatch_search(
             &query_embedding,
             &filter,
             effective_limit,
-            0.3,
+            threshold,
             index,
         )?
     };
@@ -319,7 +329,7 @@ pub(in crate::cli::batch) fn dispatch_search(
                         &query_embedding,
                         &filter,
                         limit,
-                        0.3,
+                        threshold,
                         true,
                     ) {
                         Ok(r) if !r.is_empty() => Some((ref_idx.name.clone(), r)),

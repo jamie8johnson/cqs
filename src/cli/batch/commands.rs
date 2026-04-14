@@ -89,6 +89,14 @@ pub(crate) enum BatchCmd {
         /// Disable staleness checks (skip per-file mtime comparison)
         #[arg(long)]
         no_stale_check: bool,
+        /// Min similarity threshold (default: 0.3)
+        ///
+        /// CQ-V1.25-1: matches the CLI's top-level `-t/--threshold` flag.
+        /// Previously omitted — daemon-routed queries silently collapsed to
+        /// the hardcoded 0.3 floor in `dispatch_search`, so `cqs -t 0.5 "..."`
+        /// returned results below the caller's intended cutoff.
+        #[arg(short = 't', long, value_parser = crate::cli::parse_finite_f32)]
+        threshold: Option<f32>,
     },
     /// Semantic git blame: who changed a function, when, and why
     Blame {
@@ -449,6 +457,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             context,
             expand,
             no_stale_check,
+            threshold,
         } => {
             log_query("search", &query);
             handlers::dispatch_search(
@@ -474,6 +483,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
                     context,
                     expand,
                     no_stale_check,
+                    threshold,
                 },
             )
         }

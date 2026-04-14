@@ -1,9 +1,41 @@
 //! Scout command — pre-investigation dashboard for task planning
+//!
+//! CQ-V1.25-7: the JSON builder lives here and is called by both the CLI
+//! (`cmd_scout`) and the batch handler (`dispatch_scout` in
+//! `src/cli/batch/handlers/misc.rs`) so the shape stays identical across
+//! the two dispatch paths. Mirrors the `GcOutput` pattern in
+//! `src/cli/commands/index/gc.rs`.
 
 use anyhow::Result;
 use colored::Colorize;
 
 use cqs::scout;
+
+/// Build the typed scout JSON object shared between CLI and batch.
+///
+/// Serializes `ScoutResult` once, then injects optional content-map and
+/// token-budget fields in a fixed order so both dispatch paths produce
+/// byte-identical JSON for the same inputs.
+///
+/// # Parameters
+/// - `result`: scout analysis output
+/// - `content_map`: `Some` when `--tokens` was supplied; injects a `content`
+///   field into each matching chunk entry
+/// - `token_info`: `Some((used, budget))` when token packing ran; adds the
+///   `token_count` and `token_budget` fields to the top-level object
+pub(crate) fn build_scout_output(
+    result: &cqs::ScoutResult,
+    content_map: Option<&std::collections::HashMap<String, String>>,
+    token_info: Option<(usize, usize)>,
+) -> Result<serde_json::Value> {
+    let _span = tracing::debug_span!("build_scout_output").entered();
+    let mut output = serde_json::to_value(result)?;
+    if let Some(cmap) = content_map {
+        crate::cli::commands::inject_content_into_scout_json(&mut output, cmap);
+    }
+    crate::cli::commands::inject_token_info(&mut output, token_info);
+    Ok(output)
+}
 
 // ─── Tests ────────────────────────────────────────────────────────────────
 
@@ -169,11 +201,7 @@ pub(crate) fn cmd_scout(
     };
 
     if json {
-        let mut output = serde_json::to_value(&result)?;
-        if let Some(ref cmap) = content_map {
-            crate::cli::commands::inject_content_into_scout_json(&mut output, cmap);
-        }
-        crate::cli::commands::inject_token_info(&mut output, token_info);
+        let output = build_scout_output(&result, content_map.as_ref(), token_info)?;
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         let token_label = match token_info {

@@ -82,7 +82,7 @@ fn install_sigterm_handler() {
     // threads start depending on the old disposition. We call it at
     // the top of cmd_watch, prior to spawning the socket thread.
     unsafe {
-        let prev = libc::signal(libc::SIGTERM, on_sigterm as libc::sighandler_t);
+        let prev = libc::signal(libc::SIGTERM, on_sigterm as *const () as libc::sighandler_t);
         if prev == libc::SIG_ERR {
             let e = std::io::Error::last_os_error();
             tracing::warn!(error = %e, "Failed to install SIGTERM handler; watch will rely on SIGINT only");
