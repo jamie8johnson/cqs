@@ -264,7 +264,16 @@ pub(crate) fn build_vector_index_with_config(
         if chunk_count >= cagra_threshold && cqs::cagra::CagraIndex::gpu_available() {
             match cqs::cagra::CagraIndex::build_from_store(store, store.dim()) {
                 Ok(idx) => {
-                    tracing::info!("Using CAGRA GPU index ({} vectors)", idx.len());
+                    // OB-NEW-7: single structured log per backend selection so
+                    // operators can grep a consistent `backend=` field instead
+                    // of string-matching three distinct format messages.
+                    tracing::info!(
+                        backend = "cagra",
+                        vectors = idx.len(),
+                        chunk_count,
+                        cagra_threshold,
+                        "Vector index backend selected"
+                    );
                     return Ok(Some(Box::new(idx) as Box<dyn cqs::index::VectorIndex>));
                 }
                 Err(e) => {
@@ -272,13 +281,23 @@ pub(crate) fn build_vector_index_with_config(
                 }
             }
         } else if chunk_count < cagra_threshold {
-            tracing::debug!(
-                "Index too small for CAGRA ({} < {}), using HNSW",
+            // OB-NEW-7: promoted debug! → info! with structured fields so the
+            // backend-selection decision is visible at the default log level.
+            tracing::info!(
+                backend = "hnsw",
+                reason = "index_below_cagra_threshold",
                 chunk_count,
-                cagra_threshold
+                cagra_threshold,
+                "Vector index backend selected"
             );
         } else {
-            tracing::debug!("GPU not available, using HNSW");
+            tracing::info!(
+                backend = "hnsw",
+                reason = "gpu_unavailable",
+                chunk_count,
+                cagra_threshold,
+                "Vector index backend selected"
+            );
         }
     }
     // Check for crash between SQLite commit and HNSW save (RT-DATA-6).
