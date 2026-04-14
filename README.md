@@ -769,17 +769,21 @@ export LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/x86_64-linux-gnu:$LD_
 
 ### CAGRA GPU Index (Optional, requires conda)
 
-CAGRA uses cuVS for GPU-accelerated approximate nearest neighbor search. This requires the `gpu-index` feature flag and the cuVS library from conda:
+CAGRA uses cuVS for GPU-accelerated approximate nearest neighbor search, with native bitset filtering for type/language queries. Requires the `gpu-index` feature flag and matching libcuvs from conda:
 
 ```bash
-conda install -c rapidsai -c conda-forge libcuvs
+conda install -c rapidsai libcuvs=26.04 libcuvs-headers=26.04
 cargo install cqs --features gpu-index
 ```
+
+`cuvs-sys` does strict version matching — the conda `libcuvs` version must match the Rust `cuvs` crate version (currently `=26.4`).
 
 Building from source:
 ```bash
 cargo build --release --features gpu-index
 ```
+
+> **Note:** v1.24.0 uses a patched cuvs crate that exposes `search_with_filter` for GPU-native bitset filtering. This is applied transparently via `[patch.crates-io]`. Once upstream rapidsai/cuvs#2019 merges, the patch will be removed.
 
 ### WSL2
 

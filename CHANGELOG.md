@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.0] - 2026-04-13
+
+### Added
+- **GPU-native CAGRA bitset filtering** — `VectorIndex::search_with_filter` override for CAGRA builds a bitset from the predicate, uploads to GPU, and filters during graph traversal. Replaces the 3x over-fetch + post-filter fallback. Requires patched `cuvs` crate (pending upstream rapidsai/cuvs#2019).
+- **Batch/daemon base index routing** — `dispatch_search` in `batch/handlers/search.rs` now loads `base_hnsw` and routes DenseBase queries to it, mirroring CLI behavior. Before this fix, daemon always used the enriched index regardless of router classification.
+- `CQS_FORCE_BASE_INDEX=1` env var — forces all queries to the base (non-enriched) HNSW. A/B eval toggle.
+
+### Changed
+- **Router: `type_filtered` → DenseBase** (was `DenseWithTypeHints`). Enrichment ablation at 78% summary coverage showed +8.4pp R@1 on base vs enriched for this category.
+- **Router: `multi_step` → DenseBase** (was `DenseDefault`). +2.9pp R@1 on base vs enriched.
+- **cuVS bumped 26.2 → 26.4** — requires `conda install -c rapidsai libcuvs=26.04` (cuda13 build). Includes CAGRA persistence fix (rapidsai/cuvs#1800) and CUDA 13 JIT support.
+- **CAGRA refactor** — 26.4 non-consuming `search(&self)` eliminates the `IndexRebuilder` / `Mutex<Option<Index>>` / cached `dataset` machinery. Net −357 lines. Index built once, reused for all searches.
+- CAGRA `itopk_size` clamp warning demoted from `warn!` to `debug!` (fires every query, not actionable).
+
+### Fixed
+- **Daemon SIGABRT under sustained CAGRA load** — the take-index/search/rebuild cycle triggered a CUDA assertion failure after several hundred queries. Non-consuming search (cuVS 26.4) removes the rebuild cycle; daemon now stable across 265+ consecutive searches.
+- `[patch.crates-io]` uses git dep (`jamie8johnson/cuvs-patched`) instead of local path for CI compatibility.
+
+### Notes
+- Fully-routed eval (router update + CAGRA filtering) lands at 41.5% R@1 — net zero vs pre-session baseline. Per-category gains (negation +10.3pp, multi_step +2.9pp) are offset by CAGRA filtering regressions on enriched categories (conceptual −5.5pp, structural −3.8pp). Root cause under investigation: CAGRA bitset filtering and HNSW traversal-time filtering return different candidate sets on the enriched index.
+- `gpu-index` feature requires the patched cuvs from `jamie8johnson/cuvs-patched` until upstream PR merges. `[patch.crates-io]` in Cargo.toml handles this transparently for `cargo install`.
+
 ## [1.23.0] - 2026-04-13
 
 ### Added
@@ -12,10 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Per-category SPLADE routing** — `resolve_splade_alpha()` applies data-driven fusion weights per query category. 11-point alpha sweep found optimal defaults: +4.9pp R@1 expected (47.2% vs 42.3% baseline). Overridable via `CQS_SPLADE_ALPHA_{CATEGORY}` env vars (#930, #932).
 - **Persistent query cache** — `~/.cache/cqs/query_cache.db` stores query embeddings across CLI invocations. Saves ~500ms on repeated queries (#928).
 - **Shared runtime** — `Store::open_readonly_pooled_with_runtime()` and `EmbeddingCache::open_with_runtime()` accept pre-existing tokio runtime (#929).
-- 8 new `CQS_*` env vars: `CQS_BUSY_TIMEOUT_MS`, `CQS_IDLE_TIMEOUT_SECS`, `CQS_MAX_CONNECTIONS`, `CQS_MMAP_SIZE`, `CQS_SPLADE_MAX_CHARS`, `CQS_MAX_QUERY_BYTES`, `CQS_HNSW_BATCH_SIZE`, `CQS_INTEGRITY_CHECK`.
+- **SPLADE index persistence** — on-disk `splade.index.bin` with blake3 integrity, generation-counter invalidation, and lazy rebuild. Warm SPLADE query: 45s → 9.7s (#895).
+- **v19 migration** — `sparse_vectors` gains FK `ON DELETE CASCADE` to `chunks`. Orphan sparse rows from chunk deletion are structurally impossible (#898).
+- **v20 migration** — `AFTER DELETE` trigger on `chunks` auto-bumps `splade_generation`, closing the watch-mode SPLADE drift (#899).
+- 11 new `CQS_*` env vars: `CQS_BUSY_TIMEOUT_MS`, `CQS_IDLE_TIMEOUT_SECS`, `CQS_MAX_CONNECTIONS`, `CQS_MMAP_SIZE`, `CQS_SPLADE_MAX_CHARS`, `CQS_MAX_QUERY_BYTES`, `CQS_HNSW_BATCH_SIZE`, `CQS_INTEGRITY_CHECK`, `CQS_SKIP_INTEGRITY_CHECK`, `CQS_SPLADE_MAX_INDEX_BYTES`, `CQS_EVAL_TIMEOUT_SECS`.
 
 ### Fixed
 - **AC-1: SPLADE fusion scores preserved** — `search_hybrid` was discarding fused scores and re-scoring with pure cosine. Alpha knob was a no-op on final ranking. Every prior SPLADE eval measured the wrong thing (#910).
+- **86s → 6.9s per search query** — `PRAGMA integrity_check(1)` on every `Store::open` was walking the full 1.1 GB database. Read-only opens now skip the check entirely; write opens use `quick_check` (#893).
+- **Eval harness query-as-subcommand** — single-token queries like `prepare_for_embedding` were parsed as unknown subcommands. Fixed with `cqs --json -n 20 -- <query>` form (#894).
 - **90 audit findings** across 12 files — DS-W5 watch inode detection, CQ-4 incremental SPLADE encoding, integrity check opt-in, read-only batch store, Store::clear_caches, extensibility (EXT-7/8/9/11/13), observability, error handling, security (#911).
 - **--splade flag** no longer silently disables adaptive routing (NameOnly, DenseBase, type boost) (#930).
 - CQ-4 persist fallback: skip instead of writing incomplete index on load failure.
@@ -26,26 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Batch/chat store opened read-only (skip write pool + quick_check).
 - Store::clear_caches() replaces drop+reopen churn in watch mode.
 - SPLADE encoding skips already-encoded chunks (CQ-4 incremental).
-
-## [Unreleased]
-
-### Added
-- **SPLADE index persistence** — on-disk `splade.index.bin` with blake3 integrity, generation-counter invalidation, and lazy rebuild. Warm SPLADE query: 45s → 9.7s (#895).
-- **v19 migration** — `sparse_vectors` gains FK `ON DELETE CASCADE` to `chunks`. Orphan sparse rows from chunk deletion are structurally impossible (#898).
-- **v20 migration** — `AFTER DELETE` trigger on `chunks` auto-bumps `splade_generation`, closing the watch-mode SPLADE drift (#899).
-- `CQS_SKIP_INTEGRITY_CHECK` env var — opt-out from `PRAGMA quick_check` on write opens.
-- `CQS_SPLADE_MAX_INDEX_BYTES` env var — cap on persisted SPLADE index file size (default 2 GB).
-- `CQS_EVAL_TIMEOUT_SECS` env var — per-query timeout for the eval harness (default 300s).
-
-### Fixed
-- **86s → 6.9s per search query** — `PRAGMA integrity_check(1)` on every `Store::open` was walking the full 1.1 GB database. Read-only opens now skip the check entirely; write opens use `quick_check` (#893).
-- **Eval harness query-as-subcommand** — single-token queries like `prepare_for_embedding` were parsed as unknown subcommands. Fixed with `cqs --json -n 20 -- <query>` form (#894).
-- **OpenRCT2 dual-trail spec revision** — removed time estimates, off-ramps, and substrate grading per session feedback (#896).
-
-### Performance
 - SPLADE persistence: 45s cold → 9.7s warm per SPLADE query (on-disk load instead of rebuild from SQLite) (#895).
 - Sparse DELETE batch size: `chunks(333)` → derived from SQLite variable limit (SHL-31 fix in #898).
-- SPLADE body `Vec::new()` → `Vec::with_capacity(body_len)` from file metadata (PF-4 fix in #898).
 
 ## [1.22.0] - 2026-04-09
 
