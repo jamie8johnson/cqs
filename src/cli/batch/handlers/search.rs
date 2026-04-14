@@ -154,7 +154,11 @@ pub(in crate::cli::batch) fn dispatch_search(
         enable_demotion: !params.no_demote,
         enable_splade: use_splade,
         splade_alpha,
-        type_boost_types: None,
+        // Pass type hints from classification so structural/type_filtered queries
+        // get the 1.2x boost on matching chunk types applied in finalize_results.
+        // CLI path already does this; batch previously hardcoded None which
+        // systematically undercounted structural recall in daemon-served queries.
+        type_boost_types: classification.type_hints.clone(),
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
 
@@ -219,18 +223,17 @@ pub(in crate::cli::batch) fn dispatch_search(
     if use_splade {
         ctx.ensure_splade_index();
     }
-    let splade_index_ref = ctx.borrow_splade_index();
-
-    // Build SPLADE arg from borrowed references
-    let splade_arg = splade_query
-        .as_ref()
-        .and_then(|sq| splade_index_ref.as_ref().map(|si| (si, sq)));
 
     // Check audit mode (cached per session)
     let audit_mode = ctx.audit_state();
 
     // Phase 5: select enriched or base HNSW based on router classification.
     // If base is requested but unavailable, fall back to enriched.
+    //
+    // NOTE: index selection must happen BEFORE borrowing the SPLADE RefCell.
+    // base_vector_index() may trigger check_index_staleness() which calls
+    // splade_index.borrow_mut() on cache invalidation; holding a Ref<> from
+    // borrow_splade_index() at that point would panic.
     let index = if use_base {
         match ctx.base_vector_index()? {
             Some(base_idx) => {
@@ -249,6 +252,13 @@ pub(in crate::cli::batch) fn dispatch_search(
         ctx.vector_index()?
     };
     let index = index.as_deref();
+
+    let splade_index_ref = ctx.borrow_splade_index();
+
+    // Build SPLADE arg from borrowed references
+    let splade_arg = splade_query
+        .as_ref()
+        .and_then(|sq| splade_index_ref.as_ref().map(|si| (si, sq)));
 
     let results = if audit_mode.is_active() || splade_arg.is_some() {
         let code_results = ctx.store().search_hybrid(

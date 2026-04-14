@@ -92,6 +92,17 @@ impl Store {
             }));
         }
 
+        // SQLite returns rows in rowid order regardless of input order. Restore
+        // caller-provided order so equal-score candidates in downstream sorts
+        // tie-break by fused-score rank rather than database insertion order.
+        let pos: std::collections::HashMap<&str, usize> =
+            ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        result.sort_by_key(|(candidate, _)| {
+            pos.get(candidate.id.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+
         Ok(result)
     }
 

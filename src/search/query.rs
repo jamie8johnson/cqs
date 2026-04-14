@@ -488,13 +488,22 @@ impl Store {
             sparse_scores.insert(&r.id, normalized);
         }
 
-        // Union of all candidate IDs
-        let mut all_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        // Union of all candidate IDs, deduped by insertion order for determinism.
+        // Dense results are inserted first so they bias tie-breaking ahead of
+        // sparse-only candidates. Using a HashSet here made iteration order
+        // process-seed-random, which flipped equal-score candidates at the
+        // truncate() boundary between runs.
+        let mut all_ids: Vec<&str> = Vec::new();
+        let mut seen_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for r in &dense_results {
-            all_ids.insert(&r.id);
+            if seen_ids.insert(&r.id) {
+                all_ids.push(&r.id);
+            }
         }
         for r in &sparse_results {
-            all_ids.insert(&r.id);
+            if seen_ids.insert(&r.id) {
+                all_ids.push(&r.id);
+            }
         }
 
         // Fuse with linear interpolation: final = α * dense + (1-α) * sparse
@@ -529,7 +538,10 @@ impl Store {
                 }
             })
             .collect();
-        fused.sort_by(|a, b| b.score.total_cmp(&a.score));
+        // Secondary sort key on id ensures equal-score candidates have a
+        // deterministic order across process invocations. Without this, the
+        // truncate() below drops different candidates on each run.
+        fused.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.id.cmp(&b.id)));
         fused.truncate(candidate_count);
 
         tracing::debug!(fused = fused.len(), alpha, "Hybrid fusion complete");

@@ -1084,3 +1084,48 @@ Six findings. Core theme: the v1.22.0 SPLADE persistence contract (generation co
 
 ---
 
+## Correctness — v1.24.0 routing audit (2026-04-13)
+
+Audit scope: commits c2da433..HEAD. Specific concern: structural (−3.8pp) and
+cross_language (−4.8pp) categories differ between Config A (fully-routed HNSW)
+and Config B (all-enriched HNSW). Both categories use the enriched index in both
+configs — the difference should be zero. Examined batch handler, BatchContext,
+router, cagra, and search paths.
+
+#### RCA-1: HashSet iteration order in search_hybrid produces non-deterministic fused candidate sets
+- **Severity:** high (measurement-corrupting)
+- **Difficulty:** easy
+- **Location:** src/search/query.rs:492-531
+- **Description:** `all_ids` is a `std::collections::HashSet<&str>` built from the union of dense and sparse candidate IDs. The subsequent `.iter().map(...)` iterates this HashSet in process-seed-random order (Rust's default `RandomState` randomizes per-process). After `fused.sort_by(|a, b| b.score.total_cmp(&a.score))` at line 532, candidates with equal fused scores retain their HashSet-iteration order. These equal-score ties determine which candidates survive `fused.truncate(candidate_count)` and which are passed as `candidate_ids` to `search_by_candidate_ids_with_notes`. The final result set changes between process invocations for the same query when any boundary candidates have equal fused scores. For structural queries with SPLADE alpha=0.7, roughly 100 candidates compete for `candidate_count` slots. The eval data confirms this: structural R@1 fluctuates between 48.1%, 51.9%, and 55.6% across successive runs of the same config (each run = new process = new hash seed). With N=27 structural queries, one answer boundary flip = 3.7pp. This is the primary explanation for the A vs B divergence — it is run-to-run non-determinism misattributed to a routing difference. The A vs B framing was based on comparing two different process invocations with different hash seeds.
+- **Suggested fix:** Replace `HashSet<&str>` with a `Vec<&str>` deduped by insertion order: build `all_ids` from dense_results then sparse_results, inserting IDs not already seen. Since dense and sparse results are already in score order, this biases tie-breaking toward higher-scoring candidates rather than random ordering. Alternatively, replace the `sort_by` with a sort that adds a secondary key (e.g., lexicographic on `id`) so equal-score candidates get a deterministic order: `fused.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.id.cmp(&b.id)))`.
+
+#### RCA-2: HashMap::into_iter() in SpladeIndex::search_with_filter produces non-deterministic sparse results for equal-score candidates
+- **Severity:** high (propagates to RCA-1)
+- **Difficulty:** easy
+- **Location:** src/splade/index.rs:195-209
+- **Description:** `scores: HashMap<usize, f32>` is accumulated by iterating posting lists. `scores.into_iter()` at line 195 iterates in non-deterministic order. The `results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Equal))` at line 204 uses `partial_cmp` rather than `total_cmp`; for the same score, the tie-break is the HashMap iteration order. After `results.truncate(k)`, different process runs may discard different equal-score candidates from the sparse leg. These dropped candidates never appear in `all_ids` in `search_hybrid`, causing structurally different union sets between runs. For structural queries, SPLADE is active (alpha=0.7), so this directly feeds into RCA-1. Additionally, using `partial_cmp` instead of `total_cmp` is incorrect for f32: `partial_cmp` returns `None` for NaN, which `unwrap_or(Equal)` silently promotes NaN-scored items to "equal" with everything, potentially placing them anywhere in the sorted output.
+- **Suggested fix:** Add a secondary sort key on candidate index for determinism: `results.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.id.cmp(&b.id)))`. Switch from `partial_cmp` to `total_cmp` to handle NaN consistently (NaN sorts last with total_cmp).
+
+#### RCA-3: fetch_candidates_by_ids_async SQL lacks ORDER BY — result row order is undefined
+- **Severity:** medium (secondary contributor to tie-breaking non-determinism)
+- **Difficulty:** easy
+- **Location:** src/store/chunks/async_helpers.rs:74-86
+- **Description:** The SQL is `SELECT ... FROM chunks WHERE id IN (?)` with no ORDER BY. SQLite returns rows in B-tree scan order (roughly rowid order), which is stable for a given database file but does not match the caller-provided `candidate_ids` order. In `search_by_candidate_ids_with_notes`, the `candidates` vector at line 683 is iterated to build `scored`, which is then sorted at line 760. The sort is on score, so for equal scores, the tie-break order is the SQLite rowid order — not the fused score order that `candidate_ids` was in. This means a candidate that ranked 95th in fused score (high confidence) may score identically to one ranked 5th, but the final position after the line-760 sort depends on their database rowid, not their HNSW/SPLADE signal. The result: `finalize_results` receives candidates in a rowid-biased order that doesn't reflect retrieval quality. It also means the `seen_parents` dedup at lines 340-355 keeps whichever of two equal-score children happens to have a lower rowid, not the one with higher retrieval signal.
+- **Suggested fix:** After `fetch_candidates_by_ids_async` returns, re-sort the `candidates` vec to match the `candidate_ids` input order using a HashMap lookup: `let pos: HashMap<&str, usize> = candidate_ids.iter().enumerate().map(|(i, id)| (*id, i)).collect(); candidates.sort_by_key(|(row, _)| pos.get(row.id.as_str()).copied().unwrap_or(usize::MAX));`. This restores fused-score ordering before the final scoring pass and makes dedup deterministic by signal quality.
+
+#### RCA-4: BatchContext::borrow_splade_index() RefCell borrow held across check_index_staleness() that may call borrow_mut()
+- **Severity:** medium (runtime panic under concurrent reindex during a batch session)
+- **Difficulty:** easy
+- **Location:** src/cli/batch/handlers/search.rs:222-235
+- **Description:** At line 222, `ctx.borrow_splade_index()` returns `Ref<'_, Option<SpladeIndex>>`, holding a `RefCell` borrow of `self.splade_index` for the lifetime of `splade_index_ref`. Then at lines 234-250, `ctx.base_vector_index()` is called (when `use_base=true`). `base_vector_index()` calls `self.check_index_staleness()` at line 420. If the index mtime changed, `check_index_staleness()` calls `invalidate_mutable_caches()`, which calls `*self.splade_index.borrow_mut() = None` at line 205. This `borrow_mut()` conflicts with the active `borrow()` from line 222, causing a `RefCell` runtime panic (`BorrowMutError`). This panic only fires if a concurrent `cqs index` completes between lines 222 and 234 — possible in a long-running daemon session. Config A (which actually calls `base_vector_index()` for DenseBase queries) is exposed; Config B (CQS_DISABLE_BASE_INDEX=1) returns early from `build_base_vector_index` before `check_index_staleness` can detect staleness from a real mtime change caused by loading the base index. Note: in the current eval setup (no concurrent indexing), this is latent not active.
+- **Suggested fix:** Restructure search.rs lines 218-250 to compute `index` (the HNSW selection) BEFORE calling `ensure_splade_index()` and `borrow_splade_index()`. The SPLADE borrow is only consumed at line 225 onward — there's no reason to acquire it before the HNSW selection at line 234. Swap the order: select `index` first, then SPLADE.
+
+#### RCA-5: Structural queries in batch mode do not use type_boost_types from classification — batch underperforms CLI path
+- **Severity:** low (systematic undercount on structural category in all daemon-path evals)
+- **Difficulty:** medium
+- **Location:** src/cli/batch/handlers/search.rs:157 vs src/cli/commands/search/query.rs:172
+- **Description:** In `dispatch_search` (batch), `type_boost_types: None` is hardcoded in the `SearchFilter` at line 157. In `cmd_query_project` (CLI), `type_boost_types` is set from `classification.type_hints` at line 172. `Structural` queries with `DenseWithTypeHints` strategy can extract type hints (e.g., "functions that return Result" → `[Function]`), which CLI uses to apply a 1.2x score boost on matching chunk types after scoring via `finalize_results` lines 373-381. Batch mode skips this boost. Since the enrichment ablation and routing evals run via the daemon path, the structural category in all recent eval results is measuring the no-type-boost path, not the production CLI path. The routing eval structural numbers (48.1%/51.9%) are systematically lower than what interactive users experience.
+- **Suggested fix:** In `dispatch_search`, after computing `classification`, pass `type_boost_types: classification.type_hints.clone()` in the `SearchFilter`. This requires threading `type_boost_types` through `search_hybrid` and `search_unified_with_index` into `search_by_candidate_ids_with_notes` → `finalize_results`. The `finalize_results` function already handles the boost at lines 373-381 when `type_boost_types` is `Some`, so only the wiring needs to change.
+
+---
+
