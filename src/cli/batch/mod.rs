@@ -297,6 +297,14 @@ impl BatchContext {
                 tracing::warn!(error = %e, "Embedder warm failed — will retry on first query");
             }
         }
+        // RM-V1.25-5: Evict global EmbeddingCache at daemon startup.
+        // `evict()` was previously only called at the tail of the full
+        // `cqs index` pipeline (src/cli/pipeline/mod.rs), so long-lived
+        // daemons / watch sessions on machines that never run a manual
+        // index can grow the shared ~/.cache/cqs/embeddings.db past the
+        // 10GB cap (CQS_CACHE_MAX_SIZE) without ever trimming. Kick off
+        // a single post-warm eviction so the daemon self-heals on boot.
+        evict_global_embedding_cache("daemon startup");
     }
 
     /// Get or create the embedder (~500ms first call).
@@ -613,6 +621,45 @@ fn build_vector_index(
     ef_search: Option<usize>,
 ) -> Result<Option<Box<dyn VectorIndex>>> {
     crate::cli::build_vector_index_with_config(store, cqs_dir, ef_search)
+}
+
+/// RM-V1.25-5: Evict the global embedding cache if it exceeds its size cap.
+///
+/// `EmbeddingCache::evict` is a no-op below `CQS_CACHE_MAX_SIZE` (default
+/// 10GB), so it's cheap to call. Opens the cache read-only-ish (WAL-mode
+/// SQLite, one connection), runs the eviction, then drops. Used by the
+/// daemon startup and the watch reindex path to keep the shared cache
+/// bounded even when the user never runs a full `cqs index`.
+pub(crate) fn evict_global_embedding_cache(trigger: &str) {
+    let _span = tracing::debug_span!("daemon_cache_evict", trigger).entered();
+    let cache_path = cqs::cache::EmbeddingCache::default_path();
+    let cache = match cqs::cache::EmbeddingCache::open(&cache_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %cache_path.display(),
+                "Cache evict skipped — open failed"
+            );
+            return;
+        }
+    };
+    match cache.evict() {
+        Ok(n) if n > 0 => {
+            tracing::info!(
+                evicted = n,
+                trigger,
+                path = %cache_path.display(),
+                "Global embedding cache evicted"
+            );
+        }
+        Ok(_) => {
+            tracing::debug!(trigger, "Global embedding cache under cap, no eviction");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, trigger, "Global cache eviction failed");
+        }
+    }
 }
 
 // ─── JSON serialization helpers ──────────────────────────────────────────────

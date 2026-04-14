@@ -851,6 +851,10 @@ pub fn cmd_watch(
     };
 
     let mut cycles_since_clear: u32 = 0;
+    // RM-V1.25-5: Track last eviction of the global embedding cache so
+    // the reindex path only trims once per hour, keeping the WAL file
+    // from churning on every micro-edit.
+    let mut last_cache_evict = std::time::Instant::now();
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -916,6 +920,17 @@ pub fn cmd_watch(
                     // on every reindex cycle over 24/7 systemd lifetime.
                     store.clear_caches();
                     db_id = db_file_identity(&index_path);
+
+                    // RM-V1.25-5: Periodically evict the global embedding
+                    // cache so long-running watch sessions don't let the
+                    // shared ~/.cache/cqs/embeddings.db grow past its
+                    // CQS_CACHE_MAX_SIZE cap (default 10GB). Gated by
+                    // `last_cache_evict.elapsed()` so we don't churn the
+                    // SQLite file on every single reindex cycle.
+                    if last_cache_evict.elapsed() >= Duration::from_secs(3600) {
+                        super::batch::evict_global_embedding_cache("watch reindex cycle");
+                        last_cache_evict = std::time::Instant::now();
+                    }
 
                     // DS-1: Release lock after all reindex work (including HNSW rebuild)
                     drop(lock);
