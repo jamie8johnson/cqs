@@ -241,6 +241,8 @@ fn make_ref_index(store: &TestStore, name: &str) -> ReferenceIndex {
         store: ref_store,
         index: None,
         weight: 1.0,
+        db_path: std::path::PathBuf::new(),
+        loaded_identity: None,
     }
 }
 
