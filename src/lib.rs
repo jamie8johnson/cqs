@@ -447,6 +447,19 @@ pub fn enumerate_files(
         .ignore(!no_ignore)
         .hidden(!no_ignore)
         .follow_links(false)
+        .filter_entry(|entry| {
+            // Skip nested git worktrees. A linked worktree's `.git` is a file
+            // (not a directory) that contains a `gitdir: ...` pointer. Indexing
+            // the worktree would duplicate the entire source tree under a
+            // different prefix — this is the root cause of `.claude/worktrees/`
+            // pollution in the index.
+            if entry.file_type().is_some_and(|ft| ft.is_dir())
+                && entry.path().join(".git").is_file()
+            {
+                return false;
+            }
+            true
+        })
         .build();
 
     let files: Vec<PathBuf> = walker

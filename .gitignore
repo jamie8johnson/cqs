@@ -39,3 +39,8 @@ tools/
 # ORT CUDA provider symlinks (created at runtime by ensure_ort_provider_libs)
 libonnxruntime_providers_*.so
 cuvs-fork-push
+
+# Parallel agent worktrees — checked out via `git worktree add` under this
+# directory. Their `.git` is a file, not a directory; the file walker also
+# skips them at runtime to prevent indexing duplicated source trees.
+.claude/worktrees/
