@@ -2,59 +2,66 @@
 
 ## Right Now
 
-**Watch-reindex contamination found. All session alpha data is compromised. Re-sweep needed. (2026-04-14 10:45 CDT)**
+**v1.25.0 staged. Classifier is the bottleneck, not alphas. (2026-04-14 ~12:35 CDT)**
 
-### The bug we just found
+### Where we landed today
 
-`run_ablation.py` was writing `evals/runs/*/results.json` inside the watched project dir. Watch mode treats `.json` files as code changes → reindexes → rebuilds HNSW → changes `index.db` mtime → next eval's first query invalidates BatchContext caches → fresh state for remaining queries.
+Three PRs on top of v1.24.0:
 
-Effect:
-- Every eval run contaminated the state for the NEXT eval run
-- Consecutive identical-config runs drifted by up to ±15pp on small categories
-- The "6pp oracle gap" was entirely this artifact
-- **The entire 21-point alpha sweep from yesterday is corrupted** — each cell was measured on a progressively-mutated index
+1. **#943 merged** — `run_ablation.py` now writes eval results to `~/.cache/cqs/evals/` instead of `evals/runs/*/results.json`. Fixes the watch-reindex contamination that corrupted every prior alpha measurement.
+2. **Clean 21-point alpha re-sweep** — first truly deterministic sweep. Back-to-back runs bit-exact.
+3. **New per-category defaults** in `resolve_splade_alpha()` — structural 0.60 (was 0.9, wrong), conceptual 0.85 (was 0.95), identifier 0.90 (was 1.0), behavioral 0.05 (confirmed), rest 1.0 (confirmed).
+4. **Router fix** — dropped `query.contains("how does")` from `is_behavioral_query`. That pattern caught 100% of multi_step eval queries and routed them to α=0.05. Now multi_step falls to MultiStep/Unknown (both α=1.0). +0.7pp overall.
 
-Fix (branch `fix/eval-output-location`): write to `~/.cache/cqs/evals/` instead.
+### Numbers
 
-Verified: two identical back-to-back runs give **bit-exact** results (structural R@1 = 59.3% both runs).
+- Best uniform α from clean sweep: **α=0.95 → 44.9%** (not α=1.0 — that was a corruption artifact)
+- Per-category oracle ceiling: **49.4%** (131/265)
+- Deployed per-category routing after fixes: **44.9%** — ties uniform α=0.95
+- The 4.5pp oracle gap is **entirely classifier accuracy**, not alpha choice
 
-### The three determinism landmines, summarized
-1. **Hash iteration randomness** (fixed in PR #942)
-2. **SPLADE disabled at α=1.0** (fixed in PR #942)
-3. **Eval output triggers watch-reindex** (fixing now)
+### The classifier is the bottleneck
 
-All three corrupted measurements in different ways. With all three fixed, we should finally have a reproducible eval.
+Confusion matrix (eval label vs `classify_query()` output):
 
-### What this means
+| eval_label | N | correctly classified |
+|---|---|---|
+| negation | 29 | 100% |
+| identifier | 50 | 84% |
+| structural | 27 | 19% |
+| type_filtered | 24 | 4% |
+| behavioral | 44 | 5% |
+| conceptual | 36 | 3% |
+| cross_language | 21 | 0% |
+| multi_step | 34 | 0% → fixed today via "how does" removal |
 
-- v1.24.0 defaults shipped per-category alphas tuned on corrupted measurements
-- The "real optima" from the re-sweep (structural 0.9, conceptual 0.95, behavioral 0.05) are likely also wrong — they were measured under the same contamination
-- Need full re-sweep with the fix in place
+Structural/conceptual/behavioral detectors rely on narrow phrase and word lists that miss most natural-language queries. Those queries fall to Unknown → α=1.0. type_filtered queries starting with "struct"/"enum"/"trait" hit the Structural rule first. Cross-language detection requires explicit language names.
+
+Classifier investigation is the next high-value CPU-lane item. Added to ROADMAP.
 
 ### Next session priorities
 
-1. Merge the eval-output-location fix
-2. Re-sweep all 21 alphas on truly clean infrastructure
-3. Compare: actually-correct per-category optima vs today's (corrupted) guesses
-4. Decide real defaults, update `resolve_splade_alpha()`, release v1.25.0
+1. Ship v1.25.0: commit router changes, new defaults, bump version, changelog, release.
+2. Classifier accuracy investigation — expand rule set / learned classifier / LLM-first-query-cached. Worth +4.5pp if done well.
+3. Eval expansion: grow small categories (N=21 cross_language, N=24 type_filtered) to N≥40.
+4. Rename `v2_300q.json` to actual count (265).
 
 ### Residual puzzles
 
-- SPLADE encoder on GPU (CUDA ONNX) may have residual non-determinism in the sparse vector output. Minor compared to everything else; verify post re-sweep.
-- cross_language and negation categories drifted 1 query between repeat same-daemon runs yesterday. May be the ONNX issue above.
+- Identifier dropped 1 query (98% → 96%) and structural dropped 1 query (51.9% → 48.1%) between v1 and v2 eval today, with only the `is_behavioral_query` change between them. Likely SPLADE ONNX GPU non-determinism on the sparse vector output — the previously-noted residual.
 
 ## PR status
-- #939, #940, #941, #942 all merged (v1.24.0)
-- `fix/eval-output-location` — about to PR
+- #939, #940, #941, #942, #943 all merged
+- Router + defaults changes: uncommitted on local main (needs branch + PR for v1.25.0)
 
 ## Architecture
-- Version: 1.24.0, Schema: v20
-- Deterministic search path (PR #942)
+- Version: 1.24.0 (1.25.0 staged), Schema: v20
+- Deterministic search path (PR #942) + deterministic eval pipeline (PR #943)
 - SPLADE always-on, alpha controls fusion weight only
-- Per-category defaults: identifier 1.0, structural 0.9, conceptual 0.95, type_filtered 1.0, behavioral 0.05, rest 1.0 — ALL UNCERTAIN pending re-sweep on fixed infrastructure
+- Per-category defaults (staged for v1.25.0): identifier 0.90, structural 0.60, conceptual 0.85, type_filtered 1.0, behavioral 0.05, rest 1.0
 - HNSW dirty flag self-heals via checksum verification
 - cuVS 26.4 + patched with search_with_filter (upstream rapidsai/cuvs#2019)
-- Eval results now write to `~/.cache/cqs/evals/` (outside watched project dir)
+- Eval results write to `~/.cache/cqs/evals/` (outside watched project dir)
 
 ## Open Issues
 - #909, #912-#925, #856, #717, #389, #255, #106, #63

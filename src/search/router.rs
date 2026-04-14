@@ -292,26 +292,31 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
         }
     }
 
-    // Per-category defaults from 21-point alpha sweep (2026-04-13 re-run).
-    // 265 queries × 8 categories on deterministic pipeline (post-PR #942).
-    // The original v1.23.0 sweep was measured against a broken baseline
-    // (HashMap iteration non-determinism + SPLADE disabled at α=1.0); these
-    // values correct those measurements. Oracle R@1 across all categories:
-    // 49.8% (132/265) vs 45.3% for uniform α=1.0.
+    // Per-category defaults from the 21-point alpha sweep on clean
+    // infrastructure (2026-04-14). 265 queries × 8 categories with:
+    //   - PR #942 determinism fixes (hash iteration, SPLADE-at-α=1.0,
+    //     rowid re-sort)
+    //   - PR #943 eval-output-location fix (no more watch-reindex
+    //     contamination between runs)
+    // Oracle R@1 with these values: 49.4% vs 44.9% for best uniform α=0.95.
+    // The earlier v1.24.0 defaults were fit to corrupted data; plateaus
+    // are resolved here to the mid-point for robustness.
     match category {
-        // FTS5 path; alpha doesn't affect NameOnly results. Kept at 1.0.
-        QueryCategory::IdentifierLookup => 1.0,
-        // Slight sparse mix helps substantially. +14.8pp over α=1.0 (66.7% vs 51.9%).
-        QueryCategory::Structural => 0.9,
-        // Narrowly beats α=0.9 — most dense, barely any sparse. +13.9pp (41.7% vs 27.8%).
-        QueryCategory::Conceptual => 0.95,
-        // Flat across 0.85-1.0. Pick 1.0 for simplicity.
-        QueryCategory::TypeFiltered => 1.0,
-        // Heavy sparse — action verbs match lexically better than semantically.
-        // +4.6pp over α=1.0 (34.1% vs 29.5%).
+        // Double plateau: 0.10–0.30 and 0.85–0.90 both at 98%. α=1.0 drops
+        // to 94%. Pick 0.90 (dense-side plateau edge, +4pp over 1.0).
+        QueryCategory::IdentifierLookup => 0.90,
+        // Wide plateau 0.40–0.85 at 66.7%; α=0.9 drops to 63.0%.
+        // Pick 0.60 (mid-plateau, +14.8pp over α=1.0 at 51.9%).
+        QueryCategory::Structural => 0.60,
+        // Plateau 0.75–0.95 at 41.7%. Pick 0.85 (mid-plateau, robust).
+        // +13.9pp over α=1.0 (27.8%).
+        QueryCategory::Conceptual => 0.85,
+        // Heavy sparse — action verbs match lexically. +4.6pp over α=1.0
+        // (34.1% vs 29.5%).
         QueryCategory::Behavioral => 0.05,
-        // multi_step, cross_language, negation, unknown: pure dense scoring is best.
-        // Sparse contribution hurts recall on these categories.
+        // type_filtered, multi_step, cross_language, negation, unknown:
+        // pure dense scoring is best. SPLADE still contributes to the
+        // candidate pool (always-on), α just weights the scoring.
         _ => 1.0,
     }
 }
@@ -548,10 +553,13 @@ fn is_behavioral_query(query: &str, words: &[&str]) -> bool {
     if words.iter().any(|w| BEHAVIORAL_VERBS.contains(w)) {
         return true;
     }
-    query.contains("how does")
-        || query.contains("what does")
-        || query.contains("code that")
-        || query.contains("function that")
+    // "how does" / "what does" removed 2026-04-14 — they caught 100% of
+    // multi_step eval queries ("how does X trace callers to find tests")
+    // and sent them down α=0.05 (Behavioral) instead of α=1.0 (MultiStep /
+    // Unknown). Net loss: ~3 queries / 265. "code that" / "function that"
+    // are kept — they're more specific phrasings used by genuine behavioral
+    // queries ("function that embeds a batch of text documents").
+    query.contains("code that") || query.contains("function that")
 }
 
 /// Check if query is about abstract concepts.
