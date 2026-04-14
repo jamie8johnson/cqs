@@ -27,6 +27,16 @@
 
 ## Active
 
+### Refactoring Lane (post-audit, queued 2026-04-14)
+
+High-leverage refactors that close entire bug classes — surfaced by the v1.25.0 audit. Each is its own GitHub issue.
+
+- [ ] **`Store` typestate** — issue [#946](https://github.com/jamie8johnson/cqs/issues/946). Closes the `gc-in-daemon`, `notes-in-daemon`, `suggest --apply` write-on-readonly-store class (audit findings API-V1.25-3, API-V1.25-5).
+- [ ] **`Commands` / `BatchCmd` unification** — issue [#947](https://github.com/jamie8johnson/cqs/issues/947). Today's 47 vs 36 variants drift produced 8 silent-fail commands through the daemon (audit EX-V1.25-1, API-V1.25-1/2/4/6, CQ-V1.25-1/2). Half-day refactor.
+- [ ] **`cqs::fs::atomic_replace` shared helper** — issue [#948](https://github.com/jamie8johnson/cqs/issues/948). `std::fs::rename` cross-device fallback duplicated 4× with divergent semantics; two were missing fsync until the audit (audit PB-V1.25-6, DS-V1.25-1, DS-V1.25-4).
+- [ ] **Embedder model abstraction** — issue [#949](https://github.com/jamie8johnson/cqs/issues/949). `ModelConfig::input_names`/`output_name`/`pooling` so non-BERT models are config entries, not code edits. Pre-requisite for the BGE → E5 v9-200k default switch (audit EX-V1.25-6).
+- [ ] **CAGRA persistence** — issue [#950](https://github.com/jamie8johnson/cqs/issues/950). `CagraIndex::save`/`load` via cuVS native serialize. Cuts daemon hot-restart from ~30s to <5s on this corpus (audit RM-V1.25-6).
+
 ### GPU Lane
 - [x] ~~SPLADE v1~~ — **NULL**. 0pp R@1. Weak reg, wrong vocab, wrong negatives.
 - [x] ~~SPLADE v2 data mining~~ — 199,998 token-overlap pairs.
