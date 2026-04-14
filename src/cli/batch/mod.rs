@@ -71,7 +71,15 @@ pub(crate) struct BatchContext {
     // Access via store() method which checks staleness first.
     store: RefCell<Store>,
     // Stable caches — keep OnceLock (not index-derived)
-    embedder: OnceLock<Embedder>,
+    //
+    // RM-V1.25-28: `OnceLock<Arc<Embedder>>` so the watch outer scope
+    // can hand the same Embedder instance down into the daemon thread.
+    // Previously BatchContext owned its own Embedder and the watch
+    // loop owned a second one — two ~500 MB ONNX sessions could be
+    // resident at the same time. `BatchContext::new_with_embedder`
+    // accepts a pre-built Arc; `create_context` (CLI path) still
+    // creates a fresh one lazily via `warm`.
+    embedder: OnceLock<std::sync::Arc<Embedder>>,
     config: OnceLock<cqs::config::Config>,
     reranker: OnceLock<cqs::Reranker>,
     // Time-bounded (30min expiry), not index-derived — keep OnceLock
@@ -283,18 +291,21 @@ impl BatchContext {
 
     /// Pre-warm the embedder so the first query doesn't pay the ~500ms ONNX init.
     /// Called once at session start. Errors are logged but non-fatal.
+    ///
+    /// RM-V1.25-28: if the watch outer scope installed a shared Embedder
+    /// via `adopt_embedder`, the OnceLock is already populated and this
+    /// is a no-op for model loading (cache eviction still runs).
     pub fn warm(&self) {
-        if self.embedder.get().is_some() {
-            return;
-        }
-        let _span = tracing::info_span!("batch_warm").entered();
-        match Embedder::new(self.model_config.clone()) {
-            Ok(e) => {
-                let _ = self.embedder.set(e);
-                tracing::info!("Embedder pre-warmed");
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Embedder warm failed — will retry on first query");
+        if self.embedder.get().is_none() {
+            let _span = tracing::info_span!("batch_warm").entered();
+            match Embedder::new(self.model_config.clone()) {
+                Ok(e) => {
+                    let _ = self.embedder.set(std::sync::Arc::new(e));
+                    tracing::info!("Embedder pre-warmed");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Embedder warm failed — will retry on first query");
+                }
             }
         }
         // RM-V1.25-5: Evict global EmbeddingCache at daemon startup.
@@ -307,18 +318,29 @@ impl BatchContext {
         evict_global_embedding_cache("daemon startup");
     }
 
+    /// RM-V1.25-28: Install a shared Embedder from the outer watch scope.
+    ///
+    /// Returns `true` if the Arc was installed, `false` if the OnceLock was
+    /// already populated (lazy init already happened, or another caller won
+    /// the race). The caller can use this result to decide whether to fall
+    /// back to its own lazily-initialized embedder.
+    pub fn adopt_embedder(&self, shared: std::sync::Arc<Embedder>) -> bool {
+        self.embedder.set(shared).is_ok()
+    }
+
     /// Get or create the embedder (~500ms first call).
     pub fn embedder(&self) -> Result<&Embedder> {
         if let Some(e) = self.embedder.get() {
-            return Ok(e);
+            return Ok(e.as_ref());
         }
         let _span = tracing::info_span!("batch_embedder_init").entered();
         let e = Embedder::new(self.model_config.clone())?;
         // Race is fine — OnceLock ensures only one value is stored
-        let _ = self.embedder.set(e);
+        let _ = self.embedder.set(std::sync::Arc::new(e));
         Ok(self
             .embedder
             .get()
+            .map(|arc| arc.as_ref())
             .expect("embedder OnceLock populated by set() above"))
     }
 

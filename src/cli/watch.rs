@@ -15,7 +15,6 @@
 //! For memory-constrained environments, consider running `cqs index` manually instead
 //! of using watch mode.
 
-use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -345,13 +344,19 @@ fn max_pending_files() -> usize {
 /// Immutable references shared across the watch loop.
 ///
 /// Does not include `Store` because it is re-opened each cycle (DS-9).
+///
+/// RM-V1.25-28: `embedder` now points at a shared `Arc<OnceLock<Arc<Embedder>>>`
+/// that the daemon thread also holds. First side to populate it wins; the
+/// other side's future lazy-init short-circuits to the same instance.
+/// Eliminates the ~500 MB duplicate footprint that existed when the outer
+/// watch loop and the daemon thread each owned independent OnceLocks.
 struct WatchConfig<'a> {
     root: &'a Path,
     cqs_dir: &'a Path,
     notes_path: &'a Path,
     supported_ext: &'a HashSet<&'a str>,
     parser: &'a CqParser,
-    embedder: &'a OnceCell<Embedder>,
+    embedder: &'a std::sync::OnceLock<std::sync::Arc<Embedder>>,
     quiet: bool,
     model_config: &'a ModelConfig,
 }
@@ -415,16 +420,20 @@ impl EmbedderBackoff {
     }
 }
 
-/// Try to initialize the embedder, returning a reference from the OnceCell.
-/// Deduplicates the 7-line pattern that appeared twice in cmd_watch.
-/// Uses `backoff` to apply exponential backoff on repeated failures (RM-24).
+/// Try to initialize the shared embedder, returning a reference from the
+/// Arc-backed OnceLock. Deduplicates the 7-line pattern that appeared
+/// twice in cmd_watch. Uses `backoff` to apply exponential backoff on
+/// repeated failures (RM-24).
+///
+/// RM-V1.25-28: the OnceLock is shared with the daemon thread; whichever
+/// side initializes first wins, and the other reuses the same Arc.
 fn try_init_embedder<'a>(
-    embedder: &'a OnceCell<Embedder>,
+    embedder: &'a std::sync::OnceLock<std::sync::Arc<Embedder>>,
     backoff: &mut EmbedderBackoff,
     model_config: &ModelConfig,
 ) -> Option<&'a Embedder> {
     match embedder.get() {
-        Some(e) => Some(e),
+        Some(e) => Some(e.as_ref()),
         None => {
             if !backoff.should_retry() {
                 return None;
@@ -432,7 +441,7 @@ fn try_init_embedder<'a>(
             match Embedder::new(model_config.clone()) {
                 Ok(e) => {
                     backoff.reset();
-                    Some(embedder.get_or_init(|| e))
+                    Some(embedder.get_or_init(|| std::sync::Arc::new(e)).as_ref())
                 }
                 Err(e) => {
                     warn!(error = %e, "Failed to initialize embedder");
@@ -664,6 +673,14 @@ pub fn cmd_watch(
         tracing::warn!("--serve requested on non-unix platform; daemon disabled");
     }
 
+    // RM-V1.25-28: Allocate the shared embedder slot before spawning the
+    // daemon thread so the Arc can be cloned into the thread's closure
+    // and adopted by its BatchContext. The slot starts empty; whichever
+    // side initializes first (daemon via `ctx.warm()` or watch via
+    // `try_init_embedder`) wins and the other reuses the same Arc.
+    let shared_embedder: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Embedder>>> =
+        std::sync::Arc::new(std::sync::OnceLock::new());
+
     // Spawn dedicated socket handler thread — runs independently of the file
     // watcher so queries are served immediately, even during the slow poll scan.
     //
@@ -678,6 +695,11 @@ pub fn cmd_watch(
     #[cfg(unix)]
     let mut socket_thread: Option<std::thread::JoinHandle<()>> = if serve {
         if let Some((listener, _)) = socket_listener.take() {
+            // RM-V1.25-28: Clone the shared OnceLock into the daemon closure
+            // so both the outer watch loop and BatchContext see the same
+            // Arc<Embedder>.
+            let daemon_embedder = std::sync::Arc::clone(&shared_embedder);
+            let daemon_model_config = cli.try_model_config()?.clone();
             // Stays non-blocking: the accept loop below polls so it can
             // notice SHUTDOWN_REQUESTED on SIGTERM (RM-V1.25-9).
             let thread = std::thread::spawn(move || {
@@ -685,6 +707,29 @@ pub fn cmd_watch(
                 // but thread-local ownership is fine.
                 let ctx = match super::batch::create_context() {
                     Ok(ctx) => {
+                        // RM-V1.25-28: seed the BatchContext's OnceLock if
+                        // the shared slot is already populated; otherwise
+                        // populate the shared slot with a fresh Embedder
+                        // so the outer watch loop sees it on first use.
+                        if let Some(existing) = daemon_embedder.get() {
+                            ctx.adopt_embedder(std::sync::Arc::clone(existing));
+                            tracing::info!("Daemon adopted shared embedder");
+                        } else {
+                            match Embedder::new(daemon_model_config) {
+                                Ok(emb) => {
+                                    let arc = std::sync::Arc::new(emb);
+                                    // Try to install in the shared slot;
+                                    // another thread may have raced us.
+                                    let winning_arc =
+                                        daemon_embedder.get_or_init(|| std::sync::Arc::clone(&arc));
+                                    ctx.adopt_embedder(std::sync::Arc::clone(winning_arc));
+                                    tracing::info!("Daemon built and shared embedder");
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Daemon embedder init failed — will retry lazily");
+                                }
+                            }
+                        }
                         ctx.warm();
                         ctx
                     }
@@ -802,9 +847,8 @@ pub fn cmd_watch(
         notes_path
     });
 
-    // Lazy-initialized embedder (~500MB, avoids startup delay unless changes occur).
-    // Once initialized, stays in memory for fast reindexing. See module docs for memory details.
-    let embedder: OnceCell<Embedder> = OnceCell::new();
+    // Embedder is declared above (before daemon thread spawn) so its
+    // OnceLock can be shared with the daemon thread — see RM-V1.25-28.
 
     // Open store and reuse across reindex operations within a cycle.
     // Re-opened after each reindex cycle to clear stale OnceLock caches (DS-9).
@@ -851,7 +895,7 @@ pub fn cmd_watch(
         notes_path: &notes_path,
         supported_ext: &supported_ext,
         parser: &parser,
-        embedder: &embedder,
+        embedder: shared_embedder.as_ref(),
         quiet: cli.quiet,
         model_config,
     };
@@ -958,8 +1002,13 @@ pub fn cmd_watch(
                     cycles_since_clear += 1;
                     // Clear embedder session and HNSW index after ~5 minutes idle
                     // (3000 cycles at 100ms). Frees GPU/memory when watch is idle.
+                    //
+                    // RM-V1.25-28: the shared Arc<Embedder> is also held by
+                    // the daemon thread's BatchContext. clear_session is
+                    // safe either way: the ONNX session is behind a Mutex
+                    // and the tokenizer is Mutex<Option<Arc<…>>>.
                     if cycles_since_clear >= 3000 {
-                        if let Some(emb) = embedder.get() {
+                        if let Some(emb) = shared_embedder.get() {
                             emb.clear_session();
                         }
                         state.hnsw_index = None;
@@ -1606,7 +1655,7 @@ mod tests {
         // These fields are unused by collect_events but required by the struct.
         // We leak a parser since tests don't call process_file_changes.
         let parser = Box::leak(Box::new(CqParser::new().unwrap()));
-        let embedder = Box::leak(Box::new(OnceCell::new()));
+        let embedder = Box::leak(Box::new(std::sync::OnceLock::new()));
         let model_config = Box::leak(Box::new(ModelConfig::default_model()));
         WatchConfig {
             root,
