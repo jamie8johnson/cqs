@@ -730,4 +730,154 @@ mod tests {
             "Unknown origin should not appear in stale set"
         );
     }
+
+    // ===== prune_all tests (TC-HP-3) =====
+
+    /// Helper: build a Chunk rooted at `dir` with the given relative path.
+    fn chunk_at(dir: &std::path::Path, rel: &str, name: &str) -> Chunk {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, format!("fn {name}() {{}}")).unwrap();
+        let content = format!("fn {name}() {{}}");
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        Chunk {
+            id: format!("{}:1:{}", path.display(), &hash[..8]),
+            file: path,
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {name}()"),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        }
+    }
+
+    /// TC-HP-3 (happy path): `prune_all` removes chunks for files deleted
+    /// from disk, counts reflect the prune, remaining chunks intact.
+    #[test]
+    fn test_prune_all_happy_path() {
+        let (store, dir) = setup_store();
+
+        // Index 3 files
+        let c1 = chunk_at(dir.path(), "src/a.rs", "a");
+        let c2 = chunk_at(dir.path(), "src/b.rs", "b");
+        let c3 = chunk_at(dir.path(), "src/c.rs", "c");
+        let files_on_disk = vec![c1.file.clone(), c2.file.clone(), c3.file.clone()];
+        store
+            .upsert_chunks_batch(
+                &[
+                    (c1, mock_embedding(1.0)),
+                    (c2, mock_embedding(2.0)),
+                    (c3, mock_embedding(3.0)),
+                ],
+                Some(1000),
+            )
+            .unwrap();
+
+        // Delete one file from disk
+        std::fs::remove_file(&files_on_disk[1]).unwrap();
+
+        // existing_files contains only the two remaining files
+        let existing: HashSet<_> = vec![files_on_disk[0].clone(), files_on_disk[2].clone()]
+            .into_iter()
+            .collect();
+
+        let result = store.prune_all(&existing, dir.path()).unwrap();
+        assert_eq!(result.pruned_chunks, 1, "Should prune exactly 1 chunk");
+        // No function_calls / type_edges / summaries were inserted, so these
+        // counters should be zero.
+        assert_eq!(result.pruned_calls, 0);
+        assert_eq!(result.pruned_type_edges, 0);
+        assert_eq!(result.pruned_summaries, 0);
+
+        // Remaining chunks are intact
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 2);
+    }
+
+    /// Regression: the old `ends_with` heuristic treated chunk origin
+    /// `cuvs-fork-push/CHANGELOG.md` as matching the root file
+    /// `CHANGELOG.md`, leaving the orphan in the DB. With the filesystem
+    /// existence check, the nested origin is correctly pruned when the
+    /// nested directory does not exist on disk.
+    #[test]
+    fn test_prune_all_suffix_match_regression() {
+        let (store, dir) = setup_store();
+
+        // Root-level file that does exist on disk
+        let root_chunk = chunk_at(dir.path(), "CHANGELOG.md", "root_changelog");
+        // Synthetic chunk whose origin tail-matches the root file, but whose
+        // directory does not exist on disk.
+        let mut orphan = make_chunk("orphan_changelog", "cuvs-fork-push/CHANGELOG.md");
+        orphan.id = format!(
+            "cuvs-fork-push/CHANGELOG.md:1:{}",
+            &orphan.content_hash[..8]
+        );
+
+        let existing: HashSet<_> = vec![root_chunk.file.clone()].into_iter().collect();
+
+        store
+            .upsert_chunks_batch(
+                &[
+                    (root_chunk, mock_embedding(1.0)),
+                    (orphan, mock_embedding(2.0)),
+                ],
+                Some(1000),
+            )
+            .unwrap();
+
+        let result = store.prune_all(&existing, dir.path()).unwrap();
+        assert_eq!(
+            result.pruned_chunks, 1,
+            "Expected orphan cuvs-fork-push/CHANGELOG.md to be pruned (would have been retained by the old ends_with heuristic)"
+        );
+
+        // Only the root CHANGELOG.md remains
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 1);
+    }
+
+    /// Regression: `.claude/worktrees/agent-X/src/foo.rs` must be pruned
+    /// when only `src/foo.rs` is on disk. The suffix match retained these
+    /// as "not missing" because the worktree tail matched the real path.
+    #[test]
+    fn test_prune_all_worktree_regression() {
+        let (store, dir) = setup_store();
+
+        // Legitimate root-level source file
+        let real = chunk_at(dir.path(), "src/foo.rs", "foo_real");
+        // Worktree duplicate — synthesize without writing to disk so the
+        // filesystem check confirms it does not exist.
+        let mut worktree = make_chunk("foo_worktree", ".claude/worktrees/agent-X/src/foo.rs");
+        worktree.id = format!(
+            ".claude/worktrees/agent-X/src/foo.rs:1:{}",
+            &worktree.content_hash[..8]
+        );
+
+        let existing: HashSet<_> = vec![real.file.clone()].into_iter().collect();
+
+        store
+            .upsert_chunks_batch(
+                &[(real, mock_embedding(1.0)), (worktree, mock_embedding(2.0))],
+                Some(1000),
+            )
+            .unwrap();
+
+        let result = store.prune_all(&existing, dir.path()).unwrap();
+        assert_eq!(
+            result.pruned_chunks, 1,
+            "Worktree duplicate origin should be pruned"
+        );
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 1);
+    }
 }
