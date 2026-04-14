@@ -725,6 +725,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_TEST_MAP_MAX_NODES` | `10000` | Max BFS nodes in test-map traversal |
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
 | `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
+| `CQS_WATCH_DEBOUNCE_MS` | `500` (inotify) / `1500` (WSL/poll auto) | Watch debounce window (milliseconds). Takes precedence over `--debounce`. |
 | `CQS_WATCH_MAX_PENDING` | `10000` | Max pending file changes before watch forces flush |
 | `CQS_WATCH_REBUILD_THRESHOLD` | `100` | Files changed before watch triggers full HNSW rebuild |
 
