@@ -977,10 +977,14 @@ mod tests {
             "Both function_calls rows for victim.rs must be pruned, got {}",
             result.pruned_calls
         );
-        assert!(
-            result.pruned_type_edges >= 1,
-            "type_edges rows for victim chunk must be pruned, got {}",
-            result.pruned_type_edges
+        // type_edges has FK `source_chunk_id REFERENCES chunks(id) ON DELETE
+        // CASCADE`, so the rows disappear when the chunk is deleted in step
+        // 2a. The explicit `DELETE FROM type_edges WHERE source_chunk_id NOT
+        // IN (SELECT id FROM chunks)` at step 2c finds nothing to prune — the
+        // zero counter is correct behavior, not a leak.
+        assert_eq!(
+            result.pruned_type_edges, 0,
+            "type_edges cascade-deletes with chunks — the explicit DELETE sees zero orphans"
         );
         assert!(
             result.pruned_summaries >= 1,
