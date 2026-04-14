@@ -135,9 +135,18 @@ fn handle_socket_client(
         Ok(Err(e)) => {
             let _ = write_daemon_error(&mut stream, &e);
         }
-        Err(_) => {
+        Err(payload) => {
+            let msg = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&'static str>().copied())
+                .unwrap_or("<non-string panic payload>");
             let _ = write_daemon_error(&mut stream, "internal error (panic in dispatch)");
-            tracing::error!("Daemon query panicked — daemon continues");
+            tracing::error!(
+                command,
+                panic_msg = %msg,
+                "Daemon query panicked — daemon continues"
+            );
         }
     }
 
