@@ -66,6 +66,15 @@ fn is_shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::Acquire)
 }
 
+/// RM-V1.25-8: observable from both SIGTERM (SHUTDOWN_REQUESTED) and
+/// Ctrl+C (`check_interrupted`). The socket accept loop polls this so
+/// the watch main loop can tell the daemon thread to drain without
+/// having to route a separate shutdown channel.
+#[cfg(unix)]
+fn daemon_should_exit() -> bool {
+    is_shutdown_requested() || check_interrupted()
+}
+
 /// Signal handler — async-signal-safe: only a relaxed atomic store.
 #[cfg(unix)]
 extern "C" fn on_sigterm(_sig: libc::c_int) {
@@ -657,8 +666,17 @@ pub fn cmd_watch(
 
     // Spawn dedicated socket handler thread — runs independently of the file
     // watcher so queries are served immediately, even during the slow poll scan.
+    //
+    // RM-V1.25-8: keep the `JoinHandle` in a named `socket_thread` so the
+    // main loop can `.take().join()` it on shutdown with a bounded wait.
+    // Previously the handle was stashed under `_socket_thread` and dropped
+    // on function exit, detaching the thread. In that window the daemon's
+    // BatchContext (~500MB+ ONNX sessions, SQLite pool, HNSW Arc, optional
+    // CAGRA GPU resources) lived past the main loop's return with no
+    // WAL checkpoint and no `Drop` ordering. Under `cargo install` or shell
+    // Ctrl+C the orphaned thread could also block stdout writes.
     #[cfg(unix)]
-    let _socket_thread = if serve {
+    let mut socket_thread: Option<std::thread::JoinHandle<()>> = if serve {
         if let Some((listener, _)) = socket_listener.take() {
             // Stays non-blocking: the accept loop below polls so it can
             // notice SHUTDOWN_REQUESTED on SIGTERM (RM-V1.25-9).
@@ -687,9 +705,11 @@ pub fn cmd_watch(
                 // can notice SIGTERM and drain cleanly instead of blocking
                 // indefinitely on a syscall that systemd has to kill.
                 // Listener was set non-blocking at bind time.
+                // RM-V1.25-8: also break on Ctrl+C (`check_interrupted`) so
+                // the main loop's `.join()` on shutdown completes promptly.
                 loop {
-                    if is_shutdown_requested() {
-                        tracing::info!("Daemon accept loop draining on SIGTERM");
+                    if daemon_should_exit() {
+                        tracing::info!("Daemon accept loop draining on shutdown signal");
                         break;
                     }
                     // RM-V1.25-3: passive idle sweep — inspects the
@@ -970,6 +990,43 @@ pub fn cmd_watch(
                 println!("\nSIGTERM received, stopping watch...");
             }
             break;
+        }
+    }
+
+    // RM-V1.25-8: bounded join of the daemon socket thread. The thread
+    // already observes `daemon_should_exit()` at the top of its accept
+    // loop (Ctrl+C and SIGTERM both satisfy it), so in the common case
+    // this returns within one poll cycle (~100ms). Enforce an outer
+    // timeout so a wedged handler (e.g. waiting on a long embedder
+    // inference) can't keep the process alive past ~5 s after the
+    // user asked it to stop.
+    #[cfg(unix)]
+    if let Some(handle) = socket_thread.take() {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let poll = Duration::from_millis(50);
+        let mut handle_opt = Some(handle);
+        while std::time::Instant::now() < deadline {
+            match handle_opt.as_ref() {
+                Some(h) if h.is_finished() => {
+                    if let Err(e) = handle_opt.take().unwrap().join() {
+                        tracing::warn!(?e, "Daemon socket thread panicked during shutdown");
+                    } else {
+                        tracing::info!("Daemon socket thread joined cleanly");
+                    }
+                    break;
+                }
+                Some(_) => std::thread::sleep(poll),
+                None => break,
+            }
+        }
+        if handle_opt.is_some() {
+            tracing::warn!(
+                "Daemon socket thread did not finish within 5s shutdown window — detaching (BatchContext Drop may race with process exit)"
+            );
+            // Intentionally drop `handle_opt` to detach — this is the
+            // pre-fix behaviour, preserved only when the 5 s budget is
+            // exhausted. In-flight embedder inference is the usual
+            // culprit.
         }
     }
 
