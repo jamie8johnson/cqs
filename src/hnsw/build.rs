@@ -207,7 +207,12 @@ impl HnswIndex {
             } else {
                 100
             };
-            tracing::info!(
+            // PF-V1.25-15: demoted from info! to debug!. A 60k-chunk build
+            // emits 50+ batches; at info level they drown out meaningful
+            // log messages with no user-actionable signal per batch.
+            // The final "HNSW index built" message at end-of-build (emitted
+            // as info!) is sufficient for progress tracking.
+            tracing::debug!(
                 "HNSW build progress: {} / ~{} vectors ({}%)",
                 total_inserted,
                 capacity,
