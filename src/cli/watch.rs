@@ -883,6 +883,17 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                 println!("Indexed {} chunk(s)", count);
             }
 
+            // OB-NEW-10: When SPLADE is configured but watch skipped sparse
+            // re-encoding (watch never runs the SPLADE encoder, only the v20
+            // DELETE trigger invalidates on removals), surface the drift at
+            // debug level once per reindex cycle.
+            if count > 0 && cqs::splade::resolve_splade_model_dir().is_some() {
+                tracing::debug!(
+                    new_chunks = count,
+                    "Watch skipped SPLADE encoding, sparse coverage will drift until manual 'cqs index'"
+                );
+            }
+
             // Incremental HNSW update: insert changed chunks into existing Owned index.
             // Falls back to full rebuild on first run or after hnsw_rebuild_threshold() inserts.
             let needs_full_rebuild =
