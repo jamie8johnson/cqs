@@ -19,6 +19,7 @@ use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 
@@ -48,6 +49,45 @@ impl Drop for SocketCleanupGuard {
             } else {
                 tracing::info!(path = %self.0.display(), "Daemon socket removed");
             }
+        }
+    }
+}
+
+/// RM-V1.25-9: Set on SIGTERM so the watch loop drains and exits
+/// cleanly instead of being hard-killed mid-write when systemd
+/// sends `stop`. `ctrlc` without the `termination` feature only
+/// traps SIGINT, and we don't want to grow a dep just for this
+/// one unix-only hook.
+#[cfg(unix)]
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(unix)]
+fn is_shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(Ordering::Acquire)
+}
+
+/// Signal handler — async-signal-safe: only a relaxed atomic store.
+#[cfg(unix)]
+extern "C" fn on_sigterm(_sig: libc::c_int) {
+    SHUTDOWN_REQUESTED.store(true, Ordering::Release);
+}
+
+/// Install a SIGTERM handler so `systemctl stop cqs-watch` triggers a
+/// clean drain via `SHUTDOWN_REQUESTED` rather than a hard kill. The
+/// existing ctrlc-based SIGINT handler already flips `check_interrupted`;
+/// this adds SIGTERM as a second shutdown path.
+#[cfg(unix)]
+fn install_sigterm_handler() {
+    // SAFETY: libc::signal is async-signal-safe to call before any
+    // threads start depending on the old disposition. We call it at
+    // the top of cmd_watch, prior to spawning the socket thread.
+    unsafe {
+        let prev = libc::signal(libc::SIGTERM, on_sigterm as libc::sighandler_t);
+        if prev == libc::SIG_ERR {
+            let e = std::io::Error::last_os_error();
+            tracing::warn!(error = %e, "Failed to install SIGTERM handler; watch will rely on SIGINT only");
+        } else {
+            tracing::debug!("SIGTERM handler installed for clean daemon shutdown");
         }
     }
 }
@@ -423,6 +463,12 @@ pub fn cmd_watch(
         tracing::warn!("--no-ignore is not yet implemented for watch mode");
     }
 
+    // RM-V1.25-9: install SIGTERM handler *before* spawning the socket
+    // thread so both the main loop and the accept loop observe the
+    // shutdown flag immediately when systemd stops the unit.
+    #[cfg(unix)]
+    install_sigterm_handler();
+
     let root = find_project_root();
 
     // Auto-detect when polling is needed: WSL + DrvFS mount path.
@@ -528,7 +574,8 @@ pub fn cmd_watch(
     #[cfg(unix)]
     let _socket_thread = if serve {
         if let Some((listener, _)) = socket_listener.take() {
-            listener.set_nonblocking(false)?;
+            // Stays non-blocking: the accept loop below polls so it can
+            // notice SHUTDOWN_REQUESTED on SIGTERM (RM-V1.25-9).
             let thread = std::thread::spawn(move || {
                 // BatchContext created inside the thread — RefCell is !Send
                 // but thread-local ownership is fine.
@@ -543,9 +590,20 @@ pub fn cmd_watch(
                     }
                 };
                 tracing::info!("Daemon query thread ready");
-                for stream in listener.incoming() {
-                    match stream {
-                        Ok(s) => handle_socket_client(s, &ctx),
+                // RM-V1.25-9: Poll accept with a short sleep so the loop
+                // can notice SIGTERM and drain cleanly instead of blocking
+                // indefinitely on a syscall that systemd has to kill.
+                // Listener was set non-blocking at bind time.
+                loop {
+                    if is_shutdown_requested() {
+                        tracing::info!("Daemon accept loop draining on SIGTERM");
+                        break;
+                    }
+                    match listener.accept() {
+                        Ok((s, _addr)) => handle_socket_client(s, &ctx),
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
                         Err(e) => {
                             // Warn, not debug: EMFILE/ENFILE/ECONNABORTED are
                             // operator-actionable (raise ulimit, etc.) and
@@ -784,6 +842,15 @@ pub fn cmd_watch(
 
         if check_interrupted() {
             println!("\nStopping watch...");
+            break;
+        }
+
+        #[cfg(unix)]
+        if is_shutdown_requested() {
+            tracing::info!("SIGTERM received, draining watch loop");
+            if !cli.quiet {
+                println!("\nSIGTERM received, stopping watch...");
+            }
             break;
         }
     }
