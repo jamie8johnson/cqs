@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v1.22.0
+## Current: v1.24.0
 
-54 languages. 29 chunk types. 265-query v2 eval. BGE-large = best config. Adaptive retrieval Phases 1-5 shipped. **Daemon mode** (`cqs watch --serve`, 3-19ms queries). AC-1 fusion fix + 88 audit findings addressed. Persistent query cache. SPLADE-Code 0.6B evaluated (flag-driven net loss; selective routing next).
+54 languages. 29 chunk types. 265-query v2 eval. BGE-large = best config. Adaptive retrieval Phases 1-5 shipped. **Daemon mode** (`cqs watch --serve`, 3-19ms queries). Per-category SPLADE alpha routing. GPU-native CAGRA bitset filtering (patched cuvs 26.4). Enrichment ablation + router update (type_filtered + multi_step → base).
 
 ### Eval Baselines
 
@@ -12,9 +12,11 @@
 | Fixture (296q) | BGE-large | 91.2% | Production model |
 | Real code (100q) | BGE-large | 50.0% | R@5 = 73% (agent-relevant) |
 | V2 (265q, live) | BGE-large | 42.3% | 8 categories, clean A/B (2026-04-12) |
-| V2 (265q, live) | + SPLADE α=0.9 | **43.4%** | **+1.1pp** — global optimum from 11-point sweep |
-| V2 (265q, live) | + SPLADE α=0.7 | 41.1% | −1.2pp — too much sparse weight |
-| V2 (265q, live) | + LLM summaries | 48.5% | +18pp multi_step, -15pp conceptual, net 0pp (old eval) |
+| V2 (265q, live) | + SPLADE α=0.9 | 43.4% | +1.1pp — global optimum from 11-point sweep |
+| V2 (265q, live) | Base-only (no summaries) | 42.3% | 2026-04-13 enrichment ablation |
+| V2 (265q, live) | Enriched + CAGRA filter | 42.6% | 2026-04-13 enrichment ablation |
+| V2 (265q, live) | Oracle routing (theoretical) | **43.8%** | Best arm per category |
+| V2 (265q, live) | **v1.24.0 fully routed** | **41.5%** | Router + CAGRA filter, net zero — CAGRA regression on enriched |
 
 ---
 
@@ -34,7 +36,8 @@
 - [x] ~~**Adaptive retrieval** Phase 5~~ — dual embeddings (base + enriched HNSW) shipped in PR #876 + #877 + #878
 - [x] ~~**SPLADE alpha sweep + ship defaults**~~ — 11-point sweep + single-category verification. Per-category optimal alphas shipped: identifier 0.9, structural 0.7, conceptual 0.9, type_filtered 0.9, behavioral 0.1, rest 1.0. Expected **+4.9pp R@1** (47.2% vs 42.3%). Cross-language excluded (N=21 noise). Plan: `docs/plans/2026-04-12-selective-splade-routing.md`
 - [x] ~~**Enrichment ablation + routing update**~~ — 2-arm eval at 78% summary coverage with SPLADE. Oracle routing = 43.8% R@1 (+1.9pp). Updated router: type_filtered/multi_step → DenseBase (previously enriched). Research: `~/training-data/research/enrichment.md`.
-- [x] ~~**CAGRA native bitset filtering**~~ — GPU-side type/language filtering during graph traversal, replacing 3x over-fetch + post-filter. +0.7pp R@1 (42.6% vs 41.9%) on enriched. Structural +3.7pp, negation +3.4pp, behavioral +2.2pp. Patched cuvs crate (upstream PR rapidsai/cuvs#2019). Cross-language −4.8pp regression to investigate.
+- [x] ~~**CAGRA native bitset filtering**~~ — GPU-side type/language filtering during graph traversal, replacing 3x over-fetch + post-filter. +0.7pp R@1 (42.6% vs 41.9%) on enriched. Structural +3.7pp, negation +3.4pp, behavioral +2.2pp. Patched cuvs crate (upstream PR rapidsai/cuvs#2019). Shipped in v1.24.0.
+- [ ] **Investigate CAGRA filtering regression on enriched index** — fully-routed eval (v1.24.0) showed conceptual −5.5pp, structural −3.8pp, identifier −2pp vs pre-release baseline. CAGRA bitset and HNSW traversal-time filtering return different candidate sets on the enriched index. Hypothesis: CAGRA graph walk strands in filtered-out regions when the graph was built on the full dataset. Options to try: (1) use HNSW for enriched + CAGRA only for base, (2) increase CAGRA `itopk_size` for filtered queries, (3) build separate CAGRA graphs per common filter bitmask. Blocks further R@1 gains.
 - [ ] **Query-time HyDE for structural queries** — old data shows HyDE helps structural +14pp, type_filtered +12pp but hurts conceptual −22pp, behavioral −15pp. Instead of a third index column (`embedding_hyde`), do it at query time: router classifies structural → LLM generates synthetic code snippet → embed that → search. No index change, ~500ms-1s latency per structural query. Per-category by design since router already classifies. Need fresh eval with SPLADE active (old data is pre-SPLADE, pre-AC-1).
 - [ ] **Config file support** — `[splade.alpha]` per-category overrides in `.cqs.toml`
 - [ ] **Phase 6: Explainable search** — depends on SPLADE-Code being the production default. Spec: `docs/plans/adaptive-retrieval.md`
@@ -56,7 +59,7 @@
 - [ ] **Daemon: full CLI parity** — batch parser subset differs from CLI (missing some flags). Need either unified parser or more comprehensive arg translation.
 - [ ] **Daemon: incremental SPLADE in watch mode** — watch currently skips SPLADE encoding for new/changed chunks. Needs: (1) keep SPLADE ONNX model loaded in daemon, (2) encode only new chunks, (3) incremental insert into in-memory `SpladeIndex` (current impl rebuilds from scratch ~18s for 68k chunks). Without this, `cqs index` is still required after edits for full SPLADE coverage.
 - [x] ~~**cuVS bump: cuvs 26.2→26.4**~~ — PR #935 merged. conda libcuvs=26.04, CUDA 13 JIT support, non-consuming search, CAGRA persistence fix (rapidsai/cuvs#1800). Fixed daemon CAGRA segfault.
-  - [ ] **Simplify cagra.rs** — 26.4 non-consuming `search(&self)` makes `IndexRebuilder` / `Mutex<Option<Index>>` dead code. Remove rebuild machinery.
+  - [x] ~~**Simplify cagra.rs**~~ — v1.24.0 removed `IndexRebuilder` / `Mutex<Option<Index>>` / cached `dataset`. Net −357 lines. Fixed daemon SIGABRT under sustained load.
 - [x] ~~**cuVS filtered CAGRA search**~~ — GPU-native bitset filtering shipped. Local patched cuvs 26.4 via `[patch.crates-io]`. Upstream PR rapidsai/cuvs#2019 pending review. When merged, switch back to crates.io version. PCA preprocessor and float16 are C++/Python only.
 
 ### Agent Adoption — Telemetry Data (2026-04-09)
@@ -158,7 +161,9 @@ Current implementation: N-project via `[[reference]]` entries in `.cqs.toml` →
 
 | Version | Highlights |
 |---------|-----------|
-| v1.22.0 (in progress) | Adaptive retrieval Phases 1-5, SPLADE-Code 0.6B eval chain, **daemon mode** (#926, 3-19ms queries), AC-1 fusion fix (#910), 88 audit findings (#911), persistent query cache (#928), shared runtime (#929), integrity check opt-in (#924), read-only batch store (#919), Store::clear_caches (#918), 13 issues created (#912-#925), daemon plan doc |
+| v1.24.0 | GPU-native CAGRA bitset filtering (upstream PR rapidsai/cuvs#2019), daemon stability (CAGRA non-consuming search fixes SIGABRT under load), cagra.rs simplified −357 lines, batch/daemon base index routing, router update (type_filtered + multi_step → base), cuVS 26.4 |
+| v1.23.0 | **Daemon mode** (`cqs watch --serve`, 3-19ms queries), per-category SPLADE alpha routing + 11-point sweep, persistent query cache, shared runtime, AC-1 fusion fix, 90 audit findings |
+| v1.22.0 | Adaptive retrieval Phases 1-5, SPLADE-Code 0.6B eval chain, SPLADE index persistence (#895), v19/v20 migrations (#898/#899), read-only batch store (#919), Store::clear_caches (#918), 13 issues created (#912-#925) |
 | v1.21.0 | Cross-project call graph (#850), 4 new chunk types to 29 (#851), chunk type coverage across 15 languages (#852), 14-category audit 40+ fixes (#859), API renames + 8 batch flags (#860), remaining audit sweep (#863), paper v1.0, docs refresh |
 | v1.20.0 | 14-category audit (71 findings, 69 fixed), Elm (54th), batch --include-type/--exclude-type, SPLADE code training (null), env var docs, README eval rewrite |
 | v1.19.0 | `--include-type`/`--exclude-type`, Java/C# test+endpoint, batch `--rrf`, capture list unification, Phase 2 chunks, 265q eval, store dim check |
