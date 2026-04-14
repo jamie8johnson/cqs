@@ -1,397 +1,308 @@
-# Audit Triage — v1.22.0
+# Audit Triage — v1.25.0
 
-Triage date: 2026-04-11. Source: `docs/audit-findings.md` (136 findings across 16 categories, two batches of 8 parallel auditors).
+Triage date: 2026-04-14. Source: `docs/audit-findings.md` (236 findings across 17 sections, 2 batches of 8 parallel opus auditors).
 
-## Triage rules (why things land where they do)
+## Triage rules
 
-1. **Regressions are P1 unless a documented reason says otherwise.** User rule, 2026-04-11. A regression that narrowly affects one user path is still P1.
-2. **Documents that make factual claims contradicted by the code are P1.** SECURITY.md/PRIVACY.md saying the program does X when it does Y is a correctness bug, not a doc chore.
-3. **PR #895 tax.** Cross-auditor cluster: CQ-2, CQ-3, DS-W1/W2/W3/W4, EH-1/2/3/4, PB-NEW-1/2/3/4/5, PF-4, RB-1/2, RM-3/4/5, and adversarial test gaps all trace to the SPLADE persistence PR shipped earlier today. Every one of them is P1 unless explicitly deferred, because the whole cluster makes the shipped PR unsound in normal operation.
-4. **Watch+SPLADE drift** is triple-confirmed (OB-22, PB-NEW-6, DS-W2) and the failure mode is silent stale data. Auto-P1.
-5. **Batch mode SPLADE invalidation** is quintuple-confirmed (CQ-2, EH-8, RM-3, happy-path TC-2, the existing `test_invalidate_clears_mutable_caches` test would fail if extended). Auto-P1, trivial fix.
-6. **AC-1 — SPLADE hybrid fusion scores discarded** is hard but correctness-critical. Every SPLADE eval we have is measuring the wrong thing until this is fixed. P1 despite the hard difficulty, with the caveat that the fix reshapes evaluation methodology.
-7. **Flag-declared-but-unread cluster**: CQ-1, API-1, API-10, API-11 are four independent findings pointing at the same root — cqs has no test asserting that every declared clap flag has at least one consumer. Fix the individual drops as P1; add a meta-test to prevent recurrence as P2.
-8. Hard security/data-safety items that predate #895 (DS-W5 watch-rebuild race, DS-W6 schema-migration race, SEC-NEW-1 reference source exfil) are P1 by severity, not by regression rule.
+- **P1** — easy difficulty AND high impact (real bug or security exposure that could bite a user soon). Fix immediately.
+- **P2** — medium effort AND high impact (real bug, but takes more than a one-liner). Fix in next batch.
+- **P3** — easy difficulty AND low impact (cosmetic, doc, hygiene, perf-on-slow-path). Fix if time.
+- **P4** — hard effort OR low impact (architectural changes, "would be nice", coverage gaps with no current bug). Hard ones get filed as GitHub issues; trivial ones (one-liners, doc fixes) fixed inline.
 
-## Summary
+Priority bias: lean higher for items that already bit us today (GC suffix-match, daemon mutation gap, eval-output watch-reindex, CAGRA filtering, CRLF noise on WSL), touch the daemon hot path, affect determinism/reproducibility, or are silent failures. Lean lower for "nice to have" coverage, speculative scaling, and documenting safe-by-construction invariants.
 
-| Tier | Count | Criterion |
-|---|---|---|
-| **P1** | ~50 | Regression, data-safety correctness, or security boundary. Fix in this audit cycle. |
-| **P2** | ~30 | Medium effort with meaningful impact, or easy with medium impact. Fix if time before next release. |
-| **P3** | ~40 | Easy but lower-impact hygiene. Fix inline with related work or batch into one cleanup PR. |
-| **P4** | ~15 | Hard, architectural, or genuinely low-impact. Create issues; do not block this cycle. |
+Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255, #106, #63`.
+
+## P1 — Easy + High Impact (fix immediately)
+
+| ID | Title | Difficulty | Location | Status |
+|---|---|---|---|---|
+| Algorithm Correctness: GC prune_all suffix-match | GC `prune_all` suffix-match too loose — 81% orphan retention | easy | `src/store/chunks/staleness.rs:180-184` | pending |
+| AC-V1.25-1 | `Store::rrf_fuse` non-deterministic tie-breaker (eval flake) | easy | `src/store/search.rs:187-193` | pending |
+| AC-V1.25-2 | Non-deterministic sort tie-breaking in 12+ score-sorting sites | easy | `src/search/query.rs:381,772` + 14 others | pending |
+| AC-V1.25-3 | Type-boost re-sort in `finalize_results` not deterministic on ties | easy | `src/search/query.rs:381` | pending |
+| AC-V1.25-5 | `parse_unified_diff` defaults unparseable start to line 1 — spurious hunks | easy | `src/diff_parse.rs:73-82` | pending |
+| AC-V1.25-9 | `is_cross_language_query` matches "port " across word boundaries | easy | `src/search/router.rs:518-536` | pending |
+| AC-V1.25-15 | `is_behavioral_query` matches as substrings — hyphenated identifier false positives | easy | `src/search/router.rs:552-563` | pending |
+| Code Quality: .claude/worktrees/ indexed | `.claude/worktrees/` indexed as project code; not in `.gitignore` | easy | `.gitignore`, file walker | pending |
+| CQ-V1.25-1 | `--threshold` / `-t` silently dropped on daemon-routed queries | easy | `src/cli/batch/commands.rs:392-413` | pending |
+| CQ-V1.25-2 | scout/similar/related limit clamps drift between CLI and batch dispatchers | easy | `src/cli/commands/search/scout.rs:155` + 2 others | pending |
+| CQ-V1.25-3 | `HnswIndex::try_load_with_ef` default-dim footgun survives PR #900 | easy | `src/hnsw/persist.rs:786-824` | pending |
+| API Design: Daemon batch parser misses mutation cmds | Daemon batch parser misses `audit-mode`, more `notes` subcommands | easy | `src/cli/dispatch.rs::try_daemon_query` | pending |
+| API-V1.25-1 | Daemon forwards 8 commands the batch parser cannot handle | easy | `src/cli/dispatch.rs:401-423` | pending; primary for "Daemon batch parser misses mutation cmds" |
+| API-V1.25-2 | `cqs stale --count-only` and `cqs drift -t` rejected by daemon | easy | `src/cli/batch/commands.rs:218,222-237` | pending |
+| API Design: cqs stale --json output is not JSON | `cqs stale --json` produces non-JSON; programmatic consumers break | easy | `src/cli/commands/...stale.rs` | pending |
+| EH-13 | CLI silently swallows daemon-reported errors and re-executes locally | medium→easy | `src/cli/dispatch.rs:510-520,58-62` | pending |
+| EH-15 | Daemon `read_line` 1MB check is post-hoc — OOM possible | easy | `src/cli/watch.rs:71-82` | pending; primary for RB-NEW-3, SEC-V1.25-2, RM-V1.25-22 |
+| EH-18 | Watch-mode socket setup silently discards stale-socket + permission-set errors | easy | `src/cli/watch.rs:409-413,418-420` | pending; primary for PB-V1.25-15 |
+| EH-19 | Watch-mode stale HNSW cleanup silently discards remove errors — stale results next boot | easy | `src/cli/watch.rs:888-893` | pending |
+| RB-NEW-3 | Daemon socket `read_line` allocates unbounded before 1MB check | easy | `src/cli/watch.rs:69-82` | pending; duplicate of EH-15 |
+| RB-NEW-4 | Daemon client `read_line` on response unbounded — wedged daemon OOMs CLI | easy | `src/cli/dispatch.rs:504-508` | pending |
+| SEC-V1.25-2 | Daemon socket request `read_line` allocates before 1MB check — OOM vector | easy | `src/cli/watch.rs:69-82` | pending; duplicate of EH-15 |
+| SEC-V1.25-4 | `QueryCache::open` never sets 0o600 on DB file (asymmetric with EmbeddingCache) | easy | `src/cache.rs:889-937` | pending |
+| SEC-V1.25-5 | `telemetry::log_command` / `log_routed` create file without `.mode(0o600)` — umask race | easy | `src/cli/telemetry.rs:88-96,171-178` | pending |
+| SEC-V1.25-7 | `doctor --fix` invokes `cqs` via PATH — PATH-injection hijack of recovery flow | easy | `src/cli/commands/infra/doctor.rs:41,57` | pending |
+| SEC-V1.25-13 | `CQS_LLM_API_BASE` permits silent HTTPS→HTTP downgrade with only a warn | easy | `src/llm/mod.rs:219-249` | pending |
+| SEC-V1.25-15 | Stale-socket cleanup removes any file at socket path — symlink TOCTOU | medium→easy | `src/cli/watch.rs:401-413` | pending; primary for PB-V1.25-19 |
+| PB-V1.25-15 | Socket `set_permissions(0o600).ok()` silently fails on 9P/NFS/FUSE | easy | `src/cli/watch.rs:418-421` | pending; duplicate of EH-18 |
+| PB-V1.25-18 | `cqs watch --serve` Windows branch silently drops flag | easy | `src/cli/watch.rs:465-468` | pending |
+| PB-V1.25-8 | `gitignore` boilerplate writes `\n`-only — dirty `git status` on Windows autocrlf=true | easy | `src/cli/commands/infra/init.rs:37-40` | pending |
+| SHL-V1.25-1 | `CQS_DAEMON_TIMEOUT_MS` integer-divided to seconds, loses sub-second precision | easy | `src/cli/dispatch.rs:443-449` | pending |
+| SHL-V1.25-2 | Daemon write timeout hardcoded 30s — long SPLADE+reranker queries exceed silently | easy | `src/cli/watch.rs:65-66`, `src/cli/dispatch.rs:451` | pending |
+| EH-16 | HNSW self-heal `is_hnsw_dirty().unwrap_or(true)` swallows metadata errors | easy | `src/cli/store.rs:289,343` | pending |
+| EH-17 | `query_cache::get` silently treats DB errors as cache miss | easy | `src/cache.rs:941-949` | pending; primary for OB-NEW-6 |
+| OB-NEW-6 | `QueryCache::get` swallows sqlite errors and dim mismatches — cache poisoning invisible | easy | `src/cache.rs:940-961` | pending; duplicate of EH-17 |
+| EH-21 | `handle_socket_client` `catch_unwind` discards panic payload | easy | `src/cli/watch.rs:113-138` | pending; primary for OB-NEW-4 |
+| OB-NEW-4 | Daemon panic path discards payload — error log opaque | easy | `src/cli/watch.rs:135-138` | pending; duplicate of EH-21 |
+| EH-22 | Socket accept-loop errors logged at `debug` level | easy | `src/cli/watch.rs:494` | pending; primary for RM-V1.25-20 |
+| RM-V1.25-20 | Daemon accept-error loop logs at `debug` — busy-spin invisibly | easy | `src/cli/watch.rs:493-495` | pending; duplicate of EH-22 |
+| EH-12 | `batch::dispatch_line` and `cmd_batch` flatten anyhow chain to top-level | easy | `src/cli/batch/mod.rs:254-256,844-849,851-856` | pending |
+| RB-NEW-1 | `SpladeEncoder::encode_batch` pre-pooled slicing panics on short tensor | easy | `src/splade/mod.rs:688-702` | pending |
+| RB-NEW-2 | `SpladeEncoder::encode_batch` raw-logits path panics + wrong `.expect` message | easy | `src/splade/mod.rs:733-740` | pending |
+| RB-NEW-5 | `unreachable!()` in notes dispatch encodes routing invariant outside type system | easy | `src/cli/commands/io/notes.rs:116,147` | pending |
+| EH-10 | Periodic `flush_calls` loses items when `upsert_calls_batch` fails | easy | `src/cli/pipeline/upsert.rs:44-60` | pending |
+| EH-11 | Periodic `flush_type_edges` unconditionally clears buffer on failure | easy | `src/cli/pipeline/upsert.rs:69-81,177-178` | pending |
+| RM-V1.25-9 | No explicit SIGTERM handler — systemd `stop` may hard-kill daemon, WAL unflushed | easy | `src/cli/signal.rs:27-37` | pending |
+| RM-V1.25-23 | Watch `pending_files` cap drops events silently — no full-rescan fallback | easy | `src/cli/watch.rs:186-195,784-792` | pending |
+| RM-V1.25-25 | `CQS_TELEMETRY` is sticky once file exists — disabling via env doesn't stop collection | easy | `src/cli/telemetry.rs:44,118` | pending |
+
+## P2 — Medium + High Impact (fix in batch)
+
+| ID | Title | Difficulty | Location | Status |
+|---|---|---|---|---|
+| AC-V1.25-7 | CAGRA `search_impl` returns phantom "perfect" results when `index.len() < k` | medium | `src/cagra.rs:193-273` | pending |
+| AC-V1.25-8 | HNSW self-heal dirty-flag shared across enriched and base — clearing one clears both | medium | `src/cli/store.rs:289-308,343-360`, `src/store/metadata.rs:186-207` | pending |
+| AC-V1.25-10 | `MULTISTEP_PATTERNS` includes bare `" and "` / `" or "` — routes simple conjunctions wrong | medium | `src/search/router.rs:257-259` | pending |
+| AC-V1.25-13 | `compute_risk_batch` entry-point heuristic conflates 4 distinct cases as Medium | medium | `src/impact/hints.rs:138-147` | pending |
+| AC-V1.25-14 | `test_reachability` BFS node cap truncates mid-class — biased per-function risk scores | medium | `src/impact/bfs.rs:277-301` | pending |
+| Error Handling: Ingest pipeline FK failures | Ingest pipeline FK failures silently discard call graph edges (14k+ edges lost) | medium | `src/cli/pipeline/upsert.rs` | pending |
+| Data Safety: HNSW state can diverge | HNSW state can diverge from chunks table after out-of-band mutation — ghost results | medium | `src/cli/commands/index/gc.rs`, HNSW load path | pending |
+| DS-V1.25-2 | `HnswIndex::insert_batch` partial failure leaves graph out of sync with `id_map` | medium | `src/hnsw/mod.rs:234-284` | pending |
+| DS-V1.25-3 | Watch-mode `set_hnsw_dirty(false)` + chunks-write race can clear flag with unindexed chunks | hard→medium | `src/cli/watch.rs:835-937` | pending |
+| DS-V1.25-5 | `upsert_calls_batch` aborts on FK violation — watch race drops calls silently | medium | `src/store/calls/crud.rs:55-97` | pending |
+| DS-V1.25-6 | Daemon read-only BatchContext can't detect `cqs index --force` DB replacement | medium | `src/cli/watch.rs:476-498`, `src/cli/batch/mod.rs:138-187` | pending |
+| API-V1.25-3 | `suggest --apply` writes through a read-only store — fails in CLI and daemon | medium | `src/cli/dispatch.rs:335`, `src/cli/batch/handlers/analysis.rs:86-128` | pending |
+| API-V1.25-4 | `BatchCmd::Search` inline-duplicates 21 fields instead of shared `SearchArgs` | medium | `src/cli/batch/commands.rs:32-92` vs `src/cli/definitions.rs:122-226` | pending |
+| API-V1.25-8 | Daemon forward silently ignores `--model` mismatch — wrong model used | medium | `src/cli/dispatch.rs:453-490` | pending |
+| EH-14 | Daemon socket timeouts set via silent `.ok()` discards — guard defeated | easy→medium | `src/cli/watch.rs:65-66`, `src/cli/dispatch.rs:442-451` | pending |
+| EX-V1.25-11 | Notes subcommand splits across two dispatch fns with `unreachable!()` — same class as PR #945 | medium | `src/cli/commands/io/notes.rs:106-149`, `src/cli/dispatch.rs:175-179,415-423` | pending |
+| SEC-V1.25-1 | Daemon socket DoS — single-threaded accept loop with 5s read timeout | medium | `src/cli/watch.rs:488-497,58-146` | pending |
+| SEC-V1.25-6 | LLM prompt construction concatenates unsanitized chunk content inside backticks — prompt injection from references | medium | `src/llm/prompts.rs:13-18,47-53,85-95,108-115` | pending |
+| SEC-V1.25-8 | `CQS_PDF_SCRIPT` extension-only guard can't prevent `.py` payloads — daemon-persisted | medium | `src/convert/pdf.rs:56-69` | pending |
+| SEC-V1.25-10 | `find_python` / `find_7z` rely on PATH with no exec-bit / ownership check | medium | `src/convert/mod.rs:48-60`, `src/convert/chm.rs:182-208` | pending |
+| SEC-V1.25-11 | `git_log` / `git_diff_tree` / `git_show` accept `repo: &Path` without canonicalize/validate | medium | `src/train_data/git.rs:29,92,131,196` | pending |
+| SEC-V1.25-12 | Reindex of cross-fs paths without symlink-escape check on event-triggered re-reads | medium | `src/cli/watch.rs:556-560,740-810` | pending |
+| SEC-V1.25-14 | `add_reference_to_config` stores user-supplied source verbatim — no trust check on update | medium | `src/cli/commands/infra/reference.rs:87-184`, `src/config.rs:480-...` | pending |
+| PB-V1.25-2 | `daemon_socket_path` is `#[cfg(unix)]`-only — `cqs watch --serve` silently no-ops on Windows | medium | `src/cli/files.rs:10-28`, `src/cli/watch.rs:465-468` | pending |
+| PB-V1.25-7 | Staleness macOS case-insensitivity branch ignores Windows NTFS — silent data loss | medium | `src/store/chunks/staleness.rs:55-74,167-188,326-337` | pending |
+| PB-V1.25-12 | ORT provider symlink setup is Linux-only — macOS CoreML and Windows CUDA silent CPU | medium | `src/embedder/provider.rs:26-189,191-200` | pending |
+| RM-V1.25-3 | Daemon embedder/reranker idle timeout only checked when query arrives — pins ~500MB+ | medium | `src/cli/batch/mod.rs:108-136,248` | pending |
+| RM-V1.25-5 | `EmbeddingCache.evict()` never fires in daemon/watch mode — 10GB cap blown silently | medium | `src/cli/pipeline/mod.rs:166-171`, `src/cache.rs:137-140` | pending |
+| RM-V1.25-7 | Cached ReferenceIndexes have no per-reference staleness detection | medium | `src/cli/batch/mod.rs:88,207,440-472` | pending |
+| RM-V1.25-8 | Detached socket-handler thread holds BatchContext past main-loop exit | medium | `src/cli/watch.rs:473-505` | pending |
+| RM-V1.25-11 | SPLADE index full rebuild on every reindex — first daemon query blocked ~45s | hard→medium | `src/cli/batch/mod.rs:343-386`, `src/splade/index.rs:130-150` | pending |
+| RM-V1.25-15 | Reranker/SPLADE/Embedder tokenizers never cleared by `clear_session` (~50MB resident) | medium | `src/cli/batch/mod.rs:76,582-594` + 3 others | pending |
+| RM-V1.25-19 | CAGRA GPU mutex poison recovery uses `into_inner()` without GPU state reset | medium | `src/cagra.rs:153-156` | pending |
+| RM-V1.25-22 | `read_line` on daemon socket can allocate multi-GB before size check | medium | `src/cli/watch.rs:68-82` | pending; duplicate of EH-15 / RB-NEW-3 |
+| RM-V1.25-28 | Watch outer Embedder and daemon-thread Embedder are separate OnceLocks — ~500MB dup | medium | `src/cli/watch.rs:568`, `src/cli/batch/mod.rs:74,279` | pending |
+| TC-ADV-8 | Notes daemon-forward regression (PR #945) has no test — silent regression risk | medium | `src/cli/dispatch.rs:401-423` | pending |
+| TC-ADV-9 | Concurrent `upsert_sparse_vectors` writer race has no test — WRITE_LOCK regression silent | medium | `src/store/sparse.rs:130-146` | pending |
+| TC-HP-2 | `cmd_notes_mutate` add/update/remove lifecycle has zero CLI tests — PR #945 untested | easy→medium | `src/cli/commands/io/notes.rs:122-447` | pending |
+| TC-HP-3 | `prune_all` has zero tests — happy path never verified | easy→medium | `src/store/chunks/staleness.rs:148-284` | pending |
+| TC-HP-4 | Per-category SPLADE alpha routing has no end-to-end test — silent quality regression | medium | `src/cli/batch/handlers/search.rs:117-139`, `src/cli/commands/search/query.rs:170-200` | pending |
+| TC-HP-1 | `resolve_splade_alpha` has zero tests — v1.25.0 defaults unguarded | easy→medium | `src/search/router.rs:272-322` | pending |
+| PF-V1.25-2 | `rrf_fuse` full-sorts every result to truncate to `limit` — should use bounded heap | medium | `src/store/search.rs:187-193` | pending |
+| PF-V1.25-3 | SPLADE `search_with_filter` full-sorts entire score HashMap — 10k-30k clones discarded | medium | `src/splade/index.rs:195-208` | pending |
+| PF-V1.25-4 | `NoteBoostIndex` rebuilt from scratch per search — should cache per notes-generation | medium | `src/search/query.rs:170,708`, `src/search/scoring/note_boost.rs:62-97` | pending |
+| PF-V1.25-19 | `load_all_sparse_vectors` loads entire sparse_vectors table — 4GB peak on 60k-chunk index | medium | `src/store/sparse.rs:207-249` | pending |
+| OB-NEW-7 | CAGRA vs HNSW selection logged inconsistently — operator can't tell backend | easy→medium | `src/cli/store.rs:264-282` | pending |
+
+## P3 — Easy + Low Impact (fix if time)
+
+| ID | Title | Difficulty | Location | Status |
+|---|---|---|---|---|
+| AC-V1.25-4 | `apply_parent_boost` float-precision cap overshoot — `1.15000010` vs cap `1.15` | easy | `src/search/scoring/candidate.rs:71-85` | pending |
+| AC-V1.25-6 | `extract_file_from_chunk_id` treats bare `:w` suffix as windowed | easy | `src/search/scoring/filter.rs:24-32` | pending |
+| AC-V1.25-11 | `expand_query_for_fts` preserves original-case token in OR groups — tokenizer-dependent | easy | `src/search/synonyms.rs:70-80` | pending |
+| AC-V1.25-12 | `NameMatcher::score` word-overlap path skips equal-length substring matches | easy | `src/search/scoring/name_match.rs:146-150` | pending |
+| CQ-V1.25-4 | `prune_all` inlines four DELETE statements that have dedicated prune methods | easy | `src/store/chunks/staleness.rs:223-257` | pending |
+| CQ-V1.25-6 | Suffix-match filter block duplicated 27 lines byte-for-byte across `prune_*` | easy | `src/store/chunks/staleness.rs:51-77,161-189` | pending |
+| CQ-V1.25-7 | `dispatch_scout` JSON shape structurally diverges from `cmd_scout` (no shared serializer) | easy | `src/cli/commands/search/scout.rs:169-175`, `src/cli/batch/handlers/misc.rs:186-209` | pending |
+| CQ-V1.25-8 | `BatchContext::notes_cache` invalidation is unreachable in daemon sessions | easy | `src/cli/batch/handlers/misc.rs:98-131`, `src/cli/batch/mod.rs:204` | pending |
+| EH-20 | `dispatch_diff` has dead placeholder binding — pitfall waiting to trip | easy | `src/cli/batch/handlers/misc.rs:322-334,337-357` | pending |
+| DS-V1.25-1 | SPLADE cross-device fallback writes directly into final path — not atomic | easy | `src/splade/index.rs:399-423` | pending |
+| DS-V1.25-4 | HNSW save writes `id_map` without `sync_all()` — power-cut may lose durability | easy | `src/hnsw/persist.rs:262-287` | pending |
+| DS-V1.25-7 | `query_log.jsonl` append has no lock + no size cap — interleaved lines under concurrency | easy | `src/cli/batch/commands.rs:351-379` | pending |
+| SHL-V1.25-3 | SQLite `cache_size` hardcoded per-mode; no env override | easy | `src/store/mod.rs:288,311,328,347` | pending |
+| SHL-V1.25-4 | `cache.rs:175` SQL DELETE batch still uses pre-3.32 `chunks(100)` | easy | `src/cache.rs:174-175` | pending |
+| SHL-V1.25-5 | `types.rs:102` SQL DELETE batch still uses pre-3.32 `chunks(500)` | easy | `src/store/types.rs:102` | pending |
+| SHL-V1.25-7 | `DEFAULT_MAX_CHANGED_FUNCTIONS = 500` silently truncates large diffs | easy | `src/impact/diff.rs:21,136-145` | pending |
+| SHL-V1.25-9 | Batch context reference LRU hardcoded to 2 slots | easy | `src/cli/batch/mod.rs:687,722` | pending; duplicate of RM-V1.25-17 |
+| SHL-V1.25-11 | `MAX_FILE_SIZE = 1_048_576` silently skips 1MB+ files, not tunable | easy | `src/lib.rs:424` | pending |
+| SHL-V1.25-12 | `embedding_cache.rs` `busy_timeout(5s)` hardcoded, ignores `CQS_BUSY_TIMEOUT_MS` | easy | `src/cache.rs:86,910` | pending |
+| SHL-V1.25-13 | Watch debounce 500ms default — tuned for inotify, unsafe on WSL NTFS | easy | `src/cli/definitions.rs:292-295` | pending |
+| SHL-V1.25-14 | `PLACEHOLDER_CACHE_MAX = 10_000` short of SQLite limit — cache misses on large batches | easy | `src/store/helpers/sql.rs:36` | pending |
+| SHL-V1.25-15 | SPLADE `max_seq_len` p99 comment claims 180 tokens — assumes cqs corpus | easy | `src/splade/mod.rs:587-598` | pending |
+| SHL-V1.25-16 | `IDLE_TIMEOUT_MINUTES = 5` hardcoded in batch mode | easy | `src/cli/batch/mod.rs:44` | pending |
+| OB-NEW-1 | `resolve_splade_alpha` has no span; routing decision logged at two diverging sites | easy | `src/search/router.rs:272-322`, two call sites | pending |
+| OB-NEW-2 | Daemon startup env-var log is `println!` to stdout, lists 6 of ~68 vars | easy | `src/cli/watch.rs:429-455` | pending |
+| OB-NEW-3 | `daemon_query` span lacks `command` field; per-command latency uncorrelatable | easy | `src/cli/watch.rs:62` | pending |
+| OB-NEW-5 | `try_daemon_query` has no span and 4 silent `None` returns | easy | `src/cli/dispatch.rs:401-521` | pending |
+| OB-NEW-8 | `search_hybrid` fusion logs at `debug!` — production-critical decision invisible | easy | `src/search/query.rs:509-516,547` | pending |
+| OB-NEW-9 | `dispatch_search` (batch) drops classifier confidence + strategy from log | easy | `src/cli/batch/handlers/search.rs:117-119` | pending |
+| OB-NEW-10 | Watch mode SPLADE-skip warning fires only at startup; per-cycle drift invisible | easy | `src/cli/watch.rs:528-540,802` | pending |
+| OB-NEW-11 | `handle_socket_client` ignores write errors on response delivery | easy | `src/cli/watch.rs:74,87,109,130,133` | pending |
+| OB-NEW-12 | CAGRA dim-mismatch warns use format-string args (post-v1.22 OB-18 holdouts) | easy | `src/cagra.rs:146-150,315-319` | pending |
+| API-V1.25-6 | `BatchCmd::is_pipeable` allowlist drifts out of date silently | easy | `src/cli/batch/commands.rs:325-344` | pending |
+| API-V1.25-7 | `validate_finite_f32` is dead — no f32 flag uses it as a clap value_parser | easy | `src/cli/definitions.rs:97-112` | pending |
+| TC-ADV-1 | NaN embedding bytes flow into HNSW unchecked — no test blocks NaN propagation | easy | `src/store/chunks/embeddings.rs:47-50,101-103` | pending |
+| TC-ADV-2 | `HnswIndex::search` with NaN/Inf in query has no test | easy | `src/hnsw/search.rs:47-116` | pending |
+| TC-ADV-3 | `prepare_index_data` (CAGRA) doesn't skip zero/NaN — diverges from HNSW build | easy | `src/hnsw/mod.rs:295-328` | pending |
+| TC-ADV-5 | `search_hybrid` `(limit*5).max(100)` overflow on large limits untested | easy | `src/search/query.rs:429,583` | pending |
+| TC-ADV-6 | `parse_notes_str` sentiment NaN clamping doesn't handle NaN | easy | `src/note.rs:353-355` | pending |
+| TC-ADV-13 | `prune_orphan_sparse_vectors` zero-rows generation-bump-skip branch untested | easy | `src/store/sparse.rs:229-262` | pending |
+| TC-ADV-14 | `store::notes` no test for NaN / huge batch / empty-mentions sentiment | easy | `src/store/notes.rs:62-136` | pending |
+| EX-V1.25-3 | New embedding model preset requires edits in 4 places that drift apart | easy | `src/embedder/models.rs:44-103` | pending |
+| EX-V1.25-9 | Doc-comment formats indirected through string tags, defeating type safety | easy | `src/doc_writer/formats.rs:41-132`, `src/language/mod.rs:322-327` | pending |
+| EX-V1.25-10 | CAGRA knobs hidden behind a single env var; HNSW exposes three but CAGRA exposes zero | easy | `src/cagra.rs:113,169,469` | pending; partial dup of SHL-V1.25-6 |
+| EX-V1.25-13 | `ModelInfo::default()` uses hardcoded BGE-large constants — footgun for test writers | easy | `src/embedder/models.rs:304-315` | pending |
+| SEC-V1.25-3 | Daemon socket path uses non-cryptographic `DefaultHasher` — document or replace | easy | `src/cli/files.rs:16-28` | pending |
+| SEC-V1.25-9 | `handle_socket_client` args echoed to tracing at debug — full query strings logged | easy | `src/cli/watch.rs:106` | pending |
+| SEC-V1.25-16 | Daemon logs full command for every query — sensitive `notes add` text persists in journal | easy | `src/cli/watch.rs:141-145` | pending |
+| PB-V1.25-1 | Cache paths hardcode `~/.cache/cqs/` — wrong on Windows and macOS conventions | easy | `src/cache.rs:45-48,882-885` + others | pending |
+| PB-V1.25-3 | SPLADE model default ignores `HF_HOME` / `HUGGINGFACE_HUB_CACHE` | easy | `src/splade/mod.rs:195-202,817-820` | pending |
+| PB-V1.25-5 | `cli/display.rs:27` absolute-path guard uses ad-hoc byte-matching | easy | `src/cli/display.rs:22-39` | pending |
+| PB-V1.25-9 | `.cache/cqs/` parent-dir perms `0o700` set AFTER `create_dir_all` — TOCTOU window | easy | `src/cache.rs:63-69,892-898` | pending |
+| PB-V1.25-10 | SPLADE `~/` tilde-expansion misses Windows `~\` and `%USERPROFILE%` | easy | `src/splade/mod.rs:178-187` | pending |
+| PB-V1.25-11 | WSL detection doesn't distinguish WSL1 (inotify works) from WSL2 (drops events) | easy | `src/config.rs:30-47` | pending |
+| PB-V1.25-13 | `is_wsl_mount` byte-matching duplicates `is_under_wsl_automount` with different behavior | easy | `src/config.rs:409-415` vs `src/cli/watch.rs:299-331` | pending |
+| PB-V1.25-14 | Blake3 checksum file written 0o600 on unix, default umask on non-unix | easy | `src/hnsw/persist.rs:333-370` | pending |
+| PB-V1.25-16 | `XDG_RUNTIME_DIR` fallback to `temp_dir` unexercised and untested | easy | `src/cli/files.rs:16-19` | pending |
+| PB-V1.25-17 | SQLite WAL/SHM file permissions 0o600 set AFTER SQLite writes — TOCTOU on rw opens | easy | `src/store/mod.rs:425-441` | pending |
+| PB-V1.25-19 | Daemon socket-cleanup `remove_file` follows symlinks — local symlink-attack | easy | `src/cli/watch.rs:401-413` | pending; duplicate of SEC-V1.25-15 |
+| PB-V1.25-20 | Hardcoded `PathBuf::from("/project")` in 10+ test fixtures assumes Unix absolute paths | easy | `src/cli/commands/graph/deps.rs:170` + 9 others | pending |
+| PF-V1.25-1 | `search_hybrid` rebuilds two unsized HashMaps + Vec/HashSet per SPLADE query | easy | `src/search/query.rs:475-507` | pending |
+| PF-V1.25-5 | `rerank` clones the `content` of every candidate before delegating | easy | `src/reranker.rs:111-120` | pending |
+| PF-V1.25-6 | `fetch_candidates_by_ids_async` builds an `id → rank` HashMap just to re-sort | easy | `src/store/chunks/async_helpers.rs:95-104` | pending |
+| PF-V1.25-7 | `make_placeholders` clones full cached placeholder string on every call | easy | `src/store/helpers/sql.rs:73-83` | pending |
+| PF-V1.25-8 | Batched call-graph/enrichment queries still use pre-3.32 SQLite `chunks(200/250/500)` | easy | `src/store/calls/query.rs:194,243,294` + others | pending |
+| PF-V1.25-9 | `update_embeddings_with_hashes_batch` uses `BATCH_SIZE = 100` for 3-param INSERT | easy | `src/store/chunks/crud.rs:143-165` | pending |
+| PF-V1.25-10 | `ctx.store()` syscalls `fs::metadata` on every batch handler call | easy | `src/cli/batch/mod.rs:141-187,267-270` | pending |
+| PF-V1.25-13 | `path_matches_mention` allocates two Strings per note mention per candidate | easy | `src/note.rs:366-381`, `src/search/scoring/note_boost.rs:114-125` | pending |
+| PF-V1.25-14 | `apply_parent_boost` clones `parent_type_name` for every result | easy | `src/search/scoring/candidate.rs:58-63` | pending |
+| PF-V1.25-15 | HNSW `build_batched_with_dim` logs `info!` per batch — 50+ INFO lines per build | easy | `src/hnsw/build.rs:203-208` | pending |
+| PF-V1.25-16 | `search_hybrid` builds `fused_map` cloning every id after already owning them | easy | `src/search/query.rs:549-551` | pending |
+| TC-HP-8 | Four top-level JSON CLI tests assert structure only, not content | easy | `tests/cli_commands_test.rs:132-245`, `tests/onboard_test.rs:79-140` | pending |
+| TC-HP-9 | `tests/gather_test.rs` assertions skip empty-result case | easy | `tests/gather_test.rs:69-89,127-186,188-232` | pending |
+| TC-HP-10 | All 5 `QueryCategory` catch-all variants untested as hitting `_ => 1.0` | easy | `src/search/router.rs:317-321` | pending |
+| TC-HP-13 | Pipeline envelope structure not asserted when stage returns zero results | easy | `tests/cli_batch_test.rs:384-412` | pending |
+| TC-HP-15 | `cqs stale --json` CLI tests never assert actual file paths | easy | `tests/cli_commands_test.rs:329-393` | pending |
+| TC-HP-16 | `BoundedScoreHeap` (scoring candidate struct) has zero test coverage | easy | `src/search/scoring/candidate.rs:108-204` | pending |
+| TC-HP-18 | `test_health_cli_json` asserts field types but never that counts match | easy | `tests/cli_health_test.rs:119-182` | pending |
+| TC-HP-19 | `test_build_batched_handles_rebuild_after_initial_build` doesn't search after rebuild | easy | `tests/hnsw_test.rs:258-288` | pending |
+| TC-HP-20 | `test_gc_prunes_missing_files` asserts only 2 of 5 GC counters | easy | `tests/cli_test.rs:448-487` | pending |
+| TC-ADV-4 | `BoundedScoreHeap::new(0)` silently discards all pushes — no test | easy | `src/search/scoring/candidate.rs:162-167,170-192` | pending |
+| TC-ADV-7 | `parse_notes` 10MB file-size guard and `MAX_NOTES = 10_000` truncation untested | easy | `src/note.rs:171-184,22,344` | pending |
+| TC-ADV-10 | `expand_query_for_fts` only `debug_assert!` against quote/paren — no release test | easy | `src/search/synonyms.rs:56-91` | pending |
+| TC-ADV-11 | `embed_query` truncation has no adversarial test for multi-byte chars | easy | `src/embedder/mod.rs:596-605` | pending |
+| TC-ADV-12 | `splade::encode` truncation has no boundary test for multi-byte chars | easy | `src/splade/mod.rs:378-394,546-561` | pending |
+| RM-V1.25-1 | `query_log.jsonl` append-only with no rotation or size cap | easy | `src/cli/batch/commands.rs:347-379` | pending |
+| RM-V1.25-2 | Telemetry archive files never deleted — unbounded `telemetry_*.jsonl` accumulation | easy | `src/cli/telemetry.rs:70-86,153-165` | pending |
+| RM-V1.25-4 | `QueryCache` on-disk prune runs once per `Embedder::new()` — daemon never prunes | easy | `src/embedder/mod.rs:298-304` | pending |
+| RM-V1.25-10 | `BatchContext::notes()` clones full `Vec<Note>` on every call | easy | `src/cli/batch/mod.rs:500-523,475-490` | pending |
+| RM-V1.25-13 | `EmbeddingCache` SQLite WAL files persist indefinitely | easy | `src/cache.rs:82-94` | pending |
+| RM-V1.25-14 | `EmbeddingCache::evict()` deletes entries but never `VACUUM`s — file doesn't shrink | easy | `src/cache.rs:305-354` | pending |
+| RM-V1.25-16 | `base_hnsw` retained resident even when never used — doubles peak HNSW memory | easy | `src/cli/batch/mod.rs:81,419-434` | pending |
+| RM-V1.25-17 | `refs` LRU size hardcoded to 2 — no env override | easy | `src/cli/batch/mod.rs:687,722` | pending; duplicate of SHL-V1.25-9 |
+| RM-V1.25-24 | Idle-timeout reset by every command — trivial polling defeats ONNX session eviction | easy | `src/cli/batch/mod.rs:108-136` | pending |
+| RM-V1.25-26 | Watch idle-cleanup uses `cycles_since_clear` instead of wall-clock — busy stream starves | easy | `src/cli/watch.rs:635,704-713` | pending |
+| RM-V1.25-27 | `query_cache.db` `INSERT OR REPLACE` rewrites identical rows — WAL churn | easy | `src/cache.rs:970-983` | pending |
+
+## P4 — Hard or Low Impact
+
+### Trivial inline fixes (apply now)
+
+These are easy/cosmetic items not worth a separate GitHub issue — clean up alongside the P1/P3 sweeps:
+
+- **DOC-V1.25-1** — Stray `/` in doc comments (`src/search/router.rs:296,299,305,559`). One-line fix per occurrence.
+- **DOC-V1.25-2** — README cuvs patch note pins "v1.24.0" — say "v1.24.0+" or strip version (`README.md:786`).
+- **DOC-V1.25-3** — CHANGELOG `[Unreleased]` link still points to v0.19.0; needs v1.25.0 anchor + per-version footers (`CHANGELOG.md:2188`).
+- **DOC-V1.25-4** — README env-var table missing 11 documented `CQS_*` vars (`README.md:649-704`).
+- **DOC-V1.25-5** — README does not document v1.25.0 per-category SPLADE alpha defaults.
+- **DOC-V1.25-6** — PRIVACY.md "Deleting Your Data" misses `~/.cache/cqs/` (`PRIVACY.md:46-56`).
+- **DOC-V1.25-7** — SECURITY.md Filesystem Access tables omit `~/.cache/cqs/` (`SECURITY.md:66-98`).
+- **DOC-V1.25-8** — CONTRIBUTING.md router.rs entry missing v1.25 categories and `resolve_splade_alpha`.
+- **DOC-V1.25-9** — README install section silent on patched cuvs git clone for CPU-only builds.
+- **DOC-V1.25-11** — README eval numbers contradictory across TL;DR / How It Works / Retrieval Quality.
+- **DOC-V1.25-12** — MEMORY.md says Schema v16 — current is v20; refresh test count alongside.
+- **CQ-V1.25-5** — `build_with_dim` docstring points at nonexistent `build_batched()` (`src/hnsw/build.rs:29-38`).
+- **DS-V1.25-9** — `schema.sql` header still says `v18` — bump to v20 with v19/v20 enumerated (`src/schema.sql:1-3`).
+- **DS-V1.25-11** — eval output atomic-write gap is in Python harness, out of scope for cqs Rust; close as noted.
+- **DS-V1.25-8** — Telemetry auto-archive race document-only — single-writer assumption is acceptable; document the invariant.
+- **SHL-V1.25-10** — `DEFAULT_QUERY_CACHE_SIZE = 128` comment assumes 1024-dim; just update the comment.
+
+### GitHub issues (file separately)
+
+These are hard items (architectural changes, multi-file refactors, hardware/runtime gaps, or future-leaning improvements without a current bug). Each gets its own issue:
+
+- **DOC-V1.25-10** — Re-benchmark and refresh README Performance table on v1.25.0 (medium; needs eval run).
+- **AC-V1.25-7 (already P2)** — File companion issue if cuVS API doesn't expose fill-count: design a separate sentinel-init scheme.
+- **DS-V1.25-10** — Add filesystem backup step before `migrate()` runs DDL (medium; design `CQS_MIGRATION_BACKUP=1` opt-in).
+- **API-V1.25-5** — `Store::open_readonly*` offers no compile-time guard against write methods. Hard refactor (`ReadStore`/`WriteStore` wrapper or phantom marker types). Cross-ref #909/PR #945 class.
+- **EX-V1.25-1** — Adding a new CLI subcommand requires 5–7 file edits (`Commands` vs `BatchCmd` divergence — measurable: 47 vs 36 variants). Hard. Underlying cause of CQ-V1.25-2, API-V1.25-1, API-V1.25-2.
+- **EX-V1.25-2** — Adding a grammar-less language requires editing three parser dispatch sites with non-exhaustive match. Medium.
+- **EX-V1.25-4** — Adding a new `ChunkType` leaves 57 hardcoded type-hint patterns unupdated. Medium.
+- **EX-V1.25-5** — `ExecutionProvider` enum hard-couples `gpu-index` to NVIDIA CUDA; no Metal/ROCm/Vulkan path. Hard. Affects manufacturing/local-first deployments on Apple Silicon.
+- **EX-V1.25-6** — ONNX embedder hardcodes BERT-style input/output names and mean-pooling. Medium. Add `ModelConfig::input_names`, `output_name`, `pooling`.
+- **EX-V1.25-7** — SPLADE and reranker model paths hardcoded, no preset registry. Medium. Add `[reranker]` / `[splade]` config sections.
+- **EX-V1.25-8** — Adding a new `QueryCategory` requires edits in 5 coupled places. Medium. Use `define_query_categories!` macro pattern.
+- **EX-V1.25-12** — Structural `Pattern` matchers hardcode per-language heuristics in fallthrough functions. Medium. Move to per-`LanguageDef` patterns.
+- **PB-V1.25-4** — SQLite mmap_size 256MB × 4 conns interacts poorly with WSL `/mnt/c/` 9P. Medium. Auto-detect 9P/NTFS and set mmap=0.
+- **PB-V1.25-6** — `std::fs::rename` fallback duplicated 4× with divergent cross-device handling. Medium. Factor into shared `cqs::fs::atomic_replace`.
+- **SHL-V1.25-6** — CAGRA `itopk_size` hardcoded clamp; no env override. Medium. Add `CQS_CAGRA_ITOPK_*` env vars + corpus-size scaling. (Partial duplicate of EX-V1.25-10.)
+- **SHL-V1.25-8** — Reranker batch passed whole candidate set in one ORT run. Medium. Add `CQS_RERANKER_BATCH`.
+- **PF-V1.25-11** — `classify_query` rebuilds `language_names()` and iterates 50+ patterns per search. Medium. Cache in `LazyLock`, use Aho-Corasick.
+- **PF-V1.25-12** — `NameMatcher::score` allocates per candidate (1-4MB churn on oracle runs). Medium. Pre-tokenize at upsert time.
+- **PF-V1.25-17** — `compute_enrichment_hash_with_summary` rebuilds buffers per chunk — 100MB churn for 100k-chunk reindex. Medium.
+- **PF-V1.25-18** — Reindex `reindex_files` clones every chunk into the channel. Medium. Switch to owning iterator.
+- **RM-V1.25-6** — CAGRA GPU index rebuilt fully on every index change — no persistence. Hard. Add `CagraIndex::save`/`load` using cuVS native serialization.
+- **RM-V1.25-12** — Multiple tokio runtimes per CLI invocation. Medium. Thread one shared runtime through Store + EmbeddingCache + QueryCache.
+- **RM-V1.25-18** — `last_indexed_mtime` prune uses `exists()` per entry — O(n) stat syscalls. Medium. Recency-based prune.
+- **RM-V1.25-21** — Reference `Store` uses 64MB mmap per reference — overspec'd. Medium. Add `Store::open_readonly_small`.
+- **TC-HP-5** — HNSW self-heal integration test missing. Medium. Test that dirty flag clears after clean rebuild.
+- **TC-HP-6** — Daemon `try_daemon_query` has zero tests (entire v1.24.0 feature uncovered). Hard. Mock socket + assert arg-translation; cross-ref `#909, #912-#925` if any exist.
+- **TC-HP-7** — `dispatch_search` (batch, 386 LOC) has no direct integration test asserting result content. Medium.
+- **TC-HP-11** — `tests/onboard_test.rs` 2 tests for 540+168 LOC. Medium.
+- **TC-HP-12** — `tests/where_test.rs` 2 tests for 997 LOC `where_to_add.rs`. Medium.
+- **TC-HP-14** — `tests/eval_test.rs` only 1 non-ignored test (fixture-existence). Medium. Add deterministic mock-embedder pipeline test.
+- **TC-HP-17** — `test_list_stale_files_all_fresh` doesn't pin `current == stored` and `current < stored` (backup-restore) semantics. Medium.
+- **EX-V1.25-11 (also P2)** — File alongside the P2 fix as a structural improvement issue, since collapsing the two notes-dispatch paths is a wider refactor than just patching the routing.
 
 ---
 
-## P1 — Fix this cycle
+## Triage counts
 
-### Data safety / PR #895 correctness cluster (regression tier)
+- **P1**: 49 rows (real bugs and security exposures already biting or imminent — daemon hot path, search non-determinism, OOM vectors, cache leaks, panics)
+- **P2**: 47 rows (medium-effort high-impact fixes — index/store correctness, daemon resource lifecycle, security hardening, missing tests for shipped features)
+- **P3**: 97 rows (easy hygiene/perf wins, low-impact correctness, observability uplift, single-cleanup-pass material)
+- **P4 trivial inline**: 16 rows (docs and stale-comment fixes)
+- **P4 GitHub issues**: 32 rows (hard refactors — extensibility, model abstraction, runtime/hardware coverage, multi-file rework)
 
-| ID | Finding (short) | File | Why P1 |
-|---|---|---|---|
-| CQ-2 / RM-3 / EH-8 / TC-2 | `BatchContext::invalidate_mutable_caches` omits `splade_index` → stale batch sessions serve stale SPLADE forever | `src/cli/batch/mod.rs:178-186` | Quintuple-confirmed. Easy one-line fix. Regression. | Status: ⏳ |
-| CQ-3 | `prune_orphan_sparse_vectors` DELETE + SELECT + UPDATE non-transactional | `src/store/sparse.rs:229-262` | Regression from #895 adding untransactioned queries. Wrap in `begin_write`. | Status: ⏳ |
-| DS-W1 | `prune_missing` / `prune_all` delete sparse rows in-tx but never bump `splade_generation` | `src/store/chunks/staleness.rs:116-128, 248-260` | Extends the #895 generation-counter hole; stale on-disk indexes trusted after GC. | Status: ⏳ |
-| DS-W2 / OB-22 / PB-NEW-6 | `cqs watch` has zero SPLADE integration; sparse vectors go stale silently; `splade_generation` never bumped | `src/cli/watch.rs:684-882` | **Triple-confirmed**. Loudest finding in the audit. Two-part fix: (a) bump generation in watch writes to force rebuild-on-next-query; (b) wire SPLADE encoder into watch for full re-encode. | Status: ⏳ |
-| DS-W3 | `sparse_vectors` has no FK with ON DELETE CASCADE → three delete paths in `chunks/crud.rs` leak orphan sparse rows | `src/store/chunks/crud.rs:414-588` + `schema.sql` | Root cause of DS-W1. v19 migration adding FK + CASCADE is the structural fix that makes forgetting impossible. | Status: ⏳ |
-| DS-W4 | TOCTOU: `splade_generation()` read separately from row-data read in three load sites | `src/cli/commands/index/build.rs:512-562`, `src/cli/store.rs:172-210`, `src/cli/batch/mod.rs:281-320` | Mine. Persist can label gen-N data as gen-M silently. Fix: single read transaction. | Status: ⏳ |
-| EH-1 / OB-17 | `splade_generation()` silent parse-to-0 on corrupt metadata; same pattern in two bump sites | `src/store/sparse.rs:270-278`, `:130-137`, `:244-251` | Collapses the invalidation counter on corruption; pairs with EH-3 into self-perpetuating cache poison. | Status: ⏳ |
-| EH-2 | `cmd_index` persists SPLADE with bare `.unwrap_or(0)` on generation read | `src/cli/commands/index/build.rs:536` | Violates project rule ("never bare `.unwrap_or_default()`"). Mine, shipped today. | Status: ⏳ |
-| EH-3 | `load_or_build` callers substitute `0` on generation-read failure and then `save()` a gen-0 file → self-perpetuating cache-poison loop | `src/cli/store.rs:172-210`, `src/cli/batch/mod.rs:281-320` | The failure mode is silent forever-rebuild. Fix: return `None` from the caller instead of falling through with `0`. | Status: ⏳ |
-| EH-4 | `SpladeIndexPersistError::Io` overloaded for 5 non-IO corrupt-data conditions | `src/splade/index.rs:227-260, 405-472` | API regret, shipped today. Add `CorruptData(String)` variant. | Status: ⏳ |
-| RB-1 | SPLADE header `chunk_count` / `token_count` not in blake3 checksum → one-bit flip → `Vec::with_capacity(usize::MAX)` panic | `src/splade/index.rs:389-411` | OOM attack vector. HNSW already defends against this class. | Status: ⏳ |
-| RB-2 | `SpladeIndex::load()` has no file-size cap before `read_to_end` | `src/splade/index.rs:395-396` | Unbounded allocation from untrusted file. HNSW has `hnsw_max_graph_bytes()` / `hnsw_max_data_bytes()`. | Status: ⏳ |
-| PB-NEW-1 | SPLADE save has no file locking; HNSW has `hnsw.lock` | `src/splade/index.rs:208-333` | Concurrent save tears the file. | Status: ⏳ |
-| PB-NEW-2 | SPLADE save emits no WSL advisory-locking warning | `src/splade/index.rs:208` | Silent on WSL, unlike HNSW. | Status: ⏳ |
-| PB-NEW-3 | Windows `remove_file + rename` is **redundant and actively harmful** — `std::fs::rename` handles replace-existing via `MoveFileExW` since Rust 1.46 | `src/splade/index.rs:319-325` | Delete the `#[cfg(windows)]` block. Introduces a TOCTOU race solving a non-problem. | Status: ⏳ |
-| PB-NEW-4 | SPLADE save has no cross-device `fs::copy → rename` fallback; HNSW has one | `src/splade/index.rs:325` | WSL 9P / Docker overlayfs breaks raw rename. | Status: ⏳ |
-| PF-4 | SPLADE body `Vec::new()` has no capacity hint → ~log₂(59MB) reallocations, ~100ms memcpy | `src/splade/index.rs:395-396` | One-line fix: pre-allocate from file metadata. Mine, #895 paper cut. | Status: ⏳ |
-| RM-4 | `SpladeIndex::save` leaks orphan `.splade.index.bin.*.tmp` on crash; HNSW has a cleanup loop | `src/splade/index.rs:284-325` | Add cleanup at the top of `load()`, mirror HNSW pattern. | Status: ⏳ |
+**Total rows emitted**: 49 + 47 + 97 + 16 + 32 = 241.
 
-### Scaling / performance regressions (wiring not verified after a fix)
+The 241-vs-236 overcount (+5) is intentional cross-listing. The following source rows are listed under their primary priority AND noted as duplicates of a merged parent, so the reader can scan either section without missing them:
 
-| ID | Finding (short) | File | Why P1 |
-|---|---|---|---|
-| SHL-31 | `upsert_sparse_vectors` DELETE loop still uses `chunks(333)` after PR #891 fixed only the INSERT | `src/store/sparse.rs:51-62` | Missed sibling in PR #891. Same perf class. Easy fix. | Status: ⏳ |
-| SHL-32 | `CHUNK_INSERT_BATCH = 49` in the primary chunk indexing path is 30× too small for modern SQLite | `src/store/chunks/async_helpers.rs:220-242` | Hottest reindex path; same root as SHL-31 but bigger blast radius. | Status: ⏳ |
-| SHL-33 | 14 other store call sites carry explicit "999" constants or comments | `src/store/*` | Mechanical cleanup driven by one shared helper. | Status: ⏳ |
+- RB-NEW-3, SEC-V1.25-2, RM-V1.25-22 → merged into primary EH-15 (daemon `read_line` OOM)
+- OB-NEW-6 → merged into primary EH-17 (`query_cache::get` swallow)
+- OB-NEW-4 → merged into primary EH-21 (panic payload discarded)
+- RM-V1.25-20 → merged into primary EH-22 (accept-loop debug)
+- PB-V1.25-15 → merged into primary EH-18 (socket setup `.ok()`)
+- PB-V1.25-19 → merged into primary SEC-V1.25-15 (stale-socket symlink)
+- RM-V1.25-17 → merged into primary SHL-V1.25-9 (refs LRU hardcoded 2)
+- EX-V1.25-10 → partial overlap with SHL-V1.25-6 (CAGRA knobs) — both retained
 
-### Algorithm correctness (regression even if not recent)
+Additionally, EH-15 (daemon read_line OOM) and EX-V1.25-11 (notes dispatch `unreachable!()`) appear in both P2 (fix-now) and P4 (file a structural-improvement issue) — intentional: immediate patch + follow-on refactor.
 
-| ID | Finding (short) | File | Why P1 |
-|---|---|---|---|
-| AC-1 | **SPLADE hybrid fusion scores are discarded.** `search_hybrid` computes alpha-weighted score, sorts, then passes IDs to a function that re-scores cosine-only. The alpha knob is a no-op on final ranking. | `src/search/query.rs:502-540, 700-734` | Every SPLADE eval on record is measuring candidate-set expansion, not fusion. Today's +10pp cross_language and -0.6pp overall are both reinterpretations under this finding. Hard, but blocks trustworthy SPLADE evaluation. | Status: ⏳ |
-| AC-2 | Router negation classifier matches `"not "` inside `cannot`, `"no "` inside `piano`/`nano`/`volcano`/`casino` | `src/search/router.rs:193-204, 288` | Common code identifiers misroute to `DenseBase` silently. Easy — switch to word-boundary tokenization. | Status: ⏳ |
-| AC-4 | `is_test_chunk` demotes production types `TestRegistry`/`TestHarness`/`TestRunner`/`TestContext` 30% via `starts_with("Test")` | `src/lib.rs:241` | Search rank corruption on common DI-container types. Easy. | Status: ⏳ |
+All 236 source finding rows are represented; no findings dropped as "out of scope".
 
-### Security / privacy (high severity regardless of age)
-
-| ID | Finding (short) | File | Why P1 |
-|---|---|---|---|
-| SEC-NEW-1 | Reference `source` field unvalidated → arbitrary file read via checked-in `.cqs.toml`. Attacker ships `source = "/home/user/.ssh"`; victim runs `cqs ref update rust-std-docs`; SSH keys get indexed into a reference DB | `src/config.rs:293-309`, `src/cli/commands/infra/reference.rs:110-111, 303-380` | Data exfiltration via a commonly-committed file. Pre-existing (not from #895) but clearly P1. | Status: ⏳ |
-| CQ-5 | `HnswIndex::try_load_with_ef(None, None)` in `reference.rs:106` and `project.rs:322` passes default dim (1024) even when `store.dim()` is available → 768-dim references silently load as 1024-dim garbage | `src/reference.rs:106`, `src/project.rs:322` | Same class as the `build_batched()` disaster from PR #690. Cross-project search returns garbage silently. Easy. | Status: ⏳ |
-
-### Documentation that lies
-
-| ID | Finding (short) | File | Why P1 |
-|---|---|---|---|
-| Doc-2 | **SECURITY.md:22 claims `integrity_check(1) on every database open`** — false since #893 | `SECURITY.md:22` | Security doc contradicts current code. The doc lies about safety behaviour. | Status: ⏳ |
-| Doc-3 | SECURITY.md:71/84 read/write access tables omit `.cqs/splade.index.bin` | `SECURITY.md:71, 84` | Under-reports filesystem access. Easy. | Status: ⏳ |
-| Doc-11 | PRIVACY.md:7 says `CQS_TELEMETRY=1` gates telemetry; an existing `telemetry.jsonl` re-activates logging without the env var | `PRIVACY.md:7` | Privacy doc lies about opt-in semantics. Easy. | Status: ⏳ |
-| Doc-1 | `CHANGELOG.md [Unreleased]` empty despite four shipped session PRs | `CHANGELOG.md:8-9` | Release hygiene. Easy. | Status: ⏳ |
-
-### Flag-declared-but-unread cluster (four independent findings, same root)
-
-| ID | Finding (short) | File | Why P1 |
-|---|---|---|---|
-| CQ-1 | `set_rrf_k_from_config` dead — config value silently ignored | `src/store/search.rs:13-19`, `src/store/mod.rs:162` | User writes `[scoring] rrf_k = 40`, nothing happens. | Status: ⏳ |
-| API-1 | `--format` flag ignored on 25+ commands (only 4 use `effective_format()`) | `src/cli/dispatch.rs:172-315` | User runs `cqs stats --format json` → text output. | Status: ⏳ |
-| API-10 | `--semantic-only` flag defined on `Cli` but zero readers | `src/cli/definitions.rs:181-183` | Dead flag advertised in help. | Status: ⏳ |
-| API-11 | `cmd_plan --tokens` respected in JSON mode, silently dropped in text mode | `src/cli/commands/train/plan.rs:37-74` | Budget contract broken on one output mode. | Status: ⏳ |
-
-### Non-transactional / data-loss pre-existing bugs
-
-| ID | Finding (short) | File | Why P1 |
-|---|---|---|---|
-| DS-W5 | `cqs index --force` renames `index.db` out from under a running `cqs watch`; watch's writes vanish silently as the orphan inode is garbage-collected | `src/cli/commands/index/build.rs:116-167, 609-612` | Data loss during the recovery path. No inter-process lock. Medium effort, high severity. | Status: ⏳ |
-| DS-W6 | Concurrent `check_schema_version` races produce spurious "duplicate column" migration failures on healthy DBs | `src/store/metadata.rs:23-74`, `src/store/migrations.rs:29-57, 286-295` | Not corruption but crash-looking failure. Easy fix: re-read version inside migration transaction. | Status: ⏳ |
-
----
-
-## P2 — Fix if time before next release
-
-### Performance + architecture
-
-| ID | Finding (short) | File |
-|---|---|---|
-| CQ-4 | `cmd_index` unconditionally re-encodes all SPLADE on every run → silently negates #895 persist win | `src/cli/commands/index/build.rs:389-568` + `src/store/sparse.rs:127-144` |
-| PF-1 | No persistent daemon — every CLI invocation pays full startup tax (tokio + ONNX + HNSW + SPLADE load). Agents burst 5-20 queries per turn | `src/main.rs:14-32`, `src/cli/dispatch.rs:23` |
-| PF-2 | `EmbeddingCache` only populated during indexing; `embed_query` uses per-process LRU → repeated queries re-run ONNX | `src/embedder/mod.rs:536-592`, `src/cache.rs:145-200` |
-| PF-3 | CAGRA rebuilt from store every CLI call (~95MB pull) at 24k vectors. Comment says "1s for 474 vectors" — stale | `src/cli/store.rs:253`, `src/cagra.rs:432-490` |
-| RM-6 | `cqs watch` re-opens `Store::open` every reindex cycle; churns 4-thread runtime over 24/7 systemd lifetime | `src/cli/watch.rs:384-387`, `src/store/mod.rs:338-342` |
-| RM-7 | `cqs batch`/`cqs chat` open primary store read-write for a single-stdin consumer → 4-thread runtime + quick_check per session | `src/cli/batch/mod.rs:578, 154, 195` |
-| SHL-37 | `Embedder::embed_documents` ignores `CQS_EMBED_BATCH_SIZE` — same bug as SHL-27 in a second location | `src/embedder/mod.rs:507-521` |
-| PF-11 | SPLADE `load()` copies 59MB into heap instead of `Mmap` | `src/splade/index.rs:341-490` |
-| PB-NEW-10 | `load_all_sparse_vectors` holds 7.58M SqliteRows in RAM during SPLADE rebuild → OOM risk on WSL small VMs | `src/store/sparse.rs:158-200` |
-| RM-5 | `SpladeIndex::save` holds body Vec + postings HashMap simultaneously → ~2× memory during persist | `src/splade/index.rs:218-262` |
-| RM-1 | `Embedder::model_fingerprint` reads 1.3 GB ONNX into heap; HNSW already streams via `update_reader` | `src/embedder/mod.rs:341-363` |
-
-### Extensibility / structural
-
-| ID | Finding (short) | File |
-|---|---|---|
-| EXT-7 | `LANGUAGE_NAMES` hardcodes 21 of 54 languages next to an existing registry `all()` API | `src/search/router.rs:221-243` |
-| EXT-8 | `extract_type_hints` hardcodes 17 patterns, misses 13+ ChunkType variants | `src/search/router.rs:515-549` |
-| EXT-9 | `is_test_chunk` duplicates `REGISTRY.all_test_path_patterns()` — 52 languages' test patterns invisible to scoring demotion + dead-code filter | `src/lib.rs:238-269` |
-| EXT-11 | `SearchStrategy::DenseWithSplade` has zero callers; `cmd_query_project` dispatch uses boolean instead of match | `src/search/router.rs:71-85`, `src/cli/commands/search/query.rs:279-303` |
-| EXT-10 | `parse_source` hardcodes per-language custom parser dispatch; no `LanguageDef.custom_parser` seam | `src/parser/mod.rs:232-244, 205-211` |
-| API-5 | Batch `search` silently drops `--context`/`--expand`/`--no-stale-check` and is missing `--threshold`/`--pattern`/`--include-docs`/`--semantic-only` | `src/cli/batch/handlers/search.rs:56-57`, `src/cli/batch/commands.rs:82-92` |
-
-### Observability
-
-| ID | Finding (short) | File |
-|---|---|---|
-| OB-14 | `cli::run_with` top-level dispatch has no root tracing span — all per-command logs orphaned | `src/cli/dispatch.rs:23` |
-| OB-15 | PR #893's `quick_check` + `CQS_SKIP_INTEGRITY_CHECK` bypass paths are silent | `src/store/mod.rs:430-441` |
-| OB-16 | `telemetry::log_routed` silently swallows write failures (unlike `log_command`) + no advisory lock | `src/cli/telemetry.rs:106-141` |
-| OB-18 | `cagra.rs` 14 format-string log calls vs. structured fields | `src/cagra.rs:93..507` |
-| OB-19 | Corrupt embedding skips logged at `trace!` level (invisible at default) — inconsistent with sibling `warn!` | `src/store/chunks/embeddings.rs:52`, `query.rs:347` |
-| OB-20 | `Store::begin_write` no span — WRITE_LOCK contention invisible | `src/store/mod.rs:506-518` |
-
-### Error handling (pre-existing silent fallbacks)
-
-| ID | Finding (short) | File |
-|---|---|---|
-| EH-5 | `parse_server_code_calls/types` silently return empty on 5 parser failure points; sibling `parse_server_code` logs all | `src/parser/aspx.rs:303-355, 425-478` |
-| EH-6 | `EmbeddingBatchIterator::next` silently drops rows with corrupt embedding blobs via `.ok()` | `src/store/chunks/async_helpers.rs:438-441` |
-| EH-7 | Watch-mode HNSW load failure indistinguishable from "first run" — hides `DimensionMismatch` / IO errors | `src/cli/watch.rs:307-314` |
-| EH-9 | `Drop for Store` discards `catch_unwind` panic payload silently | `src/store/mod.rs:621-629` |
-
-### Scaling (env vars to add)
-
-| ID | Finding (short) | File |
-|---|---|---|
-| SHL-34 | `busy_timeout(5s)` / `idle_timeout(30s)` hardcoded, no env override | `src/store/mod.rs:350, 372` |
-| SHL-35 | `max_connections = 4` on write opens, no env override | `src/store/mod.rs:281` |
-| SHL-36 | `mmap_size = 256MB` hardcoded in three places | `src/store/mod.rs:282, 304, 320` |
-| SHL-38 | SPLADE 4000-char truncation duplicated in two places, no env override | `src/splade/mod.rs:368-382, 533-548` |
-| SHL-39 | `MAX_QUERY_BYTES = 32KB` hardcoded, no override | `src/embedder/mod.rs:534` |
-| SHL-40 | `HNSW_BATCH_SIZE = 10_000` duplicated in two builders, no override | `src/cli/commands/index/build.rs:680, 716` |
-| Roadmap CPU | `PRAGMA quick_check` is 40s on WSL `/mnt/c` on write opens; make `CQS_INTEGRITY_CHECK=1` opt-in instead of opt-out | `src/store/mod.rs:430-441` |
-
-### Meta-fixes (to prevent clusters recurring)
-
-| ID | Finding | Why P2 |
-|---|---|---|
-| META-1 | Add a test that asserts every declared clap flag has at least one runtime reader (catches CQ-1/API-1/API-10/API-11 class) | Root cause of the flag-drop cluster; one compile-time or one test-time check eliminates four independent P1 findings at a stroke. |
-| META-2 | Replace "instrumented invalidation counters" with schema triggers / `ON DELETE CASCADE` (see feedback memory file) | Root cause of the DS-W1/W2/W3/W4 cluster. Currently enforced at call sites; should be enforced by the schema. |
-
----
-
-## P3 — Fix inline with related work or batch cleanup PR
-
-### API hygiene (easy)
-
-| ID | Finding (short) | File |
-|---|---|---|
-| CQ-6 | `CommandContext::splade_index` / `BatchContext::ensure_splade_index` logic duplicated | `src/cli/store.rs:144-210` + `src/cli/batch/mod.rs:247-320` |
-| CQ-7 | `make_named_store` test helper duplicate — marked "fixing" in v1.20.0, still there | `src/store/calls/cross_project.rs:278`, `src/impact/cross_project.rs:291` |
-| API-2 | Subcommand enums (`CacheCommand`, `NotesCommand::List`, `ProjectCommand::Search`, `RefCommand::List`) use inline `json: bool` instead of `TextJsonArgs` | multiple |
-| API-3 | `--expand` has two incompatible meanings (bool for parent context vs `usize` for graph depth) | `src/cli/definitions.rs:219`, `src/cli/args.rs:14-16` |
-| API-4 | `blame --depth`/`-d` collides with graph-depth flags; AD-31 fix renamed `-n` → `-d` and re-introduced the collision | `src/cli/args.rs:105-114` |
-| API-6 | `Affected` missing `--stdin` while peers `ImpactDiff`/`Review`/`Ci` have it | `src/cli/definitions.rs:320-327` |
-| API-7 | Batch `ensure_splade_index`+`borrow_splade_index` two-phase API vs CLI one-call | `src/cli/batch/mod.rs:281-327` |
-| API-8 | `SpladeIndex::ChecksumMismatch` missing `{ file, expected, actual }` vs HNSW equivalent | `src/splade/index.rs:55-56` |
-| API-9 | `SpladeIndexPersistError` `Io` variant overloaded (covered by EH-4, file-level fix) | `src/splade/index.rs:42-59` |
-| API-12 | `ProjectCommand::Search --limit` default 10 vs top-level default 5 | `src/cli/commands/infra/project.rs:52-57` |
-| API-13 | `TrainData::max_commits = 0` sentinel vs `TrainPairs::limit: Option<usize>` — two neighbouring commands, opposite "unlimited" idioms | `src/cli/definitions.rs:725-743, 745-759` |
-| API-14 | `bump_splade_generation` 12-line block duplicated across upsert + prune | `src/store/sparse.rs:126-144, 243-258` |
-
-### Documentation drift (easy)
-
-| ID | Finding (short) | File |
-|---|---|---|
-| Doc-4 | README.md:35 schema version two versions behind (claims v16, actual v18) | `README.md:35` |
-| Doc-5 | README env-var table missing 8 `CQS_*` vars | `README.md:646-690` |
-| Doc-6 | README `CQS_WATCH_MAX_PENDING` default wrong (1000 vs actual 10000) | `README.md:689` |
-| Doc-7 | CONTRIBUTING.md Architecture Overview missing `src/splade/` | `CONTRIBUTING.md:117-283` |
-| Doc-8 | CONTRIBUTING.md missing `src/search/router.rs` | `CONTRIBUTING.md:189-194` |
-| Doc-9 | CONTRIBUTING.md missing `src/store/sparse.rs` | `CONTRIBUTING.md:161-173` |
-| Doc-10 | `src/store/search.rs:51,55` stale "(in search.rs)" doc comment (moved to `src/search/query.rs` in v0.9.0) | `src/store/search.rs:51, 55` |
-
-### Extensibility / hygiene (easy)
-
-| ID | Finding (short) | File |
-|---|---|---|
-| EXT-12 | No `INDEX_DB_FILENAME` constant; `"index.db"` literal in 40+ sites | multiple |
-| EXT-13 | `ModelConfig::from_preset` has no enumerated preset list | `src/embedder/models.rs:94-101` |
-
-### Hot-loop perf nits (easy, small wins)
-
-| ID | Finding (short) | File |
-|---|---|---|
-| PF-5 | SPLADE load allocates 24k Strings via `.to_string()` per row | `src/splade/index.rs:411, 434` |
-| PF-6 | `name.to_lowercase()` per candidate in `NameMatcher::score` hot loop | `src/search/scoring/name_match.rs:94, 121-124` |
-| PF-7 | `search_by_candidate_ids` allocates lowercased strings per row despite pre-lowercased sets — use `eq_ignore_ascii_case` | `src/search/query.rs:691-717` |
-| PF-8 | `finalize_results` rebuilds glob matcher already compiled upstream | `src/search/query.rs:306-317` |
-| PF-9 | `apply_parent_boost` clones `parent_type_name` per entry in HashMap::entry | `src/search/scoring/candidate.rs:59-63` |
-| PF-10 | Store + cache build separate tokio runtimes per invocation (~10-20ms each) | `src/store/mod.rs:333-342`, `src/cache.rs:67-70` |
-
-### Security hardening (defence in depth)
-
-| ID | Finding (short) | File |
-|---|---|---|
-| SEC-NEW-2 | `log_routed` missing umask/advisory-lock symmetry with `log_command` | `src/cli/telemetry.rs:106-141` |
-| SEC-NEW-3 | `run_git_log_line_range` doesn't reject absolute / `..` paths | `src/cli/commands/io/blame.rs:69-111` |
-
-### Platform nits
-
-| ID | Finding (short) | File |
-|---|---|---|
-| PB-NEW-5 | No parent-directory `fsync` after rename — power-cut can lose SPLADE save (rebuildable so low severity, but undocumented) | `src/splade/index.rs:314-325` |
-| PB-NEW-7 | SPLADE save builds 60-100MB body in memory — blocks watch loop on WSL 9P | `src/splade/index.rs:218-315` |
-| PB-NEW-9 | `file_name().to_str().unwrap_or("splade.index")` collapses non-UTF-8 paths to a shared temp name | `src/splade/index.rs:284-291` |
-
-### Observability nits
-
-| ID | Finding (short) | File |
-|---|---|---|
-| OB-13 | `search_hybrid` silently falls back when `splade_index` is empty | `src/search/query.rs:407-409` |
-| OB-21 | `BoundedScoreHeap::push` non-finite warn has no context fields | `src/search/scoring/candidate.rs:172` |
-
-### Test additions (happy-path gaps)
-
-All of `docs/audit-findings.md` § Test Coverage (Happy Path) go to P3 unless referenced above. The `test_invalidate_clears_mutable_caches` extension that catches CQ-2 moves to P1 (bundled with the CQ-2 fix).
-
-### Other low-impact
-
-| ID | Finding (short) |
-|---|---|
-| AC-3 | `bootstrap_ci(&values, 0)` integer underflow — test-only |
-| SHL-41 | `SAFETY_MARGIN_VARS = 300` comment is arithmetically wrong (works in practice, but mine and the comment is misleading) |
-
----
-
-## P4 — Hard or genuinely low-impact (create issues, do not block this cycle)
-
-| ID | Finding (short) | Status |
-|---|---|---|
-| PF-1 (hard) | Persistent daemon / `cqs serve` — biggest strategic perf win | Create issue |
-| PF-3 (hard) | Persist CAGRA graph to disk | Create issue |
-| AC-1 fix implementation (hard) | `search_hybrid` rewrite to preserve fused scores through finalize; re-run SPLADE evals | P1 severity but hard implementation — track as issue + roadmap item |
-| DS-W5 fix implementation | `cqs index --force` vs watch requires inter-process file lock | P1 severity, medium implementation |
-| PB-NEW-6 fix implementation | Watch + SPLADE full re-encode requires wiring SpladeEncoder through watch context | P1 severity, hard implementation |
-
-The P1-severity hard items (AC-1, DS-W5, PB-NEW-6) stay in P1 for triage-severity accounting but the **work** to fix them spans this cycle and beyond. Track each as an issue with a linked plan doc so the severity doesn't get lost when the implementation slips.
-
----
-
-## Execution plan
-
-1. **Ship P1 as a single chained PR series.** Group by theme:
-   - **PR-A: PR #895 hardening** — CQ-2/3, DS-W1/W3/W4, EH-1/2/3/4, RB-1/2, PF-4, PB-NEW-1/2/3/4/5, RM-3/4, plus the 6 missing SPLADE tests from the adversarial auditor. Meta-fix META-2 (sparse_vectors FK+CASCADE v19 migration) is the architectural backbone.
-   - **PR-B: Watch + SPLADE integration** — DS-W2/OB-22/PB-NEW-6 cluster. Short-term: bump generation in watch writes (option B). Long-term: full SPLADE encoder wired into watch (deferred to its own PR).
-   - **PR-C: SPLADE hybrid fusion correctness** — AC-1 alone. Touches search/query.rs, risks eval-delta shifts, should ship with re-eval numbers.
-   - **PR-D: Documentation that lies** — Doc-1/2/3/11 + the CHANGELOG entry for this whole audit cycle.
-   - **PR-E: Flag-declared-but-unread cluster** — CQ-1 + API-1/10/11 + META-1 test.
-   - **PR-F: SHL-31/32/33 wiring verification** — promote pre-3.32 SQLite fix to all 15 sites via a shared helper.
-   - **PR-G: AC-2/4 router false positives** — word-boundary tokenization in negation and `is_test_chunk`.
-   - **PR-H: SEC-NEW-1 reference source containment** — extend SEC-4 validation to cover `source`. Pairs with a SECURITY.md update.
-   - **PR-I: DS-W5 + DS-W6** — inter-process lock for `cqs index --force`; double-check under lock for schema migrations.
-   - **PR-J: CQ-5 dim-footgun** — `try_load_with_ef(None, Some(store.dim()))` in reference.rs and project.rs.
-
-2. **P2/P3 rolled into release-prep sweep PRs** after P1 ships.
-
-3. **P4 items** get GitHub issues with the relevant audit-findings excerpt pasted in, and links back to this triage doc.
-
-## Next steps
-
-- Generate fix prompts for all P1 items (grouped by PR above). Each prompt: file paths, current code verbatim, replacement code, one-line why.
-- Review the fix prompts against source (second-pass agent) to catch drift.
-- Execute fixes P1-A through P1-J in dependency order: PR-A (schema+persistence hardening) goes first because META-2 is the foundation the rest assume; PR-B depends on META-2.
-
----
-
-## Fixed items (session 2026-04-11/12)
-
-| Finding | PR | Status |
-|---|---|---|
-| AC-2 | #900 | ✅ merged |
-| AC-4 | #900 | ✅ merged |
-| API-1 | #905 | ✅ merged |
-| API-10 | #902 | ✅ merged |
-| API-11 | #907 | ✅ merged |
-| API-14 | #898 | ✅ merged |
-| API-8 | #898 | ✅ merged |
-| API-9 | #898 | ✅ merged |
-| CQ-1 | #902 | ✅ merged |
-| CQ-2 | #898 | ✅ merged |
-| CQ-3 | #898 | ✅ merged |
-| CQ-5 | #900 | ✅ merged |
-| DS-W1 | #898 | ✅ merged |
-| DS-W2 | #901 | ✅ merged |
-| DS-W3 | #898 | ✅ merged |
-| DS-W4 | #898 | ✅ merged |
-| DS-W6 | #903 | ✅ merged |
-| Doc-1 | #900 | ✅ merged |
-| Doc-11 | #900 | ✅ merged |
-| Doc-2 | #900 | ✅ merged |
-| Doc-3 | #900 | ✅ merged |
-| Doc-4 | #900 | ✅ merged |
-| Doc-6 | #900 | ✅ merged |
-| Doc-7 | #900 | ✅ merged |
-| Doc-8 | #900 | ✅ merged |
-| Doc-9 | #900 | ✅ merged |
-| EH-1 | #898 | ✅ merged |
-| EH-2 | #898 | ✅ merged |
-| EH-3 | #898 | ✅ merged |
-| EH-4 | #898 | ✅ merged |
-| EH-5 | #903 | ✅ merged |
-| EH-7 | #906 | ✅ merged |
-| EH-8 | #907 | ✅ merged |
-| EH-9 | #906 | ✅ merged |
-| OB-14 | #906 | ✅ merged |
-| OB-17 | #898 | ✅ merged |
-| OB-19 | #907 | ✅ merged |
-| OB-21 | #906 | ✅ merged |
-| OB-22 | #901 | ✅ merged |
-| PB-NEW-1 | #898 | ✅ merged |
-| PB-NEW-2 | #898 | ✅ merged |
-| PB-NEW-3 | #898 | ✅ merged |
-| PB-NEW-4 | #898 | ✅ merged |
-| PB-NEW-5 | #898 | ✅ merged |
-| PB-NEW-6 | #901 | ✅ merged |
-| PF-4 | #898 | ✅ merged |
-| PF-7 | #906 | ✅ merged |
-| RB-1 | #898 | ✅ merged |
-| RB-2 | #898 | ✅ merged |
-| RM-1 | #900 | ✅ merged |
-| RM-2 | #903 | ✅ merged |
-| RM-3 | #898 | ✅ merged |
-| RM-4 | #898 | ✅ merged |
-| SEC-NEW-1 | #903 | ✅ merged |
-| SEC-NEW-3 | #900 | ✅ merged |
-| SHL-31 | #898 | ✅ merged |
-| SHL-32 | #904 | ✅ merged |
-| SHL-33 | #904 | ✅ merged |
-
-| AC-1 | #910 | ✅ merged |
-| AC-3 | #911 | ✅ merged |
-| API-12 | #911 | ✅ merged |
-| CQ-4 | #911 | ✅ merged |
-| Doc-5 | #911 | ✅ merged |
-| Doc-10 | #911 | ✅ merged |
-| DS-W5 | #911 | ✅ merged |
-| EH-6 | #911 | ✅ merged |
-| EXT-7 | #911 | ✅ merged |
-| EXT-8 | #911 | ✅ merged |
-| EXT-9 | #911 | ✅ merged |
-| OB-13 | #911 | ✅ merged |
-| OB-15 | #911 | ✅ merged |
-| OB-16 | #911 | ✅ merged |
-| OB-18 | #911 | ✅ merged |
-| OB-20 | #908 | ✅ merged |
-| PB-NEW-9 | #911 | ✅ merged |
-| PF-5 | — | won't-fix (inherent to binary format) |
-| PF-6 | #911 | ✅ merged |
-| PF-8 | #911 | ✅ merged |
-| SEC-NEW-2 | #911 | ✅ merged |
-| SHL-34 | #911 | ✅ merged |
-| SHL-35 | #911 | ✅ merged |
-| SHL-36 | #911 | ✅ merged |
-| SHL-37 | #911 | ✅ merged |
-| SHL-38 | #911 | ✅ merged |
-| SHL-39 | #911 | ✅ merged |
-| SHL-40 | #911 | ✅ merged |
-| Roadmap CPU | #911 | ✅ merged |
-| RM-6 | #911 | ✅ merged |
-| RM-7 | #911 | ✅ merged |
-
-| PF-1 | #926 | ✅ merged (daemon mode) |
-| PF-2 | #928 | ✅ merged (query cache) |
-| PF-10 | #929 | ✅ merged (shared runtime) |
-
-**90 findings fixed (+ 1 won't-fix) out of ~136 triaged.**
-All P1 items addressed. Daemon (#926), query cache (#928), shared runtime (#929) shipped.
-Issues #912–#925 created for architectural items.
+Cross-references to known open issues `#909, #912-#925, #856, #717, #389, #255, #106, #63`: no direct text-match overlap was found while triaging. The daemon-notes class of bugs (PR #945 class) is the class that would plausibly overlap with `#909`/`#912-#925` if those issue numbers track the same root cause — reviewer should confirm at issue-creation time.

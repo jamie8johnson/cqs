@@ -36,7 +36,7 @@ There are 16 categories split into 2 batches of 8. Each batch spawns 8 parallel 
 
 3. **Create team**: One team per batch (`audit-batch-N`)
 
-4. **Spawn teammates**: One per category (use `sonnet` for judgment-heavy categories, `haiku` for mechanical ones)
+4. **Spawn teammates**: One per category. Use `model: "opus"` for every auditor — sonnet produces lower-quality judgments and haiku misses subtle findings. The per-category scope keeps each agent focused enough that opus cost is reasonable.
 
 5. **Each teammate prompt must include**:
    - Their category scope (from table below)
