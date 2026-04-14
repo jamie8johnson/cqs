@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 
 use std::sync::Arc;
 
-use cqs::{parse_notes, Embedder, HnswIndex, ModelInfo, Parser as CqParser, Store};
+use cqs::{parse_notes, Embedder, HnswIndex, HnswKind, ModelInfo, Parser as CqParser, Store};
 
 use crate::cli::{
     acquire_index_lock, args::IndexArgs, check_interrupted, enumerate_files, find_project_root,
@@ -187,14 +187,18 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         println!("Indexing {} files (pipelined)...", files.len());
     }
 
-    // Mark HNSW as dirty before writing chunks — if we crash between SQLite
-    // commit and HNSW save, the dirty flag tells the next load to fall back
-    // to brute-force search until a full rebuild. (RT-DATA-6)
-    // DS-41: The dirty flag is a crash-safety invariant — if we can't set it,
-    // abort rather than risk a stale index on crash.
+    // Mark both HNSW kinds as dirty before writing chunks — if we crash
+    // between SQLite commit and HNSW save, the dirty flag tells the next
+    // load to fall back to brute-force search until a full rebuild. Base
+    // and enriched are built from the same chunks, so both must be marked.
+    // (RT-DATA-6) DS-41: the dirty flag is a crash-safety invariant — if we
+    // can't set it, abort rather than risk a stale index on crash.
     store
-        .set_hnsw_dirty(true)
-        .context("Failed to mark HNSW dirty before indexing")?;
+        .set_hnsw_dirty(HnswKind::Enriched, true)
+        .context("Failed to mark enriched HNSW dirty before indexing")?;
+    store
+        .set_hnsw_dirty(HnswKind::Base, true)
+        .context("Failed to mark base HNSW dirty before indexing")?;
 
     // Run the 3-stage pipeline: parse → embed → write
     // Pipeline shares the same Store via Arc (no duplicate DB connections)
@@ -603,9 +607,9 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         }
 
         if let Some(total) = build_hnsw_index(&store, &cqs_dir)? {
-            // HNSW saved successfully — clear dirty flag (RT-DATA-6)
-            if let Err(e) = store.set_hnsw_dirty(false) {
-                tracing::warn!(error = %e, "Failed to clear HNSW dirty flag after HNSW save");
+            // HNSW saved successfully — clear enriched dirty flag (RT-DATA-6)
+            if let Err(e) = store.set_hnsw_dirty(HnswKind::Enriched, false) {
+                tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag after HNSW save");
             }
             if !cli.quiet {
                 println!("  HNSW index: {} vectors", total);
@@ -616,6 +620,9 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         // if it fails — fall back to enriched-only at query time.
         match build_hnsw_base_index(&store, &cqs_dir) {
             Ok(Some(total)) => {
+                if let Err(e) = store.set_hnsw_dirty(HnswKind::Base, false) {
+                    tracing::warn!(error = %e, "Failed to clear base HNSW dirty flag after base HNSW save");
+                }
                 if !cli.quiet {
                     println!("  HNSW base index: {} vectors", total);
                 }

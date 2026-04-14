@@ -305,13 +305,13 @@ pub(crate) fn build_vector_index_with_config(
     // falling back to brute-force. If checksum passes, the crash happened AFTER
     // the files were written — the dirty flag is a false positive, clear it
     // and proceed. If checksum fails, the files are genuinely stale.
-    if store.is_hnsw_dirty().unwrap_or(true) {
+    if store.is_hnsw_dirty(cqs::HnswKind::Enriched).unwrap_or(true) {
         match cqs::hnsw::verify_hnsw_checksums(cqs_dir, "index") {
             Ok(()) => {
                 tracing::info!(
                     "HNSW dirty flag set but checksums pass — clearing flag (self-heal)"
                 );
-                if let Err(e) = store.set_hnsw_dirty(false) {
+                if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Enriched, false) {
                     tracing::warn!(error = %e, "Failed to clear dirty flag");
                 }
             }
@@ -359,13 +359,13 @@ pub(crate) fn build_base_vector_index(
 
     // Same self-heal logic as enriched: if checksums pass, clear the dirty
     // flag; otherwise fall back to enriched via the router.
-    if store.is_hnsw_dirty().unwrap_or(true) {
+    if store.is_hnsw_dirty(cqs::HnswKind::Base).unwrap_or(true) {
         match cqs::hnsw::verify_hnsw_checksums(cqs_dir, "index_base") {
             Ok(()) => {
                 tracing::info!(
                     "Base HNSW dirty flag set but checksums pass — clearing flag (self-heal)"
                 );
-                if let Err(e) = store.set_hnsw_dirty(false) {
+                if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Base, false) {
                     tracing::warn!(error = %e, "Failed to clear dirty flag");
                 }
             }
@@ -425,7 +425,7 @@ mod base_index_tests {
         // Mark the store as clean so we don't get filtered out by the
         // hnsw_dirty branch — that branch fires before the file load but
         // AFTER the env-var check, so we still test the early return.
-        store.set_hnsw_dirty(false).unwrap();
+        store.set_hnsw_dirty(cqs::HnswKind::Base, false).unwrap();
 
         let dim = store.dim();
         let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..10)
@@ -474,7 +474,7 @@ mod base_index_tests {
         let db_path = dir.path().join("index.db");
         let store = cqs::Store::open(&db_path).unwrap();
         store.init(&cqs::store::ModelInfo::default()).unwrap();
-        store.set_hnsw_dirty(false).unwrap();
+        store.set_hnsw_dirty(cqs::HnswKind::Base, false).unwrap();
 
         let dim = store.dim();
         let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..5)

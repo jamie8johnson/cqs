@@ -9,7 +9,7 @@ use std::collections::HashSet;
 
 use anyhow::{Context as _, Result};
 
-use cqs::Parser;
+use cqs::{HnswKind, Parser};
 
 use crate::cli::acquire_index_lock;
 
@@ -100,9 +100,11 @@ pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<(
     let hnsw_vectors = if pruned_chunks > 0 {
         // DS-3: failing to mark HNSW dirty means concurrent searches could
         // return stale results from the old index during rebuild. Abort.
+        // GC only rebuilds enriched; base is left alone for the next full
+        // `cqs index` to catch up.
         store
-            .set_hnsw_dirty(true)
-            .context("Failed to mark HNSW dirty before GC rebuild")?;
+            .set_hnsw_dirty(HnswKind::Enriched, true)
+            .context("Failed to mark enriched HNSW dirty before GC rebuild")?;
         let hnsw_path = cqs_dir.join("index.hnsw.graph");
         if hnsw_path.exists() {
             for file_name in cqs::hnsw::HNSW_ALL_EXTENSIONS
@@ -124,8 +126,8 @@ pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<(
         }
         let result = build_hnsw_index(store, cqs_dir)?;
         if result.is_some() {
-            if let Err(e) = store.set_hnsw_dirty(false) {
-                tracing::warn!(error = %e, "Failed to clear HNSW dirty flag after rebuild");
+            if let Err(e) = store.set_hnsw_dirty(HnswKind::Enriched, false) {
+                tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag after rebuild");
             }
         }
         result
