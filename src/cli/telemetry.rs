@@ -5,13 +5,15 @@
 //!
 //! **Activation:** Telemetry is active when either:
 //! - `CQS_TELEMETRY=1` env var is set, OR
-//! - `.cqs/telemetry.jsonl` already exists (created by a previous `cqs telemetry reset`)
+//! - `CQS_TELEMETRY` is unset AND `.cqs/telemetry.jsonl` already exists
+//!   (created by a previous `cqs telemetry reset`)
 //!
 //! This means: once you opt in (via env var or `cqs telemetry reset`), telemetry
 //! stays on for all processes that use this project directory — including subagents
 //! and non-interactive shells that may not inherit the env var.
 //!
-//! **Opt out:** Delete `.cqs/telemetry.jsonl` and unset `CQS_TELEMETRY`.
+//! **Opt out:** Set `CQS_TELEMETRY=0` (hard opt-out, overrides the existence
+//! check), or delete `.cqs/telemetry.jsonl` and unset `CQS_TELEMETRY`.
 //!
 //! Local file only. No network calls. Auto-archives at 10 MB.
 
@@ -33,10 +35,19 @@ pub fn log_command(
     query: Option<&str>,
     result_count: Option<usize>,
 ) {
-    // Active if env var is set OR telemetry file already exists (opt-in persists)
+    // Active if env var is explicitly "1" OR (env unset AND telemetry file
+    // already exists). RM-V1.25-25: when CQS_TELEMETRY is set to any
+    // non-"1" value (including "0"), treat that as a hard opt-out so the
+    // env var actually disables collection even when the file exists.
     let path = cqs_dir.join("telemetry.jsonl");
-    if std::env::var("CQS_TELEMETRY").as_deref() != Ok("1") && !path.exists() {
-        return;
+    match std::env::var("CQS_TELEMETRY") {
+        Ok(v) if v == "1" => {}
+        Ok(_) => return,
+        Err(_) => {
+            if !path.exists() {
+                return;
+            }
+        }
     }
 
     let timestamp = SystemTime::now()
@@ -117,9 +128,17 @@ pub fn log_routed(
     fallback: bool,
     result_count: Option<usize>,
 ) {
+    // RM-V1.25-25: mirrors log_command — explicit non-"1" env opts out
+    // even when the telemetry file is present.
     let path = cqs_dir.join("telemetry.jsonl");
-    if std::env::var("CQS_TELEMETRY").as_deref() != Ok("1") && !path.exists() {
-        return;
+    match std::env::var("CQS_TELEMETRY") {
+        Ok(v) if v == "1" => {}
+        Ok(_) => return,
+        Err(_) => {
+            if !path.exists() {
+                return;
+            }
+        }
     }
 
     let timestamp = SystemTime::now()
