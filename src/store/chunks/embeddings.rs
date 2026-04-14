@@ -45,9 +45,25 @@ impl Store {
                     let hash: String = row.get(0);
                     let bytes: Vec<u8> = row.get(1);
                     match bytes_to_embedding(&bytes, dim) {
-                        Ok(embedding) => {
-                            result.insert(hash, Embedding::new(embedding));
-                        }
+                        // TC-ADV-1: route through `Embedding::try_new` so NaN/
+                        // Inf embeddings (corrupt blob, interrupted embedder
+                        // run, bit rot, downstream writer bug) are rejected
+                        // before they can poison HNSW build or query paths.
+                        // `try_new` enforces finiteness; previously the code
+                        // used the unchecked `Embedding::new` constructor.
+                        Ok(embedding) => match Embedding::try_new(embedding) {
+                            Ok(e) => {
+                                result.insert(hash, e);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    hash = %hash,
+                                    error = %e,
+                                    "Non-finite embedding values (NaN/Inf), skipping — \
+                                     run 'cqs index --force' to rebuild"
+                                );
+                            }
+                        },
                         Err(e) => {
                             tracing::warn!(hash = %hash, error = %e, "Corrupt embedding blob, skipping — run 'cqs index --force' to rebuild");
                         }
@@ -99,9 +115,24 @@ impl Store {
                     let id: String = row.get(0);
                     let bytes: Vec<u8> = row.get(1);
                     match bytes_to_embedding(&bytes, dim) {
-                        Ok(embedding) => {
-                            result.push((id, Embedding::new(embedding)));
-                        }
+                        // TC-ADV-1: same finiteness guard as
+                        // `get_embeddings_by_hashes`. NaN/Inf values would
+                        // produce non-finite cosine distances inside HNSW
+                        // build and corrupt the graph; skip the row with a
+                        // warn instead.
+                        Ok(embedding) => match Embedding::try_new(embedding) {
+                            Ok(e) => {
+                                result.push((id, e));
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    chunk_id = %id,
+                                    error = %e,
+                                    "Non-finite embedding values (NaN/Inf), skipping — \
+                                     run 'cqs index --force' to rebuild"
+                                );
+                            }
+                        },
                         Err(e) => {
                             tracing::trace!(chunk_id = %id, error = %e, "Skipping embedding");
                         }
@@ -158,6 +189,131 @@ mod tests {
         let store = Store::open(&db_path).unwrap();
         store.init(&ModelInfo::default()).unwrap();
         (store, dir)
+    }
+
+    /// Build a `Vec<u8>` embedding blob containing at least one `f32::NAN`
+    /// so `bytes_to_embedding` returns Ok but `Embedding::try_new` rejects it.
+    fn nan_embedding_bytes() -> Vec<u8> {
+        let mut v = vec![0.5f32; crate::EMBEDDING_DIM];
+        // Drop a NaN somewhere inside the vector so byte-length is correct
+        // but finiteness is violated.
+        v[crate::EMBEDDING_DIM / 2] = f32::NAN;
+        bytemuck::cast_slice::<f32, u8>(&v).to_vec()
+    }
+
+    /// TC-ADV-1: `get_embeddings_by_hashes` must not propagate NaN-containing
+    /// embeddings into HNSW. The production write path never produces NaN,
+    /// but a corrupt blob (interrupted embedder run, bit rot, downstream
+    /// writer bug) could land in the `chunks` table. This test directly
+    /// inserts NaN bytes and verifies the reader skips the row with a warn.
+    #[test]
+    fn test_get_embeddings_by_hashes_skips_nan_blobs() {
+        let (store, _dir) = make_store();
+
+        // Insert a well-formed chunk + embedding for the control case.
+        let good = test_chunk("good", "fn good() { 1 }");
+        store
+            .upsert_chunk(&good, &mock_embedding(1.0), Some(100))
+            .unwrap();
+
+        // Insert a chunk whose embedding bytes decode to a NaN-containing
+        // vector. We bypass upsert_chunk (which accepts only an `Embedding`,
+        // already constructed) and write raw bytes via sqlx.
+        let bad_hash = "a".repeat(64); // 64-char hex, distinct from `good`
+        let bad_id = format!("test.rs:9:{}", &bad_hash[..8]);
+        let bad_bytes = nan_embedding_bytes();
+        store.rt.block_on(async {
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name,
+                 signature, content, content_hash, doc, line_start, line_end, embedding,
+                 source_mtime, created_at, updated_at)
+                 VALUES (?1, 'nan.rs', 'file', 'rust', 'function', 'nanfn',
+                 'fn nanfn()', 'fn nanfn() {}', ?2, NULL, 1, 5, ?3, 0,
+                 '1970-01-01', '1970-01-01')",
+            )
+            .bind(&bad_id)
+            .bind(&bad_hash)
+            .bind(&bad_bytes)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        });
+
+        let result = store
+            .get_embeddings_by_hashes(&[good.content_hash.as_str(), bad_hash.as_str()])
+            .unwrap();
+
+        assert!(
+            result.contains_key(&good.content_hash),
+            "good embedding should be returned"
+        );
+        assert!(
+            !result.contains_key(&bad_hash),
+            "NaN-containing embedding must be filtered out, got keys: {:?}",
+            result.keys().collect::<Vec<_>>()
+        );
+        for (h, e) in &result {
+            assert!(
+                e.as_slice().iter().all(|v| v.is_finite()),
+                "all returned embeddings must be finite (hash={h})"
+            );
+        }
+    }
+
+    /// TC-ADV-1 paired test: same guard on the sibling
+    /// `get_chunk_ids_and_embeddings_by_hashes` path (the one HNSW build
+    /// actually consumes). A NaN-containing chunk must not appear in the
+    /// returned `(id, embedding)` pairs.
+    #[test]
+    fn test_get_chunk_ids_and_embeddings_by_hashes_skips_nan_blobs() {
+        let (store, _dir) = make_store();
+
+        let good = test_chunk("good2", "fn good2() { 2 }");
+        store
+            .upsert_chunk(&good, &mock_embedding(1.0), Some(100))
+            .unwrap();
+
+        let bad_hash = "b".repeat(64);
+        let bad_id = format!("test2.rs:9:{}", &bad_hash[..8]);
+        let bad_bytes = nan_embedding_bytes();
+        store.rt.block_on(async {
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name,
+                 signature, content, content_hash, doc, line_start, line_end, embedding,
+                 source_mtime, created_at, updated_at)
+                 VALUES (?1, 'nan2.rs', 'file', 'rust', 'function', 'nanfn2',
+                 'fn nanfn2()', 'fn nanfn2() {}', ?2, NULL, 1, 5, ?3, 0,
+                 '1970-01-01', '1970-01-01')",
+            )
+            .bind(&bad_id)
+            .bind(&bad_hash)
+            .bind(&bad_bytes)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        });
+
+        let result = store
+            .get_chunk_ids_and_embeddings_by_hashes(&[
+                good.content_hash.as_str(),
+                bad_hash.as_str(),
+            ])
+            .unwrap();
+
+        // Good chunk present, bad chunk absent.
+        let ids: Vec<&str> = result.iter().map(|(id, _)| id.as_str()).collect();
+        assert!(ids.contains(&good.id.as_str()), "good id missing: {ids:?}");
+        assert!(
+            !ids.contains(&bad_id.as_str()),
+            "NaN-containing chunk id must be filtered out: {ids:?}"
+        );
+        // All returned embeddings are finite.
+        for (id, emb) in &result {
+            assert!(
+                emb.as_slice().iter().all(|v| v.is_finite()),
+                "embedding for id={id} must be finite"
+            );
+        }
     }
 
     #[test]
