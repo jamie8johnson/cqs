@@ -67,7 +67,23 @@ impl Store {
         }
 
         const BATCH_SIZE: usize = 500;
-        let mut result = Vec::with_capacity(ids.len());
+
+        // PF-V1.25-6: previously built rows in DB order, then `sort_by_key`
+        // (O(N log N)) using a HashMap<&str, usize> position index to
+        // restore caller order. Drop the sort entirely by writing each row
+        // directly into its caller-ordered slot:
+        //   1. Build id→position map once (same cost as before, but now
+        //      amortizes the whole function instead of paying it twice).
+        //   2. Allocate `Vec<Option<T>>` sized to `ids.len()`.
+        //   3. For each DB row, look up its position and place into slot.
+        //   4. `flatten()` drops `None` slots (ids not found in DB) while
+        //      preserving caller order.
+        // Tie-break semantics for downstream sorts are unchanged: the
+        // returned Vec has caller-provided ordering exactly as before.
+        let id_pos: std::collections::HashMap<&str, usize> =
+            ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        let mut positioned: Vec<Option<(CandidateRow, Vec<u8>)>> =
+            (0..ids.len()).map(|_| None).collect();
 
         for batch in ids.chunks(BATCH_SIZE) {
             let placeholders = crate::store::helpers::make_placeholders(batch.len());
@@ -85,25 +101,18 @@ impl Store {
                 q.fetch_all(&self.pool).await?
             };
 
-            result.extend(rows.iter().map(|r| {
+            for r in &rows {
                 let candidate = CandidateRow::from_row(r);
                 let embedding_bytes: Vec<u8> = r.get("embedding");
-                (candidate, embedding_bytes)
-            }));
+                if let Some(&pos) = id_pos.get(candidate.id.as_str()) {
+                    positioned[pos] = Some((candidate, embedding_bytes));
+                }
+            }
         }
 
-        // SQLite returns rows in rowid order regardless of input order. Restore
-        // caller-provided order so equal-score candidates in downstream sorts
-        // tie-break by fused-score rank rather than database insertion order.
-        let pos: std::collections::HashMap<&str, usize> =
-            ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
-        result.sort_by_key(|(candidate, _)| {
-            pos.get(candidate.id.as_str())
-                .copied()
-                .unwrap_or(usize::MAX)
-        });
-
-        Ok(result)
+        // Compact `None` slots (caller ids absent from DB) while keeping
+        // the caller-provided order for the remainder.
+        Ok(positioned.into_iter().flatten().collect())
     }
 
     /// Fetch chunks by IDs with embeddings — async version.
