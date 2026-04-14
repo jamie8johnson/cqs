@@ -544,6 +544,21 @@ mod tests {
     }
 
     #[test]
+    fn test_prune_orphan_on_clean_db_is_noop() {
+        // TC-ADV-13: the zero-rows branch must be a true no-op on a clean
+        // DB that has never held any sparse vectors. A regression flipping
+        // the `if affected > 0` guard to `>= 0` would bump the generation
+        // on every `cqs index` even when no work was done.
+        let (store, _dir) = setup_store();
+
+        let before = store.splade_generation().unwrap();
+        let pruned = store.prune_orphan_sparse_vectors().unwrap();
+        assert_eq!(pruned, 0, "fresh DB must have zero orphans to prune");
+        let after = store.splade_generation().unwrap();
+        assert_eq!(before, after, "no-op prune on clean DB must not bump");
+    }
+
+    #[test]
     fn test_fk_cascade_removes_sparse_rows_on_chunk_delete() {
         // Audit DS-W3: v19 FK CASCADE contract. Deleting a chunk must
         // automatically remove its sparse_vectors rows.
