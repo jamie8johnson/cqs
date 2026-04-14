@@ -21,7 +21,7 @@ use crate::store::{NoteSummary, Store, StoreError};
 
 use super::scoring::{
     apply_parent_boost, apply_scoring_pipeline, build_filter_sql, compile_glob_filter,
-    extract_file_from_chunk_id, score_candidate, BoundedScoreHeap, NameMatcher, NoteBoostIndex,
+    extract_file_from_chunk_id, score_candidate, BoundedScoreHeap, NameMatcher, NoteBoost,
     ScoringContext,
 };
 use super::synonyms::expand_query_for_fts;
@@ -166,8 +166,17 @@ impl Store {
                 None
             };
 
-            // Pre-compute note boost lookup for O(1) name matching in scoring loop
-            let note_index = NoteBoostIndex::new(notes);
+            // PF-V1.25-4: use the cached `OwnedNoteBoostIndex` instead of
+            // rebuilding from `&[NoteSummary]` on every search. Falls back
+            // to a fresh borrowed build if the cache fetch fails (which is
+            // transient and can happen if the notes query errors).
+            let note_boost = match self.cached_note_boost_index() {
+                Ok(arc) => NoteBoost::Owned(arc),
+                Err(e) => {
+                    tracing::warn!(error = %e, "note boost cache unavailable, rebuilding per-call");
+                    NoteBoost::Borrowed(super::scoring::NoteBoostIndex::new(notes))
+                }
+            };
 
             // Build loop-invariant scoring context once
             let scoring_ctx = ScoringContext {
@@ -175,7 +184,7 @@ impl Store {
                 filter,
                 name_matcher: name_matcher.as_ref(),
                 glob_matcher: glob_matcher.as_ref(),
-                note_index: &note_index,
+                note_index: &note_boost,
                 threshold,
             };
 
@@ -479,14 +488,22 @@ impl Store {
             .map(|r| r.score)
             .fold(0.0f32, f32::max);
 
+        // PF-V1.25-1: pre-size hash containers from known input counts.
+        // Upper bound on unique candidates is |dense| + |sparse|; default
+        // construction would rehash 2-3 times growing to this size on every
+        // SPLADE query.
+        let dense_len = dense_results.len();
+        let sparse_len = sparse_results.len();
+        let union_upper = dense_len + sparse_len;
+
         // Build score maps
         let mut dense_scores: std::collections::HashMap<&str, f32> =
-            std::collections::HashMap::new();
+            std::collections::HashMap::with_capacity(dense_len);
         for r in &dense_results {
             dense_scores.insert(&r.id, r.score);
         }
         let mut sparse_scores: std::collections::HashMap<&str, f32> =
-            std::collections::HashMap::new();
+            std::collections::HashMap::with_capacity(sparse_len);
         for r in &sparse_results {
             let normalized = if max_sparse > 0.0 {
                 r.score / max_sparse
@@ -501,8 +518,9 @@ impl Store {
         // sparse-only candidates. Using a HashSet here made iteration order
         // process-seed-random, which flipped equal-score candidates at the
         // truncate() boundary between runs.
-        let mut all_ids: Vec<&str> = Vec::new();
-        let mut seen_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut all_ids: Vec<&str> = Vec::with_capacity(union_upper);
+        let mut seen_ids: std::collections::HashSet<&str> =
+            std::collections::HashSet::with_capacity(union_upper);
         for r in &dense_results {
             if seen_ids.insert(&r.id) {
                 all_ids.push(&r.id);
@@ -554,9 +572,26 @@ impl Store {
 
         tracing::debug!(fused = fused.len(), alpha, "Hybrid fusion complete");
 
-        let fused_map: std::collections::HashMap<String, f32> =
-            fused.iter().map(|r| (r.id.clone(), r.score)).collect();
-        let candidate_ids: Vec<&str> = fused.iter().map(|r| r.id.as_str()).collect();
+        // PF-V1.25-16: drain `fused` into the score map (ids move, no clone).
+        // Previously the code ran `fused.iter().map(|r| (r.id.clone(), ...))`
+        // followed by a second `fused.iter().map(|r| r.id.as_str()).collect()`
+        // pass — one extra Vec allocation plus N string clones after having
+        // already owned the ids in `fused`.
+        //
+        // Tie-break determinism downstream depends on the final
+        // `scored.sort_by(b.1.total_cmp(&a.1).then(a.0.id.cmp(&b.0.id)))` in
+        // `search_by_candidate_ids_with_notes`, which carries its own id
+        // secondary key. The order of `candidate_ids` only affects DB fetch
+        // order, not final ranking.
+        let mut fused_map: std::collections::HashMap<String, f32> =
+            std::collections::HashMap::with_capacity(fused.len());
+        for r in fused.drain(..) {
+            fused_map.insert(r.id, r.score);
+        }
+        // HashMap iteration order is unspecified but STABLE across a single
+        // iteration within one call, which is all `fetch_candidates_by_ids_async`
+        // needs for its positional tie-breaker. No clone required.
+        let candidate_ids: Vec<&str> = fused_map.keys().map(|id| id.as_str()).collect();
         self.search_by_candidate_ids_with_notes(
             &candidate_ids,
             query,
@@ -713,8 +748,16 @@ impl Store {
                 None
             };
 
-            // Pre-compute note boost lookup for O(1) name matching in scoring loop
-            let note_index = NoteBoostIndex::new(notes);
+            // PF-V1.25-4: prefer the cached `OwnedNoteBoostIndex` shared
+            // across searches instead of rebuilding per-call. Fallback to
+            // a fresh borrowed build on cache fetch failure.
+            let note_boost = match self.cached_note_boost_index() {
+                Ok(arc) => NoteBoost::Owned(arc),
+                Err(e) => {
+                    tracing::warn!(error = %e, "note boost cache unavailable, rebuilding per-call");
+                    NoteBoost::Borrowed(super::scoring::NoteBoostIndex::new(notes))
+                }
+            };
 
             // Build loop-invariant scoring context once
             let scoring_ctx = ScoringContext {
@@ -722,7 +765,7 @@ impl Store {
                 filter,
                 name_matcher: name_matcher.as_ref(),
                 glob_matcher: glob_matcher.as_ref(),
-                note_index: &note_index,
+                note_index: &note_boost,
                 threshold,
             };
 

@@ -1,6 +1,7 @@
 //! Note-based score boosting.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::note::path_matches_mention;
 use crate::store::helpers::NoteSummary;
@@ -128,6 +129,118 @@ impl<'a> NoteBoostIndex<'a> {
         match strongest {
             Some(s) => 1.0 + s * ScoringConfig::DEFAULT.note_boost_factor,
             None => 1.0,
+        }
+    }
+}
+
+/// Owned, shareable counterpart to [`NoteBoostIndex`].
+///
+/// PF-V1.25-4: `NoteBoostIndex<'a>` holds `&'a str` borrows into the
+/// caller-supplied `&[NoteSummary]`, which means it cannot be stored on a
+/// long-lived cache (e.g. `Store::note_boost_cache`) without fighting the
+/// borrow checker. `OwnedNoteBoostIndex` copies the mention strings into
+/// its own maps so the index is self-contained and can be shared as
+/// `Arc<OwnedNoteBoostIndex>` across search calls.
+///
+/// Build cost is the same as `NoteBoostIndex::new` plus a `String::clone`
+/// per mention (typically a handful of notes × a few mentions each).
+/// Amortized across all searches between two note changes the build cost
+/// becomes negligible.
+///
+/// The `boost()` method is byte-for-byte equivalent to
+/// `NoteBoostIndex::boost`, just reading from `String`/`&str` rather than
+/// `&'a str`.
+pub(crate) struct OwnedNoteBoostIndex {
+    name_sentiments: HashMap<String, f32>,
+    path_mentions: Vec<(String, f32)>,
+}
+
+impl OwnedNoteBoostIndex {
+    /// Build the owned lookup index from notes. Same shape as
+    /// [`NoteBoostIndex::new`]; the only difference is `.to_string()` on
+    /// mention keys so the index doesn't borrow from the input.
+    pub fn new(notes: &[NoteSummary]) -> Self {
+        let mut name_sentiments: HashMap<String, f32> = HashMap::new();
+        let mut raw_paths: Vec<(String, f32)> = Vec::new();
+
+        for note in notes {
+            for mention in &note.mentions {
+                let is_path_like =
+                    mention.contains('/') || mention.contains('.') || mention.contains('\\');
+                if is_path_like {
+                    raw_paths.push((mention.clone(), note.sentiment));
+                } else {
+                    let entry = name_sentiments.entry(mention.clone()).or_insert(0.0);
+                    if note.sentiment.abs() > entry.abs() {
+                        *entry = note.sentiment;
+                    }
+                }
+            }
+        }
+
+        // Deduplicate path mentions — keep strongest sentiment per mention.
+        // (Mirrors `NoteBoostIndex::new`'s AC-11 logic.)
+        let mut deduped: HashMap<String, f32> = HashMap::new();
+        for (mention, sentiment) in raw_paths {
+            let entry = deduped.entry(mention).or_insert(0.0);
+            if sentiment.abs() > entry.abs() {
+                *entry = sentiment;
+            }
+        }
+        let path_mentions: Vec<(String, f32)> = deduped.into_iter().collect();
+
+        Self {
+            name_sentiments,
+            path_mentions,
+        }
+    }
+
+    /// Compute the note-based score boost for a chunk. Byte-equivalent to
+    /// [`NoteBoostIndex::boost`] — same sentinel selection (strongest
+    /// absolute value wins, preserving sign) and same multiplier formula.
+    #[inline]
+    pub fn boost(&self, file_path: &str, chunk_name: &str) -> f32 {
+        let mut strongest: Option<f32> = None;
+
+        if let Some(&sentiment) = self.name_sentiments.get(chunk_name) {
+            strongest = Some(sentiment);
+        }
+
+        for (mention, sentiment) in &self.path_mentions {
+            if path_matches_mention(file_path, mention) {
+                match strongest {
+                    Some(prev) if sentiment.abs() > prev.abs() => {
+                        strongest = Some(*sentiment);
+                    }
+                    None => {
+                        strongest = Some(*sentiment);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        match strongest {
+            Some(s) => 1.0 + s * ScoringConfig::DEFAULT.note_boost_factor,
+            None => 1.0,
+        }
+    }
+}
+
+/// Type-erasing wrapper so scoring paths can accept either the borrowed
+/// [`NoteBoostIndex`] or a cached [`OwnedNoteBoostIndex`] without the
+/// caller committing to one at type-construction time.
+pub(crate) enum NoteBoost<'a> {
+    Borrowed(NoteBoostIndex<'a>),
+    Owned(Arc<OwnedNoteBoostIndex>),
+}
+
+impl<'a> NoteBoost<'a> {
+    #[inline]
+    pub fn boost(&self, file_path: &str, chunk_name: &str) -> f32 {
+        match self {
+            NoteBoost::Borrowed(b) => b.boost(file_path, chunk_name),
+            NoteBoost::Owned(o) => o.boost(file_path, chunk_name),
         }
     }
 }

@@ -9,7 +9,8 @@ use crate::store::helpers::{SearchFilter, SearchResult};
 
 use super::config::ScoringConfig;
 use super::name_match::NameMatcher;
-use super::note_boost::NoteBoostIndex;
+#[cfg(test)]
+use super::note_boost::{NoteBoost, NoteBoostIndex};
 
 /// Compute search-time importance multiplier for a chunk.
 ///
@@ -55,53 +56,65 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
         return; // Need at least a container + 2 children
     }
 
-    // Count how many results share each parent_type_name
-    let mut parent_counts: HashMap<String, usize> = HashMap::new();
-    for r in results.iter() {
-        if let Some(ref ptn) = r.chunk.parent_type_name {
-            *parent_counts.entry(ptn.clone()).or_insert(0) += 1;
+    // PF-V1.25-14: compute which result indices need boosting in an
+    // immutable-borrow phase so `parent_counts` can key on `&str` borrowed
+    // from `results` instead of cloning every `parent_type_name`. Once we
+    // have the `(index, boost)` list, `parent_counts` drops and the mutable
+    // pass runs without overlapping borrows.
+    let boosts: Vec<(usize, f32)> = {
+        let mut parent_counts: HashMap<&str, usize> = HashMap::new();
+        for r in results.iter() {
+            if let Some(ref ptn) = r.chunk.parent_type_name {
+                *parent_counts.entry(ptn.as_str()).or_insert(0) += 1;
+            }
         }
-    }
+        // Only proceed if any parent_type_name appears 2+ times
+        if !parent_counts.values().any(|&c| c >= 2) {
+            return;
+        }
+        let cfg = &ScoringConfig::DEFAULT;
+        let max_children = (cfg.parent_boost_cap - 1.0) / cfg.parent_boost_per_child;
+        results
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                let is_container = matches!(
+                    r.chunk.chunk_type,
+                    ChunkType::Class | ChunkType::Struct | ChunkType::Interface
+                );
+                if !is_container {
+                    return None;
+                }
+                let count = *parent_counts.get(r.chunk.name.as_str())?;
+                if count >= 2 {
+                    let boost =
+                        1.0 + cfg.parent_boost_per_child * (count as f32 - 1.0).min(max_children);
+                    tracing::debug!(
+                        name = %r.chunk.name,
+                        child_count = count,
+                        boost = %boost,
+                        "parent_boost: boosting container"
+                    );
+                    Some((i, boost))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
 
-    // Only proceed if any parent_type_name appears 2+ times
-    if !parent_counts.values().any(|&c| c >= 2) {
+    if boosts.is_empty() {
         return;
     }
 
-    let cfg = &ScoringConfig::DEFAULT;
-    let max_children = (cfg.parent_boost_cap - 1.0) / cfg.parent_boost_per_child;
-    let mut boosted = false;
-    for r in results.iter_mut() {
-        let is_container = matches!(
-            r.chunk.chunk_type,
-            ChunkType::Class | ChunkType::Struct | ChunkType::Interface
-        );
-        if !is_container {
-            continue;
-        }
-        if let Some(&count) = parent_counts.get(&r.chunk.name) {
-            if count >= 2 {
-                let boost =
-                    1.0 + cfg.parent_boost_per_child * (count as f32 - 1.0).min(max_children);
-                tracing::debug!(
-                    name = %r.chunk.name,
-                    child_count = count,
-                    boost = %boost,
-                    "parent_boost: boosting container"
-                );
-                r.score *= boost;
-                boosted = true;
-            }
-        }
+    for (i, boost) in &boosts {
+        results[*i].score *= *boost;
     }
-
-    if boosted {
-        results.sort_by(|a, b| {
-            b.score
-                .total_cmp(&a.score)
-                .then(a.chunk.id.cmp(&b.chunk.id))
-        });
-    }
+    results.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then(a.chunk.id.cmp(&b.chunk.id))
+    });
 }
 
 /// Bounded min-heap for maintaining top-N search results by score.
@@ -229,7 +242,10 @@ pub(crate) struct ScoringContext<'a> {
     pub filter: &'a SearchFilter,
     pub name_matcher: Option<&'a NameMatcher>,
     pub glob_matcher: Option<&'a globset::GlobMatcher>,
-    pub note_index: &'a NoteBoostIndex<'a>,
+    /// PF-V1.25-4: accepts either a freshly-built `NoteBoostIndex` borrowing
+    /// from per-call notes, or a cached `Arc<OwnedNoteBoostIndex>` reused
+    /// across searches. The `NoteBoost` enum dispatches at the call site.
+    pub note_index: &'a super::note_boost::NoteBoost<'a>,
     pub threshold: f32,
 }
 
@@ -567,7 +583,7 @@ mod tests {
         let emb = test_embedding(1.0);
         let query = test_embedding(1.0);
         let filter = SearchFilter::default();
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &query,
             filter: &filter,
@@ -591,7 +607,7 @@ mod tests {
         let emb = test_embedding(1.0);
         let query = test_embedding(-1.0);
         let filter = SearchFilter::default();
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &query,
             filter: &filter,
@@ -613,7 +629,7 @@ mod tests {
         let emb = test_embedding(1.0);
         let query = test_embedding(1.0);
         let filter = SearchFilter::default();
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let glob = globset::Glob::new("src/**/*.rs").unwrap().compile_matcher();
 
         let ctx = ScoringContext {
@@ -641,7 +657,7 @@ mod tests {
             query_text: "parseConfig".to_string(),
             ..Default::default()
         };
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let matcher = NameMatcher::new("parseConfig");
 
         let ctx_no = ScoringContext {
@@ -672,7 +688,7 @@ mod tests {
     fn test_score_candidate_demotion() {
         let emb = test_embedding(1.0);
         let query = test_embedding(1.0);
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
 
         let filter_no_demote = SearchFilter {
             enable_demotion: false,
@@ -721,8 +737,8 @@ mod tests {
         let filter = SearchFilter::default();
 
         let notes = vec![make_note(1.0, &["lib.rs"])];
-        let note_index_boosted = NoteBoostIndex::new(&notes);
-        let note_index_empty = NoteBoostIndex::new(&[]);
+        let note_index_boosted = NoteBoost::Borrowed(NoteBoostIndex::new(&notes));
+        let note_index_empty = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
 
         let ctx_boosted = ScoringContext {
             query: &query,
@@ -828,7 +844,7 @@ mod tests {
         nan_emb[0] = 0.5;
         nan_emb[1] = 0.3;
         let filter = SearchFilter::default();
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &query,
             filter: &filter,
@@ -852,7 +868,7 @@ mod tests {
         let nan_query = vec![f32::NAN; crate::EMBEDDING_DIM];
         let normal_emb = test_embedding(1.0);
         let filter = SearchFilter::default();
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &nan_query,
             filter: &filter,
@@ -876,7 +892,7 @@ mod tests {
         let nan_query = vec![f32::NAN; crate::EMBEDDING_DIM];
         let nan_emb = vec![f32::NAN; crate::EMBEDDING_DIM];
         let filter = SearchFilter::default();
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &nan_query,
             filter: &filter,
@@ -903,7 +919,7 @@ mod tests {
             ..Default::default()
         };
         let notes: Vec<NoteSummary> = vec![];
-        let note_index = NoteBoostIndex::new(&notes);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&notes));
         let ctx = ScoringContext {
             query: &zero_query,
             filter: &filter,
@@ -927,7 +943,7 @@ mod tests {
     fn apply_scoring_pipeline_preserves_fused_score() {
         let filter = SearchFilter::default();
         let query = test_embedding(1.0);
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &query,
             filter: &filter,
@@ -948,7 +964,7 @@ mod tests {
         filter.name_boost = 0.3;
         filter.query_text = "my_fn".to_string();
         let query = test_embedding(1.0);
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let matcher = NameMatcher::new("my_fn");
         let ctx = ScoringContext {
             query: &query,
@@ -972,7 +988,7 @@ mod tests {
         let mut filter = SearchFilter::default();
         filter.enable_demotion = true;
         let query = test_embedding(1.0);
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &query,
             filter: &filter,
@@ -995,7 +1011,7 @@ mod tests {
     fn apply_scoring_pipeline_respects_threshold() {
         let filter = SearchFilter::default();
         let query = test_embedding(1.0);
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &query,
             filter: &filter,
