@@ -85,15 +85,18 @@ pub fn log_command(
                 }
             }
         }
-        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        // SEC-V1.25-5: set 0o600 at creation via OpenOptionsExt::mode to
+        // close the umask race. The post-open set_permissions approach
+        // left a window where the file was visible with default perms
+        // (often 0o644).
+        let mut opts = OpenOptions::new();
+        opts.create(true).append(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            {
-                tracing::debug!(path = %path.display(), error = %e, "Failed to set file permissions");
-            }
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
         }
+        let mut file = opts.open(&path)?;
         if let Err(e) = writeln!(file, "{}", entry) {
             tracing::warn!(error = %e, "Failed to write telemetry entry");
         }
@@ -168,15 +171,18 @@ pub fn log_routed(
             }
         }
 
-        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        // SEC-V1.25-5: set 0o600 at creation via OpenOptionsExt::mode to
+        // close the umask race. The post-open set_permissions approach
+        // left a window where the file was visible with default perms
+        // (often 0o644).
+        let mut opts = OpenOptions::new();
+        opts.create(true).append(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            {
-                tracing::debug!(path = %path.display(), error = %e, "Failed to set file permissions");
-            }
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
         }
+        let mut file = opts.open(&path)?;
         if let Err(e) = writeln!(file, "{}", entry) {
             tracing::warn!(error = %e, "Failed to write telemetry entry");
         }
