@@ -191,7 +191,12 @@ impl CagraIndex {
         // copies data to GPU but the DLTensor shape pointer still references the host
         // ndarray's internal shape storage.
         let mut neighbors_host: Array2<u32> = Array2::zeros((1, k));
-        let mut distances_host: Array2<f32> = Array2::zeros((1, k));
+        // AC-V1.25-7: initialize distances to +∞ so unfilled slots are
+        // detectable. When `index.len() < k`, cuVS returns only `index.len()`
+        // real pairs and leaves the rest of the buffer untouched — if we
+        // zero-filled, those untouched slots look like perfect-match hits
+        // (distance 0.0 → score 1.0) pointing at chunk_id 0.
+        let mut distances_host: Array2<f32> = Array2::from_elem((1, k), f32::INFINITY);
 
         let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&gpu.resources) {
             Ok(t) => t,
@@ -262,8 +267,13 @@ impl CagraIndex {
 
         for i in 0..k {
             let idx = neighbor_row[i] as usize;
+            let dist = distance_row[i];
+            // AC-V1.25-7: skip unfilled slots (buffer pre-seeded with +∞) so
+            // we don't emit phantom perfect-match results when k > index.len().
+            if !dist.is_finite() {
+                continue;
+            }
             if idx < self.id_map.len() {
-                let dist = distance_row[i];
                 let score = 1.0 - dist / 2.0;
                 results.push(IndexResult {
                     id: self.id_map[idx].clone(),
