@@ -64,7 +64,18 @@ pub enum SpladeError {
 pub struct SpladeEncoder {
     session: Mutex<Option<Session>>,
     model_path: std::path::PathBuf,
-    tokenizer: tokenizers::Tokenizer,
+    /// Path to the tokenizer JSON, retained so `clear_session` can drop
+    /// the tokenizer and `encode` can lazy-reload it without going back
+    /// through `SpladeEncoder::new` (which re-runs the ORT probe).
+    tokenizer_path: std::path::PathBuf,
+    /// Lazy-loaded tokenizer.
+    ///
+    /// RM-V1.25-15: Stored as `Mutex<Option<Arc<Tokenizer>>>` so
+    /// `clear_session` can drop the ~20MB tokenizer state alongside the
+    /// ONNX session during idle periods. The initial load happens at
+    /// construction time (to drive the vocab probe), but the tokenizer
+    /// can be freed after that without losing the probe result.
+    tokenizer: Mutex<Option<std::sync::Arc<tokenizers::Tokenizer>>>,
     threshold: f32,
     vocab_size: usize,
 }
@@ -354,13 +365,44 @@ impl SpladeEncoder {
             "SPLADE encoder loaded (vocab consistency verified)"
         );
 
+        // RM-V1.25-15: wrap the probed tokenizer in Arc + Mutex so
+        // clear_session can drop it during idle periods. Skip re-loading
+        // — we already have the probed instance in hand.
         Ok(Self {
             session: Mutex::new(Some(session)),
             model_path: onnx_path,
-            tokenizer,
+            tokenizer_path,
+            tokenizer: Mutex::new(Some(std::sync::Arc::new(tokenizer))),
             threshold,
             vocab_size: tokenizer_vocab,
         })
+    }
+
+    /// Get or lazy-reload the tokenizer.
+    ///
+    /// RM-V1.25-15: Returns `Arc<Tokenizer>` so encode-side callers can
+    /// release the mutex before running inference. `clear_session` drops
+    /// the inner slot during idle; a subsequent `encode` lazily reloads
+    /// from `tokenizer_path`.
+    fn tokenizer(&self) -> Result<std::sync::Arc<tokenizers::Tokenizer>, SpladeError> {
+        {
+            let guard = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(t) = guard.as_ref() {
+                return Ok(std::sync::Arc::clone(t));
+            }
+        }
+        // Rare path — only after `clear_session` has dropped the tokenizer.
+        let _span = tracing::info_span!("splade_tokenizer_reload").entered();
+        let loaded = std::sync::Arc::new(
+            tokenizers::Tokenizer::from_file(&self.tokenizer_path)
+                .map_err(|e| SpladeError::TokenizationFailed(e.to_string()))?,
+        );
+        let mut guard = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(existing) = guard.as_ref() {
+            return Ok(std::sync::Arc::clone(existing));
+        }
+        *guard = Some(std::sync::Arc::clone(&loaded));
+        Ok(loaded)
     }
 
     /// Encode text into a sparse vector.
@@ -395,7 +437,7 @@ impl SpladeEncoder {
 
         // Tokenize
         let encoding = self
-            .tokenizer
+            .tokenizer()?
             .encode(text, true)
             .map_err(|e| SpladeError::TokenizationFailed(e.to_string()))?;
 
@@ -573,10 +615,11 @@ impl SpladeEncoder {
         let non_empty_texts: Vec<&str> = non_empty_indices.iter().map(|&i| truncated[i]).collect();
 
         // Step 2: tokenize each non-empty input.
+        let tokenizer = self.tokenizer()?;
         let encodings: Vec<_> = non_empty_texts
             .iter()
             .map(|t| {
-                self.tokenizer
+                tokenizer
                     .encode(*t, true)
                     .map_err(|e| SpladeError::TokenizationFailed(e.to_string()))
             })
@@ -851,16 +894,26 @@ impl SpladeEncoder {
 
     /// Decode a token ID to its string representation (for debugging).
     pub fn decode_token(&self, token_id: u32) -> Option<String> {
-        self.tokenizer.decode(&[token_id], false).ok()
+        self.tokenizer().ok()?.decode(&[token_id], false).ok()
     }
 
     /// RM-3: Drop the ONNX session to free GPU/CPU memory.
     /// The session is lazily re-created on the next `encode()` call.
+    ///
+    /// RM-V1.25-15: Also drops the tokenizer (~20MB) — it lazy-reloads
+    /// from `tokenizer_path` on the next encode. In-flight encoders that
+    /// already cloned the Arc keep their copy for the duration of that
+    /// call.
     pub fn clear_session(&self) {
         let mut guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
         if guard.is_some() {
             *guard = None;
             tracing::debug!("SPLADE session cleared");
+        }
+        let mut tok = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
+        if tok.is_some() {
+            *tok = None;
+            tracing::debug!("SPLADE tokenizer cleared");
         }
     }
 }

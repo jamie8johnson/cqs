@@ -14,7 +14,7 @@ use once_cell::sync::OnceCell;
 use ort::session::Session;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 /// Retrieves the embedding model repository from the resolved ModelConfig.
@@ -218,8 +218,15 @@ pub struct Embedder {
     /// this holds ~500MB of GPU/CPU memory. To release, call [`clear_session`]
     /// or drop the Embedder instance and create a new one when needed.
     session: Mutex<Option<Session>>,
-    /// Lazy-loaded tokenizer
-    tokenizer: OnceCell<tokenizers::Tokenizer>,
+    /// Lazy-loaded tokenizer.
+    ///
+    /// RM-V1.25-15: Stored as `Mutex<Option<Arc<Tokenizer>>>` (instead of the
+    /// previous `OnceCell<Tokenizer>`) so `clear_session` can drop the
+    /// tokenizer alongside the ONNX session. Accessor `tokenizer()` hands
+    /// back an `Arc<Tokenizer>` clone — `Tokenizer::encode` takes `&self`,
+    /// so call sites using `arc.encode(...)` still work via `Arc` deref
+    /// without needing to touch the mutex during inference.
+    tokenizer: Mutex<Option<Arc<tokenizers::Tokenizer>>>,
     /// Lazy-loaded model paths (avoids HuggingFace API calls until actually embedding)
     model_paths: OnceCell<(PathBuf, PathBuf)>,
     provider: ExecutionProvider,
@@ -314,7 +321,7 @@ impl Embedder {
 
         Ok(Self {
             session: Mutex::new(None),
-            tokenizer: OnceCell::new(),
+            tokenizer: Mutex::new(None),
             model_paths: OnceCell::new(),
             provider,
             max_length,
@@ -430,13 +437,33 @@ impl Embedder {
         Ok(guard)
     }
 
-    /// Get or initialize the tokenizer
-    fn tokenizer(&self) -> Result<&tokenizers::Tokenizer, EmbedderError> {
+    /// Get or initialize the tokenizer.
+    ///
+    /// RM-V1.25-15: Returns an `Arc<Tokenizer>` so callers can release the
+    /// mutex immediately and let `clear_session` drop the inner tokenizer
+    /// without racing against in-flight inference. `Tokenizer::encode` /
+    /// `decode` take `&self`, so call sites using `arc.encode(...)` work
+    /// via `Arc` deref.
+    fn tokenizer(&self) -> Result<Arc<tokenizers::Tokenizer>, EmbedderError> {
+        {
+            let guard = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(t) = guard.as_ref() {
+                return Ok(Arc::clone(t));
+            }
+        }
         let (_, tokenizer_path) = self.model_paths()?;
-        self.tokenizer.get_or_try_init(|| {
+        let loaded = Arc::new(
             tokenizers::Tokenizer::from_file(tokenizer_path)
-                .map_err(|e| EmbedderError::Tokenizer(e.to_string()))
-        })
+                .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?,
+        );
+        let mut guard = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
+        // Another thread may have initialized while we were loading; prefer
+        // the first winner so Arc identity is stable.
+        if let Some(existing) = guard.as_ref() {
+            return Ok(Arc::clone(existing));
+        }
+        *guard = Some(Arc::clone(&loaded));
+        Ok(loaded)
     }
 
     /// Counts the number of tokens in the given text using the configured tokenizer.
@@ -676,7 +703,14 @@ impl Embedder {
         // if model config changes before session is re-created.
         let mut cache = self.query_cache.lock().unwrap_or_else(|p| p.into_inner());
         cache.clear();
-        tracing::info!("Embedder session and query cache cleared");
+        // RM-V1.25-15: Drop the tokenizer too (~10MB on BGE-large, ~20MB on
+        // larger BPE vocabularies). The Arc holds a strong ref so in-flight
+        // inference that grabbed an Arc clone before this call continues
+        // with its own copy; the inner `Option` slot is cleared and will
+        // lazy-reload on the next `tokenizer()` access.
+        let mut tok = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
+        *tok = None;
+        tracing::info!("Embedder session, query cache, and tokenizer cleared");
     }
 
     /// Warm up the model with a dummy inference

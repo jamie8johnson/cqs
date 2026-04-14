@@ -162,7 +162,15 @@ pub(crate) struct BatchContext {
     // Access via store() method which checks staleness first.
     store: RefCell<Store>,
     // Stable caches — keep OnceLock (not index-derived)
-    embedder: OnceLock<Embedder>,
+    //
+    // RM-V1.25-28: `OnceLock<Arc<Embedder>>` so the watch outer scope
+    // can hand the same Embedder instance down into the daemon thread.
+    // Previously BatchContext owned its own Embedder and the watch
+    // loop owned a second one — two ~500 MB ONNX sessions could be
+    // resident at the same time. `BatchContext::new_with_embedder`
+    // accepts a pre-built Arc; `create_context` (CLI path) still
+    // creates a fresh one lazily via `warm`.
+    embedder: OnceLock<std::sync::Arc<Embedder>>,
     config: OnceLock<cqs::config::Config>,
     reranker: OnceLock<cqs::Reranker>,
     // Time-bounded (30min expiry), not index-derived — keep OnceLock
@@ -398,34 +406,56 @@ impl BatchContext {
 
     /// Pre-warm the embedder so the first query doesn't pay the ~500ms ONNX init.
     /// Called once at session start. Errors are logged but non-fatal.
+    ///
+    /// RM-V1.25-28: if the watch outer scope installed a shared Embedder
+    /// via `adopt_embedder`, the OnceLock is already populated and this
+    /// is a no-op for model loading (cache eviction still runs).
     pub fn warm(&self) {
-        if self.embedder.get().is_some() {
-            return;
-        }
-        let _span = tracing::info_span!("batch_warm").entered();
-        match Embedder::new(self.model_config.clone()) {
-            Ok(e) => {
-                let _ = self.embedder.set(e);
-                tracing::info!("Embedder pre-warmed");
+        if self.embedder.get().is_none() {
+            let _span = tracing::info_span!("batch_warm").entered();
+            match Embedder::new(self.model_config.clone()) {
+                Ok(e) => {
+                    let _ = self.embedder.set(std::sync::Arc::new(e));
+                    tracing::info!("Embedder pre-warmed");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Embedder warm failed — will retry on first query");
+                }
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "Embedder warm failed — will retry on first query");
-            }
         }
+        // RM-V1.25-5: Evict global EmbeddingCache at daemon startup.
+        // `evict()` was previously only called at the tail of the full
+        // `cqs index` pipeline (src/cli/pipeline/mod.rs), so long-lived
+        // daemons / watch sessions on machines that never run a manual
+        // index can grow the shared ~/.cache/cqs/embeddings.db past the
+        // 10GB cap (CQS_CACHE_MAX_SIZE) without ever trimming. Kick off
+        // a single post-warm eviction so the daemon self-heals on boot.
+        evict_global_embedding_cache("daemon startup");
+    }
+
+    /// RM-V1.25-28: Install a shared Embedder from the outer watch scope.
+    ///
+    /// Returns `true` if the Arc was installed, `false` if the OnceLock was
+    /// already populated (lazy init already happened, or another caller won
+    /// the race). The caller can use this result to decide whether to fall
+    /// back to its own lazily-initialized embedder.
+    pub fn adopt_embedder(&self, shared: std::sync::Arc<Embedder>) -> bool {
+        self.embedder.set(shared).is_ok()
     }
 
     /// Get or create the embedder (~500ms first call).
     pub fn embedder(&self) -> Result<&Embedder> {
         if let Some(e) = self.embedder.get() {
-            return Ok(e);
+            return Ok(e.as_ref());
         }
         let _span = tracing::info_span!("batch_embedder_init").entered();
         let e = Embedder::new(self.model_config.clone())?;
         // Race is fine — OnceLock ensures only one value is stored
-        let _ = self.embedder.set(e);
+        let _ = self.embedder.set(std::sync::Arc::new(e));
         Ok(self
             .embedder
             .get()
+            .map(|arc| arc.as_ref())
             .expect("embedder OnceLock populated by set() above"))
     }
 
@@ -485,6 +515,13 @@ impl BatchContext {
         };
         let splade_path = self.cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);
         let store = self.store();
+        // RM-V1.25-11: time the build so operators can diagnose first-query
+        // latency spikes after a reindex. Full rebuild on a 200k-chunk repo
+        // with SPLADE-Code 0.6B takes ~45 s — scoped-down fix in lieu of
+        // an incremental update path; actual fix is tracked as P2 follow-up.
+        // The `rebuilt` flag comes back from `load_or_build` so we can split
+        // the log into a cheap cache hit vs a visible rebuild.
+        let build_start = Instant::now();
         let (idx, rebuilt) = cqs::splade::index::SpladeIndex::load_or_build(
             &splade_path,
             generation,
@@ -499,16 +536,37 @@ impl BatchContext {
                 }
             },
         );
+        let build_ms = build_start.elapsed().as_millis() as u64;
         if idx.is_empty() {
             // no vectors — cosine-only; leave the RefCell as None
             return;
         }
-        tracing::info!(
-            chunks = idx.len(),
-            tokens = idx.unique_tokens(),
-            rebuilt,
-            "SPLADE index ready (batch)"
-        );
+        if rebuilt {
+            tracing::info!(
+                chunks = idx.len(),
+                tokens = idx.unique_tokens(),
+                rebuild_ms = build_ms,
+                "SPLADE index rebuilt from SQLite (batch)"
+            );
+            // Surface very-long rebuilds at warn so operators notice. Empirical
+            // threshold: 10 s on a 200k-chunk SPLADE-Code index is already
+            // "user waited visibly"; 30 s is "probably a problem."
+            if build_ms > 30_000 {
+                tracing::warn!(
+                    rebuild_ms = build_ms,
+                    chunks = idx.len(),
+                    "SPLADE index rebuild exceeded 30s — first daemon query after \
+                     reindex will have been blocked this long"
+                );
+            }
+        } else {
+            tracing::info!(
+                chunks = idx.len(),
+                tokens = idx.unique_tokens(),
+                load_ms = build_ms,
+                "SPLADE index loaded from disk (batch)"
+            );
+        }
         *self.splade_index.borrow_mut() = Some(idx);
     }
 
@@ -524,14 +582,28 @@ impl BatchContext {
     /// Checks index staleness before returning cached value. If the index.db
     /// changed, rebuilds the vector index from the fresh Store.
     /// Returns a cloneable Arc so callers can hold a reference past RefCell borrow scope.
+    ///
+    /// RM-V1.25-19: if the cached index reports `is_poisoned()` (only the
+    /// CAGRA GPU backend currently does), the cache slot is cleared and a
+    /// fresh index is built. Reusing a poisoned CUDA context risks
+    /// double-free and CUDA faults.
     pub fn vector_index(&self) -> Result<Option<std::sync::Arc<dyn VectorIndex>>> {
         self.check_index_staleness();
         {
             let cached = self.hnsw.borrow();
             if let Some(arc) = cached.as_ref() {
-                return Ok(Some(std::sync::Arc::clone(arc)));
+                if arc.is_poisoned() {
+                    tracing::warn!(
+                        name = arc.name(),
+                        "Cached vector index is poisoned — discarding and rebuilding"
+                    );
+                } else {
+                    return Ok(Some(std::sync::Arc::clone(arc)));
+                }
             }
         }
+        // Clear any poisoned cache before rebuilding.
+        *self.hnsw.borrow_mut() = None;
         let _span = tracing::info_span!("batch_vector_index_init").entered();
         let store = self.store.borrow();
         let idx = build_vector_index(&store, &self.cqs_dir, self.config().ef_search)?;
@@ -564,13 +636,29 @@ impl BatchContext {
     ///
     /// Uses cached config (RM-21) and loads only the target reference (RM-16),
     /// not all references.
+    ///
+    /// RM-V1.25-7: before serving a cached entry, peek its `is_stale()` so
+    /// a concurrent `cqs ref update <name>` (which rewrites the reference's
+    /// `index.db` without touching the primary project's `.cqs/index.db`)
+    /// forces a fresh load. Without this, a long-lived daemon would keep
+    /// serving results from a closed WAL snapshot / stale HNSW bytes for
+    /// days.
     pub fn get_ref(&self, name: &str) -> Result<()> {
         let _span = tracing::info_span!("batch_get_ref", %name).entered();
-        let refs = self.refs.borrow();
-        if refs.contains(name) {
-            return Ok(());
+        {
+            let mut refs = self.refs.borrow_mut();
+            if let Some(existing) = refs.peek(name) {
+                if existing.is_stale() {
+                    tracing::info!(
+                        reference = %name,
+                        "Cached reference stale (index.db mtime/size changed) — evicting for reload"
+                    );
+                    refs.pop(name);
+                } else {
+                    return Ok(());
+                }
+            }
         }
-        drop(refs);
 
         let config = self.config();
         // Filter to just the target reference instead of loading all (RM-16)
@@ -728,6 +816,45 @@ fn build_vector_index(
     ef_search: Option<usize>,
 ) -> Result<Option<Box<dyn VectorIndex>>> {
     crate::cli::build_vector_index_with_config(store, cqs_dir, ef_search)
+}
+
+/// RM-V1.25-5: Evict the global embedding cache if it exceeds its size cap.
+///
+/// `EmbeddingCache::evict` is a no-op below `CQS_CACHE_MAX_SIZE` (default
+/// 10GB), so it's cheap to call. Opens the cache read-only-ish (WAL-mode
+/// SQLite, one connection), runs the eviction, then drops. Used by the
+/// daemon startup and the watch reindex path to keep the shared cache
+/// bounded even when the user never runs a full `cqs index`.
+pub(crate) fn evict_global_embedding_cache(trigger: &str) {
+    let _span = tracing::debug_span!("daemon_cache_evict", trigger).entered();
+    let cache_path = cqs::cache::EmbeddingCache::default_path();
+    let cache = match cqs::cache::EmbeddingCache::open(&cache_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %cache_path.display(),
+                "Cache evict skipped — open failed"
+            );
+            return;
+        }
+    };
+    match cache.evict() {
+        Ok(n) if n > 0 => {
+            tracing::info!(
+                evicted = n,
+                trigger,
+                path = %cache_path.display(),
+                "Global embedding cache evicted"
+            );
+        }
+        Ok(_) => {
+            tracing::debug!(trigger, "Global embedding cache under cap, no eviction");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, trigger, "Global cache eviction failed");
+        }
+    }
 }
 
 // ─── JSON serialization helpers ──────────────────────────────────────────────

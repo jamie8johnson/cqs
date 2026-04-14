@@ -15,7 +15,6 @@
 //! For memory-constrained environments, consider running `cqs index` manually instead
 //! of using watch mode.
 
-use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -64,6 +63,15 @@ static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[cfg(unix)]
 fn is_shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::Acquire)
+}
+
+/// RM-V1.25-8: observable from both SIGTERM (SHUTDOWN_REQUESTED) and
+/// Ctrl+C (`check_interrupted`). The socket accept loop polls this so
+/// the watch main loop can tell the daemon thread to drain without
+/// having to route a separate shutdown channel.
+#[cfg(unix)]
+fn daemon_should_exit() -> bool {
+    is_shutdown_requested() || check_interrupted()
 }
 
 /// Signal handler — async-signal-safe: only a relaxed atomic store.
@@ -370,13 +378,19 @@ fn max_pending_files() -> usize {
 /// Immutable references shared across the watch loop.
 ///
 /// Does not include `Store` because it is re-opened each cycle (DS-9).
+///
+/// RM-V1.25-28: `embedder` now points at a shared `Arc<OnceLock<Arc<Embedder>>>`
+/// that the daemon thread also holds. First side to populate it wins; the
+/// other side's future lazy-init short-circuits to the same instance.
+/// Eliminates the ~500 MB duplicate footprint that existed when the outer
+/// watch loop and the daemon thread each owned independent OnceLocks.
 struct WatchConfig<'a> {
     root: &'a Path,
     cqs_dir: &'a Path,
     notes_path: &'a Path,
     supported_ext: &'a HashSet<&'a str>,
     parser: &'a CqParser,
-    embedder: &'a OnceCell<Embedder>,
+    embedder: &'a std::sync::OnceLock<std::sync::Arc<Embedder>>,
     quiet: bool,
     model_config: &'a ModelConfig,
 }
@@ -440,16 +454,20 @@ impl EmbedderBackoff {
     }
 }
 
-/// Try to initialize the embedder, returning a reference from the OnceCell.
-/// Deduplicates the 7-line pattern that appeared twice in cmd_watch.
-/// Uses `backoff` to apply exponential backoff on repeated failures (RM-24).
+/// Try to initialize the shared embedder, returning a reference from the
+/// Arc-backed OnceLock. Deduplicates the 7-line pattern that appeared
+/// twice in cmd_watch. Uses `backoff` to apply exponential backoff on
+/// repeated failures (RM-24).
+///
+/// RM-V1.25-28: the OnceLock is shared with the daemon thread; whichever
+/// side initializes first wins, and the other reuses the same Arc.
 fn try_init_embedder<'a>(
-    embedder: &'a OnceCell<Embedder>,
+    embedder: &'a std::sync::OnceLock<std::sync::Arc<Embedder>>,
     backoff: &mut EmbedderBackoff,
     model_config: &ModelConfig,
 ) -> Option<&'a Embedder> {
     match embedder.get() {
-        Some(e) => Some(e),
+        Some(e) => Some(e.as_ref()),
         None => {
             if !backoff.should_retry() {
                 return None;
@@ -457,7 +475,7 @@ fn try_init_embedder<'a>(
             match Embedder::new(model_config.clone()) {
                 Ok(e) => {
                     backoff.reset();
-                    Some(embedder.get_or_init(|| e))
+                    Some(embedder.get_or_init(|| std::sync::Arc::new(e)).as_ref())
                 }
                 Err(e) => {
                     warn!(error = %e, "Failed to initialize embedder");
@@ -709,11 +727,33 @@ pub fn cmd_watch(
         tracing::warn!("--serve requested on non-unix platform; daemon disabled");
     }
 
+    // RM-V1.25-28: Allocate the shared embedder slot before spawning the
+    // daemon thread so the Arc can be cloned into the thread's closure
+    // and adopted by its BatchContext. The slot starts empty; whichever
+    // side initializes first (daemon via `ctx.warm()` or watch via
+    // `try_init_embedder`) wins and the other reuses the same Arc.
+    let shared_embedder: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Embedder>>> =
+        std::sync::Arc::new(std::sync::OnceLock::new());
+
     // Spawn dedicated socket handler thread — runs independently of the file
     // watcher so queries are served immediately, even during the slow poll scan.
+    //
+    // RM-V1.25-8: keep the `JoinHandle` in a named `socket_thread` so the
+    // main loop can `.take().join()` it on shutdown with a bounded wait.
+    // Previously the handle was stashed under `_socket_thread` and dropped
+    // on function exit, detaching the thread. In that window the daemon's
+    // BatchContext (~500MB+ ONNX sessions, SQLite pool, HNSW Arc, optional
+    // CAGRA GPU resources) lived past the main loop's return with no
+    // WAL checkpoint and no `Drop` ordering. Under `cargo install` or shell
+    // Ctrl+C the orphaned thread could also block stdout writes.
     #[cfg(unix)]
-    let _socket_thread = if serve {
+    let mut socket_thread: Option<std::thread::JoinHandle<()>> = if serve {
         if let Some((listener, _)) = socket_listener.take() {
+            // RM-V1.25-28: Clone the shared OnceLock into the daemon closure
+            // so both the outer watch loop and BatchContext see the same
+            // Arc<Embedder>.
+            let daemon_embedder = std::sync::Arc::clone(&shared_embedder);
+            let daemon_model_config = cli.try_model_config()?.clone();
             // Stays non-blocking: the accept loop below polls so it can
             // notice SHUTDOWN_REQUESTED on SIGTERM (RM-V1.25-9).
             let thread = std::thread::spawn(move || {
@@ -721,6 +761,29 @@ pub fn cmd_watch(
                 // but thread-local ownership is fine.
                 let ctx = match super::batch::create_context() {
                     Ok(ctx) => {
+                        // RM-V1.25-28: seed the BatchContext's OnceLock if
+                        // the shared slot is already populated; otherwise
+                        // populate the shared slot with a fresh Embedder
+                        // so the outer watch loop sees it on first use.
+                        if let Some(existing) = daemon_embedder.get() {
+                            ctx.adopt_embedder(std::sync::Arc::clone(existing));
+                            tracing::info!("Daemon adopted shared embedder");
+                        } else {
+                            match Embedder::new(daemon_model_config) {
+                                Ok(emb) => {
+                                    let arc = std::sync::Arc::new(emb);
+                                    // Try to install in the shared slot;
+                                    // another thread may have raced us.
+                                    let winning_arc =
+                                        daemon_embedder.get_or_init(|| std::sync::Arc::clone(&arc));
+                                    ctx.adopt_embedder(std::sync::Arc::clone(winning_arc));
+                                    tracing::info!("Daemon built and shared embedder");
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Daemon embedder init failed — will retry lazily");
+                                }
+                            }
+                        }
                         ctx.warm();
                         ctx
                     }
@@ -750,9 +813,11 @@ pub fn cmd_watch(
                 // can notice SIGTERM and drain cleanly instead of blocking
                 // indefinitely on a syscall that systemd has to kill.
                 // Listener was set non-blocking at bind time.
+                // RM-V1.25-8: also break on Ctrl+C (`check_interrupted`) so
+                // the main loop's `.join()` on shutdown completes promptly.
                 loop {
-                    if is_shutdown_requested() {
-                        tracing::info!("Daemon accept loop draining on SIGTERM");
+                    if daemon_should_exit() {
+                        tracing::info!("Daemon accept loop draining on shutdown signal");
                         break;
                     }
                     // RM-V1.25-3: passive idle sweep — inspects the
@@ -892,9 +957,8 @@ pub fn cmd_watch(
         notes_path
     });
 
-    // Lazy-initialized embedder (~500MB, avoids startup delay unless changes occur).
-    // Once initialized, stays in memory for fast reindexing. See module docs for memory details.
-    let embedder: OnceCell<Embedder> = OnceCell::new();
+    // Embedder is declared above (before daemon thread spawn) so its
+    // OnceLock can be shared with the daemon thread — see RM-V1.25-28.
 
     // Open store and reuse across reindex operations within a cycle.
     // Re-opened after each reindex cycle to clear stale OnceLock caches (DS-9).
@@ -941,7 +1005,7 @@ pub fn cmd_watch(
         notes_path: &notes_path,
         supported_ext: &supported_ext,
         parser: &parser,
-        embedder: &embedder,
+        embedder: shared_embedder.as_ref(),
         quiet: cli.quiet,
         model_config,
     };
@@ -961,6 +1025,10 @@ pub fn cmd_watch(
     };
 
     let mut cycles_since_clear: u32 = 0;
+    // RM-V1.25-5: Track last eviction of the global embedding cache so
+    // the reindex path only trims once per hour, keeping the WAL file
+    // from churning on every micro-edit.
+    let mut last_cache_evict = std::time::Instant::now();
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -1027,14 +1095,30 @@ pub fn cmd_watch(
                     store.clear_caches();
                     db_id = db_file_identity(&index_path);
 
+                    // RM-V1.25-5: Periodically evict the global embedding
+                    // cache so long-running watch sessions don't let the
+                    // shared ~/.cache/cqs/embeddings.db grow past its
+                    // CQS_CACHE_MAX_SIZE cap (default 10GB). Gated by
+                    // `last_cache_evict.elapsed()` so we don't churn the
+                    // SQLite file on every single reindex cycle.
+                    if last_cache_evict.elapsed() >= Duration::from_secs(3600) {
+                        super::batch::evict_global_embedding_cache("watch reindex cycle");
+                        last_cache_evict = std::time::Instant::now();
+                    }
+
                     // DS-1: Release lock after all reindex work (including HNSW rebuild)
                     drop(lock);
                 } else {
                     cycles_since_clear += 1;
                     // Clear embedder session and HNSW index after ~5 minutes idle
                     // (3000 cycles at 100ms). Frees GPU/memory when watch is idle.
+                    //
+                    // RM-V1.25-28: the shared Arc<Embedder> is also held by
+                    // the daemon thread's BatchContext. clear_session is
+                    // safe either way: the ONNX session is behind a Mutex
+                    // and the tokenizer is Mutex<Option<Arc<…>>>.
                     if cycles_since_clear >= 3000 {
-                        if let Some(emb) = embedder.get() {
+                        if let Some(emb) = shared_embedder.get() {
                             emb.clear_session();
                         }
                         state.hnsw_index = None;
@@ -1065,6 +1149,43 @@ pub fn cmd_watch(
                 println!("\nSIGTERM received, stopping watch...");
             }
             break;
+        }
+    }
+
+    // RM-V1.25-8: bounded join of the daemon socket thread. The thread
+    // already observes `daemon_should_exit()` at the top of its accept
+    // loop (Ctrl+C and SIGTERM both satisfy it), so in the common case
+    // this returns within one poll cycle (~100ms). Enforce an outer
+    // timeout so a wedged handler (e.g. waiting on a long embedder
+    // inference) can't keep the process alive past ~5 s after the
+    // user asked it to stop.
+    #[cfg(unix)]
+    if let Some(handle) = socket_thread.take() {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let poll = Duration::from_millis(50);
+        let mut handle_opt = Some(handle);
+        while std::time::Instant::now() < deadline {
+            match handle_opt.as_ref() {
+                Some(h) if h.is_finished() => {
+                    if let Err(e) = handle_opt.take().unwrap().join() {
+                        tracing::warn!(?e, "Daemon socket thread panicked during shutdown");
+                    } else {
+                        tracing::info!("Daemon socket thread joined cleanly");
+                    }
+                    break;
+                }
+                Some(_) => std::thread::sleep(poll),
+                None => break,
+            }
+        }
+        if handle_opt.is_some() {
+            tracing::warn!(
+                "Daemon socket thread did not finish within 5s shutdown window — detaching (BatchContext Drop may race with process exit)"
+            );
+            // Intentionally drop `handle_opt` to detach — this is the
+            // pre-fix behaviour, preserved only when the 5 s budget is
+            // exhausted. In-flight embedder inference is the usual
+            // culprit.
         }
     }
 
@@ -1644,7 +1765,7 @@ mod tests {
         // These fields are unused by collect_events but required by the struct.
         // We leak a parser since tests don't call process_file_changes.
         let parser = Box::leak(Box::new(CqParser::new().unwrap()));
-        let embedder = Box::leak(Box::new(OnceCell::new()));
+        let embedder = Box::leak(Box::new(std::sync::OnceLock::new()));
         let model_config = Box::leak(Box::new(ModelConfig::default_model()));
         WatchConfig {
             root,

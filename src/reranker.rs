@@ -7,7 +7,7 @@
 //! Uses `cross-encoder/ms-marco-MiniLM-L-6-v2` (~91MB ONNX, 22M params).
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use ndarray::Array2;
 use once_cell::sync::OnceCell;
@@ -68,7 +68,13 @@ fn ort_err<T>(e: ort::Error<T>) -> RerankerError {
 /// Scores (query, passage) pairs with a cross-encoder, then re-sorts results.
 pub struct Reranker {
     session: Mutex<Option<Session>>,
-    tokenizer: OnceCell<tokenizers::Tokenizer>,
+    /// Lazy-loaded tokenizer.
+    ///
+    /// RM-V1.25-15: `Mutex<Option<Arc<Tokenizer>>>` so `clear_session` can
+    /// drop the tokenizer (~20MB for ms-marco MiniLM) alongside the ONNX
+    /// session. Callers receive an `Arc<Tokenizer>` clone and release the
+    /// mutex before running inference.
+    tokenizer: Mutex<Option<Arc<tokenizers::Tokenizer>>>,
     model_paths: OnceCell<(PathBuf, PathBuf)>,
     provider: ExecutionProvider,
     max_length: usize,
@@ -97,7 +103,7 @@ impl Reranker {
         };
         Ok(Self {
             session: Mutex::new(None),
-            tokenizer: OnceCell::new(),
+            tokenizer: Mutex::new(None),
             model_paths: OnceCell::new(),
             provider,
             max_length,
@@ -321,17 +327,39 @@ impl Reranker {
     pub fn clear_session(&self) {
         let mut guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
         *guard = None;
-        tracing::info!("Reranker session cleared");
+        // RM-V1.25-15: Drop the tokenizer too (~20MB for ms-marco MiniLM).
+        // In-flight rerank() calls that grabbed an Arc clone before this
+        // call keep their own copy; the slot is cleared and lazy-reloads
+        // on next tokenizer() access.
+        let mut tok = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
+        *tok = None;
+        tracing::info!("Reranker session and tokenizer cleared");
     }
 
-    /// Get or initialize the tokenizer
-    fn tokenizer(&self) -> Result<&tokenizers::Tokenizer, RerankerError> {
+    /// Get or initialize the tokenizer.
+    ///
+    /// RM-V1.25-15: Returns `Arc<Tokenizer>` so callers drop the mutex
+    /// before running inference and `clear_session` can replace the inner
+    /// slot without racing against encode.
+    fn tokenizer(&self) -> Result<Arc<tokenizers::Tokenizer>, RerankerError> {
+        {
+            let guard = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(t) = guard.as_ref() {
+                return Ok(Arc::clone(t));
+            }
+        }
         let (_, tokenizer_path) = self.model_paths()?;
-        self.tokenizer.get_or_try_init(|| {
-            let _span = tracing::info_span!("reranker_tokenizer_init").entered();
+        let _span = tracing::info_span!("reranker_tokenizer_init").entered();
+        let loaded = Arc::new(
             tokenizers::Tokenizer::from_file(tokenizer_path)
-                .map_err(|e| RerankerError::Tokenizer(e.to_string()))
-        })
+                .map_err(|e| RerankerError::Tokenizer(e.to_string()))?,
+        );
+        let mut guard = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(existing) = guard.as_ref() {
+            return Ok(Arc::clone(existing));
+        }
+        *guard = Some(Arc::clone(&loaded));
+        Ok(loaded)
     }
 }
 
