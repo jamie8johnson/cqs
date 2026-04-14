@@ -23,7 +23,7 @@ pub fn llm_summary_pass(
 ) -> Result<usize, LlmError> {
     let _span = tracing::info_span!("llm_summary_pass").entered();
 
-    let llm_config = LlmConfig::resolve(config);
+    let llm_config = LlmConfig::resolve(config)?;
     tracing::debug!(
         api_base = %llm_config.api_base,
         "LLM API base"

@@ -17,7 +17,7 @@ pub fn hyde_query_pass(
 ) -> Result<usize, LlmError> {
     let _span = tracing::info_span!("hyde_query_pass").entered();
 
-    let llm_config = LlmConfig::resolve(config);
+    let llm_config = LlmConfig::resolve(config)?;
     tracing::debug!(
         api_base = %llm_config.api_base,
         "LLM API base"
