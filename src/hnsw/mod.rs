@@ -261,7 +261,22 @@ impl HnswIndex {
         // Assign sequential IDs starting from current id_map length.
         // Convert &[f32] → Vec<f32> so we can pass &Vec<f32> to hnsw_rs
         // (which expects T: Sized + Send + Sync for parallel insert).
+        //
+        // DS-V1.25-4: claim the id_map slots BEFORE calling into the
+        // hnsw_rs graph. `parallel_insert_data` returns `()` but can panic
+        // from the worker pool; if it does, we want the next insert to
+        // advance `base_idx` past the potentially-corrupted positions
+        // rather than reuse them (hnsw_rs has no dedup — reusing the same
+        // `(vec, id)` position is undefined behaviour). Claiming the
+        // id_map up-front guarantees `base_idx` monotonically advances
+        // even if unwinding aborts the rest of the method — worst case is
+        // orphan id_map entries pointing at partially-inserted graph
+        // positions, which the SQLite post-filter already tolerates.
         let base_idx = self.id_map.len();
+        for (id, _) in items {
+            self.id_map.push(id.clone());
+        }
+
         let owned_vecs: Vec<Vec<f32>> = items.iter().map(|(_, emb)| emb.to_vec()).collect();
         let data_for_insert: Vec<(&Vec<f32>, usize)> = owned_vecs
             .iter()
@@ -270,10 +285,6 @@ impl HnswIndex {
             .collect();
 
         hnsw.parallel_insert_data(&data_for_insert);
-
-        for (id, _) in items {
-            self.id_map.push(id.clone());
-        }
 
         tracing::info!(
             inserted = items.len(),
@@ -546,6 +557,72 @@ mod insert_batch_tests {
             }
             other => panic!("Expected DimensionMismatch, got: {}", other),
         }
+    }
+
+    /// DS-V1.25-4: a failed insert (early-return before the graph is
+    /// touched) must not leave id_map partially populated.
+    #[test]
+    fn test_insert_batch_dim_mismatch_leaves_id_map_untouched() {
+        let embeddings: Vec<(String, Embedding)> = (0..3)
+            .map(|i| (format!("chunk_{}", i), make_test_embedding(i)))
+            .collect();
+
+        let mut index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+        let before = index.len();
+
+        let bad_vec = vec![1.0f32; 10];
+        let items = vec![("bad".to_string(), bad_vec.as_slice())];
+        let _ = index.insert_batch(&items);
+
+        assert_eq!(
+            index.len(),
+            before,
+            "id_map must not grow when insert fails validation"
+        );
+    }
+
+    /// DS-V1.25-4: id_map slots are claimed before calling into the graph
+    /// so successful inserts monotonically advance `base_idx`. Two
+    /// consecutive inserts must land at disjoint positions.
+    #[test]
+    fn test_insert_batch_monotonic_base_idx() {
+        let embeddings: Vec<(String, Embedding)> = (0..3)
+            .map(|i| (format!("chunk_{}", i), make_test_embedding(i)))
+            .collect();
+
+        let mut index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+        let after_build = index.len();
+
+        let batch_a: Vec<(String, Embedding)> = (3..5)
+            .map(|i| (format!("a{}", i), make_test_embedding(i)))
+            .collect();
+        let refs_a: Vec<(String, &[f32])> = batch_a
+            .iter()
+            .map(|(id, emb)| (id.clone(), emb.as_slice()))
+            .collect();
+        index.insert_batch(&refs_a).unwrap();
+        let after_a = index.len();
+        assert_eq!(after_a, after_build + 2);
+
+        let batch_b: Vec<(String, Embedding)> = (5..8)
+            .map(|i| (format!("b{}", i), make_test_embedding(i)))
+            .collect();
+        let refs_b: Vec<(String, &[f32])> = batch_b
+            .iter()
+            .map(|(id, emb)| (id.clone(), emb.as_slice()))
+            .collect();
+        index.insert_batch(&refs_b).unwrap();
+        let after_b = index.len();
+        assert_eq!(after_b, after_a + 3);
+
+        // Both inserts must be findable — confirms id_map entries align
+        // with the graph positions they claim.
+        let q = make_test_embedding(4);
+        let r = index.search(&q, 5);
+        assert!(r.iter().any(|n| n.id == "a4"), "a4 should be findable");
+        let q = make_test_embedding(6);
+        let r = index.search(&q, 5);
+        assert!(r.iter().any(|n| n.id == "b6"), "b6 should be findable");
     }
 }
 
