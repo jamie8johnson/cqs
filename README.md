@@ -30,6 +30,8 @@ Code intelligence and RAG for AI agents. Semantic search, call graph analysis, i
 cargo install cqs
 ```
 
+> **Note:** `cargo install` clones a patched `cuvs` fork from [github.com/jamie8johnson/cuvs-patched](https://github.com/jamie8johnson/cuvs-patched) even for CPU builds, because it is wired in via `[patch.crates-io]`. The patch exposes `search_with_filter` for GPU-native bitset filtering and will be dropped once upstream [rapidsai/cuvs#2019](https://github.com/rapidsai/cuvs/pull/2019) merges.
+
 **Upgrading?** Schema changes require rebuilding the index:
 ```bash
 cqs index --force  # Run after upgrading from older versions (current schema: v20)
