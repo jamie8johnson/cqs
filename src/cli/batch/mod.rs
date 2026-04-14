@@ -457,13 +457,29 @@ impl BatchContext {
     ///
     /// Uses cached config (RM-21) and loads only the target reference (RM-16),
     /// not all references.
+    ///
+    /// RM-V1.25-7: before serving a cached entry, peek its `is_stale()` so
+    /// a concurrent `cqs ref update <name>` (which rewrites the reference's
+    /// `index.db` without touching the primary project's `.cqs/index.db`)
+    /// forces a fresh load. Without this, a long-lived daemon would keep
+    /// serving results from a closed WAL snapshot / stale HNSW bytes for
+    /// days.
     pub fn get_ref(&self, name: &str) -> Result<()> {
         let _span = tracing::info_span!("batch_get_ref", %name).entered();
-        let refs = self.refs.borrow();
-        if refs.contains(name) {
-            return Ok(());
+        {
+            let mut refs = self.refs.borrow_mut();
+            if let Some(existing) = refs.peek(name) {
+                if existing.is_stale() {
+                    tracing::info!(
+                        reference = %name,
+                        "Cached reference stale (index.db mtime/size changed) — evicting for reload"
+                    );
+                    refs.pop(name);
+                } else {
+                    return Ok(());
+                }
+            }
         }
-        drop(refs);
 
         let config = self.config();
         // Filter to just the target reference instead of loading all (RM-16)

@@ -25,6 +25,15 @@ pub struct ReferenceIndex {
     pub index: Option<Box<dyn VectorIndex>>,
     /// Score multiplier (0.0-1.0)
     pub weight: f32,
+    /// Path to the reference's `index.db` — kept so staleness checks can
+    /// re-stat the file without reconstructing the path from `name + path`.
+    pub db_path: std::path::PathBuf,
+    /// RM-V1.25-7: (mtime, size) of `index.db` at load time. Long-lived
+    /// daemons that cache loaded references need to invalidate them when
+    /// the reference's own `cqs ref update <name>` rewrites the DB. The
+    /// primary project's mtime change wouldn't catch this, so each
+    /// cached reference tracks its own identity.
+    pub loaded_identity: Option<(std::time::SystemTime, u64)>,
 }
 
 impl std::fmt::Debug for ReferenceIndex {
@@ -109,12 +118,58 @@ fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
     // store's actual dim so the HNSW loader trusts the right byte layout.
     let index = HnswIndex::try_load_with_ef(&cfg.path, None, store.dim());
 
+    // RM-V1.25-7: capture (mtime, size) at load time so cached references
+    // can be invalidated when the reference itself is re-indexed. `None`
+    // on stat failure is fine — `is_stale` treats that as "can't tell,
+    // keep using it" rather than thrashing the cache on transient errors.
+    let loaded_identity = stat_identity(&db_path);
+
     Some(ReferenceIndex {
         name: cfg.name.clone(),
         store,
         index,
         weight: cfg.weight,
+        db_path,
+        loaded_identity,
     })
+}
+
+/// Stat `path` and return `(mtime, size)` if readable. Used for RM-V1.25-7
+/// reference staleness detection. Errors are logged at debug and treated as
+/// "unknown" (caller falls back to keeping the cached value).
+fn stat_identity(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
+    match std::fs::metadata(path) {
+        Ok(md) => match md.modified() {
+            Ok(t) => Some((t, md.len())),
+            Err(e) => {
+                tracing::debug!(path = %path.display(), error = %e, "metadata.modified() failed");
+                None
+            }
+        },
+        Err(e) => {
+            tracing::debug!(path = %path.display(), error = %e, "stat failed");
+            None
+        }
+    }
+}
+
+impl ReferenceIndex {
+    /// RM-V1.25-7: Has the reference's `index.db` been rewritten since load?
+    ///
+    /// Returns `true` when the current (mtime, size) differs from the value
+    /// captured at construction. If we couldn't read the file at all (or
+    /// had no identity at load time), returns `false` so the caller keeps
+    /// using the cached index — transient NFS/permission glitches shouldn't
+    /// thrash the LRU.
+    pub fn is_stale(&self) -> bool {
+        let Some(loaded) = self.loaded_identity else {
+            return false;
+        };
+        let Some(current) = stat_identity(&self.db_path) else {
+            return false;
+        };
+        current != loaded
+    }
 }
 
 /// Load reference indexes from config, skipping any that fail to open.
