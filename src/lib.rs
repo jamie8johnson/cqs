@@ -420,12 +420,26 @@ pub fn index_notes(
 
 // ============ File Enumeration ============
 
-/// Maximum file size to index (1MB)
-const MAX_FILE_SIZE: u64 = 1_048_576;
+/// Default maximum file size to index (1MB). Generated code (`bindings.rs`
+/// blobs, compiled TypeScript, migrations) can exceed this and is silently
+/// skipped; tune via `CQS_MAX_FILE_SIZE` (bytes) when that happens.
+const DEFAULT_MAX_FILE_SIZE: u64 = 1_048_576;
+
+/// Resolve the per-file size cap, checking `CQS_MAX_FILE_SIZE` first. Zero
+/// falls back to the default — disabling the cap entirely would OOM on
+/// multi-GB artifacts.
+fn max_file_size() -> u64 {
+    std::env::var("CQS_MAX_FILE_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_FILE_SIZE)
+}
 
 /// Enumerate files to index in a project directory.
 ///
-/// Respects .gitignore, skips hidden files and large files (>1MB).
+/// Respects .gitignore, skips hidden files and files larger than
+/// `CQS_MAX_FILE_SIZE` bytes (default 1MB — generated code can exceed this).
 /// Returns relative paths from the project root.
 ///
 /// Shared file enumeration for consistent indexing.
@@ -462,6 +476,7 @@ pub fn enumerate_files(
         })
         .build();
 
+    let size_cap = max_file_size();
     let files: Vec<PathBuf> = walker
         .filter_map(|e| {
             e.map_err(|err| {
@@ -470,10 +485,25 @@ pub fn enumerate_files(
             .ok()
         })
         .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-        .filter(|e| {
-            e.metadata()
-                .map(|m| m.len() <= MAX_FILE_SIZE)
-                .unwrap_or(false)
+        .filter(|e| match e.metadata() {
+            Ok(m) => {
+                let len = m.len();
+                if len > size_cap {
+                    // SHL-V1.25-11: surface skipped oversize files at info
+                    // so users debugging "why doesn't my symbol show up"
+                    // discover CQS_MAX_FILE_SIZE instead of silent drop.
+                    tracing::info!(
+                        path = %e.path().display(),
+                        size = len,
+                        cap = size_cap,
+                        "Skipping oversize file (CQS_MAX_FILE_SIZE)"
+                    );
+                    false
+                } else {
+                    true
+                }
+            }
+            Err(_) => false,
         })
         .filter(|e| {
             e.path()

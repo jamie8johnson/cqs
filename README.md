@@ -693,6 +693,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_LLM_PROVIDER` | `anthropic` | LLM provider (`anthropic`) |
 | `CQS_MAX_CONNECTIONS` | `4` | SQLite write-pool max connections |
 | `CQS_MAX_CONTRASTIVE_CHUNKS` | `30000` | Max chunks for contrastive summary matrix (memory = N*N*4 bytes) |
+| `CQS_MAX_FILE_SIZE` | `1048576` (1 MB) | Per-file size cap (bytes) for indexing. Files above this are skipped with an `info!` log; bump for generated code (`bindings.rs`, compiled TS, migrations). |
 | `CQS_MAX_QUERY_BYTES` | `32768` | Max query input bytes for embedding |
 | `CQS_MAX_SEQ_LENGTH` | (auto) | Override max sequence length for custom ONNX models |
 | `CQS_MD_MAX_SECTION_LINES` | `150` | Max markdown section lines before overflow split |
