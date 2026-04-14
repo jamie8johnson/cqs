@@ -17,6 +17,12 @@ When you run `cqs index`, the following is stored in `.cqs/index.db`:
 - File paths and line numbers
 - File modification times
 
+Additional caches are kept under `~/.cache/cqs/`:
+
+- `embeddings.db` — content-addressed embedding cache, capped at 1 GB by default (configurable via `CQS_CACHE_MAX_SIZE`). Reused across projects to skip re-embedding identical chunks.
+- `query_cache.db` — recent query embeddings with a 7-day TTL. Speeds up repeated searches.
+- `query_log.jsonl` — opt-in query log, written only when `CQS_TELEMETRY=1` or the file already exists. Stays local.
+
 This data never leaves your machine.
 
 ## Model Download
@@ -52,5 +58,6 @@ rm -rf ~/.config/cqs/projects.toml    # Project registry
 rm -f ~/.config/cqs/config.toml       # User configuration
 rm -f .cqs.toml                       # Project config
 rm -f docs/notes.toml                 # Project notes
+rm -rf ~/.cache/cqs/                  # Embedding + query caches, query log
 rm -rf ~/.cache/huggingface/          # Downloaded model
 ```

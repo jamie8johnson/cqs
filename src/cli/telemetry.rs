@@ -53,6 +53,15 @@ pub fn log_command(
 
     // path already declared above for existence check
     let _ = (|| -> std::io::Result<()> {
+        // DS-V1.25-8: single-writer assumption — telemetry is per-process, but
+        // multiple cqs invocations (CLI + agents + `cqs watch`) write to the
+        // same `.cqs/telemetry.jsonl` concurrently. The advisory `flock` on
+        // `telemetry.lock` enforces ordering *only if every writer takes the
+        // lock* (classic advisory-lock caveat). Do not bypass it: skipping the
+        // `try_lock` call will race with `cqs telemetry reset` (which takes
+        // the blocking `lock`) and can either lose writes or corrupt a
+        // half-rotated file.
+        //
         // DS-NEW-2: advisory lock to prevent races with concurrent telemetry reset.
         // Non-blocking try_lock — if reset holds it, skip this write silently.
         let lock_path = cqs_dir.join("telemetry.lock");
@@ -136,6 +145,12 @@ pub fn log_routed(
     });
 
     let _ = (|| -> std::io::Result<()> {
+        // DS-V1.25-8: see the corresponding block in `log_command` above for the
+        // full single-writer rationale. In short: telemetry is per-process but
+        // many cqs invocations (CLI + agents + `cqs watch`) share the file, and
+        // `flock` enforces ordering only when every writer takes it. Do not
+        // bypass.
+        //
         // Advisory lock to prevent races with concurrent telemetry reset.
         // Non-blocking try_lock — if reset holds it, skip this write silently.
         let lock_path = cqs_dir.join("telemetry.lock");

@@ -2185,7 +2185,13 @@ Second 14-category audit completed (117 findings). 107 of 109 actionable finding
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v1.25.0...HEAD
+[1.25.0]: https://github.com/jamie8johnson/cqs/compare/v1.24.0...v1.25.0
+[1.24.0]: https://github.com/jamie8johnson/cqs/compare/v1.23.0...v1.24.0
+[1.23.0]: https://github.com/jamie8johnson/cqs/compare/v1.22.0...v1.23.0
+[1.22.0]: https://github.com/jamie8johnson/cqs/compare/v1.21.0...v1.22.0
+[1.21.0]: https://github.com/jamie8johnson/cqs/compare/v1.20.0...v1.21.0
+[1.20.0]: https://github.com/jamie8johnson/cqs/compare/v1.19.0...v1.20.0
 [0.19.0]: https://github.com/jamie8johnson/cqs/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/jamie8johnson/cqs/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/jamie8johnson/cqs/compare/v0.16.0...v0.17.0

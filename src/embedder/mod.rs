@@ -238,8 +238,10 @@ pub struct Embedder {
     model_fingerprint: std::sync::OnceLock<String>,
 }
 
-/// Default query cache size (entries). Each entry is ~4KB (1024 floats + key).
-/// Override with `CQS_QUERY_CACHE_SIZE` environment variable.
+/// Default query cache size (entries). Each entry is roughly `4 * dim` bytes
+/// of vector data plus the cache key; with the default BGE-large (1024-dim) that
+/// is ~4 KB/entry, with E5-base / v9-200k (768-dim) it is ~3 KB/entry, and scales
+/// accordingly for custom models. Override with `CQS_QUERY_CACHE_SIZE`.
 const DEFAULT_QUERY_CACHE_SIZE: usize = 128;
 
 impl Embedder {
