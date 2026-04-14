@@ -56,7 +56,7 @@ Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255,
 | OB-NEW-4 | Daemon panic path discards payload — error log opaque | easy | `src/cli/watch.rs:135-138` | ✅ wave-1 (2ba4b6a) |
 | EH-22 | Socket accept-loop errors logged at `debug` level | easy | `src/cli/watch.rs:494` | ✅ wave-1 (40a16c2) |
 | RM-V1.25-20 | Daemon accept-error loop logs at `debug` — busy-spin invisibly | easy | `src/cli/watch.rs:493-495` | ✅ wave-1 (40a16c2) |
-| EH-12 | `batch::dispatch_line` and `cmd_batch` flatten anyhow chain to top-level | easy | `src/cli/batch/mod.rs:254-256,844-849,851-856` | pending |
+| EH-12 | `batch::dispatch_line` and `cmd_batch` flatten anyhow chain to top-level | easy | `src/cli/batch/mod.rs:254-256,844-849,851-856` | ✅ wave-3 (4bdf8c1) |
 | RB-NEW-1 | `SpladeEncoder::encode_batch` pre-pooled slicing panics on short tensor | easy | `src/splade/mod.rs:688-702` | ✅ wave-1 (74a01f4) |
 | RB-NEW-2 | `SpladeEncoder::encode_batch` raw-logits path panics + wrong `.expect` message | easy | `src/splade/mod.rs:733-740` | ✅ wave-1 (74a01f4) |
 | RB-NEW-5 | `unreachable!()` in notes dispatch encodes routing invariant outside type system | easy | `src/cli/commands/io/notes.rs:116,147` | ✅ wave-2 (9e87eb9) |
@@ -78,15 +78,15 @@ Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255,
 | Error Handling: Ingest pipeline FK failures | Ingest pipeline FK failures silently discard call graph edges (14k+ edges lost) | medium | `src/cli/pipeline/upsert.rs` | pending |
 | Data Safety: HNSW state can diverge | HNSW state can diverge from chunks table after out-of-band mutation — ghost results | medium | `src/cli/commands/index/gc.rs`, HNSW load path | pending |
 | DS-V1.25-2 | `HnswIndex::insert_batch` partial failure leaves graph out of sync with `id_map` | medium | `src/hnsw/mod.rs:234-284` | ✅ wave-2 (166aa05) |
-| DS-V1.25-3 | Watch-mode `set_hnsw_dirty(false)` + chunks-write race can clear flag with unindexed chunks | hard→medium | `src/cli/watch.rs:835-937` | pending |
+| DS-V1.25-3 | Watch-mode `set_hnsw_dirty(false)` + chunks-write race can clear flag with unindexed chunks | hard→medium | `src/cli/watch.rs:835-937` | ✅ wave-3 (b46805d) |
 | DS-V1.25-5 | `upsert_calls_batch` aborts on FK violation — watch race drops calls silently | medium | `src/store/calls/crud.rs:55-97` | pending |
-| DS-V1.25-6 | Daemon read-only BatchContext can't detect `cqs index --force` DB replacement | medium | `src/cli/watch.rs:476-498`, `src/cli/batch/mod.rs:138-187` | pending |
+| DS-V1.25-6 | Daemon read-only BatchContext can't detect `cqs index --force` DB replacement | medium | `src/cli/watch.rs:476-498`, `src/cli/batch/mod.rs:138-187` | ✅ wave-3 (ba16d6f) |
 | API-V1.25-3 | `suggest --apply` writes through a read-only store — fails in CLI and daemon | medium | `src/cli/dispatch.rs:335`, `src/cli/batch/handlers/analysis.rs:86-128` | ✅ issue #946 |
 | API-V1.25-4 | `BatchCmd::Search` inline-duplicates 21 fields instead of shared `SearchArgs` | medium | `src/cli/batch/commands.rs:32-92` vs `src/cli/definitions.rs:122-226` | ✅ issue #947 |
 | API-V1.25-8 | Daemon forward silently ignores `--model` mismatch — wrong model used | medium | `src/cli/dispatch.rs:453-490` | ✅ wave-1 (63ff389) |
-| EH-14 | Daemon socket timeouts set via silent `.ok()` discards — guard defeated | easy→medium | `src/cli/watch.rs:65-66`, `src/cli/dispatch.rs:442-451` | pending |
-| EX-V1.25-11 | Notes subcommand splits across two dispatch fns with `unreachable!()` — same class as PR #945 | medium | `src/cli/commands/io/notes.rs:106-149`, `src/cli/dispatch.rs:175-179,415-423` | pending |
-| SEC-V1.25-1 | Daemon socket DoS — single-threaded accept loop with 5s read timeout | medium | `src/cli/watch.rs:488-497,58-146` | pending |
+| EH-14 | Daemon socket timeouts set via silent `.ok()` discards — guard defeated | easy→medium | `src/cli/watch.rs:65-66`, `src/cli/dispatch.rs:442-451` | ✅ wave-3 (d36c5c1) |
+| EX-V1.25-11 | Notes subcommand splits across two dispatch fns with `unreachable!()` — same class as PR #945 | medium | `src/cli/commands/io/notes.rs:106-149`, `src/cli/dispatch.rs:175-179,415-423` | ✅ issue #959 |
+| SEC-V1.25-1 | Daemon socket DoS — single-threaded accept loop with 5s read timeout | medium | `src/cli/watch.rs:488-497,58-146` | ✅ wave-3 (68c62a4) |
 | SEC-V1.25-6 | LLM prompt construction concatenates unsanitized chunk content inside backticks — prompt injection from references | medium | `src/llm/prompts.rs:13-18,47-53,85-95,108-115` | ✅ wave-2 (283d7ae) |
 | SEC-V1.25-8 | `CQS_PDF_SCRIPT` extension-only guard can't prevent `.py` payloads — daemon-persisted | medium | `src/convert/pdf.rs:56-69` | ✅ wave-2 (ab3206d) |
 | SEC-V1.25-10 | `find_python` / `find_7z` rely on PATH with no exec-bit / ownership check | medium | `src/convert/mod.rs:48-60`, `src/convert/chm.rs:182-208` | ✅ wave-2 (0ed9dd9) |
@@ -96,25 +96,25 @@ Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255,
 | PB-V1.25-2 | `daemon_socket_path` is `#[cfg(unix)]`-only — `cqs watch --serve` silently no-ops on Windows | medium | `src/cli/files.rs:10-28`, `src/cli/watch.rs:465-468` | ✅ wave-1 (6ac57eb) |
 | PB-V1.25-7 | Staleness macOS case-insensitivity branch ignores Windows NTFS — silent data loss | medium | `src/store/chunks/staleness.rs:55-74,167-188,326-337` | ✅ wave-1 (ccda36e) |
 | PB-V1.25-12 | ORT provider symlink setup is Linux-only — macOS CoreML and Windows CUDA silent CPU | medium | `src/embedder/provider.rs:26-189,191-200` | pending |
-| RM-V1.25-3 | Daemon embedder/reranker idle timeout only checked when query arrives — pins ~500MB+ | medium | `src/cli/batch/mod.rs:108-136,248` | pending |
-| RM-V1.25-5 | `EmbeddingCache.evict()` never fires in daemon/watch mode — 10GB cap blown silently | medium | `src/cli/pipeline/mod.rs:166-171`, `src/cache.rs:137-140` | pending |
-| RM-V1.25-7 | Cached ReferenceIndexes have no per-reference staleness detection | medium | `src/cli/batch/mod.rs:88,207,440-472` | pending |
-| RM-V1.25-8 | Detached socket-handler thread holds BatchContext past main-loop exit | medium | `src/cli/watch.rs:473-505` | pending |
-| RM-V1.25-11 | SPLADE index full rebuild on every reindex — first daemon query blocked ~45s | hard→medium | `src/cli/batch/mod.rs:343-386`, `src/splade/index.rs:130-150` | pending |
-| RM-V1.25-15 | Reranker/SPLADE/Embedder tokenizers never cleared by `clear_session` (~50MB resident) | medium | `src/cli/batch/mod.rs:76,582-594` + 3 others | pending |
-| RM-V1.25-19 | CAGRA GPU mutex poison recovery uses `into_inner()` without GPU state reset | medium | `src/cagra.rs:153-156` | pending |
+| RM-V1.25-3 | Daemon embedder/reranker idle timeout only checked when query arrives — pins ~500MB+ | medium | `src/cli/batch/mod.rs:108-136,248` | ✅ wave-3 (7d8e2a0) |
+| RM-V1.25-5 | `EmbeddingCache.evict()` never fires in daemon/watch mode — 10GB cap blown silently | medium | `src/cli/pipeline/mod.rs:166-171`, `src/cache.rs:137-140` | ✅ wave-3 (e6e25ff) |
+| RM-V1.25-7 | Cached ReferenceIndexes have no per-reference staleness detection | medium | `src/cli/batch/mod.rs:88,207,440-472` | ✅ wave-3 (351cc6b) |
+| RM-V1.25-8 | Detached socket-handler thread holds BatchContext past main-loop exit | medium | `src/cli/watch.rs:473-505` | ✅ wave-3 (691a056) |
+| RM-V1.25-11 | SPLADE index full rebuild on every reindex — first daemon query blocked ~45s | hard→medium | `src/cli/batch/mod.rs:343-386`, `src/splade/index.rs:130-150` | ✅ wave-3 (7e60801, telemetry only) |
+| RM-V1.25-15 | Reranker/SPLADE/Embedder tokenizers never cleared by `clear_session` (~50MB resident) | medium | `src/cli/batch/mod.rs:76,582-594` + 3 others | ✅ wave-3 (47ef7fe) |
+| RM-V1.25-19 | CAGRA GPU mutex poison recovery uses `into_inner()` without GPU state reset | medium | `src/cagra.rs:153-156` | ✅ wave-3 (90d437d) |
 | RM-V1.25-22 | `read_line` on daemon socket can allocate multi-GB before size check | medium | `src/cli/watch.rs:68-82` | ✅ wave-1 (eb48f41) |
-| RM-V1.25-28 | Watch outer Embedder and daemon-thread Embedder are separate OnceLocks — ~500MB dup | medium | `src/cli/watch.rs:568`, `src/cli/batch/mod.rs:74,279` | pending |
+| RM-V1.25-28 | Watch outer Embedder and daemon-thread Embedder are separate OnceLocks — ~500MB dup | medium | `src/cli/watch.rs:568`, `src/cli/batch/mod.rs:74,279` | ✅ wave-3 (b226d71) |
 | TC-ADV-8 | Notes daemon-forward regression (PR #945) has no test — silent regression risk | medium | `src/cli/dispatch.rs:401-423` | pending |
 | TC-ADV-9 | Concurrent `upsert_sparse_vectors` writer race has no test — WRITE_LOCK regression silent | medium | `src/store/sparse.rs:130-146` | pending |
-| TC-HP-2 | `cmd_notes_mutate` add/update/remove lifecycle has zero CLI tests — PR #945 untested | easy→medium | `src/cli/commands/io/notes.rs:122-447` | pending |
+| TC-HP-2 | `cmd_notes_mutate` add/update/remove lifecycle has zero CLI tests — PR #945 untested | easy→medium | `src/cli/commands/io/notes.rs:122-447` | ✅ wave-3 (c848c17) |
 | TC-HP-3 | `prune_all` has zero tests — happy path never verified | easy→medium | `src/store/chunks/staleness.rs:148-284` | ✅ wave-1 (aa660d5) |
-| TC-HP-4 | Per-category SPLADE alpha routing has no end-to-end test — silent quality regression | medium | `src/cli/batch/handlers/search.rs:117-139`, `src/cli/commands/search/query.rs:170-200` | pending |
-| TC-HP-1 | `resolve_splade_alpha` has zero tests — v1.25.0 defaults unguarded | easy→medium | `src/search/router.rs:272-322` | pending |
+| TC-HP-4 | Per-category SPLADE alpha routing has no end-to-end test — silent quality regression | medium | `src/cli/batch/handlers/search.rs:117-139`, `src/cli/commands/search/query.rs:170-200` | ✅ wave-3 (c2c1917) |
+| TC-HP-1 | `resolve_splade_alpha` has zero tests — v1.25.0 defaults unguarded | easy→medium | `src/search/router.rs:272-322` | ✅ wave-3 (eff6d92) |
 | PF-V1.25-2 | `rrf_fuse` full-sorts every result to truncate to `limit` — should use bounded heap | medium | `src/store/search.rs:187-193` | ✅ wave-1 (2ef2de9) |
 | PF-V1.25-3 | SPLADE `search_with_filter` full-sorts entire score HashMap — 10k-30k clones discarded | medium | `src/splade/index.rs:195-208` | ✅ wave-1 (2ef2de9) |
-| PF-V1.25-4 | `NoteBoostIndex` rebuilt from scratch per search — should cache per notes-generation | medium | `src/search/query.rs:170,708`, `src/search/scoring/note_boost.rs:62-97` | pending |
-| PF-V1.25-19 | `load_all_sparse_vectors` loads entire sparse_vectors table — 4GB peak on 60k-chunk index | medium | `src/store/sparse.rs:207-249` | pending |
+| PF-V1.25-4 | `NoteBoostIndex` rebuilt from scratch per search — should cache per notes-generation | medium | `src/search/query.rs:170,708`, `src/search/scoring/note_boost.rs:62-97` | ✅ wave-3 (33ba8e6) |
+| PF-V1.25-19 | `load_all_sparse_vectors` loads entire sparse_vectors table — 4GB peak on 60k-chunk index | medium | `src/store/sparse.rs:207-249` | ✅ wave-3 (e872ac6) |
 | OB-NEW-7 | CAGRA vs HNSW selection logged inconsistently — operator can't tell backend | easy→medium | `src/cli/store.rs:264-282` | ✅ wave-1 (672880b) |
 
 ## P3 — Easy + Low Impact (fix if time)
@@ -133,17 +133,17 @@ Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255,
 | DS-V1.25-1 | SPLADE cross-device fallback writes directly into final path — not atomic | easy | `src/splade/index.rs:399-423` | ✅ wave-1 (bd3c7ef) |
 | DS-V1.25-4 | HNSW save writes `id_map` without `sync_all()` — power-cut may lose durability | easy | `src/hnsw/persist.rs:262-287` | ✅ wave-2 (de3dc7f) |
 | DS-V1.25-7 | `query_log.jsonl` append has no lock + no size cap — interleaved lines under concurrency | easy | `src/cli/batch/commands.rs:351-379` | pending |
-| SHL-V1.25-3 | SQLite `cache_size` hardcoded per-mode; no env override | easy | `src/store/mod.rs:288,311,328,347` | pending |
-| SHL-V1.25-4 | `cache.rs:175` SQL DELETE batch still uses pre-3.32 `chunks(100)` | easy | `src/cache.rs:174-175` | pending |
-| SHL-V1.25-5 | `types.rs:102` SQL DELETE batch still uses pre-3.32 `chunks(500)` | easy | `src/store/types.rs:102` | pending |
-| SHL-V1.25-7 | `DEFAULT_MAX_CHANGED_FUNCTIONS = 500` silently truncates large diffs | easy | `src/impact/diff.rs:21,136-145` | pending |
-| SHL-V1.25-9 | Batch context reference LRU hardcoded to 2 slots | easy | `src/cli/batch/mod.rs:687,722` | pending; duplicate of RM-V1.25-17 |
-| SHL-V1.25-11 | `MAX_FILE_SIZE = 1_048_576` silently skips 1MB+ files, not tunable | easy | `src/lib.rs:424` | pending |
-| SHL-V1.25-12 | `embedding_cache.rs` `busy_timeout(5s)` hardcoded, ignores `CQS_BUSY_TIMEOUT_MS` | easy | `src/cache.rs:86,910` | pending |
-| SHL-V1.25-13 | Watch debounce 500ms default — tuned for inotify, unsafe on WSL NTFS | easy | `src/cli/definitions.rs:292-295` | pending |
-| SHL-V1.25-14 | `PLACEHOLDER_CACHE_MAX = 10_000` short of SQLite limit — cache misses on large batches | easy | `src/store/helpers/sql.rs:36` | pending |
-| SHL-V1.25-15 | SPLADE `max_seq_len` p99 comment claims 180 tokens — assumes cqs corpus | easy | `src/splade/mod.rs:587-598` | pending |
-| SHL-V1.25-16 | `IDLE_TIMEOUT_MINUTES = 5` hardcoded in batch mode | easy | `src/cli/batch/mod.rs:44` | pending |
+| SHL-V1.25-3 | SQLite `cache_size` hardcoded per-mode; no env override | easy | `src/store/mod.rs:288,311,328,347` | ✅ wave-3 (434d932) |
+| SHL-V1.25-4 | `cache.rs:175` SQL DELETE batch still uses pre-3.32 `chunks(100)` | easy | `src/cache.rs:174-175` | ✅ wave-3 (9ceb045) |
+| SHL-V1.25-5 | `types.rs:102` SQL DELETE batch still uses pre-3.32 `chunks(500)` | easy | `src/store/types.rs:102` | ✅ wave-3 (9019b40) |
+| SHL-V1.25-7 | `DEFAULT_MAX_CHANGED_FUNCTIONS = 500` silently truncates large diffs | easy | `src/impact/diff.rs:21,136-145` | ✅ wave-3 (a7e4249) |
+| SHL-V1.25-9 | Batch context reference LRU hardcoded to 2 slots | easy | `src/cli/batch/mod.rs:687,722` | ✅ wave-3 (7cc5e65) |
+| SHL-V1.25-11 | `MAX_FILE_SIZE = 1_048_576` silently skips 1MB+ files, not tunable | easy | `src/lib.rs:424` | ✅ wave-3 (9e9aba1) |
+| SHL-V1.25-12 | `embedding_cache.rs` `busy_timeout(5s)` hardcoded, ignores `CQS_BUSY_TIMEOUT_MS` | easy | `src/cache.rs:86,910` | ✅ wave-3 (25b1351) |
+| SHL-V1.25-13 | Watch debounce 500ms default — tuned for inotify, unsafe on WSL NTFS | easy | `src/cli/definitions.rs:292-295` | ✅ wave-3 (723a2d1) |
+| SHL-V1.25-14 | `PLACEHOLDER_CACHE_MAX = 10_000` short of SQLite limit — cache misses on large batches | easy | `src/store/helpers/sql.rs:36` | ✅ wave-3 (57a8560) |
+| SHL-V1.25-15 | SPLADE `max_seq_len` p99 comment claims 180 tokens — assumes cqs corpus | easy | `src/splade/mod.rs:587-598` | ✅ wave-3 (ac32600) |
+| SHL-V1.25-16 | `IDLE_TIMEOUT_MINUTES = 5` hardcoded in batch mode | easy | `src/cli/batch/mod.rs:44` | ✅ wave-3 (7cc5e65) |
 | OB-NEW-1 | `resolve_splade_alpha` has no span; routing decision logged at two diverging sites | easy | `src/search/router.rs:272-322`, two call sites | ✅ wave-1 (cc14508) |
 | OB-NEW-2 | Daemon startup env-var log is `println!` to stdout, lists 6 of ~68 vars | easy | `src/cli/watch.rs:429-455` | ✅ wave-1 (4e43a14) |
 | OB-NEW-3 | `daemon_query` span lacks `command` field; per-command latency uncorrelatable | easy | `src/cli/watch.rs:62` | ✅ wave-1 (8f25fcf) |
@@ -155,13 +155,13 @@ Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255,
 | OB-NEW-12 | CAGRA dim-mismatch warns use format-string args (post-v1.22 OB-18 holdouts) | easy | `src/cagra.rs:146-150,315-319` | ✅ wave-1 (854bc7f) |
 | API-V1.25-6 | `BatchCmd::is_pipeable` allowlist drifts out of date silently | easy | `src/cli/batch/commands.rs:325-344` | ✅ wave-1 (af0d0cf) |
 | API-V1.25-7 | `validate_finite_f32` is dead — no f32 flag uses it as a clap value_parser | easy | `src/cli/definitions.rs:97-112` | ✅ wave-1 (3b97a59) |
-| TC-ADV-1 | NaN embedding bytes flow into HNSW unchecked — no test blocks NaN propagation | easy | `src/store/chunks/embeddings.rs:47-50,101-103` | pending |
-| TC-ADV-2 | `HnswIndex::search` with NaN/Inf in query has no test | easy | `src/hnsw/search.rs:47-116` | pending |
+| TC-ADV-1 | NaN embedding bytes flow into HNSW unchecked — no test blocks NaN propagation | easy | `src/store/chunks/embeddings.rs:47-50,101-103` | ✅ wave-3 (5c7a6a5) |
+| TC-ADV-2 | `HnswIndex::search` with NaN/Inf in query has no test | easy | `src/hnsw/search.rs:47-116` | ✅ wave-3 (2b46ea8) |
 | TC-ADV-3 | `prepare_index_data` (CAGRA) doesn't skip zero/NaN — diverges from HNSW build | easy | `src/hnsw/mod.rs:295-328` | pending |
-| TC-ADV-5 | `search_hybrid` `(limit*5).max(100)` overflow on large limits untested | easy | `src/search/query.rs:429,583` | pending |
+| TC-ADV-5 | `search_hybrid` `(limit*5).max(100)` overflow on large limits untested | easy | `src/search/query.rs:429,583` | ✅ wave-3 (ffd659c) |
 | TC-ADV-6 | `parse_notes_str` sentiment NaN clamping doesn't handle NaN | easy | `src/note.rs:353-355` | pending |
-| TC-ADV-13 | `prune_orphan_sparse_vectors` zero-rows generation-bump-skip branch untested | easy | `src/store/sparse.rs:229-262` | pending |
-| TC-ADV-14 | `store::notes` no test for NaN / huge batch / empty-mentions sentiment | easy | `src/store/notes.rs:62-136` | pending |
+| TC-ADV-13 | `prune_orphan_sparse_vectors` zero-rows generation-bump-skip branch untested | easy | `src/store/sparse.rs:229-262` | ✅ wave-3 (b811b33) |
+| TC-ADV-14 | `store::notes` no test for NaN / huge batch / empty-mentions sentiment | easy | `src/store/notes.rs:62-136` | ✅ wave-3 (8a7812e) |
 | EX-V1.25-3 | New embedding model preset requires edits in 4 places that drift apart | easy | `src/embedder/models.rs:44-103` | pending |
 | EX-V1.25-9 | Doc-comment formats indirected through string tags, defeating type safety | easy | `src/doc_writer/formats.rs:41-132`, `src/language/mod.rs:322-327` | pending |
 | EX-V1.25-10 | CAGRA knobs hidden behind a single env var; HNSW exposes three but CAGRA exposes zero | easy | `src/cagra.rs:113,169,469` | pending; partial dup of SHL-V1.25-6 |
@@ -181,17 +181,17 @@ Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255,
 | PB-V1.25-17 | SQLite WAL/SHM file permissions 0o600 set AFTER SQLite writes — TOCTOU on rw opens | easy | `src/store/mod.rs:425-441` | pending |
 | PB-V1.25-19 | Daemon socket-cleanup `remove_file` follows symlinks — local symlink-attack | easy | `src/cli/watch.rs:401-413` | ✅ wave-1 (40ba816) |
 | PB-V1.25-20 | Hardcoded `PathBuf::from("/project")` in 10+ test fixtures assumes Unix absolute paths | easy | `src/cli/commands/graph/deps.rs:170` + 9 others | pending |
-| PF-V1.25-1 | `search_hybrid` rebuilds two unsized HashMaps + Vec/HashSet per SPLADE query | easy | `src/search/query.rs:475-507` | pending |
-| PF-V1.25-5 | `rerank` clones the `content` of every candidate before delegating | easy | `src/reranker.rs:111-120` | pending |
-| PF-V1.25-6 | `fetch_candidates_by_ids_async` builds an `id → rank` HashMap just to re-sort | easy | `src/store/chunks/async_helpers.rs:95-104` | pending |
-| PF-V1.25-7 | `make_placeholders` clones full cached placeholder string on every call | easy | `src/store/helpers/sql.rs:73-83` | pending |
-| PF-V1.25-8 | Batched call-graph/enrichment queries still use pre-3.32 SQLite `chunks(200/250/500)` | easy | `src/store/calls/query.rs:194,243,294` + others | pending |
-| PF-V1.25-9 | `update_embeddings_with_hashes_batch` uses `BATCH_SIZE = 100` for 3-param INSERT | easy | `src/store/chunks/crud.rs:143-165` | pending |
-| PF-V1.25-10 | `ctx.store()` syscalls `fs::metadata` on every batch handler call | easy | `src/cli/batch/mod.rs:141-187,267-270` | pending |
-| PF-V1.25-13 | `path_matches_mention` allocates two Strings per note mention per candidate | easy | `src/note.rs:366-381`, `src/search/scoring/note_boost.rs:114-125` | pending |
-| PF-V1.25-14 | `apply_parent_boost` clones `parent_type_name` for every result | easy | `src/search/scoring/candidate.rs:58-63` | pending |
-| PF-V1.25-15 | HNSW `build_batched_with_dim` logs `info!` per batch — 50+ INFO lines per build | easy | `src/hnsw/build.rs:203-208` | pending |
-| PF-V1.25-16 | `search_hybrid` builds `fused_map` cloning every id after already owning them | easy | `src/search/query.rs:549-551` | pending |
+| PF-V1.25-1 | `search_hybrid` rebuilds two unsized HashMaps + Vec/HashSet per SPLADE query | easy | `src/search/query.rs:475-507` | ✅ wave-3 (51e200d) |
+| PF-V1.25-5 | `rerank` clones the `content` of every candidate before delegating | easy | `src/reranker.rs:111-120` | ✅ wave-3 (a5c99a1) |
+| PF-V1.25-6 | `fetch_candidates_by_ids_async` builds an `id → rank` HashMap just to re-sort | easy | `src/store/chunks/async_helpers.rs:95-104` | ✅ wave-3 (a8f4f4c) |
+| PF-V1.25-7 | `make_placeholders` clones full cached placeholder string on every call | easy | `src/store/helpers/sql.rs:73-83` | ✅ wave-3 (ed4ff24) |
+| PF-V1.25-8 | Batched call-graph/enrichment queries still use pre-3.32 SQLite `chunks(200/250/500)` | easy | `src/store/calls/query.rs:194,243,294` + others | ✅ wave-3 (de692c5) |
+| PF-V1.25-9 | `update_embeddings_with_hashes_batch` uses `BATCH_SIZE = 100` for 3-param INSERT | easy | `src/store/chunks/crud.rs:143-165` | ✅ wave-3 (0f2553a) |
+| PF-V1.25-10 | `ctx.store()` syscalls `fs::metadata` on every batch handler call | easy | `src/cli/batch/mod.rs:141-187,267-270` | ✅ wave-3 (9792012) |
+| PF-V1.25-13 | `path_matches_mention` allocates two Strings per note mention per candidate | easy | `src/note.rs:366-381`, `src/search/scoring/note_boost.rs:114-125` | ✅ wave-3 (d457dd8) |
+| PF-V1.25-14 | `apply_parent_boost` clones `parent_type_name` for every result | easy | `src/search/scoring/candidate.rs:58-63` | ✅ wave-3 (032cb13) |
+| PF-V1.25-15 | HNSW `build_batched_with_dim` logs `info!` per batch — 50+ INFO lines per build | easy | `src/hnsw/build.rs:203-208` | ✅ wave-3 (4675c50) |
+| PF-V1.25-16 | `search_hybrid` builds `fused_map` cloning every id after already owning them | easy | `src/search/query.rs:549-551` | ✅ wave-3 (51e200d) |
 | TC-HP-8 | Four top-level JSON CLI tests assert structure only, not content | easy | `tests/cli_commands_test.rs:132-245`, `tests/onboard_test.rs:79-140` | pending |
 | TC-HP-9 | `tests/gather_test.rs` assertions skip empty-result case | easy | `tests/gather_test.rs:69-89,127-186,188-232` | pending |
 | TC-HP-10 | All 5 `QueryCategory` catch-all variants untested as hitting `_ => 1.0` | easy | `src/search/router.rs:317-321` | pending |
@@ -202,7 +202,7 @@ Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255,
 | TC-HP-19 | `test_build_batched_handles_rebuild_after_initial_build` doesn't search after rebuild | easy | `tests/hnsw_test.rs:258-288` | pending |
 | TC-HP-20 | `test_gc_prunes_missing_files` asserts only 2 of 5 GC counters | easy | `tests/cli_test.rs:448-487` | ✅ wave-1 (aa660d5) |
 | TC-ADV-4 | `BoundedScoreHeap::new(0)` silently discards all pushes — no test | easy | `src/search/scoring/candidate.rs:162-167,170-192` | pending |
-| TC-ADV-7 | `parse_notes` 10MB file-size guard and `MAX_NOTES = 10_000` truncation untested | easy | `src/note.rs:171-184,22,344` | pending |
+| TC-ADV-7 | `parse_notes` 10MB file-size guard and `MAX_NOTES = 10_000` truncation untested | easy | `src/note.rs:171-184,22,344` | ✅ wave-3 (bf1ce2b) |
 | TC-ADV-10 | `expand_query_for_fts` only `debug_assert!` against quote/paren — no release test | easy | `src/search/synonyms.rs:56-91` | pending |
 | TC-ADV-11 | `embed_query` truncation has no adversarial test for multi-byte chars | easy | `src/embedder/mod.rs:596-605` | pending |
 | TC-ADV-12 | `splade::encode` truncation has no boundary test for multi-byte chars | easy | `src/splade/mod.rs:378-394,546-561` | pending |
