@@ -412,6 +412,13 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
         | Some(Commands::TrainPairs { .. })
         | Some(Commands::Cache { .. })
         | Some(Commands::Doctor { .. }) => return None,
+        // notes add/update/remove are filesystem mutations on docs/notes.toml
+        // followed by a reindex. The batch handler only supports `notes --warnings`
+        // / `--patterns` (list modes) and rejects the subcommand tokens. Route
+        // mutations to the CLI handler at Group A instead.
+        Some(Commands::Notes { subcmd }) if !matches!(subcmd, NotesCommand::List { .. }) => {
+            return None;
+        }
         None | Some(_) => {}
     }
 

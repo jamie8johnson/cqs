@@ -1151,3 +1151,42 @@ mentions = ["agents"]
 sentiment = -0.5
 text = "GH Actions free tier queues test jobs 20+ minutes on Sunday afternoons — plan around this for CI-dependent workflows"
 mentions = ["ci"]
+
+[[note]]
+sentiment = -1.0
+text = "Watch-reindex on eval-output writes is the invisible determinism killer. Any .json/.md write inside watched dir triggers reindex + cache invalidation mid-session, drifting measurements ±15pp on small categories. Fix: write eval results to ~/.cache/cqs/evals/ outside the watched tree."
+mentions = [
+    "evals/run_ablation.py",
+    "watch",
+    "daemon",
+]
+
+[[note]]
+sentiment = -0.5
+text = "cargo publish fails with --features gpu-index because [patch.crates-io] cannot reference a git dep when publishing. Must publish default features only. Consumers with gpu-index apply the same patch in their own Cargo.toml."
+mentions = [
+    "Cargo.toml",
+    "cuvs",
+]
+
+[[note]]
+sentiment = 0.0
+text = "Dependabot alerts do not auto-close while any vulnerable transitive version remains in the lockfile — even if that transitive is build-time only. Dismiss manually with reason (not_used / tolerable_risk) when the advisory preconditions are structurally unreachable in our code."
+mentions = ["Cargo.lock"]
+
+[[note]]
+sentiment = 0.5
+text = "When adding daemon bypass for commands the batch handler can't dispatch, exclude them in try_daemon_query (src/cli/dispatch.rs). Mutations often belong in CLI path even if reads can daemon-serve. Fixed for notes {add,update,remove}."
+mentions = [
+    "src/cli/batch",
+    "notes",
+]
+
+[[note]]
+sentiment = 0.0
+text = "Per-category alpha routing caps at classifier accuracy, not alpha values. Oracle 49.4% on 2026-04-14 eval, deployed 44.9% — gap is entirely structural/conceptual/behavioral classifier missing 80%+ of queries (they fall to Unknown). Rule-list heuristics do not cover natural-language phrasings. Fix direction: broader rules / learned classifier / LLM-on-first-query cached."
+mentions = [
+    "src/search/router.rs",
+    "classifier",
+    "splade",
+]
