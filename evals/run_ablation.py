@@ -307,7 +307,13 @@ def main():
         print("  (unavailable)")
 
     # ── Save structured results ──────────────────────────────────────
-    run_dir = os.path.join("evals", "runs", time.strftime("run_%Y%m%d_%H%M%S"))
+    # Write outside the project dir so watch mode doesn't reindex on eval
+    # completion. Writing inside the project (previously evals/runs/) caused
+    # `.json` files to be treated as code changes, triggering a reindex +
+    # HNSW rebuild that invalidated batch context caches between eval runs.
+    # This produced up to ±15pp R@1 drift on identical configurations.
+    eval_root = os.path.expanduser("~/.cache/cqs/evals")
+    run_dir = os.path.join(eval_root, time.strftime("run_%Y%m%d_%H%M%S"))
     os.makedirs(run_dir, exist_ok=True)
     results_path = os.path.join(run_dir, "results.json")
     save_data = {

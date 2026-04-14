@@ -2,64 +2,59 @@
 
 ## Right Now
 
-**5-bug audit + re-sweep + SPLADE-always-on fix in flight. (2026-04-13 EOD)**
+**Watch-reindex contamination found. All session alpha data is compromised. Re-sweep needed. (2026-04-14 10:45 CDT)**
 
-### Big session findings
+### The bug we just found
 
-The v1.23.0 SPLADE alpha sweep was measured against a broken pipeline. Two bugs:
-1. **Hash iteration non-determinism** in search_hybrid (HashSet) + SpladeIndex (HashMap) → ±5pp noise per category per run
-2. **SPLADE disabled at α=1.0** → categories with α=1.0 lost the candidate-expansion benefit entirely
+`run_ablation.py` was writing `evals/runs/*/results.json` inside the watched project dir. Watch mode treats `.json` files as code changes → reindexes → rebuilds HNSW → changes `index.db` mtime → next eval's first query invalidates BatchContext caches → fresh state for remaining queries.
 
-Plus 3 smaller bugs (RCA-3/-4/-5 in the audit). All fixed in PR #942.
+Effect:
+- Every eval run contaminated the state for the NEXT eval run
+- Consecutive identical-config runs drifted by up to ±15pp on small categories
+- The "6pp oracle gap" was entirely this artifact
+- **The entire 21-point alpha sweep from yesterday is corrupted** — each cell was measured on a progressively-mutated index
 
-Re-swept on deterministic pipeline (21 points, 0.0 → 1.0 by 0.05):
+Fix (branch `fix/eval-output-location`): write to `~/.cache/cqs/evals/` instead.
 
-- Global optimum uniform α=1.0: **45.3% R@1**
-- Per-category oracle: **49.8% R@1** (+4.5pp)
-- Pre-session production baseline: 41.5% R@1
+Verified: two identical back-to-back runs give **bit-exact** results (structural R@1 = 59.3% both runs).
 
-Real per-category optima:
-- identifier 1.0 (FTS5, alpha inert)
-- structural **0.9** (+14.8pp vs 1.0) — was 0.7 in old defaults (miscalibrated 3.7pp)
-- conceptual **0.95** (+13.9pp vs 1.0)
-- type_filtered 1.0
-- behavioral **0.05** (+4.6pp vs 1.0)
-- multi_step / negation / cross_language: 1.0
+### The three determinism landmines, summarized
+1. **Hash iteration randomness** (fixed in PR #942)
+2. **SPLADE disabled at α=1.0** (fixed in PR #942)
+3. **Eval output triggers watch-reindex** (fixing now)
 
-Updated `resolve_splade_alpha()` with real values.
+All three corrupted measurements in different ways. With all three fixed, we should finally have a reproducible eval.
 
-### Open puzzle
+### What this means
 
-Deploying the new per-category defaults gave 43.8%, not the oracle's 49.8%. 6pp gap. Per-category routing apparently has between-query state interaction that uniform sweeps don't expose. Needs investigation next.
+- v1.24.0 defaults shipped per-category alphas tuned on corrupted measurements
+- The "real optima" from the re-sweep (structural 0.9, conceptual 0.95, behavioral 0.05) are likely also wrong — they were measured under the same contamination
+- Need full re-sweep with the fix in place
 
-### Also fixed this session
-- **Dirty flag self-heal** (just written, not yet pushed): daemon startup now verifies HNSW checksums before respecting the dirty flag. If files pass checksum, clear the flag and proceed. Stops the "reindex interrupted → forever stale" problem that bit us repeatedly today.
-- **Daemon env var logging**: startup prints CQS_* env vars so it's obvious which config the daemon is running.
+### Next session priorities
 
-### Meta-lesson
+1. Merge the eval-output-location fix
+2. Re-sweep all 21 alphas on truly clean infrastructure
+3. Compare: actually-correct per-category optima vs today's (corrupted) guesses
+4. Decide real defaults, update `resolve_splade_alpha()`, release v1.25.0
 
-Two days of "per-category alpha tuning" was measuring noise. One audit pass + one fix flipped the entire eval narrative. When eval results drift 3-5pp between identical configurations, suspect the measurement apparatus before the feature.
+### Residual puzzles
+
+- SPLADE encoder on GPU (CUDA ONNX) may have residual non-determinism in the sparse vector output. Minor compared to everything else; verify post re-sweep.
+- cross_language and negation categories drifted 1 query between repeat same-daemon runs yesterday. May be the ONNX issue above.
 
 ## PR status
-- #939 merged (v1.24.0: CAGRA filtering, daemon stability)
-- #940 merged (docs cleanup)
-- #941 merged (Windows cfg guard)
-- #942 open (determinism + SPLADE-always-on + dirty-flag self-heal)
+- #939, #940, #941, #942 all merged (v1.24.0)
+- `fix/eval-output-location` — about to PR
 
-## Next session priorities
-1. **Investigate 6pp oracle gap** on per-category routing — between-query state leak
-2. **Eval expansion** — N=21 cross_language, N=24 type_filtered are too noisy. Grow each small category to N≥40.
-3. **v1.25.0 release** after #942 merges — headline: determinism fixes + real per-category optima
-4. **`cqs history` / author-weighted search / auto-notes** — agent continuity features on the roadmap
+## Architecture
+- Version: 1.24.0, Schema: v20
+- Deterministic search path (PR #942)
+- SPLADE always-on, alpha controls fusion weight only
+- Per-category defaults: identifier 1.0, structural 0.9, conceptual 0.95, type_filtered 1.0, behavioral 0.05, rest 1.0 — ALL UNCERTAIN pending re-sweep on fixed infrastructure
+- HNSW dirty flag self-heals via checksum verification
+- cuVS 26.4 + patched with search_with_filter (upstream rapidsai/cuvs#2019)
+- Eval results now write to `~/.cache/cqs/evals/` (outside watched project dir)
 
 ## Open Issues
 - #909, #912-#925, #856, #717, #389, #255, #106, #63
-
-## Architecture (post-#942)
-- Version: 1.24.0, Schema: v20
-- Deterministic search results across process invocations (hash iteration + SPLADE + SQL ordering fixes)
-- SPLADE always enabled when available (candidate expansion decoupled from fusion weight)
-- HNSW dirty flag self-heals via checksum verification on startup
-- Per-category SPLADE alpha defaults updated to real optima
-- cuVS 26.4 (libcuvs 26.04, conda, CUDA 13), patched with search_with_filter (upstream rapidsai/cuvs#2019)
-- LLM summary coverage: 78% of code chunks (6,275 summaries)
