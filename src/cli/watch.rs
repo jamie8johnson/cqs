@@ -317,6 +317,10 @@ struct WatchState {
     last_indexed_mtime: HashMap<PathBuf, SystemTime>,
     hnsw_index: Option<HnswIndex>,
     incremental_count: usize,
+    /// RM-V1.25-23: number of file events dropped this debounce cycle
+    /// because pending_files was at cap. Logged once per cycle in
+    /// process_file_changes, cleared after.
+    dropped_this_cycle: usize,
 }
 
 /// Track exponential backoff state for embedder initialization retries.
@@ -745,6 +749,7 @@ pub fn cmd_watch(
         last_indexed_mtime: HashMap::with_capacity(1024),
         hnsw_index,
         incremental_count,
+        dropped_this_cycle: 0,
     };
 
     let mut cycles_since_clear: u32 = 0;
@@ -910,7 +915,12 @@ fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchSta
             if state.pending_files.len() < max_pending_files() {
                 state.pending_files.insert(rel.to_path_buf());
             } else {
-                tracing::warn!(
+                // RM-V1.25-23: log per-event at debug (spammy on bulk
+                // drops) and accumulate a counter; the once-per-cycle
+                // summary fires in process_file_changes so operators
+                // see the total truncation even if the level is info.
+                state.dropped_this_cycle = state.dropped_this_cycle.saturating_add(1);
+                tracing::debug!(
                     max = max_pending_files(),
                     path = %rel.display(),
                     "Watch pending_files full, dropping file event"
@@ -929,6 +939,18 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
     let files: Vec<PathBuf> = state.pending_files.drain().collect();
     let _span = info_span!("process_file_changes", file_count = files.len()).entered();
     state.pending_files.shrink_to(64);
+
+    // RM-V1.25-23: surface truncated cycles at warn level so operators
+    // notice the gap. The per-event drops are logged at debug to keep
+    // the journal clean on bulk edits.
+    if state.dropped_this_cycle > 0 {
+        tracing::warn!(
+            dropped = state.dropped_this_cycle,
+            cap = max_pending_files(),
+            "Watch event queue full this cycle; dropping events. Run `cqs index` to catch up"
+        );
+        state.dropped_this_cycle = 0;
+    }
     if !cfg.quiet {
         println!("\n{} file(s) changed, reindexing...", files.len());
         for f in &files {
@@ -1426,6 +1448,7 @@ mod tests {
             last_indexed_mtime: HashMap::new(),
             hnsw_index: None,
             incremental_count: 0,
+            dropped_this_cycle: 0,
         }
     }
 
