@@ -655,12 +655,17 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_CACHE_MAX_SIZE` | `1073741824` (1 GB) | Global embedding cache size limit |
 | `CQS_CAGRA_MAX_BYTES` | (auto) | Max GPU memory for CAGRA index |
 | `CQS_CAGRA_THRESHOLD` | `50000` | Min chunks to trigger CAGRA over HNSW |
+| `CQS_DAEMON_TIMEOUT_MS` | `2000` | Daemon client connect/read timeout in milliseconds (CLI → daemon) |
 | `CQS_DEFERRED_FLUSH_INTERVAL` | `50` | Chunks between deferred flushes during indexing |
+| `CQS_DISABLE_BASE_INDEX` | (none) | Set to `1` to skip the base (non-enriched) HNSW at query time (eval A/B) |
 | `CQS_EMBED_BATCH_SIZE` | `64` | ONNX inference batch size (reduce if GPU OOM) |
 | `CQS_EMBED_CHANNEL_DEPTH` | `64` | Embedding pipeline channel depth (bounds memory) |
 | `CQS_EMBEDDING_DIM` | (auto) | Override embedding dimension for custom ONNX models |
 | `CQS_EMBEDDING_MODEL` | `bge-large` | Embedding model preset (`bge-large`, `v9-200k`, `e5-base`) or custom repo |
+| `CQS_EVAL_OUTPUT` | (none) | Path to write per-query eval diagnostics JSON (used by eval harness) |
+| `CQS_EVAL_TIMEOUT_SECS` | `300` | Per-query timeout in seconds inside `evals/run_ablation.py` |
 | `CQS_FILE_BATCH_SIZE` | `5000` | Files per parse batch in pipeline |
+| `CQS_FORCE_BASE_INDEX` | (none) | Set to `1` to force search via the base (non-enriched) HNSW index |
 | `CQS_GATHER_MAX_NODES` | `200` | Max BFS nodes in `gather` context assembly |
 | `CQS_HNSW_EF_CONSTRUCTION` | `200` | HNSW construction-time search width |
 | `CQS_HNSW_EF_SEARCH` | `100` | HNSW query-time search width |
@@ -685,6 +690,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_MD_MAX_SECTION_LINES` | `150` | Max markdown section lines before overflow split |
 | `CQS_MD_MIN_SECTION_LINES` | `30` | Min markdown section lines (smaller sections merge) |
 | `CQS_MMAP_SIZE` | `268435456` (256 MB) | SQLite memory-mapped I/O size |
+| `CQS_NO_DAEMON` | (none) | Set to `1` to force CLI mode (skip daemon connection attempt) |
 | `CQS_ONNX_DIR` | (auto) | Custom ONNX model directory (must contain `model.onnx` + `tokenizer.json`) |
 | `CQS_PARSE_CHANNEL_DEPTH` | `512` | Parse pipeline channel depth |
 | `CQS_PDF_SCRIPT` | (auto) | Path to `pdf_to_md.py` for PDF conversion |
@@ -693,12 +699,21 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_RERANKER_MAX_LENGTH` | `512` | Max input length for cross-encoder reranker |
 | `CQS_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder model for `--rerank` |
 | `CQS_RRF_K` | `60` | RRF fusion constant (higher = more weight to top results) |
-| `CQS_SKIP_ENRICHMENT` | (none) | Comma-separated enrichment layers to skip |
+| `CQS_SKIP_ENRICHMENT` | (none) | Comma-separated enrichment layers to skip (e.g. `llm,hyde,callgraph`) |
+| `CQS_SKIP_INTEGRITY_CHECK` | (none) | Set to `1` to skip `PRAGMA quick_check` on write-mode store opens |
+| `CQS_SPLADE_ALPHA` | (per-category default) | Global SPLADE fusion alpha override (0.0 = pure sparse, 1.0 = pure dense) |
+| `CQS_SPLADE_ALPHA_{CATEGORY}` | (per-category default) | Per-category SPLADE alpha override (e.g. `CQS_SPLADE_ALPHA_CONCEPTUAL`); takes precedence over `CQS_SPLADE_ALPHA` |
+| `CQS_SPLADE_BATCH` | `32` | Initial chunk batch size for SPLADE encoding during indexing |
 | `CQS_SPLADE_MAX_CHARS` | `4000` | Max chars per chunk for SPLADE encoding |
+| `CQS_SPLADE_MAX_INDEX_BYTES` | `2147483648` (2 GB) | Max `splade.index.bin` size before index build refuses to persist |
+| `CQS_SPLADE_MAX_SEQ` | `256` | Max sequence length (tokens) for SPLADE ONNX inference |
+| `CQS_SPLADE_MODEL` | (auto) | Path to SPLADE ONNX model directory (supports `~`-prefixed paths) |
+| `CQS_SPLADE_RESET_EVERY` | `0` | Reset the ORT session every N SPLADE batches to bound arena growth (0 = disabled) |
 | `CQS_SPLADE_THRESHOLD` | `0.01` | SPLADE sparse activation threshold |
 | `CQS_TELEMETRY` | `0` | Set to `1` to enable command usage telemetry |
 | `CQS_TEST_MAP_MAX_NODES` | `10000` | Max BFS nodes in test-map traversal |
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
+| `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
 | `CQS_WATCH_MAX_PENDING` | `10000` | Max pending file changes before watch forces flush |
 | `CQS_WATCH_REBUILD_THRESHOLD` | `100` | Files changed before watch triggers full HNSW rebuild |
 
