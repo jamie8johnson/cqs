@@ -676,6 +676,13 @@ pub fn cmd_watch(
                     }
                 };
                 tracing::info!("Daemon query thread ready");
+                // RM-V1.25-3: Periodically sweep idle ONNX sessions even if
+                // no client connects. `check_idle_timeout` only fires on
+                // `dispatch_line`, so a warmed-but-untouched daemon would
+                // otherwise pin ~500MB+ indefinitely. Tick once per minute
+                // using the accept loop's WouldBlock cycles as the clock.
+                let mut last_idle_sweep = std::time::Instant::now();
+                let idle_sweep_interval = Duration::from_secs(60);
                 // RM-V1.25-9: Poll accept with a short sleep so the loop
                 // can notice SIGTERM and drain cleanly instead of blocking
                 // indefinitely on a syscall that systemd has to kill.
@@ -684,6 +691,15 @@ pub fn cmd_watch(
                     if is_shutdown_requested() {
                         tracing::info!("Daemon accept loop draining on SIGTERM");
                         break;
+                    }
+                    // RM-V1.25-3: passive idle sweep — inspects the
+                    // `last_command_time` set by real dispatches and drops
+                    // sessions after IDLE_TIMEOUT_MINUTES. `&ctx` is the
+                    // daemon thread's own BatchContext (not shared), so
+                    // the call is safe and does not race.
+                    if last_idle_sweep.elapsed() >= idle_sweep_interval {
+                        ctx.sweep_idle_sessions();
+                        last_idle_sweep = std::time::Instant::now();
                     }
                     match listener.accept() {
                         Ok((s, _addr)) => handle_socket_client(s, &ctx),
