@@ -12,6 +12,8 @@ use std::path::Path;
 
 use thiserror::Error;
 
+use crate::store::helpers::sql::max_rows_per_statement;
+
 #[derive(Error, Debug)]
 pub enum CacheError {
     #[error("Cache database error: {0}")]
@@ -171,8 +173,12 @@ impl EmbeddingCache {
         self.rt.block_on(async {
             let mut result = HashMap::new();
 
-            // Batch in groups of 100 to avoid SQLite variable limit
-            for batch in content_hashes.chunks(100) {
+            // SHL-V1.25-4: Batch size matches modern SQLite variable limit
+            // (32766). Two vars per row accounts for the shared model_fingerprint
+            // bind plus the content_hash bind, with headroom for either being
+            // added to in the future. Cache hit lookups for a 50k-chunk index
+            // now fire 2-3 SELECTs instead of 500.
+            for batch in content_hashes.chunks(max_rows_per_statement(2)) {
                 let placeholders: Vec<String> =
                     (0..batch.len()).map(|i| format!("?{}", i + 2)).collect();
                 let sql = format!(
