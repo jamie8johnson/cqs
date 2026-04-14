@@ -43,6 +43,16 @@ const MAX_BATCH_LINE_LEN: usize = 1_048_576;
 /// Matches watch mode's ~5-minute idle clear pattern.
 const IDLE_TIMEOUT_MINUTES: u64 = 5;
 
+/// Minimum interval between `fs::metadata` calls on `index.db` during a
+/// batch session. PF-V1.25-10: `store()` is called on virtually every
+/// handler hop, and `ctx.store()` calls `check_index_staleness` which in
+/// turn calls `fs::metadata`. Most filesystem mtime resolutions are 1 ms
+/// on Linux ext4 / WSL, so polling more often than ~100 ms cannot detect
+/// anything mtime-based — we just pay a syscall per poll. 100 ms caps the
+/// syscall rate at ~10 Hz per batch session while keeping reindex
+/// detection latency well under a second.
+const STALENESS_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
 // ─── BatchContext ────────────────────────────────────────────────────────────
 
 /// Shared resources for a batch session.
@@ -93,6 +103,9 @@ pub(crate) struct BatchContext {
     pub model_config: cqs::embedder::ModelConfig,
     /// Last-seen mtime of index.db, used to detect concurrent index updates.
     index_mtime: Cell<Option<SystemTime>>,
+    /// When the staleness check last ran. Used to rate-limit `fs::metadata`
+    /// on `index.db` — see [`STALENESS_CHECK_INTERVAL`].
+    last_staleness_check: Cell<Option<Instant>>,
     error_count: AtomicU64,
     /// Tracks when the last command was processed.
     /// Used to clear ONNX sessions (embedder, reranker) after idle timeout.
@@ -138,7 +151,21 @@ impl BatchContext {
     /// Check if index.db mtime changed since last access. If so, clear all
     /// mutable caches and re-open the Store (which resets its internal
     /// OnceLock caches like call_graph_cache, test_chunks_cache).
+    ///
+    /// PF-V1.25-10: rate-limited to at most once per [`STALENESS_CHECK_INTERVAL`].
+    /// Every `ctx.store()` and every `vector_index` / `file_set` / etc. accessor
+    /// calls this; before the rate-limit it ran `fs::metadata` on every call,
+    /// producing dozens of syscalls per pipelined batch command for no benefit
+    /// (mtime granularity is coarser than the poll rate).
     pub(crate) fn check_index_staleness(&self) {
+        let now = Instant::now();
+        if let Some(prev) = self.last_staleness_check.get() {
+            if now.duration_since(prev) < STALENESS_CHECK_INTERVAL {
+                return;
+            }
+        }
+        self.last_staleness_check.set(Some(now));
+
         let index_path = self.cqs_dir.join("index.db");
         let current_mtime = match std::fs::metadata(&index_path).and_then(|m| m.modified()) {
             Ok(t) => t,
@@ -222,6 +249,9 @@ impl BatchContext {
         if let Ok(mtime) = std::fs::metadata(&index_path).and_then(|m| m.modified()) {
             self.index_mtime.set(Some(mtime));
         }
+        // PF-V1.25-10: treat the manual refresh as a fresh staleness check
+        // so the next batch command hits the rate-limit fast path.
+        self.last_staleness_check.set(Some(Instant::now()));
 
         tracing::info!("Manual cache invalidation complete");
         Ok(())
@@ -689,6 +719,9 @@ pub(crate) fn create_context() -> Result<BatchContext> {
         cqs_dir,
         model_config: ModelConfig::resolve(None, None).apply_env_overrides(),
         index_mtime: Cell::new(index_mtime),
+        // PF-V1.25-10: None means the first check runs unconditionally; the
+        // 100ms rate-limit kicks in only after the first successful stat.
+        last_staleness_check: Cell::new(None),
         error_count: AtomicU64::new(0),
         last_command_time: Cell::new(Instant::now()),
     })
@@ -724,6 +757,9 @@ fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
         cqs_dir: cqs_dir.to_path_buf(),
         model_config: ModelConfig::resolve(None, None).apply_env_overrides(),
         index_mtime: Cell::new(index_mtime),
+        // PF-V1.25-10: start with `None` so the first staleness check
+        // always runs; subsequent calls within 100ms take the fast path.
+        last_staleness_check: Cell::new(None),
         error_count: AtomicU64::new(0),
         last_command_time: Cell::new(Instant::now()),
     })
