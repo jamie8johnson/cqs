@@ -399,4 +399,127 @@ mod tests {
         assert_eq!(stats.warnings, 1, "Only -1 should count as warning");
         assert_eq!(stats.patterns, 1, "Only 0.5 should count as pattern");
     }
+
+    // ===== TC-ADV-14: upsert edge cases =====
+    //
+    // `upsert_notes_batch` binds sentiment as a raw f32, serializes
+    // `mentions` via serde_json, and iterates every note inside one
+    // transaction. Previously uncovered edge cases:
+    //   - NaN sentiment (SQLite stores it; downstream `note_stats` threshold
+    //     comparisons must not misclassify).
+    //   - Empty mentions vec round-trips as `[]` JSON.
+    //   - Larger batches still commit in one transaction without partial
+    //     writes or FTS desync.
+
+    /// NaN sentiment is rejected by the SQLite `sentiment REAL NOT NULL`
+    /// schema: sqlx binds a Rust NaN as SQL NULL, which fails the NOT NULL
+    /// constraint. Document this behaviour so a future schema change (e.g.
+    /// relaxing NOT NULL) doesn't silently start letting NaN land in the
+    /// table, where `note_stats` threshold comparisons would misclassify.
+    #[test]
+    fn test_upsert_notes_nan_sentiment_rejected_by_schema() {
+        let (store, _dir) = setup_store();
+        let source = Path::new("/tmp/nan.toml");
+
+        let notes = vec![make_note("nan1", "nan sentiment note", f32::NAN)];
+        let result = store.upsert_notes_batch(&notes, source, 100);
+
+        let err = result.expect_err("NaN sentiment must fail the NOT NULL constraint");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("NOT NULL")
+                || msg.contains("constraint")
+                || msg.to_lowercase().contains("null"),
+            "error should mention the NOT NULL rejection, got: {msg}"
+        );
+
+        // The failed transaction leaves no note behind — no partial write.
+        assert_eq!(
+            store.note_count().unwrap(),
+            0,
+            "failed NaN upsert must not have written a row"
+        );
+    }
+
+    /// Infinite sentiment (±Inf) round-trips through SQLite unlike NaN.
+    /// `note_stats` threshold comparisons work correctly: +Inf > 0.3 so
+    /// it counts as a pattern, -Inf < -0.3 so it counts as a warning.
+    /// Extreme values are not rejected by schema — callers should clamp.
+    #[test]
+    fn test_upsert_notes_infinity_sentiment_roundtrips() {
+        let (store, _dir) = setup_store();
+        let source = Path::new("/tmp/inf.toml");
+
+        let notes = vec![
+            make_note("pos_inf", "huge positive", f32::INFINITY),
+            make_note("neg_inf", "huge negative", f32::NEG_INFINITY),
+        ];
+        store.upsert_notes_batch(&notes, source, 100).unwrap();
+
+        assert_eq!(store.note_count().unwrap(), 2);
+
+        let stats = store.note_stats().unwrap();
+        assert_eq!(stats.total, 2);
+        assert_eq!(stats.warnings, 1, "-Inf satisfies `sentiment < threshold`");
+        assert_eq!(stats.patterns, 1, "+Inf satisfies `sentiment > threshold`");
+    }
+
+    /// Empty mentions round-trip as `[]` and come back as an empty Vec.
+    /// No serde error, no null/empty-string corruption.
+    #[test]
+    fn test_upsert_notes_empty_mentions_roundtrip() {
+        let (store, _dir) = setup_store();
+        let source = Path::new("/tmp/empty_mentions.toml");
+
+        let notes = vec![Note {
+            id: "em1".to_string(),
+            text: "note with no mentions".to_string(),
+            sentiment: 0.5,
+            mentions: vec![],
+        }];
+        store.upsert_notes_batch(&notes, source, 100).unwrap();
+
+        let summaries = store.list_notes_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, "em1");
+        assert!(
+            summaries[0].mentions.is_empty(),
+            "empty mentions must round-trip as empty Vec, got {:?}",
+            summaries[0].mentions
+        );
+    }
+
+    /// A multi-hundred batch commits in a single transaction; all rows
+    /// land and the FTS counter agrees with the main table.
+    #[test]
+    fn test_upsert_notes_large_batch_single_transaction() {
+        let (store, _dir) = setup_store();
+        let source = Path::new("/tmp/bulk.toml");
+
+        // 500 notes — large enough to exercise the per-note INSERT loop
+        // without making the test slow. Unique ids + text guarantee no
+        // hash collision.
+        let notes: Vec<Note> = (0..500)
+            .map(|i| {
+                make_note(
+                    &format!("bulk_{i}"),
+                    &format!("bulk note {i}"),
+                    (i % 3) as f32 * 0.5 - 0.5, // -0.5, 0.0, 0.5 cycling
+                )
+            })
+            .collect();
+
+        let written = store
+            .upsert_notes_batch(&notes, source, 100)
+            .expect("large batch must commit");
+        assert_eq!(written, 500);
+
+        // Every row landed.
+        assert_eq!(store.note_count().unwrap(), 500);
+
+        // FTS table agrees with main table — no desync (the inner
+        // INSERT-OR-REPLACE + FTS DELETE/INSERT contract).
+        let summaries = store.list_notes_summaries().unwrap();
+        assert_eq!(summaries.len(), 500);
+    }
 }
