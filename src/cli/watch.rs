@@ -103,8 +103,20 @@ fn handle_socket_client(
     let _enter = span.enter();
     let start = std::time::Instant::now();
 
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(30))).ok();
+    // EH-14: explicit warn on timeout failures rather than silent `.ok()` —
+    // without a timeout a wedged client would pin the handler thread forever.
+    if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(5))) {
+        tracing::warn!(
+            error = %e,
+            "Failed to set read timeout on daemon stream — slow client could pin handler"
+        );
+    }
+    if let Err(e) = stream.set_write_timeout(Some(Duration::from_secs(30))) {
+        tracing::warn!(
+            error = %e,
+            "Failed to set write timeout on daemon stream — slow client could pin handler"
+        );
+    }
 
     // Read request (max 1MB). Wrap reader in .take() so allocation is
     // bounded *before* we accept a giant line — the post-hoc size check
