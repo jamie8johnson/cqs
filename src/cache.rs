@@ -932,6 +932,32 @@ impl QueryCache {
             Ok::<_, sqlx::Error>(pool)
         })?;
 
+        // SEC-V1.25-4: restrict DB + WAL/SHM sidecar files to 0o600 to
+        // match EmbeddingCache::open. Query text may be sensitive (user
+        // prompts, internal tooling queries), and multi-user boxes must
+        // not leave this world-readable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            for suffix in &["", "-wal", "-shm"] {
+                let db_file = path.with_extension(
+                    path.extension()
+                        .map(|e| format!("{}{}", e.to_string_lossy(), suffix))
+                        .unwrap_or_else(|| suffix.trim_start_matches('-').to_string()),
+                );
+                if db_file.exists() {
+                    if let Err(e) = std::fs::set_permissions(&db_file, perms.clone()) {
+                        tracing::warn!(
+                            path = %db_file.display(),
+                            error = %e,
+                            "Failed to set query cache permissions to 0o600"
+                        );
+                    }
+                }
+            }
+        }
+
         tracing::debug!(path = %path.display(), "Query cache opened");
         Ok(Self { pool, rt })
     }
