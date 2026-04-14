@@ -15,6 +15,8 @@
 //! built once and reused for all searches. No rebuild machinery needed.
 
 #[cfg(feature = "gpu-index")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "gpu-index")]
 use std::sync::Mutex;
 
 #[cfg(feature = "gpu-index")]
@@ -70,6 +72,14 @@ pub struct CagraIndex {
     gpu: Mutex<GpuState>,
     /// Mapping from internal index to chunk ID
     id_map: Vec<String>,
+    /// RM-V1.25-19: Set when a mutex poison is observed. The CUDA stream
+    /// may be in an inconsistent posture after a mid-op panic
+    /// (cudaMalloc'd buffer unfreed, stream corked, resources leaked),
+    /// so subsequent searches against the same `GpuState` could
+    /// double-free or CUDA-fault. `BatchContext::vector_index` checks
+    /// `is_poisoned()` and forces a rebuild via `build_from_store`
+    /// rather than reusing the poisoned state.
+    poisoned: AtomicBool,
 }
 
 #[cfg(feature = "gpu-index")]
@@ -121,6 +131,7 @@ impl CagraIndex {
             dim,
             gpu: Mutex::new(GpuState { resources, index }),
             id_map,
+            poisoned: AtomicBool::new(false),
         })
     }
 
@@ -151,9 +162,24 @@ impl CagraIndex {
         }
 
         let gpu = self.gpu.lock().unwrap_or_else(|poisoned| {
-            tracing::debug!("CAGRA GPU mutex poisoned, recovering");
+            // RM-V1.25-19: a prior panic left the CUDA stream in an
+            // unknown state. Flag the index so the caller forces a
+            // rebuild on the next `vector_index()` access; return an
+            // empty result here rather than run a new kernel against
+            // possibly-corrupted resources.
+            self.poisoned.store(true, Ordering::Release);
+            tracing::warn!(
+                "CAGRA GPU mutex poisoned — results from this call are discarded \
+                 and the index will be rebuilt on the next vector_index() access"
+            );
             poisoned.into_inner()
         });
+
+        if self.poisoned.load(Ordering::Acquire) {
+            // Don't dispatch new kernels; the caller should have already
+            // rebuilt us. This is a safety net for racing clients.
+            return Vec::new();
+        }
 
         self.search_impl(&gpu, query, k, None)
     }
@@ -304,6 +330,13 @@ impl VectorIndex for CagraIndex {
         "CAGRA"
     }
 
+    /// RM-V1.25-19: expose the poison flag so `BatchContext::vector_index`
+    /// can force a full rebuild instead of reusing a possibly-corrupt
+    /// CUDA context after a prior panic.
+    fn is_poisoned(&self) -> bool {
+        self.poisoned.load(Ordering::Acquire)
+    }
+
     fn dim(&self) -> usize {
         self.dim
     }
@@ -360,9 +393,21 @@ impl VectorIndex for CagraIndex {
         );
 
         let gpu = self.gpu.lock().unwrap_or_else(|poisoned| {
-            tracing::debug!("CAGRA GPU mutex poisoned, recovering");
+            // RM-V1.25-19: same recovery path as `search()`. See that
+            // comment for the rationale — CUDA state may be corrupt, we
+            // flag for rebuild and drop the work rather than kernel-launch
+            // against a bad stream.
+            self.poisoned.store(true, Ordering::Release);
+            tracing::warn!(
+                "CAGRA GPU mutex poisoned (filtered path) — results discarded \
+                 and index will be rebuilt on next vector_index()"
+            );
             poisoned.into_inner()
         });
+
+        if self.poisoned.load(Ordering::Acquire) {
+            return Vec::new();
+        }
 
         // Upload bitset to device
         let bitset_host = ndarray_015::Array1::from_vec(bitset);
@@ -487,6 +532,7 @@ impl CagraIndex {
             dim,
             gpu: Mutex::new(GpuState { resources, index }),
             id_map,
+            poisoned: AtomicBool::new(false),
         })
     }
 }

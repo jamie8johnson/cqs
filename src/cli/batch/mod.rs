@@ -445,14 +445,28 @@ impl BatchContext {
     /// Checks index staleness before returning cached value. If the index.db
     /// changed, rebuilds the vector index from the fresh Store.
     /// Returns a cloneable Arc so callers can hold a reference past RefCell borrow scope.
+    ///
+    /// RM-V1.25-19: if the cached index reports `is_poisoned()` (only the
+    /// CAGRA GPU backend currently does), the cache slot is cleared and a
+    /// fresh index is built. Reusing a poisoned CUDA context risks
+    /// double-free and CUDA faults.
     pub fn vector_index(&self) -> Result<Option<std::sync::Arc<dyn VectorIndex>>> {
         self.check_index_staleness();
         {
             let cached = self.hnsw.borrow();
             if let Some(arc) = cached.as_ref() {
-                return Ok(Some(std::sync::Arc::clone(arc)));
+                if arc.is_poisoned() {
+                    tracing::warn!(
+                        name = arc.name(),
+                        "Cached vector index is poisoned — discarding and rebuilding"
+                    );
+                } else {
+                    return Ok(Some(std::sync::Arc::clone(arc)));
+                }
             }
         }
+        // Clear any poisoned cache before rebuilding.
+        *self.hnsw.borrow_mut() = None;
         let _span = tracing::info_span!("batch_vector_index_init").entered();
         let store = self.store.borrow();
         let idx = build_vector_index(&store, &self.cqs_dir, self.config().ef_search)?;
