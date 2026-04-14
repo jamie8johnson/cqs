@@ -41,7 +41,7 @@ fn flush_calls(
         }
     };
 
-    let (ready, retained): (Vec<_>, Vec<_>) = calls
+    let (ready, mut retained): (Vec<_>, Vec<_>) = calls
         .into_iter()
         .partition(|(id, _)| existing.contains(id.as_str()));
 
@@ -52,11 +52,15 @@ fn flush_calls(
             "Periodic flush: deferred chunk calls"
         );
         if let Err(e) = store.upsert_calls_batch(&ready) {
+            // EH-10: on transient upsert failure, push `ready` back into
+            // `retained` so the next flush attempt retries them. Discarding
+            // was silent permanent data loss.
             tracing::warn!(
                 count = ready.len(),
                 error = %e,
-                "Periodic flush of deferred calls failed, items lost"
+                "Periodic flush of deferred calls failed, re-buffering for retry"
             );
+            retained.extend(ready);
         }
     }
 
