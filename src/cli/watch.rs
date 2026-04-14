@@ -163,7 +163,22 @@ fn handle_socket_client(
     // enriched with it, without needing to repeat `command` on each log.
     span.record("command", command);
 
-    tracing::debug!(command, args = ?args, "Daemon request");
+    // SEC-V1.25-9: avoid echoing full query args — search strings and
+    // notes bodies may contain snippets of private source or secrets.
+    // Log only a length + 80-char preview at debug level; the full
+    // command name is already on the span.
+    let args_joined = args.join(" ");
+    let args_preview_end = args_joined
+        .char_indices()
+        .nth(80)
+        .map(|(i, _)| i)
+        .unwrap_or(args_joined.len());
+    tracing::debug!(
+        command,
+        args_len = args.len(),
+        args_preview = %&args_joined[..args_preview_end],
+        "Daemon request"
+    );
 
     if command.is_empty() {
         let delivered = write_daemon_error_tracked(&mut stream, "missing 'command' field");
