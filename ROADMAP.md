@@ -1,116 +1,99 @@
 # Roadmap
 
-## Current: v1.24.0 (v1.25.0 in prep)
+## Current: v1.25.0 (audit-fixes batch in prep)
 
-54 languages. 29 chunk types. 265-query v2 eval. BGE-large = best config. Adaptive retrieval Phases 1-5 shipped. **Daemon mode** (`cqs watch --serve`, 3-19ms queries). Per-category SPLADE alpha routing. GPU-native CAGRA bitset filtering (patched cuvs 26.4). Enrichment ablation + router update (type_filtered + multi_step → base).
+54 languages. 29 chunk types. 265-query v2 eval. **Daemon mode** (`cqs watch --serve`, 3-19ms queries). Per-category SPLADE alpha routing. GPU-native CAGRA bitset filtering (patched cuvs 26.4). Enrichment ablation + router update (type_filtered + multi_step → base).
 
-**v1.25.0 staged**: eval output writes to `~/.cache/cqs/evals/` (#943, fixes watch-reindex contamination), clean 21-point alpha re-sweep, new per-category defaults (identifier 0.90, structural 0.60, conceptual 0.85, behavioral 0.05, rest 1.0), and multi_step router fix (removed over-broad `"how does"` Behavioral pattern). Fully-routed R@1 = 44.9% (ties best uniform α=0.95; oracle ceiling 49.4% gated on classifier accuracy).
+**v1.25.0 shipped 2026-04-14:** eval output writes to `~/.cache/cqs/evals/` (#943, fixes watch-reindex contamination), clean 21-point alpha re-sweep, new per-category defaults (identifier 0.90, structural 0.60, conceptual 0.85, behavioral 0.05, rest 1.0), multi_step router fix (removed over-broad `"how does"` Behavioral pattern). Tag pushed, crates.io published, GH release with Linux/macOS/Windows binaries.
 
-### Eval Baselines
+**Audit-fixes batch in prep:** ~80 fixes from the 11th full audit (16 categories, 2 batches × 8 parallel opus auditors → 236 findings → 49 P1 + 47 P2 + 97 P3 + 16 P4-trivial-inline + 32 P4-issues). Branch `audit/p1-fixes-wave1` accumulating. Issues #946–#975 filed for refactors and quick wins.
 
-| Eval | Model | R@1 | Notes |
-|------|-------|-----|-------|
-| Fixture (296q) | BGE-large FT | 91.9% | Synthetic fixtures |
-| Fixture (296q) | BGE-large | 91.2% | Production model |
-| Real code (100q) | BGE-large | 50.0% | R@5 = 73% (agent-relevant) |
-| V2 (265q, live) | BGE-large | 42.3% | 8 categories, clean A/B (2026-04-12) |
-| V2 (265q, live) | + SPLADE α=0.9 | 43.4% | +1.1pp — global optimum from 11-point sweep |
-| V2 (265q, live) | Base-only (no summaries) | 42.3% | 2026-04-13 enrichment ablation |
-| V2 (265q, live) | Enriched + CAGRA filter | 42.6% | 2026-04-13 enrichment ablation |
-| V2 (265q, live) | Oracle routing (theoretical) | **43.8%** | Best arm per category |
-| V2 (265q, live) | **v1.24.0 fully routed** | **41.5%** | Router + CAGRA filter, net zero — CAGRA regression on enriched |
-| V2 (265q, live) | 21-pt sweep best uniform α=0.95 | 44.9% | Clean infra (post #942 + #943) |
-| V2 (265q, live) | Oracle per-category α (clean) | **49.4%** | +4.5pp vs uniform — gated on classifier accuracy |
-| V2 (265q, live) | **v1.25.0 fully routed** | **44.9%** | New per-cat defaults + multi_step router fix (2026-04-14) |
+### Eval Baselines (post-clean-index, 2026-04-14)
+
+The pre-2026-04-14 numbers were measured against an index that was 81% worktree/cuvs duplicates (root cause: GC `prune_all` suffix-match bug, fixed wave 1). Duplicate-name chunks inflated R@1 and crowded R@5/R@20. Current honest numbers:
+
+| Eval | Model | R@1 | R@5 | R@20 | Notes |
+|------|-------|-----|-----|------|-------|
+| Fixture (296q) | BGE-large FT | 91.9% | — | — | Synthetic fixtures, model-agnostic to GC bug |
+| Fixture (296q) | BGE-large baseline | 91.2% | — | — | Production model |
+| Real code (100q) | BGE-large | 50.0% | 73.0% | — | Identifier-slice subset of v2 |
+| V2 (265q clean) | BGE-large | 37.4% | 55.8% | 77.4% | Fully routed v1.25.0, post-GC fix (this is the honest number) |
+| V2 (265q clean) | E5 v9-200k | 37.4% | 56.6% | 78.1% | Ties BGE on R@1, slight edge on R@5/R@20 — at 1/3 the embedding size |
+| V2 (265q clean) | Oracle per-category α | 49.4% | — | — | Theoretical ceiling — gated on classifier accuracy (~22% non-identifier today) |
+
+**Caveat:** v1.25.0 per-category alpha defaults were tuned on the *dirty* index. Alphas may need re-fitting against the clean index numbers above. Tracked in CPU Lane.
 
 ---
 
 ## Active
 
-### Refactoring Lane (post-audit, queued 2026-04-14)
+### Refactoring Lane (post-audit, 2026-04-14)
 
 High-leverage refactors that close entire bug classes — surfaced by the v1.25.0 audit. Each is its own GitHub issue.
 
-- [ ] **`Store` typestate** — issue [#946](https://github.com/jamie8johnson/cqs/issues/946). Closes the `gc-in-daemon`, `notes-in-daemon`, `suggest --apply` write-on-readonly-store class (audit findings API-V1.25-3, API-V1.25-5).
-- [ ] **`Commands` / `BatchCmd` unification** — issue [#947](https://github.com/jamie8johnson/cqs/issues/947). Today's 47 vs 36 variants drift produced 8 silent-fail commands through the daemon (audit EX-V1.25-1, API-V1.25-1/2/4/6, CQ-V1.25-1/2). Half-day refactor.
-- [ ] **`cqs::fs::atomic_replace` shared helper** — issue [#948](https://github.com/jamie8johnson/cqs/issues/948). `std::fs::rename` cross-device fallback duplicated 4× with divergent semantics; two were missing fsync until the audit (audit PB-V1.25-6, DS-V1.25-1, DS-V1.25-4).
-- [ ] **Embedder model abstraction** — issue [#949](https://github.com/jamie8johnson/cqs/issues/949). `ModelConfig::input_names`/`output_name`/`pooling` so non-BERT models are config entries, not code edits. Pre-requisite for the BGE → E5 v9-200k default switch (audit EX-V1.25-6).
-- [ ] **CAGRA persistence** — issue [#950](https://github.com/jamie8johnson/cqs/issues/950). `CagraIndex::save`/`load` via cuVS native serialize. Cuts daemon hot-restart from ~30s to <5s on this corpus (audit RM-V1.25-6).
+- [ ] **`Store` typestate** — issue [#946](https://github.com/jamie8johnson/cqs/issues/946). Closes `gc-in-daemon`, `notes-in-daemon`, `suggest --apply` write-on-readonly-store class (audit API-V1.25-3, API-V1.25-5).
+- [ ] **`Commands` / `BatchCmd` unification** — issue [#947](https://github.com/jamie8johnson/cqs/issues/947). 47 vs 36 variants drift produced 8 silent-fail commands through the daemon (audit EX-V1.25-1, API-V1.25-1/2/4/6, CQ-V1.25-1/2). Half-day refactor.
+- [ ] **`cqs::fs::atomic_replace` shared helper** — issue [#948](https://github.com/jamie8johnson/cqs/issues/948). `std::fs::rename` cross-device fallback duplicated 4× with divergent semantics; two were missing fsync until the audit (PB-V1.25-6, DS-V1.25-1, DS-V1.25-4).
+- [ ] **Embedder model abstraction** — issue [#949](https://github.com/jamie8johnson/cqs/issues/949). `ModelConfig::input_names`/`output_name`/`pooling` so non-BERT models are config entries, not code edits. Pre-req for BGE → E5 v9-200k default switch.
+- [ ] **CAGRA persistence** — issue [#950](https://github.com/jamie8johnson/cqs/issues/950). `CagraIndex::save`/`load` via cuVS native serialize. Cuts daemon hot-restart from ~30s to <5s.
 
-### Quick-wins Lane (do-these-next from the v1.25.0 audit)
+### Quick-wins Lane (Tier-1 ROI from audit issues)
 
-Tier-1 ROI from the 25 P4 audit issues (#951–#975) — high impact, easy/medium effort. Pick from this list before reaching for the larger refactors above.
+- [ ] **WSL 9P/NTFS mmap auto-detect** — issue [#961](https://github.com/jamie8johnson/cqs/issues/961). Fixes daily WSL `/mnt/c` slow-eval pain. Detect 9P/NTFS at Store open, set `mmap_size=0`. ~50 LOC.
+- [ ] **CAGRA itopk + graph_degree env overrides** — issue [#962](https://github.com/jamie8johnson/cqs/issues/962). Concrete proposal for the CAGRA-filtering-regression investigation. Env vars + corpus-size scaling formula.
+- [ ] **Reranker batch chunking** — issue [#963](https://github.com/jamie8johnson/cqs/issues/963). Reranker OOMs on large top-K + shared GPU. Add `CQS_RERANKER_BATCH` and chunk the input.
+- [ ] **Daemon `try_daemon_query` test scaffold** — issue [#972](https://github.com/jamie8johnson/cqs/issues/972). Closes the largest test-coverage gap in one file.
 
-- [ ] **WSL 9P/NTFS mmap auto-detect** — issue [#961](https://github.com/jamie8johnson/cqs/issues/961). Daily WSL `/mnt/c` slow-eval pain. Detect 9P/NTFS at Store open, set `mmap_size=0`. ~50 LOC.
-- [ ] **CAGRA itopk + graph_degree env overrides** — issue [#962](https://github.com/jamie8johnson/cqs/issues/962). The concrete proposal for the CAGRA-filtering-regression investigation above. Env vars + corpus-size scaling formula.
-- [ ] **Reranker batch chunking** — issue [#963](https://github.com/jamie8johnson/cqs/issues/963). Current reranker runs the whole candidate set in one ORT call; OOMs on large top-K + shared GPU. Add `CQS_RERANKER_BATCH` and chunk the input. Mirrors `embed_documents`.
-- [ ] **Daemon `try_daemon_query` test scaffold** — issue [#972](https://github.com/jamie8johnson/cqs/issues/972). Entire v1.24.0 daemon feature is uncovered. Mock socket + arg-translation tests. Closes the largest test-coverage gap in one file.
+Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue list --label audit-v1.25.0`.
 
 ### GPU Lane
-- [x] ~~SPLADE v1~~ — **NULL**. 0pp R@1. Weak reg, wrong vocab, wrong negatives.
-- [x] ~~SPLADE v2 data mining~~ — 199,998 token-overlap pairs.
-- [x] ~~SPLADE v2 training~~ — Token-overlap negs + reg_weight 1e-3.
-- [x] ~~SPLADE v2 eval~~ — **NULL**. 0pp R@1. 110M BERT capacity ceiling confirmed.
-- [x] ~~SPLADE v3 / v4 (reg sweep, CodeBERT vocab)~~ — Cancelled. Capacity is the bottleneck.
-- [x] ~~**SPLADE-Code 0.6B eval**~~ — **Flag-driven is a net loss.** 2026-04-11 re-run: 41.8% R@1 (+SPLADE) vs 42.4% R@1 (baseline) on 165q, N=165. Reverses the 2026-04-09 +1.2pp headline. cross_language is the only category where SPLADE pays off (+10pp, N=10). conceptual_search −3.7pp and multi_step −4.6pp from cross-category R@5 displacement. Full breakdown in `~/training-data/research/sparse.md` § SPLADE-Code 0.6B Eval Re-run. Next: selective routing (below).
-- [ ] **Reranker V2** — code-trained cross-encoder (ms-marco was catastrophic)
 
-### CPU Lane (next up)
-- [x] ~~**Adaptive retrieval** Phases 1-4~~ — classifier + routing + telemetry shipped in v1.22.0
-- [x] ~~**Adaptive retrieval** Phase 5~~ — dual embeddings (base + enriched HNSW) shipped in PR #876 + #877 + #878
-- [x] ~~**SPLADE alpha sweep + ship defaults**~~ — 11-point sweep + single-category verification. Per-category optimal alphas shipped: identifier 0.9, structural 0.7, conceptual 0.9, type_filtered 0.9, behavioral 0.1, rest 1.0. Expected **+4.9pp R@1** (47.2% vs 42.3%). Cross-language excluded (N=21 noise). Plan: `docs/plans/2026-04-12-selective-splade-routing.md`
-- [x] ~~**Eval determinism + SPLADE-always-on + alpha re-sweep**~~ — PR #942. Audit found 5 bugs causing ±5pp hash-random noise in every measurement. Post-fix 21-point re-sweep on deterministic pipeline. Uniform α=1.0 wins at 45.3% R@1; per-category oracle 49.8% (+4.5pp over uniform). Real optima: structural 0.9 (+14.8pp), conceptual 0.95 (+13.9pp), behavioral 0.05 (+4.6pp), rest 1.0. Research: `~/training-data/research/sparse.md` § Alpha Sweep.
-- [x] ~~**Investigate oracle-gap on per-category routing**~~ — root cause: `run_ablation.py` wrote eval results inside the watched project dir (`evals/runs/*/results.json`). `.json` writes triggered watch reindex + HNSW rebuild, invalidating BatchContext caches between eval runs. Consecutive identical-config runs drifted up to ±15pp. The 6pp oracle gap was this artifact. Fix: write to `~/.cache/cqs/evals/` (outside watched tree). Verified bit-exact back-to-back after fix.
-- [x] ~~**Re-sweep alphas on uncontaminated infrastructure**~~ — 21-point sweep on post-#943 pipeline. Per-category optima: identifier 0.90 (+4pp over 1.0), structural plateau 0.40–0.85 (picked 0.60), conceptual plateau 0.75–0.95 (picked 0.85), behavioral 0.05 (confirmed), rest 1.0 (confirmed). Oracle R@1 = 49.4% vs 44.9% for best uniform α=0.95. Shipped defaults target v1.25.0. Research: `~/training-data/research/sparse.md` § Alpha Sweep — Clean Infrastructure Re-run.
-- [ ] **Classifier accuracy investigation** — the 4.5pp gap between deployed per-category routing (44.9%) and oracle (49.4%) is **entirely** in `classify_query()` accuracy, not alpha picks. Current accuracy: negation 100%, identifier 84%, structural 19%, type_filtered 4%, behavioral 5%, conceptual 3%, cross_language 0%. Most queries fall to Unknown → α=1.0. Fixed one concrete bug 2026-04-14 (`"how does"` → Behavioral caught 100% of multi_step, +0.7pp overall). Remaining: structural/conceptual detectors rely on narrow phrase/word lists that miss most natural-language queries; cross_language requires explicit language names; type_filtered loses to Structural when query starts with "struct "/"enum "/"trait ".
+- [ ] **Reranker V2** — code-trained cross-encoder (ms-marco was catastrophic). SPLADE work all `[x]` historically (cqs-side null result; full breakdown in `~/training-data/research/sparse.md`).
+
+### CPU Lane
+
+**Eval & retrieval quality:**
+- [ ] **Classifier accuracy investigation** — the 4.5pp gap between deployed per-category routing (44.9%) and oracle (49.4%) is *entirely* in `classify_query()` accuracy, not alpha picks. Today: negation 100%, identifier 84%, structural 19%, type_filtered 4%, behavioral 5%, conceptual 3%, cross_language 0%. Most queries fall to `Unknown` → α=1.0.
 
   **Options (local-first first):**
-  1. **Rule expansion.** Mine eval queries for common missed phrasings ("how is X built", "X that uses Y", "dependencies of X"), add patterns. Cheap, brittle, re-tweaks on every eval update. Estimated headroom: 5-10pp classifier accuracy.
-  2. **Centroid matching on BGE embeddings (local, zero-train).** Mean the BGE-large embeddings of labeled queries per category → 8 category centroids (~32 KB: 8 × 1024 × 4). Classify = 8 dot products against centroids, argmax. Zero extra model, query embedding already computed for dense retrieval, sub-µs inference, debuggable ("classified as structural because 0.81 sim vs 0.72 for multi_step"). Likely 60-80% on non-identifier/negation buckets. **Recommended starting point.**
-  3. **Logistic regression on BGE embeddings (local, trivial train).** Same input as (2) with a proper linear head trained on the labeled set. ~40 KB weights file, sklearn one-liner to train. Approaches 85-90% if the embedding separates classes. Drop-in replacement for (2) when/if accuracy tops out.
-  4. **Fine-tuned MiniLM classifier (local, training effort).** Distill a tiny BERT (MiniLM-L6, 23 MB) with a 9-class head, ONNX-exported for CUDA/CPU. ~1 ms inference. Highest local accuracy; overkill for the current label volume.
-  5. **LLM classify + cache (non-local).** Haiku classifies, result cached by normalized query hash. ~200 ms miss, µs hit. Highest accuracy, but violates local-first and adds a per-miss API cost.
+  1. **Rule expansion** — mine eval queries for missed phrasings ("how is X built", "X that uses Y"). Cheap, brittle, +5-10pp.
+  2. **Centroid matching on BGE embeddings (zero-train)** — mean labeled embeddings per category → 8 centroids (~32 KB). Query embedding already computed for retrieval. Sub-µs inference. Likely 60-80% on non-identifier/negation. **Recommended starting point.**
+  3. **Logistic regression on BGE embeddings (trivial train)** — same input, proper linear head, ~40 KB weights. Approaches 85-90%.
+  4. **Fine-tuned MiniLM (training effort)** — 23 MB ONNX, ~1 ms inference. Highest local accuracy.
+  5. **LLM classify + cache (non-local)** — Haiku, query-hash cached. Highest accuracy, violates local-first.
 
-  **Data caveat (applies to 2-4):** 265 labeled queries *are* the eval set — train-and-eval leakage. Need leave-one-out CV for honest numbers, plus a held-out future-query partition. Coupled with the eval-expansion roadmap item (grow small categories to N≥40) — more data helps both measurement and training.
+  **Data caveat:** 265 labeled queries *are* the eval set — train/eval leakage. Need leave-one-out CV + held-out partition. Coupled with eval expansion below.
 
-  Worth +4.5pp if done well.
-- [ ] **Eval expansion: grow small categories** — N=21 cross_language and N=24 type_filtered are too noisy for reliable per-category decisions (±4.5pp noise floor just from sampling). Target: every category N≥40, noise floor ≤2.5pp. Rename file to actual count (v2_300q.json actually has 265 queries; misnomer).
-- [ ] **Full audit (v1.25.0+)** — 11th full audit. Last one was v1.15.1 (103/103 findings fixed, 0 P1-P4 remaining). Since then we've shipped: daemon mode (`watch --serve`), persistent query cache, shared-runtime support, AC-1 fusion rewrite, enrichment ablation + base/enriched routing (Phase 5), CAGRA native bitset filtering (patched cuvs 26.4), SPLADE always-on, deterministic search path (hash iteration fix + rowid re-sort + α=1.0 SPLADE candidate expansion), HNSW dirty-flag self-heal, eval-output-location fix, router priority fixes, per-category alpha re-sweep and new defaults, daemon notes-mutation bypass, GC suffix-match bug (found 2026-04-14 but not yet fixed). ~10 versions of surface area, ≥3 known design issues untouched (GC correctness, classifier accuracy, CAGRA-on-enriched regression). Use `/audit` skill (14-category parallel agents). Priority: run before any further research lanes build on v1.25.0 infrastructure.
-- [x] ~~**Enrichment ablation + routing update**~~ — 2-arm eval at 78% summary coverage with SPLADE. Oracle routing = 43.8% R@1 (+1.9pp). Updated router: type_filtered/multi_step → DenseBase (previously enriched). Research: `~/training-data/research/enrichment.md`.
-- [x] ~~**CAGRA native bitset filtering**~~ — GPU-side type/language filtering during graph traversal, replacing 3x over-fetch + post-filter. +0.7pp R@1 (42.6% vs 41.9%) on enriched. Structural +3.7pp, negation +3.4pp, behavioral +2.2pp. Patched cuvs crate (upstream PR rapidsai/cuvs#2019). Shipped in v1.24.0.
-- [ ] **Investigate CAGRA filtering regression on enriched index** — fully-routed eval (v1.24.0) showed conceptual −5.5pp, structural −3.8pp, identifier −2pp vs pre-release baseline. CAGRA bitset and HNSW traversal-time filtering return different candidate sets on the enriched index. Hypothesis: CAGRA graph walk strands in filtered-out regions when the graph was built on the full dataset. Options to try: (1) use HNSW for enriched + CAGRA only for base, (2) increase CAGRA `itopk_size` for filtered queries, (3) build separate CAGRA graphs per common filter bitmask. Blocks further R@1 gains. **Concrete proposal in [#962](https://github.com/jamie8johnson/cqs/issues/962)** (env override + corpus-size scaling) — pick this up first.
-- [ ] **Query-time HyDE for structural queries** — old data shows HyDE helps structural +14pp, type_filtered +12pp but hurts conceptual −22pp, behavioral −15pp. Instead of a third index column (`embedding_hyde`), do it at query time: router classifies structural → LLM generates synthetic code snippet → embed that → search. No index change, ~500ms-1s latency per structural query. Per-category by design since router already classifies. Need fresh eval with SPLADE active (old data is pre-SPLADE, pre-AC-1).
-- [ ] **Temporal search — `cqs history`** — "find the thing I wrote 6 months ago but can't remember." Query by author + time range, returns recently-touched chunks ranked by how little they've been touched since. Uses git log + chunk file/line mapping. Doesn't need the user to remember what the function does or is named — git remembers for them. Example: `cqs history --author jamie --since "6 months ago" --stale-since "3 months ago"` → functions you wrote last year that you haven't revisited.
-- [ ] **Author-weighted search** — `cqs search "handles api retries" --author jamie --boost 0.5` biases results toward chunks the author touched. Complements temporal search when the user has a vague memory of intent.
-- [ ] **Auto-notes on commit** — post-commit hook that runs `cqs notes add` with commit message + changed chunk names as observations. Turns git log into indexed searchable memory. Sentiment inferred from commit-message heuristics (fix/revert = negative, feat/add = positive) with override flag.
-- [ ] **Config file support** — `[splade.alpha]` per-category overrides in `.cqs.toml`
-- [ ] **Phase 6: Explainable search** — depends on SPLADE-Code being the production default. Spec: `docs/plans/adaptive-retrieval.md`
-- ~~**OpenRCT2 → Rust dual-trail experiment**~~ — parked. Spec: `docs/plans/2026-04-10-openrct2-rust-port-dual-trail.md`
-- [ ] **Paper v1.0** — clean rewrite done, needs review/polish + adaptive retrieval results
-- [x] ~~**Cross-project: wire remaining commands**~~ — impact, trace, test-map wired in #864. Deps local-only.
-- [x] ~~**Agent adoption: telemetry analysis**~~ — mined 16,731 invocations across all sessions. Finding: main conversation uses search (60%) + context (28%). Subagents use the full toolkit (impact, callers, test-map). The gap is in the main conversation, not subagents.
-- [x] ~~**Agent adoption: pre-edit impact hook**~~ — PreToolUse hook on Edit, runs `cqs impact`, injects caller/test/risk as additionalContext. Implemented in `.claude/hooks/pre-edit-impact.py`, wired in `settings.json`.
-- [ ] **Agent adoption: slim CLAUDE.md** — reduce 30-command reference to top 5 (search, context, read, impact, review) + "see `cqs --help`". Measure with telemetry before/after.
-- [ ] **Agent adoption: composite search results** — `cqs search` returns mini-impact (caller count, test count) alongside each result. One call instead of search + impact.
-- [ ] **Move language** — blocked: no tree-sitter grammar on crates.io
-- [x] ~~**`PRAGMA quick_check` opt-in**~~ — flipped to opt-in via `CQS_INTEGRITY_CHECK=1` (#924/#911). Default: skip. Saves ~40s on WSL `/mnt/c` write opens.
-- [x] ~~**Persistent daemon**~~ — `cqs watch --serve` (#926). Unix socket, dedicated query thread, 3-19ms graph queries. Plan: `docs/plans/2026-04-12-persistent-daemon.md`.
-- [x] ~~**Persistent query cache**~~ — `~/.cache/cqs/query_cache.db` (#928). Disk-backed query embeddings, 7-day eviction. Saves ~500ms on repeated queries.
-- [x] ~~**Shared runtime support**~~ — `Store::open_readonly_pooled_with_runtime()` + `EmbeddingCache::open_with_runtime()` (#929). Optional runtime injection, backward compatible.
-- [x] ~~**AC-1 fusion rewrite**~~ — `apply_scoring_pipeline()` preserves fused scores through scoring (#910). Alpha knob now functional.
-- [x] ~~**Audit mega-batch**~~ — 28 findings + 10 tests + 13 issues (#911). All P1s addressed (88 total).
-- [x] ~~**SPLADE re-eval**~~ — done via 11-point alpha sweep (PR #932). AC-1 fusion fix confirmed working: α=0.9 is +1.1pp R@1 globally, per-category optimal alphas shipped in `resolve_splade_alpha()`.
-- [ ] **Daemon: full CLI parity** — batch parser subset differs from CLI (missing some flags). Need either unified parser or more comprehensive arg translation.
-- [ ] **Daemon: incremental SPLADE in watch mode** — watch currently skips SPLADE encoding for new/changed chunks. Needs: (1) keep SPLADE ONNX model loaded in daemon, (2) encode only new chunks, (3) incremental insert into in-memory `SpladeIndex` (current impl rebuilds from scratch ~18s for 68k chunks). Without this, `cqs index` is still required after edits for full SPLADE coverage.
-- [x] ~~**cuVS bump: cuvs 26.2→26.4**~~ — PR #935 merged. conda libcuvs=26.04, CUDA 13 JIT support, non-consuming search, CAGRA persistence fix (rapidsai/cuvs#1800). Fixed daemon CAGRA segfault.
-  - [x] ~~**Simplify cagra.rs**~~ — v1.24.0 removed `IndexRebuilder` / `Mutex<Option<Index>>` / cached `dataset`. Net −357 lines. Fixed daemon SIGABRT under sustained load.
-- [x] ~~**cuVS filtered CAGRA search**~~ — GPU-native bitset filtering shipped. Local patched cuvs 26.4 via `[patch.crates-io]`. Upstream PR rapidsai/cuvs#2019 pending review. When merged, switch back to crates.io version. PCA preprocessor and float16 are C++/Python only.
+- [ ] **Re-fit per-category alphas on clean index** — current v1.25.0 defaults were tuned on the dirty (81% worktree-dup) index. Real optima on the clean index are unknown and likely shift. Re-run the 21-point sweep with the clean index + record new per-category curves.
+- [ ] **Eval expansion: grow small categories** — N=21 cross_language and N=24 type_filtered are too noisy for reliable per-category decisions (±4.5pp sampling floor). Target every category N≥40 (≤2.5pp). Rename `v2_300q.json` to actual count (265).
+- [ ] **Investigate CAGRA filtering regression on enriched index** — fully-routed v1.24.0 showed conceptual −5.5pp, structural −3.8pp, identifier −2pp vs pre-release baseline. Hypothesis: CAGRA graph walk strands in filtered-out regions. Concrete proposal in [#962](https://github.com/jamie8johnson/cqs/issues/962) (Quick-wins Lane).
+- [ ] **Query-time HyDE for structural queries** — old data: HyDE +14pp structural / +12pp type_filtered / −22pp conceptual / −15pp behavioral. Router classifies structural → LLM generates synthetic code → embed → search. Per-category by design. Need fresh eval with SPLADE active (old data is pre-SPLADE, pre-AC-1).
+- [ ] **Switch production default BGE → E5 v9-200k** — clean-index eval shows ties on R@1 + slight edge on R@5/R@20 + 1/3 the embedding dimension (768 vs 1024). Gated on Embedder model abstraction ([#949](https://github.com/jamie8johnson/cqs/issues/949)) and a confirmation re-run to rule out 1-query noise.
+
+**Daemon & data:**
+- [ ] **Daemon: full CLI parity** — batch parser subset differs from CLI. Subsumed by [#947](https://github.com/jamie8johnson/cqs/issues/947) Commands/BatchCmd unification.
+- [ ] **Daemon: incremental SPLADE in watch mode** — watch currently skips SPLADE encoding for new/changed chunks. Keep ONNX model in daemon, encode only new chunks, incremental insert into in-memory `SpladeIndex` (current rebuild ≈18s for 68k chunks).
+
+**Features (queued, no immediate work):**
+- [ ] **Temporal search — `cqs history`** — query by author + time range, returns recently-touched chunks ranked by how little they've been touched since. Uses git log + chunk file/line mapping.
+- [ ] **Author-weighted search** — `cqs search "..." --author X --boost 0.5` biases results toward an author. Complements temporal search.
+- [ ] **Auto-notes on commit** — post-commit hook runs `cqs notes add` with commit message + changed chunk names. Sentiment inferred from commit-message heuristics with override flag.
+- [ ] **Config file support** — `[splade.alpha]` per-category overrides in `.cqs.toml`.
+- [ ] **Phase 6: Explainable search** — depends on SPLADE-Code being the production default. Spec: `docs/plans/adaptive-retrieval.md`.
+- [ ] **Paper v1.0** — clean rewrite done, needs review/polish + adaptive retrieval results.
+
+**Agent adoption:**
+- [ ] **Slim CLAUDE.md** — reduce 30-command reference to top 5 (search, context, read, impact, review) + "see `cqs --help`". Measure with telemetry before/after.
+- [ ] **Composite search results** — `cqs search` returns mini-impact (caller count, test count) alongside each result. One call instead of search + impact.
+
+**Languages:**
+- [ ] **Move language** — blocked: no tree-sitter grammar on crates.io.
 
 ### Agent Adoption — Telemetry Data (2026-04-09)
 
-16,731 cqs invocations across all sessions. Two distinct usage profiles:
+16,731 cqs invocations across all sessions. Two distinct profiles:
 
-**Main conversation (3,889 invocations via telemetry):**
+**Main conversation (3,889 invocations):**
 | Command | % | Count |
 |---------|---|-------|
 | search | 60.1% | 2336 |
@@ -123,38 +106,38 @@ Tier-1 ROI from the 25 P4 audit issues (#951–#975) — high impact, easy/mediu
 | impact | **0.2%** | 6 |
 | callers | **0.2%** | 7 |
 
-**Subagents (12,842 invocations via conversation log mining):**
+**Subagents (12,842 invocations):**
 | Command | Count |
 |---------|-------|
 | impact | 825 |
 | callers | 589 |
-| test-map | 457 |
 | dead | 693 |
+| test-map | 457 |
 | gather | 403 |
 | review | 370 |
 | scout | 377 |
 
-Key insight: impact/callers/test-map are used heavily by subagents but almost never by the main conversation. The pre-edit hook bridges this gap by running impact automatically.
+**Insight:** impact/callers/test-map are heavy in subagents but almost unused by main. The pre-edit hook bridges this gap by running impact automatically.
 
 ### Cross-Project Architecture
 
-Current implementation: N-project via `[[reference]]` entries in `.cqs.toml` → `CrossProjectContext { stores: Vec<NamedStore> }`.
+Current: N-project via `[[reference]]` entries in `.cqs.toml` → `CrossProjectContext { stores: Vec<NamedStore> }`.
 
 | Approach | Status | Used for | How |
 |----------|--------|----------|-----|
-| Per-store BFS | **shipped** | callers, callees, impact, trace | Walk call graph in each store, merge by name. Cross-boundary edges matched by exact function name. |
-| Per-store search + merge | **shipped** | search | Independent embedding search per store, RRF-merge by score. No cross-boundary awareness. |
+| Per-store BFS | shipped | callers, callees, impact, trace | Walk call graph in each store, merge by name. Cross-boundary edges matched by exact name. |
+| Per-store search + merge | shipped | search | Independent embedding search per store, RRF-merge by score. No cross-boundary awareness. |
 | Unified index | not implemented | — | Single HNSW spanning all projects. Best recall, needs shared model + reindex. |
-| Federated query | not implemented | — | Query fan-out with coordinator, filtering/reranking across merged set. |
+| Federated query | not implemented | — | Query fan-out + coordinator, filtering/reranking across merged set. |
 
-**Limitation:** Cross-project BFS connects functions by exact name match only. If project-1 calls `utils::parse` and project-2 defines it, the edge connects. But wrapper functions, re-exports, or name mismatches are invisible.
+**Limitation:** Cross-project BFS connects functions by exact name match only. Wrapper functions, re-exports, and name mismatches are invisible.
 
 **Future improvements:**
 - [ ] Type-signature matching for cross-boundary edges (same signature + same callers → likely same function)
-- [ ] Import-graph resolution (parse `use`/`import` to resolve re-exports across projects)
+- [ ] Import-graph resolution (parse `use`/`import` to resolve re-exports)
 - [ ] Cross-project search with unified scoring (not just per-store RRF merge)
-- [ ] `analyze_impact_cross` resolve file/line from CallGraph (currently returns empty paths — CQ-3)
-- [ ] Cross-project dead code detection (function with zero callers across all referenced projects)
+- [ ] `analyze_impact_cross` resolve file/line from CallGraph (currently empty paths — CQ-3)
+- [ ] Cross-project dead code detection
 
 ---
 
@@ -182,10 +165,13 @@ Current implementation: N-project via `[[reference]]` entries in `.cqs.toml` →
 - Lock/fork-aware training weights (Exp #5)
 - Ladder logic (RLL) parser
 - DXF, Openclaw PLC
+- **OpenRCT2 → Rust dual-trail experiment** — spec: `docs/plans/2026-04-10-openrct2-rust-port-dual-trail.md`
 
 ---
 
 ## Open Issues
+
+Pre-audit issues. New audit issues are tracked under the `audit-v1.25.0` GitHub label (`gh issue list --label audit-v1.25.0` or in the Refactoring + Quick-wins lanes above).
 
 | # | Finding | Difficulty |
 |---|---------|-----------|
@@ -193,11 +179,8 @@ Current implementation: N-project via `[[reference]]` entries in `.cqs.toml` →
 | #854 | SEC-4: Reference path containment | medium |
 | #855 | SHL-25: 25 env vars undocumented in README | easy |
 | #856 | PB-5: atexit Mutex UB | hard |
-| #857 | ~~AD-2: --include-type naming~~ | closed |
-| #858 | ~~AD-4: Batch missing flags~~ | closed |
-| #849 | SHL-23: Channel depth env overrides | done in #863 |
 | #848 | RM-1: Reduce tokio threads | easy |
-| #847 | EXT-2: CLI/batch parity test | easy |
+| #847 | EXT-2: CLI/batch parity test | easy (subsumed by [#947](https://github.com/jamie8johnson/cqs/issues/947)) |
 
 ---
 
@@ -205,9 +188,10 @@ Current implementation: N-project via `[[reference]]` entries in `.cqs.toml` →
 
 | Version | Highlights |
 |---------|-----------|
+| v1.25.0 | **11th full audit** (16 categories, 236 findings, fix waves in flight). Per-category SPLADE alpha defaults from clean 21-point sweep (identifier 0.90, structural 0.60, conceptual 0.85, behavioral 0.05). Multi_step router fix (`"how does"` → not Behavioral, +0.7pp). Eval output to `~/.cache/cqs/evals/` (#943, fixed watch-reindex contamination — root cause of 2 days of eval drift). Notes daemon-bypass routing (#945). Determinism fixes across 15+ sort sites + GC suffix-match bug (81% chunks orphan, root cause of v1.24.0 → v1.25.0 R@1 inflation). Refactor lane queued: #946–#950. Quick-wins lane: #961–#975. |
 | v1.24.0 | GPU-native CAGRA bitset filtering (upstream PR rapidsai/cuvs#2019), daemon stability (CAGRA non-consuming search fixes SIGABRT under load), cagra.rs simplified −357 lines, batch/daemon base index routing, router update (type_filtered + multi_step → base), cuVS 26.4 |
 | v1.23.0 | **Daemon mode** (`cqs watch --serve`, 3-19ms queries), per-category SPLADE alpha routing + 11-point sweep, persistent query cache, shared runtime, AC-1 fusion fix, 90 audit findings |
-| v1.22.0 | Adaptive retrieval Phases 1-5, SPLADE-Code 0.6B eval chain, SPLADE index persistence (#895), v19/v20 migrations (#898/#899), read-only batch store (#919), Store::clear_caches (#918), 13 issues created (#912-#925) |
+| v1.22.0 | Adaptive retrieval Phases 1-5 (classifier + routing + dual base/enriched HNSW), SPLADE-Code 0.6B eval chain (null result), SPLADE index persistence (#895), v19/v20 migrations (#898/#899), read-only batch store (#919), Store::clear_caches (#918), 13 issues created (#912-#925) |
 | v1.21.0 | Cross-project call graph (#850), 4 new chunk types to 29 (#851), chunk type coverage across 15 languages (#852), 14-category audit 40+ fixes (#859), API renames + 8 batch flags (#860), remaining audit sweep (#863), paper v1.0, docs refresh |
 | v1.20.0 | 14-category audit (71 findings, 69 fixed), Elm (54th), batch --include-type/--exclude-type, SPLADE code training (null), env var docs, README eval rewrite |
 | v1.19.0 | `--include-type`/`--exclude-type`, Java/C# test+endpoint, batch `--rrf`, capture list unification, Phase 2 chunks, 265q eval, store dim check |
@@ -217,7 +201,7 @@ Current implementation: N-project via `[[reference]]` entries in `.cqs.toml` →
 | v1.15.2 | 10th audit 103/103, typed JSON output structs, 35 PRs |
 | v1.15.1 | JSON schema migration, batch/CLI unification |
 | v1.15.0 | L5X/L5K PLC, telemetry, CommandContext, custom agents, BGE-large FT |
-| v1.14.0 | `--format text|json`, ImpactOptions, scoring config |
+| v1.14.0 | `--format text\|json`, ImpactOptions, scoring config |
 | v1.13.0 | 296-query eval, 9th audit, 16 commands |
 | v1.12.0 | Pre-edit hooks, query expansion, diff impact cap |
 | v1.11.0 | Synonym expansion, f32→f64 cosine, 80/88 audit fixes |
