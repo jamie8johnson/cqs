@@ -783,7 +783,7 @@ Building from source:
 cargo build --release --features gpu-index
 ```
 
-> **Note:** v1.24.0 uses a patched cuvs crate that exposes `search_with_filter` for GPU-native bitset filtering. This is applied transparently via `[patch.crates-io]`. Once upstream rapidsai/cuvs#2019 merges, the patch will be removed.
+> **Note:** cqs uses a patched cuvs crate that exposes `search_with_filter` for GPU-native bitset filtering. This is applied transparently via `[patch.crates-io]`. Once upstream rapidsai/cuvs#2019 merges, the patch will be removed.
 
 ### WSL2
 
