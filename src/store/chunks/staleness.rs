@@ -880,4 +880,146 @@ mod tests {
         let stats = store.stats().unwrap();
         assert_eq!(stats.total_chunks, 1);
     }
+
+    /// TC-HP-3 gap-fill: the happy-path test above asserts
+    /// `pruned_calls/type_edges/summaries == 0` because nothing was inserted
+    /// into those tables. This test actually populates each of the four
+    /// cascade tables and verifies that deleting the source file propagates
+    /// through every counter. A refactor that short-circuits any of steps
+    /// 2b / 2c / 2d would survive the happy-path test — this one catches it.
+    #[test]
+    fn test_prune_all_cascade_populates_all_counters() {
+        use crate::parser::{CallSite, FunctionCalls, TypeRef};
+
+        let (store, dir) = setup_store();
+
+        // Keeper + victim files.
+        let keeper_chunk = chunk_at(dir.path(), "src/keep.rs", "keep");
+        let victim_chunk = chunk_at(dir.path(), "src/victim.rs", "victim");
+        let keeper_file = keeper_chunk.file.clone();
+        let victim_file = victim_chunk.file.clone();
+        let victim_chunk_id = victim_chunk.id.clone();
+        let victim_content_hash = victim_chunk.content_hash.clone();
+
+        store
+            .upsert_chunks_batch(
+                &[
+                    (keeper_chunk, mock_embedding(1.0)),
+                    (victim_chunk, mock_embedding(2.0)),
+                ],
+                Some(1000),
+            )
+            .unwrap();
+
+        // function_calls orphan: two call sites from victim.rs. Once the
+        // file is gone, both rows become orphans per the `DELETE WHERE file
+        // NOT IN (SELECT DISTINCT origin FROM chunks)` query in prune_all.
+        store
+            .upsert_function_calls(
+                &victim_file,
+                &[FunctionCalls {
+                    name: "victim".to_string(),
+                    line_start: 1,
+                    calls: vec![
+                        CallSite {
+                            callee_name: "helper_a".to_string(),
+                            line_number: 2,
+                        },
+                        CallSite {
+                            callee_name: "helper_b".to_string(),
+                            line_number: 3,
+                        },
+                    ],
+                }],
+            )
+            .unwrap();
+
+        // type_edges orphan: one edge whose source_chunk_id is the victim
+        // chunk. After the chunk is deleted, the edge becomes an orphan.
+        store
+            .upsert_type_edges(
+                &victim_chunk_id,
+                &[TypeRef {
+                    type_name: "Config".to_string(),
+                    line_number: 2,
+                    kind: None,
+                }],
+            )
+            .unwrap();
+
+        // llm_summaries orphan: one summary row tied to the victim chunk's
+        // content_hash. When the chunk is deleted, no chunk row references
+        // that hash any more — the summary becomes an orphan.
+        store
+            .upsert_summaries_batch(&[(
+                victim_content_hash,
+                "summary body".to_string(),
+                "test-model".to_string(),
+                "general".to_string(),
+            )])
+            .unwrap();
+
+        // Simulate the source file being deleted on disk. `prune_all` filters
+        // against existing_files via `origin_exists`, and the filesystem check
+        // kicks in when we drop the path from the HashSet — we don't have to
+        // `remove_file` because `chunk_at` wrote a placeholder file that we
+        // can safely ignore (the check prefers the HashSet hit first).
+        std::fs::remove_file(&victim_file).unwrap();
+        let existing: HashSet<_> = vec![keeper_file.clone()].into_iter().collect();
+
+        let result = store.prune_all(&existing, dir.path()).unwrap();
+        assert_eq!(
+            result.pruned_chunks, 1,
+            "Victim chunk should be pruned (keeper intact)"
+        );
+        assert!(
+            result.pruned_calls >= 2,
+            "Both function_calls rows for victim.rs must be pruned, got {}",
+            result.pruned_calls
+        );
+        assert!(
+            result.pruned_type_edges >= 1,
+            "type_edges rows for victim chunk must be pruned, got {}",
+            result.pruned_type_edges
+        );
+        assert!(
+            result.pruned_summaries >= 1,
+            "llm_summaries rows for victim hash must be pruned, got {}",
+            result.pruned_summaries
+        );
+
+        // Keeper chunk survives; no other side effects.
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 1);
+    }
+
+    /// TC-HP-3 gap-fill: baseline "nothing to prune". When every file still
+    /// exists on disk, prune_all must return an all-zero `PruneAllResult`.
+    /// Regression guard for refactors that change the default branch to
+    /// unconditionally prune orphans when there are none.
+    #[test]
+    fn test_prune_all_nothing_to_prune_returns_zeroes() {
+        let (store, dir) = setup_store();
+
+        let c1 = chunk_at(dir.path(), "src/x.rs", "x");
+        let c2 = chunk_at(dir.path(), "src/y.rs", "y");
+        let files_on_disk = [c1.file.clone(), c2.file.clone()];
+        store
+            .upsert_chunks_batch(
+                &[(c1, mock_embedding(1.0)), (c2, mock_embedding(2.0))],
+                Some(1000),
+            )
+            .unwrap();
+
+        let existing: HashSet<_> = files_on_disk.iter().cloned().collect();
+        let result = store.prune_all(&existing, dir.path()).unwrap();
+        assert_eq!(result.pruned_chunks, 0);
+        assert_eq!(result.pruned_calls, 0);
+        assert_eq!(result.pruned_type_edges, 0);
+        assert_eq!(result.pruned_summaries, 0);
+
+        // Chunks are untouched.
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 2);
+    }
 }
