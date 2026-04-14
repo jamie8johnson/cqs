@@ -399,3 +399,120 @@ fn test_build_batched_search_quality() {
         assert!(found, "Should find item{} in top 15 results", i);
     }
 }
+
+// TC-ADV-2: HnswIndex::search must not panic on non-finite query vectors.
+//
+// Callers assemble the query embedding from user input (dense encoder,
+// SPLADE, HyDE). A NaN/Inf leak from the encoder or a corrupt query cache
+// entry could reach `search()` as a poisoned vector. The dense library
+// (hnsw_rs) propagates NaN through cosine distance, so the returned
+// `distance` would be NaN and `1.0 - NaN` is still NaN. The current
+// implementation already filters non-finite scores before returning, so
+// the contract is: no panic, no NaN results — either an empty vec or all
+// finite scores.
+//
+// This guards the invariant with an explicit regression test so a future
+// refactor of `search_impl` can't silently reintroduce a NaN result leak.
+
+fn build_small_index() -> HnswIndex {
+    let embeddings: Vec<_> = (1..=8)
+        .map(|i| (format!("chunk{}", i), make_embedding(i)))
+        .collect();
+    HnswIndex::build_with_dim(embeddings, cqs::EMBEDDING_DIM).unwrap()
+}
+
+#[test]
+fn test_search_all_nan_query_returns_empty() {
+    let index = build_small_index();
+
+    // Bypass `Embedding::try_new` (which rejects NaN) to simulate the worst
+    // case where a poisoned vector somehow reaches `search()`.
+    let nan_query = Embedding::new(vec![f32::NAN; EMBEDDING_DIM]);
+
+    // Must not panic. Guard at the top of search_impl short-circuits
+    // non-finite queries to an empty result.
+    let results = index.search(&nan_query, 5);
+    assert!(
+        results.is_empty(),
+        "NaN query must return empty results, got {} entries",
+        results.len()
+    );
+}
+
+#[test]
+fn test_search_mixed_nan_query_returns_empty() {
+    let index = build_small_index();
+
+    // A single NaN in an otherwise valid vector is the more realistic
+    // corruption (bit rot, partial overwrite, encoder edge case).
+    let mut v = make_embedding(1).as_slice().to_vec();
+    v[EMBEDDING_DIM / 3] = f32::NAN;
+    let poisoned = Embedding::new(v);
+
+    let results = index.search(&poisoned, 5);
+    assert!(
+        results.is_empty(),
+        "query with a single NaN element must return empty results, got {} entries",
+        results.len()
+    );
+}
+
+#[test]
+fn test_search_positive_infinity_query_returns_empty() {
+    let index = build_small_index();
+
+    // +Inf cosine numerator would previously panic inside anndists when
+    // `dist_unchecked >= -0.00002` assertion failed. Guard converts to empty.
+    let inf_query = Embedding::new(vec![f32::INFINITY; EMBEDDING_DIM]);
+
+    let results = index.search(&inf_query, 5);
+    assert!(
+        results.is_empty(),
+        "+Inf query must return empty results, got {} entries",
+        results.len()
+    );
+}
+
+#[test]
+fn test_search_negative_infinity_query_returns_empty() {
+    let index = build_small_index();
+
+    // -Inf triggers the same `dist_unchecked >= -0.00002` panic inside
+    // anndists on the raw library. Guard converts to empty.
+    let neg_inf_query = Embedding::new(vec![f32::NEG_INFINITY; EMBEDDING_DIM]);
+
+    let results = index.search(&neg_inf_query, 5);
+    assert!(
+        results.is_empty(),
+        "-Inf query must return empty results, got {} entries",
+        results.len()
+    );
+}
+
+#[test]
+fn test_search_filtered_nan_query_returns_empty() {
+    let index = build_small_index();
+
+    let nan_query = Embedding::new(vec![f32::NAN; EMBEDDING_DIM]);
+
+    // Predicate always true — exercises the filtered branch of search_impl.
+    let results = index.search_filtered(&nan_query, 5, &|_| true);
+    assert!(
+        results.is_empty(),
+        "search_filtered with NaN query must return empty results, got {} entries",
+        results.len()
+    );
+}
+
+#[test]
+fn test_search_valid_query_still_works_after_nan_guard() {
+    let index = build_small_index();
+
+    // Regression: the NaN/Inf guard must not break the happy path.
+    let good = make_embedding(1);
+    let results = index.search(&good, 3);
+    assert!(!results.is_empty(), "valid query must still return results");
+    for r in &results {
+        assert!(r.score.is_finite(), "valid scores must be finite");
+    }
+}
