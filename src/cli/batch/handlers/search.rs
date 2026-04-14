@@ -119,20 +119,23 @@ pub(in crate::cli::batch) fn dispatch_search(
 
     // Per-category SPLADE routing: if --splade flag is set, use it directly.
     // Otherwise, resolve per-category alpha from classification.
+    //
+    // IMPORTANT: we always enable SPLADE when the encoder is available — even
+    // at α=1.0. The α knob controls *scoring* weight (α=1.0 = pure dense
+    // scoring) but SPLADE still contributes to the *candidate pool*.
+    // Skipping SPLADE entirely at α=1.0 loses ~10pp R@1 on queries where the
+    // sparse leg surfaces relevant candidates the dense leg misses
+    // (multi_step, negation, cross_language).
     let (use_splade, splade_alpha) = if params.splade {
         (true, params.splade_alpha)
     } else {
         let alpha = cqs::search::router::resolve_splade_alpha(&classification.category);
-        if alpha < 1.0 {
-            tracing::info!(
-                category = %classification.category,
-                alpha,
-                "SPLADE activated by per-category alpha (batch)"
-            );
-            (true, alpha)
-        } else {
-            (false, 1.0)
-        }
+        tracing::info!(
+            category = %classification.category,
+            alpha,
+            "SPLADE routing (batch)"
+        );
+        (true, alpha)
     };
 
     // Phase 5: base/enriched index routing. DenseBase queries use the

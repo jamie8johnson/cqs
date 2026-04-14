@@ -172,21 +172,23 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
     let type_boost_types = classification.as_ref().and_then(|c| c.type_hints.clone());
 
     // Resolve per-category SPLADE alpha. --splade flag overrides (uses cli.splade_alpha
-    // for all categories). Otherwise, resolve from env → config → default (1.0 = off).
+    // for all categories). Otherwise, resolve from env → config → default.
+    //
+    // IMPORTANT: SPLADE is always enabled when a category is classified, even at
+    // α=1.0 — the α knob controls scoring weight (α=1.0 = pure dense) but SPLADE
+    // still contributes to the *candidate pool*. Skipping SPLADE at α=1.0 loses
+    // ~10pp R@1 on categories where sparse surfaces candidates dense misses
+    // (multi_step, negation, cross_language).
     let (use_splade, splade_alpha) = if cli.splade {
         (true, cli.splade_alpha)
     } else if let Some(ref c) = classification {
         let alpha = cqs::search::router::resolve_splade_alpha(&c.category);
-        if alpha < 1.0 {
-            tracing::info!(
-                category = %c.category,
-                alpha,
-                "SPLADE activated by per-category alpha"
-            );
-            (true, alpha)
-        } else {
-            (false, 1.0)
-        }
+        tracing::info!(
+            category = %c.category,
+            alpha,
+            "SPLADE routing"
+        );
+        (true, alpha)
     } else {
         (false, cli.splade_alpha)
     };
