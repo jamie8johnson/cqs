@@ -126,16 +126,15 @@ pub(in crate::cli::batch) fn dispatch_search(
     // Skipping SPLADE entirely at α=1.0 loses ~10pp R@1 on queries where the
     // sparse leg surfaces relevant candidates the dense leg misses
     // (multi_step, negation, cross_language).
+    // OB-NEW-1: `resolve_splade_alpha` emits the structured "SPLADE routing"
+    // log internally — no call-site log needed here.
     let (use_splade, splade_alpha) = if params.splade {
         (true, params.splade_alpha)
     } else {
-        let alpha = cqs::search::router::resolve_splade_alpha(&classification.category);
-        tracing::info!(
-            category = %classification.category,
-            alpha,
-            "SPLADE routing (batch)"
-        );
-        (true, alpha)
+        (
+            true,
+            cqs::search::router::resolve_splade_alpha(&classification.category),
+        )
     };
 
     // Phase 5: base/enriched index routing. DenseBase queries use the

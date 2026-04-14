@@ -283,13 +283,28 @@ const MULTISTEP_PATTERNS: &[&str] = &[
 ///
 /// Returns a value in [0.0, 1.0] where 1.0 means pure dense and < 1.0 activates
 /// SPLADE with that fusion weight.
+///
+/// OB-NEW-1: emits a single structured `tracing::info!` recording the
+/// resolved alpha, its source (`per_cat_env` / `global_env` / `default`),
+/// and the category. Callers no longer need to log the decision themselves;
+/// rooting the log inside this function makes the env-precedence visible and
+/// eliminates the drift that existed between the CLI and batch-handler logs.
 pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
+    let _span = tracing::debug_span!("resolve_splade_alpha", category = %category).entered();
+
     // Per-category env override: CQS_SPLADE_ALPHA_CONCEPTUAL_SEARCH etc.
     let cat_key = format!("CQS_SPLADE_ALPHA_{}", category.to_string().to_uppercase());
     if let Ok(val) = std::env::var(&cat_key) {
         if let Ok(alpha) = val.parse::<f32>() {
             if alpha.is_finite() {
-                return alpha.clamp(0.0, 1.0);
+                let alpha = alpha.clamp(0.0, 1.0);
+                tracing::info!(
+                    category = %category,
+                    alpha,
+                    source = "per_cat_env",
+                    "SPLADE routing"
+                );
+                return alpha;
             }
             tracing::warn!(var = %cat_key, value = %val, "Non-finite alpha, using default");
         } else {
@@ -301,7 +316,14 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
     if let Ok(val) = std::env::var("CQS_SPLADE_ALPHA") {
         if let Ok(alpha) = val.parse::<f32>() {
             if alpha.is_finite() {
-                return alpha.clamp(0.0, 1.0);
+                let alpha = alpha.clamp(0.0, 1.0);
+                tracing::info!(
+                    category = %category,
+                    alpha,
+                    source = "global_env",
+                    "SPLADE routing"
+                );
+                return alpha;
             }
         }
     }
@@ -315,7 +337,7 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
     // Oracle R@1 with these values: 49.4% vs 44.9% for best uniform α=0.95.
     // The earlier v1.24.0 defaults were fit to corrupted data; plateaus
     // are resolved here to the mid-point for robustness.
-    match category {
+    let alpha = match category {
         // Double plateau: 0.10–0.30 and 0.85–0.90 both at 98%. α=1.0 drops
         // to 94%. Pick 0.90 (dense-side plateau edge, +4pp over 1.0).
         QueryCategory::IdentifierLookup => 0.90,
@@ -332,7 +354,15 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
         // pure dense scoring is best. SPLADE still contributes to the
         // candidate pool (always-on), α just weights the scoring.
         _ => 1.0,
-    }
+    };
+
+    tracing::info!(
+        category = %category,
+        alpha,
+        source = "default",
+        "SPLADE routing"
+    );
+    alpha
 }
 
 /// Pure function — no I/O, cannot fail, completes in <1ms.
