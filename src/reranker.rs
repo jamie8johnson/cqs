@@ -114,9 +114,23 @@ impl Reranker {
         results: &mut Vec<SearchResult>,
         limit: usize,
     ) -> Result<(), RerankerError> {
-        let passages: Vec<String> = results.iter().map(|r| r.chunk.content.clone()).collect();
-        let refs: Vec<&str> = passages.iter().map(|s| s.as_str()).collect();
-        self.rerank_with_passages(query, results, &refs, limit)
+        // PF-V1.25-5: borrow passages from results directly instead of
+        // cloning content strings. The previous impl did
+        // `results.iter().map(|r| r.chunk.content.clone()).collect()`,
+        // allocating a fresh String per candidate (N allocations × content
+        // length bytes each) only to feed them to `rerank_with_passages`.
+        // Score computation happens in a scoped borrow so the subsequent
+        // `&mut results` write back is valid.
+        //
+        // We inline the compute-score-then-apply pattern rather than
+        // reusing `rerank_with_passages`, because passages that borrow
+        // from `results` conflict with `&mut results` at the call site.
+        let scores = {
+            let passages: Vec<&str> = results.iter().map(|r| r.chunk.content.as_str()).collect();
+            self.compute_scores(query, &passages)?
+        };
+        apply_rerank_scores(results, scores, limit);
+        Ok(())
     }
 
     /// Re-rank search results using custom passage text per result.
@@ -149,6 +163,27 @@ impl Reranker {
             )));
         }
 
+        let Some(scores) = self.compute_scores_opt(query, passages)? else {
+            return Ok(());
+        };
+        apply_rerank_scores(results, scores, limit);
+        Ok(())
+    }
+
+    /// Compute cross-encoder scores for (query, passage) pairs.
+    ///
+    /// Returns `Some(scores)` on success, or `None` when tokenization produced
+    /// zero-length encodings (nothing to score). `scores.len() == passages.len()`
+    /// on `Some(...)`.
+    ///
+    /// PF-V1.25-5: extracted so `rerank` can feed passages borrowed directly
+    /// from `&Vec<SearchResult>` without cloning contents, then apply scores
+    /// via `apply_rerank_scores` in a subsequent `&mut` scope.
+    fn compute_scores_opt(
+        &self,
+        query: &str,
+        passages: &[&str],
+    ) -> Result<Option<Vec<f32>>, RerankerError> {
         let tokenizer = self.tokenizer()?;
 
         // 1. Tokenize (query, passage) pairs
@@ -177,12 +212,13 @@ impl Reranker {
             .unwrap_or(0)
             .min(self.max_length);
         if max_len == 0 {
-            return Ok(()); // Nothing to score — empty tokenization
+            return Ok(None); // Nothing to score — empty tokenization
         }
 
+        let batch_size = passages.len();
         let ids_arr = pad_2d_i64(&input_ids, max_len, 0);
         let mask_arr = pad_2d_i64(&attention_mask, max_len, 0);
-        let type_arr = Array2::<i64>::zeros((results.len(), max_len));
+        let type_arr = Array2::<i64>::zeros((batch_size, max_len));
 
         // Create tensors (ort requires Value, not raw ndarray)
         use ort::value::Tensor;
@@ -204,29 +240,23 @@ impl Reranker {
             .map_err(ort_err)?;
 
         // 4. Extract logits, apply sigmoid
-        // Cross-encoder output is typically "logits" with shape [batch, 1] or [batch]
-        // ort rc.11 try_extract_tensor returns (Vec<i64>, Vec<f32>)
         if outputs.len() == 0 {
             return Err(RerankerError::Inference(
                 "ONNX model produced no outputs".to_string(),
             ));
         }
         let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
-        let batch_size = results.len();
 
-        // Handle [batch, 1] → stride 1, or [batch] → stride 1
         let stride = if shape.len() == 2 {
             shape[1] as usize
         } else {
             1
         };
-
         if stride == 0 {
             return Err(RerankerError::Inference(
                 "Model returned zero-width output tensor".to_string(),
             ));
         }
-
         let expected_len = batch_size * stride;
         if data.len() < expected_len {
             return Err(RerankerError::Inference(format!(
@@ -236,23 +266,20 @@ impl Reranker {
             )));
         }
 
-        for (i, result) in results.iter_mut().enumerate() {
-            let logit = data[i * stride];
-            result.score = sigmoid(logit);
+        let scores: Vec<f32> = (0..batch_size).map(|i| sigmoid(data[i * stride])).collect();
+        Ok(Some(scores))
+    }
+
+    /// Like [`compute_scores_opt`] but returns an empty vec instead of `None`
+    /// when tokenization produces zero-length encodings. Used by [`rerank`]
+    /// where a degenerate empty input just means a no-op.
+    fn compute_scores(&self, query: &str, passages: &[&str]) -> Result<Vec<f32>, RerankerError> {
+        if passages.len() <= 1 {
+            return Ok(Vec::new());
         }
-
-        // 5. Sort descending by score, truncate. Secondary sort on chunk id
-        // keeps equal-score candidates deterministically ordered so the
-        // truncate() drops the same candidates on every invocation.
-        results.sort_by(|a, b| {
-            b.score
-                .total_cmp(&a.score)
-                .then(a.chunk.id.cmp(&b.chunk.id))
-        });
-        results.truncate(limit);
-
-        tracing::info!(reranked = results.len(), batch_size, "Re-ranking complete");
-        Ok(())
+        Ok(self
+            .compute_scores_opt(query, passages)?
+            .unwrap_or_default())
     }
 
     /// Download model and tokenizer from HuggingFace Hub
@@ -369,6 +396,37 @@ fn verify_checksum(path: &std::path::Path, expected: &str) -> Result<(), Reranke
 /// The sigmoid of x, a value in the range (0, 1)
 fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
+}
+
+/// Apply freshly computed cross-encoder scores, then sort and truncate.
+///
+/// When `scores` is empty, leaves `results` unchanged (used for the degenerate
+/// paths in [`Reranker::rerank`]). Otherwise, writes each score onto the
+/// corresponding result, sorts descending with a chunk-id secondary key for
+/// deterministic tie-breaking, and truncates to `limit`.
+///
+/// PF-V1.25-5: extracted from the impl block so the &mut results write and
+/// the earlier &results passage borrow live in disjoint scopes at the call
+/// site (`rerank`).
+fn apply_rerank_scores(results: &mut Vec<SearchResult>, scores: Vec<f32>, limit: usize) {
+    if scores.is_empty() {
+        return;
+    }
+    let n = scores.len().min(results.len());
+    for (i, score) in scores.into_iter().take(n).enumerate() {
+        results[i].score = score;
+    }
+    let batch_size = results.len();
+    // 5. Sort descending by score, truncate. Secondary sort on chunk id keeps
+    // equal-score candidates deterministically ordered so the truncate()
+    // drops the same candidates on every invocation.
+    results.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then(a.chunk.id.cmp(&b.chunk.id))
+    });
+    results.truncate(limit);
+    tracing::info!(reranked = results.len(), batch_size, "Re-ranking complete");
 }
 
 #[cfg(test)]
