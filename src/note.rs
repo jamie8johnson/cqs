@@ -553,6 +553,89 @@ text = "first note"
         assert!(result.is_err());
     }
 
+    // ===== TC-ADV-7: size guard + MAX_NOTES truncation =====
+    //
+    // `parse_notes` has two guards against memory exhaustion:
+    //   1. A 10MB file-size cap (`MAX_NOTES_FILE_SIZE = 10 * 1024 * 1024`)
+    //      that errors with `ErrorKind::InvalidData` before reading content.
+    //   2. A `MAX_NOTES = 10_000` cap in `parse_notes_str` that silently
+    //      truncates via `.take(MAX_NOTES)`.
+    // Neither was exercised by the suite before TC-ADV-7.
+
+    /// Over-sized notes file is rejected with a clear `InvalidData` error
+    /// and the `"file too large"` phrase, before any TOML parsing.
+    #[test]
+    fn test_parse_notes_rejects_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.toml");
+
+        // Build a > 10 MB file. Each entry is cheap to write; pad a single
+        // entry's `text` with enough bytes to cross the threshold without
+        // needing 10k individual entries (faster + avoids TOML parse cost
+        // at the filesystem-read stage).
+        //
+        // Text size = 11 MB of `x` characters.
+        let big_text: String = "x".repeat(11 * 1024 * 1024);
+        let content = format!("[[note]]\ntext = \"{}\"\n", big_text);
+        std::fs::write(&path, content).unwrap();
+
+        let result = parse_notes(&path);
+        match result {
+            Err(NoteError::Io(e)) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("file too large"),
+                    "error should mention size limit, got: {}",
+                    msg
+                );
+            }
+            other => panic!(
+                "expected Io(InvalidData)/'file too large', got: {:?}",
+                other.map(|v| v.len())
+            ),
+        }
+    }
+
+    /// Files with > `MAX_NOTES` entries are truncated silently; the parse
+    /// succeeds and returns exactly `MAX_NOTES` notes. This is by design —
+    /// the memory-exhaustion protection sits at the post-parse step so the
+    /// TOML itself can be arbitrarily shaped.
+    #[test]
+    fn test_parse_notes_str_truncates_at_max_notes() {
+        // 10_500 notes is above the 10_000 cap but small enough that TOML
+        // parsing stays fast. Each entry text is unique so blake3 IDs differ.
+        let mut content = String::with_capacity(10_500 * 40);
+        for i in 0..10_500 {
+            content.push_str(&format!("[[note]]\ntext = \"note {}\"\n", i));
+        }
+
+        let notes = parse_notes_str(&content).expect("truncation must not error");
+        assert_eq!(
+            notes.len(),
+            10_000,
+            "parse_notes_str must truncate at MAX_NOTES=10_000, got {}",
+            notes.len()
+        );
+        // First note preserved (the `take(MAX_NOTES)` keeps the prefix).
+        assert_eq!(notes[0].text, "note 0");
+        // Last note kept is the 10_000th (index 9999).
+        assert_eq!(notes[9_999].text, "note 9999");
+    }
+
+    /// Exactly `MAX_NOTES` entries is the boundary case — no truncation,
+    /// all notes preserved.
+    #[test]
+    fn test_parse_notes_str_exactly_max_notes() {
+        let mut content = String::with_capacity(10_000 * 40);
+        for i in 0..10_000 {
+            content.push_str(&format!("[[note]]\ntext = \"n{}\"\n", i));
+        }
+
+        let notes = parse_notes_str(&content).unwrap();
+        assert_eq!(notes.len(), 10_000, "at boundary, no truncation applied");
+    }
+
     // ===== Fuzz tests =====
 
     mod fuzz {
