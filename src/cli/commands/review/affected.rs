@@ -180,6 +180,7 @@ mod tests {
                 caller_count: 0,
                 test_count: 0,
                 truncated: false,
+                truncated_functions: 0,
             },
         };
         assert_eq!(overall_risk_label(&empty_result), "low");
