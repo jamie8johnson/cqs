@@ -9,7 +9,8 @@ use crate::store::helpers::{SearchFilter, SearchResult};
 
 use super::config::ScoringConfig;
 use super::name_match::NameMatcher;
-use super::note_boost::NoteBoostIndex;
+#[cfg(test)]
+use super::note_boost::{NoteBoost, NoteBoostIndex};
 
 /// Compute search-time importance multiplier for a chunk.
 ///
@@ -241,7 +242,10 @@ pub(crate) struct ScoringContext<'a> {
     pub filter: &'a SearchFilter,
     pub name_matcher: Option<&'a NameMatcher>,
     pub glob_matcher: Option<&'a globset::GlobMatcher>,
-    pub note_index: &'a NoteBoostIndex<'a>,
+    /// PF-V1.25-4: accepts either a freshly-built `NoteBoostIndex` borrowing
+    /// from per-call notes, or a cached `Arc<OwnedNoteBoostIndex>` reused
+    /// across searches. The `NoteBoost` enum dispatches at the call site.
+    pub note_index: &'a super::note_boost::NoteBoost<'a>,
     pub threshold: f32,
 }
 
@@ -579,7 +583,7 @@ mod tests {
         let emb = test_embedding(1.0);
         let query = test_embedding(1.0);
         let filter = SearchFilter::default();
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &query,
             filter: &filter,
@@ -603,7 +607,7 @@ mod tests {
         let emb = test_embedding(1.0);
         let query = test_embedding(-1.0);
         let filter = SearchFilter::default();
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &query,
             filter: &filter,
@@ -625,7 +629,7 @@ mod tests {
         let emb = test_embedding(1.0);
         let query = test_embedding(1.0);
         let filter = SearchFilter::default();
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let glob = globset::Glob::new("src/**/*.rs").unwrap().compile_matcher();
 
         let ctx = ScoringContext {
@@ -653,7 +657,7 @@ mod tests {
             query_text: "parseConfig".to_string(),
             ..Default::default()
         };
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let matcher = NameMatcher::new("parseConfig");
 
         let ctx_no = ScoringContext {
@@ -684,7 +688,7 @@ mod tests {
     fn test_score_candidate_demotion() {
         let emb = test_embedding(1.0);
         let query = test_embedding(1.0);
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
 
         let filter_no_demote = SearchFilter {
             enable_demotion: false,
@@ -733,8 +737,8 @@ mod tests {
         let filter = SearchFilter::default();
 
         let notes = vec![make_note(1.0, &["lib.rs"])];
-        let note_index_boosted = NoteBoostIndex::new(&notes);
-        let note_index_empty = NoteBoostIndex::new(&[]);
+        let note_index_boosted = NoteBoost::Borrowed(NoteBoostIndex::new(&notes));
+        let note_index_empty = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
 
         let ctx_boosted = ScoringContext {
             query: &query,
@@ -840,7 +844,7 @@ mod tests {
         nan_emb[0] = 0.5;
         nan_emb[1] = 0.3;
         let filter = SearchFilter::default();
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &query,
             filter: &filter,
@@ -864,7 +868,7 @@ mod tests {
         let nan_query = vec![f32::NAN; crate::EMBEDDING_DIM];
         let normal_emb = test_embedding(1.0);
         let filter = SearchFilter::default();
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &nan_query,
             filter: &filter,
@@ -888,7 +892,7 @@ mod tests {
         let nan_query = vec![f32::NAN; crate::EMBEDDING_DIM];
         let nan_emb = vec![f32::NAN; crate::EMBEDDING_DIM];
         let filter = SearchFilter::default();
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &nan_query,
             filter: &filter,
@@ -915,7 +919,7 @@ mod tests {
             ..Default::default()
         };
         let notes: Vec<NoteSummary> = vec![];
-        let note_index = NoteBoostIndex::new(&notes);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&notes));
         let ctx = ScoringContext {
             query: &zero_query,
             filter: &filter,
@@ -939,7 +943,7 @@ mod tests {
     fn apply_scoring_pipeline_preserves_fused_score() {
         let filter = SearchFilter::default();
         let query = test_embedding(1.0);
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &query,
             filter: &filter,
@@ -960,7 +964,7 @@ mod tests {
         filter.name_boost = 0.3;
         filter.query_text = "my_fn".to_string();
         let query = test_embedding(1.0);
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let matcher = NameMatcher::new("my_fn");
         let ctx = ScoringContext {
             query: &query,
@@ -984,7 +988,7 @@ mod tests {
         let mut filter = SearchFilter::default();
         filter.enable_demotion = true;
         let query = test_embedding(1.0);
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &query,
             filter: &filter,
@@ -1007,7 +1011,7 @@ mod tests {
     fn apply_scoring_pipeline_respects_threshold() {
         let filter = SearchFilter::default();
         let query = test_embedding(1.0);
-        let note_index = NoteBoostIndex::new(&[]);
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
             query: &query,
             filter: &filter,

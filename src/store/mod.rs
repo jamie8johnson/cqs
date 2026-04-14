@@ -227,6 +227,10 @@ pub struct Store {
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
     notes_summaries_cache: RwLock<Option<Arc<Vec<NoteSummary>>>>,
+    /// PF-V1.25-4: cached `OwnedNoteBoostIndex` derived from `notes_summaries_cache`.
+    /// Built lazily on first `cached_note_boost_index()` call, invalidated
+    /// alongside the notes cache in `invalidate_notes_cache`.
+    note_boost_cache: RwLock<Option<Arc<crate::search::scoring::OwnedNoteBoostIndex>>>,
     /// Cached call graph — populated on first access, valid until `clear_caches()`.
     /// `OnceLock` is write-once within a cache epoch. `clear_caches(&mut self)` swaps
     /// in a fresh OnceLock, which is safe because `&mut self` guarantees exclusive access.
@@ -529,6 +533,7 @@ impl Store {
             dim,
             closed: AtomicBool::new(false),
             notes_summaries_cache: RwLock::new(None),
+            note_boost_cache: RwLock::new(None),
             call_graph_cache: std::sync::OnceLock::new(),
             test_chunks_cache: std::sync::OnceLock::new(),
             chunk_type_map_cache: std::sync::OnceLock::new(),
@@ -583,6 +588,12 @@ impl Store {
         let _span = tracing::debug_span!("store_clear_caches").entered();
         *self
             .notes_summaries_cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        // PF-V1.25-4: note_boost_cache is derived from notes_summaries_cache;
+        // clear alongside it so a reset doesn't leave stale boost data.
+        *self
+            .note_boost_cache
             .write()
             .unwrap_or_else(|e| e.into_inner()) = None;
         self.call_graph_cache = std::sync::OnceLock::new();

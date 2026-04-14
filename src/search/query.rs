@@ -21,7 +21,7 @@ use crate::store::{NoteSummary, Store, StoreError};
 
 use super::scoring::{
     apply_parent_boost, apply_scoring_pipeline, build_filter_sql, compile_glob_filter,
-    extract_file_from_chunk_id, score_candidate, BoundedScoreHeap, NameMatcher, NoteBoostIndex,
+    extract_file_from_chunk_id, score_candidate, BoundedScoreHeap, NameMatcher, NoteBoost,
     ScoringContext,
 };
 use super::synonyms::expand_query_for_fts;
@@ -166,8 +166,17 @@ impl Store {
                 None
             };
 
-            // Pre-compute note boost lookup for O(1) name matching in scoring loop
-            let note_index = NoteBoostIndex::new(notes);
+            // PF-V1.25-4: use the cached `OwnedNoteBoostIndex` instead of
+            // rebuilding from `&[NoteSummary]` on every search. Falls back
+            // to a fresh borrowed build if the cache fetch fails (which is
+            // transient and can happen if the notes query errors).
+            let note_boost = match self.cached_note_boost_index() {
+                Ok(arc) => NoteBoost::Owned(arc),
+                Err(e) => {
+                    tracing::warn!(error = %e, "note boost cache unavailable, rebuilding per-call");
+                    NoteBoost::Borrowed(super::scoring::NoteBoostIndex::new(notes))
+                }
+            };
 
             // Build loop-invariant scoring context once
             let scoring_ctx = ScoringContext {
@@ -175,7 +184,7 @@ impl Store {
                 filter,
                 name_matcher: name_matcher.as_ref(),
                 glob_matcher: glob_matcher.as_ref(),
-                note_index: &note_index,
+                note_index: &note_boost,
                 threshold,
             };
 
@@ -735,8 +744,16 @@ impl Store {
                 None
             };
 
-            // Pre-compute note boost lookup for O(1) name matching in scoring loop
-            let note_index = NoteBoostIndex::new(notes);
+            // PF-V1.25-4: prefer the cached `OwnedNoteBoostIndex` shared
+            // across searches instead of rebuilding per-call. Fallback to
+            // a fresh borrowed build on cache fetch failure.
+            let note_boost = match self.cached_note_boost_index() {
+                Ok(arc) => NoteBoost::Owned(arc),
+                Err(e) => {
+                    tracing::warn!(error = %e, "note boost cache unavailable, rebuilding per-call");
+                    NoteBoost::Borrowed(super::scoring::NoteBoostIndex::new(notes))
+                }
+            };
 
             // Build loop-invariant scoring context once
             let scoring_ctx = ScoringContext {
@@ -744,7 +761,7 @@ impl Store {
                 filter,
                 name_matcher: name_matcher.as_ref(),
                 glob_matcher: glob_matcher.as_ref(),
-                note_index: &note_index,
+                note_index: &note_boost,
                 threshold,
             };
 
