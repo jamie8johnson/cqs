@@ -518,7 +518,10 @@ pub fn cmd_watch(
                     match stream {
                         Ok(s) => handle_socket_client(s, &ctx),
                         Err(e) => {
-                            tracing::debug!(error = %e, "Socket accept error");
+                            // Warn, not debug: EMFILE/ENFILE/ECONNABORTED are
+                            // operator-actionable (raise ulimit, etc.) and
+                            // should be visible at the default log level.
+                            tracing::warn!(error = %e, "Socket accept failed");
                         }
                     }
                 }
