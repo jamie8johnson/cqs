@@ -67,6 +67,10 @@ pub(crate) fn cmd_related(
     let _span = tracing::info_span!("cmd_related", name).entered();
     let store = &ctx.store;
     let root = &ctx.root;
+    // CQ-V1.25-2: clamp via shared constant. Previously unbounded on CLI
+    // vs 100 on batch; `find_related` runs a triple overlap query that
+    // doesn't scale well to thousands of entries per category.
+    let limit = limit.clamp(1, crate::cli::RELATED_LIMIT_MAX);
 
     let result = cqs::find_related(store, name, limit)?;
 

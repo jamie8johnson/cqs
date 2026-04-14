@@ -191,7 +191,8 @@ pub(in crate::cli::batch) fn dispatch_scout(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_scout", query).entered();
     let embedder = ctx.embedder()?;
-    let limit = limit.clamp(1, 50);
+    // CQ-V1.25-2: shared with CLI's cmd_scout.
+    let limit = limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
     let result = cqs::scout(&ctx.store(), embedder, query, &ctx.root, limit)?;
 
     let Some(budget) = tokens else {

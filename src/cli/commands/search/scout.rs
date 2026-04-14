@@ -152,7 +152,9 @@ pub(crate) fn cmd_scout(
     let store = &ctx.store;
     let root = &ctx.root;
     let embedder = ctx.embedder()?;
-    let limit = limit.clamp(1, 10);
+    // CQ-V1.25-2: clamp via shared constant so CLI and batch return the
+    // same number of groups. Previously capped at 10 here vs 50 in batch.
+    let limit = limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
 
     let result = scout(store, embedder, task, root, limit)?;
 

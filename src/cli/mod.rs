@@ -10,6 +10,7 @@ mod dispatch;
 mod display;
 mod enrichment;
 mod files;
+mod limits;
 mod pipeline;
 mod signal;
 pub(crate) mod staleness;
@@ -25,6 +26,10 @@ pub use definitions::{Cli, OutputFormat};
 
 // Re-export dispatch entry point
 pub use dispatch::run_with;
+
+// Shared clamp ceilings for commands that are dispatched from both
+// CLI and batch paths. CQ-V1.25-2.
+pub(crate) use limits::{RELATED_LIMIT_MAX, SCOUT_LIMIT_MAX, SIMILAR_LIMIT_MAX};
 
 // Re-export for watch.rs and commands
 pub(crate) use config::find_project_root;
