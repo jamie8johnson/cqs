@@ -19,8 +19,8 @@ use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
@@ -72,6 +72,13 @@ extern "C" fn on_sigterm(_sig: libc::c_int) {
     SHUTDOWN_REQUESTED.store(true, Ordering::Release);
 }
 
+/// SEC-V1.25-1: cap concurrent daemon client threads so a misbehaving
+/// (or malicious) local client can't spawn unbounded handlers and exhaust
+/// fds, threads, or stacks. 64 is comfortably above typical agent traffic
+/// and still bounded — at 2 MB stack each this is ~128 MB worst case.
+#[cfg(unix)]
+const MAX_CONCURRENT_DAEMON_CLIENTS: usize = 64;
+
 /// Install a SIGTERM handler so `systemctl stop cqs-watch` triggers a
 /// clean drain via `SHUTDOWN_REQUESTED` rather than a hard kill. The
 /// existing ctrlc-based SIGINT handler already flips `check_interrupted`;
@@ -95,9 +102,15 @@ fn install_sigterm_handler() {
 /// Handle a single client connection on the daemon socket.
 #[cfg(unix)]
 /// Reads one JSON-line request, dispatches via the shared BatchContext, writes response.
+///
+/// SEC-V1.25-1: `batch_ctx` is a shared `Mutex<BatchContext>`; reads and
+/// writes happen without the lock so concurrent clients can parse their
+/// requests in parallel. Only the dispatch itself acquires the mutex, so a
+/// slow/malicious client's 5 s read window no longer wedges the accept loop
+/// or sibling handlers.
 fn handle_socket_client(
     mut stream: std::os::unix::net::UnixStream,
-    batch_ctx: &super::batch::BatchContext,
+    batch_ctx: &Mutex<super::batch::BatchContext>,
 ) {
     let span = tracing::info_span!("daemon_query", command = tracing::field::Empty);
     let _enter = span.enter();
@@ -234,7 +247,16 @@ fn handle_socket_client(
             format!("{} {}", command, shell_words::join(&args))
         };
         let mut output = Vec::new();
-        batch_ctx.dispatch_line(&full_line, &mut output);
+        // SEC-V1.25-1: hold the BatchContext lock only across dispatch.
+        // Poisoned mutex → recover the inner ctx (dispatch_line itself
+        // catches panics via catch_unwind above, but some unrelated
+        // panic path could still leave the lock poisoned).
+        {
+            let ctx = batch_ctx
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            ctx.dispatch_line(&full_line, &mut output);
+        }
         String::from_utf8(output).map_err(|e| format!("non-UTF-8 output: {e}"))
     }));
 
@@ -687,7 +709,17 @@ pub fn cmd_watch(
                         return;
                     }
                 };
-                tracing::info!("Daemon query thread ready");
+                // SEC-V1.25-1: wrap the BatchContext in Arc<Mutex> so each
+                // accepted connection gets its own handler thread. Without
+                // this, a single malicious client sitting on the 5 s read
+                // timeout (or a slow legitimate client) could wedge the
+                // accept loop for `5 * N` seconds and DoS the daemon.
+                let ctx = Arc::new(Mutex::new(ctx));
+                let in_flight = Arc::new(AtomicUsize::new(0));
+                tracing::info!(
+                    max_concurrent = MAX_CONCURRENT_DAEMON_CLIENTS,
+                    "Daemon query thread ready"
+                );
                 // RM-V1.25-9: Poll accept with a short sleep so the loop
                 // can notice SIGTERM and drain cleanly instead of blocking
                 // indefinitely on a syscall that systemd has to kill.
@@ -698,7 +730,53 @@ pub fn cmd_watch(
                         break;
                     }
                     match listener.accept() {
-                        Ok((s, _addr)) => handle_socket_client(s, &ctx),
+                        Ok((stream, _addr)) => {
+                            // SEC-V1.25-1: back-pressure. If we're already at
+                            // `MAX_CONCURRENT_DAEMON_CLIENTS` in-flight
+                            // handlers, reject this connection quickly rather
+                            // than spawning an unbounded number of threads.
+                            // Daemon is local-only, but we still want a hard
+                            // cap so a misbehaving client can't exhaust fds
+                            // or thread stacks.
+                            let current = in_flight.load(Ordering::Acquire);
+                            if current >= MAX_CONCURRENT_DAEMON_CLIENTS {
+                                let mut s = stream;
+                                let _ = write_daemon_error(
+                                    &mut s,
+                                    "daemon busy (too many concurrent clients)",
+                                );
+                                tracing::warn!(
+                                    in_flight = current,
+                                    cap = MAX_CONCURRENT_DAEMON_CLIENTS,
+                                    "Rejecting new daemon connection — at concurrency cap"
+                                );
+                                continue;
+                            }
+                            in_flight.fetch_add(1, Ordering::AcqRel);
+                            let ctx_clone = Arc::clone(&ctx);
+                            let in_flight_clone = Arc::clone(&in_flight);
+                            // Spawn a fresh thread per accepted connection so
+                            // read/parse/write I/O happens in parallel. Only
+                            // the dispatch itself is serialized via the
+                            // BatchContext mutex inside handle_socket_client.
+                            if let Err(e) = std::thread::Builder::new()
+                                .name("cqs-daemon-client".to_string())
+                                .spawn(move || {
+                                    handle_socket_client(stream, &ctx_clone);
+                                    in_flight_clone.fetch_sub(1, Ordering::AcqRel);
+                                })
+                            {
+                                // Couldn't spawn a thread — decrement the
+                                // counter we just bumped and log. The
+                                // connection is dropped when `stream` falls
+                                // out of scope at the end of the match arm.
+                                in_flight.fetch_sub(1, Ordering::AcqRel);
+                                tracing::warn!(
+                                    error = %e,
+                                    "Failed to spawn daemon client thread — dropping connection"
+                                );
+                            }
+                        }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(100));
                         }
