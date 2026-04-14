@@ -114,12 +114,14 @@ pub(in crate::cli::batch) fn dispatch_search(
         None => None,
     };
 
+    // Classify query for per-category routing (SPLADE alpha + base/enriched index).
+    let classification = cqs::search::router::classify_query(&params.query);
+
     // Per-category SPLADE routing: if --splade flag is set, use it directly.
-    // Otherwise, classify the query and resolve per-category alpha.
+    // Otherwise, resolve per-category alpha from classification.
     let (use_splade, splade_alpha) = if params.splade {
         (true, params.splade_alpha)
     } else {
-        let classification = cqs::search::router::classify_query(&params.query);
         let alpha = cqs::search::router::resolve_splade_alpha(&classification.category);
         if alpha < 1.0 {
             tracing::info!(
@@ -132,6 +134,14 @@ pub(in crate::cli::batch) fn dispatch_search(
             (false, 1.0)
         }
     };
+
+    // Phase 5: base/enriched index routing. DenseBase queries use the
+    // non-enriched HNSW (no LLM summaries). CQS_FORCE_BASE_INDEX=1
+    // overrides all queries to base for A/B eval.
+    let use_base = matches!(
+        classification.strategy,
+        cqs::search::router::SearchStrategy::DenseBase
+    ) || std::env::var("CQS_FORCE_BASE_INDEX").as_deref() == Ok("1");
 
     let filter = cqs::SearchFilter {
         languages,
@@ -218,7 +228,26 @@ pub(in crate::cli::batch) fn dispatch_search(
 
     // Check audit mode (cached per session)
     let audit_mode = ctx.audit_state();
-    let index = ctx.vector_index()?;
+
+    // Phase 5: select enriched or base HNSW based on router classification.
+    // If base is requested but unavailable, fall back to enriched.
+    let index = if use_base {
+        match ctx.base_vector_index()? {
+            Some(base_idx) => {
+                tracing::info!(
+                    category = %classification.category,
+                    "Router selected base HNSW for non-enriched query (batch)"
+                );
+                Some(base_idx)
+            }
+            None => {
+                tracing::info!("Base HNSW unavailable — falling back to enriched index (batch)");
+                ctx.vector_index()?
+            }
+        }
+    } else {
+        ctx.vector_index()?
+    };
     let index = index.as_deref();
 
     let results = if audit_mode.is_active() || splade_arg.is_some() {

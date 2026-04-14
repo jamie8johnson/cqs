@@ -38,3 +38,4 @@ tools/
 
 # ORT CUDA provider symlinks (created at runtime by ensure_ort_provider_libs)
 libonnxruntime_providers_*.so
+cuvs-fork-push

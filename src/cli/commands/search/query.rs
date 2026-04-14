@@ -301,7 +301,7 @@ fn cmd_query_project(ctx: &QueryContext<'_>) -> Result<()> {
     let use_base = matches!(
         ctx.routed_strategy,
         Some(cqs::search::router::SearchStrategy::DenseBase)
-    );
+    ) || std::env::var("CQS_FORCE_BASE_INDEX").as_deref() == Ok("1");
     let mut base_fallback = false;
     let index = if use_base {
         match crate::cli::build_base_vector_index(store, cqs_dir)? {

@@ -355,12 +355,15 @@ pub fn classify_query(query: &str) -> Classification {
     }
 
     // 4. Type-filtered — "all structs", "every enum", "test functions"
+    //    2026-04-13: route to base. Enrichment ablation at 78% summary coverage
+    //    showed +8.4pp R@1 on base vs enriched (41.7% vs 33.3%, N=24).
+    //    Summaries add generic vocabulary that dilutes the specific type signal.
     let type_hints = extract_type_hints(&query_lower);
     if type_hints.is_some() {
         return Classification {
             category: QueryCategory::TypeFiltered,
             confidence: Confidence::Medium,
-            strategy: SearchStrategy::DenseWithTypeHints,
+            strategy: SearchStrategy::DenseBase,
             type_hints,
         };
     }
@@ -427,11 +430,14 @@ pub fn classify_query(query: &str) -> Classification {
     }
 
     // 8. Multi-step — conjunctions
+    //    2026-04-13: route to base. Enrichment ablation at 78% summary coverage
+    //    showed +2.9pp R@1 on base vs enriched (23.5% vs 20.6%, N=34).
+    //    Summaries inject vocabulary that displaces the conjunction terms.
     if MULTISTEP_PATTERNS.iter().any(|p| query_lower.contains(p)) {
         return Classification {
             category: QueryCategory::MultiStep,
             confidence: Confidence::Low,
-            strategy: SearchStrategy::DenseDefault,
+            strategy: SearchStrategy::DenseBase,
             type_hints: None,
         };
     }
@@ -737,6 +743,8 @@ mod tests {
     fn test_classify_type_filtered() {
         let c = classify_query("all test functions");
         assert_eq!(c.category, QueryCategory::TypeFiltered);
+        // 2026-04-13: type_filtered routes to base — summaries dilute type signal (+8.4pp).
+        assert_eq!(c.strategy, SearchStrategy::DenseBase);
         assert!(c.type_hints.is_some());
         assert!(c.type_hints.unwrap().contains(&ChunkType::Test));
     }
@@ -760,6 +768,8 @@ mod tests {
         let c = classify_query("find errors and then retry them");
         assert_eq!(c.category, QueryCategory::MultiStep);
         assert_eq!(c.confidence, Confidence::Low);
+        // 2026-04-13: multi_step routes to base — summaries displace conjunction terms (+2.9pp).
+        assert_eq!(c.strategy, SearchStrategy::DenseBase);
     }
 
     #[test]

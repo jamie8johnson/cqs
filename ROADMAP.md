@@ -33,13 +33,16 @@
 - [x] ~~**Adaptive retrieval** Phases 1-4~~ — classifier + routing + telemetry shipped in v1.22.0
 - [x] ~~**Adaptive retrieval** Phase 5~~ — dual embeddings (base + enriched HNSW) shipped in PR #876 + #877 + #878
 - [x] ~~**SPLADE alpha sweep + ship defaults**~~ — 11-point sweep + single-category verification. Per-category optimal alphas shipped: identifier 0.9, structural 0.7, conceptual 0.9, type_filtered 0.9, behavioral 0.1, rest 1.0. Expected **+4.9pp R@1** (47.2% vs 42.3%). Cross-language excluded (N=21 noise). Plan: `docs/plans/2026-04-12-selective-splade-routing.md`
+- [x] ~~**Enrichment ablation + routing update**~~ — 2-arm eval at 78% summary coverage with SPLADE. Oracle routing = 43.8% R@1 (+1.9pp). Updated router: type_filtered/multi_step → DenseBase (previously enriched). Research: `~/training-data/research/enrichment.md`.
+- [x] ~~**CAGRA native bitset filtering**~~ — GPU-side type/language filtering during graph traversal, replacing 3x over-fetch + post-filter. +0.7pp R@1 (42.6% vs 41.9%) on enriched. Structural +3.7pp, negation +3.4pp, behavioral +2.2pp. Patched cuvs crate (upstream PR rapidsai/cuvs#2019). Cross-language −4.8pp regression to investigate.
+- [ ] **Query-time HyDE for structural queries** — old data shows HyDE helps structural +14pp, type_filtered +12pp but hurts conceptual −22pp, behavioral −15pp. Instead of a third index column (`embedding_hyde`), do it at query time: router classifies structural → LLM generates synthetic code snippet → embed that → search. No index change, ~500ms-1s latency per structural query. Per-category by design since router already classifies. Need fresh eval with SPLADE active (old data is pre-SPLADE, pre-AC-1).
 - [ ] **Config file support** — `[splade.alpha]` per-category overrides in `.cqs.toml`
 - [ ] **Phase 6: Explainable search** — depends on SPLADE-Code being the production default. Spec: `docs/plans/adaptive-retrieval.md`
-- [ ] **OpenRCT2 → Rust dual-trail experiment** — substrate for measuring whether structural code intelligence augmentation improves agent-directed translation in a sustained, real-world task. Two parallel translations on the same upstream commit, one with cqs in the loop, one without. Pre-registered metrics (regression bugs, tokens, wall clock). Publishable after three modules in both trails. Spec: `docs/plans/2026-04-10-openrct2-rust-port-dual-trail.md`
+- ~~**OpenRCT2 → Rust dual-trail experiment**~~ — parked. Spec: `docs/plans/2026-04-10-openrct2-rust-port-dual-trail.md`
 - [ ] **Paper v1.0** — clean rewrite done, needs review/polish + adaptive retrieval results
 - [x] ~~**Cross-project: wire remaining commands**~~ — impact, trace, test-map wired in #864. Deps local-only.
 - [x] ~~**Agent adoption: telemetry analysis**~~ — mined 16,731 invocations across all sessions. Finding: main conversation uses search (60%) + context (28%). Subagents use the full toolkit (impact, callers, test-map). The gap is in the main conversation, not subagents.
-- [ ] **Agent adoption: pre-edit impact hook** — PreToolUse hook that runs `cqs impact` on every Edit, injects caller/test/risk as additionalContext. Prototype in `.claude/hooks/pre-edit-impact.sh`. Needs session restart to test.
+- [x] ~~**Agent adoption: pre-edit impact hook**~~ — PreToolUse hook on Edit, runs `cqs impact`, injects caller/test/risk as additionalContext. Implemented in `.claude/hooks/pre-edit-impact.py`, wired in `settings.json`.
 - [ ] **Agent adoption: slim CLAUDE.md** — reduce 30-command reference to top 5 (search, context, read, impact, review) + "see `cqs --help`". Measure with telemetry before/after.
 - [ ] **Agent adoption: composite search results** — `cqs search` returns mini-impact (caller count, test count) alongside each result. One call instead of search + impact.
 - [ ] **Move language** — blocked: no tree-sitter grammar on crates.io
@@ -49,8 +52,12 @@
 - [x] ~~**Shared runtime support**~~ — `Store::open_readonly_pooled_with_runtime()` + `EmbeddingCache::open_with_runtime()` (#929). Optional runtime injection, backward compatible.
 - [x] ~~**AC-1 fusion rewrite**~~ — `apply_scoring_pipeline()` preserves fused scores through scoring (#910). Alpha knob now functional.
 - [x] ~~**Audit mega-batch**~~ — 28 findings + 10 tests + 13 issues (#911). All P1s addressed (88 total).
-- [ ] **SPLADE re-eval** — AC-1 fix means prior eval measured candidate-set expansion, not fusion. Need fresh numbers with alpha functional.
+- [x] ~~**SPLADE re-eval**~~ — done via 11-point alpha sweep (PR #932). AC-1 fusion fix confirmed working: α=0.9 is +1.1pp R@1 globally, per-category optimal alphas shipped in `resolve_splade_alpha()`.
 - [ ] **Daemon: full CLI parity** — batch parser subset differs from CLI (missing some flags). Need either unified parser or more comprehensive arg translation.
+- [ ] **Daemon: incremental SPLADE in watch mode** — watch currently skips SPLADE encoding for new/changed chunks. Needs: (1) keep SPLADE ONNX model loaded in daemon, (2) encode only new chunks, (3) incremental insert into in-memory `SpladeIndex` (current impl rebuilds from scratch ~18s for 68k chunks). Without this, `cqs index` is still required after edits for full SPLADE coverage.
+- [x] ~~**cuVS bump: cuvs 26.2→26.4**~~ — PR #935 merged. conda libcuvs=26.04, CUDA 13 JIT support, non-consuming search, CAGRA persistence fix (rapidsai/cuvs#1800). Fixed daemon CAGRA segfault.
+  - [ ] **Simplify cagra.rs** — 26.4 non-consuming `search(&self)` makes `IndexRebuilder` / `Mutex<Option<Index>>` dead code. Remove rebuild machinery.
+- [x] ~~**cuVS filtered CAGRA search**~~ — GPU-native bitset filtering shipped. Local patched cuvs 26.4 via `[patch.crates-io]`. Upstream PR rapidsai/cuvs#2019 pending review. When merged, switch back to crates.io version. PCA preprocessor and float16 are C++/Python only.
 
 ### Agent Adoption — Telemetry Data (2026-04-09)
 

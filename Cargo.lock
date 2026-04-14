@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "cqs"
-version = "1.23.0"
+version = "1.24.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -914,8 +914,7 @@ dependencies = [
 [[package]]
 name = "cuvs"
 version = "26.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abc05a465fc106bc0782fb975009ff38f50faedca6adf4dfecea08932be2f3fc"
+source = "git+https://github.com/jamie8johnson/cuvs-patched.git?branch=main#a7d39b5a3778a7b3577a46da95656c3b5a34a1e8"
 dependencies = [
  "cuvs-sys",
  "ndarray 0.15.6",

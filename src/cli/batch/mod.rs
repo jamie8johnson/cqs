@@ -78,6 +78,7 @@ pub(crate) struct BatchContext {
     audit_state: OnceLock<cqs::audit::AuditMode>,
     // Mutable caches — RefCell<Option<T>> for invalidation on index change
     hnsw: RefCell<Option<std::sync::Arc<dyn VectorIndex>>>,
+    base_hnsw: RefCell<Option<std::sync::Arc<dyn VectorIndex>>>,
     call_graph: RefCell<Option<std::sync::Arc<cqs::store::CallGraph>>>,
     test_chunks: RefCell<Option<std::sync::Arc<Vec<cqs::store::ChunkSummary>>>>,
     file_set: RefCell<Option<HashSet<PathBuf>>>,
@@ -196,6 +197,7 @@ impl BatchContext {
     /// the freshly persisted `splade.index.bin` (or SQLite fallback).
     fn invalidate_mutable_caches(&self) {
         *self.hnsw.borrow_mut() = None;
+        *self.base_hnsw.borrow_mut() = None;
         *self.call_graph.borrow_mut() = None;
         *self.test_chunks.borrow_mut() = None;
         *self.file_set.borrow_mut() = None;
@@ -409,6 +411,25 @@ impl BatchContext {
         let result = idx.map(|boxed| -> std::sync::Arc<dyn VectorIndex> { boxed.into() });
         let ret = result.clone();
         *self.hnsw.borrow_mut() = result;
+        Ok(ret)
+    }
+
+    /// Get or build the base (non-enriched) vector index, cached.
+    /// Returns `None` if the base index files don't exist or `CQS_DISABLE_BASE_INDEX=1`.
+    pub fn base_vector_index(&self) -> Result<Option<std::sync::Arc<dyn VectorIndex>>> {
+        self.check_index_staleness();
+        {
+            let cached = self.base_hnsw.borrow();
+            if let Some(arc) = cached.as_ref() {
+                return Ok(Some(std::sync::Arc::clone(arc)));
+            }
+        }
+        let _span = tracing::info_span!("batch_base_vector_index_init").entered();
+        let store = self.store.borrow();
+        let idx = crate::cli::build_base_vector_index(&store, &self.cqs_dir)?;
+        let result = idx.map(|boxed| -> std::sync::Arc<dyn VectorIndex> { boxed.into() });
+        let ret = result.clone();
+        *self.base_hnsw.borrow_mut() = result;
         Ok(ret)
     }
 
@@ -656,6 +677,7 @@ pub(crate) fn create_context() -> Result<BatchContext> {
         reranker: OnceLock::new(),
         audit_state: OnceLock::new(),
         hnsw: RefCell::new(None),
+        base_hnsw: RefCell::new(None),
         call_graph: RefCell::new(None),
         test_chunks: RefCell::new(None),
         file_set: RefCell::new(None),
@@ -690,6 +712,7 @@ fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
         reranker: OnceLock::new(),
         audit_state: OnceLock::new(),
         hnsw: RefCell::new(None),
+        base_hnsw: RefCell::new(None),
         call_graph: RefCell::new(None),
         test_chunks: RefCell::new(None),
         file_set: RefCell::new(None),

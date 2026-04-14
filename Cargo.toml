@@ -1,6 +1,6 @@
 [package]
 name = "cqs"
-version = "1.23.0"
+version = "1.24.0"
 edition = "2021"
 rust-version = "1.93"
 description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 54 languages + L5X/L5K PLC exports, 91.2% Recall@1 (BGE-large), 0.951 MRR (296 queries). Local ML, GPU-accelerated."
@@ -99,7 +99,7 @@ keyring = { version = "3", optional = true }
 # Vector search (HNSW default, cuVS optional)
 hnsw_rs = "0.3"
 simsimd = "6"
-cuvs = { version = "=26.4", optional = true }  # pinned — 26.4 requires CUDA <13, we run CUDA 13.1
+cuvs = { version = "=26.4", optional = true }  # pinned — strict version coupling with conda libcuvs
 
 # Text processing
 regex = "1"
@@ -230,6 +230,9 @@ proptest = "1"
 assert_cmd = "2"
 predicates = "3"
 serial_test = "3"
+
+[patch.crates-io]
+cuvs = { git = "https://github.com/jamie8johnson/cuvs-patched.git", branch = "main" }  # adds search_with_filter (upstream PR rapidsai/cuvs#2019)
 
 [profile.release]
 lto = "thin"
