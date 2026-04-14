@@ -903,12 +903,24 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                         state.hnsw_index = None;
                         for ext in cqs::hnsw::HNSW_ALL_EXTENSIONS {
                             let path = cfg.cqs_dir.join(format!("index.{}", ext));
-                            if path.exists() {
-                                let _ = std::fs::remove_file(&path);
+                            if let Err(e) = std::fs::remove_file(&path) {
+                                if e.kind() != std::io::ErrorKind::NotFound {
+                                    tracing::warn!(
+                                        error = %e,
+                                        path = %path.display(),
+                                        "Failed to delete stale HNSW file"
+                                    );
+                                }
                             }
                             let base_path = cfg.cqs_dir.join(format!("index_base.{}", ext));
-                            if base_path.exists() {
-                                let _ = std::fs::remove_file(&base_path);
+                            if let Err(e) = std::fs::remove_file(&base_path) {
+                                if e.kind() != std::io::ErrorKind::NotFound {
+                                    tracing::warn!(
+                                        error = %e,
+                                        path = %base_path.display(),
+                                        "Failed to delete stale base HNSW file"
+                                    );
+                                }
                             }
                         }
                     }
