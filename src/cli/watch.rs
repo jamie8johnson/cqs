@@ -75,7 +75,13 @@ fn handle_socket_client(
     match std::io::BufRead::read_line(&mut reader, &mut line) {
         Ok(0) => return,
         Ok(n) if n > 1_048_576 => {
-            let _ = write_daemon_error(&mut stream, "request too large");
+            let delivered = write_daemon_error_tracked(&mut stream, "request too large");
+            tracing::info!(
+                status = "client_error",
+                delivered,
+                latency_ms = start.elapsed().as_millis() as u64,
+                "Daemon query complete"
+            );
             return;
         }
         Err(e) => {
@@ -88,9 +94,10 @@ fn handle_socket_client(
     let request: serde_json::Value = match serde_json::from_str(line.trim()) {
         Ok(v) => v,
         Err(e) => {
-            let _ = write_daemon_error(&mut stream, &format!("invalid JSON: {e}"));
+            let delivered = write_daemon_error_tracked(&mut stream, &format!("invalid JSON: {e}"));
             tracing::info!(
                 status = "parse_error",
+                delivered,
                 latency_ms = start.elapsed().as_millis() as u64,
                 "Daemon query complete"
             );
@@ -119,9 +126,10 @@ fn handle_socket_client(
     tracing::debug!(command, args = ?args, "Daemon request");
 
     if command.is_empty() {
-        let _ = write_daemon_error(&mut stream, "missing 'command' field");
+        let delivered = write_daemon_error_tracked(&mut stream, "missing 'command' field");
         tracing::info!(
             status = "client_error",
+            delivered,
             latency_ms = start.elapsed().as_millis() as u64,
             "Daemon query complete"
         );
@@ -139,18 +147,24 @@ fn handle_socket_client(
         String::from_utf8(output).map_err(|e| format!("non-UTF-8 output: {e}"))
     }));
 
-    let status = match result {
+    let (status, delivered) = match result {
         Ok(Ok(output)) => {
             let resp = serde_json::json!({
                 "status": "ok",
                 "output": output.trim_end(),
             });
-            let _ = writeln!(stream, "{}", resp);
-            "ok"
+            let delivered = match writeln!(stream, "{}", resp) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::debug!(error = %e, "Failed to write daemon response");
+                    false
+                }
+            };
+            ("ok", delivered)
         }
         Ok(Err(e)) => {
-            let _ = write_daemon_error(&mut stream, &e);
-            "client_error"
+            let delivered = write_daemon_error_tracked(&mut stream, &e);
+            ("client_error", delivered)
         }
         Err(payload) => {
             let msg = payload
@@ -158,17 +172,19 @@ fn handle_socket_client(
                 .map(String::as_str)
                 .or_else(|| payload.downcast_ref::<&'static str>().copied())
                 .unwrap_or("<non-string panic payload>");
-            let _ = write_daemon_error(&mut stream, "internal error (panic in dispatch)");
+            let delivered =
+                write_daemon_error_tracked(&mut stream, "internal error (panic in dispatch)");
             tracing::error!(
                 panic_msg = %msg,
                 "Daemon query panicked — daemon continues"
             );
-            "panic"
+            ("panic", delivered)
         }
     };
 
     tracing::info!(
         status,
+        delivered,
         latency_ms = start.elapsed().as_millis() as u64,
         "Daemon query complete"
     );
@@ -182,6 +198,21 @@ fn write_daemon_error(
     use std::io::Write;
     let resp = serde_json::json!({ "status": "error", "message": message });
     writeln!(stream, "{}", resp)
+}
+
+/// Like `write_daemon_error`, but logs on failure and returns whether
+/// the write reached the client. Used by `handle_socket_client` to
+/// populate the `delivered` telemetry field instead of silently
+/// swallowing write errors with `let _ = ...`.
+#[cfg(unix)]
+fn write_daemon_error_tracked(stream: &mut std::os::unix::net::UnixStream, message: &str) -> bool {
+    match write_daemon_error(stream, message) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::debug!(error = %e, "Failed to write daemon error response");
+            false
+        }
+    }
 }
 
 /// Opaque identity of a database file for detecting replacements (DS-W5).
