@@ -18,7 +18,7 @@ pub(crate) use pipeline::{execute_pipeline, has_pipe_token};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime};
@@ -33,6 +33,71 @@ use cqs::store::Store;
 use cqs::Embedder;
 
 use super::open_project_store_readonly;
+
+/// Opaque identity of `index.db` used to detect that it has been replaced
+/// or rewritten between two observations.
+///
+/// Combines inode (unix), size, and mtime. This catches:
+///
+/// - **Replacement via rename** (e.g. `cqs index --force` writes a fresh
+///   `index.db.tmp` then renames it over `index.db`): the new inode
+///   differs, so the identity changes even if size/mtime happened to
+///   match.
+/// - **In-place size change**: size differs.
+/// - **Overwrite that kept the size**: mtime differs (modulo the
+///   filesystem's mtime resolution).
+///
+/// ## Why not mtime alone?
+///
+/// DS-V1.25-6: WSL DrvFS / NTFS report mtime at 1-second resolution.
+/// A tight `cqs index --force` followed by a daemon query burst could
+/// share the same mtime bucket, causing `BatchContext` to keep serving
+/// results from the orphaned inode. Mixing in inode and size closes
+/// that sub-second race: the rename-over gives a new inode immediately,
+/// regardless of whether the mtime ticked.
+///
+/// On non-unix platforms the inode fields are omitted and the struct
+/// falls back to `(size, mtime)`; replacement on Windows still changes
+/// the mtime and/or the size, so this is weaker than unix but strictly
+/// better than mtime alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DbFileIdentity {
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    inode: u64,
+    size: u64,
+    mtime: Option<SystemTime>,
+}
+
+impl DbFileIdentity {
+    /// Read the identity fields for `path`, returning `None` if the
+    /// metadata stat fails (path missing, permission denied, etc.).
+    fn from_path(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        // mtime is best-effort — some exotic filesystems don't record
+        // it. Falling back to `None` here still leaves inode + size as
+        // useful discriminators.
+        let mtime = meta.modified().ok();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Some(Self {
+                dev: meta.dev(),
+                inode: meta.ino(),
+                size: meta.len(),
+                mtime,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Some(Self {
+                size: meta.len(),
+                mtime,
+            })
+        }
+    }
+}
 
 /// Maximum batch stdin line length (1MB). Lines exceeding this are rejected
 /// to prevent unbounded memory allocation from malicious input.
@@ -117,8 +182,15 @@ pub(crate) struct BatchContext {
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
     pub model_config: cqs::embedder::ModelConfig,
-    /// Last-seen mtime of index.db, used to detect concurrent index updates.
-    index_mtime: Cell<Option<SystemTime>>,
+    /// Last-seen identity (inode + size + mtime on unix; size + mtime
+    /// elsewhere) of index.db, used to detect concurrent index updates.
+    ///
+    /// DS-V1.25-6: previously this tracked `SystemTime` alone. WSL NTFS
+    /// has 1-s mtime resolution, so a fast `cqs index --force` plus a
+    /// daemon query burst could share the same mtime bucket and keep
+    /// serving results from the orphaned inode. `DbFileIdentity` mixes
+    /// in inode + size so sub-second replacements still register.
+    index_id: Cell<Option<DbFileIdentity>>,
     error_count: AtomicU64,
     /// Tracks when the last command was processed.
     /// Used to clear ONNX sessions (embedder, reranker) after idle timeout.
@@ -181,20 +253,26 @@ impl BatchContext {
         }
     }
 
-    /// Check if index.db mtime changed since last access. If so, clear all
-    /// mutable caches and re-open the Store (which resets its internal
+    /// Check if index.db identity changed since last access. If so, clear
+    /// all mutable caches and re-open the Store (which resets its internal
     /// OnceLock caches like call_graph_cache, test_chunks_cache).
+    ///
+    /// DS-V1.25-6: identity is `(inode, size, mtime)` on unix and
+    /// `(size, mtime)` elsewhere. The extra discriminators catch
+    /// sub-second replacements on filesystems with 1-s mtime resolution
+    /// (WSL NTFS/DrvFS): a `cqs index --force` rename-over yields a new
+    /// inode immediately, so the batch session invalidates even when two
+    /// events share the same mtime bucket.
     pub(crate) fn check_index_staleness(&self) {
         let index_path = self.cqs_dir.join("index.db");
-        let current_mtime = match std::fs::metadata(&index_path).and_then(|m| m.modified()) {
-            Ok(t) => t,
-            Err(e) => {
+        let current_id = match DbFileIdentity::from_path(&index_path) {
+            Some(id) => id,
+            None => {
                 // v1.22.0 audit EH-8: previously silent return. If the DB
                 // becomes temporarily unstattable (permissions, concurrent
                 // rebuild, NFS glitch), every subsequent command in the batch
                 // session keeps using stale caches forever.
                 tracing::warn!(
-                    error = %e,
                     path = %index_path.display(),
                     "Cannot stat index.db for staleness check — caches may remain stale"
                 );
@@ -202,10 +280,10 @@ impl BatchContext {
             }
         };
 
-        let last = self.index_mtime.get();
-        if last.is_some() && last != Some(current_mtime) {
+        let last = self.index_id.get();
+        if last.is_some() && last != Some(current_id) {
             let _span = tracing::info_span!("batch_index_invalidation").entered();
-            tracing::info!("index.db mtime changed, invalidating mutable caches");
+            tracing::info!("index.db identity changed, invalidating mutable caches");
             self.invalidate_mutable_caches();
 
             // Re-open the Store to reset its internal OnceLock caches
@@ -229,10 +307,10 @@ impl BatchContext {
                 }
             }
         }
-        self.index_mtime.set(Some(current_mtime));
+        self.index_id.set(Some(current_id));
     }
 
-    /// Clear all mutable caches. Called on index mtime change or manual refresh.
+    /// Clear all mutable caches. Called on index identity change or manual refresh.
     ///
     /// v1.22.0 audit (CQ-2 / RM-3 / EH-8 / TC-2, quintuple-confirmed across
     /// five independent auditors): previously this omitted `splade_index`,
@@ -264,9 +342,9 @@ impl BatchContext {
             .map_err(|e| anyhow::anyhow!("Failed to re-open Store: {e}"))?;
         *self.store.borrow_mut() = new_store;
 
-        // Update mtime to current so we don't immediately re-invalidate
-        if let Ok(mtime) = std::fs::metadata(&index_path).and_then(|m| m.modified()) {
-            self.index_mtime.set(Some(mtime));
+        // Update identity to current so we don't immediately re-invalidate.
+        if let Some(id) = DbFileIdentity::from_path(&index_path) {
+            self.index_id.set(Some(id));
         }
 
         tracing::info!("Manual cache invalidation complete");
@@ -711,12 +789,12 @@ fn write_json_line(
 pub(crate) fn create_context() -> Result<BatchContext> {
     let (store, root, cqs_dir) = open_project_store_readonly()?;
 
-    // Capture initial index.db mtime
-    let index_mtime = std::fs::metadata(cqs_dir.join("index.db"))
-        .and_then(|m| m.modified())
-        .ok();
-    if index_mtime.is_none() {
-        tracing::debug!("Could not read index.db mtime — staleness detection will be skipped until first successful stat");
+    // Capture initial index.db identity (inode/size/mtime on unix).
+    // DS-V1.25-6: previously this was mtime alone, which sub-second
+    // replacements on WSL NTFS could miss.
+    let index_id = DbFileIdentity::from_path(&cqs_dir.join("index.db"));
+    if index_id.is_none() {
+        tracing::debug!("Could not stat index.db — staleness detection will be skipped until first successful stat");
     }
 
     Ok(BatchContext {
@@ -737,7 +815,7 @@ pub(crate) fn create_context() -> Result<BatchContext> {
         root,
         cqs_dir,
         model_config: ModelConfig::resolve(None, None).apply_env_overrides(),
-        index_mtime: Cell::new(index_mtime),
+        index_id: Cell::new(index_id),
         error_count: AtomicU64::new(0),
         last_command_time: Cell::new(Instant::now()),
     })
@@ -750,9 +828,7 @@ fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
     let store =
         Store::open(&index_path).map_err(|e| anyhow::anyhow!("Failed to open test store: {e}"))?;
     let root = cqs_dir.parent().unwrap_or(cqs_dir).to_path_buf();
-    let index_mtime = std::fs::metadata(&index_path)
-        .and_then(|m| m.modified())
-        .ok();
+    let index_id = DbFileIdentity::from_path(&index_path);
 
     Ok(BatchContext {
         store: RefCell::new(store),
@@ -772,7 +848,7 @@ fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
         root,
         cqs_dir: cqs_dir.to_path_buf(),
         model_config: ModelConfig::resolve(None, None).apply_env_overrides(),
-        index_mtime: Cell::new(index_mtime),
+        index_id: Cell::new(index_id),
         error_count: AtomicU64::new(0),
         last_command_time: Cell::new(Instant::now()),
     })
@@ -1003,6 +1079,73 @@ mod tests {
         assert!(
             ctx.notes_cache.borrow().is_none(),
             "Mtime change should invalidate cache"
+        );
+    }
+
+    /// DS-V1.25-6: BatchContext freshness detection must catch a rename-over
+    /// replacement even if the new file's mtime happens to match the old one.
+    /// Previously the check used `SystemTime` alone, so on WSL NTFS (1-s mtime
+    /// resolution) a tight `cqs index --force` + query burst could re-use a
+    /// stale pool against the orphaned inode. The fix mixes inode + size
+    /// into the identity so the rename-over is detected immediately.
+    #[cfg(unix)]
+    #[test]
+    fn test_sub_second_rename_replacement_invalidates_cache() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        // Populate a cache and run the first check to capture baseline identity.
+        *ctx.notes_cache.borrow_mut() = Some(vec![]);
+        ctx.check_index_staleness();
+        assert!(
+            ctx.notes_cache.borrow().is_some(),
+            "First check should not invalidate"
+        );
+
+        let index_path = cqs_dir.join("index.db");
+        let original_mtime = std::fs::metadata(&index_path).unwrap().modified().unwrap();
+        let original_ino = std::fs::metadata(&index_path).unwrap().ino();
+
+        // Build a fresh SQLite DB in a sibling path, then rename it over the
+        // original. The new file has a distinct inode — this is exactly the
+        // `cqs index --force` rename-over pattern.
+        let replacement = cqs_dir.join("index.db.replacement");
+        let store = Store::open(&replacement).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+        drop(store);
+
+        // Force-set mtime on the replacement to match the original so we are
+        // explicitly testing the inode-based discriminator rather than an
+        // incidental mtime bump.
+        {
+            use std::fs::File;
+            let f = File::open(&replacement).unwrap();
+            f.set_modified(original_mtime).unwrap();
+        }
+        std::fs::rename(&replacement, &index_path).unwrap();
+
+        // Sanity: the replacement changed the inode even though mtime matches.
+        let new_meta = std::fs::metadata(&index_path).unwrap();
+        assert_ne!(
+            new_meta.ino(),
+            original_ino,
+            "Test precondition: rename-over must change inode"
+        );
+        assert_eq!(
+            new_meta.modified().unwrap(),
+            original_mtime,
+            "Test precondition: mtime matches — this is the sub-second race",
+        );
+
+        // The staleness check should now invalidate even though mtime is
+        // identical. Without the DS-V1.25-6 fix this would silently pass
+        // through and keep the stale cache.
+        ctx.check_index_staleness();
+        assert!(
+            ctx.notes_cache.borrow().is_none(),
+            "DS-V1.25-6: rename-over replacement (same mtime, new inode) should invalidate cache"
         );
     }
 
