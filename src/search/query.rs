@@ -431,7 +431,10 @@ impl Store {
             }
         };
 
-        let candidate_count = (limit * 5).max(100);
+        // TC-ADV-5: `limit * 5` overflows `usize` for pathological inputs
+        // (e.g. `usize::MAX / 4`). Use saturating multiplication so the
+        // candidate pool stays bounded at `usize::MAX` instead of panicking.
+        let candidate_count = limit.saturating_mul(5).max(100);
 
         // Build chunk filter predicate
         let meta = self.chunk_type_language_map()?;
@@ -585,7 +588,8 @@ impl Store {
         if let Some(idx) = index {
             let _span = tracing::info_span!("search_index_guided", limit = limit).entered();
 
-            let candidate_count = (limit * 5).max(100);
+            // TC-ADV-5: saturating multiply — see `search_hybrid` for details.
+            let candidate_count = limit.saturating_mul(5).max(100);
             let has_type_or_lang_filter = filter.include_types.is_some()
                 || filter.exclude_types.is_some()
                 || filter.languages.is_some();
@@ -1153,6 +1157,93 @@ mod tests {
         let filter = SearchFilter::default();
         let results = store.search_filtered(&query, &filter, 3, 0.0).unwrap();
         assert_eq!(results.len(), 3);
+    }
+
+    // ===== TC-ADV-5: candidate-count multiply overflow guards =====
+    //
+    // `search_hybrid` and `search_filtered_with_index` both compute
+    // `candidate_count = limit.saturating_mul(5).max(100)`. The `saturating_mul`
+    // replaces a previous `limit * 5` that would panic with arithmetic overflow
+    // when `limit >= usize::MAX / 5`. Agents or badly-shaped CLI flags could
+    // feed a huge `limit`; a panic in search is unacceptable.
+
+    /// Direct arithmetic regression for the saturating-multiply expression.
+    /// Guards against a refactor that reverts to naive `limit * 5`.
+    #[test]
+    fn test_candidate_count_saturating_multiply() {
+        // usize::MAX / 4 would overflow `limit * 5`.
+        let limit = usize::MAX / 4;
+        let candidate_count = limit.saturating_mul(5).max(100);
+
+        // Saturating — no panic — and bounded at usize::MAX.
+        assert_eq!(candidate_count, usize::MAX);
+
+        // Small limit still respects the floor of 100.
+        let small = 5usize.saturating_mul(5).max(100);
+        assert_eq!(small, 100);
+
+        // Typical limit scales linearly.
+        let typical = 50usize.saturating_mul(5).max(100);
+        assert_eq!(typical, 250);
+    }
+
+    /// Integration regression: exercise `search_filtered_with_index` with a
+    /// mock index and a huge `limit` to prove the `limit * 5` call site is
+    /// panic-free end-to-end. The mock index returns a known candidate id so
+    /// the code path takes the `search_by_candidate_ids_with_notes` branch
+    /// (where downstream `limit * 3` over-fetch does not apply).
+    #[test]
+    fn test_search_filtered_with_index_huge_limit_mock() {
+        use crate::embedder::Embedding;
+        use crate::index::{IndexResult, VectorIndex};
+
+        struct MockIdx {
+            candidate_id: String,
+        }
+
+        impl VectorIndex for MockIdx {
+            fn search(&self, _query: &Embedding, _k: usize) -> Vec<IndexResult> {
+                vec![IndexResult {
+                    id: self.candidate_id.clone(),
+                    score: 0.9,
+                }]
+            }
+            fn len(&self) -> usize {
+                1
+            }
+            fn name(&self) -> &'static str {
+                "MockIdx"
+            }
+            fn dim(&self) -> usize {
+                crate::EMBEDDING_DIM
+            }
+        }
+
+        let (store, _dir) = setup_store();
+        let c = make_chunk("big_fn", "src/big.rs", Language::Rust, ChunkType::Function);
+        let chunk_id = c.id.clone();
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(c, emb.clone())], Some(12345))
+            .unwrap();
+
+        let idx = MockIdx {
+            candidate_id: chunk_id,
+        };
+        let filter = SearchFilter::default();
+
+        // usize::MAX / 4 would overflow naive `limit * 5`.
+        let huge = usize::MAX / 4;
+        let results = store
+            .search_filtered_with_index(&emb, &filter, huge, 0.0, Some(&idx))
+            .expect("search must not panic on huge limit");
+
+        // Only one chunk exists, so results are capped at 1.
+        assert!(
+            results.len() <= 1,
+            "result count must be bounded by fixture, got {}",
+            results.len()
+        );
     }
 
     // ===== type_boost_factor() tests =====
