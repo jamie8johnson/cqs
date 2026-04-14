@@ -106,33 +106,45 @@ impl BatchContext {
     /// sessions after IDLE_TIMEOUT_MINUTES of no commands, freeing ~500MB+.
     /// Sessions re-initialize lazily on next use.
     pub(crate) fn check_idle_timeout(&self) {
+        self.sweep_idle_sessions();
+        self.last_command_time.set(Instant::now());
+    }
+
+    /// Clear ONNX sessions if idle too long without resetting the clock.
+    ///
+    /// RM-V1.25-3: This is called both from `check_idle_timeout` (on command
+    /// arrival) and from a periodic accept-loop tick (watch.rs), so a truly
+    /// idle daemon — no queries ever — still releases ~500MB+ after
+    /// `IDLE_TIMEOUT_MINUTES`. Unlike `check_idle_timeout` it does NOT update
+    /// `last_command_time`; the tick is a passive observer.
+    pub(crate) fn sweep_idle_sessions(&self) {
         let elapsed = self.last_command_time.get().elapsed();
         let timeout = std::time::Duration::from_secs(IDLE_TIMEOUT_MINUTES * 60);
-        if elapsed >= timeout {
-            if let Some(emb) = self.embedder.get() {
-                emb.clear_session();
-                tracing::info!(
-                    idle_minutes = elapsed.as_secs() / 60,
-                    "Cleared embedder session after idle timeout"
-                );
-            }
-            if let Some(rr) = self.reranker.get() {
-                rr.clear_session();
-                tracing::info!(
-                    idle_minutes = elapsed.as_secs() / 60,
-                    "Cleared reranker session after idle timeout"
-                );
-            }
-            // RM-3: Also clear SPLADE encoder session
-            if let Some(splade) = self.splade_encoder.get().and_then(|opt| opt.as_ref()) {
-                splade.clear_session();
-                tracing::info!(
-                    idle_minutes = elapsed.as_secs() / 60,
-                    "Cleared SPLADE session after idle timeout"
-                );
-            }
+        if elapsed < timeout {
+            return;
         }
-        self.last_command_time.set(Instant::now());
+        if let Some(emb) = self.embedder.get() {
+            emb.clear_session();
+            tracing::info!(
+                idle_minutes = elapsed.as_secs() / 60,
+                "Cleared embedder session after idle timeout"
+            );
+        }
+        if let Some(rr) = self.reranker.get() {
+            rr.clear_session();
+            tracing::info!(
+                idle_minutes = elapsed.as_secs() / 60,
+                "Cleared reranker session after idle timeout"
+            );
+        }
+        // RM-3: Also clear SPLADE encoder session
+        if let Some(splade) = self.splade_encoder.get().and_then(|opt| opt.as_ref()) {
+            splade.clear_session();
+            tracing::info!(
+                idle_minutes = elapsed.as_secs() / 60,
+                "Cleared SPLADE session after idle timeout"
+            );
+        }
     }
 
     /// Check if index.db mtime changed since last access. If so, clear all

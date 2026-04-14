@@ -202,6 +202,7 @@ pub enum LlmProvider {
 }
 
 /// Resolved LLM configuration (env vars > config file > constants).
+#[derive(Debug)]
 pub struct LlmConfig {
     pub provider: LlmProvider,
     pub api_base: String,
