@@ -59,7 +59,8 @@ fn handle_socket_client(
     mut stream: std::os::unix::net::UnixStream,
     batch_ctx: &super::batch::BatchContext,
 ) {
-    let _span = tracing::info_span!("daemon_query").entered();
+    let span = tracing::info_span!("daemon_query", command = tracing::field::Empty);
+    let _enter = span.enter();
     let start = std::time::Instant::now();
 
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
@@ -88,6 +89,11 @@ fn handle_socket_client(
         Ok(v) => v,
         Err(e) => {
             let _ = write_daemon_error(&mut stream, &format!("invalid JSON: {e}"));
+            tracing::info!(
+                status = "parse_error",
+                latency_ms = start.elapsed().as_millis() as u64,
+                "Daemon query complete"
+            );
             return;
         }
     };
@@ -106,10 +112,19 @@ fn handle_socket_client(
         })
         .unwrap_or_default();
 
+    // Record command on the span so every event inside this handler is
+    // enriched with it, without needing to repeat `command` on each log.
+    span.record("command", command);
+
     tracing::debug!(command, args = ?args, "Daemon request");
 
     if command.is_empty() {
         let _ = write_daemon_error(&mut stream, "missing 'command' field");
+        tracing::info!(
+            status = "client_error",
+            latency_ms = start.elapsed().as_millis() as u64,
+            "Daemon query complete"
+        );
         return;
     }
 
@@ -124,16 +139,18 @@ fn handle_socket_client(
         String::from_utf8(output).map_err(|e| format!("non-UTF-8 output: {e}"))
     }));
 
-    match result {
+    let status = match result {
         Ok(Ok(output)) => {
             let resp = serde_json::json!({
                 "status": "ok",
                 "output": output.trim_end(),
             });
             let _ = writeln!(stream, "{}", resp);
+            "ok"
         }
         Ok(Err(e)) => {
             let _ = write_daemon_error(&mut stream, &e);
+            "client_error"
         }
         Err(payload) => {
             let msg = payload
@@ -143,15 +160,15 @@ fn handle_socket_client(
                 .unwrap_or("<non-string panic payload>");
             let _ = write_daemon_error(&mut stream, "internal error (panic in dispatch)");
             tracing::error!(
-                command,
                 panic_msg = %msg,
                 "Daemon query panicked — daemon continues"
             );
+            "panic"
         }
-    }
+    };
 
     tracing::info!(
-        command,
+        status,
         latency_ms = start.elapsed().as_millis() as u64,
         "Daemon query complete"
     );
