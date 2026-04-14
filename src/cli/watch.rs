@@ -65,8 +65,11 @@ fn handle_socket_client(
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     stream.set_write_timeout(Some(Duration::from_secs(30))).ok();
 
-    // Read request (max 1MB)
-    let mut reader = std::io::BufReader::new(&stream);
+    // Read request (max 1MB). Wrap reader in .take() so allocation is
+    // bounded *before* we accept a giant line — the post-hoc size check
+    // below still fires if a client sends exactly the cap worth of data.
+    use std::io::Read as _;
+    let mut reader = std::io::BufReader::new(&stream).take(1_048_577);
     let mut line = String::new();
     match std::io::BufRead::read_line(&mut reader, &mut line) {
         Ok(0) => return,
