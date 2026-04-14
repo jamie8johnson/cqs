@@ -292,15 +292,27 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
         }
     }
 
-    // Per-category defaults from 11-point alpha sweep (2026-04-13).
-    // 265 queries × 8 categories. Verified with single-category reruns.
+    // Per-category defaults from 21-point alpha sweep (2026-04-13 re-run).
+    // 265 queries × 8 categories on deterministic pipeline (post-PR #942).
+    // The original v1.23.0 sweep was measured against a broken baseline
+    // (HashMap iteration non-determinism + SPLADE disabled at α=1.0); these
+    // values correct those measurements. Oracle R@1 across all categories:
+    // 49.8% (132/265) vs 45.3% for uniform α=1.0.
     match category {
-        QueryCategory::IdentifierLookup => 0.9, // +4.0pp (98.0% vs 94.0%)
-        QueryCategory::Structural => 0.7,       // +14.8pp (66.7% vs 51.9%) — verified
-        QueryCategory::Conceptual => 0.9,       // +8.4pp (41.7% vs 33.3%)
-        QueryCategory::TypeFiltered => 0.9,     // +4.2pp (37.5% vs 33.3%)
-        QueryCategory::Behavioral => 0.1,       // +6.8pp (31.8% vs 25.0%) — verified
-        _ => 1.0,                               // multi_step, cross_language, negation, unknown
+        // FTS5 path; alpha doesn't affect NameOnly results. Kept at 1.0.
+        QueryCategory::IdentifierLookup => 1.0,
+        // Slight sparse mix helps substantially. +14.8pp over α=1.0 (66.7% vs 51.9%).
+        QueryCategory::Structural => 0.9,
+        // Narrowly beats α=0.9 — most dense, barely any sparse. +13.9pp (41.7% vs 27.8%).
+        QueryCategory::Conceptual => 0.95,
+        // Flat across 0.85-1.0. Pick 1.0 for simplicity.
+        QueryCategory::TypeFiltered => 1.0,
+        // Heavy sparse — action verbs match lexically better than semantically.
+        // +4.6pp over α=1.0 (34.1% vs 29.5%).
+        QueryCategory::Behavioral => 0.05,
+        // multi_step, cross_language, negation, unknown: pure dense scoring is best.
+        // Sparse contribution hurts recall on these categories.
+        _ => 1.0,
     }
 }
 

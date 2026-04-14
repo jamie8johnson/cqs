@@ -117,7 +117,7 @@ pub const HNSW_ALL_EXTENSIONS: &[&str] = &[
 /// or stored separately in a trusted location.
 ///
 /// Returns Ok if checksums match or no checksum file exists (with warning).
-fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError> {
+pub fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError> {
     let checksum_path = dir.join(format!("{}.hnsw.checksum", basename));
 
     if !checksum_path.exists() {

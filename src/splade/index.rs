@@ -201,11 +201,10 @@ impl SpladeIndex {
                 })
             })
             .collect();
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // Secondary sort on id for deterministic tie-breaking across process
+        // invocations (the HashMap above iterates in random order). Use
+        // total_cmp so NaN sorts last consistently.
+        results.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.id.cmp(&b.id)));
         results.truncate(k);
 
         tracing::debug!(results = results.len(), "SPLADE search complete");
