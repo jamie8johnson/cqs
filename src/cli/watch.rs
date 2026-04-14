@@ -145,6 +145,7 @@ fn handle_socket_client(
     );
 }
 
+#[cfg(unix)]
 fn write_daemon_error(
     stream: &mut std::os::unix::net::UnixStream,
     message: &str,
