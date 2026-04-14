@@ -69,15 +69,25 @@ fn build_placeholders(n: usize) -> String {
 
 /// Build a comma-separated list of numbered SQL placeholders: "?1,?2,...,?N".
 ///
-/// Common batch sizes (1-999) are served from a static cache; larger values are built on demand.
-pub(crate) fn make_placeholders(n: usize) -> String {
+/// Common batch sizes (1..=`PLACEHOLDER_CACHE_MAX`) are served from a
+/// static cache as `Cow::Borrowed(&'static str)`; larger values build a
+/// fresh `String` on demand and return `Cow::Owned`. Callers only format
+/// these into SQL via `format!("... IN ({})", placeholders)`, which accepts
+/// any `Display` so the `Cow` change is transparent.
+///
+/// PF-V1.25-7: previously returned `String` via `PLACEHOLDER_CACHE[n].clone()`,
+/// which re-allocated the full placeholder string on every cache hit. A 500-id
+/// batch cost ~4KB memcpy per call; on a hot reindex or batch-search loop
+/// this adds up to measurable allocator pressure. Now the cache hit returns a
+/// `&'static str` borrow.
+pub(crate) fn make_placeholders(n: usize) -> std::borrow::Cow<'static, str> {
     assert!(
         n <= 100_000,
         "make_placeholders called with unreasonable n={n}"
     );
     if n <= PLACEHOLDER_CACHE_MAX {
-        PLACEHOLDER_CACHE[n].clone()
+        std::borrow::Cow::Borrowed(PLACEHOLDER_CACHE[n].as_str())
     } else {
-        build_placeholders(n)
+        std::borrow::Cow::Owned(build_placeholders(n))
     }
 }
