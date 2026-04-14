@@ -281,9 +281,22 @@ impl HnswIndex {
             .map_err(|e| {
                 HnswError::Internal(format!("Failed to create {}: {}", id_map_temp.display(), e))
             })?;
-            let writer = std::io::BufWriter::new(file);
-            serde_json::to_writer(writer, &self.id_map)
+            let mut writer = std::io::BufWriter::new(file);
+            serde_json::to_writer(&mut writer, &self.id_map)
                 .map_err(|e| HnswError::Internal(format!("Failed to serialize ID map: {}", e)))?;
+            // DS-V1.25-4: flush the BufWriter and fsync the underlying file
+            // before it is dropped so the id_map bytes are durable on disk.
+            // Mirrors the SPLADE persist pattern in `src/splade/index.rs:380-381`.
+            // Without this the id_map could survive in the page cache through
+            // the subsequent rename and get lost on a power cut, leaving the
+            // graph without any string IDs to look up.
+            use std::io::Write;
+            writer.flush().map_err(|e| {
+                HnswError::Internal(format!("Failed to flush {}: {}", id_map_temp.display(), e))
+            })?;
+            writer.get_ref().sync_all().map_err(|e| {
+                HnswError::Internal(format!("Failed to fsync {}: {}", id_map_temp.display(), e))
+            })?;
         }
 
         // Compute checksum by reading back the file (avoids holding JSON in memory)
@@ -472,6 +485,31 @@ impl HnswIndex {
             tracing::warn!(error = %e, "HNSW save failed mid-rename, rolled back to original files");
             let _ = std::fs::remove_dir_all(&temp_dir);
             return Err(e);
+        }
+
+        // DS-V1.25-4: fsync the parent directory so the renames themselves
+        // are durable on a power cut — otherwise the files exist on disk
+        // but the directory entries can be reordered or lost, leaving a
+        // half-saved index. Best-effort: on platforms where opening a
+        // directory for fsync isn't supported we log at debug level and
+        // continue.
+        match std::fs::File::open(dir) {
+            Ok(f) => {
+                if let Err(e) = f.sync_all() {
+                    tracing::debug!(
+                        error = %e,
+                        dir = %dir.display(),
+                        "fsync of HNSW parent directory failed (non-fatal)"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    dir = %dir.display(),
+                    "could not open HNSW parent directory for fsync"
+                );
+            }
         }
 
         // Clean up temp directory and .bak files from successful save
@@ -761,11 +799,15 @@ impl HnswIndex {
         }
     }
 
-    /// Load HNSW index with optional ef_search override and runtime dim.
+    /// Load HNSW index with optional ef_search override and an explicit
+    /// runtime dim.
+    ///
+    /// `dim` is required — it must match the dimension the index was built
+    /// with. Mismatches surface as load errors rather than silent misreads.
     pub fn try_load_with_ef(
         cq_dir: &Path,
         ef_search: Option<usize>,
-        dim: Option<usize>,
+        dim: usize,
     ) -> Option<Box<dyn VectorIndex>> {
         Self::try_load_named(cq_dir, "index", ef_search, dim)
     }
@@ -774,10 +816,12 @@ impl HnswIndex {
     ///
     /// Returns `None` when `index_base.hnsw.*` files are absent or corrupt —
     /// the router treats that as a signal to fall back to the enriched index.
+    ///
+    /// `dim` is required for the same reasons as `try_load_with_ef`.
     pub fn try_load_base_with_ef(
         cq_dir: &Path,
         ef_search: Option<usize>,
-        dim: Option<usize>,
+        dim: usize,
     ) -> Option<Box<dyn VectorIndex>> {
         Self::try_load_named(cq_dir, "index_base", ef_search, dim)
     }
@@ -787,11 +831,10 @@ impl HnswIndex {
         cq_dir: &Path,
         basename: &str,
         ef_search: Option<usize>,
-        dim: Option<usize>,
+        dim: usize,
     ) -> Option<Box<dyn VectorIndex>> {
         if Self::exists(cq_dir, basename) {
-            let load_dim = dim.unwrap_or(crate::EMBEDDING_DIM);
-            match Self::load_with_dim(cq_dir, basename, load_dim) {
+            match Self::load_with_dim(cq_dir, basename, dim) {
                 Ok(mut index) => {
                     if let Some(ef) = ef_search {
                         index.set_ef_search(ef);
@@ -1133,11 +1176,11 @@ mod tests {
         index.save(tmp.path(), "index").unwrap();
 
         // Enriched load should succeed.
-        let enriched = HnswIndex::try_load_with_ef(tmp.path(), None, None);
+        let enriched = HnswIndex::try_load_with_ef(tmp.path(), None, crate::EMBEDDING_DIM);
         assert!(enriched.is_some(), "enriched HNSW should load");
 
         // Base load should return None — no index_base.* files exist.
-        let base = HnswIndex::try_load_base_with_ef(tmp.path(), None, None);
+        let base = HnswIndex::try_load_base_with_ef(tmp.path(), None, crate::EMBEDDING_DIM);
         assert!(
             base.is_none(),
             "base HNSW should return None when index_base files are absent"
@@ -1157,12 +1200,12 @@ mod tests {
         index.save(tmp.path(), "index_base").unwrap();
 
         // Base load succeeds.
-        let base = HnswIndex::try_load_base_with_ef(tmp.path(), None, None);
+        let base = HnswIndex::try_load_base_with_ef(tmp.path(), None, crate::EMBEDDING_DIM);
         assert!(base.is_some(), "base HNSW should load when files present");
         assert_eq!(base.unwrap().len(), 10);
 
         // Enriched should still return None — only the base files exist.
-        let enriched = HnswIndex::try_load_with_ef(tmp.path(), None, None);
+        let enriched = HnswIndex::try_load_with_ef(tmp.path(), None, crate::EMBEDDING_DIM);
         assert!(
             enriched.is_none(),
             "enriched should return None when only index_base files exist"

@@ -1061,9 +1061,15 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
     // batch is not — files indexed so far are visible, remaining are
     // stale. Self-heals after HNSW rebuild. Acceptable for a dev tool.
     //
-    // Mark HNSW dirty before writing chunks (RT-DATA-6).
-    if let Err(e) = store.set_hnsw_dirty(true) {
-        tracing::warn!(error = %e, "Cannot set HNSW dirty flag — skipping reindex to prevent stale index on crash");
+    // Mark both HNSW kinds dirty before writing chunks (RT-DATA-6). The base
+    // index derives from the same chunks as enriched, so a crash mid-write
+    // can leave either graph stale.
+    if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Enriched, true) {
+        tracing::warn!(error = %e, "Cannot set enriched HNSW dirty flag — skipping reindex to prevent stale index on crash");
+        return;
+    }
+    if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Base, true) {
+        tracing::warn!(error = %e, "Cannot set base HNSW dirty flag — skipping reindex to prevent stale index on crash");
         return;
     }
     match reindex_files(cfg.root, store, &files, cfg.parser, emb, cfg.quiet) {
@@ -1110,8 +1116,8 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                         let n = index.len();
                         state.hnsw_index = Some(index);
                         state.incremental_count = 0;
-                        if let Err(e) = store.set_hnsw_dirty(false) {
-                            tracing::warn!(error = %e, "Failed to clear HNSW dirty flag — unnecessary rebuild on next load");
+                        if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Enriched, false) {
+                            tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag — unnecessary rebuild on next load");
                         }
                         info!(vectors = n, "HNSW index rebuilt (full)");
                         if !cfg.quiet {
@@ -1156,6 +1162,9 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                 match super::commands::build_hnsw_base_index(store, cfg.cqs_dir) {
                     Ok(Some(n)) => {
                         info!(vectors = n, "Base HNSW index rebuilt");
+                        if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Base, false) {
+                            tracing::warn!(error = %e, "Failed to clear base HNSW dirty flag — unnecessary rebuild on next load");
+                        }
                         if !cfg.quiet {
                             println!("  HNSW base index: {} vectors (full rebuild)", n);
                         }
@@ -1187,8 +1196,10 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                                     // Save updated index to disk for search processes
                                     if let Err(e) = index.save(cfg.cqs_dir, "index") {
                                         warn!(error = %e, "Failed to save HNSW after incremental insert");
-                                    } else if let Err(e) = store.set_hnsw_dirty(false) {
-                                        tracing::warn!(error = %e, "Failed to clear HNSW dirty flag — unnecessary rebuild on next load");
+                                    } else if let Err(e) =
+                                        store.set_hnsw_dirty(cqs::HnswKind::Enriched, false)
+                                    {
+                                        tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag — unnecessary rebuild on next load");
                                     }
                                     info!(
                                         inserted = n,

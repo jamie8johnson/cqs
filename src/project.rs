@@ -338,7 +338,7 @@ fn search_single_project(
 
     let store = crate::Store::open_readonly(&index_path)?;
     let cqs_dir = index_path.parent().unwrap_or(entry.path.as_path());
-    let index = crate::hnsw::HnswIndex::try_load_with_ef(cqs_dir, None, Some(store.dim()));
+    let index = crate::hnsw::HnswIndex::try_load_with_ef(cqs_dir, None, store.dim());
     let filter = crate::store::helpers::SearchFilter {
         query_text: query_text.to_string(),
         enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval

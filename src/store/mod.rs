@@ -115,6 +115,9 @@ pub use helpers::UnifiedResult;
 /// Current database schema version.
 pub use helpers::CURRENT_SCHEMA_VERSION;
 
+/// Which HNSW index a dirty-flag operation applies to (enriched vs base).
+pub use metadata::HnswKind;
+
 /// Name of the embedding model (compile-time default for BGE-large).
 /// Runtime code should use `Store::stored_model_name()` or `ModelInfo::new()`.
 /// This constant exists for callers outside the store (e.g. `doctor.rs`).

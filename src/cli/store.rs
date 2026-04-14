@@ -309,7 +309,9 @@ pub(crate) fn build_vector_index_with_config(
     // EH-16: surface metadata-read failures. Conservative fallback is still
     // "treat as dirty" but we emit a breadcrumb so mid-migration / corrupt
     // DB conditions don't get swallowed.
-    let dirty = match store.is_hnsw_dirty() {
+    // AC-V1.25-8: per-kind dirty flag (Enriched vs Base) so clearing one
+    // does not silently mark the other clean.
+    let dirty = match store.is_hnsw_dirty(cqs::HnswKind::Enriched) {
         Ok(d) => d,
         Err(e) => {
             tracing::warn!(
@@ -326,7 +328,7 @@ pub(crate) fn build_vector_index_with_config(
                 tracing::info!(
                     "HNSW dirty flag set but checksums pass — clearing flag (self-heal)"
                 );
-                if let Err(e) = store.set_hnsw_dirty(false) {
+                if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Enriched, false) {
                     tracing::warn!(error = %e, "Failed to clear dirty flag");
                 }
             }
@@ -343,7 +345,7 @@ pub(crate) fn build_vector_index_with_config(
     Ok(cqs::HnswIndex::try_load_with_ef(
         cqs_dir,
         ef_search,
-        Some(store.dim()),
+        store.dim(),
     ))
 }
 
@@ -376,7 +378,7 @@ pub(crate) fn build_base_vector_index(
     // flag; otherwise fall back to enriched via the router.
     //
     // EH-16: surface metadata-read failures for the base index path too.
-    let dirty = match store.is_hnsw_dirty() {
+    let dirty = match store.is_hnsw_dirty(cqs::HnswKind::Base) {
         Ok(d) => d,
         Err(e) => {
             tracing::warn!(
@@ -393,7 +395,7 @@ pub(crate) fn build_base_vector_index(
                 tracing::info!(
                     "Base HNSW dirty flag set but checksums pass — clearing flag (self-heal)"
                 );
-                if let Err(e) = store.set_hnsw_dirty(false) {
+                if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Base, false) {
                     tracing::warn!(error = %e, "Failed to clear dirty flag");
                 }
             }
@@ -409,7 +411,7 @@ pub(crate) fn build_base_vector_index(
     Ok(cqs::HnswIndex::try_load_base_with_ef(
         cqs_dir,
         None,
-        Some(store.dim()),
+        store.dim(),
     ))
 }
 
@@ -453,7 +455,7 @@ mod base_index_tests {
         // Mark the store as clean so we don't get filtered out by the
         // hnsw_dirty branch — that branch fires before the file load but
         // AFTER the env-var check, so we still test the early return.
-        store.set_hnsw_dirty(false).unwrap();
+        store.set_hnsw_dirty(cqs::HnswKind::Base, false).unwrap();
 
         let dim = store.dim();
         let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..10)
@@ -502,7 +504,7 @@ mod base_index_tests {
         let db_path = dir.path().join("index.db");
         let store = cqs::Store::open(&db_path).unwrap();
         store.init(&cqs::store::ModelInfo::default()).unwrap();
-        store.set_hnsw_dirty(false).unwrap();
+        store.set_hnsw_dirty(cqs::HnswKind::Base, false).unwrap();
 
         let dim = store.dim();
         let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..5)

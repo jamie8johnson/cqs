@@ -81,7 +81,7 @@ pub(crate) fn build_explain_data(
             let idx: Option<&dyn VectorIndex> = match index {
                 Some(idx) => idx,
                 None => {
-                    owned_index = HnswIndex::try_load_with_ef(cqs_dir, None, Some(store.dim()));
+                    owned_index = HnswIndex::try_load_with_ef(cqs_dir, None, store.dim());
                     owned_index.as_deref()
                 }
             };

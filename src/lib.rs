@@ -119,7 +119,7 @@ pub use note::{
 };
 pub use parser::{Chunk, Parser};
 pub use reranker::Reranker;
-pub use store::{ModelInfo, SearchFilter, Store};
+pub use store::{HnswKind, ModelInfo, SearchFilter, Store};
 
 // Re-exports for binary crate (CLI) - these are NOT part of the public library API
 // but need to be accessible to src/cli/* and tests/.
