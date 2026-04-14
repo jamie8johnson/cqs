@@ -143,9 +143,9 @@ impl CagraIndex {
 
         if query.len() != self.dim {
             tracing::warn!(
-                "Query dimension mismatch: expected {}, got {}",
-                self.dim,
-                query.len()
+                expected_dim = self.dim,
+                actual_dim = query.len(),
+                "Query dimension mismatch"
             );
             return Vec::new();
         }
@@ -313,9 +313,9 @@ impl VectorIndex for CagraIndex {
 
         if query.len() != self.dim {
             tracing::warn!(
-                "Query dimension mismatch: expected {}, got {}",
-                self.dim,
-                query.len()
+                expected_dim = self.dim,
+                actual_dim = query.len(),
+                "Query dimension mismatch"
             );
             return Vec::new();
         }
