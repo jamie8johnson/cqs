@@ -43,23 +43,125 @@ use anyhow::Context;
 /// exits cleanly with `--version` to avoid running unrelated binaries.
 ///
 /// Shared by PDF conversion and model export (PB-4).
+///
+/// SEC-V1.25-10: Rejects any binary whose resolved location is in a
+/// user-writable directory (e.g. /tmp, /var/tmp, or a world-writable dir).
+/// This blocks PATH injection where an attacker drops `python3` in a
+/// writable directory earlier in PATH. Callers on systems without a
+/// suitable binary get a clear error.
 pub fn find_python() -> anyhow::Result<String> {
     for name in &["python3", "python", "py"] {
-        match std::process::Command::new(name)
+        let Some(resolved) = resolve_on_path(name) else {
+            continue;
+        };
+        if !is_safe_executable_path(&resolved) {
+            tracing::warn!(
+                candidate = name,
+                path = %resolved.display(),
+                "Refusing Python candidate in user-writable directory (SEC-V1.25-10)"
+            );
+            continue;
+        }
+        match std::process::Command::new(&resolved)
             .arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
         {
             Ok(status) if status.success() => {
-                return Ok(name.to_string());
+                return Ok(resolved.to_string_lossy().to_string());
             }
             _ => continue,
         }
     }
     anyhow::bail!(
-        "Python not found. Install `python3` (Linux: `sudo apt install python3`, macOS: `brew install python`)"
+        "Python not found (or only available in a user-writable directory that cqs refuses to trust). \
+         Install `python3` (Linux: `sudo apt install python3`, macOS: `brew install python`)"
     )
+}
+
+/// Walk PATH looking for `name`; return the first entry that exists and is a file.
+/// Applies platform-specific PATHEXT handling on Windows.
+#[cfg(feature = "convert")]
+pub(crate) fn resolve_on_path(name: &str) -> Option<std::path::PathBuf> {
+    let path_env = std::env::var_os("PATH")?;
+    #[cfg(windows)]
+    let exts: Vec<String> = std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".EXE;.BAT;.CMD;.COM".to_string())
+        .split(';')
+        .map(|s| s.to_string())
+        .collect();
+    for dir in std::env::split_paths(&path_env) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        for ext in &exts {
+            let mut with_ext = candidate.clone();
+            let filename = match with_ext.file_name().and_then(|f| f.to_str()) {
+                Some(f) => format!("{}{}", f, ext),
+                None => continue,
+            };
+            with_ext.set_file_name(filename);
+            if with_ext.is_file() {
+                return Some(with_ext);
+            }
+        }
+    }
+    None
+}
+
+/// Fallback when the `convert` feature is disabled: simple PATH walker, no PATHEXT handling.
+#[cfg(not(feature = "convert"))]
+fn resolve_on_path(name: &str) -> Option<std::path::PathBuf> {
+    let path_env = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_env) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Reject a resolved binary path if it is in a user-writable directory.
+///
+/// SEC-V1.25-10:
+///   * Paths under `/tmp/` or `/var/tmp/` are rejected outright.
+///   * On Unix, paths whose parent directory is group- or world-writable
+///     (mode bits `022`) are rejected — this catches PATH entries like
+///     `$HOME/.local/bin` that have been accidentally made writable.
+///   * A binary that cannot be canonicalized is treated as unsafe.
+pub(crate) fn is_safe_executable_path(p: &std::path::Path) -> bool {
+    let canonical = match p.canonicalize() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(path = %p.display(), error = %e, "cannot canonicalize binary path, treating as unsafe");
+            return false;
+        }
+    };
+    let s = canonical.to_string_lossy();
+    const DANGEROUS_PREFIXES: &[&str] = &["/tmp/", "/var/tmp/"];
+    if DANGEROUS_PREFIXES.iter().any(|pfx| s.starts_with(pfx)) {
+        return false;
+    }
+    #[cfg(unix)]
+    if let Some(parent) = canonical.parent() {
+        if let Ok(md) = std::fs::metadata(parent) {
+            use std::os::unix::fs::PermissionsExt;
+            if md.permissions().mode() & 0o022 != 0 {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Document format detected from file extension.
@@ -519,6 +621,45 @@ mod tests {
         assert_eq!(
             detect_format(std::path::Path::new("doc.HTM")),
             Some(DocFormat::Html)
+        );
+    }
+
+    // SEC-V1.25-10: is_safe_executable_path rejects /tmp and world-writable parents.
+    #[test]
+    #[cfg(all(feature = "convert", unix))]
+    fn is_safe_executable_path_rejects_tmp() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let exe = dir.path().join("fake_python");
+        std::fs::write(&exe, "#!/bin/sh\necho hi\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            !is_safe_executable_path(&exe),
+            "binary in /tmp must be rejected: {}",
+            exe.display()
+        );
+    }
+
+    #[test]
+    #[cfg(all(feature = "convert", unix))]
+    fn is_safe_executable_path_accepts_safe_location() {
+        // /bin/sh exists on every unix system we build for.
+        let sh = std::path::Path::new("/bin/sh");
+        if sh.exists() {
+            assert!(
+                is_safe_executable_path(sh),
+                "/bin/sh should be accepted as a safe executable"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "convert")]
+    fn is_safe_executable_path_rejects_nonexistent() {
+        let bogus = std::path::Path::new("/nonexistent/cqs_fake_binary_xyz");
+        assert!(
+            !is_safe_executable_path(bogus),
+            "nonexistent path must fail canonicalize and be rejected"
         );
     }
 }

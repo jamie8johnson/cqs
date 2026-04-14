@@ -2,7 +2,7 @@
 //!
 //! Runs diagnostic checks on installation and index.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 
 use cqs::embedder::ModelConfig;
@@ -34,11 +34,17 @@ struct DoctorIssue {
 fn run_fixes(issues: &[DoctorIssue]) -> Result<()> {
     let _span = tracing::info_span!("doctor_fix", issue_count = issues.len()).entered();
 
+    // SEC-V1.25-7: Resolve our own binary path via current_exe() so a malicious
+    // `cqs` earlier in PATH can't hijack the rescue flow when an admin runs
+    // `cqs doctor --fix`.
+    let cqs_path =
+        std::env::current_exe().context("Failed to resolve current executable for 'cqs'")?;
+
     for issue in issues {
         match issue.kind {
             IssueKind::Stale | IssueKind::NoIndex => {
                 println!("  Fixing: {} — running 'cqs index'...", issue.message);
-                let status = std::process::Command::new("cqs")
+                let status = std::process::Command::new(&cqs_path)
                     .arg("index")
                     .status()
                     .map_err(|e| anyhow::anyhow!("Failed to run 'cqs index': {}", e))?;
@@ -54,7 +60,7 @@ fn run_fixes(issues: &[DoctorIssue]) -> Result<()> {
                     "  Fixing: {} — running 'cqs index --force'...",
                     issue.message
                 );
-                let status = std::process::Command::new("cqs")
+                let status = std::process::Command::new(&cqs_path)
                     .args(["index", "--force"])
                     .status()
                     .map_err(|e| anyhow::anyhow!("Failed to run 'cqs index --force': {}", e))?;
