@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 91.2% Recall@1 on fixtures, 50% R@1 on real code (100q lookup), 73% R@5 — the agent-relevant metric. 54 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 91.2% Recall@1 on fixtures; on a real 11k-chunk codebase (v1.25.0 clean post-GC index, 265-query V2 live eval) the router scores 37.4% R@1 / 55.8% R@5 / 77.4% R@20 (oracle ceiling 49.4% R@1). Identifier lookup is 50% R@1 / 73% R@5 on a 100-query slice — the agent-relevant metric. 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -599,7 +599,7 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, interfaces, constants, tests, endpoints, modules, and 19 other chunk types across 54 languages (plus L5X/L5K PLC exports). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination (SQ-11). Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 91.2% Recall@1 on fixture eval (BGE-large, 296 queries across 7 languages). 50% R@1 on real-code lookup queries (100q), 73% R@5. Per-category: 100% identifier, 62% structural, 50% behavioral, 25% conceptual (265q eval across 8 categories). Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
+3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 91.2% Recall@1 on fixture eval (BGE-large, 296 queries across 7 languages). On the v1.25.0 live 265-query V2 eval against a real 11k-chunk codebase (post-GC clean index, today), the full router scores 37.4% R@1 / 55.8% R@5 / 77.4% R@20; per-category oracle ceiling is 49.4% R@1. Identifier lookup is 50% R@1 / 73% R@5 on a 100-query slice. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
@@ -637,14 +637,18 @@ Two eval suites measure different things:
 | v9-200k LoRA (preset) | 110M | 81.4% | 99.3% | 0.898 |
 | E5-base (preset) | 110M | 75.3% | 99.0% | 0.869 |
 
-**Live codebase eval** (265 queries, 8 categories — real code, diverse query types):
+**Live codebase eval** (v1.25.0 full router, 265-query V2, real 11k-chunk cqs codebase, clean post-GC index, today):
 
-| Config | Recall@1 (265q) | Recall@5 |
-|--------|-----------------|----------|
-| BGE-large baseline | 48.5% | 66.7% |
-| + LLM summaries | 48.5% | 67.9% |
+| Config | Recall@1 | Recall@5 | Recall@20 |
+|--------|----------|----------|-----------|
+| Full router (per-category alpha + clean multi_step) | **37.4%** | **55.8%** | **77.4%** |
+| Oracle ceiling (best alpha per-category, known category) | **49.4%** | — | — |
 
-The fixture eval measures retrieval from small synthetic fixtures (high ceiling). The live eval measures retrieval from a real 11k-chunk codebase across identifier lookup, behavioral, conceptual, structural, negation, and multi-step queries. The gap reflects that real-world queries are harder than synthetic benchmarks.
+Identifier-lookup slice (100-query subset): 50% R@1, 73% R@5 — this is the metric that matters most for agent search.
+
+The older `48.5% / 66.7%` numbers came from a pre-v1.25.0 index contaminated by watch-reindex races between eval runs (fixed by PR #943) and pre-determinism-fix SPLADE noise (fixed by PR #942). They are historical and no longer representative.
+
+The fixture eval measures retrieval from small synthetic fixtures (high ceiling). The live eval measures retrieval from a real 11k-chunk codebase across identifier lookup, behavioral, conceptual, structural, negation, type-filtered, multi-step, and cross-language queries. The gap reflects that real-world queries are harder than synthetic benchmarks.
 
 Best production config: **BGE-large** (`cqs index`). LLM summaries provide marginal R@5 improvement. Use `CQS_EMBEDDING_MODEL=v9-200k` for resource-constrained environments.
 
