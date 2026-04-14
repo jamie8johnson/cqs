@@ -7,8 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
 
-use crate::normalize_slashes;
-
 /// Sentiment thresholds for classification
 /// 0.3 chosen to separate neutral observations from significant notes:
 /// - Values near 0 are neutral observations
@@ -360,19 +358,44 @@ pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
     Ok(notes)
 }
 
+/// Normalize `path` for slash-matching without allocating when possible.
+///
+/// PF-V1.25-13: `normalize_slashes` always allocates a fresh `String` even
+/// when the input has no backslashes (the Unix common case and, in practice,
+/// most indexed paths on Windows that already came from `normalize_path`).
+/// This helper returns `Cow::Borrowed(s)` when no substitution is needed,
+/// avoiding the allocation entirely.
+fn normalize_slashes_cow(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.contains('\\') {
+        std::borrow::Cow::Owned(s.replace('\\', "/"))
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
 /// Check if a mention matches a path by component suffix matching.
 /// "gather.rs" matches "src/gather.rs" but not "src/gatherer.rs"
 /// "src/store" matches "src/store/chunks.rs" but not "my_src/store.rs"
+///
+/// PF-V1.25-13: previously allocated two `String`s per (note mention ×
+/// candidate) via `normalize_slashes`. In search scoring this runs
+/// O(notes × path_mentions × candidates) times per query; on Unix every
+/// allocation was wasted (no backslashes to replace) and on Windows only
+/// paths that weren't already slash-normalized upstream needed the work.
+/// Switched to `Cow<str>`: zero allocation on the already-slash-clean path,
+/// identical semantics on the backslash path.
 pub fn path_matches_mention(path: &str, mention: &str) -> bool {
     // Normalize backslashes to forward slashes for cross-platform matching
-    let path = normalize_slashes(path);
-    let mention = normalize_slashes(mention);
+    let path = normalize_slashes_cow(path);
+    let mention = normalize_slashes_cow(mention);
+    let path: &str = path.as_ref();
+    let mention: &str = mention.as_ref();
 
     // Check if mention matches as a path suffix (component-aligned)
-    if let Some(stripped) = path.strip_suffix(mention.as_str()) {
+    if let Some(stripped) = path.strip_suffix(mention) {
         // Must be at component boundary: empty prefix or ends with /
         stripped.is_empty() || stripped.ends_with('/')
-    } else if let Some(stripped) = path.strip_prefix(mention.as_str()) {
+    } else if let Some(stripped) = path.strip_prefix(mention) {
         // Check prefix match at component boundary
         stripped.is_empty() || stripped.starts_with('/')
     } else {
