@@ -717,6 +717,32 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_WATCH_MAX_PENDING` | `10000` | Max pending file changes before watch forces flush |
 | `CQS_WATCH_REBUILD_THRESHOLD` | `100` | Files changed before watch triggers full HNSW rebuild |
 
+## Per-category SPLADE alpha
+
+Hybrid retrieval fuses a dense (BGE-large) and sparse (SPLADE) candidate pool. The fusion weight `alpha` controls how much each side contributes to the final score: `alpha = 1.0` means pure dense, `alpha = 0.0` means pure sparse, and values in between interpolate ranks via RRF.
+
+SPLADE is always generating candidates; `alpha` only weights the scoring. v1.25.0 ships per-category defaults tuned on a 21-point alpha sweep (265 queries × 8 categories, oracle R@1 49.4% vs 44.9% for the best uniform `alpha=0.95`).
+
+| Category | Default alpha | Rationale |
+|----------|---------------|-----------|
+| `identifier` | `0.90` | Dense-side plateau edge; identifiers hit both dense and sparse signals |
+| `structural` | `0.60` | Mid-plateau `0.40–0.85`; sparse matches structural keywords (`async`, `trait`, `impl`) |
+| `conceptual` | `0.85` | Dense-heavy — semantic understanding dominates; sparse is a small nudge |
+| `behavioral` | `0.05` | Heavy sparse — action verbs match lexically better than semantically |
+| `type_filtered` | `1.00` | Pure dense; the type filter already narrows candidates |
+| `multi_step` | `1.00` | Pure dense; semantic chaining matters more than exact tokens |
+| `negation` | `1.00` | Pure dense; SPLADE can't model "not X" cleanly |
+| `cross_language` | `1.00` | Pure dense; translations don't share tokens across languages |
+| `unknown` | `1.00` | Pure dense; safest default when the router can't classify |
+
+**Override precedence** (highest to lowest):
+
+1. `CQS_SPLADE_ALPHA_{CATEGORY}` (e.g. `CQS_SPLADE_ALPHA_CONCEPTUAL=0.95`) — per-category override
+2. `CQS_SPLADE_ALPHA=<value>` — global override applied to every category
+3. The per-category default from the table above
+
+Overrides are clamped to `[0.0, 1.0]`. Non-finite or unparseable values fall through to the next layer with a `tracing::warn!`.
+
 ## RAG Efficiency
 
 cqs is a retrieval component for RAG pipelines. Context assembly commands (`gather`, `task`, `scout --tokens`) deliver semantically relevant code within a token budget, replacing full file reads.
