@@ -453,34 +453,15 @@ pub fn cmd_watch(
         );
         if !cli.quiet {
             println!("Daemon listening on {}", sock_path.display());
-            // Log query-behavior env vars so it's obvious which config the daemon
-            // is running under. Env vars set on client subprocesses do NOT affect
-            // daemon-served queries — only the daemon's own env applies.
-            let query_env_vars = [
-                "CQS_SPLADE_ALPHA",
-                "CQS_DISABLE_BASE_INDEX",
-                "CQS_FORCE_BASE_INDEX",
-                "CQS_CAGRA_THRESHOLD",
-                "CQS_INTEGRITY_CHECK",
-                "CQS_EF_SEARCH",
-            ];
-            let set_vars: Vec<String> = query_env_vars
-                .iter()
-                .filter_map(|k| std::env::var(k).ok().map(|v| format!("{k}={v}")))
-                .collect();
-            let per_cat_vars: Vec<String> = std::env::vars()
-                .filter(|(k, _)| k.starts_with("CQS_SPLADE_ALPHA_"))
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect();
-            if !set_vars.is_empty() || !per_cat_vars.is_empty() {
-                println!("Query env: {}", set_vars.join(", "));
-                if !per_cat_vars.is_empty() {
-                    println!("Per-category SPLADE overrides: {}", per_cat_vars.join(", "));
-                }
-            } else {
-                println!("Query env: (using defaults from code)");
-            }
         }
+        // OB-NEW-2: Self-maintaining env snapshot — iterate every CQS_*
+        // variable instead of a hardcoded whitelist that drifts as new
+        // knobs are added. Env vars set on client subprocesses do NOT
+        // affect daemon-served queries; only the daemon's own env applies.
+        let cqs_vars: Vec<(String, String)> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("CQS_"))
+            .collect();
+        tracing::info!(cqs_vars = ?cqs_vars, "Daemon env snapshot");
         Some((listener, sock_path))
     } else {
         None
