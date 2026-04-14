@@ -68,19 +68,28 @@ fn flush_calls(
 }
 
 /// Attempt to flush deferred type edges. Type edge resolution already handles
-/// missing chunks gracefully (warns and skips), so we flush everything and
-/// clear the vec.
-fn flush_type_edges(store: &Store, edges: &[(PathBuf, Vec<cqs::parser::ChunkTypeRefs>)]) {
+/// missing chunks gracefully (warns and skips), so we flush everything.
+///
+/// Returns `true` if the flush succeeded (caller should clear the buffer),
+/// `false` if it failed (caller must leave the buffer intact for retry).
+#[must_use]
+fn flush_type_edges(store: &Store, edges: &[(PathBuf, Vec<cqs::parser::ChunkTypeRefs>)]) -> bool {
     if edges.is_empty() {
-        return;
+        return true;
     }
     tracing::info!(files = edges.len(), "Periodic flush: deferred type edges");
-    if let Err(e) = store.upsert_type_edges_for_files(edges) {
-        tracing::warn!(
-            files = edges.len(),
-            error = %e,
-            "Periodic flush of deferred type edges failed"
-        );
+    match store.upsert_type_edges_for_files(edges) {
+        Ok(()) => true,
+        Err(e) => {
+            // EH-11: leave the buffer intact for retry rather than silently
+            // dropping all deferred edges on transient failure.
+            tracing::warn!(
+                files = edges.len(),
+                error = %e,
+                "Periodic flush of deferred type edges failed, retaining for retry"
+            );
+            false
+        }
     }
 }
 
@@ -178,8 +187,11 @@ pub(super) fn store_stage(
         batch_counter += 1;
         if batch_counter.is_multiple_of(flush_interval) {
             deferred_chunk_calls = flush_calls(store, std::mem::take(&mut deferred_chunk_calls));
-            flush_type_edges(store, &deferred_type_edges);
-            deferred_type_edges.clear();
+            // EH-11: only clear the buffer on successful flush; on failure
+            // the buffer is left intact so the next flush retries.
+            if flush_type_edges(store, &deferred_type_edges) {
+                deferred_type_edges.clear();
+            }
         }
     }
 
