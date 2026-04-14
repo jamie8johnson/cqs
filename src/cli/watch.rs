@@ -641,9 +641,18 @@ pub fn cmd_watch(
     let _socket_guard = socket_listener
         .as_ref()
         .map(|(_, path)| SocketCleanupGuard(path.clone()));
+    // PB-V1.25-2 / PB-V1.25-18: on non-unix platforms the daemon
+    // socket path is #[cfg(unix)]-only, so --serve would otherwise
+    // silently no-op. Warn both on stderr (so interactive users notice
+    // without --log-level=warn) and via tracing (for systemd-style
+    // journals that scrape our output).
     #[cfg(not(unix))]
     if serve {
-        tracing::warn!("--serve is not supported on Windows (no Unix domain sockets)");
+        eprintln!(
+            "Warning: --serve is unix-only (daemon socket uses Unix domain sockets); \
+             falling back to plain watch mode"
+        );
+        tracing::warn!("--serve requested on non-unix platform; daemon disabled");
     }
 
     // Spawn dedicated socket handler thread — runs independently of the file
