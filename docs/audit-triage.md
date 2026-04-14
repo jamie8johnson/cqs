@@ -27,7 +27,7 @@ Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255,
 | Code Quality: .claude/worktrees/ indexed | `.claude/worktrees/` indexed as project code; not in `.gitignore` | easy | `.gitignore`, file walker | ✅ wave-1 (d01766a) |
 | CQ-V1.25-1 | `--threshold` / `-t` silently dropped on daemon-routed queries | easy | `src/cli/batch/commands.rs:392-413` | pending |
 | CQ-V1.25-2 | scout/similar/related limit clamps drift between CLI and batch dispatchers | easy | `src/cli/commands/search/scout.rs:155` + 2 others | ✅ wave-1 (f720bf7) |
-| CQ-V1.25-3 | `HnswIndex::try_load_with_ef` default-dim footgun survives PR #900 | easy | `src/hnsw/persist.rs:786-824` | pending |
+| CQ-V1.25-3 | `HnswIndex::try_load_with_ef` default-dim footgun survives PR #900 | easy | `src/hnsw/persist.rs:786-824` | ✅ wave-2 (a88b63a) |
 | API Design: Daemon batch parser misses mutation cmds | Daemon batch parser misses `audit-mode`, more `notes` subcommands | easy | `src/cli/dispatch.rs::try_daemon_query` | pending |
 | API-V1.25-1 | Daemon forwards 8 commands the batch parser cannot handle | easy | `src/cli/dispatch.rs:401-423` | ✅ wave-1 (63ff389) |
 | API-V1.25-2 | `cqs stale --count-only` and `cqs drift -t` rejected by daemon | easy | `src/cli/batch/commands.rs:218,222-237` | ✅ wave-1 (63ff389) |
@@ -39,19 +39,19 @@ Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255,
 | RB-NEW-3 | Daemon socket `read_line` allocates unbounded before 1MB check | easy | `src/cli/watch.rs:69-82` | ✅ wave-1 (eb48f41) |
 | RB-NEW-4 | Daemon client `read_line` on response unbounded — wedged daemon OOMs CLI | easy | `src/cli/dispatch.rs:504-508` | ✅ wave-1 (63ff389) |
 | SEC-V1.25-2 | Daemon socket request `read_line` allocates before 1MB check — OOM vector | easy | `src/cli/watch.rs:69-82` | ✅ wave-1 (eb48f41) |
-| SEC-V1.25-4 | `QueryCache::open` never sets 0o600 on DB file (asymmetric with EmbeddingCache) | easy | `src/cache.rs:889-937` | pending |
-| SEC-V1.25-5 | `telemetry::log_command` / `log_routed` create file without `.mode(0o600)` — umask race | easy | `src/cli/telemetry.rs:88-96,171-178` | pending |
-| SEC-V1.25-7 | `doctor --fix` invokes `cqs` via PATH — PATH-injection hijack of recovery flow | easy | `src/cli/commands/infra/doctor.rs:41,57` | pending |
-| SEC-V1.25-13 | `CQS_LLM_API_BASE` permits silent HTTPS→HTTP downgrade with only a warn | easy | `src/llm/mod.rs:219-249` | pending |
+| SEC-V1.25-4 | `QueryCache::open` never sets 0o600 on DB file (asymmetric with EmbeddingCache) | easy | `src/cache.rs:889-937` | ✅ wave-2 (439d627) |
+| SEC-V1.25-5 | `telemetry::log_command` / `log_routed` create file without `.mode(0o600)` — umask race | easy | `src/cli/telemetry.rs:88-96,171-178` | ✅ wave-2 (368cda6) |
+| SEC-V1.25-7 | `doctor --fix` invokes `cqs` via PATH — PATH-injection hijack of recovery flow | easy | `src/cli/commands/infra/doctor.rs:41,57` | ✅ wave-2 (5da5f3e) |
+| SEC-V1.25-13 | `CQS_LLM_API_BASE` permits silent HTTPS→HTTP downgrade with only a warn | easy | `src/llm/mod.rs:219-249` | ✅ wave-2 (510494a) |
 | SEC-V1.25-15 | Stale-socket cleanup removes any file at socket path — symlink TOCTOU | medium→easy | `src/cli/watch.rs:401-413` | ✅ wave-1 (40ba816) |
 | PB-V1.25-15 | Socket `set_permissions(0o600).ok()` silently fails on 9P/NFS/FUSE | easy | `src/cli/watch.rs:418-421` | ✅ wave-1 (7bae42d) |
 | PB-V1.25-18 | `cqs watch --serve` Windows branch silently drops flag | easy | `src/cli/watch.rs:465-468` | ✅ wave-1 (6ac57eb) |
 | PB-V1.25-8 | `gitignore` boilerplate writes `\n`-only — dirty `git status` on Windows autocrlf=true | easy | `src/cli/commands/infra/init.rs:37-40` | pending |
 | SHL-V1.25-1 | `CQS_DAEMON_TIMEOUT_MS` integer-divided to seconds, loses sub-second precision | easy | `src/cli/dispatch.rs:443-449` | ✅ wave-1 (63ff389) |
 | SHL-V1.25-2 | Daemon write timeout hardcoded 30s — long SPLADE+reranker queries exceed silently | easy | `src/cli/watch.rs:65-66`, `src/cli/dispatch.rs:451` | ✅ wave-1 (63ff389) |
-| EH-16 | HNSW self-heal `is_hnsw_dirty().unwrap_or(true)` swallows metadata errors | easy | `src/cli/store.rs:289,343` | pending |
-| EH-17 | `query_cache::get` silently treats DB errors as cache miss | easy | `src/cache.rs:941-949` | pending; primary for OB-NEW-6 |
-| OB-NEW-6 | `QueryCache::get` swallows sqlite errors and dim mismatches — cache poisoning invisible | easy | `src/cache.rs:940-961` | pending; duplicate of EH-17 |
+| EH-16 | HNSW self-heal `is_hnsw_dirty().unwrap_or(true)` swallows metadata errors | easy | `src/cli/store.rs:289,343` | ✅ wave-2 (9be9cfd) |
+| EH-17 | `query_cache::get` silently treats DB errors as cache miss | easy | `src/cache.rs:941-949` | ✅ wave-2 (2f1e678) |
+| OB-NEW-6 | `QueryCache::get` swallows sqlite errors and dim mismatches — cache poisoning invisible | easy | `src/cache.rs:940-961` | ✅ wave-2 (2f1e678) |
 | EH-21 | `handle_socket_client` `catch_unwind` discards panic payload | easy | `src/cli/watch.rs:113-138` | ✅ wave-1 (2ba4b6a) |
 | OB-NEW-4 | Daemon panic path discards payload — error log opaque | easy | `src/cli/watch.rs:135-138` | ✅ wave-1 (2ba4b6a) |
 | EH-22 | Socket accept-loop errors logged at `debug` level | easy | `src/cli/watch.rs:494` | ✅ wave-1 (40a16c2) |
@@ -59,38 +59,38 @@ Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255,
 | EH-12 | `batch::dispatch_line` and `cmd_batch` flatten anyhow chain to top-level | easy | `src/cli/batch/mod.rs:254-256,844-849,851-856` | pending |
 | RB-NEW-1 | `SpladeEncoder::encode_batch` pre-pooled slicing panics on short tensor | easy | `src/splade/mod.rs:688-702` | ✅ wave-1 (74a01f4) |
 | RB-NEW-2 | `SpladeEncoder::encode_batch` raw-logits path panics + wrong `.expect` message | easy | `src/splade/mod.rs:733-740` | ✅ wave-1 (74a01f4) |
-| RB-NEW-5 | `unreachable!()` in notes dispatch encodes routing invariant outside type system | easy | `src/cli/commands/io/notes.rs:116,147` | pending |
-| EH-10 | Periodic `flush_calls` loses items when `upsert_calls_batch` fails | easy | `src/cli/pipeline/upsert.rs:44-60` | pending |
-| EH-11 | Periodic `flush_type_edges` unconditionally clears buffer on failure | easy | `src/cli/pipeline/upsert.rs:69-81,177-178` | pending |
+| RB-NEW-5 | `unreachable!()` in notes dispatch encodes routing invariant outside type system | easy | `src/cli/commands/io/notes.rs:116,147` | ✅ wave-2 (9e87eb9) |
+| EH-10 | Periodic `flush_calls` loses items when `upsert_calls_batch` fails | easy | `src/cli/pipeline/upsert.rs:44-60` | ✅ wave-2 (a42206a) |
+| EH-11 | Periodic `flush_type_edges` unconditionally clears buffer on failure | easy | `src/cli/pipeline/upsert.rs:69-81,177-178` | ✅ wave-2 (dc8bf79) |
 | RM-V1.25-9 | No explicit SIGTERM handler — systemd `stop` may hard-kill daemon, WAL unflushed | easy | `src/cli/signal.rs:27-37` | ✅ wave-1 (7f4b72f) |
 | RM-V1.25-23 | Watch `pending_files` cap drops events silently — no full-rescan fallback | easy | `src/cli/watch.rs:186-195,784-792` | ✅ wave-1 (4ec3dd8) |
-| RM-V1.25-25 | `CQS_TELEMETRY` is sticky once file exists — disabling via env doesn't stop collection | easy | `src/cli/telemetry.rs:44,118` | pending |
+| RM-V1.25-25 | `CQS_TELEMETRY` is sticky once file exists — disabling via env doesn't stop collection | easy | `src/cli/telemetry.rs:44,118` | ✅ wave-2 (41d5417) |
 
 ## P2 — Medium + High Impact (fix in batch)
 
 | ID | Title | Difficulty | Location | Status |
 |---|---|---|---|---|
 | AC-V1.25-7 | CAGRA `search_impl` returns phantom "perfect" results when `index.len() < k` | medium | `src/cagra.rs:193-273` | ✅ wave-1 (6434c41) |
-| AC-V1.25-8 | HNSW self-heal dirty-flag shared across enriched and base — clearing one clears both | medium | `src/cli/store.rs:289-308,343-360`, `src/store/metadata.rs:186-207` | pending |
+| AC-V1.25-8 | HNSW self-heal dirty-flag shared across enriched and base — clearing one clears both | medium | `src/cli/store.rs:289-308,343-360`, `src/store/metadata.rs:186-207` | ✅ wave-2 (f66d898) |
 | AC-V1.25-10 | `MULTISTEP_PATTERNS` includes bare `" and "` / `" or "` — routes simple conjunctions wrong | medium | `src/search/router.rs:257-259` | ✅ wave-1 (f720bf7) |
 | AC-V1.25-13 | `compute_risk_batch` entry-point heuristic conflates 4 distinct cases as Medium | medium | `src/impact/hints.rs:138-147` | pending |
 | AC-V1.25-14 | `test_reachability` BFS node cap truncates mid-class — biased per-function risk scores | medium | `src/impact/bfs.rs:277-301` | pending |
 | Error Handling: Ingest pipeline FK failures | Ingest pipeline FK failures silently discard call graph edges (14k+ edges lost) | medium | `src/cli/pipeline/upsert.rs` | pending |
 | Data Safety: HNSW state can diverge | HNSW state can diverge from chunks table after out-of-band mutation — ghost results | medium | `src/cli/commands/index/gc.rs`, HNSW load path | pending |
-| DS-V1.25-2 | `HnswIndex::insert_batch` partial failure leaves graph out of sync with `id_map` | medium | `src/hnsw/mod.rs:234-284` | pending |
+| DS-V1.25-2 | `HnswIndex::insert_batch` partial failure leaves graph out of sync with `id_map` | medium | `src/hnsw/mod.rs:234-284` | ✅ wave-2 (166aa05) |
 | DS-V1.25-3 | Watch-mode `set_hnsw_dirty(false)` + chunks-write race can clear flag with unindexed chunks | hard→medium | `src/cli/watch.rs:835-937` | pending |
 | DS-V1.25-5 | `upsert_calls_batch` aborts on FK violation — watch race drops calls silently | medium | `src/store/calls/crud.rs:55-97` | pending |
 | DS-V1.25-6 | Daemon read-only BatchContext can't detect `cqs index --force` DB replacement | medium | `src/cli/watch.rs:476-498`, `src/cli/batch/mod.rs:138-187` | pending |
-| API-V1.25-3 | `suggest --apply` writes through a read-only store — fails in CLI and daemon | medium | `src/cli/dispatch.rs:335`, `src/cli/batch/handlers/analysis.rs:86-128` | pending |
-| API-V1.25-4 | `BatchCmd::Search` inline-duplicates 21 fields instead of shared `SearchArgs` | medium | `src/cli/batch/commands.rs:32-92` vs `src/cli/definitions.rs:122-226` | pending |
+| API-V1.25-3 | `suggest --apply` writes through a read-only store — fails in CLI and daemon | medium | `src/cli/dispatch.rs:335`, `src/cli/batch/handlers/analysis.rs:86-128` | ✅ issue #946 |
+| API-V1.25-4 | `BatchCmd::Search` inline-duplicates 21 fields instead of shared `SearchArgs` | medium | `src/cli/batch/commands.rs:32-92` vs `src/cli/definitions.rs:122-226` | ✅ issue #947 |
 | API-V1.25-8 | Daemon forward silently ignores `--model` mismatch — wrong model used | medium | `src/cli/dispatch.rs:453-490` | ✅ wave-1 (63ff389) |
 | EH-14 | Daemon socket timeouts set via silent `.ok()` discards — guard defeated | easy→medium | `src/cli/watch.rs:65-66`, `src/cli/dispatch.rs:442-451` | pending |
 | EX-V1.25-11 | Notes subcommand splits across two dispatch fns with `unreachable!()` — same class as PR #945 | medium | `src/cli/commands/io/notes.rs:106-149`, `src/cli/dispatch.rs:175-179,415-423` | pending |
 | SEC-V1.25-1 | Daemon socket DoS — single-threaded accept loop with 5s read timeout | medium | `src/cli/watch.rs:488-497,58-146` | pending |
-| SEC-V1.25-6 | LLM prompt construction concatenates unsanitized chunk content inside backticks — prompt injection from references | medium | `src/llm/prompts.rs:13-18,47-53,85-95,108-115` | pending |
-| SEC-V1.25-8 | `CQS_PDF_SCRIPT` extension-only guard can't prevent `.py` payloads — daemon-persisted | medium | `src/convert/pdf.rs:56-69` | pending |
-| SEC-V1.25-10 | `find_python` / `find_7z` rely on PATH with no exec-bit / ownership check | medium | `src/convert/mod.rs:48-60`, `src/convert/chm.rs:182-208` | pending |
-| SEC-V1.25-11 | `git_log` / `git_diff_tree` / `git_show` accept `repo: &Path` without canonicalize/validate | medium | `src/train_data/git.rs:29,92,131,196` | pending |
+| SEC-V1.25-6 | LLM prompt construction concatenates unsanitized chunk content inside backticks — prompt injection from references | medium | `src/llm/prompts.rs:13-18,47-53,85-95,108-115` | ✅ wave-2 (283d7ae) |
+| SEC-V1.25-8 | `CQS_PDF_SCRIPT` extension-only guard can't prevent `.py` payloads — daemon-persisted | medium | `src/convert/pdf.rs:56-69` | ✅ wave-2 (ab3206d) |
+| SEC-V1.25-10 | `find_python` / `find_7z` rely on PATH with no exec-bit / ownership check | medium | `src/convert/mod.rs:48-60`, `src/convert/chm.rs:182-208` | ✅ wave-2 (0ed9dd9) |
+| SEC-V1.25-11 | `git_log` / `git_diff_tree` / `git_show` accept `repo: &Path` without canonicalize/validate | medium | `src/train_data/git.rs:29,92,131,196` | ✅ wave-2 (08c9751) |
 | SEC-V1.25-12 | Reindex of cross-fs paths without symlink-escape check on event-triggered re-reads | medium | `src/cli/watch.rs:556-560,740-810` | pending |
 | SEC-V1.25-14 | `add_reference_to_config` stores user-supplied source verbatim — no trust check on update | medium | `src/cli/commands/infra/reference.rs:87-184`, `src/config.rs:480-...` | pending |
 | PB-V1.25-2 | `daemon_socket_path` is `#[cfg(unix)]`-only — `cqs watch --serve` silently no-ops on Windows | medium | `src/cli/files.rs:10-28`, `src/cli/watch.rs:465-468` | ✅ wave-1 (6ac57eb) |
@@ -131,7 +131,7 @@ Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255,
 | CQ-V1.25-8 | `BatchContext::notes_cache` invalidation is unreachable in daemon sessions | easy | `src/cli/batch/handlers/misc.rs:98-131`, `src/cli/batch/mod.rs:204` | pending |
 | EH-20 | `dispatch_diff` has dead placeholder binding — pitfall waiting to trip | easy | `src/cli/batch/handlers/misc.rs:322-334,337-357` | pending |
 | DS-V1.25-1 | SPLADE cross-device fallback writes directly into final path — not atomic | easy | `src/splade/index.rs:399-423` | ✅ wave-1 (bd3c7ef) |
-| DS-V1.25-4 | HNSW save writes `id_map` without `sync_all()` — power-cut may lose durability | easy | `src/hnsw/persist.rs:262-287` | pending |
+| DS-V1.25-4 | HNSW save writes `id_map` without `sync_all()` — power-cut may lose durability | easy | `src/hnsw/persist.rs:262-287` | ✅ wave-2 (de3dc7f) |
 | DS-V1.25-7 | `query_log.jsonl` append has no lock + no size cap — interleaved lines under concurrency | easy | `src/cli/batch/commands.rs:351-379` | pending |
 | SHL-V1.25-3 | SQLite `cache_size` hardcoded per-mode; no env override | easy | `src/store/mod.rs:288,311,328,347` | pending |
 | SHL-V1.25-4 | `cache.rs:175` SQL DELETE batch still uses pre-3.32 `chunks(100)` | easy | `src/cache.rs:174-175` | pending |
@@ -166,7 +166,7 @@ Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255,
 | EX-V1.25-9 | Doc-comment formats indirected through string tags, defeating type safety | easy | `src/doc_writer/formats.rs:41-132`, `src/language/mod.rs:322-327` | pending |
 | EX-V1.25-10 | CAGRA knobs hidden behind a single env var; HNSW exposes three but CAGRA exposes zero | easy | `src/cagra.rs:113,169,469` | pending; partial dup of SHL-V1.25-6 |
 | EX-V1.25-13 | `ModelInfo::default()` uses hardcoded BGE-large constants — footgun for test writers | easy | `src/embedder/models.rs:304-315` | pending |
-| SEC-V1.25-3 | Daemon socket path uses non-cryptographic `DefaultHasher` — document or replace | easy | `src/cli/files.rs:16-28` | pending |
+| SEC-V1.25-3 | Daemon socket path uses non-cryptographic `DefaultHasher` — document or replace | easy | `src/cli/files.rs:16-28` | ✅ wave-2 (cb5d0e2) |
 | SEC-V1.25-9 | `handle_socket_client` args echoed to tracing at debug — full query strings logged | easy | `src/cli/watch.rs:106` | ✅ wave-1 (a10a44b) |
 | SEC-V1.25-16 | Daemon logs full command for every query — sensitive `notes add` text persists in journal | easy | `src/cli/watch.rs:141-145` | ✅ wave-1 (49ec0e0) |
 | PB-V1.25-1 | Cache paths hardcode `~/.cache/cqs/` — wrong on Windows and macOS conventions | easy | `src/cache.rs:45-48,882-885` + others | pending |
@@ -224,22 +224,22 @@ Cross-references to known open issues: `#909, #912-#925, #856, #717, #389, #255,
 
 These are easy/cosmetic items not worth a separate GitHub issue — clean up alongside the P1/P3 sweeps:
 
-- **DOC-V1.25-1** — Stray `/` in doc comments (`src/search/router.rs:296,299,305,559`). One-line fix per occurrence.
-- **DOC-V1.25-2** — README cuvs patch note pins "v1.24.0" — say "v1.24.0+" or strip version (`README.md:786`).
-- **DOC-V1.25-3** — CHANGELOG `[Unreleased]` link still points to v0.19.0; needs v1.25.0 anchor + per-version footers (`CHANGELOG.md:2188`).
-- **DOC-V1.25-4** — README env-var table missing 11 documented `CQS_*` vars (`README.md:649-704`).
-- **DOC-V1.25-5** — README does not document v1.25.0 per-category SPLADE alpha defaults.
-- **DOC-V1.25-6** — PRIVACY.md "Deleting Your Data" misses `~/.cache/cqs/` (`PRIVACY.md:46-56`).
-- **DOC-V1.25-7** — SECURITY.md Filesystem Access tables omit `~/.cache/cqs/` (`SECURITY.md:66-98`).
-- **DOC-V1.25-8** — CONTRIBUTING.md router.rs entry missing v1.25 categories and `resolve_splade_alpha`.
-- **DOC-V1.25-9** — README install section silent on patched cuvs git clone for CPU-only builds.
-- **DOC-V1.25-11** — README eval numbers contradictory across TL;DR / How It Works / Retrieval Quality.
-- **DOC-V1.25-12** — MEMORY.md says Schema v16 — current is v20; refresh test count alongside.
-- **CQ-V1.25-5** — `build_with_dim` docstring points at nonexistent `build_batched()` (`src/hnsw/build.rs:29-38`).
-- **DS-V1.25-9** — `schema.sql` header still says `v18` — bump to v20 with v19/v20 enumerated (`src/schema.sql:1-3`).
+- **DOC-V1.25-1** — Stray `/` in doc comments (`src/search/router.rs:296,299,305,559`). One-line fix per occurrence. ✅ wave-1 (router cleanup)
+- **DOC-V1.25-2** — README cuvs patch note pins "v1.24.0" — say "v1.24.0+" or strip version (`README.md:786`). ✅ wave-2 (docs)
+- **DOC-V1.25-3** — CHANGELOG `[Unreleased]` link still points to v0.19.0; needs v1.25.0 anchor + per-version footers (`CHANGELOG.md:2188`). ✅ wave-2 (docs)
+- **DOC-V1.25-4** — README env-var table missing 11 documented `CQS_*` vars (`README.md:649-704`). ✅ wave-2 (docs)
+- **DOC-V1.25-5** — README does not document v1.25.0 per-category SPLADE alpha defaults. ✅ wave-2 (docs)
+- **DOC-V1.25-6** — PRIVACY.md "Deleting Your Data" misses `~/.cache/cqs/` (`PRIVACY.md:46-56`). ✅ wave-2 (docs)
+- **DOC-V1.25-7** — SECURITY.md Filesystem Access tables omit `~/.cache/cqs/` (`SECURITY.md:66-98`). ✅ wave-2 (docs)
+- **DOC-V1.25-8** — CONTRIBUTING.md router.rs entry missing v1.25 categories and `resolve_splade_alpha`. ✅ wave-2 (docs)
+- **DOC-V1.25-9** — README install section silent on patched cuvs git clone for CPU-only builds. ✅ wave-2 (docs)
+- **DOC-V1.25-11** — README eval numbers contradictory across TL;DR / How It Works / Retrieval Quality. ✅ wave-2 (docs)
+- **DOC-V1.25-12** — MEMORY.md says Schema v16 — current is v20; refresh test count alongside. ✅ wave-2 (MEMORY)
+- **CQ-V1.25-5** — `build_with_dim` docstring points at nonexistent `build_batched()` (`src/hnsw/build.rs:29-38`). ✅ wave-2 (docs)
+- **DS-V1.25-9** — `schema.sql` header still says `v18` — bump to v20 with v19/v20 enumerated (`src/schema.sql:1-3`). ✅ wave-2 (docs)
 - **DS-V1.25-11** — eval output atomic-write gap is in Python harness, out of scope for cqs Rust; close as noted.
-- **DS-V1.25-8** — Telemetry auto-archive race document-only — single-writer assumption is acceptable; document the invariant.
-- **SHL-V1.25-10** — `DEFAULT_QUERY_CACHE_SIZE = 128` comment assumes 1024-dim; just update the comment.
+- **DS-V1.25-8** — Telemetry auto-archive race document-only — single-writer assumption is acceptable; document the invariant. ✅ wave-2 (docs)
+- **SHL-V1.25-10** — `DEFAULT_QUERY_CACHE_SIZE = 128` comment assumes 1024-dim; just update the comment. ✅ wave-2 (docs)
 
 ### GitHub issues (file separately)
 
