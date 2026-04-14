@@ -55,53 +55,65 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
         return; // Need at least a container + 2 children
     }
 
-    // Count how many results share each parent_type_name
-    let mut parent_counts: HashMap<String, usize> = HashMap::new();
-    for r in results.iter() {
-        if let Some(ref ptn) = r.chunk.parent_type_name {
-            *parent_counts.entry(ptn.clone()).or_insert(0) += 1;
+    // PF-V1.25-14: compute which result indices need boosting in an
+    // immutable-borrow phase so `parent_counts` can key on `&str` borrowed
+    // from `results` instead of cloning every `parent_type_name`. Once we
+    // have the `(index, boost)` list, `parent_counts` drops and the mutable
+    // pass runs without overlapping borrows.
+    let boosts: Vec<(usize, f32)> = {
+        let mut parent_counts: HashMap<&str, usize> = HashMap::new();
+        for r in results.iter() {
+            if let Some(ref ptn) = r.chunk.parent_type_name {
+                *parent_counts.entry(ptn.as_str()).or_insert(0) += 1;
+            }
         }
-    }
+        // Only proceed if any parent_type_name appears 2+ times
+        if !parent_counts.values().any(|&c| c >= 2) {
+            return;
+        }
+        let cfg = &ScoringConfig::DEFAULT;
+        let max_children = (cfg.parent_boost_cap - 1.0) / cfg.parent_boost_per_child;
+        results
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                let is_container = matches!(
+                    r.chunk.chunk_type,
+                    ChunkType::Class | ChunkType::Struct | ChunkType::Interface
+                );
+                if !is_container {
+                    return None;
+                }
+                let count = *parent_counts.get(r.chunk.name.as_str())?;
+                if count >= 2 {
+                    let boost =
+                        1.0 + cfg.parent_boost_per_child * (count as f32 - 1.0).min(max_children);
+                    tracing::debug!(
+                        name = %r.chunk.name,
+                        child_count = count,
+                        boost = %boost,
+                        "parent_boost: boosting container"
+                    );
+                    Some((i, boost))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
 
-    // Only proceed if any parent_type_name appears 2+ times
-    if !parent_counts.values().any(|&c| c >= 2) {
+    if boosts.is_empty() {
         return;
     }
 
-    let cfg = &ScoringConfig::DEFAULT;
-    let max_children = (cfg.parent_boost_cap - 1.0) / cfg.parent_boost_per_child;
-    let mut boosted = false;
-    for r in results.iter_mut() {
-        let is_container = matches!(
-            r.chunk.chunk_type,
-            ChunkType::Class | ChunkType::Struct | ChunkType::Interface
-        );
-        if !is_container {
-            continue;
-        }
-        if let Some(&count) = parent_counts.get(&r.chunk.name) {
-            if count >= 2 {
-                let boost =
-                    1.0 + cfg.parent_boost_per_child * (count as f32 - 1.0).min(max_children);
-                tracing::debug!(
-                    name = %r.chunk.name,
-                    child_count = count,
-                    boost = %boost,
-                    "parent_boost: boosting container"
-                );
-                r.score *= boost;
-                boosted = true;
-            }
-        }
+    for (i, boost) in &boosts {
+        results[*i].score *= *boost;
     }
-
-    if boosted {
-        results.sort_by(|a, b| {
-            b.score
-                .total_cmp(&a.score)
-                .then(a.chunk.id.cmp(&b.chunk.id))
-        });
-    }
+    results.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then(a.chunk.id.cmp(&b.chunk.id))
+    });
 }
 
 /// Bounded min-heap for maintaining top-N search results by score.
