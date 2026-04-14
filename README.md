@@ -716,6 +716,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_SPLADE_MODEL` | (auto) | Path to SPLADE ONNX model directory (supports `~`-prefixed paths) |
 | `CQS_SPLADE_RESET_EVERY` | `0` | Reset the ORT session every N SPLADE batches to bound arena growth (0 = disabled) |
 | `CQS_SPLADE_THRESHOLD` | `0.01` | SPLADE sparse activation threshold |
+| `CQS_SQLITE_CACHE_SIZE` | `-16384` (`-4096` for `open_readonly`) | SQLite `cache_size` PRAGMA. Negative = kibibytes, positive = page count. |
 | `CQS_TELEMETRY` | `0` | Set to `1` to enable command usage telemetry |
 | `CQS_TEST_MAP_MAX_NODES` | `10000` | Max BFS nodes in test-map traversal |
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |

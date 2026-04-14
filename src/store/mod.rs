@@ -247,7 +247,7 @@ struct StoreOpenConfig {
     use_current_thread: bool,
     max_connections: u32,
     mmap_size: String,
-    cache_size: &'static str,
+    cache_size: String,
     /// Pre-existing runtime to reuse. If `Some`, skips runtime creation
     /// (~15ms saving). If `None`, creates a new one per `use_current_thread`.
     runtime: Option<Runtime>,
@@ -260,6 +260,18 @@ fn mmap_size_from_env(default_bytes: &str) -> String {
         .ok()
         .and_then(|v| v.parse::<u64>().ok().map(|n| n.to_string()))
         .unwrap_or_else(|| default_bytes.to_string())
+}
+
+/// Read `CQS_SQLITE_CACHE_SIZE` env var, falling back to `default_kib`.
+/// SQLite `cache_size` PRAGMA uses a negative kibibyte count (e.g. `-16384`
+/// for 16 MB). The env var should be a signed integer in that same format —
+/// negative means kibibytes, positive means a page count. Accepting only
+/// i64 keeps parsing simple while letting tuners pick either convention.
+fn cache_size_from_env(default_kib: &str) -> String {
+    std::env::var("CQS_SQLITE_CACHE_SIZE")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok().map(|n| n.to_string()))
+        .unwrap_or_else(|| default_kib.to_string())
 }
 
 impl Store {
@@ -288,7 +300,7 @@ impl Store {
                 use_current_thread: false,
                 max_connections,
                 mmap_size: mmap_size_from_env("268435456"), // 256MB default
-                cache_size: "-16384",                       // 16MB
+                cache_size: cache_size_from_env("-16384"),  // 16MB
                 runtime: None,
             },
         )
@@ -311,7 +323,7 @@ impl Store {
                 use_current_thread: true,
                 max_connections: 1,
                 mmap_size: mmap_size_from_env("268435456"),
-                cache_size: "-16384",
+                cache_size: cache_size_from_env("-16384"),
                 runtime: None,
             },
         )
@@ -328,7 +340,7 @@ impl Store {
                 use_current_thread: true,
                 max_connections: 1,
                 mmap_size: mmap_size_from_env("67108864"), // 64MB default
-                cache_size: "-4096",                       // 4MB
+                cache_size: cache_size_from_env("-4096"),  // 4MB
                 runtime: None,
             },
         )
@@ -347,7 +359,7 @@ impl Store {
                 use_current_thread: true,
                 max_connections: 1,
                 mmap_size: mmap_size_from_env("268435456"),
-                cache_size: "-16384",
+                cache_size: cache_size_from_env("-16384"),
                 runtime: Some(runtime),
             },
         )
