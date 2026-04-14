@@ -19,7 +19,7 @@ mod watch;
 
 // Re-export definitions (clap structs, enums, helpers) for external use
 pub(crate) use definitions::{
-    parse_nonzero_usize, validate_finite_f32, AuditModeState, GateThreshold,
+    parse_finite_f32, parse_nonzero_usize, validate_finite_f32, AuditModeState, GateThreshold,
 };
 pub use definitions::{Cli, OutputFormat};
 

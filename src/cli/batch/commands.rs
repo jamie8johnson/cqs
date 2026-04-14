@@ -48,7 +48,7 @@ pub(crate) enum BatchCmd {
         #[arg(long)]
         splade: bool,
         /// SPLADE fusion weight: 1.0 = pure cosine, 0.0 = pure sparse
-        #[arg(long, default_value = "0.7")]
+        #[arg(long, default_value = "0.7", value_parser = crate::cli::parse_finite_f32)]
         splade_alpha: f32,
         /// Filter by language
         #[arg(short = 'l', long)]
@@ -69,7 +69,7 @@ pub(crate) enum BatchCmd {
         #[arg(long)]
         no_demote: bool,
         /// Weight for name matching in hybrid search (0.0-1.0, default 0.2)
-        #[arg(long, default_value = "0.2")]
+        #[arg(long, default_value = "0.2", value_parser = crate::cli::parse_finite_f32)]
         name_boost: f32,
         /// Search only this reference index (skip project index)
         #[arg(long = "ref")]
@@ -230,10 +230,10 @@ pub(crate) enum BatchCmd {
         ///
         /// `-t` alias matches the CLI subcommand so forwarded invocations
         /// (`cqs drift ref -t 0.9`) parse cleanly on the daemon side.
-        #[arg(short = 't', long, default_value = "0.95")]
+        #[arg(short = 't', long, default_value = "0.95", value_parser = crate::cli::parse_finite_f32)]
         threshold: f32,
         /// Minimum drift to show (default: 0.0)
-        #[arg(long, default_value = "0.0")]
+        #[arg(long, default_value = "0.0", value_parser = crate::cli::parse_finite_f32)]
         min_drift: f32,
         /// Filter by language
         #[arg(short = 'l', long)]
@@ -293,7 +293,7 @@ pub(crate) enum BatchCmd {
         ///
         /// `-t` alias matches the CLI subcommand so forwarded invocations
         /// (`cqs diff a b -t 0.9`) parse cleanly on the daemon side.
-        #[arg(short = 't', long, default_value = "0.95")]
+        #[arg(short = 't', long, default_value = "0.95", value_parser = crate::cli::parse_finite_f32)]
         threshold: f32,
         /// Filter by language
         #[arg(short = 'l', long)]
