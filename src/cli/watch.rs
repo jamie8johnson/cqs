@@ -161,22 +161,46 @@ fn handle_socket_client(
 
     // Record command on the span so every event inside this handler is
     // enriched with it, without needing to repeat `command` on each log.
-    span.record("command", command);
+    //
+    // SEC-V1.25-16: `notes add`/`update`/`remove` carry the note body
+    // as the first arg, which may contain source snippets or secrets.
+    // Log only `notes/<subcommand>` so operators see the shape of
+    // activity without the body reaching the journal.
+    let command_for_log: String = if command == "notes" {
+        let sub = args.first().map(String::as_str).unwrap_or("<unknown>");
+        // Only pass the subcommand itself through, never args beyond it.
+        match sub {
+            "add" | "update" | "remove" | "list" => format!("notes/{sub}"),
+            _ => "notes/<unknown>".to_string(),
+        }
+    } else {
+        command.to_string()
+    };
+    span.record("command", command_for_log.as_str());
 
     // SEC-V1.25-9: avoid echoing full query args — search strings and
     // notes bodies may contain snippets of private source or secrets.
     // Log only a length + 80-char preview at debug level; the full
     // command name is already on the span.
-    let args_joined = args.join(" ");
-    let args_preview_end = args_joined
-        .char_indices()
-        .nth(80)
-        .map(|(i, _)| i)
-        .unwrap_or(args_joined.len());
+    //
+    // SEC-V1.25-16: for notes mutations the body *is* the sensitive
+    // payload, so skip the preview entirely and record only the arg
+    // count.
+    let args_preview: String = if command == "notes" {
+        "<redacted>".to_string()
+    } else {
+        let joined = args.join(" ");
+        let end = joined
+            .char_indices()
+            .nth(80)
+            .map(|(i, _)| i)
+            .unwrap_or(joined.len());
+        joined[..end].to_string()
+    };
     tracing::debug!(
-        command,
+        command = %command_for_log,
         args_len = args.len(),
-        args_preview = %&args_joined[..args_preview_end],
+        args_preview = %args_preview,
         "Daemon request"
     );
 
