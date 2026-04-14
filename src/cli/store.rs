@@ -328,7 +328,7 @@ pub(crate) fn build_vector_index_with_config(
     Ok(cqs::HnswIndex::try_load_with_ef(
         cqs_dir,
         ef_search,
-        Some(store.dim()),
+        store.dim(),
     ))
 }
 
@@ -381,7 +381,7 @@ pub(crate) fn build_base_vector_index(
     Ok(cqs::HnswIndex::try_load_base_with_ef(
         cqs_dir,
         None,
-        Some(store.dim()),
+        store.dim(),
     ))
 }
 

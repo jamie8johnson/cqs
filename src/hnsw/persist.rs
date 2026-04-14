@@ -761,11 +761,15 @@ impl HnswIndex {
         }
     }
 
-    /// Load HNSW index with optional ef_search override and runtime dim.
+    /// Load HNSW index with optional ef_search override and an explicit
+    /// runtime dim.
+    ///
+    /// `dim` is required — it must match the dimension the index was built
+    /// with. Mismatches surface as load errors rather than silent misreads.
     pub fn try_load_with_ef(
         cq_dir: &Path,
         ef_search: Option<usize>,
-        dim: Option<usize>,
+        dim: usize,
     ) -> Option<Box<dyn VectorIndex>> {
         Self::try_load_named(cq_dir, "index", ef_search, dim)
     }
@@ -774,10 +778,12 @@ impl HnswIndex {
     ///
     /// Returns `None` when `index_base.hnsw.*` files are absent or corrupt —
     /// the router treats that as a signal to fall back to the enriched index.
+    ///
+    /// `dim` is required for the same reasons as `try_load_with_ef`.
     pub fn try_load_base_with_ef(
         cq_dir: &Path,
         ef_search: Option<usize>,
-        dim: Option<usize>,
+        dim: usize,
     ) -> Option<Box<dyn VectorIndex>> {
         Self::try_load_named(cq_dir, "index_base", ef_search, dim)
     }
@@ -787,11 +793,10 @@ impl HnswIndex {
         cq_dir: &Path,
         basename: &str,
         ef_search: Option<usize>,
-        dim: Option<usize>,
+        dim: usize,
     ) -> Option<Box<dyn VectorIndex>> {
         if Self::exists(cq_dir, basename) {
-            let load_dim = dim.unwrap_or(crate::EMBEDDING_DIM);
-            match Self::load_with_dim(cq_dir, basename, load_dim) {
+            match Self::load_with_dim(cq_dir, basename, dim) {
                 Ok(mut index) => {
                     if let Some(ef) = ef_search {
                         index.set_ef_search(ef);
@@ -1133,11 +1138,11 @@ mod tests {
         index.save(tmp.path(), "index").unwrap();
 
         // Enriched load should succeed.
-        let enriched = HnswIndex::try_load_with_ef(tmp.path(), None, None);
+        let enriched = HnswIndex::try_load_with_ef(tmp.path(), None, crate::EMBEDDING_DIM);
         assert!(enriched.is_some(), "enriched HNSW should load");
 
         // Base load should return None — no index_base.* files exist.
-        let base = HnswIndex::try_load_base_with_ef(tmp.path(), None, None);
+        let base = HnswIndex::try_load_base_with_ef(tmp.path(), None, crate::EMBEDDING_DIM);
         assert!(
             base.is_none(),
             "base HNSW should return None when index_base files are absent"
@@ -1157,12 +1162,12 @@ mod tests {
         index.save(tmp.path(), "index_base").unwrap();
 
         // Base load succeeds.
-        let base = HnswIndex::try_load_base_with_ef(tmp.path(), None, None);
+        let base = HnswIndex::try_load_base_with_ef(tmp.path(), None, crate::EMBEDDING_DIM);
         assert!(base.is_some(), "base HNSW should load when files present");
         assert_eq!(base.unwrap().len(), 10);
 
         // Enriched should still return None — only the base files exist.
-        let enriched = HnswIndex::try_load_with_ef(tmp.path(), None, None);
+        let enriched = HnswIndex::try_load_with_ef(tmp.path(), None, crate::EMBEDDING_DIM);
         assert!(
             enriched.is_none(),
             "enriched should return None when only index_base files exist"
