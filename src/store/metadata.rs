@@ -1,3 +1,6 @@
+// DS-5 / DS-V1.25-3: WRITE_LOCK guard is held across .await inside block_on().
+// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+#![allow(clippy::await_holding_lock)]
 //! Metadata get/set and version validation for the Store.
 
 use std::path::Path;
@@ -210,15 +213,26 @@ impl Store {
     ///
     /// AC-V1.25-8: tracked per-kind so that clearing after an enriched rebuild
     /// does not mask a still-stale base index.
+    ///
+    /// DS-V1.25-3: the flag update goes through `begin_write`, which acquires
+    /// `WRITE_LOCK` before opening the SQLite transaction. Previously this
+    /// ran as a bare pool write and could race with a concurrent chunks
+    /// mutation: if thread A was mid-write of new chunks while thread B
+    /// cleared the dirty flag, the on-disk state could briefly advertise a
+    /// clean HNSW that didn't yet reflect the in-flight chunks. The daemon
+    /// is read-only today so the hazard isn't exploited in practice, but
+    /// the invariant is now enforced instead of documented.
     pub fn set_hnsw_dirty(&self, kind: HnswKind, dirty: bool) -> Result<(), StoreError> {
         let val = if dirty { "1" } else { "0" };
         let key = kind.metadata_key();
         self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
             sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
                 .bind(key)
                 .bind(val)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
+            tx.commit().await?;
             Ok(())
         })
     }

@@ -545,8 +545,20 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
             .map(|ms| ms.max(1_000))
             .unwrap_or(30_000),
     );
-    stream.set_read_timeout(Some(timeout)).ok();
-    stream.set_write_timeout(Some(timeout)).ok();
+    // EH-14: explicit warn on timeout failures rather than silent `.ok()` —
+    // without a timeout the CLI could hang forever on a wedged daemon read.
+    if let Err(e) = stream.set_read_timeout(Some(timeout)) {
+        tracing::warn!(
+            error = %e,
+            "Failed to set read timeout on daemon client stream — CLI may hang on wedged daemon"
+        );
+    }
+    if let Err(e) = stream.set_write_timeout(Some(timeout)) {
+        tracing::warn!(
+            error = %e,
+            "Failed to set write timeout on daemon client stream — CLI may hang on wedged daemon"
+        );
+    }
 
     // Build batch-format request from CLI args.
     // Strip global flags (--json, -q, --quiet, --model, etc.) — they live
