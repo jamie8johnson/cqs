@@ -1299,6 +1299,11 @@ mod tests {
             "Test precondition: mtime matches — this is the sub-second race",
         );
 
+        // PF-V1.25-10 added a 100ms rate-limit on staleness checks. The setup
+        // above (create replacement Store + init + drop + rename) is faster
+        // than that on modern disks, so clear the throttle so the check runs.
+        ctx.last_staleness_check.set(None);
+
         // The staleness check should now invalidate even though mtime is
         // identical. Without the DS-V1.25-6 fix this would silently pass
         // through and keep the stale cache.
