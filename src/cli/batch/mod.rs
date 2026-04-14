@@ -38,10 +38,36 @@ use super::open_project_store_readonly;
 /// to prevent unbounded memory allocation from malicious input.
 const MAX_BATCH_LINE_LEN: usize = 1_048_576;
 
-/// Idle timeout for ONNX sessions (embedder, reranker) in minutes.
-/// After this many minutes without a command, sessions are cleared to free memory.
-/// Matches watch mode's ~5-minute idle clear pattern.
-const IDLE_TIMEOUT_MINUTES: u64 = 5;
+/// Default idle timeout for ONNX sessions (embedder, reranker) in minutes.
+/// After this many minutes without a command, sessions are cleared to free
+/// memory. Matches watch mode's ~5-minute idle clear pattern. Override via
+/// `CQS_BATCH_IDLE_MINUTES` (workstation users with 48GB VRAM can push to
+/// 60+; laptops with shared GPU may want 2).
+const DEFAULT_IDLE_TIMEOUT_MINUTES: u64 = 5;
+
+/// Resolve the idle-timeout minutes from env; 0 disables eviction entirely.
+fn idle_timeout_minutes() -> u64 {
+    std::env::var("CQS_BATCH_IDLE_MINUTES")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES)
+}
+
+/// Default number of reference indexes kept in the LRU cache. A "reference"
+/// is a sibling cqs project loaded via `@name` syntax. Memory-constrained
+/// environments can keep 2; workstation users can bump via `CQS_REFS_LRU_SIZE`.
+const DEFAULT_REFS_LRU_SIZE: usize = 2;
+
+/// Resolve the refs-cache LRU size from env, clamping to at least 1 slot.
+fn refs_lru_size() -> std::num::NonZeroUsize {
+    let size = std::env::var("CQS_REFS_LRU_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_REFS_LRU_SIZE);
+    // SAFETY: filter above guarantees size > 0; const fallback is 2.
+    std::num::NonZeroUsize::new(size).unwrap_or(std::num::NonZeroUsize::new(1).unwrap())
+}
 
 // ─── BatchContext ────────────────────────────────────────────────────────────
 
@@ -103,11 +129,16 @@ impl BatchContext {
     /// Check idle timeout and clear ONNX sessions if enough time has passed.
     ///
     /// Call this at the start of each command. Clears embedder and reranker
-    /// sessions after IDLE_TIMEOUT_MINUTES of no commands, freeing ~500MB+.
-    /// Sessions re-initialize lazily on next use.
+    /// sessions after `CQS_BATCH_IDLE_MINUTES` (default 5) of no commands,
+    /// freeing ~500MB+. Set to 0 to disable eviction entirely. Sessions
+    /// re-initialize lazily on next use.
     pub(crate) fn check_idle_timeout(&self) {
+        let timeout_minutes = idle_timeout_minutes();
+        if timeout_minutes == 0 {
+            return;
+        }
         let elapsed = self.last_command_time.get().elapsed();
-        let timeout = std::time::Duration::from_secs(IDLE_TIMEOUT_MINUTES * 60);
+        let timeout = std::time::Duration::from_secs(timeout_minutes * 60);
         if elapsed >= timeout {
             if let Some(emb) = self.embedder.get() {
                 emb.clear_session();
@@ -684,7 +715,7 @@ pub(crate) fn create_context() -> Result<BatchContext> {
         notes_cache: RefCell::new(None),
         splade_encoder: OnceLock::new(),
         splade_index: RefCell::new(None),
-        refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(2).unwrap())),
+        refs: RefCell::new(lru::LruCache::new(refs_lru_size())),
         root,
         cqs_dir,
         model_config: ModelConfig::resolve(None, None).apply_env_overrides(),
@@ -719,7 +750,7 @@ fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
         notes_cache: RefCell::new(None),
         splade_encoder: OnceLock::new(),
         splade_index: RefCell::new(None),
-        refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(2).unwrap())),
+        refs: RefCell::new(lru::LruCache::new(refs_lru_size())),
         root,
         cqs_dir: cqs_dir.to_path_buf(),
         model_config: ModelConfig::resolve(None, None).apply_env_overrides(),

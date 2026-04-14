@@ -657,6 +657,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CQS_API_BASE` | (none) | LLM API base URL (legacy alias for `CQS_LLM_API_BASE`) |
+| `CQS_BATCH_IDLE_MINUTES` | `5` | Minutes of inactivity before `cqs batch` / `cqs chat` clears ONNX sessions (`0` disables eviction). |
 | `CQS_BUSY_TIMEOUT_MS` | `5000` | SQLite busy timeout in milliseconds |
 | `CQS_CACHE_MAX_SIZE` | `1073741824` (1 GB) | Global embedding cache size limit |
 | `CQS_CAGRA_MAX_BYTES` | (auto) | Max GPU memory for CAGRA index |
@@ -703,6 +704,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_PDF_SCRIPT` | (auto) | Path to `pdf_to_md.py` for PDF conversion |
 | `CQS_QUERY_CACHE_SIZE` | `128` | Embedding query cache entries |
 | `CQS_RAYON_THREADS` | (auto) | Rayon thread pool size for parallel operations |
+| `CQS_REFS_LRU_SIZE` | `2` | Slots in the batch-mode reference-index LRU cache (sibling projects loaded via `@name`). |
 | `CQS_RERANKER_MAX_LENGTH` | `512` | Max input length for cross-encoder reranker |
 | `CQS_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder model for `--rerank` |
 | `CQS_RRF_K` | `60` | RRF fusion constant (higher = more weight to top results) |
