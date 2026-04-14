@@ -191,21 +191,22 @@ impl SpladeIndex {
             }
         }
 
-        // Sort by score descending, take top-k
-        let mut results: Vec<_> = scores
+        // PF-V1.25-3: bounded heap keeps top-k in O(n log k) instead of the
+        // full O(n log n) sort+truncate. `BoundedScoreHeap::into_sorted_vec`
+        // applies the id tie-breaker so equal-score results are
+        // deterministically ordered across process invocations (the HashMap
+        // above iterates in random order).
+        let mut heap = crate::search::scoring::BoundedScoreHeap::new(k);
+        for (idx, score) in scores {
+            if let Some(id) = self.id_map.get(idx) {
+                heap.push(id.clone(), score);
+            }
+        }
+        let results: Vec<IndexResult> = heap
+            .into_sorted_vec()
             .into_iter()
-            .filter_map(|(idx, score)| {
-                self.id_map.get(idx).map(|id| IndexResult {
-                    id: id.clone(),
-                    score,
-                })
-            })
+            .map(|(id, score)| IndexResult { id, score })
             .collect();
-        // Secondary sort on id for deterministic tie-breaking across process
-        // invocations (the HashMap above iterates in random order). Use
-        // total_cmp so NaN sorts last consistently.
-        results.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.id.cmp(&b.id)));
-        results.truncate(k);
 
         tracing::debug!(results = results.len(), "SPLADE search complete");
         results

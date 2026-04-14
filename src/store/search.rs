@@ -152,6 +152,10 @@ impl Store {
     ///
     /// Pre-allocates the HashMap with capacity for both input lists (PERF-28).
     /// Input size varies (limit*3 semantic + limit*3 FTS) but is always known upfront.
+    ///
+    /// PF-V1.25-2: uses `BoundedScoreHeap` for the final top-`limit` extraction
+    /// instead of full-sorting every candidate. Asymptotic: O(n log n) → O(n log limit),
+    /// which saves meaningful work on large candidate pools (100k returned for top-100).
     pub(crate) fn rrf_fuse(
         semantic_ids: &[&str],
         fts_ids: &[String],
@@ -190,13 +194,15 @@ impl Store {
             *scores.entry(id.as_str()).or_insert(0.0) += contribution;
         }
 
-        let mut sorted: Vec<(String, f32)> = scores
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect();
-        sorted.sort_by(|a, b| b.1.total_cmp(&a.1));
-        sorted.truncate(limit);
-        sorted
+        // Bounded heap keeps top-`limit` in O(n log limit) instead of the full
+        // O(n log n) sort+truncate. `BoundedScoreHeap::into_sorted_vec` applies
+        // the id tie-breaker so results are deterministic across process
+        // invocations (the HashMap above iterates in random order).
+        let mut heap = crate::search::scoring::BoundedScoreHeap::new(limit);
+        for (id, score) in scores {
+            heap.push(id.to_string(), score);
+        }
+        heap.into_sorted_vec()
     }
 
     /// Exposed for property testing only
