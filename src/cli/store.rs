@@ -305,7 +305,22 @@ pub(crate) fn build_vector_index_with_config(
     // falling back to brute-force. If checksum passes, the crash happened AFTER
     // the files were written — the dirty flag is a false positive, clear it
     // and proceed. If checksum fails, the files are genuinely stale.
-    if store.is_hnsw_dirty().unwrap_or(true) {
+    //
+    // EH-16: surface metadata-read failures. Conservative fallback is still
+    // "treat as dirty" but we emit a breadcrumb so mid-migration / corrupt
+    // DB conditions don't get swallowed.
+    let dirty = match store.is_hnsw_dirty() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                hnsw_kind = "enriched",
+                "Failed to read hnsw_dirty flag, treating as dirty"
+            );
+            true
+        }
+    };
+    if dirty {
         match cqs::hnsw::verify_hnsw_checksums(cqs_dir, "index") {
             Ok(()) => {
                 tracing::info!(
@@ -359,7 +374,20 @@ pub(crate) fn build_base_vector_index(
 
     // Same self-heal logic as enriched: if checksums pass, clear the dirty
     // flag; otherwise fall back to enriched via the router.
-    if store.is_hnsw_dirty().unwrap_or(true) {
+    //
+    // EH-16: surface metadata-read failures for the base index path too.
+    let dirty = match store.is_hnsw_dirty() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                hnsw_kind = "base",
+                "Failed to read hnsw_dirty flag, treating as dirty"
+            );
+            true
+        }
+    };
+    if dirty {
         match cqs::hnsw::verify_hnsw_checksums(cqs_dir, "index_base") {
             Ok(()) => {
                 tracing::info!(
