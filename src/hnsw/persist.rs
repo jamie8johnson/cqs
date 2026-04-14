@@ -281,9 +281,22 @@ impl HnswIndex {
             .map_err(|e| {
                 HnswError::Internal(format!("Failed to create {}: {}", id_map_temp.display(), e))
             })?;
-            let writer = std::io::BufWriter::new(file);
-            serde_json::to_writer(writer, &self.id_map)
+            let mut writer = std::io::BufWriter::new(file);
+            serde_json::to_writer(&mut writer, &self.id_map)
                 .map_err(|e| HnswError::Internal(format!("Failed to serialize ID map: {}", e)))?;
+            // DS-V1.25-4: flush the BufWriter and fsync the underlying file
+            // before it is dropped so the id_map bytes are durable on disk.
+            // Mirrors the SPLADE persist pattern in `src/splade/index.rs:380-381`.
+            // Without this the id_map could survive in the page cache through
+            // the subsequent rename and get lost on a power cut, leaving the
+            // graph without any string IDs to look up.
+            use std::io::Write;
+            writer.flush().map_err(|e| {
+                HnswError::Internal(format!("Failed to flush {}: {}", id_map_temp.display(), e))
+            })?;
+            writer.get_ref().sync_all().map_err(|e| {
+                HnswError::Internal(format!("Failed to fsync {}: {}", id_map_temp.display(), e))
+            })?;
         }
 
         // Compute checksum by reading back the file (avoids holding JSON in memory)
@@ -472,6 +485,31 @@ impl HnswIndex {
             tracing::warn!(error = %e, "HNSW save failed mid-rename, rolled back to original files");
             let _ = std::fs::remove_dir_all(&temp_dir);
             return Err(e);
+        }
+
+        // DS-V1.25-4: fsync the parent directory so the renames themselves
+        // are durable on a power cut — otherwise the files exist on disk
+        // but the directory entries can be reordered or lost, leaving a
+        // half-saved index. Best-effort: on platforms where opening a
+        // directory for fsync isn't supported we log at debug level and
+        // continue.
+        match std::fs::File::open(dir) {
+            Ok(f) => {
+                if let Err(e) = f.sync_all() {
+                    tracing::debug!(
+                        error = %e,
+                        dir = %dir.display(),
+                        "fsync of HNSW parent directory failed (non-fatal)"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    dir = %dir.display(),
+                    "could not open HNSW parent directory for fsync"
+                );
+            }
         }
 
         // Clean up temp directory and .bak files from successful save
