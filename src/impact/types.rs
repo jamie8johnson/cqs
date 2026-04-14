@@ -136,6 +136,15 @@ pub struct DiffImpactSummary {
     /// True when changed functions exceeded the cap and were truncated.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
+    /// SHL-V1.25-7: number of changed functions dropped past the cap. `--json`
+    /// consumers can detect silent truncation without scraping stderr. Zero
+    /// when `truncated == false`.
+    #[serde(skip_serializing_if = "is_zero_usize")]
+    pub truncated_functions: usize,
+}
+
+fn is_zero_usize(n: &usize) -> bool {
+    *n == 0
 }
 
 /// Aggregated impact result from a diff

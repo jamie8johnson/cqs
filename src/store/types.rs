@@ -9,11 +9,13 @@
 //! for catch-all types found only inside generics.
 //!
 //! Follows the same patterns as `calls.rs`: sync wrappers over async sqlx,
-//! batch-safe SQL (999 bind limit), tracing at appropriate levels.
+//! batch-safe SQL (modern SQLite 32766-variable limit, see `helpers::sql`),
+//! tracing at appropriate levels.
 
 use std::collections::HashMap;
 use std::path::Path;
 
+use super::helpers::sql::max_rows_per_statement;
 use super::helpers::{clamp_line_number, ChunkRow, StoreError};
 use super::Store;
 use crate::store::helpers::ChunkSummary;
@@ -97,9 +99,12 @@ async fn upsert_type_edges_one_file(
         return Ok(0);
     }
 
-    // Delete existing type edges for all resolved chunk IDs
+    // Delete existing type edges for all resolved chunk IDs.
+    // SHL-V1.25-5: 1 bind per row; helper resolves to the modern SQLite
+    // variable limit (32466 with safety margin) so 100k chunks rebuilds in
+    // ~3 statements instead of 200.
     let chunk_ids: Vec<&str> = name_to_id.values().map(|s| s.as_str()).collect();
-    for batch in chunk_ids.chunks(500) {
+    for batch in chunk_ids.chunks(max_rows_per_statement(1)) {
         let placeholders = super::helpers::make_placeholders(batch.len());
         let sql = format!(
             "DELETE FROM type_edges WHERE source_chunk_id IN ({})",
@@ -112,8 +117,10 @@ async fn upsert_type_edges_one_file(
         q.execute(&mut **tx).await?;
     }
 
-    // Batch insert new edges (4 binds per row → 249 rows per batch)
-    const INSERT_BATCH: usize = 249;
+    // Batch insert new edges. 4 binds per row (source_chunk_id,
+    // target_type_name, edge_kind, line_number); helper yields ~8116 rows
+    // per statement at the modern SQLite variable limit.
+    const INSERT_BATCH: usize = max_rows_per_statement(4);
     for batch in edges.chunks(INSERT_BATCH) {
         let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
             "INSERT INTO type_edges (source_chunk_id, target_type_name, edge_kind, line_number) ",
@@ -136,7 +143,8 @@ impl Store {
 
     /// Upsert type edges for a single chunk.
     /// Deletes existing type edges for the chunk, then batch-inserts new ones.
-    /// 4 binds per row → 249 rows per batch (996 < 999 SQLite limit).
+    /// 4 binds per row → `max_rows_per_statement(4)` rows per batch (modern
+    /// SQLite variable limit of 32766, minus safety margin).
     pub fn upsert_type_edges(
         &self,
         chunk_id: &str,

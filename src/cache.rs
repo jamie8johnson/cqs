@@ -12,6 +12,8 @@ use std::path::Path;
 
 use thiserror::Error;
 
+use crate::store::helpers::sql::{busy_timeout_from_env, max_rows_per_statement};
+
 #[derive(Error, Debug)]
 pub enum CacheError {
     #[error("Cache database error: {0}")]
@@ -79,11 +81,13 @@ impl EmbeddingCache {
         };
 
         // Use SqliteConnectOptions to avoid URL-encoding issues with special paths
+        // SHL-V1.25-12: honour CQS_BUSY_TIMEOUT_MS like the main Store pool
+        // so the cache doesn't surrender at 5s while the store still waits.
         let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .busy_timeout(std::time::Duration::from_secs(5))
+            .busy_timeout(busy_timeout_from_env(5000))
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
         let pool = rt.block_on(async {
@@ -171,8 +175,12 @@ impl EmbeddingCache {
         self.rt.block_on(async {
             let mut result = HashMap::new();
 
-            // Batch in groups of 100 to avoid SQLite variable limit
-            for batch in content_hashes.chunks(100) {
+            // SHL-V1.25-4: Batch size matches modern SQLite variable limit
+            // (32766). Two vars per row accounts for the shared model_fingerprint
+            // bind plus the content_hash bind, with headroom for either being
+            // added to in the future. Cache hit lookups for a 50k-chunk index
+            // now fire 2-3 SELECTs instead of 500.
+            for batch in content_hashes.chunks(max_rows_per_statement(2)) {
                 let placeholders: Vec<String> =
                     (0..batch.len()).map(|i| format!("?{}", i + 2)).collect();
                 let sql = format!(
@@ -903,11 +911,14 @@ impl QueryCache {
             .build()
             .map_err(|e| CacheError::Io(std::io::Error::other(e)))?;
 
+        // SHL-V1.25-12: query cache honours CQS_BUSY_TIMEOUT_MS too. Default
+        // here is 2s because the query cache is write-lighter than the
+        // embedding cache — still tunable by the global env knob.
         let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .busy_timeout(std::time::Duration::from_secs(2))
+            .busy_timeout(busy_timeout_from_env(2000))
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
         let pool = rt.block_on(async {

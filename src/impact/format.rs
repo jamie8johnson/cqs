@@ -293,6 +293,7 @@ mod tests {
                 caller_count: 1,
                 test_count: 1,
                 truncated: false,
+                truncated_functions: 0,
             },
         };
         let json = diff_impact_to_json(&result);
@@ -329,6 +330,7 @@ mod tests {
                 caller_count: 0,
                 test_count: 0,
                 truncated: false,
+                truncated_functions: 0,
             },
         };
         let json = diff_impact_to_json(&result);

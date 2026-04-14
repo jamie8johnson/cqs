@@ -308,7 +308,10 @@ pub(super) enum Commands {
     },
     /// Watch for changes and reindex
     Watch {
-        /// Debounce interval in milliseconds
+        /// Debounce interval in milliseconds. Default 500ms suits inotify
+        /// on native Linux; WSL DrvFS (/mnt/) and --poll mode auto-bump to
+        /// 1500ms because NTFS mtime resolution is 1s. Override here or
+        /// via CQS_WATCH_DEBOUNCE_MS (takes precedence over the flag).
         #[arg(long, default_value = "500")]
         debounce: u64,
         /// Index files ignored by .gitignore

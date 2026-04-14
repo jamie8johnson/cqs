@@ -568,6 +568,26 @@ pub fn cmd_watch(
         tracing::warn!("WSL detected: inotify may be unreliable on Windows filesystem mounts. Use --poll or 'cqs index' periodically.");
     }
 
+    // SHL-V1.25-13: the 500ms default is tuned for inotify on native
+    // Linux. WSL DrvFS (/mnt/, //wsl$) exposes NTFS which has 1s mtime
+    // resolution — anything under ~1000ms risks double-fire for a single
+    // save. Poll mode also benefits from a longer window. When the user
+    // did not override via flag or env, auto-bump to 1500ms for these
+    // paths. `CQS_WATCH_DEBOUNCE_MS` takes precedence over the flag.
+    let debounce_ms = if let Some(env_ms) = std::env::var("CQS_WATCH_DEBOUNCE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        env_ms
+    } else if debounce_ms == 500 && use_poll {
+        tracing::info!(
+            "Auto-bumping watch debounce to 1500ms for WSL/poll mode (override via --debounce or CQS_WATCH_DEBOUNCE_MS)"
+        );
+        1500
+    } else {
+        debounce_ms
+    };
+
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");
 

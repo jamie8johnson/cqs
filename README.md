@@ -657,6 +657,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CQS_API_BASE` | (none) | LLM API base URL (legacy alias for `CQS_LLM_API_BASE`) |
+| `CQS_BATCH_IDLE_MINUTES` | `5` | Minutes of inactivity before `cqs batch` / `cqs chat` clears ONNX sessions (`0` disables eviction). |
 | `CQS_BUSY_TIMEOUT_MS` | `5000` | SQLite busy timeout in milliseconds |
 | `CQS_CACHE_MAX_SIZE` | `1073741824` (1 GB) | Global embedding cache size limit |
 | `CQS_CAGRA_MAX_BYTES` | (auto) | Max GPU memory for CAGRA index |
@@ -683,6 +684,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_HYDE_MAX_TOKENS` | (config) | Max tokens for HyDE query prediction |
 | `CQS_IDLE_TIMEOUT_SECS` | `30` | SQLite connection idle timeout in seconds |
 | `CQS_INTEGRITY_CHECK` | `0` | Set to `1` to enable PRAGMA quick_check on write-mode store opens |
+| `CQS_IMPACT_MAX_CHANGED_FUNCTIONS` | `500` | Cap on changed functions processed by `impact --diff` / `review --diff`. Excess is dropped and surfaced as `summary.truncated_functions` in JSON. |
 | `CQS_IMPACT_MAX_NODES` | `10000` | Max BFS nodes in impact analysis |
 | `CQS_LLM_API_BASE` | `https://api.anthropic.com/v1` | LLM API base URL |
 | `CQS_LLM_MAX_CONTENT_CHARS` | `8000` | Max content chars in LLM prompts |
@@ -691,6 +693,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_LLM_PROVIDER` | `anthropic` | LLM provider (`anthropic`) |
 | `CQS_MAX_CONNECTIONS` | `4` | SQLite write-pool max connections |
 | `CQS_MAX_CONTRASTIVE_CHUNKS` | `30000` | Max chunks for contrastive summary matrix (memory = N*N*4 bytes) |
+| `CQS_MAX_FILE_SIZE` | `1048576` (1 MB) | Per-file size cap (bytes) for indexing. Files above this are skipped with an `info!` log; bump for generated code (`bindings.rs`, compiled TS, migrations). |
 | `CQS_MAX_QUERY_BYTES` | `32768` | Max query input bytes for embedding |
 | `CQS_MAX_SEQ_LENGTH` | (auto) | Override max sequence length for custom ONNX models |
 | `CQS_MD_MAX_SECTION_LINES` | `150` | Max markdown section lines before overflow split |
@@ -702,6 +705,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_PDF_SCRIPT` | (auto) | Path to `pdf_to_md.py` for PDF conversion |
 | `CQS_QUERY_CACHE_SIZE` | `128` | Embedding query cache entries |
 | `CQS_RAYON_THREADS` | (auto) | Rayon thread pool size for parallel operations |
+| `CQS_REFS_LRU_SIZE` | `2` | Slots in the batch-mode reference-index LRU cache (sibling projects loaded via `@name`). |
 | `CQS_RERANKER_MAX_LENGTH` | `512` | Max input length for cross-encoder reranker |
 | `CQS_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder model for `--rerank` |
 | `CQS_RRF_K` | `60` | RRF fusion constant (higher = more weight to top results) |
@@ -716,10 +720,12 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_SPLADE_MODEL` | (auto) | Path to SPLADE ONNX model directory (supports `~`-prefixed paths) |
 | `CQS_SPLADE_RESET_EVERY` | `0` | Reset the ORT session every N SPLADE batches to bound arena growth (0 = disabled) |
 | `CQS_SPLADE_THRESHOLD` | `0.01` | SPLADE sparse activation threshold |
+| `CQS_SQLITE_CACHE_SIZE` | `-16384` (`-4096` for `open_readonly`) | SQLite `cache_size` PRAGMA. Negative = kibibytes, positive = page count. |
 | `CQS_TELEMETRY` | `0` | Set to `1` to enable command usage telemetry |
 | `CQS_TEST_MAP_MAX_NODES` | `10000` | Max BFS nodes in test-map traversal |
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
 | `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
+| `CQS_WATCH_DEBOUNCE_MS` | `500` (inotify) / `1500` (WSL/poll auto) | Watch debounce window (milliseconds). Takes precedence over `--debounce`. |
 | `CQS_WATCH_MAX_PENDING` | `10000` | Max pending file changes before watch forces flush |
 | `CQS_WATCH_REBUILD_THRESHOLD` | `100` | Files changed before watch triggers full HNSW rebuild |
 
