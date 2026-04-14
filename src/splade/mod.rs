@@ -684,6 +684,22 @@ impl SpladeEncoder {
                 "SPLADE batch output"
             );
 
+            // RB-NEW-1: validate that `data` is large enough before the slice
+            // below. Without this, a short tensor would panic on out-of-bounds
+            // slicing inside the map closure.
+            let expected = batch_size
+                .checked_mul(vocab)
+                .ok_or_else(|| SpladeError::InferenceFailed("batch*vocab overflow".into()))?;
+            if data.len() < expected {
+                return Err(SpladeError::InferenceFailed(format!(
+                    "sparse_vector data len {} < expected {} for batch={} vocab={}",
+                    data.len(),
+                    expected,
+                    batch_size,
+                    vocab,
+                )));
+            }
+
             let threshold = self.threshold;
             (0..batch_size)
                 .map(|b| {
@@ -730,6 +746,23 @@ impl SpladeEncoder {
                 "SPLADE batch output"
             );
 
+            // RB-NEW-2: validate total data length before per-example slicing.
+            // Mirrors RB-NEW-1 but accounts for the extra seq dimension.
+            let expected = batch_size
+                .checked_mul(max_seq_len)
+                .and_then(|n| n.checked_mul(vocab))
+                .ok_or_else(|| SpladeError::InferenceFailed("batch*seq*vocab overflow".into()))?;
+            if data.len() < expected {
+                return Err(SpladeError::InferenceFailed(format!(
+                    "raw logits data len {} < expected {} for batch={} seq={} vocab={}",
+                    data.len(),
+                    expected,
+                    batch_size,
+                    max_seq_len,
+                    vocab,
+                )));
+            }
+
             let example_stride = max_seq_len * vocab;
             let threshold = self.threshold;
 
@@ -737,7 +770,7 @@ impl SpladeEncoder {
                 .map(|b| {
                     let example = &data[b * example_stride..(b + 1) * example_stride];
                     let logits = ArrayView2::from_shape((max_seq_len, vocab), example)
-                        .expect("shape derived from data length");
+                        .map_err(|e| SpladeError::InferenceFailed(format!("reshape: {e}")))?;
 
                     // Build a -inf mask for padded positions so they can't win max-pool.
                     // Clamp real_seq_len to max_seq_len in case the input was
@@ -756,7 +789,7 @@ impl SpladeEncoder {
                         })
                         .collect();
 
-                    pooled
+                    Ok(pooled
                         .iter()
                         .enumerate()
                         .filter_map(|(id, &val)| {
@@ -767,9 +800,9 @@ impl SpladeEncoder {
                                 None
                             }
                         })
-                        .collect()
+                        .collect())
                 })
-                .collect()
+                .collect::<Result<Vec<SparseVector>, SpladeError>>()?
         } else {
             let names: Vec<&str> = outputs.keys().collect();
             return Err(SpladeError::InferenceFailed(format!(
