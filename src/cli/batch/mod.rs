@@ -378,6 +378,13 @@ impl BatchContext {
         };
         let splade_path = self.cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);
         let store = self.store();
+        // RM-V1.25-11: time the build so operators can diagnose first-query
+        // latency spikes after a reindex. Full rebuild on a 200k-chunk repo
+        // with SPLADE-Code 0.6B takes ~45 s — scoped-down fix in lieu of
+        // an incremental update path; actual fix is tracked as P2 follow-up.
+        // The `rebuilt` flag comes back from `load_or_build` so we can split
+        // the log into a cheap cache hit vs a visible rebuild.
+        let build_start = Instant::now();
         let (idx, rebuilt) = cqs::splade::index::SpladeIndex::load_or_build(
             &splade_path,
             generation,
@@ -392,16 +399,37 @@ impl BatchContext {
                 }
             },
         );
+        let build_ms = build_start.elapsed().as_millis() as u64;
         if idx.is_empty() {
             // no vectors — cosine-only; leave the RefCell as None
             return;
         }
-        tracing::info!(
-            chunks = idx.len(),
-            tokens = idx.unique_tokens(),
-            rebuilt,
-            "SPLADE index ready (batch)"
-        );
+        if rebuilt {
+            tracing::info!(
+                chunks = idx.len(),
+                tokens = idx.unique_tokens(),
+                rebuild_ms = build_ms,
+                "SPLADE index rebuilt from SQLite (batch)"
+            );
+            // Surface very-long rebuilds at warn so operators notice. Empirical
+            // threshold: 10 s on a 200k-chunk SPLADE-Code index is already
+            // "user waited visibly"; 30 s is "probably a problem."
+            if build_ms > 30_000 {
+                tracing::warn!(
+                    rebuild_ms = build_ms,
+                    chunks = idx.len(),
+                    "SPLADE index rebuild exceeded 30s — first daemon query after \
+                     reindex will have been blocked this long"
+                );
+            }
+        } else {
+            tracing::info!(
+                chunks = idx.len(),
+                tokens = idx.unique_tokens(),
+                load_ms = build_ms,
+                "SPLADE index loaded from disk (batch)"
+            );
+        }
         *self.splade_index.borrow_mut() = Some(idx);
     }
 
