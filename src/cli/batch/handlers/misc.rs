@@ -435,7 +435,7 @@ pub(in crate::cli::batch) fn dispatch_gc(ctx: &BatchContext) -> Result<serde_jso
     let _span = tracing::info_span!("batch_gc").entered();
 
     let file_set = ctx.file_set()?;
-    let (stale_count, missing_count) = match ctx.store().count_stale_files(&file_set) {
+    let (stale_count, missing_count) = match ctx.store().count_stale_files(&file_set, &ctx.root) {
         Ok(counts) => counts,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to count stale files");
@@ -445,7 +445,7 @@ pub(in crate::cli::batch) fn dispatch_gc(ctx: &BatchContext) -> Result<serde_jso
 
     let prune = ctx
         .store()
-        .prune_all(&file_set)
+        .prune_all(&file_set, &ctx.root)
         .context("Failed to prune stale entries from index")?;
 
     let output = crate::cli::commands::GcOutput {

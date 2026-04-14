@@ -19,7 +19,7 @@ pub(crate) fn cmd_health(ctx: &crate::cli::CommandContext, json: bool) -> Result
     let files = crate::cli::enumerate_files(root, &parser, false)?;
     let file_set: HashSet<_> = files.into_iter().collect();
 
-    let report = cqs::health::health_check(store, &file_set, cqs_dir)?;
+    let report = cqs::health::health_check(store, &file_set, cqs_dir, root)?;
 
     if json {
         let json_val = serde_json::to_value(&report)?;

@@ -55,7 +55,7 @@ pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<(
     let file_set: HashSet<_> = files.into_iter().collect();
 
     // Count what we'll clean before doing it
-    let (stale_count, missing_count) = match store.count_stale_files(&file_set) {
+    let (stale_count, missing_count) = match store.count_stale_files(&file_set, root) {
         Ok(counts) => counts,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to count stale files");
@@ -66,7 +66,7 @@ pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<(
     // All prune operations in a single transaction so concurrent readers
     // never see chunks deleted but orphan call/type/summary entries remaining.
     let prune = store
-        .prune_all(&file_set)
+        .prune_all(&file_set, root)
         .context("Failed to prune stale entries from index")?;
     let pruned_chunks = prune.pruned_chunks as usize;
     let pruned_calls = prune.pruned_calls as usize;

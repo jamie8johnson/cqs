@@ -48,6 +48,7 @@ pub fn health_check(
     store: &Store,
     existing_files: &HashSet<PathBuf>,
     cqs_dir: &Path,
+    root: &Path,
 ) -> Result<HealthReport, StoreError> {
     let _span = tracing::info_span!("health_check").entered();
 
@@ -57,7 +58,7 @@ pub fn health_check(
     let mut warnings = Vec::new();
 
     // Staleness
-    let (stale_count, missing_count) = match store.count_stale_files(existing_files) {
+    let (stale_count, missing_count) = match store.count_stale_files(existing_files, root) {
         Ok((s, m)) => (s, m),
         Err(e) => {
             tracing::warn!(error = %e, "Failed to count stale files");
@@ -182,7 +183,7 @@ mod tests {
         let (store, dir) = make_store();
 
         let files = HashSet::new();
-        let report = health_check(&store, &files, dir.path()).unwrap();
+        let report = health_check(&store, &files, dir.path(), dir.path()).unwrap();
 
         assert_eq!(report.stats.total_chunks, 0);
         assert_eq!(report.dead_confident, 0);
@@ -208,7 +209,7 @@ mod tests {
             .map(|i| PathBuf::from(format!("src/mod{}.rs", i)))
             .collect();
 
-        let report = health_check(&store, &files, dir.path()).unwrap();
+        let report = health_check(&store, &files, dir.path(), dir.path()).unwrap();
 
         assert!(
             report.stats.total_chunks >= 3,
@@ -235,7 +236,7 @@ mod tests {
         // Provide an empty existing_files set — all indexed files are "missing"
         let files: HashSet<PathBuf> = HashSet::new();
 
-        let report = health_check(&store, &files, dir.path()).unwrap();
+        let report = health_check(&store, &files, dir.path(), dir.path()).unwrap();
 
         assert!(
             report.missing_count > 0,
@@ -266,7 +267,7 @@ mod tests {
             .map(|i| PathBuf::from(format!("src/lib{}.rs", i)))
             .collect();
 
-        let report = health_check(&store, &files, dir.path()).unwrap();
+        let report = health_check(&store, &files, dir.path(), dir.path()).unwrap();
 
         assert!(
             report.dead_confident > 0,
@@ -323,7 +324,7 @@ mod tests {
             .collect();
         files.insert(PathBuf::from("src/core.rs"));
 
-        let report = health_check(&store, &files, dir.path()).unwrap();
+        let report = health_check(&store, &files, dir.path(), dir.path()).unwrap();
 
         assert!(
             !report.hotspots.is_empty(),
@@ -389,7 +390,7 @@ mod tests {
             .collect();
         files.insert(PathBuf::from("src/core.rs"));
 
-        let report = health_check(&store, &files, dir.path()).unwrap();
+        let report = health_check(&store, &files, dir.path(), dir.path()).unwrap();
 
         // untested_hotspots must contain untested_hot
         let found = report
@@ -486,7 +487,7 @@ mod tests {
         files.insert(PathBuf::from("src/core.rs"));
         files.insert(PathBuf::from(test_file));
 
-        let report = health_check(&store, &files, dir.path()).unwrap();
+        let report = health_check(&store, &files, dir.path(), dir.path()).unwrap();
 
         let in_untested = report
             .untested_hotspots

@@ -4,10 +4,34 @@
 //! Staleness checks and pruning for missing/stale files.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::store::helpers::{StaleFile, StaleReport, StoreError};
 use crate::store::Store;
+
+/// Decide whether a chunk origin refers to a file that exists.
+///
+/// Used by all four staleness helpers in this module. Replaces the
+/// over-loose path-suffix matching that retained 81% of chunks as
+/// orphans on this repo (root cause of v1.22.0 → v1.25.0 eval drift).
+///
+/// The check is: exact membership in `existing_files`, falling back to a
+/// filesystem `exists()` probe against `root` for paths that may have been
+/// stored under a different relative/absolute form. Filesystem existence is
+/// case-correct on every OS (including macOS case-fold), so the previous
+/// `#[cfg(target_os = "macos")]` branch is no longer needed.
+fn origin_exists(origin: &str, existing_files: &HashSet<PathBuf>, root: &Path) -> bool {
+    let origin_path = PathBuf::from(origin);
+    if existing_files.contains(&origin_path) {
+        return true;
+    }
+    let absolute = if origin_path.is_absolute() {
+        origin_path
+    } else {
+        root.join(&origin_path)
+    };
+    absolute.exists()
+}
 
 /// Result of running all GC prune operations atomically.
 #[derive(Debug, Clone)]
@@ -29,7 +53,11 @@ impl Store {
     /// - Existing files often number 10k+, exceeding SQLite's parameter limit (~999)
     /// - Sending full file list to SQLite would require chunked queries anyway
     /// - HashSet lookup is O(1), and we already have the set from enumerate_files()
-    pub fn prune_missing(&self, existing_files: &HashSet<PathBuf>) -> Result<u32, StoreError> {
+    pub fn prune_missing(
+        &self,
+        existing_files: &HashSet<PathBuf>,
+        root: &Path,
+    ) -> Result<u32, StoreError> {
         let _span = tracing::info_span!("prune_missing", existing = existing_files.len()).entered();
         self.rt.block_on(async {
             let rows: Vec<(String,)> = sqlx::query_as(
@@ -38,41 +66,13 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
 
-            // Collect missing origins
-            //
-            // PB-24: On macOS (HFS+/APFS case-insensitive), PathBuf comparison
-            // is case-sensitive but the filesystem is not. Normalize both sides
-            // to lowercase so we don't falsely mark files as missing.
-            //
-            // Also handles absolute/relative path mismatches: if the stored origin
-            // is absolute and the existing_files set has relative (or vice versa),
-            // fall back to suffix matching so stale chunks from moved/deleted files
-            // are correctly detected.
+            // AC / CQ-V1.25-4 / CQ-V1.25-6 / PB-V1.25-7: reconcile stored origins
+            // against current filesystem state via `origin_exists`. The previous
+            // `ends_with` heuristic retained 81% of chunks as orphans whenever a
+            // worktree or subdirectory tail-matched a root file name.
             let missing: Vec<String> = rows
                 .into_iter()
-                .filter(|(origin,)| {
-                    let origin_path = PathBuf::from(origin);
-                    #[cfg(target_os = "macos")]
-                    {
-                        let origin_lower = origin.to_lowercase();
-                        !existing_files
-                            .iter()
-                            .any(|p| p.to_string_lossy().to_lowercase() == origin_lower)
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        if existing_files.contains(&origin_path) {
-                            false // exact match — not missing
-                        } else {
-                            // Suffix match: catch absolute/relative mismatches
-                            !existing_files.iter().any(|p| {
-                                let p_str = p.to_string_lossy();
-                                let o_str = origin_path.to_string_lossy();
-                                p_str.ends_with(o_str.as_ref()) || o_str.ends_with(p_str.as_ref())
-                            })
-                        }
-                    }
-                })
+                .filter(|(origin,)| !origin_exists(origin, existing_files, root))
                 .map(|(origin,)| origin)
                 .collect();
 
@@ -148,6 +148,7 @@ impl Store {
     pub fn prune_all(
         &self,
         existing_files: &HashSet<PathBuf>,
+        root: &Path,
     ) -> Result<PruneAllResult, StoreError> {
         let _span = tracing::info_span!("prune_all", existing = existing_files.len()).entered();
         self.rt.block_on(async {
@@ -158,33 +159,10 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
 
-            // PB-1: Same filtering logic as prune_missing — macOS case-fold
-            // and suffix-match fallback for absolute/relative path mismatches.
+            // Same filesystem-existence reconciliation as `prune_missing`.
             let missing: Vec<String> = rows
                 .into_iter()
-                .filter(|(origin,)| {
-                    let origin_path = PathBuf::from(origin);
-                    #[cfg(target_os = "macos")]
-                    {
-                        let origin_lower = origin.to_lowercase();
-                        !existing_files
-                            .iter()
-                            .any(|p| p.to_string_lossy().to_lowercase() == origin_lower)
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        if existing_files.contains(&origin_path) {
-                            false // exact match — not missing
-                        } else {
-                            // Suffix match: catch absolute/relative mismatches
-                            !existing_files.iter().any(|p| {
-                                let p_str = p.to_string_lossy();
-                                let o_str = origin_path.to_string_lossy();
-                                p_str.ends_with(o_str.as_ref()) || o_str.ends_with(p_str.as_ref())
-                            })
-                        }
-                    }
-                })
+                .filter(|(origin,)| !origin_exists(origin, existing_files, root))
                 .map(|(origin,)| origin)
                 .collect();
 
@@ -290,9 +268,10 @@ impl Store {
     pub fn count_stale_files(
         &self,
         existing_files: &HashSet<PathBuf>,
+        root: &Path,
     ) -> Result<(u64, u64), StoreError> {
         let _span = tracing::debug_span!("count_stale_files").entered();
-        let report = self.list_stale_files(existing_files)?;
+        let report = self.list_stale_files(existing_files, root)?;
         Ok((report.stale.len() as u64, report.missing.len() as u64))
     }
 
@@ -302,6 +281,7 @@ impl Store {
     pub fn list_stale_files(
         &self,
         existing_files: &HashSet<PathBuf>,
+        root: &Path,
     ) -> Result<StaleReport, StoreError> {
         let _span = tracing::debug_span!("list_stale_files").entered();
         self.rt.block_on(async {
@@ -318,25 +298,9 @@ impl Store {
             for (origin, stored_mtime) in rows {
                 let path = PathBuf::from(&origin);
 
-                // PB-2: On macOS (HFS+/APFS case-insensitive), PathBuf comparison
-                // is case-sensitive but the filesystem is not. Normalize both sides
-                // to lowercase so we don't falsely mark files as missing.
-                // Same pattern as prune_missing.
-                let found = {
-                    #[cfg(target_os = "macos")]
-                    {
-                        let origin_lower = origin.to_lowercase();
-                        existing_files
-                            .iter()
-                            .any(|p| p.to_string_lossy().to_lowercase() == origin_lower)
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        existing_files.contains(&path)
-                    }
-                };
-
-                if !found {
+                // Filesystem existence check — same logic as prune_*. Replaces
+                // the previous macOS case-fold + set-contains special case.
+                if !origin_exists(&origin, existing_files, root) {
                     missing.push(path);
                     continue;
                 }
@@ -354,7 +318,14 @@ impl Store {
                     }
                 };
 
-                let current_mtime = path
+                // Resolve the path against `root` for metadata lookup so
+                // relative origins work regardless of current directory.
+                let lookup_path: PathBuf = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    root.join(&path)
+                };
+                let current_mtime = lookup_path
                     .metadata()
                     .and_then(|m| m.modified())
                     .ok()
@@ -464,9 +435,9 @@ mod tests {
 
     #[test]
     fn test_list_stale_files_empty_index() {
-        let (store, _dir) = setup_store();
+        let (store, dir) = setup_store();
         let existing = HashSet::new();
-        let report = store.list_stale_files(&existing).unwrap();
+        let report = store.list_stale_files(&existing, dir.path()).unwrap();
         assert!(report.stale.is_empty());
         assert!(report.missing.is_empty());
         assert_eq!(report.total_indexed, 0);
@@ -515,7 +486,7 @@ mod tests {
 
         let mut existing = HashSet::new();
         existing.insert(file_path);
-        let report = store.list_stale_files(&existing).unwrap();
+        let report = store.list_stale_files(&existing, dir.path()).unwrap();
         assert!(report.stale.is_empty());
         assert!(report.missing.is_empty());
         assert_eq!(report.total_indexed, 1);
@@ -554,7 +525,7 @@ mod tests {
 
         let mut existing = HashSet::new();
         existing.insert(file_path);
-        let report = store.list_stale_files(&existing).unwrap();
+        let report = store.list_stale_files(&existing, dir.path()).unwrap();
         assert_eq!(report.stale.len(), 1);
         assert_eq!(report.stale[0].stored_mtime, 1000);
         assert!(report.stale[0].current_mtime > 1000);
@@ -564,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_list_stale_files_detects_missing() {
-        let (store, _dir) = setup_store();
+        let (store, dir) = setup_store();
 
         let c = make_chunk("gone", "/nonexistent/file.rs");
         store
@@ -573,7 +544,7 @@ mod tests {
 
         // existing_files doesn't contain the path
         let existing = HashSet::new();
-        let report = store.list_stale_files(&existing).unwrap();
+        let report = store.list_stale_files(&existing, dir.path()).unwrap();
         assert!(report.stale.is_empty());
         assert_eq!(report.missing.len(), 1);
         assert_eq!(report.total_indexed, 1);
@@ -612,7 +583,7 @@ mod tests {
 
         let mut existing = HashSet::new();
         existing.insert(file_path);
-        let report = store.list_stale_files(&existing).unwrap();
+        let report = store.list_stale_files(&existing, dir.path()).unwrap();
         assert_eq!(
             report.stale.len(),
             1,

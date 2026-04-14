@@ -213,7 +213,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     // Prune missing files
     let existing_files: HashSet<_> = files.into_iter().collect();
     let pruned = store
-        .prune_missing(&existing_files)
+        .prune_missing(&existing_files, &root)
         .context("Failed to prune deleted files from index")?;
 
     if !cli.quiet {
