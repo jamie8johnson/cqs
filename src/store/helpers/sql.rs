@@ -42,9 +42,14 @@ pub const fn max_rows_per_statement(vars_per_row: usize) -> usize {
 }
 
 /// Maximum batch size that is pre-built and cached at startup.
-/// Bumped from 999 to match the modern SQLite limit so cached
-/// placeholder strings cover the full useful range.
-const PLACEHOLDER_CACHE_MAX: usize = 10_000;
+///
+/// SHL-V1.25-14: sized exactly to cover the caller-facing max
+/// (`max_rows_per_statement(1) = SQLITE_MAX_VARIABLES - SAFETY_MARGIN_VARS
+/// = 32466`). With the previous 10_000 cap, single-bind batches beyond
+/// 10k fell off the cache and re-built the ~120KB placeholder string
+/// every call, negating the cache's purpose. The extra ~22k strings
+/// cost ~1-2MB at startup in exchange for zero-alloc on the hot path.
+const PLACEHOLDER_CACHE_MAX: usize = SQLITE_MAX_VARIABLES - SAFETY_MARGIN_VARS;
 
 /// Pre-built placeholder strings for n = 1..=PLACEHOLDER_CACHE_MAX.
 /// Index 0 is unused; index n holds the string for n placeholders.
@@ -80,7 +85,9 @@ fn build_placeholders(n: usize) -> String {
 
 /// Build a comma-separated list of numbered SQL placeholders: "?1,?2,...,?N".
 ///
-/// Common batch sizes (1-999) are served from a static cache; larger values are built on demand.
+/// Batch sizes up to [`PLACEHOLDER_CACHE_MAX`] are served from a static
+/// cache; larger values are built on demand. The cache covers the full
+/// caller-facing range — no production call site should fall off it.
 pub(crate) fn make_placeholders(n: usize) -> String {
     assert!(
         n <= 100_000,
