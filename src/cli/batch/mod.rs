@@ -252,12 +252,15 @@ impl BatchContext {
                     let _ = write_json_line(out, &value);
                 }
                 Err(e) => {
-                    let err = serde_json::json!({"error": format!("{e}")});
+                    // EH-12: use anyhow chain formatter (`:#`) so the real
+                    // root cause (e.g. CUDA OOM) surfaces to daemon clients
+                    // instead of the flattened top-level "embedding failed".
+                    let err = serde_json::json!({"error": format!("{e:#}")});
                     let _ = write_json_line(out, &err);
                 }
             },
             Err(e) => {
-                let err = serde_json::json!({"error": format!("{e}")});
+                let err = serde_json::json!({"error": format!("{e:#}")});
                 let _ = write_json_line(out, &err);
             }
         }
@@ -842,7 +845,10 @@ pub(crate) fn cmd_batch() -> Result<()> {
                     }
                     Err(e) => {
                         ctx.error_count.fetch_add(1, Ordering::Relaxed);
-                        let error_json = serde_json::json!({"error": format!("{}", e)});
+                        // EH-12: `:#` preserves anyhow's context chain so the
+                        // root cause (e.g. CUDA OOM) reaches the caller
+                        // instead of being flattened to a single message.
+                        let error_json = serde_json::json!({"error": format!("{e:#}")});
                         if write_json_line(&mut stdout, &error_json).is_err() {
                             break;
                         }
@@ -850,7 +856,7 @@ pub(crate) fn cmd_batch() -> Result<()> {
                 },
                 Err(e) => {
                     ctx.error_count.fetch_add(1, Ordering::Relaxed);
-                    let error_json = serde_json::json!({"error": format!("{}", e)});
+                    let error_json = serde_json::json!({"error": format!("{e:#}")});
                     if write_json_line(&mut stdout, &error_json).is_err() {
                         break;
                     }
