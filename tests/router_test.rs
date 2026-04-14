@@ -16,7 +16,7 @@
 //! The tests also clear the env vars both before and after exercising them so
 //! they remain hermetic even if an earlier run crashed.
 
-use cqs::search::router::{resolve_splade_alpha, QueryCategory};
+use cqs::search::router::{classify_query, resolve_splade_alpha, QueryCategory};
 use serial_test::serial;
 
 /// Per-category env var keys. Kept in sync with `resolve_splade_alpha`'s
@@ -206,6 +206,138 @@ fn test_resolve_splade_alpha_invalid_string_falls_back() {
         "Unparseable per-cat env must fall through to default; got {got}"
     );
     clear_all_alpha_env();
+}
+
+/// TC-HP-4: per-category SPLADE alpha routing has no end-to-end test. The
+/// wiring in `dispatch_search` (`src/cli/batch/handlers/search.rs:117-139`)
+/// and `cmd_query` (`src/cli/commands/search/query.rs:170-200`) composes
+/// `classify_query(query)` → `resolve_splade_alpha(category)`. Both production
+/// call sites do *exactly* that two-step lookup. A refactor that hardcodes
+/// `alpha = 1.0` or swaps the category would survive the split-apart unit
+/// tests but the composed behavior would break silently.
+///
+/// These tests couple the two functions and assert the alpha that would
+/// flow into `SearchFilter::splade_alpha`. They do NOT construct a full
+/// `BatchContext` — `dispatch_search` is `pub(crate)`, not reachable from an
+/// integration test. Since both production sites resolve alpha via the
+/// same two public functions we test here, coupling them in a test is
+/// equivalent to coupling them in production.
+mod splade_routing {
+    use super::*;
+
+    /// Run the composed `classify_query` → `resolve_splade_alpha` pipeline
+    /// that both production call sites use.
+    fn route(query: &str) -> (QueryCategory, f32) {
+        let classification = classify_query(query);
+        let alpha = resolve_splade_alpha(&classification.category);
+        (classification.category, alpha)
+    }
+
+    /// Structural query → α=0.60 from the v1.25.0 sweep.
+    #[test]
+    #[serial]
+    fn test_routing_structural_lands_on_alpha_0_60() {
+        clear_all_alpha_env();
+        let (cat, alpha) = route("functions that return Result");
+        assert_eq!(cat, QueryCategory::Structural);
+        assert!(
+            (alpha - 0.60).abs() < f32::EPSILON,
+            "Structural query should route to α=0.60, got {alpha}"
+        );
+        clear_all_alpha_env();
+    }
+
+    /// Behavioral query → α=0.05 (the load-bearing sparse-heavy signal).
+    #[test]
+    #[serial]
+    fn test_routing_behavioral_lands_on_alpha_0_05() {
+        clear_all_alpha_env();
+        let (cat, alpha) = route("validates user input");
+        assert_eq!(cat, QueryCategory::Behavioral);
+        assert!(
+            (alpha - 0.05).abs() < f32::EPSILON,
+            "Behavioral query should route to α=0.05, got {alpha}"
+        );
+        clear_all_alpha_env();
+    }
+
+    /// Conceptual query → α=0.85.
+    #[test]
+    #[serial]
+    fn test_routing_conceptual_lands_on_alpha_0_85() {
+        clear_all_alpha_env();
+        let (cat, alpha) = route("dependency injection pattern");
+        assert_eq!(cat, QueryCategory::Conceptual);
+        assert!(
+            (alpha - 0.85).abs() < f32::EPSILON,
+            "Conceptual query should route to α=0.85, got {alpha}"
+        );
+        clear_all_alpha_env();
+    }
+
+    /// Identifier lookup → α=0.90 (the dense-side plateau edge).
+    #[test]
+    #[serial]
+    fn test_routing_identifier_lands_on_alpha_0_90() {
+        clear_all_alpha_env();
+        let (cat, alpha) = route("HashMap::new");
+        assert_eq!(cat, QueryCategory::IdentifierLookup);
+        assert!(
+            (alpha - 0.90).abs() < f32::EPSILON,
+            "Identifier lookup should route to α=0.90, got {alpha}"
+        );
+        clear_all_alpha_env();
+    }
+
+    /// Catch-all categories (Negation, MultiStep, CrossLanguage,
+    /// TypeFiltered, Unknown) land on α=1.0.
+    #[test]
+    #[serial]
+    fn test_routing_catch_all_lands_on_alpha_1_00() {
+        clear_all_alpha_env();
+
+        // Negation — "sort without allocating"
+        let (cat, alpha) = route("sort without allocating");
+        assert_eq!(cat, QueryCategory::Negation);
+        assert!(
+            (alpha - 1.00).abs() < f32::EPSILON,
+            "Negation should route to α=1.0, got {alpha}"
+        );
+
+        // CrossLanguage — "Python equivalent of map in Rust"
+        let (cat, alpha) = route("Python equivalent of map in Rust");
+        assert_eq!(cat, QueryCategory::CrossLanguage);
+        assert!(
+            (alpha - 1.00).abs() < f32::EPSILON,
+            "CrossLanguage should route to α=1.0, got {alpha}"
+        );
+
+        // TypeFiltered — "all test functions"
+        let (cat, alpha) = route("all test functions");
+        assert_eq!(cat, QueryCategory::TypeFiltered);
+        assert!(
+            (alpha - 1.00).abs() < f32::EPSILON,
+            "TypeFiltered should route to α=1.0, got {alpha}"
+        );
+
+        clear_all_alpha_env();
+    }
+
+    /// Env override propagates through the composed pipeline.
+    #[test]
+    #[serial]
+    fn test_routing_env_override_wins_through_pipeline() {
+        clear_all_alpha_env();
+        // Pin Behavioral to a bespoke alpha via the per-category env.
+        std::env::set_var("CQS_SPLADE_ALPHA_BEHAVIORAL", "0.42");
+        let (cat, alpha) = route("validates user input");
+        assert_eq!(cat, QueryCategory::Behavioral);
+        assert!(
+            (alpha - 0.42).abs() < f32::EPSILON,
+            "Env override should propagate through classify → resolve, got {alpha}"
+        );
+        clear_all_alpha_env();
+    }
 }
 
 /// TC-HP-10 companion: the `_ => 1.0` catch-all covers 5 of 9 variants. This
