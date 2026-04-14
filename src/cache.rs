@@ -932,6 +932,32 @@ impl QueryCache {
             Ok::<_, sqlx::Error>(pool)
         })?;
 
+        // SEC-V1.25-4: restrict DB + WAL/SHM sidecar files to 0o600 to
+        // match EmbeddingCache::open. Query text may be sensitive (user
+        // prompts, internal tooling queries), and multi-user boxes must
+        // not leave this world-readable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            for suffix in &["", "-wal", "-shm"] {
+                let db_file = path.with_extension(
+                    path.extension()
+                        .map(|e| format!("{}{}", e.to_string_lossy(), suffix))
+                        .unwrap_or_else(|| suffix.trim_start_matches('-').to_string()),
+                );
+                if db_file.exists() {
+                    if let Err(e) = std::fs::set_permissions(&db_file, perms.clone()) {
+                        tracing::warn!(
+                            path = %db_file.display(),
+                            error = %e,
+                            "Failed to set query cache permissions to 0o600"
+                        );
+                    }
+                }
+            }
+        }
+
         tracing::debug!(path = %path.display(), "Query cache opened");
         Ok(Self { pool, rt })
     }
@@ -939,17 +965,48 @@ impl QueryCache {
     /// Look up a cached query embedding.
     pub fn get(&self, query: &str, model_fp: &str) -> Option<crate::embedder::Embedding> {
         self.rt.block_on(async {
-            let row: Option<(Vec<u8>,)> = sqlx::query_as(
+            // EH-17 / OB-NEW-6: log sqlite failures instead of treating them
+            // as a silent cache miss. A corrupted / locked cache is a real
+            // signal, not background noise.
+            let row: Option<(Vec<u8>,)> = match sqlx::query_as(
                 "SELECT embedding FROM query_cache WHERE query = ?1 AND model_fp = ?2",
             )
             .bind(query)
             .bind(model_fp)
             .fetch_optional(&self.pool)
             .await
-            .ok()?;
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let preview_len = query.len().min(40);
+                    tracing::warn!(
+                        query_preview = %&query[..preview_len],
+                        error = %e,
+                        "query cache read failed"
+                    );
+                    return None;
+                }
+            };
 
             let (bytes,) = row?;
+            // EH-17 / OB-NEW-6: a malformed embedding blob (length not a
+            // multiple of 4) means the row is corrupt. Don't let it sit in
+            // the DB forever — log it and delete so future reads skip the
+            // cost of re-checking the same bad row.
             if bytes.len() % std::mem::size_of::<f32>() != 0 {
+                tracing::warn!(
+                    raw_len = bytes.len(),
+                    "query cache entry has malformed embedding blob; deleting"
+                );
+                if let Err(e) =
+                    sqlx::query("DELETE FROM query_cache WHERE query = ?1 AND model_fp = ?2")
+                        .bind(query)
+                        .bind(model_fp)
+                        .execute(&self.pool)
+                        .await
+                {
+                    tracing::warn!(error = %e, "failed to delete malformed query cache row");
+                }
                 return None;
             }
             let floats: Vec<f32> = bytes
@@ -978,7 +1035,10 @@ impl QueryCache {
             .execute(&self.pool)
             .await
         }) {
-            tracing::debug!(error = %e, "Query cache write failed (non-fatal)");
+            // EH-17 / OB-NEW-6: write failures on the query cache are
+            // corruption / disk-full risks, not noise. Promote from debug!
+            // to warn! so operators see them in default logs.
+            tracing::warn!(error = %e, "Query cache write failed (non-fatal)");
         }
     }
 
