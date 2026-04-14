@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.25.0] - 2026-04-14
+
+### Changed
+- **Per-category SPLADE alpha defaults** updated from the first fully-deterministic 21-point sweep (post PR #942 + #943):
+  - `identifier_lookup`: 1.0 → **0.90** (+4.0pp at α=0.90 over α=1.0)
+  - `structural`: 0.9 → **0.60** (mid of the 0.40–0.85 plateau; v1.24.0's 0.9 dropped to 63.0% vs plateau 66.7%)
+  - `conceptual`: 0.95 → **0.85** (mid of the 0.75–0.95 plateau)
+  - `behavioral`: 0.05 (confirmed)
+  - `type_filtered`, `multi_step`, `negation`, `cross_language`, unknown: 1.0 (confirmed)
+  - Oracle R@1 with these values: 49.4% vs 44.9% for the best uniform α=0.95.
+- **Router: dropped over-broad `"how does"` / `"what does"` patterns** from `is_behavioral_query`. 100% of multi_step eval queries ("how does X trace callers…") were firing here and routing to α=0.05 instead of α=1.0. Multi_step now falls through to `MultiStep` (conjunctions) or `Unknown`, both α=1.0. Recovers +8.9pp R@1 on multi_step (23.5% → 32.4%); +0.7pp overall.
+- `evals/run_alpha_sweep.sh` expanded to the full 21-point grid (0.05 increments).
+
+### Fixed
+- Security: transitive `rand` 0.9.2 → 0.9.4 via `cargo update` to patch GHSA-cq8v-f236-94qc (low severity; soundness bug when a custom logger calls `ThreadRng` methods during reseed). cqs has no `ThreadRng` usages so the advisory's preconditions cannot fire; alert dismissed as `not_used`. Residual `rand 0.8.5` via `phf_generator` is build-time only.
+
+### Notes
+- Fully-routed R@1 lands at **44.9%**, tying the best uniform α=0.95. The 4.5pp gap to the oracle ceiling (49.4%) is entirely in classifier accuracy: structural detection fires on 19% of structural queries, conceptual on 3%, cross_language on 0%. Most natural-language queries in those categories fall to `Unknown` → α=1.0. Classifier investigation is the next high-value item (ROADMAP).
+
 ## [1.24.0] - 2026-04-13
 
 ### Added

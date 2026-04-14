@@ -1,8 +1,10 @@
 # Roadmap
 
-## Current: v1.24.0
+## Current: v1.24.0 (v1.25.0 in prep)
 
 54 languages. 29 chunk types. 265-query v2 eval. BGE-large = best config. Adaptive retrieval Phases 1-5 shipped. **Daemon mode** (`cqs watch --serve`, 3-19ms queries). Per-category SPLADE alpha routing. GPU-native CAGRA bitset filtering (patched cuvs 26.4). Enrichment ablation + router update (type_filtered + multi_step → base).
+
+**v1.25.0 staged**: eval output writes to `~/.cache/cqs/evals/` (#943, fixes watch-reindex contamination), clean 21-point alpha re-sweep, new per-category defaults (identifier 0.90, structural 0.60, conceptual 0.85, behavioral 0.05, rest 1.0), and multi_step router fix (removed over-broad `"how does"` Behavioral pattern). Fully-routed R@1 = 44.9% (ties best uniform α=0.95; oracle ceiling 49.4% gated on classifier accuracy).
 
 ### Eval Baselines
 
@@ -17,6 +19,9 @@
 | V2 (265q, live) | Enriched + CAGRA filter | 42.6% | 2026-04-13 enrichment ablation |
 | V2 (265q, live) | Oracle routing (theoretical) | **43.8%** | Best arm per category |
 | V2 (265q, live) | **v1.24.0 fully routed** | **41.5%** | Router + CAGRA filter, net zero — CAGRA regression on enriched |
+| V2 (265q, live) | 21-pt sweep best uniform α=0.95 | 44.9% | Clean infra (post #942 + #943) |
+| V2 (265q, live) | Oracle per-category α (clean) | **49.4%** | +4.5pp vs uniform — gated on classifier accuracy |
+| V2 (265q, live) | **v1.25.0 fully routed** | **44.9%** | New per-cat defaults + multi_step router fix (2026-04-14) |
 
 ---
 
@@ -37,7 +42,8 @@
 - [x] ~~**SPLADE alpha sweep + ship defaults**~~ — 11-point sweep + single-category verification. Per-category optimal alphas shipped: identifier 0.9, structural 0.7, conceptual 0.9, type_filtered 0.9, behavioral 0.1, rest 1.0. Expected **+4.9pp R@1** (47.2% vs 42.3%). Cross-language excluded (N=21 noise). Plan: `docs/plans/2026-04-12-selective-splade-routing.md`
 - [x] ~~**Eval determinism + SPLADE-always-on + alpha re-sweep**~~ — PR #942. Audit found 5 bugs causing ±5pp hash-random noise in every measurement. Post-fix 21-point re-sweep on deterministic pipeline. Uniform α=1.0 wins at 45.3% R@1; per-category oracle 49.8% (+4.5pp over uniform). Real optima: structural 0.9 (+14.8pp), conceptual 0.95 (+13.9pp), behavioral 0.05 (+4.6pp), rest 1.0. Research: `~/training-data/research/sparse.md` § Alpha Sweep.
 - [x] ~~**Investigate oracle-gap on per-category routing**~~ — root cause: `run_ablation.py` wrote eval results inside the watched project dir (`evals/runs/*/results.json`). `.json` writes triggered watch reindex + HNSW rebuild, invalidating BatchContext caches between eval runs. Consecutive identical-config runs drifted up to ±15pp. The 6pp oracle gap was this artifact. Fix: write to `~/.cache/cqs/evals/` (outside watched tree). Verified bit-exact back-to-back after fix.
-- [ ] **Re-sweep alphas on uncontaminated infrastructure** — redo the 21-point sweep now that eval output doesn't invalidate caches. Current per-category defaults (structural 0.9, conceptual 0.95, behavioral 0.05, rest 1.0) were measured on drifting state — real optima unknown. Blocks v1.25.0 release.
+- [x] ~~**Re-sweep alphas on uncontaminated infrastructure**~~ — 21-point sweep on post-#943 pipeline. Per-category optima: identifier 0.90 (+4pp over 1.0), structural plateau 0.40–0.85 (picked 0.60), conceptual plateau 0.75–0.95 (picked 0.85), behavioral 0.05 (confirmed), rest 1.0 (confirmed). Oracle R@1 = 49.4% vs 44.9% for best uniform α=0.95. Shipped defaults target v1.25.0. Research: `~/training-data/research/sparse.md` § Alpha Sweep — Clean Infrastructure Re-run.
+- [ ] **Classifier accuracy investigation** — the 4.5pp gap between deployed per-category routing (44.9%) and oracle (49.4%) is **entirely** in `classify_query()` accuracy, not alpha picks. Current accuracy: negation 100%, identifier 84%, structural 19%, type_filtered 4%, behavioral 5%, conceptual 3%, cross_language 0%. Most queries fall to Unknown → α=1.0. Fixed one concrete bug 2026-04-14 (`"how does"` → Behavioral caught 100% of multi_step, +0.7pp overall). Remaining: structural/conceptual detectors rely on narrow phrase/word lists that miss most natural-language queries; cross_language requires explicit language names; type_filtered loses to Structural when query starts with "struct "/"enum "/"trait ". Options: (1) expand rule set with common phrasings mined from eval queries, (2) small learned classifier (tiny MLP on sentence embedding?), (3) LLM-on-first-query + cache. Worth +4.5pp if done well.
 - [ ] **Eval expansion: grow small categories** — N=21 cross_language and N=24 type_filtered are too noisy for reliable per-category decisions (±4.5pp noise floor just from sampling). Target: every category N≥40, noise floor ≤2.5pp. Rename file to actual count (v2_300q.json actually has 265 queries; misnomer).
 - [x] ~~**Enrichment ablation + routing update**~~ — 2-arm eval at 78% summary coverage with SPLADE. Oracle routing = 43.8% R@1 (+1.9pp). Updated router: type_filtered/multi_step → DenseBase (previously enriched). Research: `~/training-data/research/enrichment.md`.
 - [x] ~~**CAGRA native bitset filtering**~~ — GPU-side type/language filtering during graph traversal, replacing 3x over-fetch + post-filter. +0.7pp R@1 (42.6% vs 41.9%) on enriched. Structural +3.7pp, negation +3.4pp, behavioral +2.2pp. Patched cuvs crate (upstream PR rapidsai/cuvs#2019). Shipped in v1.24.0.
