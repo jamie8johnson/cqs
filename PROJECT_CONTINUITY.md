@@ -2,76 +2,119 @@
 
 ## Right Now
 
-**v1.25.0 shipped. Classifier is the next bottleneck. (2026-04-14 ~13:00 CDT)**
+**v1.25.0 + 11th audit merged. Wave A in flight. Waves B/C/D queued for autopilot. (2026-04-14 ~23:45 CDT)**
 
-### Where we landed today
+Main at `ea7c72b` (#976 audit batch). Working branches in flight:
+- **#978** `chore/post-audit-tears` — this tears update (will merge once CI green)
+- **#979** `wave-a/quick-wins` — Wave A fixes (#961 WSL mmap, #962 CAGRA itopk, #963 reranker batch)
 
-Three merged PRs on top of v1.24.0:
+### What landed today (massive day)
 
-1. **#943** — eval output moved to `~/.cache/cqs/evals/` (fixes watch-reindex contamination that corrupted every prior alpha measurement).
-2. **Clean 21-point alpha re-sweep** — first truly deterministic sweep; back-to-back runs are bit-exact.
-3. **#944 / v1.25.0** — new per-category defaults (`identifier 0.90, structural 0.60, conceptual 0.85, behavioral 0.05, rest 1.0`) + dropped the over-broad `"how does"` pattern from `is_behavioral_query` that was catching 100% of multi_step queries and routing them to α=0.05. Transitive `rand 0.9.2 → 0.9.4` bump (GHSA-cq8v-f236-94qc alert dismissed as `not_used`).
+**Morning — v1.25.0:**
+- #942 determinism fixes (hash iteration + SPLADE-at-α=1.0 + rowid re-sort)
+- #943 eval-output-location fix (watch-reindex contamination — root cause of 2 days of drift)
+- #944 v1.25.0 release — new per-category alpha defaults + multi_step router fix
+- #945 notes mutation daemon bypass
 
-### Release status
+**Afternoon — 11th full audit:**
+- 16 categories × 2 batches × 8 parallel opus auditor agents → **236 findings**
+- Triaged into P1 (49) / P2 (47) / P3 (97) / P4 trivial (16) / P4 issues (32)
+- Executed in 3 waves of implementer agents (wave 1 shared tree, 2+3 worktree-isolated)
+- **PR #976 merged 20:40 CDT** — 126 commits closing 166/236 findings
+- **PR #977 merged 19:33 CDT** — #856 atexit Mutex UB fix (dependent follow-up)
+- 11 stale issues closed, 25 P4 issues filed (#951-#975), 5 refactor issues (#946-#950)
+- `cqs-training` pushed (research/sparse.md clean-sweep data + 15 scripts + gitignore cleanup)
 
-- Tag `v1.25.0` pushed
-- Crates.io: **published** as `cqs 1.25.0` (default features; `[patch.crates-io]` cuvs git dep prevents publishing with `--features gpu-index`)
-- GitHub Release workflow: running (background task `bsyim32pp`, watched via `gh run watch`). Will auto-create the GitHub Release with Linux/macOS/Windows binaries on success.
-- Local binary + daemon: on v1.25.0, daemon active.
+**Evening — Wave A kickoff:**
+- 3 worktree-isolated opus agents, all produced 1-commit branches:
+  - `fix/961-wsl-mmap-autodetect` — detect 9P/DrvFS/NTFS/CIFS, force `mmap_size=0` unless user override
+  - `fix/963-reranker-batch` — `CQS_RERANKER_BATCH` chunking (default 32), mirrors `embed_documents`
+  - `fix/962-cagra-itopk-env` — `CQS_CAGRA_ITOPK_MIN/MAX`, `GRAPH_DEGREE`, `INTERMEDIATE_GRAPH_DEGREE` with corpus-size log₂ scaling
+- Bundled into **PR #979** `wave-a/quick-wins`.
 
-### Numbers
+### CI caveat — slow integration tests
 
-- Best uniform α from clean sweep: **α=0.95 → 44.9%** R@1
-- Per-category oracle ceiling: **49.4%** (131/265)
-- Deployed per-category routing (v1.25.0): **44.9%** — ties uniform α=0.95
-- The 4.5pp oracle gap is **entirely classifier accuracy**, not alpha choice
+A CI `test` job cancelled at 1h48m during the audit-PR merge sequence because I assumed it was hung. **It was not.** `tests/cli_health_test.rs` has pre-existing CLI integration tests (`test_health_cli_text` ≈ 303s each) that shell out to `cqs` and cold-load the whole ONNX/HNSW/SPLADE stack per invocation. Normal test-job time on this repo is ~22 min.
 
-### The classifier is the bottleneck
+**Filed #980** (`tier-2 / performance / testing`) with the in-process-fixture fix proposal. Today's new tests (`cli_notes_test.rs`, `router_test.rs`) use the correct in-process pattern and are fast (0.16s).
 
-Confusion matrix (eval label vs `classify_query()` output) from today's check:
+**Do not cancel running CI under 30 min without a specific hang signal.**
 
-| eval_label | N | correctly classified | dominant misroute |
-|---|---|---|---|
-| negation | 29 | 100% | — |
-| identifier | 50 | 84% | 5 → Unknown |
-| structural | 27 | 19% | 18 → Unknown |
-| type_filtered | 24 | 4% | 11 → Structural (starts with "struct "/"enum "/"trait ") |
-| behavioral | 44 | 5% | 24 → Unknown |
-| conceptual | 36 | 3% | 24 → Unknown |
-| cross_language | 21 | 0% | 11 → Unknown, 5 → Structural |
-| multi_step | 34 | 0% → fixed | was 100% → Behavioral; now split MultiStep/Unknown (both α=1.0) |
+### Wave-merge caveat
 
-Structural/conceptual/behavioral detectors use narrow phrase/word lists that miss natural-language queries. Those fall to Unknown → α=1.0. Cross-language detection requires explicit language names, which the eval queries don't use.
+My first two merge scripts printed "MERGED" unconditionally without checking `gh pr merge` exit status. Three of the claimed merges didn't happen — branch-protection rejected them because:
+1. Cancelled runs leave stale "fail" status that blocks required checks
+2. Re-triggered CI creates fresh runs but the old statuses can linger
+3. `gh pr merge --admin` overrides "fail" / "stale" but **not "in progress"** — if any required check is still running, even admin is blocked
 
-### Next session priorities
+Fix pattern:
+1. Always check `$?` after `gh pr merge`
+2. Empty commit (`git commit --allow-empty`) retriggers fresh CI that supersedes stale statuses
+3. `--admin` is available (I'm authenticated as repo owner); use it only when a stale status is the real blocker, not to bypass actually-failing tests
 
-1. **Classifier accuracy investigation** — expand rule set with phrasings mined from eval queries, or a small learned classifier, or LLM-first-query-cached. Worth +4.5pp if done well. Full ROADMAP entry exists.
-2. **Eval expansion** — grow small categories (N=21 cross_language, N=24 type_filtered) to N≥40 so per-category decisions aren't dominated by single-query noise.
-3. **Rename `evals/queries/v2_300q.json`** to its actual count (265 queries).
+### Next session — pull list queued, autopilot contract
+
+**Wave B** (1 agent, bigger refactor):
+- #947 Commands/BatchCmd unification — half-day refactor, kills daemon/CLI parity drift class. Touches `src/cli/definitions.rs`, `src/cli/dispatch.rs`, `src/cli/batch/`.
+
+**Wave C** (4 parallel worktrees):
+- #946 Store typestate (closes write-on-readonly class)
+- #948 `atomic_replace` helper (closes fs-persist durability class)
+- #949 Model abstraction (unblocks BGE→E5 default switch)
+- #950 CAGRA persistence (daemon hot-restart 30s → 5s)
+
+**Wave D** (2 parallel worktrees):
+- #972 Daemon `try_daemon_query` test scaffold
+- #964 Aho-Corasick `classify_query` (pre-req for classifier accuracy work)
+
+Order: A → B → C → D sequential between waves (later waves benefit from earlier fixes); parallel within each. Rebuild + install binary after each wave merge so daemon uses current code.
+
+### Architecture state
+
+- **Version:** v1.25.0, Schema v20
+- **Binary:** last rebuilt + installed from post-merge main (`ea7c72b`), daemon active
+- **Index:** clean (post-GC, 13,279 chunks down from 81%-dup 69,444)
+- **Per-category SPLADE α defaults:** identifier 0.90, structural 0.60, conceptual 0.85, behavioral 0.05, rest 1.0 (tuned on *dirty* index; re-fit pending — CPU Lane)
+- **Determinism:** end-to-end after #942 + #943 + wave-1 sort hardening (15+ sites)
+- **Test count:** 1404 lib tests pre-wave-A; +new Wave A tests (WSL mountinfo parser etc.)
+
+### Eval numbers (honest, post-clean-index)
+
+| Eval | Model | R@1 | R@5 | R@20 |
+|---|---|---|---|---|
+| V2 (265q clean) | BGE-large fully routed | 37.4% | 55.8% | 77.4% |
+| V2 (265q clean) | E5 v9-200k fully routed | 37.4% | 56.6% | 78.1% |
+| V2 (265q clean) | Oracle per-category α | 49.4% | — | — |
+
+**E5 v9-200k ties BGE on R@1, slight edge on R@5/R@20 — at 1/3 the embedding dim.** Gated on #949 (model abstraction) for low-friction default switch.
+
+Pre-2026-04-14 numbers (44.9% R@1 etc.) were measured against the dirty (81% worktree-dup) index; see GC prune_all suffix-match bug fixed in wave 1.
 
 ### Residual puzzles
 
-- Identifier dropped 1 query (98% → 96%) and structural dropped 1 query between v1 and v2 router-fix evals with only `is_behavioral_query` changed between them. Likely SPLADE ONNX GPU non-determinism on the sparse vector output — a known residual drift source worth verifying once.
-
-## Parked
-
-- **CAGRA filtering regression on enriched index** (v1.24.0 investigation) — conceptual −5.5pp, structural −3.8pp, identifier −2pp vs pre-release baseline when CAGRA bitset filtering is on with the enriched graph. Options: HNSW-for-enriched + CAGRA-for-base, or bumped itopk_size, or per-filter CAGRA graphs. Blocks further R@1 gains but orthogonal to the classifier work.
-- **Query-time HyDE for structural queries** — old data shows +14pp structural / +12pp type_filtered / −22pp conceptual. Needs a fresh eval with SPLADE active.
-- **Reranker V2** (code-trained cross-encoder; ms-marco was catastrophic).
+- **Classifier accuracy** — 4.5pp oracle gap entirely in `classify_query()`, not alpha picks. Today: negation 100%, identifier 84%, structural 19%, behavioral 5%, conceptual 3%, cross_language 0%. Wave D #964 (Aho-Corasick) is a pre-req; actual investigation + centroid-matching-on-BGE-embeddings proposed in ROADMAP.
+- **Alpha defaults on clean index** — today's defaults were fit on dirty data. Re-sweep on clean infra to find real optima.
 
 ## PR status
-- All recent PRs merged: #939, #940, #941, #942, #943, #944.
-- No open PRs from this session.
 
-## Architecture
-- Version: **1.25.0**, Schema: v20
-- Deterministic search path (PR #942) + deterministic eval pipeline (PR #943)
+- #978 tears (this one) — open, CI running
+- #979 Wave A quick-wins — open, CI running
+- #980 slow-CLI-tests issue — filed 2026-04-14 evening
+
+## Open Issues (40, tiered)
+
+- **Tier 1 (11)** — fix-worthy near-term: #946-#950 refactors, #953 migration backup, #961 WSL mmap (→ Wave A), #962 CAGRA itopk (→ Wave A), #963 reranker batch (→ Wave A), #972 daemon tests
+- **Tier 2 (10)** — real impact, harder: #956 Metal/ROCm, #957 SPLADE/reranker presets, #964 Aho-Corasick, #968 shared runtime, #973 dispatch_search tests, #63 paste RUSTSEC, #916 mmap SPLADE, #917 streaming SPLADE, #921 WSL SPLADE save, #923 INDEX_DB_FILENAME, #980 CLI test perf
+- **Tier 3 (19)** — low urgency/blocked upstream: #106 ort RC, #389 CAGRA CPU retain, #717 HNSW RAM, #255 reference packages, plus 15 minor perf/refactor/test items
+
+Filter: `gh issue list --state open --label tier-N`
+
+## Architecture notes
+- Deterministic search path + deterministic eval pipeline (end-to-end)
 - SPLADE always-on, α controls fusion weight only
-- Per-category SPLADE defaults: identifier 0.90, structural 0.60, conceptual 0.85, type_filtered 1.0, behavioral 0.05, rest 1.0
-- HNSW dirty flag self-heals via checksum verification
-- cuVS 26.4 + patched with `search_with_filter` (upstream rapidsai/cuvs#2019 pending)
+- HNSW dirty flag self-heals via checksum verification (per-kind after wave 2 AC-V1.25-8)
+- cuVS 26.4 + patched with `search_with_filter` (upstream rapidsai/cuvs#2019)
 - Eval results write to `~/.cache/cqs/evals/` (outside watched project dir)
-- Daemon: `cqs watch --serve`, systemd unit `cqs-watch`
-
-## Open Issues
-- #909, #912-#925, #856, #717, #389, #255, #106, #63
+- Daemon (`cqs watch --serve`), thread-per-connection capped at 64 (SEC-V1.25-1)
+- WSL mmap auto-detect lands in Wave A (#961) — disables mmap on 9P/NTFS/CIFS
+- CAGRA itopk env overrides with corpus-log₂ scaling land in Wave A (#962)

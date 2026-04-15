@@ -1190,3 +1190,36 @@ mentions = [
     "classifier",
     "splade",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Shell scripts that echo 'MERGED' after gh pr merge MUST check $? — otherwise failed merges (base-branch policy rejects, in-progress checks, etc.) get reported as success. Cost me 3 bogus 'merged' claims before I spotted the pattern. Use: merge_out=$(gh pr merge ...); if [ $? -ne 0 ]; then echo FAILED: $merge_out; exit 1; fi"
+mentions = [
+    "gh",
+    "ci",
+    "scripts",
+]
+
+[[note]]
+sentiment = -1.0
+text = "tests/cli_health_test.rs tests take 60-300s EACH because they shell out to cqs and cold-load ONNX/HNSW/SPLADE per invocation. Normal test-job CI time is ~22min. Do NOT cancel running CI under 30min without a specific hang signal. Filed #980 with in-process-fixture fix."
+mentions = [
+    "tests/cli_health_test.rs",
+    "ci",
+]
+
+[[note]]
+sentiment = 0.0
+text = "gh pr merge --admin (when auth'd as repo owner) overrides 'fail' and 'stale' status checks but NOT 'in progress' ones. If branch protection is blocking, empty commit to retrigger fresh CI + wait for it, THEN admin-merge if needed. Don't try to admin-bypass a running check."
+mentions = [
+    "gh",
+    "branch-protection",
+]
+
+[[note]]
+sentiment = 1.0
+text = "Parallel implementer agents on the SAME working directory cause staging collisions and commit-message misattribution. Always use isolation: 'worktree' in Agent calls. Wave 1 of the v1.25.0 audit hit this; wave 2+ with worktrees were clean."
+mentions = [
+    "Agent",
+    "worktrees",
+]
