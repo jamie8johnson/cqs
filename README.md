@@ -706,6 +706,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_QUERY_CACHE_SIZE` | `128` | Embedding query cache entries |
 | `CQS_RAYON_THREADS` | (auto) | Rayon thread pool size for parallel operations |
 | `CQS_REFS_LRU_SIZE` | `2` | Slots in the batch-mode reference-index LRU cache (sibling projects loaded via `@name`). |
+| `CQS_RERANKER_BATCH` | `32` | Cross-encoder batch size per ORT run (reduce if reranker OOMs on large `--rerank-k`) |
 | `CQS_RERANKER_MAX_LENGTH` | `512` | Max input length for cross-encoder reranker |
 | `CQS_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder model for `--rerank` |
 | `CQS_RRF_K` | `60` | RRF fusion constant (higher = more weight to top results) |
