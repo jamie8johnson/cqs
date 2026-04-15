@@ -42,9 +42,22 @@ High-leverage refactors that close entire bug classes — surfaced by the v1.25.
 - [x] **WSL 9P/NTFS mmap auto-detect** — #961 closed by PR #979.
 - [x] **CAGRA itopk + graph_degree env overrides** — #962 closed by PR #979.
 - [x] **Reranker batch chunking** — #963 closed by PR #979.
-- [ ] **Daemon `try_daemon_query` test scaffold** — issue [#972](https://github.com/jamie8johnson/cqs/issues/972). Queued for Wave D.
+- [x] **Daemon `try_daemon_query` test scaffold** — #972 closed by PR #999 (Wave D1, 2026-04-15).
 
-Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue list --label audit-v1.25.0`.
+### Waves D–F (Tier-1/2/3 batch closed 2026-04-15)
+
+- [x] **Aho-Corasick + LazyLock language_names (#964)** — Wave D2, PR #992. 1.31× on type_filtered classifier path. Prereq for classifier accuracy investigation.
+- [x] **dispatch_search content-asserting tests (#973)** — Wave E2, PR #997. Closes silent-regression test-gap class.
+- [x] **Shared Arc<Runtime> (#968)** — Wave E3, PR #1000. Daemon consolidates to one `cqs-shared-rt` worker pool.
+- [x] **Migration fs-backup (#953)** — Wave E1, PR #996. Data-integrity: restore DB byte-identical on migration failure.
+- [x] **NameMatcher ASCII fast path (#965)** — Wave F1, PR #990. 1.2-1.5× on search hot path.
+- [x] **`open_readonly_small` (#970)** — Wave F2, PR #993. 256MB → 16MB mmap per reference store.
+- [x] **Reindex drain-owned chunks (#967)** — Wave F3, PR #991. ~180MB / ~1.4M allocs saved per 20-file watch burst.
+- [x] **INDEX_DB_FILENAME constant (#923)** — Wave F4, PR #994. 56 literal sites unified.
+- [x] **CAGRA sentinel INVALID_DISTANCE (#952)** — Wave F5, PR #995.
+- [x] **`open_readonly_after_init` + drop unsafe `into_readonly` (#986)** — Wave F6, PR #998.
+
+Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue list --label audit-v1.25.0`. Remaining tier-2/3 form the Wave G backlog: #955, #958, #959, #960, #966, #969, #971, #974, #975 + upstream-blocked.
 
 ### GPU Lane
 
@@ -77,7 +90,7 @@ Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue lis
 
   **Data caveat:** 265 labeled queries *are* the eval set — train/eval leakage. Need leave-one-out CV + held-out partition. Coupled with eval expansion below.
 
-- [ ] **Re-fit per-category alphas on clean index** — current v1.25.0 defaults were tuned on the dirty (81% worktree-dup) index. Real optima on the clean index are unknown and likely shift. Re-run the 21-point sweep with the clean index + record new per-category curves.
+- [ ] **Re-fit per-category alphas on clean index** (**in flight 2026-04-15**) — current v1.25.0 defaults were tuned on the dirty (81% worktree-dup) index. Confirmed this session: SPLADE-enabled R@1 is **9pp below** dense-only R@1 (26.8% vs 35.8%, N=265 clean index, 100% SPLADE coverage). identifier_lookup drops 42pp (54% vs 96%) under the dirty-tuned alphas. Running `evals/run_alpha_sweep.sh` (21 global α's 0.00-1.00). When done, extract per-category optima per alpha × category breakdown, update `src/search/router.rs` defaults, confirm with re-run.
 - [ ] **Eval expansion: grow small categories** — N=21 cross_language and N=24 type_filtered are too noisy for reliable per-category decisions (±4.5pp sampling floor). Target every category N≥40 (≤2.5pp). Rename `v2_300q.json` to actual count (265).
 - [ ] **Investigate CAGRA filtering regression on enriched index** — fully-routed v1.24.0 showed conceptual −5.5pp, structural −3.8pp, identifier −2pp vs pre-release baseline. Hypothesis: CAGRA graph walk strands in filtered-out regions. Concrete proposal in [#962](https://github.com/jamie8johnson/cqs/issues/962) (Quick-wins Lane).
 - [ ] **Query-time HyDE for structural queries** — old data: HyDE +14pp structural / +12pp type_filtered / −22pp conceptual / −15pp behavioral. Router classifies structural → LLM generates synthetic code → embed → search. Per-category by design. Need fresh eval with SPLADE active (old data is pre-SPLADE, pre-AC-1).
