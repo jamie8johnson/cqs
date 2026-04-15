@@ -644,35 +644,6 @@ impl<Mode> Store<Mode> {
 }
 
 impl Store<ReadWrite> {
-    /// Erase the write capability at the type level. No SQLite-level change —
-    /// the connection stays open in read-write mode but the `ReadOnly` marker
-    /// blocks `Store<ReadWrite>`-gated methods at compile time. Used by tests
-    /// that build fixture data under `ReadWrite` before handing the store to
-    /// an API that accepts only `Store<ReadOnly>` (e.g. `ReferenceIndex`,
-    /// `NamedStore`). Production code should prefer `Store::open_readonly`.
-    pub fn into_readonly(self) -> Store<ReadOnly> {
-        // `Store<Mode>` implements `Drop`, so we cannot move fields out with
-        // normal assignment. Use `ManuallyDrop` + `ptr::read` to transfer
-        // ownership field-by-field; the source is forgotten so its Drop
-        // doesn't run twice. Safe because we initialize every field of the
-        // returned `Store<ReadOnly>` exactly once.
-        let me = std::mem::ManuallyDrop::new(self);
-        unsafe {
-            Store {
-                pool: std::ptr::read(&me.pool),
-                rt: std::ptr::read(&me.rt),
-                dim: me.dim,
-                closed: std::ptr::read(&me.closed),
-                notes_summaries_cache: std::ptr::read(&me.notes_summaries_cache),
-                note_boost_cache: std::ptr::read(&me.note_boost_cache),
-                call_graph_cache: std::ptr::read(&me.call_graph_cache),
-                test_chunks_cache: std::ptr::read(&me.test_chunks_cache),
-                chunk_type_map_cache: std::ptr::read(&me.chunk_type_map_cache),
-                _mode: PhantomData,
-            }
-        }
-    }
-
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         Self::open_with_config(path, Self::default_open_config(path, None))
@@ -737,6 +708,9 @@ impl Store<ReadOnly> {
     /// Open an existing index in read-only mode with reduced resources.
     /// Uses minimal connection pool, smaller cache, and single-threaded runtime.
     /// Suitable for reference stores and background builds that only read data.
+    ///
+    /// For test fixture setup where you need to write data before exposing a
+    /// read-only handle, see [`Store::open_readonly_after_init`].
     pub fn open_readonly(path: &Path) -> Result<Self, StoreError> {
         open_with_config_impl::<ReadOnly>(
             path,
@@ -801,6 +775,47 @@ impl Store<ReadOnly> {
                 runtime: None,
             },
         )
+    }
+
+    /// Open the store read-write, run `init` for fixture setup, drop the
+    /// read-write handle (flushing the WAL via the [`Drop`] impl), then
+    /// reopen read-only via [`Store::open_readonly`]. The returned store is
+    /// read-only at both the type system level and the SQLite connection
+    /// level — unlike the phantom-typestate erasure used internally by tests.
+    ///
+    /// Intended for test fixture setup where code under test accepts only
+    /// [`Store<ReadOnly>`] (e.g. `ReferenceIndex`, `NamedStore`) but the
+    /// fixture builder needs to populate tables first.
+    ///
+    /// The closure receives `&Store<ReadWrite>` (not `&mut`) because every
+    /// write method on `Store` already goes through the pool via `&self`.
+    /// If the closure returns `Err`, the read-write handle is dropped
+    /// immediately and the error is propagated — no partially-initialized
+    /// store is returned.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use cqs::Store;
+    /// use cqs::store::ModelInfo;
+    /// use std::path::Path;
+    /// let store = Store::open_readonly_after_init(Path::new(".cqs/index.db"), |s| {
+    ///     s.init(&ModelInfo::default())?;
+    ///     // populate fixtures via &Store<ReadWrite> methods here
+    ///     Ok(())
+    /// })?;
+    /// // `store` is Store<ReadOnly>, safe to pass to read-only-only APIs.
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn open_readonly_after_init<F>(path: &Path, init: F) -> Result<Self, StoreError>
+    where
+        F: FnOnce(&Store<ReadWrite>) -> Result<(), StoreError>,
+    {
+        let rw = Store::<ReadWrite>::open(path)?;
+        init(&rw)?;
+        // Dropping the RW handle runs the WAL checkpoint (see `impl Drop for
+        // Store`), ensuring the reopened RO handle sees all writes.
+        drop(rw);
+        Store::<ReadOnly>::open_readonly(path)
     }
 }
 
@@ -1569,6 +1584,7 @@ mod tests {
             .expect("second init() should be idempotent but failed");
     }
 
+<<<<<<< HEAD
     #[test]
     fn open_readonly_small_roundtrip() {
         // #970: open_readonly_small right-sizes the mmap/cache for reference
@@ -1629,5 +1645,79 @@ mod tests {
             .expect("get_chunks_by_origin should work on small-mode store");
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].name, "small");
+    }
+
+    // ===== open_readonly_after_init tests (#986) =====
+
+    #[test]
+    fn open_readonly_after_init_happy_path() {
+        // Closure writes fixtures under RW; reopened RO handle must read
+        // them back. Verifies that the WAL checkpoint triggered by dropping
+        // the RW handle flushes writes to the main DB file before the RO
+        // handle opens.
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+
+        let store = Store::<ReadOnly>::open_readonly_after_init(&db_path, |s| {
+            s.init(&ModelInfo::default())?;
+            // Write a call-graph edge so we have something to query back.
+            s.rt.block_on(async {
+                sqlx::query(
+                    "INSERT INTO function_calls (file, caller_name, callee_name, caller_line, call_line)
+                     VALUES ('test.rs', 'caller_fn', 'callee_fn', 1, 2)",
+                )
+                .execute(&s.pool)
+                .await
+            })?;
+            Ok(())
+        })
+        .expect("open_readonly_after_init happy path failed");
+
+        // Query the RO handle to confirm the write landed on disk.
+        let count: i64 = store
+            .rt
+            .block_on(async {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM function_calls WHERE caller_name = 'caller_fn'",
+                )
+                .fetch_one(&store.pool)
+                .await
+            })
+            .expect("query after reopen failed");
+        assert_eq!(count, 1, "RO handle did not see the fixture write");
+    }
+
+    #[test]
+    fn open_readonly_after_init_closure_error_propagates() {
+        // If the closure returns Err, the constructor must return Err and
+        // not leave a half-initialized read-only handle hanging around.
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+
+        // Can't use `expect_err` — `Store<ReadOnly>` doesn't implement
+        // `Debug`, so its formatter can't render the Ok case. Match directly.
+        match Store::<ReadOnly>::open_readonly_after_init(&db_path, |_s| {
+            Err(StoreError::Runtime("closure rejected the init".to_string()))
+        }) {
+            Ok(_) => panic!("constructor should have surfaced closure error"),
+            Err(StoreError::Runtime(msg)) => assert_eq!(msg, "closure rejected the init"),
+            Err(other) => panic!("expected Runtime error, got {other:?}"),
+        }
+
+        // The RW handle opened internally created the DB file (since
+        // `Store::open` uses `create_if_missing=true`). That's acceptable:
+        // the contract is "no half-initialized RO handle is returned", not
+        // "no bytes touch disk". The DB on disk may be either pre-init
+        // (empty) or post-init, but the caller holds no `Store` handle.
+        // Verify that a subsequent successful open_readonly_after_init can
+        // still use this path (i.e., the previous error didn't corrupt
+        // anything or leak a lock).
+        let recovered = Store::<ReadOnly>::open_readonly_after_init(&db_path, |s| {
+            s.init(&ModelInfo::default())?;
+            Ok(())
+        })
+        .expect("second attempt after closure error should succeed");
+        // Sanity: the recovered handle can run a read query.
+        assert!(recovered.check_model_version().is_ok());
     }
 }

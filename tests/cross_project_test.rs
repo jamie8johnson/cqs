@@ -4,18 +4,31 @@ use std::path::PathBuf;
 
 use cqs::cross_project::{CrossProjectContext, NamedStore};
 use cqs::parser::{ChunkType, Language};
-use cqs::store::ModelInfo;
+use cqs::store::{ModelInfo, ReadOnly, ReadWrite, StoreError};
 use cqs::Store;
 use tempfile::TempDir;
 
-fn create_project(dir: &TempDir) -> Store {
+/// Build a read-only `Store` at `dir/index.db`, initializing it and running
+/// `populate` for fixture setup. Wraps [`Store::open_readonly_after_init`]
+/// so tests don't have to repeat the init boilerplate.
+fn build_readonly_store<F>(dir: &TempDir, populate: F) -> Store<ReadOnly>
+where
+    F: FnOnce(&Store<ReadWrite>) -> Result<(), StoreError>,
+{
     let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
-    let store = Store::open(&db_path).expect("open store");
-    store.init(&ModelInfo::default()).expect("init store");
-    store
+    Store::<ReadOnly>::open_readonly_after_init(&db_path, |store| {
+        store.init(&ModelInfo::default())?;
+        populate(store)
+    })
+    .expect("open_readonly_after_init")
 }
 
-fn insert_chunk_and_call(store: &Store, caller: &str, callee: &str, file: &str) {
+fn insert_chunk_and_call(
+    store: &Store<ReadWrite>,
+    caller: &str,
+    callee: &str,
+    file: &str,
+) -> Result<(), StoreError> {
     // Use the public API: upsert_chunks + upsert_function_calls
     let chunk = cqs::Chunk {
         id: format!("{}:1:hash_{}", file, caller),
@@ -34,9 +47,7 @@ fn insert_chunk_and_call(store: &Store, caller: &str, callee: &str, file: &str) 
         parent_type_name: None,
     };
     let embedding = cqs::Embedding::new(vec![0.0f32; store.dim()]);
-    store
-        .upsert_chunks_batch(&[(chunk, embedding)], None)
-        .expect("upsert chunk");
+    store.upsert_chunks_batch(&[(chunk, embedding)], None)?;
 
     let calls = vec![cqs::parser::FunctionCalls {
         name: caller.to_string(),
@@ -46,29 +57,29 @@ fn insert_chunk_and_call(store: &Store, caller: &str, callee: &str, file: &str) 
             line_number: 3,
         }],
     }];
-    store
-        .upsert_function_calls(&PathBuf::from(file), &calls)
-        .expect("upsert calls");
+    store.upsert_function_calls(&PathBuf::from(file), &calls)?;
+    Ok(())
 }
 
 #[test]
 fn test_cross_project_callers_finds_both() {
     let dir_a = TempDir::new().unwrap();
     let dir_b = TempDir::new().unwrap();
-    let store_a = create_project(&dir_a);
-    let store_b = create_project(&dir_b);
-
-    insert_chunk_and_call(&store_a, "foo", "target", "a.rs");
-    insert_chunk_and_call(&store_b, "bar", "target", "b.rs");
+    let store_a = build_readonly_store(&dir_a, |s| {
+        insert_chunk_and_call(s, "foo", "target", "a.rs")
+    });
+    let store_b = build_readonly_store(&dir_b, |s| {
+        insert_chunk_and_call(s, "bar", "target", "b.rs")
+    });
 
     let mut ctx = CrossProjectContext::new(vec![
         NamedStore {
             name: "local".into(),
-            store: store_a.into_readonly(),
+            store: store_a,
         },
         NamedStore {
             name: "project_b".into(),
-            store: store_b.into_readonly(),
+            store: store_b,
         },
     ]);
 
@@ -87,20 +98,21 @@ fn test_cross_project_callers_finds_both() {
 fn test_cross_project_callees_finds_both() {
     let dir_a = TempDir::new().unwrap();
     let dir_b = TempDir::new().unwrap();
-    let store_a = create_project(&dir_a);
-    let store_b = create_project(&dir_b);
-
-    insert_chunk_and_call(&store_a, "source", "foo", "a.rs");
-    insert_chunk_and_call(&store_b, "source", "bar", "b.rs");
+    let store_a = build_readonly_store(&dir_a, |s| {
+        insert_chunk_and_call(s, "source", "foo", "a.rs")
+    });
+    let store_b = build_readonly_store(&dir_b, |s| {
+        insert_chunk_and_call(s, "source", "bar", "b.rs")
+    });
 
     let mut ctx = CrossProjectContext::new(vec![
         NamedStore {
             name: "local".into(),
-            store: store_a.into_readonly(),
+            store: store_a,
         },
         NamedStore {
             name: "project_b".into(),
-            store: store_b.into_readonly(),
+            store: store_b,
         },
     ]);
 
@@ -115,12 +127,11 @@ fn test_cross_project_callees_finds_both() {
 #[test]
 fn test_cross_project_no_references_local_only() {
     let dir = TempDir::new().unwrap();
-    let store = create_project(&dir);
-    insert_chunk_and_call(&store, "foo", "target", "a.rs");
+    let store = build_readonly_store(&dir, |s| insert_chunk_and_call(s, "foo", "target", "a.rs"));
 
     let mut ctx = CrossProjectContext::new(vec![NamedStore {
         name: "local".into(),
-        store: store.into_readonly(),
+        store,
     }]);
 
     let callers = ctx.get_callers_cross("target").unwrap();
@@ -131,11 +142,11 @@ fn test_cross_project_no_references_local_only() {
 #[test]
 fn test_cross_project_function_not_found() {
     let dir = TempDir::new().unwrap();
-    let store = create_project(&dir);
+    let store = build_readonly_store(&dir, |_s| Ok(()));
 
     let mut ctx = CrossProjectContext::new(vec![NamedStore {
         name: "local".into(),
-        store: store.into_readonly(),
+        store,
     }]);
 
     let callers = ctx.get_callers_cross("nonexistent").unwrap();
@@ -146,20 +157,21 @@ fn test_cross_project_function_not_found() {
 fn test_cross_project_same_name_different_sources() {
     let dir_a = TempDir::new().unwrap();
     let dir_b = TempDir::new().unwrap();
-    let store_a = create_project(&dir_a);
-    let store_b = create_project(&dir_b);
-
-    insert_chunk_and_call(&store_a, "init", "target", "a.rs");
-    insert_chunk_and_call(&store_b, "init", "target", "b.rs");
+    let store_a = build_readonly_store(&dir_a, |s| {
+        insert_chunk_and_call(s, "init", "target", "a.rs")
+    });
+    let store_b = build_readonly_store(&dir_b, |s| {
+        insert_chunk_and_call(s, "init", "target", "b.rs")
+    });
 
     let mut ctx = CrossProjectContext::new(vec![
         NamedStore {
             name: "local".into(),
-            store: store_a.into_readonly(),
+            store: store_a,
         },
         NamedStore {
             name: "project_b".into(),
-            store: store_b.into_readonly(),
+            store: store_b,
         },
     ]);
 
