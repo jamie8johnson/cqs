@@ -1,10 +1,120 @@
 //! Shared argument structs for CLI and batch commands.
 //! Eliminates duplication between Commands and BatchCmd enums.
+//!
+//! #947: each variant in the user-facing command surface should embed one of
+//! these structs via `#[command(flatten)]`. Both the CLI path and the daemon
+//! batch path read from the same arg struct, so adding a flag or changing a
+//! default happens once and both paths pick it up automatically.
 
 use clap::Args;
 
 use super::{parse_finite_f32, parse_nonzero_usize};
 use cqs::store::DeadConfidence;
+
+/// Arguments for semantic search: the flagship command. Shared between CLI
+/// `search` (top-level + `cqs search …`) and batch `search`.
+///
+/// CQ-V1.25-1/4: this struct is the single source of truth for every search
+/// knob. Previously `BatchCmd::Search` inline-duplicated 21 fields and
+/// individual fields drifted (missing `--threshold`, missing `--pattern`,
+/// etc.). If a flag is valid for search, it lives here.
+#[derive(Args, Debug, Clone)]
+pub(crate) struct SearchArgs {
+    /// Search query (quote multi-word queries)
+    pub query: String,
+
+    /// Max results
+    #[arg(short = 'n', long, default_value = "5")]
+    pub limit: usize,
+
+    /// Min similarity threshold
+    ///
+    /// NOTE: `-t` is intentionally overloaded across subcommands.
+    /// In search/similar, it means "min similarity threshold" (default 0.3).
+    /// In diff/drift, it means "match threshold" for identity (default 0.95).
+    #[arg(short = 't', long, default_value = "0.3", value_parser = parse_finite_f32)]
+    pub threshold: f32,
+
+    /// Weight for name matching in hybrid search (0.0-1.0)
+    #[arg(long, default_value = "0.2", value_parser = parse_finite_f32)]
+    pub name_boost: f32,
+
+    /// Filter by language
+    #[arg(short = 'l', long)]
+    pub lang: Option<String>,
+
+    /// Include only these chunk types in results (e.g., function, struct, test, endpoint)
+    #[arg(long, alias = "chunk-type")]
+    pub include_type: Option<Vec<String>>,
+
+    /// Exclude these chunk types from results (e.g., test, variable, configkey)
+    #[arg(long)]
+    pub exclude_type: Option<Vec<String>>,
+
+    /// Filter by path pattern (glob)
+    #[arg(short = 'p', long)]
+    pub path: Option<String>,
+
+    /// Filter by structural pattern (builder, error_swallow, async, mutex, unsafe, recursion)
+    #[arg(long)]
+    pub pattern: Option<String>,
+
+    /// Definition search: find by name only, skip embedding (faster)
+    #[arg(long)]
+    pub name_only: bool,
+
+    /// Enable RRF hybrid search (keyword + semantic fusion).
+    #[arg(long)]
+    pub rrf: bool,
+
+    /// Include documentation, markdown, and config chunks in search results.
+    #[arg(long)]
+    pub include_docs: bool,
+
+    /// Re-rank results with cross-encoder (slower, more accurate)
+    #[arg(long)]
+    pub rerank: bool,
+
+    /// Enable SPLADE sparse-dense hybrid search (requires SPLADE model)
+    #[arg(long)]
+    pub splade: bool,
+
+    /// SPLADE fusion weight: 1.0 = pure cosine, 0.0 = pure sparse (default: 0.7)
+    #[arg(long, default_value = "0.7", value_parser = parse_finite_f32)]
+    pub splade_alpha: f32,
+
+    /// Show only file:line, no code
+    #[arg(long)]
+    pub no_content: bool,
+
+    /// Show N lines of context before/after the chunk
+    #[arg(short = 'C', long)]
+    pub context: Option<usize>,
+
+    /// Expand results with parent context (small-to-big retrieval)
+    #[arg(long)]
+    pub expand: bool,
+
+    /// Search only this reference index (skip project index)
+    #[arg(long = "ref")]
+    pub ref_name: Option<String>,
+
+    /// Include reference indexes in search results (default: project only)
+    #[arg(long)]
+    pub include_refs: bool,
+
+    /// Maximum token budget for results (packs highest-scoring into budget)
+    #[arg(long, value_parser = parse_nonzero_usize)]
+    pub tokens: Option<usize>,
+
+    /// Disable staleness checks (skip per-file mtime comparison)
+    #[arg(long)]
+    pub no_stale_check: bool,
+
+    /// Disable search-time demotion of test functions and underscore-prefixed names
+    #[arg(long)]
+    pub no_demote: bool,
+}
 
 /// Arguments shared between CLI `gather` and batch `gather`.
 #[derive(Args, Debug, Clone)]

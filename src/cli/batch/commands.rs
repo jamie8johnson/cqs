@@ -6,7 +6,8 @@ use clap::{Parser, Subcommand};
 use super::BatchContext;
 
 use crate::cli::args::{
-    BlameArgs, ContextArgs, DeadArgs, GatherArgs, ImpactArgs, ScoutArgs, SimilarArgs, TraceArgs,
+    BlameArgs, ContextArgs, DeadArgs, GatherArgs, ImpactArgs, ScoutArgs, SearchArgs, SimilarArgs,
+    TraceArgs,
 };
 use crate::cli::parse_nonzero_usize;
 use crate::cli::GateThreshold;
@@ -29,74 +30,13 @@ pub(crate) struct BatchInput {
 #[derive(Subcommand, Debug)]
 pub(crate) enum BatchCmd {
     /// Semantic search
+    ///
+    /// #947: embeds shared `SearchArgs` so both CLI and batch share one
+    /// source of truth for search flags. Previously 21 fields were
+    /// inline-duplicated here and drift was the default outcome.
     Search {
-        /// Search query
-        query: String,
-        /// Max results
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
-        /// Definition search: find by name only
-        #[arg(long)]
-        name_only: bool,
-        /// Enable RRF hybrid search (cosine + FTS5 keyword fusion)
-        #[arg(long)]
-        rrf: bool,
-        /// Re-rank results with cross-encoder
-        #[arg(long)]
-        rerank: bool,
-        /// Enable SPLADE sparse-dense hybrid search
-        #[arg(long)]
-        splade: bool,
-        /// SPLADE fusion weight: 1.0 = pure cosine, 0.0 = pure sparse
-        #[arg(long, default_value = "0.7", value_parser = crate::cli::parse_finite_f32)]
-        splade_alpha: f32,
-        /// Filter by language
-        #[arg(short = 'l', long)]
-        lang: Option<String>,
-        /// Filter by path pattern (glob)
-        #[arg(short = 'p', long)]
-        path: Option<String>,
-        /// Include only these chunk types (e.g., function, test, endpoint)
-        #[arg(long)]
-        include_type: Option<Vec<String>>,
-        /// Exclude these chunk types (e.g., test, variable, configkey)
-        #[arg(long)]
-        exclude_type: Option<Vec<String>>,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
-        /// Disable search-time demotion of test functions and underscore-prefixed names
-        #[arg(long)]
-        no_demote: bool,
-        /// Weight for name matching in hybrid search (0.0-1.0, default 0.2)
-        #[arg(long, default_value = "0.2", value_parser = crate::cli::parse_finite_f32)]
-        name_boost: f32,
-        /// Search only this reference index (skip project index)
-        #[arg(long = "ref")]
-        ref_name: Option<String>,
-        /// Include reference indexes in search results (default: project only)
-        #[arg(long)]
-        include_refs: bool,
-        /// Show only file:line, no code
-        #[arg(long)]
-        no_content: bool,
-        /// Show N lines of context before/after the chunk
-        #[arg(short = 'C', long)]
-        context: Option<usize>,
-        /// Expand results with parent context (small-to-big retrieval)
-        #[arg(long)]
-        expand: bool,
-        /// Disable staleness checks (skip per-file mtime comparison)
-        #[arg(long)]
-        no_stale_check: bool,
-        /// Min similarity threshold (default: 0.3)
-        ///
-        /// CQ-V1.25-1: matches the CLI's top-level `-t/--threshold` flag.
-        /// Previously omitted — daemon-routed queries silently collapsed to
-        /// the hardcoded 0.3 floor in `dispatch_search`, so `cqs -t 0.5 "..."`
-        /// returned results below the caller's intended cutoff.
-        #[arg(short = 't', long, value_parser = crate::cli::parse_finite_f32)]
-        threshold: Option<f32>,
+        #[command(flatten)]
+        args: SearchArgs,
     },
     /// Semantic git blame: who changed a function, when, and why
     Blame {
@@ -436,54 +376,36 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
         BatchCmd::Blame { args } => {
             handlers::dispatch_blame(ctx, &args.name, args.depth, args.callers)
         }
-        BatchCmd::Search {
-            query,
-            limit,
-            name_only,
-            rrf,
-            rerank,
-            splade,
-            splade_alpha,
-            lang,
-            path,
-            include_type,
-            exclude_type,
-            tokens,
-            no_demote,
-            name_boost,
-            ref_name,
-            include_refs,
-            no_content,
-            context,
-            expand,
-            no_stale_check,
-            threshold,
-        } => {
-            log_query("search", &query);
+        BatchCmd::Search { args } => {
+            log_query("search", &args.query);
             handlers::dispatch_search(
                 ctx,
                 &handlers::SearchParams {
-                    query,
-                    limit,
-                    name_only,
-                    rrf,
-                    rerank,
-                    splade,
-                    splade_alpha,
-                    lang,
-                    path,
-                    include_type,
-                    exclude_type,
-                    tokens,
-                    no_demote,
-                    name_boost,
-                    ref_name,
-                    include_refs,
-                    no_content,
-                    context,
-                    expand,
-                    no_stale_check,
-                    threshold,
+                    query: args.query,
+                    limit: args.limit,
+                    name_only: args.name_only,
+                    rrf: args.rrf,
+                    rerank: args.rerank,
+                    splade: args.splade,
+                    splade_alpha: args.splade_alpha,
+                    lang: args.lang,
+                    path: args.path,
+                    include_type: args.include_type,
+                    exclude_type: args.exclude_type,
+                    tokens: args.tokens,
+                    no_demote: args.no_demote,
+                    name_boost: args.name_boost,
+                    ref_name: args.ref_name,
+                    include_refs: args.include_refs,
+                    no_content: args.no_content,
+                    context: args.context,
+                    expand: args.expand,
+                    no_stale_check: args.no_stale_check,
+                    // CQ-V1.25-1: SearchArgs' threshold is non-optional (default 0.3).
+                    // `None` in SearchParams preserves the old semantics where the
+                    // batch handler's hard-coded default kicks in only if the flag
+                    // was omitted. We send the always-present value now.
+                    threshold: Some(args.threshold),
                 },
             )
         }
@@ -624,11 +546,9 @@ mod tests {
     fn test_parse_search() {
         let input = BatchInput::try_parse_from(["search", "hello"]).unwrap();
         match input.cmd {
-            BatchCmd::Search {
-                ref query, limit, ..
-            } => {
-                assert_eq!(query, "hello");
-                assert_eq!(limit, 5); // default
+            BatchCmd::Search { ref args } => {
+                assert_eq!(args.query, "hello");
+                assert_eq!(args.limit, 5); // default
             }
             _ => panic!("Expected Search command"),
         }
@@ -639,15 +559,10 @@ mod tests {
         let input =
             BatchInput::try_parse_from(["search", "hello", "--limit", "3", "--name-only"]).unwrap();
         match input.cmd {
-            BatchCmd::Search {
-                ref query,
-                limit,
-                name_only,
-                ..
-            } => {
-                assert_eq!(query, "hello");
-                assert_eq!(limit, 3);
-                assert!(name_only);
+            BatchCmd::Search { ref args } => {
+                assert_eq!(args.query, "hello");
+                assert_eq!(args.limit, 3);
+                assert!(args.name_only);
             }
             _ => panic!("Expected Search command"),
         }
