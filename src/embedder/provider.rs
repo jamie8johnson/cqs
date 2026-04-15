@@ -21,8 +21,16 @@ pub(super) fn ort_err<T>(e: ort::Error<T>) -> EmbedderError {
 /// name (e.g., "cqs"), so ORT constructs `absolute("cqs").remove_filename()`
 /// = CWD. Providers must exist there for `dlopen` to succeed.
 /// Strategy: compute the same directory ORT will search (from argv[0]),
-/// and create symlinks from the ORT cache there. Symlinks are cleaned up
-/// on process exit.
+/// and create symlinks from the ORT cache there.
+///
+/// PB-5 / #856: we previously registered a libc::atexit handler to
+/// unlink the symlinks here, but that function called Mutex::lock()
+/// which is UB after the Rust allocator has been torn down (and panics
+/// on poisoned mutex → unwinding into C is also UB). The symlinks are
+/// now left in place on process exit; they get overwritten on the
+/// next run (ORT provider resolution is deterministic per cqs version).
+/// If stale-file accumulation becomes a concern, add a startup-time
+/// GC pass instead of a shutdown-time one.
 #[cfg(target_os = "linux")]
 fn ensure_ort_provider_libs() {
     let ort_lib_dir = match find_ort_provider_dir() {
@@ -47,20 +55,10 @@ fn ensure_ort_provider_libs() {
 
     symlink_providers(&ort_lib_dir, &ort_search_dir, &provider_libs);
 
-    // Collect all symlink paths for cleanup
-    let mut cleanup_paths: Vec<PathBuf> = provider_libs
-        .iter()
-        .map(|lib| ort_search_dir.join(lib))
-        .collect();
-
     // Also symlink into LD_LIBRARY_PATH for other search paths
     if let Some(ld_dir) = find_ld_library_dir(&ort_lib_dir) {
         symlink_providers(&ort_lib_dir, &ld_dir, &provider_libs);
-        cleanup_paths.extend(provider_libs.iter().map(|lib| ld_dir.join(lib)));
     }
-
-    // Register cleanup for ALL symlinked paths (both directories)
-    register_provider_cleanup(cleanup_paths);
 }
 
 /// Compute the directory ORT's GetRuntimePath() will resolve to.
@@ -151,41 +149,6 @@ fn symlink_providers(src_dir: &Path, target_dir: &Path, libs: &[&str]) {
             tracing::debug!("Failed to symlink {}: {}", lib, e);
         }
     }
-}
-
-/// Register atexit cleanup for provider symlinks.
-/// Uses Mutex to support paths from multiple directories.
-#[cfg(target_os = "linux")]
-fn register_provider_cleanup(paths: Vec<PathBuf>) {
-    use std::sync::Mutex;
-
-    static CLEANUP_PATHS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
-
-    if let Ok(mut guard) = CLEANUP_PATHS.lock() {
-        guard.extend(paths);
-    }
-
-    // Register atexit handler only once
-    static REGISTERED: std::sync::Once = std::sync::Once::new();
-    REGISTERED.call_once(|| {
-        /// Cleans up temporary files and symlinks registered for deletion during program termination.
-        /// This function is registered as an exit handler and removes any files that were added to the cleanup list during execution. It safely iterates through registered paths, verifying each is a symlink before attempting deletion, and silently ignores any removal failures.
-        /// # Arguments
-        /// None. Accesses a global `CLEANUP_PATHS` collection to determine which files to remove.
-        /// # Returns
-        /// Nothing. This is an extern "C" function with no return value, suitable for use as an exit handler.
-        extern "C" fn cleanup() {
-            // Note: remove_file may allocate. Acceptable for CLI tool that exits normally.
-            if let Ok(paths) = CLEANUP_PATHS.lock() {
-                for path in paths.iter() {
-                    if path.symlink_metadata().is_ok() && std::fs::read_link(path).is_ok() {
-                        let _ = std::fs::remove_file(path);
-                    }
-                }
-            }
-        }
-        unsafe { libc::atexit(cleanup) };
-    });
 }
 
 /// No-op on non-Linux platforms (CUDA provider libs handled differently)
