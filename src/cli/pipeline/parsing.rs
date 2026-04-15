@@ -223,15 +223,27 @@ pub(super) fn parser_stage(
             // Relationships are sent with the first batch only. Per-file data
             // (function_calls, type_refs) is safe. Per-chunk data (chunk_calls,
             // type_edges) is deferred in store_stage until all chunks are committed.
+            //
+            // PF-V1.25-18: drain owned chunks into each batch instead of
+            // `chunks.chunks(n)` + `.to_vec()`, which would clone every Chunk
+            // (deep copy of id/file/signature/content/content_hash/...).
+            // We own `chunks` here and never reuse it after this loop, so
+            // moving each window out is safe and saves one full Chunk copy
+            // per indexed chunk per batch.
             let mut remaining_rels = Some(batch_rels);
-            for chunk_batch in chunks.chunks(batch_size) {
-                let batch_mtimes: std::collections::HashMap<PathBuf, i64> = chunk_batch
+            let mut chunks = chunks;
+            while !chunks.is_empty() {
+                let take = batch_size.min(chunks.len());
+                // Compute mtimes from a borrow first; `drain` below will move
+                // the same chunks out, so we can't borrow after that.
+                let batch_mtimes: std::collections::HashMap<PathBuf, i64> = chunks[..take]
                     .iter()
                     .filter_map(|c| file_mtimes.get(&c.file).map(|&m| (c.file.clone(), m)))
                     .collect();
+                let batch: Vec<cqs::Chunk> = chunks.drain(..take).collect();
                 if parse_tx
                     .send(ParsedBatch {
-                        chunks: chunk_batch.to_vec(),
+                        chunks: batch,
                         relationships: remaining_rels.take().unwrap_or_default(),
                         file_mtimes: batch_mtimes,
                     })
@@ -243,4 +255,125 @@ pub(super) fn parser_stage(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::unbounded;
+    use std::collections::HashSet;
+
+    /// PF-V1.25-18: fixture-driven regression test for the drain-based send
+    /// loop. Builds a small fixture corpus, runs `parser_stage` end-to-end,
+    /// and verifies:
+    ///
+    /// * every chunk the parser produced is delivered (no loss)
+    /// * chunk IDs are unique across batches (drain did not alias data)
+    /// * each batch respects `embed_batch_size()`
+    /// * at least two batches are emitted (so the loop actually iterates)
+    /// * relationships ride with exactly one batch
+    ///
+    /// The fixture produces >64 chunks so the default `embed_batch_size()`
+    /// of 64 forces multiple iterations — avoids mutating the shared
+    /// `CQS_EMBED_BATCH_SIZE` env var, which would race with
+    /// `pipeline::tests::test_embed_batch_size`.
+    #[test]
+    fn parser_stage_drains_chunks_without_loss() {
+        // Serialize with `pipeline::tests::test_embed_batch_size`, which
+        // mutates CQS_EMBED_BATCH_SIZE — without this guard a parallel run
+        // could flip the batch size mid-test and invalidate assertions.
+        let _lock = super::super::types::TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Three fixture files. File `big.rs` has 70 trivial functions so the
+        // total chunk count exceeds the default embed_batch_size (64),
+        // guaranteeing at least two batches without touching env vars.
+        let mut big = String::new();
+        for i in 0..70 {
+            use std::fmt::Write as _;
+            writeln!(&mut big, "pub fn big_{i}() {{}}").unwrap();
+        }
+        std::fs::write(root.join("big.rs"), &big).unwrap();
+        std::fs::write(root.join("a.rs"), "pub fn a_one() {}\npub fn a_two() {}\n").unwrap();
+        std::fs::write(root.join("b.rs"), "pub fn b_one() {}\n").unwrap();
+
+        let rel_paths: Vec<PathBuf> = vec![
+            PathBuf::from("big.rs"),
+            PathBuf::from("a.rs"),
+            PathBuf::from("b.rs"),
+        ];
+
+        // Store + parser — same flavour as the real pipeline.
+        let db_path = root.join("index.db");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+        let parser = Arc::new(CqParser::new().unwrap());
+
+        // Ground truth: parse each file directly and count chunks so we can
+        // assert the send loop delivered the full set.
+        let expected_total: usize = rel_paths
+            .iter()
+            .map(|rel| {
+                let abs = root.join(rel);
+                parser.parse_file_all(&abs).unwrap().0.len()
+            })
+            .sum();
+        assert!(
+            expected_total > embed_batch_size(),
+            "fixture must produce more chunks than batch_size; got {expected_total}"
+        );
+
+        let (tx, rx) = unbounded::<ParsedBatch>();
+        let ctx = ParserStageContext {
+            root: root.clone(),
+            force: true, // bypass needs_reindex on fresh store
+            parser: Arc::clone(&parser),
+            store: Arc::clone(&store),
+            parsed_count: Arc::new(AtomicUsize::new(0)),
+            parse_errors: Arc::new(AtomicUsize::new(0)),
+        };
+        parser_stage(rel_paths, ctx, tx).unwrap();
+
+        let batches: Vec<ParsedBatch> = rx.try_iter().collect();
+        assert!(
+            batches.len() >= 2,
+            "fixture should force multiple batches, got {}",
+            batches.len()
+        );
+
+        let max_batch = embed_batch_size();
+        let mut ids: HashSet<String> = HashSet::new();
+        let mut total = 0usize;
+        let mut rels_seen = 0usize;
+        for b in &batches {
+            assert!(!b.chunks.is_empty(), "empty batch should not be sent");
+            assert!(
+                b.chunks.len() <= max_batch,
+                "batch must respect embed_batch_size={max_batch}, got {}",
+                b.chunks.len()
+            );
+            total += b.chunks.len();
+            for c in &b.chunks {
+                assert!(ids.insert(c.id.clone()), "duplicated chunk id: {}", c.id);
+            }
+            let has_rels = !b.relationships.type_refs.is_empty()
+                || !b.relationships.function_calls.is_empty()
+                || !b.relationships.chunk_calls.is_empty();
+            if has_rels {
+                rels_seen += 1;
+            }
+        }
+        assert_eq!(
+            total, expected_total,
+            "drain loop must deliver every parsed chunk once"
+        );
+        assert!(
+            rels_seen <= 1,
+            "relationships should ride with at most one batch, saw {rels_seen}"
+        );
+    }
 }

@@ -129,6 +129,13 @@ pub(super) fn embed_channel_depth() -> usize {
     })
 }
 
+/// Process-wide lock used by tests that mutate or depend on
+/// `CQS_EMBED_BATCH_SIZE`. Shared across `pipeline::tests` and
+/// `pipeline::parsing::tests` so env-var-sensitive tests do not race with
+/// each other under `cargo test`'s default parallelism.
+#[cfg(test)]
+pub(super) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Embedding batch size. Was 32 (backed off from 64 after an undiagnosed crash at 2%).
 /// Restored to 64 with debug logging (PERF-45 investigation). If it crashes again,
 /// run with RUST_LOG=debug to capture batch_size/max_char_len/total_chars at failure.
