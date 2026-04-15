@@ -96,27 +96,11 @@ impl ProjectRegistry {
         let suffix = crate::temp_suffix();
         let tmp = path.with_extension(format!("toml.{:016x}.tmp", suffix));
         std::fs::write(&tmp, &content)?;
-        if let Err(rename_err) = std::fs::rename(&tmp, &path) {
-            // Cross-device fallback: copy to dest dir temp, then same-device rename (atomic)
-            let dest_dir = path.parent().unwrap_or(Path::new("."));
-            let dest_tmp = dest_dir.join(format!(".projects.{:016x}.tmp", suffix));
-            if let Err(copy_err) = std::fs::copy(&tmp, &dest_tmp) {
-                let _ = std::fs::remove_file(&tmp);
-                let _ = std::fs::remove_file(&dest_tmp);
-                return Err(ProjectError::Io(std::io::Error::other(format!(
-                    "rename {} -> {} failed ({}), copy fallback failed: {}",
-                    tmp.display(),
-                    path.display(),
-                    rename_err,
-                    copy_err
-                ))));
-            }
+        // atomic_replace: fsync tmp, rename with EXDEV fallback, fsync parent dir.
+        crate::fs::atomic_replace(&tmp, &path).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
-            if let Err(e) = std::fs::rename(&dest_tmp, &path) {
-                let _ = std::fs::remove_file(&dest_tmp);
-                return Err(ProjectError::Io(e));
-            }
-        }
+            ProjectError::Io(e)
+        })?;
 
         #[cfg(unix)]
         {
