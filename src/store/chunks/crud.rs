@@ -12,7 +12,7 @@ use crate::store::Store;
 
 use super::async_helpers::{batch_insert_chunks, snapshot_content_hashes, upsert_fts_conditional};
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Retrieve a single metadata value by key.
     ///
     /// Returns `Ok(value)` if the key exists, or `Err` if not found or on DB error.

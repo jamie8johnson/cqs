@@ -76,7 +76,7 @@ pub(crate) async fn bump_splade_generation_tx(
     Ok(())
 }
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Upsert sparse vectors for a batch of chunks.
     /// Replaces existing vectors for the same chunk_id.
     ///

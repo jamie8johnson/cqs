@@ -46,7 +46,7 @@ pub struct PruneAllResult {
     pub pruned_summaries: usize,
 }
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Delete chunks for files that no longer exist
     /// Batches deletes in groups of 100 to balance memory usage and query efficiency.
     /// Uses Rust HashSet for existence check rather than SQL WHERE NOT IN because:

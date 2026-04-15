@@ -10,7 +10,7 @@ use crate::parser::Chunk;
 use crate::store::helpers::{bytes_to_embedding, CandidateRow, ChunkRow, StoreError};
 use crate::store::Store;
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Fetch chunks by IDs (without embeddings) — async version.
     ///
     /// Returns a map of chunk ID → ChunkRow for the given IDs.
@@ -398,8 +398,8 @@ pub(super) async fn upsert_fts_conditional(
 /// default) or `"embedding_base"` (Phase 5 dual index). Rows where the
 /// selected column is NULL are silently skipped — NULL is valid state for
 /// `embedding_base` between the v17→v18 migration and the next index pass.
-struct EmbeddingBatchIterator<'a> {
-    store: &'a Store,
+struct EmbeddingBatchIterator<'a, Mode> {
+    store: &'a Store<Mode>,
     batch_size: usize,
     /// Last seen rowid for cursor-based pagination
     last_rowid: i64,
@@ -407,7 +407,7 @@ struct EmbeddingBatchIterator<'a> {
     column: &'static str,
 }
 
-impl<'a> Iterator for EmbeddingBatchIterator<'a> {
+impl<'a, Mode> Iterator for EmbeddingBatchIterator<'a, Mode> {
     type Item = Result<Vec<(String, Embedding)>, StoreError>;
 
     /// Advances the iterator to the next batch of embedding records from the database.
@@ -501,7 +501,7 @@ impl<'a> Iterator for EmbeddingBatchIterator<'a> {
 
 // SAFETY: Once `done` is set to true, `next()` always returns None.
 // This is guaranteed by the check at the start of `next()`.
-impl<'a> std::iter::FusedIterator for EmbeddingBatchIterator<'a> {}
+impl<'a, Mode> std::iter::FusedIterator for EmbeddingBatchIterator<'a, Mode> {}
 
 #[cfg(test)]
 mod tests {

@@ -35,7 +35,7 @@ impl HnswKind {
     }
 }
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Validates and optionally migrates the database schema version to match the current expected version.
     /// Queries the metadata table for the stored schema version and compares it against the current version. If the stored version is older, attempts to migrate the schema. Returns an error if the stored version is newer than the current version (indicating the database is incompatible), if the schema is corrupted, or if migration fails without a supported migration path.
     /// # Arguments

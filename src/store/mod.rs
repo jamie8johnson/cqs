@@ -31,6 +31,7 @@ mod types;
 /// types from `cqs::store` instead of accessing `cqs::store::helpers` directly.
 pub(crate) mod helpers;
 
+use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -200,10 +201,38 @@ pub(crate) fn sanitize_fts_query(s: &str) -> String {
     trimmed.to_string()
 }
 
+/// Typestate marker for a store opened in read-only mode.
+///
+/// A [`Store<ReadOnly>`] exposes only query methods. Write methods
+/// (`upsert_*`, `set_*`, `delete_*`, `prune_*`, etc.) live exclusively
+/// on `impl Store<ReadWrite>`, so the compiler refuses to call them on
+/// a read-only store. This converts a class of runtime errors into
+/// compile-time errors — see the closed-bug examples in GitHub #946.
+#[derive(Debug, Clone, Copy)]
+pub struct ReadOnly;
+
+/// Typestate marker for a store opened in read-write mode.
+///
+/// A [`Store<ReadWrite>`] exposes the full surface: both query and
+/// mutation methods. This is the default type parameter of `Store`, so
+/// bare `Store` in legacy code is equivalent to `Store<ReadWrite>`.
+#[derive(Debug, Clone, Copy)]
+pub struct ReadWrite;
+
 /// Thread-safe SQLite store for chunks and embeddings
 /// Uses sqlx connection pooling for concurrent reads and WAL mode
 /// for crash safety. All methods are synchronous but internally use
 /// an async runtime to execute sqlx operations.
+///
+/// # Typestate
+///
+/// The `Mode` type parameter records whether the store was opened
+/// read-only or read-write. Read methods live on `impl<Mode> Store<Mode>`
+/// and are available to both. Write methods live on `impl Store<ReadWrite>`
+/// only — the compiler refuses any attempt to call a mutating method on
+/// a `Store<ReadOnly>` handle (GitHub #946). `Mode` defaults to
+/// [`ReadWrite`] so bare `Store` keeps working for legacy call sites.
+///
 /// # Memory-mapped I/O
 /// `open()` sets `PRAGMA mmap_size = 256MB` per connection with a 4-connection pool,
 /// reserving up to 1GB of virtual address space. `open_readonly()` uses 64MB × 1.
@@ -219,7 +248,7 @@ pub(crate) fn sanitize_fts_query(s: &str) -> String {
 /// println!("Indexed {} chunks", stats.total_chunks);
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-pub struct Store {
+pub struct Store<Mode = ReadWrite> {
     pub(crate) pool: SqlitePool,
     pub(crate) rt: Runtime,
     /// Embedding dimension for this store (read from metadata on open, default `EMBEDDING_DIM`).
@@ -237,6 +266,8 @@ pub struct Store {
     call_graph_cache: std::sync::OnceLock<std::sync::Arc<CallGraph>>,
     test_chunks_cache: std::sync::OnceLock<std::sync::Arc<Vec<ChunkSummary>>>,
     chunk_type_map_cache: std::sync::OnceLock<std::sync::Arc<ChunkTypeMap>>,
+    /// Typestate marker — `ReadOnly` or `ReadWrite`. Zero-sized.
+    _mode: PhantomData<Mode>,
 }
 
 /// Map from chunk ID to (ChunkType, Language) — used by HNSW traversal-time filtering.
@@ -578,7 +609,7 @@ fn cache_size_from_env(default_kib: &str) -> String {
         .unwrap_or_else(|| default_kib.to_string())
 }
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Embedding dimension for vectors in this store.
     pub fn dim(&self) -> usize {
         self.dim
@@ -590,7 +621,9 @@ impl Store {
     pub fn set_dim(&mut self, dim: usize) {
         self.dim = dim;
     }
+}
 
+impl Store<ReadWrite> {
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let max_connections = std::env::var("CQS_MAX_CONNECTIONS")
@@ -844,6 +877,7 @@ impl Store {
             call_graph_cache: std::sync::OnceLock::new(),
             test_chunks_cache: std::sync::OnceLock::new(),
             chunk_type_map_cache: std::sync::OnceLock::new(),
+            _mode: PhantomData,
         };
 
         // Skip model name validation on open — dimension is validated at embed time,
@@ -854,7 +888,9 @@ impl Store {
 
         Ok(store)
     }
+}
 
+impl<Mode> Store<Mode> {
     /// Begin a write transaction with in-process serialization (DS-5).
     ///
     /// Acquires `WRITE_LOCK` before calling `pool.begin()`, preventing two
@@ -1113,7 +1149,7 @@ CREATE TABLE baz (id INTEGER);
     }
 }
 
-impl Drop for Store {
+impl<Mode> Drop for Store<Mode> {
     /// Performs a best-effort WAL (Write-Ahead Logging) checkpoint when the Store is dropped to prevent accumulation of large WAL files.
     /// # Arguments
     /// * `&mut self` - A mutable reference to the Store instance being dropped

@@ -9,7 +9,7 @@ use super::CallStats;
 use crate::store::helpers::StoreError;
 use crate::store::Store;
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Insert or replace call sites for a chunk
     pub fn upsert_calls(
         &self,

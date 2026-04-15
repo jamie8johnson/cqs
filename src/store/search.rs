@@ -34,7 +34,7 @@ fn rrf_k() -> f32 {
     })
 }
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Search FTS5 index for keyword matches.
     ///
     /// # Search Method Overview

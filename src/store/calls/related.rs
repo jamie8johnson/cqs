@@ -6,7 +6,7 @@ use super::FunctionCallStats;
 use crate::store::helpers::StoreError;
 use crate::store::Store;
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Batch count query for call graph columns.
     /// Shared implementation for caller/callee count queries. Filters by `filter_column`
     /// and groups by `group_column` to count edges.

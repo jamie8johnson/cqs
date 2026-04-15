@@ -82,7 +82,7 @@ pub(crate) fn type_boost_factor() -> f32 {
     }
 }
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Raw embedding-only cosine similarity search (no RRF, no keyword matching).
     ///
     /// **You almost certainly want `search_filtered()` instead.** This method skips

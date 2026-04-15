@@ -13,7 +13,7 @@ use crate::parser::{ChunkType, Language};
 use crate::store::helpers::{clamp_line_number, ChunkRow, ChunkSummary, StoreError};
 use crate::store::Store;
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Find functions/methods never called by indexed code (dead code detection).
     /// Returns two lists:
     /// - `confident`: Functions with no callers that are likely dead (with confidence scores)

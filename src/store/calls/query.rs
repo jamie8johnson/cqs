@@ -9,7 +9,7 @@ use crate::store::helpers::{
 };
 use crate::store::Store;
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Find all callers of a function (from full call graph)
     pub fn get_callers_full(&self, callee_name: &str) -> Result<Vec<CallerInfo>, StoreError> {
         let _span = tracing::debug_span!("get_callers_full", function = %callee_name).entered();

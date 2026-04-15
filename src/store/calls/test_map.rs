@@ -4,7 +4,7 @@ use super::{TEST_CHUNKS_SQL, TEST_CHUNK_NAMES_SQL};
 use crate::store::helpers::{ChunkRow, ChunkSummary, StoreError};
 use crate::store::Store;
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Async helper for find_test_chunks (reused by find_dead_code)
     /// Loads only lightweight columns (no content/doc) since callers only need
     /// name, file, and line_start. The SQL WHERE clause still filters on content

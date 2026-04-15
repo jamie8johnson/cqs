@@ -138,7 +138,7 @@ async fn upsert_type_edges_one_file(
     Ok(edges.len())
 }
 
-impl Store {
+impl<Mode> Store<Mode> {
     // ============ Type Edge Upsert Methods ============
 
     /// Upsert type edges for a single chunk.

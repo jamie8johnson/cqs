@@ -8,7 +8,7 @@ use crate::embedder::Embedding;
 use crate::store::helpers::{bytes_to_embedding, StoreError};
 use crate::store::Store;
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Get embeddings for chunks with matching content hashes (batch lookup).
     /// Batches queries in groups of 500 to stay within SQLite's parameter limit (~999).
     pub fn get_embeddings_by_hashes(

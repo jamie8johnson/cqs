@@ -57,7 +57,7 @@ async fn insert_note_with_fts(
     Ok(())
 }
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Insert or update notes in batch
     pub fn upsert_notes_batch(
         &self,
