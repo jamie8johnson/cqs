@@ -31,24 +31,37 @@ The pre-2026-04-14 numbers were measured against an index that was 81% worktree/
 
 High-leverage refactors that close entire bug classes — surfaced by the v1.25.0 audit. Each is its own GitHub issue.
 
-- [ ] **`Store` typestate** — issue [#946](https://github.com/jamie8johnson/cqs/issues/946). Closes `gc-in-daemon`, `notes-in-daemon`, `suggest --apply` write-on-readonly-store class (audit API-V1.25-3, API-V1.25-5).
-- [ ] **`Commands` / `BatchCmd` unification** — issue [#947](https://github.com/jamie8johnson/cqs/issues/947). 47 vs 36 variants drift produced 8 silent-fail commands through the daemon (audit EX-V1.25-1, API-V1.25-1/2/4/6, CQ-V1.25-1/2). Half-day refactor.
-- [ ] **`cqs::fs::atomic_replace` shared helper** — issue [#948](https://github.com/jamie8johnson/cqs/issues/948). `std::fs::rename` cross-device fallback duplicated 4× with divergent semantics; two were missing fsync until the audit (PB-V1.25-6, DS-V1.25-1, DS-V1.25-4).
-- [ ] **Embedder model abstraction** — issue [#949](https://github.com/jamie8johnson/cqs/issues/949). `ModelConfig::input_names`/`output_name`/`pooling` so non-BERT models are config entries, not code edits. Pre-req for BGE → E5 v9-200k default switch.
-- [ ] **CAGRA persistence** — issue [#950](https://github.com/jamie8johnson/cqs/issues/950). `CagraIndex::save`/`load` via cuVS native serialize. Cuts daemon hot-restart from ~30s to <5s.
+- [x] **`Store` typestate** — #946 closed by PR #982 (merged 2026-04-15). Follow-up #986 tracks `open_readonly_after_init` replacement for `into_readonly()`.
+- [x] **`Commands` / `BatchCmd` unification** — #947 closed by PR #981.
+- [x] **`cqs::fs::atomic_replace` shared helper** — #948 closed by PR #983.
+- [x] **Embedder model abstraction** — #949 closed by PR #984.
+- [x] **CAGRA persistence** — #950 closed by PR #985.
 
 ### Quick-wins Lane (Tier-1 ROI from audit issues)
 
-- [ ] **WSL 9P/NTFS mmap auto-detect** — issue [#961](https://github.com/jamie8johnson/cqs/issues/961). Fixes daily WSL `/mnt/c` slow-eval pain. Detect 9P/NTFS at Store open, set `mmap_size=0`. ~50 LOC.
-- [ ] **CAGRA itopk + graph_degree env overrides** — issue [#962](https://github.com/jamie8johnson/cqs/issues/962). Concrete proposal for the CAGRA-filtering-regression investigation. Env vars + corpus-size scaling formula.
-- [ ] **Reranker batch chunking** — issue [#963](https://github.com/jamie8johnson/cqs/issues/963). Reranker OOMs on large top-K + shared GPU. Add `CQS_RERANKER_BATCH` and chunk the input.
-- [ ] **Daemon `try_daemon_query` test scaffold** — issue [#972](https://github.com/jamie8johnson/cqs/issues/972). Closes the largest test-coverage gap in one file.
+- [x] **WSL 9P/NTFS mmap auto-detect** — #961 closed by PR #979.
+- [x] **CAGRA itopk + graph_degree env overrides** — #962 closed by PR #979.
+- [x] **Reranker batch chunking** — #963 closed by PR #979.
+- [ ] **Daemon `try_daemon_query` test scaffold** — issue [#972](https://github.com/jamie8johnson/cqs/issues/972). Queued for Wave D.
 
 Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue list --label audit-v1.25.0`.
 
 ### GPU Lane
 
-- [ ] **Reranker V2** — code-trained cross-encoder (ms-marco was catastrophic). SPLADE work all `[x]` historically (cqs-side null result; full breakdown in `~/training-data/research/sparse.md`).
+- [ ] **Reranker V2** — code-trained cross-encoder (ms-marco was catastrophic). Pairwise ranking loss (DPO-family — cross-entropy / margin-MSE / RankNet / optionally a KL anchor against a reference scorer) is the right paradigm, not contrastive: rerankers score `(query, doc)` pairs, not embed into a shared space, so relative-order supervision fits directly.
+
+  **Why not the bi-encoder instead:** research/models.md "basin" result — v9-200k, v9-200k-hn, v9-200k-testq, v9-175k, v9-500k, v9-mini, v8, contrastive-B all land 81-82% R@1 on 296q regardless of training variation. That's the architectural ceiling for E5-base, not a training gap. Further preference data on the bi-encoder won't move the basin.
+
+  **Data pipeline is the long pole:**
+  1. **Local-LLM-judged pairwise preferences (primary)** — `Gemma 4 31B Dense` at Q4_K_M via vLLM on the A6000 scores `(query, chunk_A, chunk_B)` across augmented_200k_keydac or combined_9lang_hard_negs. Apache 2.0, ~20GB VRAM at Q4, ~28GB headroom left for KV cache + context. Gemma 4 release (2026-04-02) leads open-weights coding benches — 80.0% LiveCodeBench v6, 2150 Codeforces ELO. Cost: $0 per pass. Throughput estimate: ~500-1000 tok/s batched → 200k labels in ~5h. Cached by content hash (same pattern as contrastive summaries SQ-10b). Fallback tier: `Gemma 4 26B MoE` (3.8B active/token, ~2-3× throughput, ~2 point lower LiveCodeBench) for bulk clear-cut pairs.
+  2. **Claude for the hard tail (secondary)** — Haiku or Sonnet on the subset where Gemma's per-pair log-prob confidence is low (< threshold) or where a calibration run shows <70% agreement vs. a 1k gold subset. Haiku batch rate ~0.3¢/query; sized to cost pennies if Gemma handles 80%+ of the corpus.
+  3. **Click-signal from agent telemetry** — 16k+ cqs invocations logged per ROADMAP "Agent Adoption" section. Sequences where `search` → `gather`/`context` on a specific chunk within N turns are implicit positive signals. Cheap, noisy vs. explicit LLM judgments; best used to validate/backfill the LLM-judged labels.
+
+  **Calibration gate before full run:** label a 1k-query gold subset with both Gemma 4 31B and Haiku, compute inter-model agreement. ≥85% → local-only is fine. 70-85% → hybrid Gemma-then-Claude for low-confidence pairs. <70% → Claude-only (Gemma not tracking judgment quality).
+
+  **Training budget:** ~1-2 days on the A6000 once data exists. Architecture likely `jinaai/jina-reranker-v2-base` or similar 100-300M param cross-encoder — small enough to ONNX-export and ship inside `~/.local/share/cqs/` like the current reranker. SPLADE work is unrelated (all `[x]` historically, cqs-side null result; full breakdown in `~/training-data/research/sparse.md`).
+
+  **Gating:** dedicated project, not a drive-by. Waiting on (a) an idle GPU window and (b) decision on LLM-judged vs. click-signal corpus.
 
 ### CPU Lane
 
@@ -73,6 +86,9 @@ Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue lis
 **Daemon & data:**
 - [ ] **Daemon: full CLI parity** — batch parser subset differs from CLI. Subsumed by [#947](https://github.com/jamie8johnson/cqs/issues/947) Commands/BatchCmd unification.
 - [ ] **Daemon: incremental SPLADE in watch mode** — watch currently skips SPLADE encoding for new/changed chunks. Keep ONNX model in daemon, encode only new chunks, incremental insert into in-memory `SpladeIndex` (current rebuild ≈18s for 68k chunks).
+
+**Testing infrastructure:**
+- [ ] **Rewrite slow CLI test binaries to in-process fixtures** — issue [#980](https://github.com/jamie8johnson/cqs/issues/980). `cli_batch_test`, `cli_graph_test`, `cli_commands_test`, `cli_test`, `cli_health_test` are gated behind the `slow-tests` feature (PR #988) because each shells out to `cqs` and cold-loads the full ONNX/HNSW/SPLADE stack per test case (~118 min combined on PR CI). Follow the `cli_notes_test` + `router_test` pattern: open one `Store` + `CommandContext` per binary, call `cmd_*` handlers directly. Un-gates the feature and retires the nightly `slow-tests.yml` workflow.
 
 **Features (queued, no immediate work):**
 - [ ] **Temporal search — `cqs history`** — query by author + time range, returns recently-touched chunks ranked by how little they've been touched since. Uses git log + chunk file/line mapping.

@@ -1223,3 +1223,36 @@ mentions = [
     "Agent",
     "worktrees",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "CI runs 'cargo clippy -- -D warnings' without --all-targets; local --all-targets treats test warnings as warnings. Match the CI command exactly before pushing — unused imports / absurd comparisons in tests escape otherwise."
+mentions = [
+    "src/cli/commands/mod.rs",
+    "clippy",
+    "CI",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Store::into_readonly() zero-cost type-level erasure — RW to RO via ManuallyDrop + ptr::read (Store<Mode> has Drop). Pub because integration tests need it; doc-comment steers production to Store::open_readonly."
+mentions = [
+    "src/store/mod.rs",
+    "typestate",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Use the Monitor tool for long-running PR/CI watchers. Shell-backgrounded poll scripts risk being killed, logs wiped from /tmp, and duplicate instances racing on the same PR. Monitor is session-scoped and single-lifecycle."
+mentions = [
+    "Monitor",
+    "workflow",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Worktree-isolated agents can drop out mid-refactor with the tree dirty and the branch at commit N/M. Always 'git status' on the worktree after an agent reports done — if you see 60+ modified files uncommitted, the agent stopped early and owes you N+1..M commits."
+mentions = [
+    "agents",
+    "worktree",
+]
