@@ -487,13 +487,10 @@ mod tests {
         }
     }
 
-    // Mutex to serialize tests that mutate CQS_EMBED_BATCH_SIZE env var.
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn test_embed_batch_size() {
-        use super::types::embed_batch_size;
-        let _lock = ENV_MUTEX.lock().unwrap();
+        use super::types::{embed_batch_size, TEST_ENV_MUTEX};
+        let _lock = TEST_ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
 
         // Default
         std::env::remove_var("CQS_EMBED_BATCH_SIZE");
