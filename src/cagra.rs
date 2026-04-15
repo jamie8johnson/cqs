@@ -58,6 +58,47 @@ fn cagra_max_bytes() -> usize {
     })
 }
 
+/// Issue #962: Scale `itopk_max` ceiling with corpus size. At 1k chunks we
+/// want the library default (~320); at 1M chunks we want ~640 or more.
+/// Logarithmic scaling based on chunk count:
+///   ceiling = (log2(n_vectors) * 32).clamp(128, 4096)
+/// 1k → 320, 13k → 447, 100k → 532, 1M → 640, 10M → 744
+/// Then `(k * 2).clamp(min, max)` narrows the actual `itopk_size` at
+/// query time. Overridable via `CQS_CAGRA_ITOPK_MAX`.
+#[cfg(feature = "gpu-index")]
+fn cagra_itopk_max_default(n_vectors: usize) -> usize {
+    let log2 = (n_vectors.max(1) as f64).log2();
+    let scaled = (log2 * 32.0) as usize;
+    scaled.clamp(128, 4096)
+}
+
+/// Issue #962: Build-time CAGRA graph degrees, overridable via env.
+/// `CQS_CAGRA_GRAPH_DEGREE` (default 64) is the output graph degree.
+/// `CQS_CAGRA_INTERMEDIATE_GRAPH_DEGREE` (default 128) is the pruned-input
+/// graph degree. Both map to the corresponding cuVS `IndexParams` setters.
+/// Returns `IndexParams` with those setters applied (and traces the choice).
+#[cfg(feature = "gpu-index")]
+fn cagra_build_params() -> Result<cuvs::cagra::IndexParams, CagraError> {
+    let graph_degree: usize = std::env::var("CQS_CAGRA_GRAPH_DEGREE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64);
+    let intermediate_graph_degree: usize = std::env::var("CQS_CAGRA_INTERMEDIATE_GRAPH_DEGREE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(128);
+    let params = cuvs::cagra::IndexParams::new()
+        .map_err(|e| CagraError::Cuvs(e.to_string()))?
+        .set_graph_degree(graph_degree)
+        .set_intermediate_graph_degree(intermediate_graph_degree);
+    tracing::info!(
+        graph_degree,
+        intermediate_graph_degree,
+        "CAGRA build params"
+    );
+    Ok(params)
+}
+
 /// CAGRA GPU index for vector search.
 ///
 /// # Thread Safety
@@ -119,8 +160,7 @@ impl CagraIndex {
         let dataset = Array2::from_shape_vec((n_vectors, dim), flat_data)
             .map_err(|e| CagraError::Cuvs(format!("Failed to create array: {}", e)))?;
 
-        let build_params =
-            cuvs::cagra::IndexParams::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
+        let build_params = cagra_build_params()?;
 
         let index = cuvs::cagra::Index::build(&resources, &build_params, &dataset)
             .map_err(|e| CagraError::Cuvs(e.to_string()))?;
@@ -192,10 +232,23 @@ impl CagraIndex {
         k: usize,
         bitset_device: Option<&cuvs::ManagedTensor>,
     ) -> Vec<IndexResult> {
-        let itopk_size = (k * 2).clamp(128, 512);
-        if k * 2 > 512 {
-            tracing::debug!(k, "CAGRA itopk_size clamped to 512, recall may degrade");
-        }
+        let itopk_min = std::env::var("CQS_CAGRA_ITOPK_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(128);
+        let itopk_max = std::env::var("CQS_CAGRA_ITOPK_MAX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| cagra_itopk_max_default(self.len()));
+        let itopk_size = (k * 2).clamp(itopk_min, itopk_max);
+        tracing::debug!(
+            itopk_size,
+            itopk_min,
+            itopk_max,
+            k,
+            n_vectors = self.len(),
+            "CAGRA itopk resolved"
+        );
 
         let search_params = match cuvs::cagra::SearchParams::new() {
             Ok(params) => params.set_itopk_size(itopk_size),
@@ -520,8 +573,7 @@ impl CagraIndex {
         let dataset = Array2::from_shape_vec((n_vectors, dim), flat_data)
             .map_err(|e| CagraError::Cuvs(format!("Failed to create array: {}", e)))?;
 
-        let build_params =
-            cuvs::cagra::IndexParams::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
+        let build_params = cagra_build_params()?;
 
         let index = cuvs::cagra::Index::build(&resources, &build_params, &dataset)
             .map_err(|e| CagraError::Cuvs(e.to_string()))?;
