@@ -40,7 +40,14 @@ pub fn write_checkpoint(path: &Path, repo: &str, sha: &str) -> Result<(), TrainD
         content.push('\n');
     }
     fs::write(&tmp, &content)?;
-    fs::rename(&tmp, path)?;
+    // atomic_replace: picks up fsync-tmp + EXDEV fallback + fsync-parent
+    // that the previous bare `fs::rename` skipped. Checkpoints drive
+    // training-data resumption, so lost checkpoint writes = re-traversing
+    // thousands of commits on the next run.
+    crate::fs::atomic_replace(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        TrainDataError::Io(e)
+    })?;
     Ok(())
 }
 

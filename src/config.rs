@@ -560,31 +560,13 @@ pub fn add_reference_to_config(
         }
     }
 
-    if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {
-        // Cross-device fallback: copy to a same-dir temp, then rename
-        // PB-19: unpredictable suffix to prevent symlink TOCTOU
-        let fb_suffix = crate::temp_suffix();
-        let fallback_tmp =
-            config_path.with_extension(format!("toml.{:016x}.fallback.tmp", fb_suffix));
-        if let Err(copy_err) = std::fs::copy(&tmp_path, &fallback_tmp) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(ConfigError::Io(std::io::Error::other(format!(
-                "rename failed ({}), copy fallback failed: {}",
-                rename_err, copy_err
-            ))));
-        }
-        // SEC-2: Restrict permissions on copy fallback target
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&fallback_tmp, std::fs::Permissions::from_mode(0o600));
-        }
+    // atomic_replace: fsync tmp, rename with EXDEV fallback, fsync parent dir.
+    // SEC-1: the tmp file was opened with mode(0o600), which fs::copy
+    // preserves into the xdev fallback destination.
+    crate::fs::atomic_replace(&tmp_path, config_path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp_path);
-        if let Err(e) = std::fs::rename(&fallback_tmp, config_path) {
-            let _ = std::fs::remove_file(&fallback_tmp);
-            return Err(ConfigError::Io(e));
-        }
-    }
+        ConfigError::Io(e)
+    })?;
 
     // lock_file dropped here, releasing exclusive lock
     Ok(())
@@ -658,32 +640,11 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> Result<bo
             }
         }
 
-        if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {
-            // Cross-device fallback: copy to a same-dir temp, then rename
-            // PB-19: unpredictable suffix to prevent symlink TOCTOU
-            let fb_suffix = crate::temp_suffix();
-            let fallback_tmp =
-                config_path.with_extension(format!("toml.{:016x}.fallback.tmp", fb_suffix));
-            if let Err(copy_err) = std::fs::copy(&tmp_path, &fallback_tmp) {
-                let _ = std::fs::remove_file(&tmp_path);
-                return Err(ConfigError::Io(std::io::Error::other(format!(
-                    "rename failed ({}), copy fallback failed: {}",
-                    rename_err, copy_err
-                ))));
-            }
-            // SEC-2: Restrict permissions on copy fallback target
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ =
-                    std::fs::set_permissions(&fallback_tmp, std::fs::Permissions::from_mode(0o600));
-            }
+        // atomic_replace: fsync tmp, rename with EXDEV fallback, fsync parent dir.
+        crate::fs::atomic_replace(&tmp_path, config_path).map_err(|e| {
             let _ = std::fs::remove_file(&tmp_path);
-            if let Err(e) = std::fs::rename(&fallback_tmp, config_path) {
-                let _ = std::fs::remove_file(&fallback_tmp);
-                return Err(ConfigError::Io(e));
-            }
-        }
+            ConfigError::Io(e)
+        })?;
     }
     // lock_file dropped here, releasing exclusive lock
     Ok(removed)

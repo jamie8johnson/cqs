@@ -59,6 +59,7 @@ pub mod cache;
 pub mod config;
 pub mod convert;
 pub mod embedder;
+pub mod fs;
 pub mod hnsw;
 pub mod index;
 pub mod language;

@@ -422,40 +422,31 @@ impl HnswIndex {
                 let temp_path = temp_dir.join(format!("{}.{}", basename, ext));
                 let final_path = dir.join(format!("{}.{}", basename, ext));
                 if temp_path.exists() {
-                    if let Err(rename_err) = std::fs::rename(&temp_path, &final_path) {
-                        // Cross-device fallback (Docker overlayfs, NFS, etc.)
-                        // PB-20: unpredictable suffix
-                        let fb_suffix = crate::temp_suffix();
-                        let target_tmp =
-                            dir.join(format!(".{}.{}.{:016x}.tmp", basename, ext, fb_suffix));
-                        std::fs::copy(&temp_path, &target_tmp).map_err(|copy_err| {
-                            HnswError::Internal(format!(
-                                "Failed to rename {} -> {} ({}), copy fallback also failed: {}",
-                                temp_path.display(),
-                                final_path.display(),
-                                rename_err,
-                                copy_err
-                            ))
-                        })?;
-                        // SEC-2: Restrict permissions on copy fallback target
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            let _ = std::fs::set_permissions(
-                                &target_tmp,
-                                std::fs::Permissions::from_mode(0o600),
-                            );
-                        }
-                        std::fs::rename(&target_tmp, &final_path).map_err(|e| {
-                            let _ = std::fs::remove_file(&target_tmp);
-                            HnswError::Internal(format!(
-                                "Failed to rename {} -> {} after cross-device copy: {}",
-                                target_tmp.display(),
-                                final_path.display(),
-                                e
-                            ))
-                        })?;
-                        let _ = std::fs::remove_file(&temp_path);
+                    // `atomic_replace` fsyncs the temp file, renames with
+                    // cross-device fallback (the in-process temp dir sits
+                    // on a different device from `dir` on Docker overlayfs
+                    // and WSL `/mnt/c`), and fsyncs the parent directory.
+                    // Unified replacement for the previous per-extension
+                    // rename + fs::copy fallback; see SEC-2 / PB-20 notes.
+                    crate::fs::atomic_replace(&temp_path, &final_path).map_err(|e| {
+                        HnswError::Internal(format!(
+                            "Failed to promote {} -> {}: {}",
+                            temp_path.display(),
+                            final_path.display(),
+                            e
+                        ))
+                    })?;
+                    // SEC-2: keep the restrictive mode on the promoted file
+                    // now that it lives in the final directory. The library
+                    // `file_dump` output uses the process umask; we want
+                    // 0o600 regardless.
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(
+                            &final_path,
+                            std::fs::Permissions::from_mode(0o600),
+                        );
                     }
                     moved_exts.push(ext);
                 }

@@ -139,35 +139,12 @@ pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
         }
     }
 
-    if let Err(rename_err) = std::fs::rename(&tmp_path, &path) {
-        // Cross-device fallback: copy to same-dir temp, then rename (atomic)
-        let dest_dir = path.parent().unwrap_or(std::path::Path::new("."));
-        let dest_tmp = dest_dir.join(format!(".audit.{:016x}.tmp", suffix));
-        if let Err(copy_err) = std::fs::copy(&tmp_path, &dest_tmp) {
-            let _ = std::fs::remove_file(&tmp_path);
-            anyhow::bail!(
-                "rename failed ({}), copy fallback failed: {}",
-                rename_err,
-                copy_err
-            );
-        }
-        // SEC-2: Restrict permissions on copy fallback target
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&dest_tmp, std::fs::Permissions::from_mode(0o600));
-        }
-        if let Err(rename2_err) = std::fs::rename(&dest_tmp, &path) {
-            let _ = std::fs::remove_file(&dest_tmp);
-            let _ = std::fs::remove_file(&tmp_path);
-            anyhow::bail!(
-                "rename failed ({}), fallback rename failed: {}",
-                rename_err,
-                rename2_err
-            );
-        }
+    // atomic_replace: fsync tmp, rename with EXDEV fallback, fsync parent dir.
+    // SEC-1 perms preserved: tmp was opened with mode(0o600).
+    crate::fs::atomic_replace(&tmp_path, &path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp_path);
-    }
+        anyhow::anyhow!("Failed to persist audit-mode file: {}", e)
+    })?;
     Ok(())
 }
 
