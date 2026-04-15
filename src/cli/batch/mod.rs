@@ -987,8 +987,14 @@ pub(crate) fn create_context() -> Result<BatchContext> {
 }
 
 /// Create a BatchContext for testing with a temporary store.
+///
+/// Visibility: `pub(in crate::cli::batch)` under `#[cfg(test)]` so submodule
+/// tests (handlers/search.rs tests for issue #973) can reuse the same fixture
+/// wiring as the in-file `mod tests`.
 #[cfg(test)]
-fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
+pub(in crate::cli::batch) fn create_test_context(
+    cqs_dir: &std::path::Path,
+) -> Result<BatchContext> {
     let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
     let store =
         Store::open(&index_path).map_err(|e| anyhow::anyhow!("Failed to open test store: {e}"))?;
