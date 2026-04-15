@@ -1394,7 +1394,7 @@ mod tests {
     // TC-7: sanitize_json_floats is no-op on clean values
     #[test]
     fn test_sanitize_json_floats_clean_passthrough() {
-        let mut val = serde_json::json!({"a": 1, "b": "text", "c": [true, null, 3.14]});
+        let mut val = serde_json::json!({"a": 1, "b": "text", "c": [true, null, 2.5]});
         let expected = val.clone();
         sanitize_json_floats(&mut val);
         assert_eq!(val, expected);
