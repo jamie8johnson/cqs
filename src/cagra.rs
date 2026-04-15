@@ -796,7 +796,11 @@ impl CagraIndex {
     /// Persist with an explicit `splade_generation` stamp from the caller's
     /// `Store`. Preferred over [`save`](Self::save) because it records the
     /// deletion counter for coarse staleness checks on load.
-    pub fn save_with_store(&self, path: &Path, store: &crate::Store) -> Result<(), CagraError> {
+    pub fn save_with_store<Mode>(
+        &self,
+        path: &Path,
+        store: &crate::Store<Mode>,
+    ) -> Result<(), CagraError> {
         let _span = tracing::info_span!("cagra_save_with_store", path = %path.display()).entered();
         if !cagra_persist_enabled() {
             return Err(CagraError::Io(
