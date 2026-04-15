@@ -1584,7 +1584,6 @@ mod tests {
             .expect("second init() should be idempotent but failed");
     }
 
-<<<<<<< HEAD
     #[test]
     fn open_readonly_small_roundtrip() {
         // #970: open_readonly_small right-sizes the mmap/cache for reference
