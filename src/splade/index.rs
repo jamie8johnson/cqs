@@ -381,104 +381,24 @@ impl SpladeIndex {
             writer.get_ref().sync_all()?;
         }
 
-        // Atomic rename. Audit PB-NEW-3: the previous Windows branch did
-        // `remove_file` then `rename`, which was (a) redundant — Rust's
-        // `std::fs::rename` on Windows uses `MoveFileExW` with
-        // `MOVEFILE_REPLACE_EXISTING` since 1.46, so rename-over-existing
-        // works natively; (b) actively harmful — the remove+rename
-        // sequence opened a crash window where neither the old nor the new
-        // file existed, and a `SHARING_VIOLATION` on the remove (from
-        // another process mmapping the target) broke the save entirely.
-        // Deleted the whole `#[cfg(windows)]` block.
+        // Audit PB-NEW-3 / PB-NEW-4 / PB-NEW-5: atomic rename with
+        // cross-device fallback and parent-dir fsync. The full sequence
+        // (fsync tmp -> rename -> EXDEV fallback with fsync -> parent-dir
+        // fsync) now lives in `cqs::fs::atomic_replace`; the previous
+        // inline implementation was the fourth copy of this pattern and
+        // two siblings had shipped without one of the fsync calls
+        // (DS-V1.25-1, DS-V1.25-4).
         //
-        // Audit PB-NEW-4: cross-device rename fallback — on WSL 9P / Docker
-        // overlayfs / NFS the rename can fail with `CrossesDevices` or
-        // permission errors even within a single path. Mirror the
-        // `src/hnsw/persist.rs:412-445` pattern: try rename first, fall
-        // back to `fs::copy` + `set_permissions(0o600)` + remove(tmp) on
-        // error.
-        if let Err(rename_err) = std::fs::rename(&tmp_path, path) {
-            tracing::warn!(
-                error = %rename_err,
-                from = %tmp_path.display(),
-                to = %path.display(),
-                "SPLADE index rename failed, attempting fs::copy fallback"
-            );
-            // DS-V1.25-1: copy into a same-dir temp first, fsync it, then
-            // rename atomically. The previous implementation did
-            // `fs::copy(&tmp_path, path)` which writes directly into the
-            // final filename — if the process died mid-copy, a later load
-            // would read a truncated file. Mirrors the HNSW pattern in
-            // `src/hnsw/persist.rs:412-445`.
-            let dest_tmp = path.with_extension("splade.tmp");
-            std::fs::copy(&tmp_path, &dest_tmp).map_err(|copy_err| {
-                SpladeIndexPersistError::Io(std::io::Error::new(
-                    copy_err.kind(),
-                    format!(
-                        "rename failed ({}) AND copy fallback failed ({})",
-                        rename_err, copy_err
-                    ),
-                ))
-            })?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&dest_tmp, std::fs::Permissions::from_mode(0o600));
-            }
-            // fsync the dest-dir tmp file before the rename so the bytes are
-            // durable even on a power cut between copy and rename.
-            match std::fs::File::open(&dest_tmp) {
-                Ok(f) => {
-                    if let Err(e) = f.sync_all() {
-                        tracing::debug!(
-                            error = %e,
-                            path = %dest_tmp.display(),
-                            "fsync of SPLADE cross-device dest tmp failed (non-fatal)"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        error = %e,
-                        path = %dest_tmp.display(),
-                        "could not reopen SPLADE cross-device dest tmp for fsync"
-                    );
-                }
-            }
-            std::fs::rename(&dest_tmp, path).map_err(|rn_err| {
-                // Best-effort cleanup of the dest tmp; the original src tmp
-                // is cleaned below regardless.
-                let _ = std::fs::remove_file(&dest_tmp);
-                SpladeIndexPersistError::Io(std::io::Error::new(
-                    rn_err.kind(),
-                    format!(
-                        "rename failed ({}), copy fallback succeeded, final rename failed ({})",
-                        rename_err, rn_err
-                    ),
-                ))
-            })?;
-            // Best-effort source temp cleanup — we already got the target
-            // file in place, so a leftover tmp is non-fatal.
+        // The BufWriter above already flushed and sync_all'd the tmp
+        // file, but atomic_replace re-fsyncs the path it reopens — this
+        // is effectively free compared to the write itself and matches
+        // the invariant the helper advertises.
+        crate::fs::atomic_replace(&tmp_path, path).map_err(|e| {
+            // Best-effort cleanup of our own tmp on unexpected error
+            // before returning.
             let _ = std::fs::remove_file(&tmp_path);
-        }
-
-        // Audit PB-NEW-5: fsync the parent directory on unix so the rename
-        // is durable across a power cut. NTFS journals metadata with the
-        // rename itself, so Windows doesn't need this. Best-effort; logged
-        // on failure because the rebuild path handles lost persists.
-        #[cfg(unix)]
-        {
-            if let Ok(dir) = std::fs::File::open(parent) {
-                if let Err(e) = dir.sync_all() {
-                    tracing::debug!(
-                        error = %e,
-                        parent = %parent.display(),
-                        "parent dir fsync failed after SPLADE save — save is persisted but not \
-                         guaranteed durable across power loss (rebuildable, so low severity)"
-                    );
-                }
-            }
-        }
+            SpladeIndexPersistError::Io(e)
+        })?;
 
         tracing::info!(
             path = %path.display(),
