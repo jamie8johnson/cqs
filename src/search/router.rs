@@ -1206,4 +1206,74 @@ mod tests {
         let c = classify_query("code that handles retries");
         assert_eq!(c.category, QueryCategory::Behavioral);
     }
+
+    // ── Micro-benchmark (#964) ───────────────────────────────────────
+    //
+    // Sanity check for the Aho-Corasick + LazyLock rewrite. Runs
+    // classify_query on a mix of query shapes and prints per-call
+    // timing. Does not assert on timing — CI machines have wildly
+    // different performance envelopes.
+    //
+    // Marked #[ignore] so the default `cargo test` run does not pay
+    // the timing cost; invoke in release for a realistic number:
+    //   cargo test --release --features gpu-index --lib -- \
+    //     search::router::tests::bench_classify_query_throughput \
+    //     --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_classify_query_throughput() {
+        // Four query shapes that exercise different branches of classify_query:
+        //   1. Type-filtered — runs the full 72-pattern extract_type_hints
+        //      table, which was the heaviest contributor before the AC rewrite.
+        //   2. Behavioral — fires on a BEHAVIORAL_VERBS word.
+        //   3. Cross-language — two language names, full language_names scan.
+        //   4. Unknown — walks every branch (no early return) so the whole
+        //      classifier is stressed.
+        let queries: &[(&str, &str)] = &[
+            (
+                "type_filtered",
+                "find all test functions and every interface and all traits in the codebase shown",
+            ),
+            (
+                "behavioral",
+                "find the function that validates user input in the python module and logs it",
+            ),
+            (
+                "cross_language",
+                "port the python logging and tracing module into a rust crate with serde",
+            ),
+            (
+                "unknown",
+                "zephyr quartz wonder blooming river sunset gentle breeze stormy afternoon light",
+            ),
+        ];
+
+        // Warm the LazyLocks so construction cost isn't folded into timing.
+        for (_, q) in queries {
+            let _ = classify_query(q);
+        }
+
+        const ITERATIONS: usize = 10_000;
+        for (label, query) in queries {
+            assert!(
+                query.len() >= 60 && query.len() <= 95,
+                "keep bench queries near the 80-char target ({} = {} chars)",
+                label,
+                query.len()
+            );
+            let start = std::time::Instant::now();
+            let mut sink = 0u32;
+            for _ in 0..ITERATIONS {
+                let c = classify_query(query);
+                // Prevent the optimizer from eliding the call.
+                sink = sink.wrapping_add(c.category as u32);
+            }
+            let elapsed = start.elapsed();
+            let per_call_ns = elapsed.as_nanos() / ITERATIONS as u128;
+            eprintln!(
+                "classify_query bench [{:<14}]: {} iters in {:>9.3?} ({:>5} ns/call, sink={})",
+                label, ITERATIONS, elapsed, per_call_ns, sink
+            );
+        }
+    }
 }
