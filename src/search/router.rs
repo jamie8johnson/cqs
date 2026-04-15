@@ -137,6 +137,12 @@ const NL_INDICATORS: &[&str] = &[
     "using",
 ];
 
+/// Aho-Corasick automaton over [`NL_INDICATORS`] for whole-query scans.
+/// Match ids are not used — only the presence of a whole-word match matters.
+static NL_INDICATORS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+    AhoCorasick::new(NL_INDICATORS).expect("NL_INDICATORS is a valid pattern set (static)")
+});
+
 /// Behavioral verbs suggesting a behavioral search
 const BEHAVIORAL_VERBS: &[&str] = &[
     "validates",
@@ -170,6 +176,12 @@ const BEHAVIORAL_VERBS: &[&str] = &[
     "renders",
 ];
 
+/// Aho-Corasick automaton over [`BEHAVIORAL_VERBS`].
+/// Only whole-word matches trigger behavioral classification.
+static BEHAVIORAL_VERBS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+    AhoCorasick::new(BEHAVIORAL_VERBS).expect("BEHAVIORAL_VERBS is a valid pattern set (static)")
+});
+
 /// Abstract nouns suggesting conceptual search
 const CONCEPTUAL_NOUNS: &[&str] = &[
     "pattern",
@@ -187,6 +199,12 @@ const CONCEPTUAL_NOUNS: &[&str] = &[
     "technique",
     "methodology",
 ];
+
+/// Aho-Corasick automaton over [`CONCEPTUAL_NOUNS`].
+/// Only whole-word matches trigger conceptual classification.
+static CONCEPTUAL_NOUNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+    AhoCorasick::new(CONCEPTUAL_NOUNS).expect("CONCEPTUAL_NOUNS is a valid pattern set (static)")
+});
 
 /// Negation tokens matched against word-split query tokens (not substrings).
 ///
@@ -265,6 +283,14 @@ const STRUCTURAL_PATTERNS: &[&str] = &[
     "deriving",
 ];
 
+/// Aho-Corasick automaton over [`STRUCTURAL_PATTERNS`]. These are matched as
+/// raw substrings in the query (same as the previous `query.contains(pat)`),
+/// so any match — word-bounded or not — triggers structural classification.
+static STRUCTURAL_PATTERNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+    AhoCorasick::new(STRUCTURAL_PATTERNS)
+        .expect("STRUCTURAL_PATTERNS is a valid pattern set (static)")
+});
+
 /// Multi-step conjunction patterns.
 ///
 /// AC-V1.25-10: bare " and " / " or " were removed because they fired on
@@ -283,6 +309,14 @@ const MULTISTEP_PATTERNS: &[&str] = &[
     "both ",
     "between ",
 ];
+
+/// Aho-Corasick automaton over [`MULTISTEP_PATTERNS`]. Raw substring match —
+/// the pattern strings already carry their own trailing / leading space
+/// where word-boundary semantics are needed.
+static MULTISTEP_PATTERNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+    AhoCorasick::new(MULTISTEP_PATTERNS)
+        .expect("MULTISTEP_PATTERNS is a valid pattern set (static)")
+});
 
 // ── Classification ───────────────────────────────────────────────────
 
@@ -506,7 +540,7 @@ pub fn classify_query(query: &str) -> Classification {
     //    2026-04-13: route to base. Enrichment ablation at 78% summary coverage
     //    showed +2.9pp R@1 on base vs enriched (23.5% vs 20.6%, N=34).
     //    Summaries inject vocabulary that displaces the conjunction terms.
-    if MULTISTEP_PATTERNS.iter().any(|p| query_lower.contains(p)) {
+    if MULTISTEP_PATTERNS_AC.is_match(&query_lower) {
         return Classification {
             category: QueryCategory::MultiStep,
             confidence: Confidence::Low,
@@ -529,7 +563,7 @@ pub fn classify_query(query: &str) -> Classification {
 /// Check if a query looks like an identifier lookup.
 /// All tokens must be valid identifier characters (a-z, 0-9, _, :, .)
 /// and no natural language indicator words.
-fn is_identifier_query(_query: &str, words: &[&str]) -> bool {
+fn is_identifier_query(query: &str, words: &[&str]) -> bool {
     // Single-word queries with identifier chars
     if words.len() == 1 {
         let w = words[0];
@@ -537,8 +571,10 @@ fn is_identifier_query(_query: &str, words: &[&str]) -> bool {
         if !w.chars().any(|c| c.is_alphabetic()) {
             return false;
         }
-        // NL indicator words are not identifiers
-        if NL_INDICATORS.contains(&w) {
+        // NL indicator words are not identifiers. On a single-word query the
+        // word itself IS the whole query and carries no whitespace, so the
+        // AC word-boundary match reduces to "some pattern equals w".
+        if ac_has_word_bounded_match(&NL_INDICATORS_AC, query) {
             return false;
         }
         // Pure identifier chars (including :: and .)
@@ -550,7 +586,7 @@ fn is_identifier_query(_query: &str, words: &[&str]) -> bool {
     // Multi-word: require at least one strong identifier signal
     // (underscore, ::, ., or mixed case within a single token)
     if words.len() <= 3 {
-        let has_nl = words.iter().any(|w| NL_INDICATORS.contains(w));
+        let has_nl = ac_has_word_bounded_match(&NL_INDICATORS_AC, query);
         if has_nl {
             return false;
         }
@@ -599,7 +635,7 @@ fn is_cross_language_query(query: &str, words: &[&str]) -> bool {
 /// Check if query is structural (about code structure, not behavior).
 fn is_structural_query(query: &str) -> bool {
     // Structural patterns like "functions that return"
-    if STRUCTURAL_PATTERNS.iter().any(|p| query.contains(p)) {
+    if STRUCTURAL_PATTERNS_AC.is_match(query) {
         return true;
     }
     // Contains structural keywords as NL words (not identifiers)
@@ -615,8 +651,8 @@ fn is_structural_query(query: &str) -> bool {
 /// checks instead of raw substring contains so hyphenated identifiers like
 /// `code-that-was-deleted-yesterday` don't false-fire. The word-boundary
 /// phrase must be surrounded by whitespace or sit at a string boundary.
-fn is_behavioral_query(query: &str, words: &[&str]) -> bool {
-    if words.iter().any(|w| BEHAVIORAL_VERBS.contains(w)) {
+fn is_behavioral_query(query: &str, _words: &[&str]) -> bool {
+    if ac_has_word_bounded_match(&BEHAVIORAL_VERBS_AC, query) {
         return true;
     }
     // "how does" / "what does" removed 2026-04-14 — they caught 100% of
@@ -653,14 +689,43 @@ fn contains_phrase(query: &str, phrase: &str) -> bool {
     false
 }
 
+/// Check whether any pattern in `ac` has at least one whole-word match in
+/// `query`. A match is whole-word iff both sides of the match are either
+/// a string boundary or ASCII whitespace.
+///
+/// Used in place of the previous `words.iter().any(|w| SET.contains(w))`
+/// check: tokens split by whitespace are exactly the strings whose first
+/// and last bytes sit at ASCII whitespace (or the string boundary), so an
+/// AC match with whitespace on both sides represents a token that equals
+/// one of the patterns. No regex, no allocation, single pass over `query`.
+///
+/// Uses [`AhoCorasick::find_overlapping_iter`] so shared-prefix patterns
+/// (e.g. `"a"` / `"all"` / `"an"` in [`NL_INDICATORS`]) all get a chance
+/// to fire: a leftmost-first `find_iter` would return the first pattern
+/// that matches at position 0, and if that pattern is not word-bounded
+/// the helper would wrongly report "no match" even when a longer sibling
+/// pattern *is* word-bounded at the same start. Requires
+/// [`MatchKind::Standard`], which is the default for [`AhoCorasick::new`].
+fn ac_has_word_bounded_match(ac: &AhoCorasick, query: &str) -> bool {
+    let bytes = query.as_bytes();
+    for m in ac.find_overlapping_iter(query) {
+        let left_ok = m.start() == 0 || bytes[m.start() - 1].is_ascii_whitespace();
+        let right_ok = m.end() == bytes.len() || bytes[m.end()].is_ascii_whitespace();
+        if left_ok && right_ok {
+            return true;
+        }
+    }
+    false
+}
+
 /// Check if query is about abstract concepts.
 fn is_conceptual_query(query: &str, words: &[&str]) -> bool {
-    if words.iter().any(|w| CONCEPTUAL_NOUNS.contains(w)) {
+    if ac_has_word_bounded_match(&CONCEPTUAL_NOUNS_AC, query) {
         return true;
     }
     // Short queries (1-3 words) that aren't identifiers and aren't structural
     words.len() <= 3
-        && words.iter().any(|w| NL_INDICATORS.contains(w))
+        && ac_has_word_bounded_match(&NL_INDICATORS_AC, query)
         && !is_structural_query(query)
 }
 
