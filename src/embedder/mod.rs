@@ -1,9 +1,12 @@
 //! Embedding generation with ort + tokenizers
 
-mod models;
+pub mod models;
 mod provider;
 
-pub use models::{EmbeddingConfig, ModelConfig, ModelInfo, DEFAULT_DIM, DEFAULT_MODEL_REPO};
+pub use models::{
+    EmbeddingConfig, InputNames, ModelConfig, ModelInfo, PoolingStrategy, DEFAULT_DIM,
+    DEFAULT_MODEL_REPO,
+};
 
 use provider::ort_err;
 pub(crate) use provider::{create_session, select_provider};
@@ -1345,6 +1348,9 @@ mod tests {
                 max_seq_length: 512,
                 query_prefix: String::new(),
                 doc_prefix: String::new(),
+                input_names: crate::embedder::models::InputNames::bert(),
+                output_name: "last_hidden_state".to_string(),
+                pooling: crate::embedder::models::PoolingStrategy::Mean,
             }
         }
 
@@ -1447,6 +1453,9 @@ mod tests {
                 max_seq_length: 512,
                 query_prefix: String::new(),
                 doc_prefix: String::new(),
+                input_names: crate::embedder::models::InputNames::bert(),
+                output_name: "last_hidden_state".to_string(),
+                pooling: crate::embedder::models::PoolingStrategy::Mean,
             };
 
             // Point CQS_ONNX_DIR at our incomplete dir (has tokenizer but no model)
@@ -1493,6 +1502,9 @@ mod tests {
                 max_seq_length: 512,
                 query_prefix: String::new(),
                 doc_prefix: String::new(),
+                input_names: crate::embedder::models::InputNames::bert(),
+                output_name: "last_hidden_state".to_string(),
+                pooling: crate::embedder::models::PoolingStrategy::Mean,
             });
             std::env::remove_var("CQS_ONNX_DIR");
 

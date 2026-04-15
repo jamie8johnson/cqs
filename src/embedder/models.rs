@@ -2,10 +2,108 @@
 
 use serde::Deserialize;
 
+// ---------------------------------------------------------------------------
+// Default tensor name helpers (used by serde defaults on `InputNames`).
+// ---------------------------------------------------------------------------
+
+fn default_ids_name() -> String {
+    "input_ids".to_string()
+}
+fn default_mask_name() -> String {
+    "attention_mask".to_string()
+}
+fn default_output_name() -> String {
+    "last_hidden_state".to_string()
+}
+
+/// Names of the input tensors consumed by the ONNX model.
+///
+/// Most BERT-family embedders use the triple `(input_ids, attention_mask,
+/// token_type_ids)`. Some distilled or non-BERT models drop `token_type_ids`
+/// or rename the tensors entirely. This struct makes those names configurable
+/// instead of hard-coding them in the encoder.
+///
+/// # Defaults
+/// - `ids`: `"input_ids"`
+/// - `mask`: `"attention_mask"`
+/// - `token_types`: `None` — set to `Some("token_type_ids")` for BERT.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct InputNames {
+    /// Name of the token-id tensor (default `"input_ids"`).
+    #[serde(default = "default_ids_name")]
+    pub ids: String,
+    /// Name of the attention-mask tensor (default `"attention_mask"`).
+    #[serde(default = "default_mask_name")]
+    pub mask: String,
+    /// Name of the token-type-id tensor, if the model consumes it.
+    /// `None` means the input is not supplied to `session.run`.
+    #[serde(default)]
+    pub token_types: Option<String>,
+}
+
+impl Default for InputNames {
+    /// Standard BERT input names: `input_ids`, `attention_mask`, `token_type_ids`.
+    ///
+    /// Matches BGE-large, E5-base, and v9-200k presets.
+    fn default() -> Self {
+        Self::bert()
+    }
+}
+
+impl InputNames {
+    /// Standard BERT input names: `input_ids`, `attention_mask`, `token_type_ids`.
+    ///
+    /// Used by BGE-large, E5-base, and v9-200k.
+    pub fn bert() -> Self {
+        Self {
+            ids: default_ids_name(),
+            mask: default_mask_name(),
+            token_types: Some("token_type_ids".to_string()),
+        }
+    }
+
+    /// BERT-like inputs without `token_type_ids`.
+    ///
+    /// Used by some distilled variants and non-BERT transformers (e.g. Jina v2,
+    /// models that dropped segment embeddings during distillation).
+    pub fn bert_no_token_types() -> Self {
+        Self {
+            ids: default_ids_name(),
+            mask: default_mask_name(),
+            token_types: None,
+        }
+    }
+}
+
+/// Strategy for reducing the per-token hidden states to a single vector.
+///
+/// The encoder dispatches on this after running `session.run`. All strategies
+/// preserve the hidden dimension; downstream L2-normalization happens in
+/// [`normalize_l2`][crate::embedder] regardless of choice.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PoolingStrategy {
+    /// Mean-pool the masked token positions. **Current default** — BGE, E5, v9-200k.
+    #[default]
+    Mean,
+    /// Use the first-token (`[CLS]`) embedding directly.
+    ///
+    /// Some DistilBERT-derived embedders are trained for CLS pooling; using
+    /// mean pooling on them degrades quality silently.
+    Cls,
+    /// Use the last non-padding token, selected via the attention mask.
+    ///
+    /// Used by autoregressive / decoder-only embedders (rare: Qwen3-Embedding,
+    /// some Mistral-based embedders).
+    LastToken,
+}
+
 /// Configuration for an embedding model.
 ///
 /// Defines everything needed to download, load, and use an ONNX embedding model:
-/// repository location, file paths, dimensions, and text prefixes.
+/// repository location, file paths, dimensions, text prefixes, and the
+/// architecture-specific I/O contract (input tensor names, output tensor name,
+/// pooling strategy).
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
     /// Short human-readable name (e.g. "e5-base", "bge-large")
@@ -25,6 +123,17 @@ pub struct ModelConfig {
     pub query_prefix: String,
     /// Prefix prepended to documents (e.g. "passage: " for E5)
     pub doc_prefix: String,
+    /// Names of the input tensors the ONNX model consumes.
+    ///
+    /// Defaults to standard BERT: `input_ids` + `attention_mask` + `token_type_ids`.
+    pub input_names: InputNames,
+    /// Name of the output tensor to pool over (most models: `"last_hidden_state"`;
+    /// sentence-transformers-packaged models sometimes expose `"sentence_embedding"`).
+    pub output_name: String,
+    /// How to reduce per-token hidden states to a single embedding vector.
+    ///
+    /// Defaults to [`PoolingStrategy::Mean`] (BGE, E5, v9-200k).
+    pub pooling: PoolingStrategy,
 }
 
 /// Default model repo ID. Must match `ModelConfig::default_model().repo`.
@@ -46,6 +155,9 @@ impl ModelConfig {
     }
 
     /// E5-base-v2: 768-dim, 512 tokens. Lightweight preset.
+    ///
+    /// Standard BERT I/O (`input_ids` / `attention_mask` / `token_type_ids`),
+    /// output `last_hidden_state`, mean pooling over the attention mask.
     pub fn e5_base() -> Self {
         Self {
             name: "e5-base".to_string(),
@@ -56,11 +168,16 @@ impl ModelConfig {
             max_seq_length: 512,
             query_prefix: "query: ".to_string(),
             doc_prefix: "passage: ".to_string(),
+            input_names: InputNames::bert(),
+            output_name: default_output_name(),
+            pooling: PoolingStrategy::Mean,
         }
     }
 
     /// v9-200k LoRA: E5-base fine-tuned with call-graph false-negative filtering.
     /// 768-dim, 512 tokens. 90.5% R@1 on expanded eval (296 queries, 7 languages).
+    ///
+    /// Same architecture as E5-base: standard BERT I/O, mean pooling.
     pub fn v9_200k() -> Self {
         Self {
             name: "v9-200k".to_string(),
@@ -71,10 +188,16 @@ impl ModelConfig {
             max_seq_length: 512,
             query_prefix: "query: ".to_string(),
             doc_prefix: "passage: ".to_string(),
+            input_names: InputNames::bert(),
+            output_name: default_output_name(),
+            pooling: PoolingStrategy::Mean,
         }
     }
 
     /// BGE-large-en-v1.5: 1024-dim, 512 tokens. Higher quality, slower.
+    ///
+    /// Standard BERT I/O, mean pooling (matches the BGE-reference implementation
+    /// used in HuggingFace `sentence-transformers`).
     pub fn bge_large() -> Self {
         Self {
             name: "bge-large".to_string(),
@@ -85,6 +208,9 @@ impl ModelConfig {
             max_seq_length: 512,
             query_prefix: "Represent this sentence for searching relevant passages: ".to_string(),
             doc_prefix: String::new(),
+            input_names: InputNames::bert(),
+            output_name: default_output_name(),
+            pooling: PoolingStrategy::Mean,
         }
     }
 
@@ -188,6 +314,19 @@ impl ModelConfig {
                     }
                 }
 
+                // Architecture fields: fall back to BERT defaults if the user
+                // did not override them. The tokenizer auto-detects BPE vs
+                // WordPiece from `tokenizer.json`, so no tokenizer_kind needed.
+                let input_names = embedding_cfg
+                    .input_names
+                    .clone()
+                    .unwrap_or_else(InputNames::bert);
+                let output_name = embedding_cfg
+                    .output_name
+                    .clone()
+                    .unwrap_or_else(default_output_name);
+                let pooling = embedding_cfg.pooling.unwrap_or(PoolingStrategy::Mean);
+
                 let cfg = Self {
                     name: embedding_cfg.model.clone(),
                     repo: embedding_cfg.repo.clone().expect("guarded by has_repo"),
@@ -197,6 +336,9 @@ impl ModelConfig {
                     max_seq_length: embedding_cfg.max_seq_length.unwrap_or(512),
                     query_prefix: embedding_cfg.query_prefix.clone().unwrap_or_default(),
                     doc_prefix: embedding_cfg.doc_prefix.clone().unwrap_or_default(),
+                    input_names,
+                    output_name,
+                    pooling,
                 };
                 tracing::info!(model = %cfg.name, source = "config-custom", "Resolved custom model config");
                 return cfg;
@@ -243,7 +385,9 @@ impl ModelConfig {
 /// Config-file section for embedding model settings.
 ///
 /// Parsed from `[embedding]` in the cqs config file.
-/// All fields except `model` are optional — preset names fill them automatically.
+/// All fields except `model` are optional — preset names fill them automatically,
+/// and architecture fields (`input_names`, `output_name`, `pooling`) fall back
+/// to BERT defaults when absent.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EmbeddingConfig {
     /// Model name or preset (default: "bge-large")
@@ -263,10 +407,43 @@ pub struct EmbeddingConfig {
     pub query_prefix: Option<String>,
     /// Document prefix
     pub doc_prefix: Option<String>,
+    /// Names of the ONNX input tensors (defaults to BERT: `input_ids`,
+    /// `attention_mask`, `token_type_ids`). Omit for BERT-family models.
+    #[serde(default)]
+    pub input_names: Option<InputNames>,
+    /// Output tensor to pool over (default `last_hidden_state`).
+    #[serde(default)]
+    pub output_name: Option<String>,
+    /// Pooling strategy (`mean`, `cls`, or `lasttoken`; default `mean`).
+    #[serde(default)]
+    pub pooling: Option<PoolingStrategy>,
 }
 
 fn default_model_name() -> String {
     ModelConfig::default_model().name
+}
+
+impl Default for EmbeddingConfig {
+    /// All-`None` defaults with `model` set to the project default.
+    ///
+    /// Intended as a starting point for tests / programmatic config — the
+    /// `resolve()` path fills in architecture fields (input_names, output_name,
+    /// pooling) when the user does not override them.
+    fn default() -> Self {
+        Self {
+            model: default_model_name(),
+            repo: None,
+            onnx_path: None,
+            tokenizer_path: None,
+            dim: None,
+            max_seq_length: None,
+            query_prefix: None,
+            doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
+        }
+    }
 }
 
 /// Model metadata for index initialization.
@@ -457,6 +634,9 @@ mod tests {
             max_seq_length: None,
             query_prefix: None,
             doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
         };
         let cfg = ModelConfig::resolve(None, Some(&embedding_cfg));
         assert_eq!(cfg.name, "bge-large");
@@ -475,6 +655,9 @@ mod tests {
             max_seq_length: Some(256),
             query_prefix: Some("search: ".to_string()),
             doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
         };
         let cfg = ModelConfig::resolve(None, Some(&embedding_cfg));
         assert_eq!(cfg.name, "my-custom");
@@ -500,6 +683,9 @@ mod tests {
             max_seq_length: None,
             query_prefix: None,
             doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
         };
         let cfg = ModelConfig::resolve(None, Some(&embedding_cfg));
         assert_eq!(cfg.name, "bge-large"); // falls back
@@ -559,6 +745,9 @@ mod tests {
             max_seq_length: None,
             query_prefix: None,
             doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
         };
         let cfg = ModelConfig::resolve(Some("e5-base"), Some(&embedding_cfg));
         assert_eq!(cfg.name, "e5-base");
@@ -580,6 +769,9 @@ mod tests {
             max_seq_length: None,
             query_prefix: None,
             doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
         };
         let cfg = ModelConfig::resolve(None, Some(&embedding_cfg));
         assert_eq!(
@@ -604,6 +796,9 @@ mod tests {
             max_seq_length: None,
             query_prefix: None,
             doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -625,6 +820,9 @@ mod tests {
             max_seq_length: None,
             query_prefix: None,
             doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -646,6 +844,9 @@ mod tests {
             max_seq_length: None,
             query_prefix: None,
             doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -667,6 +868,9 @@ mod tests {
             max_seq_length: None,
             query_prefix: None,
             doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -690,6 +894,9 @@ mod tests {
             max_seq_length: None,
             query_prefix: None,
             doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -713,6 +920,9 @@ mod tests {
             max_seq_length: None,
             query_prefix: None,
             doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -734,6 +944,9 @@ mod tests {
             max_seq_length: None,
             query_prefix: None,
             doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -755,6 +968,9 @@ mod tests {
             max_seq_length: None,
             query_prefix: None,
             doc_prefix: None,
+            input_names: None,
+            output_name: None,
+            pooling: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
