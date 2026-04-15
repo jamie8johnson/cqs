@@ -1,3 +1,9 @@
+//! Gated behind the `slow-tests` feature: these shell out to the `cqs`
+//! binary and cold-load the full model stack per invocation, adding ~2h
+//! to CI. PR CI skips; nightly runs `cargo test --features "gpu-index slow-tests"`.
+//! See issue #980.
+#![cfg(feature = "slow-tests")]
+
 //! Integration tests for health, suggest, and deps CLI commands (TC-18)
 //!
 //! Uses a graph fixture with call relationships and type dependencies:
