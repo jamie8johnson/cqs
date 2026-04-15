@@ -374,31 +374,45 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
         }
     }
 
-    // Per-category defaults from the 21-point alpha sweep on clean
-    // infrastructure (2026-04-14). 265 queries × 8 categories with:
-    //   - PR #942 determinism fixes (hash iteration, SPLADE-at-α=1.0,
-    //     rowid re-sort)
-    //   - PR #943 eval-output-location fix (no more watch-reindex
-    //     contamination between runs)
-    // Oracle R@1 with these values: 49.4% vs 44.9% for best uniform α=0.95.
-    // The earlier v1.24.0 defaults were fit to corrupted data; plateaus
-    // are resolved here to the mid-point for robustness.
+    // Per-category defaults from the 21-point alpha sweep on the genuinely
+    // clean index (2026-04-15). 265 queries × 8 categories, 14,882 chunks
+    // post-GC + worktree-duplicate purge.
+    //
+    // History: the 2026-04-14 "clean" sweep was actually run on a 96k-chunk
+    // index polluted by auto-indexed `.claude/worktrees/` copies (daemon
+    // watch ignored .gitignore, fixed in #1003). The dirty-tuned alphas
+    // drove SPLADE-enabled R@1 to 26.8% (vs 35.8% dense-only) until
+    // re-measured. The values here reflect the real clean-index optima —
+    // overall R@1 41% projected (vs 37.7% for global α=0.90).
+    //
+    // Run artifacts: /home/user001/.cache/cqs/evals/run_20260415_1[4-5]*/
     let alpha = match category {
-        // Double plateau: 0.10–0.30 and 0.85–0.90 both at 98%. α=1.0 drops
-        // to 94%. Pick 0.90 (dense-side plateau edge, +4pp over 1.0).
-        QueryCategory::IdentifierLookup => 0.90,
-        // Wide plateau 0.40–0.85 at 66.7%; α=0.9 drops to 63.0%.
-        // Pick 0.60 (mid-plateau, +14.8pp over α=1.0 at 51.9%).
-        QueryCategory::Structural => 0.60,
-        // Plateau 0.75–0.95 at 41.7%. Pick 0.85 (mid-plateau, robust).
-        // +13.9pp over α=1.0 (27.8%).
-        QueryCategory::Conceptual => 0.85,
-        // Heavy sparse — action verbs match lexically. +4.6pp over α=1.0
-        // (34.1% vs 29.5%).
-        QueryCategory::Behavioral => 0.05,
-        // type_filtered, multi_step, cross_language, negation, unknown:
-        // pure dense scoring is best. SPLADE still contributes to the
-        // candidate pool (always-on), α just weights the scoring.
+        // Peak at α=1.00 (94%). Previous default 0.90 gave 90% — the extra
+        // 10% SPLADE cost 4pp. Identifier queries are dominated by exact
+        // name matches which the dense embedder resolves unambiguously.
+        QueryCategory::IdentifierLookup => 1.00,
+        // Peak at α=0.90 (44.4%). Previous default 0.60 was from the
+        // dirty-index sweep and gave only 29.6% — 14.8pp miscalibration.
+        // Structural queries (e.g. "recursive function", "mutex usage")
+        // match on code idioms the dense embedder learned well.
+        QueryCategory::Structural => 0.90,
+        // Peak at α=0.70 (33.3%). Previous default 0.85 gave 30.6%.
+        // Conceptual queries benefit from some SPLADE lexical grounding
+        // (noun-token matches) without over-weighting it.
+        QueryCategory::Conceptual => 0.70,
+        // Peak at α=0.00 (25.0%). Previous default 0.05 gave 22.7% —
+        // the gain is within noise (N=44) but directionally consistent:
+        // behavioral queries match action verbs that SPLADE captures
+        // lexically and the dense embedder does not.
+        QueryCategory::Behavioral => 0.00,
+        // Peak at α=0.80 (20.7%), up from 13.8% at α=1.0 — a real 6.9pp
+        // gain. Previously missed because the arm fell through to the
+        // `_ => 1.0` default. Negation queries need lexical SPLADE to
+        // suppress candidates that match the negated term.
+        QueryCategory::Negation => 0.80,
+        // multi_step, cross_language, type_filtered, unknown: flat curves
+        // within noise (N=21-34); pick α=1.0. SPLADE still contributes to
+        // the candidate pool (always-on), α just weights the scoring.
         _ => 1.0,
     };
 
