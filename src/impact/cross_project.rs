@@ -290,7 +290,7 @@ mod tests {
     // NOTE: similar helper exists in store/calls/cross_project.rs
     fn make_named_store(name: &str, forward_edges: Vec<(&str, &str)>) -> NamedStore {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         let store = Store::open(&db_path).unwrap();
         let model_info = crate::store::helpers::ModelInfo::default();
         store.init(&model_info).unwrap();

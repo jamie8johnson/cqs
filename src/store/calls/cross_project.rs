@@ -92,7 +92,7 @@ impl CrossProjectContext {
         }];
 
         for ref_cfg in &config.references {
-            let db_path = ref_cfg.path.join("index.db");
+            let db_path = ref_cfg.path.join(crate::INDEX_DB_FILENAME);
             match Store::open_readonly(&db_path) {
                 Ok(store) => {
                     tracing::debug!(name = %ref_cfg.name, "Reference store opened");
@@ -283,7 +283,7 @@ mod tests {
         reverse: StdMap<String, Vec<String>>,
     ) -> NamedStore {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         let store = Store::open(&db_path).unwrap();
         let model_info = crate::store::helpers::ModelInfo::default();
         store.init(&model_info).unwrap();

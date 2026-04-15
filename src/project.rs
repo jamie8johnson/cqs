@@ -494,7 +494,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
-        let db_path = cqs_dir.join("index.db");
+        let db_path = cqs_dir.join(crate::INDEX_DB_FILENAME);
 
         let store = crate::Store::open(&db_path).unwrap();
         store.init(&ModelInfo::default()).unwrap();

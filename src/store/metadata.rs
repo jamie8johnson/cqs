@@ -606,7 +606,7 @@ mod tests {
 
     fn make_test_store_initialized() -> (Store, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         let store = Store::open(&db_path).unwrap();
         store.init(&ModelInfo::default()).unwrap();
         (store, dir)
@@ -640,7 +640,7 @@ mod tests {
         // Corrupt dimension string is silently ignored (defaults to EMBEDDING_DIM).
         // This matches open_with_config behavior: parse failure -> default.
         let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         {
             let store = Store::open(&db_path).unwrap();
             store.init(&ModelInfo::default()).unwrap();
@@ -768,7 +768,7 @@ mod tests {
         // TC-31.1: init writes dim to metadata, verifiable via get_metadata_opt.
         // Note: store.dim() reflects the value read at open() time, not post-init.
         let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         let store = Store::open(&db_path).unwrap();
         store
             .init(&ModelInfo::new("test/model-1024", 1024))
@@ -787,7 +787,7 @@ mod tests {
         // Note: Store::dim is set at open() time, not updated by init().
         // The metadata write is what matters for future reopens.
         let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         let store = Store::open(&db_path).unwrap();
         store
             .init(&ModelInfo::new("test/model-1024", 1024))
@@ -807,7 +807,7 @@ mod tests {
         // (This was the AD-43/DS-30 bug: model validation on open rejected
         // non-default models. Fixed by skipping model validation on open.)
         let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         {
             let store = Store::open(&db_path).unwrap();
             store
@@ -828,7 +828,7 @@ mod tests {
     fn tc31_store_dim_zero_defaults_to_embedding_dim() {
         // TC-31.7: Set dimensions metadata to "0", reopen — should default to EMBEDDING_DIM.
         let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         {
             let store = Store::open(&db_path).unwrap();
             store.init(&ModelInfo::default()).unwrap();

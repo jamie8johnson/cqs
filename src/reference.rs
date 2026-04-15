@@ -102,7 +102,7 @@ fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
         }
     }
 
-    let db_path = cfg.path.join("index.db");
+    let db_path = cfg.path.join(crate::INDEX_DB_FILENAME);
     let store = match Store::open_readonly(&db_path) {
         Ok(s) => s,
         Err(e) => {

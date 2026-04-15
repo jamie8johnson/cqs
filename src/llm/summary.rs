@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn contrastive_neighbors_empty_store() {
         let dir = tempfile::TempDir::new().unwrap();
-        let store = crate::Store::open(&dir.path().join("index.db")).unwrap();
+        let store = crate::Store::open(&dir.path().join(crate::INDEX_DB_FILENAME)).unwrap();
         store.init(&crate::store::ModelInfo::default()).unwrap();
         let result = find_contrastive_neighbors(&store, 3);
         assert!(result.is_ok(), "Expected Ok, got {:?}", result);
@@ -470,7 +470,7 @@ mod tests {
     #[test]
     fn contrastive_neighbors_limit_zero() {
         let dir = tempfile::TempDir::new().unwrap();
-        let store = crate::Store::open(&dir.path().join("index.db")).unwrap();
+        let store = crate::Store::open(&dir.path().join(crate::INDEX_DB_FILENAME)).unwrap();
         store.init(&crate::store::ModelInfo::default()).unwrap();
         let result = find_contrastive_neighbors(&store, 0);
         assert!(result.is_ok(), "Expected Ok, got {:?}", result);
