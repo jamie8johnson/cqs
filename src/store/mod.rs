@@ -257,13 +257,313 @@ struct StoreOpenConfig {
     runtime: Option<Runtime>,
 }
 
-/// Read `CQS_MMAP_SIZE` env var, falling back to `default_bytes`.
-/// The env var is the raw byte count (e.g. `268435456` for 256 MB).
-fn mmap_size_from_env(default_bytes: &str) -> String {
+/// Filesystem types where SQLite `mmap_size > 0` hurts performance.
+///
+/// On these backends, mmap either falls back to per-page I/O (9P, NFS, SMB)
+/// or triggers synchronous flushes on unrelated writes. Setting `mmap_size=0`
+/// forces SQLite to use regular `pread`/`pwrite`, which is uniformly faster
+/// on these filesystems.
+///
+/// `drvfs` / `fuse.drvfs` cover legacy WSL1. `9p` is WSL2's DrvFS transport
+/// to the Windows host (paths under `/mnt/c/`, `/mnt/d/`, etc.). `cifs`,
+/// `smb3`, `smbfs` cover SMB shares. `nfs`, `nfs4` cover NFS mounts.
+/// `ntfs`, `ntfs3`, `fuseblk` cover native-Linux NTFS access (ntfs-3g).
+const SLOW_MMAP_FSTYPES: &[&str] = &[
+    "9p",
+    "cifs",
+    "smb3",
+    "smbfs",
+    "drvfs",
+    "fuse.drvfs",
+    "nfs",
+    "nfs4",
+    "ntfs",
+    "ntfs3",
+    "fuseblk",
+];
+
+/// Read `CQS_MMAP_SIZE` env var, returning `Some(value)` if explicitly set
+/// to a valid non-negative integer. Returns `None` if unset or unparseable,
+/// so callers can distinguish "user-requested" from "fell back to default".
+fn mmap_size_env_override() -> Option<String> {
     std::env::var("CQS_MMAP_SIZE")
         .ok()
-        .and_then(|v| v.parse::<u64>().ok().map(|n| n.to_string()))
-        .unwrap_or_else(|| default_bytes.to_string())
+        .and_then(|v| v.trim().parse::<u64>().ok().map(|n| n.to_string()))
+}
+
+/// Resolve the SQLite `mmap_size` PRAGMA value for a database at `db_path`.
+///
+/// Precedence (highest first):
+/// 1. `CQS_MMAP_SIZE` env var — explicit user override always wins.
+/// 2. Slow-FS auto-detection — if `db_path` is on 9P/NTFS/SMB/NFS, return `"0"`
+///    (disables mmap) and log an info message.
+/// 3. `default_bytes` — the mode-specific default (e.g. 256 MB pooled, 64 MB
+///    read-only).
+///
+/// The env var is the raw byte count (e.g. `268435456` for 256 MB).
+fn resolve_mmap_size(default_bytes: &str, db_path: &Path) -> String {
+    if let Some(explicit) = mmap_size_env_override() {
+        return explicit;
+    }
+    if is_slow_mmap_fs(db_path) {
+        tracing::info!(
+            path = %db_path.display(),
+            "Slow FS detected (WSL/9P/NTFS/SMB/NFS), disabling SQLite mmap (set CQS_MMAP_SIZE to override)"
+        );
+        return "0".to_string();
+    }
+    default_bytes.to_string()
+}
+
+/// Return `true` if `path` lives on a filesystem where SQLite `mmap_size > 0`
+/// degrades performance (WSL `/mnt/c/` 9P, NFS, SMB, NTFS-via-FUSE).
+///
+/// Implementation: on Unix, parses `/proc/self/mountinfo` and looks up the
+/// fstype of the mount containing `path`. On non-Unix, returns `false` (mmap
+/// behavior on Windows native / macOS APFS is fine with the default size).
+///
+/// Canonicalizes `path` first; if canonicalization fails (e.g., the DB file
+/// doesn't exist yet on first open), tries the parent directory.
+fn is_slow_mmap_fs(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        // Resolve to an absolute path. On fresh opens the DB file may not
+        // exist yet (create_if_missing=true), so fall back to the parent dir.
+        let canonical = dunce::canonicalize(path).or_else(|_| {
+            path.parent().map_or_else(
+                || {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "no parent",
+                    ))
+                },
+                dunce::canonicalize,
+            )
+        });
+        let abs = match canonical {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        let mountinfo = match std::fs::read_to_string("/proc/self/mountinfo") {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        match fstype_for_path(&mountinfo, &abs) {
+            Some(fstype) => SLOW_MMAP_FSTYPES.iter().any(|&s| s == fstype),
+            None => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// Parse `/proc/self/mountinfo` content and return the fstype of the mount
+/// point that contains `abs_path`.
+///
+/// mountinfo format (per `proc(5)`):
+/// ```text
+///   36 35 98:0 /mnt1 /mnt2 rw,noatime master:1 - ext3 /dev/root rw,errors=continue
+///   (1) (2) (3)   (4)   (5)      (6)    ...    -  (fstype)
+/// ```
+/// Field 5 is the mount point; after the `-` separator, the first field is
+/// the fstype. Optional fields (field 7+) vary, so split on `-`.
+///
+/// Picks the longest mount point that is a path-prefix of `abs_path`
+/// (so nested mounts like `/mnt/c/WINDOWS` inside `/mnt/c` win correctly).
+fn fstype_for_path(mountinfo: &str, abs_path: &Path) -> Option<String> {
+    let abs_str = abs_path.to_str()?;
+    let mut best: Option<(usize, String)> = None;
+    for line in mountinfo.lines() {
+        // Split on the ` - ` separator between variable-length and
+        // fixed fields. mountinfo guarantees the separator token is ` - `.
+        let (left, right) = match line.split_once(" - ") {
+            Some(parts) => parts,
+            None => continue,
+        };
+        let left_fields: Vec<&str> = left.split_whitespace().collect();
+        if left_fields.len() < 5 {
+            continue;
+        }
+        let mount_point = left_fields[4];
+        // mountinfo escapes space/tab/newline/backslash as \040, \011, \012, \134.
+        // For our purposes we only need to match exact prefixes; unescape \040
+        // since spaces in paths are the realistic case. Other escapes are rare
+        // enough to skip.
+        let mp = mount_point.replace("\\040", " ");
+        if !path_starts_with(abs_str, &mp) {
+            continue;
+        }
+        let right_fields: Vec<&str> = right.split_whitespace().collect();
+        let fstype = match right_fields.first() {
+            Some(t) => *t,
+            None => continue,
+        };
+        let len = mp.len();
+        if best.as_ref().is_none_or(|(blen, _)| len > *blen) {
+            best = Some((len, fstype.to_string()));
+        }
+    }
+    best.map(|(_, fs)| fs)
+}
+
+/// Check whether `path` begins with `prefix` at a path-component boundary.
+///
+/// A plain `str::starts_with` would match `/mnt/ca` against `/mnt/c` — wrong,
+/// since those are sibling mounts. The prefix matches only if `path == prefix`
+/// or `path` continues with `/` after the prefix. Also handles the special
+/// case where `prefix == "/"` (root mount) — always a prefix.
+fn path_starts_with(path: &str, prefix: &str) -> bool {
+    if prefix == "/" {
+        return path.starts_with('/');
+    }
+    if !path.starts_with(prefix) {
+        return false;
+    }
+    // Exact match or next char is a path separator.
+    path.len() == prefix.len() || path.as_bytes()[prefix.len()] == b'/'
+}
+
+#[cfg(test)]
+mod slow_fs_tests {
+    use super::{fstype_for_path, path_starts_with, SLOW_MMAP_FSTYPES};
+    use std::path::Path;
+
+    /// Realistic mountinfo snippet captured on WSL2 (Debian 13, kernel 6.6).
+    /// Rootfs is ext4, `/mnt/c` is 9P-over-drvfs, `/proc` and `/sys` are virtual.
+    const WSL_MOUNTINFO: &str = "\
+75 80 0:29 / /usr/lib/modules/6.6.87 rw,nosuid,nodev,noatime - overlay none rw,lowerdir=/modules
+80 65 8:48 / / rw,relatime - ext4 /dev/sdd rw,discard,errors=remount-ro
+111 80 0:22 / /sys rw,nosuid,nodev,noexec,noatime shared:15 - sysfs sysfs rw
+112 80 0:59 / /proc rw,nosuid,nodev,noexec,noatime shared:16 - proc proc rw
+135 80 0:73 / /mnt/c rw,noatime - 9p C:\\134 rw,aname=drvfs;path=C:\\
+136 80 0:74 / /mnt/d rw,noatime - 9p D:\\134 rw,aname=drvfs;path=D:\\
+";
+
+    #[test]
+    fn wsl_mnt_c_detected_as_9p() {
+        let fs = fstype_for_path(
+            WSL_MOUNTINFO,
+            Path::new("/mnt/c/Projects/cqs/.cqs/index.db"),
+        );
+        assert_eq!(fs.as_deref(), Some("9p"));
+        assert!(SLOW_MMAP_FSTYPES.contains(&"9p"));
+    }
+
+    #[test]
+    fn wsl_home_detected_as_ext4_not_slow() {
+        let fs = fstype_for_path(
+            WSL_MOUNTINFO,
+            Path::new("/home/user001/project/.cqs/index.db"),
+        );
+        assert_eq!(fs.as_deref(), Some("ext4"));
+        assert!(!SLOW_MMAP_FSTYPES.contains(&"ext4"));
+    }
+
+    #[test]
+    fn wsl_mnt_c_root_itself_matches() {
+        // Path exactly at mount point (edge case).
+        let fs = fstype_for_path(WSL_MOUNTINFO, Path::new("/mnt/c"));
+        assert_eq!(fs.as_deref(), Some("9p"));
+    }
+
+    #[test]
+    fn sibling_mount_not_matched() {
+        // `/mnt/ca` must not match mount `/mnt/c`. Without component-boundary
+        // checking, naive starts_with would incorrectly return "9p".
+        let info = "135 80 0:73 / /mnt/c rw,noatime - 9p C:\\134 rw\n80 65 8:48 / / rw - ext4 /dev/sdd rw\n";
+        let fs = fstype_for_path(info, Path::new("/mnt/ca/file"));
+        // Falls through to root ext4, not the /mnt/c 9p.
+        assert_eq!(fs.as_deref(), Some("ext4"));
+    }
+
+    #[test]
+    fn longest_prefix_wins_for_nested_mounts() {
+        // `/mnt/c/WINDOWS` nested inside `/mnt/c` — the nested mount fstype
+        // should win even though both are prefixes. Uses an artificial "cifs"
+        // for the nested mount to prove the longer match is picked.
+        let info = "\
+80 65 8:48 / / rw - ext4 /dev/sdd rw
+135 80 0:73 / /mnt/c rw - 9p C:\\134 rw
+200 135 0:99 / /mnt/c/WINDOWS rw - cifs //host/share rw
+";
+        let fs = fstype_for_path(info, Path::new("/mnt/c/WINDOWS/system32/a.db"));
+        assert_eq!(fs.as_deref(), Some("cifs"));
+    }
+
+    #[test]
+    fn handles_optional_fields_with_shared_tag() {
+        // mountinfo may have optional fields (shared:N, master:M) between
+        // mount opts and the `-` separator. Must still parse.
+        let info = "\
+76 80 0:32 / /some/mount rw,relatime shared:1 master:2 - 9p foo rw\n";
+        let fs = fstype_for_path(info, Path::new("/some/mount/file"));
+        assert_eq!(fs.as_deref(), Some("9p"));
+    }
+
+    #[test]
+    fn empty_or_garbage_mountinfo_returns_none() {
+        assert!(fstype_for_path("", Path::new("/any/path")).is_none());
+        assert!(fstype_for_path("not a mountinfo line\n", Path::new("/any/path")).is_none());
+        // Missing ` - ` separator.
+        assert!(fstype_for_path("80 65 8:48 / / rw ext4 /dev/sdd rw\n", Path::new("/")).is_none());
+    }
+
+    #[test]
+    fn native_linux_ext4_is_not_slow() {
+        // No WSL in sight — plain ext4 at root.
+        let info = "80 65 8:48 / / rw,relatime - ext4 /dev/sda1 rw\n";
+        let fs = fstype_for_path(info, Path::new("/home/alice/project/.cqs/index.db"));
+        assert_eq!(fs.as_deref(), Some("ext4"));
+        assert!(!SLOW_MMAP_FSTYPES.contains(&"ext4"));
+    }
+
+    #[test]
+    fn nfs_and_cifs_are_slow() {
+        let info = "\
+80 65 8:48 / / rw - ext4 /dev/sdd rw
+90 80 0:50 / /net/nfs rw - nfs server:/export rw
+91 80 0:51 / /net/smb rw - cifs //host/share rw
+";
+        assert_eq!(
+            fstype_for_path(info, Path::new("/net/nfs/index.db")).as_deref(),
+            Some("nfs")
+        );
+        assert_eq!(
+            fstype_for_path(info, Path::new("/net/smb/index.db")).as_deref(),
+            Some("cifs")
+        );
+        assert!(SLOW_MMAP_FSTYPES.contains(&"nfs"));
+        assert!(SLOW_MMAP_FSTYPES.contains(&"cifs"));
+    }
+
+    #[test]
+    fn path_starts_with_component_boundary() {
+        assert!(path_starts_with("/mnt/c/foo", "/mnt/c"));
+        assert!(path_starts_with("/mnt/c", "/mnt/c"));
+        assert!(!path_starts_with("/mnt/ca", "/mnt/c"));
+        assert!(!path_starts_with("/mnt", "/mnt/c"));
+        // Root is always a prefix of any absolute path.
+        assert!(path_starts_with("/anything", "/"));
+        assert!(path_starts_with("/", "/"));
+    }
+
+    #[test]
+    fn resolve_mmap_size_env_override_wins() {
+        // Env explicit set → returns that value, ignores slow-fs detection.
+        // Save/restore to stay neighbour-friendly with parallel tests that
+        // may inspect CQS_MMAP_SIZE.
+        let prev = std::env::var("CQS_MMAP_SIZE").ok();
+        std::env::set_var("CQS_MMAP_SIZE", "12345");
+        let got = super::resolve_mmap_size("268435456", Path::new("/mnt/c/any"));
+        assert_eq!(got, "12345");
+        match prev {
+            Some(v) => std::env::set_var("CQS_MMAP_SIZE", v),
+            None => std::env::remove_var("CQS_MMAP_SIZE"),
+        }
+    }
 }
 
 /// Read `CQS_SQLITE_CACHE_SIZE` env var, falling back to `default_kib`.
@@ -303,8 +603,8 @@ impl Store {
                 read_only: false,
                 use_current_thread: false,
                 max_connections,
-                mmap_size: mmap_size_from_env("268435456"), // 256MB default
-                cache_size: cache_size_from_env("-16384"),  // 16MB
+                mmap_size: resolve_mmap_size("268435456", path), // 256MB default
+                cache_size: cache_size_from_env("-16384"),       // 16MB
                 runtime: None,
             },
         )
@@ -326,7 +626,7 @@ impl Store {
                 read_only: true,
                 use_current_thread: true,
                 max_connections: 1,
-                mmap_size: mmap_size_from_env("268435456"),
+                mmap_size: resolve_mmap_size("268435456", path),
                 cache_size: cache_size_from_env("-16384"),
                 runtime: None,
             },
@@ -343,8 +643,8 @@ impl Store {
                 read_only: true,
                 use_current_thread: true,
                 max_connections: 1,
-                mmap_size: mmap_size_from_env("67108864"), // 64MB default
-                cache_size: cache_size_from_env("-4096"),  // 4MB
+                mmap_size: resolve_mmap_size("67108864", path), // 64MB default
+                cache_size: cache_size_from_env("-4096"),       // 4MB
                 runtime: None,
             },
         )
@@ -362,7 +662,7 @@ impl Store {
                 read_only: true,
                 use_current_thread: true,
                 max_connections: 1,
-                mmap_size: mmap_size_from_env("268435456"),
+                mmap_size: resolve_mmap_size("268435456", path),
                 cache_size: cache_size_from_env("-16384"),
                 runtime: Some(runtime),
             },

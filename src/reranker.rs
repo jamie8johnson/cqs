@@ -24,6 +24,28 @@ const TOKENIZER_FILE: &str = "tokenizer.json";
 const MODEL_BLAKE3: &str = "";
 const TOKENIZER_BLAKE3: &str = "";
 
+/// Default batch size for reranker ORT runs.
+///
+/// Caps the candidate set fed to each `session.run()` call so a large `k`
+/// (e.g. `--rerank-k 100` with `max_length=512`) doesn't allocate a single
+/// `[100, 512]` token tensor that OOMs on small GPUs or after SPLADE has
+/// claimed VRAM. Mirrors the `CQS_EMBED_BATCH_SIZE=64` pattern in the
+/// embed path; 32 is conservative because cross-encoder runs produce larger
+/// activations than plain encoder forward passes.
+const DEFAULT_RERANKER_BATCH: usize = 32;
+
+/// Maximum number of candidates per ORT `session.run()` in the reranker.
+///
+/// Reads `CQS_RERANKER_BATCH`; falls back to [`DEFAULT_RERANKER_BATCH`] when
+/// unset, unparseable, or zero.
+fn reranker_batch_size() -> usize {
+    std::env::var("CQS_RERANKER_BATCH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n: &usize| n > 0)
+        .unwrap_or(DEFAULT_RERANKER_BATCH)
+}
+
 /// Retrieves the reranker model repository path from the environment or returns the default.
 ///
 /// # Returns
@@ -179,12 +201,19 @@ impl Reranker {
     /// Compute cross-encoder scores for (query, passage) pairs.
     ///
     /// Returns `Some(scores)` on success, or `None` when tokenization produced
-    /// zero-length encodings (nothing to score). `scores.len() == passages.len()`
-    /// on `Some(...)`.
+    /// zero-length encodings across all passages (nothing to score).
+    /// `scores.len() == passages.len()` on `Some(...)`.
     ///
     /// PF-V1.25-5: extracted so `rerank` can feed passages borrowed directly
     /// from `&Vec<SearchResult>` without cloning contents, then apply scores
     /// via `apply_rerank_scores` in a subsequent `&mut` scope.
+    ///
+    /// Issue #963: passages are chunked into `CQS_RERANKER_BATCH`-sized
+    /// groups (default 32) before feeding each chunk to `session.run()`. This
+    /// keeps the `[chunk_len, max_length]` token tensor bounded so large `k`
+    /// values don't OOM on small GPUs or after SPLADE has claimed VRAM.
+    /// Scoring semantics are preserved — each candidate gets the same
+    /// cross-encoder score, just computed in smaller ORT runs.
     fn compute_scores_opt(
         &self,
         query: &str,
@@ -192,7 +221,10 @@ impl Reranker {
     ) -> Result<Option<Vec<f32>>, RerankerError> {
         let tokenizer = self.tokenizer()?;
 
-        // 1. Tokenize (query, passage) pairs
+        // 1. Tokenize (query, passage) pairs once up front. Tokenization is
+        //    cheap relative to ORT inference and doing it here lets us
+        //    short-circuit (return None) when the entire input is degenerate,
+        //    matching the pre-#963 semantics.
         let encodings: Vec<tokenizers::Encoding> = passages
             .iter()
             .map(|passage| {
@@ -202,12 +234,42 @@ impl Reranker {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        // 2. Build padded tensors
-        let input_ids: Vec<Vec<i64>> = encodings
+        let overall_max = encodings
+            .iter()
+            .map(|e| e.get_ids().len())
+            .max()
+            .unwrap_or(0)
+            .min(self.max_length);
+        if overall_max == 0 {
+            return Ok(None); // Nothing to score — empty tokenization
+        }
+
+        let batch_cap = reranker_batch_size();
+        let mut scores = Vec::with_capacity(passages.len());
+        for chunk in encodings.chunks(batch_cap) {
+            scores.extend(self.run_chunk(chunk)?);
+        }
+        Ok(Some(scores))
+    }
+
+    /// Run one reranker batch: build tensors from `chunk` and score via ORT.
+    ///
+    /// `chunk` is a slice of tokenized (query, passage) encodings sized to at
+    /// most `CQS_RERANKER_BATCH`. The per-chunk `max_len` is the longest
+    /// encoding in this chunk capped at `self.max_length`, so shorter chunks
+    /// use smaller tensors.
+    ///
+    /// Returns one score per encoding in `chunk`.
+    fn run_chunk(&self, chunk: &[tokenizers::Encoding]) -> Result<Vec<f32>, RerankerError> {
+        let batch_size = chunk.len();
+        debug_assert!(batch_size > 0, "run_chunk called with empty chunk");
+
+        // Build per-chunk padded tensors.
+        let input_ids: Vec<Vec<i64>> = chunk
             .iter()
             .map(|e| e.get_ids().iter().map(|&id| id as i64).collect())
             .collect();
-        let attention_mask: Vec<Vec<i64>> = encodings
+        let attention_mask: Vec<Vec<i64>> = chunk
             .iter()
             .map(|e| e.get_attention_mask().iter().map(|&m| m as i64).collect())
             .collect();
@@ -218,10 +280,13 @@ impl Reranker {
             .unwrap_or(0)
             .min(self.max_length);
         if max_len == 0 {
-            return Ok(None); // Nothing to score — empty tokenization
+            // This chunk's passages all tokenized empty but the aggregate
+            // check in compute_scores_opt already guaranteed overall_max > 0.
+            // Return zero scores for this chunk; the non-empty chunks carry
+            // the ranking signal.
+            return Ok(vec![sigmoid(0.0); batch_size]);
         }
 
-        let batch_size = passages.len();
         let ids_arr = pad_2d_i64(&input_ids, max_len, 0);
         let mask_arr = pad_2d_i64(&attention_mask, max_len, 0);
         let type_arr = Array2::<i64>::zeros((batch_size, max_len));
@@ -232,7 +297,7 @@ impl Reranker {
         let mask_tensor = Tensor::from_array(mask_arr).map_err(ort_err)?;
         let type_tensor = Tensor::from_array(type_arr).map_err(ort_err)?;
 
-        // 3. Run inference
+        // Run inference on this chunk only.
         let mut session_guard = self.session()?;
         let session = session_guard
             .as_mut()
@@ -245,7 +310,7 @@ impl Reranker {
             ])
             .map_err(ort_err)?;
 
-        // 4. Extract logits, apply sigmoid
+        // Extract logits, apply sigmoid.
         if outputs.len() == 0 {
             return Err(RerankerError::Inference(
                 "ONNX model produced no outputs".to_string(),
@@ -273,7 +338,7 @@ impl Reranker {
         }
 
         let scores: Vec<f32> = (0..batch_size).map(|i| sigmoid(data[i * stride])).collect();
-        Ok(Some(scores))
+        Ok(scores)
     }
 
     /// Like [`compute_scores_opt`] but returns an empty vec instead of `None`
