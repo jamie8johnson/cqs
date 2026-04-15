@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::store::helpers::{StaleFile, StaleReport, StoreError};
-use crate::store::Store;
+use crate::store::{ReadWrite, Store};
 
 /// Decide whether a chunk origin refers to a file that exists.
 ///
@@ -46,7 +46,7 @@ pub struct PruneAllResult {
     pub pruned_summaries: usize,
 }
 
-impl<Mode> Store<Mode> {
+impl Store<ReadWrite> {
     /// Delete chunks for files that no longer exist
     /// Batches deletes in groups of 100 to balance memory usage and query efficiency.
     /// Uses Rust HashSet for existence check rather than SQL WHERE NOT IN because:
@@ -260,7 +260,9 @@ impl<Mode> Store<Mode> {
             })
         })
     }
+}
 
+impl<Mode> Store<Mode> {
     /// Count files that are stale (mtime changed) or missing from disk.
     /// Compares stored source_mtime against current filesystem state.
     /// Only checks files with source_type='file' (not notes or other sources).

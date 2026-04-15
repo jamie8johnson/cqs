@@ -890,7 +890,7 @@ impl Store<ReadWrite> {
     }
 }
 
-impl<Mode> Store<Mode> {
+impl Store<ReadWrite> {
     /// Begin a write transaction with in-process serialization (DS-5).
     ///
     /// Acquires `WRITE_LOCK` before calling `pool.begin()`, preventing two
@@ -916,33 +916,6 @@ impl<Mode> Store<Mode> {
         let guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tx = self.pool.begin().await?;
         Ok((guard, tx))
-    }
-
-    /// Reset all in-memory caches without closing the connection pool.
-    ///
-    /// Cheaper than `drop` + `open`: avoids pool teardown, runtime creation,
-    /// PRAGMA setup, and integrity check. Designed for long-lived Store
-    /// instances (watch mode, future daemon) that need to pick up index
-    /// changes without paying full re-open cost.
-    ///
-    /// Requires `&mut self` — exclusive access guarantees no concurrent
-    /// readers see a half-cleared state.
-    pub fn clear_caches(&mut self) {
-        let _span = tracing::debug_span!("store_clear_caches").entered();
-        *self
-            .notes_summaries_cache
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = None;
-        // PF-V1.25-4: note_boost_cache is derived from notes_summaries_cache;
-        // clear alongside it so a reset doesn't leave stale boost data.
-        *self
-            .note_boost_cache
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = None;
-        self.call_graph_cache = std::sync::OnceLock::new();
-        self.test_chunks_cache = std::sync::OnceLock::new();
-        self.chunk_type_map_cache = std::sync::OnceLock::new();
-        tracing::debug!("Store caches cleared");
     }
 
     /// Create a new index
@@ -1004,6 +977,35 @@ impl<Mode> Store<Mode> {
 
             Ok(())
         })
+    }
+}
+
+impl<Mode> Store<Mode> {
+    /// Reset all in-memory caches without closing the connection pool.
+    ///
+    /// Cheaper than `drop` + `open`: avoids pool teardown, runtime creation,
+    /// PRAGMA setup, and integrity check. Designed for long-lived Store
+    /// instances (watch mode, future daemon) that need to pick up index
+    /// changes without paying full re-open cost.
+    ///
+    /// Requires `&mut self` — exclusive access guarantees no concurrent
+    /// readers see a half-cleared state.
+    pub fn clear_caches(&mut self) {
+        let _span = tracing::debug_span!("store_clear_caches").entered();
+        *self
+            .notes_summaries_cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        // PF-V1.25-4: note_boost_cache is derived from notes_summaries_cache;
+        // clear alongside it so a reset doesn't leave stale boost data.
+        *self
+            .note_boost_cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        self.call_graph_cache = std::sync::OnceLock::new();
+        self.test_chunks_cache = std::sync::OnceLock::new();
+        self.chunk_type_map_cache = std::sync::OnceLock::new();
+        tracing::debug!("Store caches cleared");
     }
 
     /// Gracefully close the store, performing WAL checkpoint.

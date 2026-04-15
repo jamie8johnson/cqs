@@ -17,7 +17,7 @@ use std::path::Path;
 
 use super::helpers::sql::max_rows_per_statement;
 use super::helpers::{clamp_line_number, ChunkRow, StoreError};
-use super::Store;
+use super::{ReadWrite, Store};
 use crate::store::helpers::ChunkSummary;
 
 /// Statistics about type dependency edges
@@ -138,7 +138,7 @@ async fn upsert_type_edges_one_file(
     Ok(edges.len())
 }
 
-impl<Mode> Store<Mode> {
+impl Store<ReadWrite> {
     // ============ Type Edge Upsert Methods ============
 
     /// Upsert type edges for a single chunk.
@@ -273,7 +273,9 @@ impl<Mode> Store<Mode> {
             Ok(())
         })
     }
+}
 
+impl<Mode> Store<Mode> {
     // ============ Type Edge Query Methods ============
 
     /// Get chunks that reference a given type name.
@@ -524,7 +526,9 @@ impl<Mode> Store<Mode> {
                 .collect())
         })
     }
+}
 
+impl Store<ReadWrite> {
     // ============ Type Edge Maintenance ============
 
     /// Delete type_edges for chunks no longer in the chunks table (GC).

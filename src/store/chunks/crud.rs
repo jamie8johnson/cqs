@@ -8,7 +8,7 @@ use std::path::Path;
 use crate::embedder::Embedding;
 use crate::parser::Chunk;
 use crate::store::helpers::{embedding_to_bytes, StoreError};
-use crate::store::Store;
+use crate::store::{ReadWrite, Store};
 
 use super::async_helpers::{batch_insert_chunks, snapshot_content_hashes, upsert_fts_conditional};
 
@@ -30,6 +30,179 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// Get enrichment hashes for a batch of chunk IDs.
+    ///
+    /// Returns a map from chunk_id to enrichment_hash (only for chunks that have one).
+    pub fn get_enrichment_hashes_batch(
+        &self,
+        chunk_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        let _span =
+            tracing::debug_span!("get_enrichment_hashes_batch", count = chunk_ids.len()).entered();
+        if chunk_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        self.rt.block_on(async {
+            let mut result = std::collections::HashMap::new();
+            use crate::store::helpers::sql::max_rows_per_statement;
+            for batch in chunk_ids.chunks(max_rows_per_statement(1)) {
+                let placeholders = crate::store::helpers::make_placeholders(batch.len());
+                let sql = format!(
+                    "SELECT id, enrichment_hash FROM chunks WHERE id IN ({}) AND enrichment_hash IS NOT NULL",
+                    placeholders
+                );
+                let mut query = sqlx::query_as::<_, (String, String)>(&sql);
+                for id in batch {
+                    query = query.bind(*id);
+                }
+                let rows = query.fetch_all(&self.pool).await?;
+                for (id, hash) in rows {
+                    result.insert(id, hash);
+                }
+            }
+            Ok(result)
+        })
+    }
+
+    /// Fetch all enrichment hashes in a single query.
+    ///
+    /// Returns a map from chunk_id to enrichment_hash for all chunks that have one.
+    /// Used by the enrichment pass to avoid per-page hash fetches (PERF-29).
+    pub fn get_all_enrichment_hashes(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        let _span = tracing::debug_span!("get_all_enrichment_hashes").entered();
+        self.rt.block_on(async {
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT id, enrichment_hash FROM chunks WHERE enrichment_hash IS NOT NULL",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            Ok(rows.into_iter().collect())
+        })
+    }
+
+    /// Get LLM summaries for a batch of content hashes.
+    ///
+    /// Returns a map from content_hash to summary text. Only includes hashes
+    /// that have summaries in the llm_summaries table matching the given purpose.
+    pub fn get_summaries_by_hashes(
+        &self,
+        content_hashes: &[&str],
+        purpose: &str,
+    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        let _span = tracing::debug_span!(
+            "get_summaries_by_hashes",
+            count = content_hashes.len(),
+            purpose
+        )
+        .entered();
+        if content_hashes.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        self.rt.block_on(async {
+            let mut result = std::collections::HashMap::new();
+            use crate::store::helpers::sql::max_rows_per_statement;
+            // Reserve one param for the purpose bind, so (limit - 1) per batch
+            for batch in content_hashes.chunks(max_rows_per_statement(1) - 1) {
+                let placeholders = crate::store::helpers::make_placeholders(batch.len());
+                let sql = format!(
+                    "SELECT content_hash, summary FROM llm_summaries WHERE content_hash IN ({}) AND purpose = ?{}",
+                    placeholders,
+                    batch.len() + 1
+                );
+                let mut query = sqlx::query_as::<_, (String, String)>(&sql);
+                for hash in batch {
+                    query = query.bind(*hash);
+                }
+                query = query.bind(purpose);
+                let rows = query.fetch_all(&self.pool).await?;
+                for (hash, summary) in rows {
+                    result.insert(hash, summary);
+                }
+            }
+            Ok(result)
+        })
+    }
+
+    /// Fetch all LLM summaries as a map from content_hash to summary text.
+    ///
+    /// Single query, no batching needed (reads entire table). Used by the
+    /// enrichment pass to avoid per-page summary fetches.
+    pub fn get_all_summaries(
+        &self,
+        purpose: &str,
+    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        let _span = tracing::debug_span!("get_all_summaries", purpose).entered();
+        self.rt.block_on(async {
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT content_hash, summary FROM llm_summaries WHERE purpose = ?1",
+            )
+            .bind(purpose)
+            .fetch_all(&self.pool)
+            .await?;
+            Ok(rows.into_iter().collect())
+        })
+    }
+
+    /// Get all distinct content hashes currently in the chunks table.
+    /// Used to validate batch results against the current index (DS-20).
+    pub fn get_all_content_hashes(&self) -> Result<Vec<String>, StoreError> {
+        let _span = tracing::debug_span!("get_all_content_hashes").entered();
+        self.rt.block_on(async {
+            let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT content_hash FROM chunks")
+                .fetch_all(&self.pool)
+                .await?;
+            Ok(rows.into_iter().map(|(h,)| h).collect())
+        })
+    }
+
+    /// Get all summaries with full metadata for backup/restore.
+    /// Returns Vec of (content_hash, summary, model, purpose).
+    pub fn get_all_summaries_full(
+        &self,
+    ) -> Result<Vec<(String, String, String, String)>, StoreError> {
+        let _span = tracing::debug_span!("get_all_summaries_full").entered();
+        self.rt.block_on(async {
+            let rows: Vec<(String, String, String, String)> =
+                sqlx::query_as("SELECT content_hash, summary, model, purpose FROM llm_summaries")
+                    .fetch_all(&self.pool)
+                    .await?;
+            Ok(rows)
+        })
+    }
+
+    /// Check if a file needs reindexing based on mtime.
+    ///
+    /// Returns `Ok(Some(mtime))` if reindex needed (with the file's current mtime),
+    /// or `Ok(None)` if no reindex needed. This avoids reading file metadata twice.
+    pub fn needs_reindex(&self, path: &Path) -> Result<Option<i64>, StoreError> {
+        let _span = tracing::debug_span!("needs_reindex", path = %path.display()).entered();
+        let current_mtime = path
+            .metadata()?
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| StoreError::SystemTime)?
+            .as_millis() as i64;
+
+        self.rt.block_on(async {
+            let row: Option<(Option<i64>,)> =
+                sqlx::query_as("SELECT source_mtime FROM chunks WHERE origin = ?1 LIMIT 1")
+                    .bind(crate::normalize_path(path))
+                    .fetch_optional(&self.pool)
+                    .await?;
+
+            match row {
+                Some((Some(stored_mtime),)) if stored_mtime >= current_mtime => Ok(None),
+                _ => Ok(Some(current_mtime)),
+            }
+        })
+    }
+}
+
+// Write methods live on `impl Store<ReadWrite>` — the compiler refuses to
+// call them on a `Store<ReadOnly>`. Closes the bug class in GitHub #946.
+impl Store<ReadWrite> {
     /// Insert or update chunks in batch using multi-row INSERT.
     ///
     /// Chunks are inserted in batches of 52 rows (52 * 19 params = 988 < SQLite's 999 limit).
@@ -198,101 +371,6 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// Get enrichment hashes for a batch of chunk IDs.
-    ///
-    /// Returns a map from chunk_id to enrichment_hash (only for chunks that have one).
-    pub fn get_enrichment_hashes_batch(
-        &self,
-        chunk_ids: &[&str],
-    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
-        let _span =
-            tracing::debug_span!("get_enrichment_hashes_batch", count = chunk_ids.len()).entered();
-        if chunk_ids.is_empty() {
-            return Ok(std::collections::HashMap::new());
-        }
-        self.rt.block_on(async {
-            let mut result = std::collections::HashMap::new();
-            use crate::store::helpers::sql::max_rows_per_statement;
-            for batch in chunk_ids.chunks(max_rows_per_statement(1)) {
-                let placeholders = crate::store::helpers::make_placeholders(batch.len());
-                let sql = format!(
-                    "SELECT id, enrichment_hash FROM chunks WHERE id IN ({}) AND enrichment_hash IS NOT NULL",
-                    placeholders
-                );
-                let mut query = sqlx::query_as::<_, (String, String)>(&sql);
-                for id in batch {
-                    query = query.bind(*id);
-                }
-                let rows = query.fetch_all(&self.pool).await?;
-                for (id, hash) in rows {
-                    result.insert(id, hash);
-                }
-            }
-            Ok(result)
-        })
-    }
-
-    /// Fetch all enrichment hashes in a single query.
-    ///
-    /// Returns a map from chunk_id to enrichment_hash for all chunks that have one.
-    /// Used by the enrichment pass to avoid per-page hash fetches (PERF-29).
-    pub fn get_all_enrichment_hashes(
-        &self,
-    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
-        let _span = tracing::debug_span!("get_all_enrichment_hashes").entered();
-        self.rt.block_on(async {
-            let rows: Vec<(String, String)> = sqlx::query_as(
-                "SELECT id, enrichment_hash FROM chunks WHERE enrichment_hash IS NOT NULL",
-            )
-            .fetch_all(&self.pool)
-            .await?;
-            Ok(rows.into_iter().collect())
-        })
-    }
-
-    /// Get LLM summaries for a batch of content hashes.
-    ///
-    /// Returns a map from content_hash to summary text. Only includes hashes
-    /// that have summaries in the llm_summaries table matching the given purpose.
-    pub fn get_summaries_by_hashes(
-        &self,
-        content_hashes: &[&str],
-        purpose: &str,
-    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
-        let _span = tracing::debug_span!(
-            "get_summaries_by_hashes",
-            count = content_hashes.len(),
-            purpose
-        )
-        .entered();
-        if content_hashes.is_empty() {
-            return Ok(std::collections::HashMap::new());
-        }
-        self.rt.block_on(async {
-            let mut result = std::collections::HashMap::new();
-            use crate::store::helpers::sql::max_rows_per_statement;
-            // Reserve one param for the purpose bind, so (limit - 1) per batch
-            for batch in content_hashes.chunks(max_rows_per_statement(1) - 1) {
-                let placeholders = crate::store::helpers::make_placeholders(batch.len());
-                let sql = format!(
-                    "SELECT content_hash, summary FROM llm_summaries WHERE content_hash IN ({}) AND purpose = ?{}",
-                    placeholders,
-                    batch.len() + 1
-                );
-                let mut query = sqlx::query_as::<_, (String, String)>(&sql);
-                for hash in batch {
-                    query = query.bind(*hash);
-                }
-                query = query.bind(purpose);
-                let rows = query.fetch_all(&self.pool).await?;
-                for (hash, summary) in rows {
-                    result.insert(hash, summary);
-                }
-            }
-            Ok(result)
-        })
-    }
-
     /// Insert or update LLM summaries in batch.
     ///
     /// Each entry is (content_hash, summary, model, purpose).
@@ -331,38 +409,6 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// Fetch all LLM summaries as a map from content_hash to summary text.
-    ///
-    /// Single query, no batching needed (reads entire table). Used by the
-    /// enrichment pass to avoid per-page summary fetches.
-    pub fn get_all_summaries(
-        &self,
-        purpose: &str,
-    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
-        let _span = tracing::debug_span!("get_all_summaries", purpose).entered();
-        self.rt.block_on(async {
-            let rows: Vec<(String, String)> = sqlx::query_as(
-                "SELECT content_hash, summary FROM llm_summaries WHERE purpose = ?1",
-            )
-            .bind(purpose)
-            .fetch_all(&self.pool)
-            .await?;
-            Ok(rows.into_iter().collect())
-        })
-    }
-
-    /// Get all distinct content hashes currently in the chunks table.
-    /// Used to validate batch results against the current index (DS-20).
-    pub fn get_all_content_hashes(&self) -> Result<Vec<String>, StoreError> {
-        let _span = tracing::debug_span!("get_all_content_hashes").entered();
-        self.rt.block_on(async {
-            let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT content_hash FROM chunks")
-                .fetch_all(&self.pool)
-                .await?;
-            Ok(rows.into_iter().map(|(h,)| h).collect())
-        })
-    }
-
     /// Delete orphan LLM summaries whose content_hash doesn't exist in any chunk.
     pub fn prune_orphan_summaries(&self) -> Result<usize, StoreError> {
         let _span = tracing::debug_span!("prune_orphan_summaries").entered();
@@ -374,48 +420,6 @@ impl<Mode> Store<Mode> {
             .execute(&self.pool)
             .await?;
             Ok(result.rows_affected() as usize)
-        })
-    }
-
-    /// Get all summaries with full metadata for backup/restore.
-    /// Returns Vec of (content_hash, summary, model, purpose).
-    pub fn get_all_summaries_full(
-        &self,
-    ) -> Result<Vec<(String, String, String, String)>, StoreError> {
-        let _span = tracing::debug_span!("get_all_summaries_full").entered();
-        self.rt.block_on(async {
-            let rows: Vec<(String, String, String, String)> =
-                sqlx::query_as("SELECT content_hash, summary, model, purpose FROM llm_summaries")
-                    .fetch_all(&self.pool)
-                    .await?;
-            Ok(rows)
-        })
-    }
-
-    /// Check if a file needs reindexing based on mtime.
-    ///
-    /// Returns `Ok(Some(mtime))` if reindex needed (with the file's current mtime),
-    /// or `Ok(None)` if no reindex needed. This avoids reading file metadata twice.
-    pub fn needs_reindex(&self, path: &Path) -> Result<Option<i64>, StoreError> {
-        let _span = tracing::debug_span!("needs_reindex", path = %path.display()).entered();
-        let current_mtime = path
-            .metadata()?
-            .modified()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| StoreError::SystemTime)?
-            .as_millis() as i64;
-
-        self.rt.block_on(async {
-            let row: Option<(Option<i64>,)> =
-                sqlx::query_as("SELECT source_mtime FROM chunks WHERE origin = ?1 LIMIT 1")
-                    .bind(crate::normalize_path(path))
-                    .fetch_optional(&self.pool)
-                    .await?;
-
-            match row {
-                Some((Some(stored_mtime),)) if stored_mtime >= current_mtime => Ok(None),
-                _ => Ok(Some(current_mtime)),
-            }
         })
     }
 
@@ -560,8 +564,11 @@ impl<Mode> Store<Mode> {
                 .await?;
 
             for batch in live_ids.chunks(crate::store::helpers::sql::max_rows_per_statement(1)) {
-                let placeholders: Vec<String> =
-                    batch.iter().enumerate().map(|(i, _)| format!("(?{})", i + 1)).collect();
+                let placeholders: Vec<String> = batch
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("(?{})", i + 1))
+                    .collect();
                 let insert_sql = format!(
                     "INSERT OR IGNORE INTO _live_ids (id) VALUES {}",
                     placeholders.join(",")

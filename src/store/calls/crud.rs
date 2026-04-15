@@ -7,9 +7,9 @@ use std::path::Path;
 
 use super::CallStats;
 use crate::store::helpers::StoreError;
-use crate::store::Store;
+use crate::store::{ReadWrite, Store};
 
-impl<Mode> Store<Mode> {
+impl Store<ReadWrite> {
     /// Insert or replace call sites for a chunk
     pub fn upsert_calls(
         &self,
@@ -95,7 +95,9 @@ impl<Mode> Store<Mode> {
             Ok(())
         })
     }
+}
 
+impl<Mode> Store<Mode> {
     /// Check which chunk IDs from a set actually exist in the database.
     /// Used by periodic deferred-flush to filter calls whose FK targets are present.
     pub fn existing_chunk_ids(
@@ -171,7 +173,9 @@ impl<Mode> Store<Mode> {
             })
         })
     }
+}
 
+impl Store<ReadWrite> {
     // ============ Full Call Graph Methods (v5) ============
 
     /// Insert function calls for a file (full call graph, no size limits)
