@@ -67,6 +67,58 @@ const CAGRA_META_MAGIC: &str = "CAGRA01";
 #[cfg(feature = "gpu-index")]
 const CAGRA_META_VERSION: u32 = 1;
 
+/// Sentinel distance marking an output slot cuVS did not write (issue #952).
+///
+/// # Why a sentinel?
+///
+/// cuVS does not promise to fill the neighbor / distance buffers beyond
+/// `index.len()` rows. When we request `k` neighbors against an index with
+/// fewer than `k` vectors — or against a filtered set smaller than `k` —
+/// the kernel writes exactly `index.len()` (or `|filter|`) real
+/// `(neighbor, distance)` pairs and leaves the remaining slots untouched.
+///
+/// A zero-initialized output buffer decodes those untouched slots as
+/// `(chunk_id = 0, distance = 0.0)` → `score = 1.0`, emitting phantom
+/// perfect-match hits pointing at whichever chunk happens to hold internal
+/// index 0. This is the class of bug tracked by issue #952.
+///
+/// The fix is to pre-fill `distances_host` with this sentinel before the
+/// kernel launch and drop any slot whose distance still holds it after
+/// copy-back. CAGRA writes squared-L2 distances, so every real hit is a
+/// finite non-negative value strictly less than `+∞` — the sentinel is
+/// therefore unambiguous.
+///
+/// # Why `f32::INFINITY` specifically?
+///
+/// - Distinct from any real squared-L2 distance cuVS produces.
+/// - `!dist.is_finite()` also captures any NaN a future cuVS release
+///   might emit on exotic inputs, giving us a zero-cost second line of
+///   defense without a dedicated branch.
+/// - Cheap to initialise — [`ndarray::Array2::from_elem`] materialises
+///   the constant once per query; no broadcast or copy overhead.
+///
+/// `f32::NAN` was considered and rejected: `dist == NAN` is always false
+/// (NaN is not comparable), so the sentinel check would have to use
+/// `is_nan()` exclusively, losing the "real distances are finite"
+/// structural guarantee.
+///
+/// # cuVS API audit (cuvs 26.4, April 2026)
+///
+/// The companion issue contemplated two upstream mechanisms that would
+/// make this sentinel unnecessary:
+///   1. A `fill_with_invalid` (or equivalent) option on
+///      [`cuvs::cagra::SearchParams`] that pre-fills unused rows.
+///   2. An `n_valid_results` output field on the search call.
+///
+/// Neither exists in 26.4: `SearchParams` exposes only `itopk_size`,
+/// `max_queries`, `max_iterations`, algo/team/block tuning, and hashmap
+/// knobs. The search entrypoint returns `Result<()>` with no per-row
+/// validity information. Re-audit this when bumping the `cuvs` pin; if
+/// either mechanism lands upstream, the sentinel scheme can be removed
+/// in favour of the native API.
+#[cfg(feature = "gpu-index")]
+const INVALID_DISTANCE: f32 = f32::INFINITY;
+
 #[cfg(feature = "gpu-index")]
 #[derive(Error, Debug)]
 pub enum CagraError {
@@ -315,12 +367,12 @@ impl CagraIndex {
         // copies data to GPU but the DLTensor shape pointer still references the host
         // ndarray's internal shape storage.
         let mut neighbors_host: Array2<u32> = Array2::zeros((1, k));
-        // AC-V1.25-7: initialize distances to +∞ so unfilled slots are
-        // detectable. When `index.len() < k`, cuVS returns only `index.len()`
-        // real pairs and leaves the rest of the buffer untouched — if we
-        // zero-filled, those untouched slots look like perfect-match hits
-        // (distance 0.0 → score 1.0) pointing at chunk_id 0.
-        let mut distances_host: Array2<f32> = Array2::from_elem((1, k), f32::INFINITY);
+        // Sentinel-init (issue #952): cuVS does not write slots beyond the
+        // number of real neighbours it found, so we seed every slot with
+        // `INVALID_DISTANCE` and filter against it after copy-back. See
+        // the `INVALID_DISTANCE` doc for the cuVS API audit that motivates
+        // the sentinel approach.
+        let mut distances_host: Array2<f32> = Array2::from_elem((1, k), INVALID_DISTANCE);
 
         let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&gpu.resources) {
             Ok(t) => t,
@@ -392,8 +444,13 @@ impl CagraIndex {
         for i in 0..k {
             let idx = neighbor_row[i] as usize;
             let dist = distance_row[i];
-            // AC-V1.25-7: skip unfilled slots (buffer pre-seeded with +∞) so
-            // we don't emit phantom perfect-match results when k > index.len().
+            // Sentinel check (issue #952): a slot still holding
+            // `INVALID_DISTANCE` means cuVS did not overwrite it, so the
+            // paired `neighbor_row[i]` is garbage and must be dropped.
+            // `!is_finite()` is a superset of `dist == INVALID_DISTANCE`
+            // (since `INVALID_DISTANCE == +∞`) and also catches any NaN
+            // cuVS might emit on exotic inputs — real squared-L2
+            // distances are always finite and non-negative.
             if !dist.is_finite() {
                 continue;
             }
@@ -1321,6 +1378,45 @@ mod tests {
 
         let results = index.search(&make_embedding(1), 3);
         assert!(!results.is_empty());
+    }
+
+    /// Issue #952 regression: when `k > index.len()`, cuVS leaves the
+    /// extra output slots untouched. The `INVALID_DISTANCE` sentinel must
+    /// filter them out so we never emit phantom perfect-match hits
+    /// (distance `0.0` → score `1.0`) pointing at internal index 0.
+    #[test]
+    fn test_search_k_greater_than_len_drops_phantoms() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let index = build_test_index(3);
+        let results = index.search(&make_embedding(0), 10);
+
+        // Only three real vectors exist, so the result must never exceed
+        // that count even though we asked for ten.
+        assert!(
+            results.len() <= 3,
+            "expected at most 3 results, got {}: {:?}",
+            results.len(),
+            results
+        );
+        // Every returned id is one of the three real chunks; nothing
+        // phantom has slipped through the sentinel filter.
+        for r in &results {
+            assert!(
+                matches!(r.id.as_str(), "chunk_0" | "chunk_1" | "chunk_2"),
+                "phantom id leaked past sentinel check: {}",
+                r.id
+            );
+        }
+        // No two results share an id (the phantom bug repeatedly emitted
+        // `chunk_0`, so a duplicate would also catch a regression).
+        let mut ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
+        ids.sort_unstable();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(before, ids.len(), "duplicate ids in results: {:?}", results);
     }
 
     #[test]
