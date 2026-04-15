@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use crate::config::ReferenceConfig;
 use crate::hnsw::HnswIndex;
 use crate::index::VectorIndex;
-use crate::store::{SearchFilter, SearchResult, Store, StoreError, UnifiedResult};
+use crate::store::{ReadOnly, SearchFilter, SearchResult, Store, StoreError, UnifiedResult};
 use crate::Embedding;
 
 /// A loaded reference index ready for searching
@@ -19,8 +19,12 @@ use crate::Embedding;
 pub struct ReferenceIndex {
     /// Display name
     pub name: String,
-    /// The reference's store (separate DB + connection pool)
-    pub store: Store,
+    /// The reference's store (separate DB + connection pool).
+    ///
+    /// Always `Store<ReadOnly>` — references are loaded from external
+    /// codebases and only exposed through search/caller queries. The
+    /// typestate (#946) turns any accidental write into a compile error.
+    pub store: Store<ReadOnly>,
     /// Optional HNSW index for O(log n) search
     pub index: Option<Box<dyn VectorIndex>>,
     /// Score multiplier (0.0-1.0)

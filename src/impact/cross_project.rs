@@ -317,7 +317,7 @@ mod tests {
 
         NamedStore {
             name: name.to_string(),
-            store,
+            store: store.into_readonly(),
         }
     }
 

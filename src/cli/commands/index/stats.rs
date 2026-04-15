@@ -63,7 +63,7 @@ pub(crate) struct StatsOutput {
 /// Contains: total_chunks, total_files, notes, call_graph, type_graph,
 /// by_language, by_type, model, schema_version.
 /// Callers add context-specific fields (stale_files, errors, etc.).
-pub(crate) fn build_stats(store: &cqs::Store) -> Result<StatsOutput> {
+pub(crate) fn build_stats<Mode>(store: &cqs::Store<Mode>) -> Result<StatsOutput> {
     let _span = tracing::info_span!("build_stats").entered();
     let stats = store.stats().context("Failed to read index statistics")?;
     let note_count = store.note_count()?;
@@ -195,7 +195,10 @@ fn print_stats_text(output: &StatsOutput) {
 // ---------------------------------------------------------------------------
 
 /// Display index statistics (chunk counts, languages, types)
-pub(crate) fn cmd_stats(ctx: &crate::cli::CommandContext, json: bool) -> Result<()> {
+pub(crate) fn cmd_stats(
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
+    json: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_stats").entered();
     let store = &ctx.store;
     let root = &ctx.root;

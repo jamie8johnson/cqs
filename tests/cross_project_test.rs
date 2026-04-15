@@ -64,11 +64,11 @@ fn test_cross_project_callers_finds_both() {
     let mut ctx = CrossProjectContext::new(vec![
         NamedStore {
             name: "local".into(),
-            store: store_a,
+            store: store_a.into_readonly(),
         },
         NamedStore {
             name: "project_b".into(),
-            store: store_b,
+            store: store_b.into_readonly(),
         },
     ]);
 
@@ -96,11 +96,11 @@ fn test_cross_project_callees_finds_both() {
     let mut ctx = CrossProjectContext::new(vec![
         NamedStore {
             name: "local".into(),
-            store: store_a,
+            store: store_a.into_readonly(),
         },
         NamedStore {
             name: "project_b".into(),
-            store: store_b,
+            store: store_b.into_readonly(),
         },
     ]);
 
@@ -120,7 +120,7 @@ fn test_cross_project_no_references_local_only() {
 
     let mut ctx = CrossProjectContext::new(vec![NamedStore {
         name: "local".into(),
-        store,
+        store: store.into_readonly(),
     }]);
 
     let callers = ctx.get_callers_cross("target").unwrap();
@@ -135,7 +135,7 @@ fn test_cross_project_function_not_found() {
 
     let mut ctx = CrossProjectContext::new(vec![NamedStore {
         name: "local".into(),
-        store,
+        store: store.into_readonly(),
     }]);
 
     let callers = ctx.get_callers_cross("nonexistent").unwrap();
@@ -155,11 +155,11 @@ fn test_cross_project_same_name_different_sources() {
     let mut ctx = CrossProjectContext::new(vec![
         NamedStore {
             name: "local".into(),
-            store: store_a,
+            store: store_a.into_readonly(),
         },
         NamedStore {
             name: "project_b".into(),
-            store: store_b,
+            store: store_b.into_readonly(),
         },
     ]);
 

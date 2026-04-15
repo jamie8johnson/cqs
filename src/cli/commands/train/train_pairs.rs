@@ -50,7 +50,7 @@ fn build_nl_description(chunk: &ChunkSummary, contrastive_prefix: Option<&str>) 
 }
 
 /// Build contrastive prefix from callees: "Unlike X and Y, ..."
-fn build_contrastive_prefix(store: &Store, chunk: &ChunkSummary) -> Option<String> {
+fn build_contrastive_prefix<Mode>(store: &Store<Mode>, chunk: &ChunkSummary) -> Option<String> {
     let _span = tracing::debug_span!("build_contrastive_prefix", name = %chunk.name).entered();
 
     let callees = store
@@ -84,7 +84,7 @@ fn build_contrastive_prefix(store: &Store, chunk: &ChunkSummary) -> Option<Strin
 }
 
 pub(crate) fn cmd_train_pairs(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     output: &str,
     limit: Option<usize>,
     language: Option<&str>,

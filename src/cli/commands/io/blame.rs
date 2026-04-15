@@ -32,8 +32,8 @@ pub(crate) struct BlameData {
 
 /// Build blame data: resolve target, run git log -L, parse commits, optionally
 /// fetch callers.
-pub(crate) fn build_blame_data(
-    store: &Store,
+pub(crate) fn build_blame_data<Mode>(
+    store: &Store<Mode>,
     root: &Path,
     target: &str,
     depth: usize,
@@ -286,7 +286,7 @@ fn print_blame_terminal(data: &BlameData, root: &Path) {
 // ─── CLI command ─────────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_blame(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     target: &str,
     depth: usize,
     show_callers: bool,
@@ -375,7 +375,7 @@ mod tests {
                 language: cqs::language::Language::Rust,
                 chunk_type: cqs::language::ChunkType::Function,
                 name: "resolve_target".to_string(),
-                signature: "pub fn resolve_target(store: &Store, target: &str)".to_string(),
+                signature: "pub fn resolve_target(store: &Store<Mode>, target: &str)".to_string(),
                 content: String::new(),
                 doc: None,
                 line_start: 23,

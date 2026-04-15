@@ -23,7 +23,7 @@ fn risk_label(level: &RiskLevel) -> colored::ColoredString {
 }
 
 pub(crate) fn cmd_affected(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     base: Option<&str>,
     json: bool,
 ) -> Result<()> {

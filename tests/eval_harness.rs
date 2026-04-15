@@ -116,9 +116,9 @@ fn find_rank(results: &[cqs::store::SearchResult], query: &EvalQuery) -> (Option
 }
 
 /// Run a single query against a configuration, return per-query result
-fn eval_single_query(
+fn eval_single_query<Mode>(
     query: &EvalQuery,
-    store: &cqs::Store,
+    store: &cqs::Store<Mode>,
     embedder: &cqs::Embedder,
     reranker: Option<&cqs::Reranker>,
     config: &EvalConfig,

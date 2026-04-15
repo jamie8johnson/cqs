@@ -64,8 +64,8 @@ pub struct CiReport {
 /// 1. `review_diff()` — impact analysis + risk scoring + notes + staleness
 /// 2. `find_dead_code()` — filtered to files touched by the diff
 /// 3. Gate evaluation — configurable threshold
-pub fn run_ci_analysis(
-    store: &Store,
+pub fn run_ci_analysis<Mode>(
+    store: &Store<Mode>,
     diff_text: &str,
     root: &Path,
     threshold: GateThreshold,

@@ -103,7 +103,10 @@ pub(crate) enum NotesCommand {
 }
 
 /// Handle `notes list` — requires a readonly CommandContext for staleness checks.
-pub(crate) fn cmd_notes(ctx: &crate::cli::CommandContext, subcmd: &NotesCommand) -> Result<()> {
+pub(crate) fn cmd_notes(
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
+    subcmd: &NotesCommand,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_notes").entered();
     match subcmd {
         NotesCommand::List {
@@ -448,7 +451,7 @@ fn cmd_notes_remove(cli: &Cli, text: &str, no_reindex: bool) -> Result<()> {
 
 /// List notes from docs/notes.toml
 fn cmd_notes_list(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     warnings_only: bool,
     patterns_only: bool,
     json: bool,

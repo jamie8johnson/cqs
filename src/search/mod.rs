@@ -42,7 +42,11 @@ pub fn parse_target(target: &str) -> (Option<&str>, &str) {
 /// Resolve a target string to a [`ResolvedTarget`].
 /// Uses search_by_name with optional file filtering.
 /// Returns the best-matching chunk and alternatives, or an error if none found.
-pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget, StoreError> {
+/// Generic over store typestate — pure read path.
+pub fn resolve_target<Mode>(
+    store: &Store<Mode>,
+    target: &str,
+) -> Result<ResolvedTarget, StoreError> {
     let _span = tracing::info_span!("resolve_target", target).entered();
     let (file_filter, name) = parse_target(target);
     let results = store.search_by_name(name, 20)?;

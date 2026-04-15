@@ -493,7 +493,10 @@ impl CagraIndex {
     /// so we can't stream incrementally like HNSW. However, we stream from
     /// SQLite to avoid double-buffering in memory.
     /// Notes are excluded — they use brute-force search from SQLite.
-    pub fn build_from_store(store: &crate::Store, dim: usize) -> Result<Self, CagraError> {
+    pub fn build_from_store<Mode>(
+        store: &crate::Store<Mode>,
+        dim: usize,
+    ) -> Result<Self, CagraError> {
         let _span = tracing::debug_span!("cagra_build_from_store").entered();
         let chunk_count = store
             .chunk_count()

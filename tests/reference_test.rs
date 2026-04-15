@@ -124,7 +124,7 @@ fn test_search_reference_applies_weight() {
     let c1 = test_chunk("weighted_fn", "fn weighted_fn() { test }");
     insert_chunks(&store, &[c1], 1.0);
 
-    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
     let ref_idx = ReferenceIndex {
         name: "test-ref".to_string(),
         store: ref_store,
@@ -156,7 +156,7 @@ fn test_search_reference_weight_filters_below_threshold() {
     let c1 = test_chunk("fn_a", "fn fn_a() { test }");
     insert_chunks(&store, &[c1], 1.0);
 
-    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
     let ref_idx = ReferenceIndex {
         name: "test-ref".to_string(),
         store: ref_store,
@@ -183,7 +183,7 @@ fn test_search_reference_by_name_weight() {
     let c1 = test_chunk("lookup_fn", "fn lookup_fn() { lookup }");
     insert_chunks(&store, &[c1], 1.0);
 
-    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
     let ref_idx = ReferenceIndex {
         name: "test-ref".to_string(),
         store: ref_store,
@@ -235,7 +235,7 @@ fn test_search_reference_unweighted_returns_raw_scores() {
     let c1 = test_chunk("unweighted_fn", "fn unweighted_fn() { test }");
     insert_chunks(&store, &[c1], 1.0);
 
-    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
     let ref_idx = ReferenceIndex {
         name: "test-ref".to_string(),
         store: ref_store,
@@ -268,8 +268,8 @@ fn test_search_reference_unweighted_vs_weighted() {
     let c1 = test_chunk("compare_fn", "fn compare_fn() { compare }");
     insert_chunks(&store, &[c1], 1.0);
 
-    let ref_store_w = cqs::Store::open(&store.db_path()).unwrap();
-    let ref_store_u = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_store_w = cqs::Store::open_readonly(&store.db_path()).unwrap();
+    let ref_store_u = cqs::Store::open_readonly(&store.db_path()).unwrap();
 
     let weight = 0.6;
     let ref_idx_w = ReferenceIndex {
@@ -328,7 +328,7 @@ fn test_search_reference_by_name_unweighted() {
     let c1 = test_chunk("name_search_fn", "fn name_search_fn() { test }");
     insert_chunks(&store, &[c1], 1.0);
 
-    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
     let ref_idx = ReferenceIndex {
         name: "test-ref".to_string(),
         store: ref_store,
@@ -358,7 +358,7 @@ fn test_search_reference_by_name_unweighted_threshold() {
     let c1 = test_chunk("threshold_fn", "fn threshold_fn() { test }");
     insert_chunks(&store, &[c1], 1.0);
 
-    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
     let ref_idx = ReferenceIndex {
         name: "test-ref".to_string(),
         store: ref_store,

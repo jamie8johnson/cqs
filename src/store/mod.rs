@@ -624,6 +624,35 @@ impl<Mode> Store<Mode> {
 }
 
 impl Store<ReadWrite> {
+    /// Erase the write capability at the type level. No SQLite-level change —
+    /// the connection stays open in read-write mode but the `ReadOnly` marker
+    /// blocks `Store<ReadWrite>`-gated methods at compile time. Used by tests
+    /// that build fixture data under `ReadWrite` before handing the store to
+    /// an API that accepts only `Store<ReadOnly>` (e.g. `ReferenceIndex`,
+    /// `NamedStore`). Production code should prefer `Store::open_readonly`.
+    pub fn into_readonly(self) -> Store<ReadOnly> {
+        // `Store<Mode>` implements `Drop`, so we cannot move fields out with
+        // normal assignment. Use `ManuallyDrop` + `ptr::read` to transfer
+        // ownership field-by-field; the source is forgotten so its Drop
+        // doesn't run twice. Safe because we initialize every field of the
+        // returned `Store<ReadOnly>` exactly once.
+        let me = std::mem::ManuallyDrop::new(self);
+        unsafe {
+            Store {
+                pool: std::ptr::read(&me.pool),
+                rt: std::ptr::read(&me.rt),
+                dim: me.dim,
+                closed: std::ptr::read(&me.closed),
+                notes_summaries_cache: std::ptr::read(&me.notes_summaries_cache),
+                note_boost_cache: std::ptr::read(&me.note_boost_cache),
+                call_graph_cache: std::ptr::read(&me.call_graph_cache),
+                test_chunks_cache: std::ptr::read(&me.test_chunks_cache),
+                chunk_type_map_cache: std::ptr::read(&me.chunk_type_map_cache),
+                _mode: PhantomData,
+            }
+        }
+    }
+
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let max_connections = std::env::var("CQS_MAX_CONNECTIONS")
@@ -642,7 +671,9 @@ impl Store<ReadWrite> {
             },
         )
     }
+}
 
+impl Store<ReadOnly> {
     /// Open an existing index in read-only mode with single-threaded runtime
     /// but full memory. Uses `current_thread` tokio runtime (1 OS thread
     /// instead of 4) while keeping the full 256MB mmap and 16MB cache of
@@ -653,7 +684,7 @@ impl Store<ReadWrite> {
     /// AD-1: Renamed from `open_light` to clarify semantics — this is a
     /// read-only pooled connection, not a "light" store.
     pub fn open_readonly_pooled(path: &Path) -> Result<Self, StoreError> {
-        Self::open_with_config(
+        open_with_config_impl::<ReadOnly>(
             path,
             StoreOpenConfig {
                 read_only: true,
@@ -670,7 +701,7 @@ impl Store<ReadWrite> {
     /// Uses minimal connection pool, smaller cache, and single-threaded runtime.
     /// Suitable for reference stores and background builds that only read data.
     pub fn open_readonly(path: &Path) -> Result<Self, StoreError> {
-        Self::open_with_config(
+        open_with_config_impl::<ReadOnly>(
             path,
             StoreOpenConfig {
                 read_only: true,
@@ -689,7 +720,7 @@ impl Store<ReadWrite> {
         path: &Path,
         runtime: Runtime,
     ) -> Result<Self, StoreError> {
-        Self::open_with_config(
+        open_with_config_impl::<ReadOnly>(
             path,
             StoreOpenConfig {
                 read_only: true,
@@ -701,193 +732,207 @@ impl Store<ReadWrite> {
             },
         )
     }
+}
 
-    /// Shared open logic for both read-write and read-only modes.
+impl Store<ReadWrite> {
+    /// Shared open logic for read-write mode (delegates to
+    /// `open_with_config_impl`). See that free function for shared logic.
     fn open_with_config(path: &Path, config: StoreOpenConfig) -> Result<Self, StoreError> {
-        let mode = if config.read_only { "readonly" } else { "open" };
-        let _span = tracing::info_span!("store_open", %mode, path = %path.display()).entered();
-
-        // Reuse provided runtime or build a new one.
-        let rt = if let Some(rt) = config.runtime {
-            rt
-        } else if config.use_current_thread {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?
-        } else {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(config.max_connections as usize)
-                .enable_all()
-                .build()?
-        };
-
-        // Use SqliteConnectOptions::filename() to avoid URL parsing issues with
-        // special characters in paths (spaces, #, ?, %, unicode).
-        let mut connect_opts = SqliteConnectOptions::new()
-            .filename(path)
-            .foreign_keys(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(helpers::sql::busy_timeout_from_env(5000))
-            // NORMAL synchronous in WAL mode: fsync on checkpoint, not every commit.
-            // Trade-off: a crash can lose the last few committed transactions (WAL
-            // tail not yet fsynced), but the database remains consistent. Acceptable
-            // for a rebuildable search index — `cqs index --force` recovers fully.
-            // FULL would fsync every commit, ~2x slower on spinning disk / WSL-NTFS.
-            .synchronous(SqliteSynchronous::Normal)
-            .pragma("mmap_size", config.mmap_size)
-            .log_slow_statements(log::LevelFilter::Warn, std::time::Duration::from_secs(5));
-
-        if config.read_only {
-            connect_opts = connect_opts.read_only(true);
-        } else {
-            connect_opts = connect_opts.create_if_missing(true);
-        }
-
-        // Build cache_size PRAGMA string once for the after_connect closure.
-        let cache_pragma = format!("PRAGMA cache_size = {}", config.cache_size);
-
-        let pool = rt.block_on(async {
-            SqlitePoolOptions::new()
-                .max_connections(config.max_connections)
-                .idle_timeout(std::time::Duration::from_secs(
-                    std::env::var("CQS_IDLE_TIMEOUT_SECS")
-                        .ok()
-                        .and_then(|v| v.parse::<u64>().ok())
-                        .unwrap_or(30), // PB-2: shorter timeout to release WAL locks
-                ))
-                .after_connect(move |conn, _meta| {
-                    let pragma = cache_pragma.clone();
-                    Box::pin(async move {
-                        sqlx::query(&pragma).execute(&mut *conn).await?;
-                        sqlx::query("PRAGMA temp_store = MEMORY")
-                            .execute(&mut *conn)
-                            .await?;
-                        Ok(())
-                    })
-                })
-                .connect_with(connect_opts)
-                .await
-        })?;
-
-        // Set restrictive permissions on database files (Unix only, write mode only)
-        #[cfg(unix)]
-        if !config.read_only {
-            use std::os::unix::fs::PermissionsExt;
-            let restrictive = std::fs::Permissions::from_mode(0o600);
-            if let Err(e) = std::fs::set_permissions(path, restrictive.clone()) {
-                tracing::debug!(path = %path.display(), error = %e, "Failed to set permissions");
-            }
-            let wal_path = path.with_extension("db-wal");
-            let shm_path = path.with_extension("db-shm");
-            if let Err(e) = std::fs::set_permissions(&wal_path, restrictive.clone()) {
-                tracing::debug!(path = %wal_path.display(), error = %e, "Failed to set permissions");
-            }
-            if let Err(e) = std::fs::set_permissions(&shm_path, restrictive) {
-                tracing::debug!(path = %shm_path.display(), error = %e, "Failed to set permissions");
-            }
-        }
-
-        tracing::info!(
-            path = %path.display(),
-            read_only = config.read_only,
-            "Database connected"
-        );
-
-        // Cheap B-tree sanity check — write opens only.
-        //
-        // The previous `PRAGMA integrity_check(1)` walked every page and took
-        // 85s+ on a 1.1GB database over WSL /mnt/c, dominating every CLI
-        // invocation and blocking the eval harness (each `cqs search` shelled
-        // out, each open re-paid the cost). Two changes fix that:
-        //
-        // 1. Skip the check entirely on read-only opens. Reads cannot
-        //    introduce corruption, and if a read encounters corrupt pages the
-        //    query will fail naturally — an upfront walk of the whole file
-        //    just to pre-discover that is not earning its cost for a
-        //    rebuildable search index.
-        // 2. On write opens, use `PRAGMA quick_check` instead of
-        //    `integrity_check`. quick_check validates the B-tree structure
-        //    without the slower cross-checks of index content vs table
-        //    content, which is the right tradeoff for a startup canary.
-        //
-        // Opt-in via CQS_INTEGRITY_CHECK=1. The quick_check takes ~40s on
-        // WSL /mnt/c (NTFS over 9P) which dominated every write-open. For a
-        // rebuildable search index the risk/cost tradeoff favors skipping by
-        // default. Legacy CQS_SKIP_INTEGRITY_CHECK=1 still works (forces skip
-        // even when CQS_INTEGRITY_CHECK=1 is set).
-        let opt_in = std::env::var("CQS_INTEGRITY_CHECK").as_deref() == Ok("1");
-        let force_skip = std::env::var("CQS_SKIP_INTEGRITY_CHECK").as_deref() == Ok("1");
-        let run_check = opt_in && !force_skip && !config.read_only;
-        if config.read_only {
-            tracing::debug!("Skipping integrity check (read-only open)");
-        } else if !run_check {
-            tracing::debug!("Integrity check skipped (set CQS_INTEGRITY_CHECK=1 to enable)");
-        }
-        if run_check {
-            rt.block_on(async {
-                let result: (String,) = sqlx::query_as("PRAGMA quick_check(1)")
-                    .fetch_one(&pool)
-                    .await?;
-                if result.0 != "ok" {
-                    return Err(StoreError::Corruption(result.0));
-                }
-                Ok::<_, StoreError>(())
-            })?;
-        }
-
-        // Read dim from metadata before constructing Store (avoid unsafe mutation).
-        // Defaults to EMBEDDING_DIM for fresh/pre-v15 databases without dimensions key.
-        let dim = rt
-            .block_on(async {
-                let row: Option<(String,)> =
-                    match sqlx::query_as("SELECT value FROM metadata WHERE key = 'dimensions'")
-                        .fetch_optional(&pool)
-                        .await
-                    {
-                        Ok(r) => r,
-                        Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => {
-                            return Ok::<_, StoreError>(None);
-                        }
-                        Err(e) => return Err(e.into()),
-                    };
-                Ok(match row {
-                    Some((s,)) => match s.parse::<u32>() {
-                        Ok(0) => {
-                            tracing::warn!(raw = %s, "dimensions metadata is 0 — invalid, using default");
-                            None
-                        }
-                        Ok(d) => Some(d as usize),
-                        Err(e) => {
-                            tracing::warn!(raw = %s, error = %e, "dimensions metadata is not a valid integer, using default");
-                            None
-                        }
-                    },
-                    None => None,
-                })
-            })?
-            .unwrap_or(crate::EMBEDDING_DIM);
-
-        let store = Self {
-            pool,
-            rt,
-            dim,
-            closed: AtomicBool::new(false),
-            notes_summaries_cache: RwLock::new(None),
-            note_boost_cache: RwLock::new(None),
-            call_graph_cache: std::sync::OnceLock::new(),
-            test_chunks_cache: std::sync::OnceLock::new(),
-            chunk_type_map_cache: std::sync::OnceLock::new(),
-            _mode: PhantomData,
-        };
-
-        // Skip model name validation on open — dimension is validated at embed time,
-        // and configurable models (v1.7.0) can legitimately use any model name.
-        // Model mismatch is checked at index time via check_model_version_with().
-        store.check_schema_version(path)?;
-        store.check_cq_version();
-
-        Ok(store)
+        open_with_config_impl::<ReadWrite>(path, config)
     }
+}
+
+/// Shared open implementation used by `Store<ReadWrite>::open_with_config` and
+/// `Store<ReadOnly>::open_with_config`. Lives as a free function so both
+/// typestate-specific impl blocks can materialize `Store<Mode>` from the same
+/// connection/pool/validation logic.
+fn open_with_config_impl<Mode>(
+    path: &Path,
+    config: StoreOpenConfig,
+) -> Result<Store<Mode>, StoreError> {
+    let mode = if config.read_only { "readonly" } else { "open" };
+    let _span = tracing::info_span!("store_open", %mode, path = %path.display()).entered();
+
+    // Reuse provided runtime or build a new one.
+    let rt = if let Some(rt) = config.runtime {
+        rt
+    } else if config.use_current_thread {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+    } else {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(config.max_connections as usize)
+            .enable_all()
+            .build()?
+    };
+
+    // Use SqliteConnectOptions::filename() to avoid URL parsing issues with
+    // special characters in paths (spaces, #, ?, %, unicode).
+    let mut connect_opts = SqliteConnectOptions::new()
+        .filename(path)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(helpers::sql::busy_timeout_from_env(5000))
+        // NORMAL synchronous in WAL mode: fsync on checkpoint, not every commit.
+        // Trade-off: a crash can lose the last few committed transactions (WAL
+        // tail not yet fsynced), but the database remains consistent. Acceptable
+        // for a rebuildable search index — `cqs index --force` recovers fully.
+        // FULL would fsync every commit, ~2x slower on spinning disk / WSL-NTFS.
+        .synchronous(SqliteSynchronous::Normal)
+        .pragma("mmap_size", config.mmap_size)
+        .log_slow_statements(log::LevelFilter::Warn, std::time::Duration::from_secs(5));
+
+    if config.read_only {
+        connect_opts = connect_opts.read_only(true);
+    } else {
+        connect_opts = connect_opts.create_if_missing(true);
+    }
+
+    // Build cache_size PRAGMA string once for the after_connect closure.
+    let cache_pragma = format!("PRAGMA cache_size = {}", config.cache_size);
+
+    let pool = rt.block_on(async {
+        SqlitePoolOptions::new()
+            .max_connections(config.max_connections)
+            .idle_timeout(std::time::Duration::from_secs(
+                std::env::var("CQS_IDLE_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(30), // PB-2: shorter timeout to release WAL locks
+            ))
+            .after_connect(move |conn, _meta| {
+                let pragma = cache_pragma.clone();
+                Box::pin(async move {
+                    sqlx::query(&pragma).execute(&mut *conn).await?;
+                    sqlx::query("PRAGMA temp_store = MEMORY")
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect_with(connect_opts)
+            .await
+    })?;
+
+    // Set restrictive permissions on database files (Unix only, write mode only)
+    #[cfg(unix)]
+    if !config.read_only {
+        use std::os::unix::fs::PermissionsExt;
+        let restrictive = std::fs::Permissions::from_mode(0o600);
+        if let Err(e) = std::fs::set_permissions(path, restrictive.clone()) {
+            tracing::debug!(path = %path.display(), error = %e, "Failed to set permissions");
+        }
+        let wal_path = path.with_extension("db-wal");
+        let shm_path = path.with_extension("db-shm");
+        if let Err(e) = std::fs::set_permissions(&wal_path, restrictive.clone()) {
+            tracing::debug!(path = %wal_path.display(), error = %e, "Failed to set permissions");
+        }
+        if let Err(e) = std::fs::set_permissions(&shm_path, restrictive) {
+            tracing::debug!(path = %shm_path.display(), error = %e, "Failed to set permissions");
+        }
+    }
+
+    tracing::info!(
+        path = %path.display(),
+        read_only = config.read_only,
+        "Database connected"
+    );
+
+    // Cheap B-tree sanity check — write opens only.
+    //
+    // The previous `PRAGMA integrity_check(1)` walked every page and took
+    // 85s+ on a 1.1GB database over WSL /mnt/c, dominating every CLI
+    // invocation and blocking the eval harness (each `cqs search` shelled
+    // out, each open re-paid the cost). Two changes fix that:
+    //
+    // 1. Skip the check entirely on read-only opens. Reads cannot
+    //    introduce corruption, and if a read encounters corrupt pages the
+    //    query will fail naturally — an upfront walk of the whole file
+    //    just to pre-discover that is not earning its cost for a
+    //    rebuildable search index.
+    // 2. On write opens, use `PRAGMA quick_check` instead of
+    //    `integrity_check`. quick_check validates the B-tree structure
+    //    without the slower cross-checks of index content vs table
+    //    content, which is the right tradeoff for a startup canary.
+    //
+    // Opt-in via CQS_INTEGRITY_CHECK=1. The quick_check takes ~40s on
+    // WSL /mnt/c (NTFS over 9P) which dominated every write-open. For a
+    // rebuildable search index the risk/cost tradeoff favors skipping by
+    // default. Legacy CQS_SKIP_INTEGRITY_CHECK=1 still works (forces skip
+    // even when CQS_INTEGRITY_CHECK=1 is set).
+    let opt_in = std::env::var("CQS_INTEGRITY_CHECK").as_deref() == Ok("1");
+    let force_skip = std::env::var("CQS_SKIP_INTEGRITY_CHECK").as_deref() == Ok("1");
+    let run_check = opt_in && !force_skip && !config.read_only;
+    if config.read_only {
+        tracing::debug!("Skipping integrity check (read-only open)");
+    } else if !run_check {
+        tracing::debug!("Integrity check skipped (set CQS_INTEGRITY_CHECK=1 to enable)");
+    }
+    if run_check {
+        rt.block_on(async {
+            let result: (String,) = sqlx::query_as("PRAGMA quick_check(1)")
+                .fetch_one(&pool)
+                .await?;
+            if result.0 != "ok" {
+                return Err(StoreError::Corruption(result.0));
+            }
+            Ok::<_, StoreError>(())
+        })?;
+    }
+
+    // Read dim from metadata before constructing Store (avoid unsafe mutation).
+    // Defaults to EMBEDDING_DIM for fresh/pre-v15 databases without dimensions key.
+    let dim = rt
+        .block_on(async {
+            let row: Option<(String,)> =
+                match sqlx::query_as("SELECT value FROM metadata WHERE key = 'dimensions'")
+                    .fetch_optional(&pool)
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => {
+                        return Ok::<_, StoreError>(None);
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+            Ok(match row {
+                Some((s,)) => match s.parse::<u32>() {
+                    Ok(0) => {
+                        tracing::warn!(raw = %s, "dimensions metadata is 0 — invalid, using default");
+                        None
+                    }
+                    Ok(d) => Some(d as usize),
+                    Err(e) => {
+                        tracing::warn!(raw = %s, error = %e, "dimensions metadata is not a valid integer, using default");
+                        None
+                    }
+                },
+                None => None,
+            })
+        })?
+        .unwrap_or(crate::EMBEDDING_DIM);
+
+    let store: Store<Mode> = Store {
+        pool,
+        rt,
+        dim,
+        closed: AtomicBool::new(false),
+        notes_summaries_cache: RwLock::new(None),
+        note_boost_cache: RwLock::new(None),
+        call_graph_cache: std::sync::OnceLock::new(),
+        test_chunks_cache: std::sync::OnceLock::new(),
+        chunk_type_map_cache: std::sync::OnceLock::new(),
+        _mode: PhantomData,
+    };
+
+    // Skip model name validation on open — dimension is validated at embed time,
+    // and configurable models (v1.7.0) can legitimately use any model name.
+    // Model mismatch is checked at index time via check_model_version_with().
+    store.check_schema_version(path)?;
+    store.check_cq_version();
+
+    Ok(store)
 }
 
 impl Store<ReadWrite> {

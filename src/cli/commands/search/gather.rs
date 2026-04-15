@@ -64,7 +64,7 @@ pub(crate) fn build_gather_output(
 
 /// Infrastructure context for gather commands.
 pub(crate) struct GatherContext<'a> {
-    pub ctx: &'a crate::cli::CommandContext<'a>,
+    pub ctx: &'a crate::cli::CommandContext<'a, cqs::store::ReadOnly>,
     pub query: &'a str,
     pub expand: usize,
     pub direction: GatherDirection,

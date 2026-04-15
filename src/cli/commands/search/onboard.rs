@@ -6,7 +6,7 @@ use colored::Colorize;
 use cqs::onboard;
 
 pub(crate) fn cmd_onboard(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     concept: &str,
     depth: usize,
     json: bool,

@@ -79,7 +79,7 @@ pub(crate) fn build_where_output(
 // ─── CLI command ───────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_where(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     description: &str,
     limit: usize,
     json: bool,

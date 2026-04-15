@@ -44,8 +44,8 @@ pub struct HealthReport {
 /// Run a comprehensive health check on the index.
 /// Only `store.stats()` is fatal. All other sub-queries degrade gracefully,
 /// populating defaults and adding warnings.
-pub fn health_check(
-    store: &Store,
+pub fn health_check<Mode>(
+    store: &Store<Mode>,
     existing_files: &HashSet<PathBuf>,
     cqs_dir: &Path,
     root: &Path,

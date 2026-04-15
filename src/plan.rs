@@ -375,8 +375,8 @@ pub fn template_names() -> Vec<&'static str> {
 ///
 /// Classifies the task, runs scout, and returns a structured plan
 /// combining the template checklist with scout results.
-pub fn plan(
-    store: &Store,
+pub fn plan<Mode>(
+    store: &Store<Mode>,
     embedder: &Embedder,
     description: &str,
     root: &Path,

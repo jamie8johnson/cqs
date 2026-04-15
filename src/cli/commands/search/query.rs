@@ -41,7 +41,10 @@ fn emit_empty_results(query: &str, json: bool, context: Option<&str>) -> ! {
 }
 
 /// Execute a semantic search query and display results
-pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result<()> {
+pub(crate) fn cmd_query(
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
+    query: &str,
+) -> Result<()> {
     let query_preview = if query.len() > 200 {
         // Find a valid UTF-8 boundary near 200 bytes
         let mut end = 200;
@@ -268,7 +271,7 @@ struct QueryContext<'a> {
     query: &'a str,
     query_embedding: &'a Embedding,
     filter: &'a SearchFilter,
-    store: &'a Store,
+    store: &'a Store<cqs::store::ReadOnly>,
     cqs_dir: &'a std::path::Path,
     root: &'a std::path::Path,
     embedder: &'a Embedder,
@@ -580,9 +583,9 @@ fn rerank_unified(
 }
 
 /// Name-only search: find by function/struct name, no embedding needed
-fn cmd_query_name_only(
+fn cmd_query_name_only<Mode>(
     cli: &Cli,
-    store: &Store,
+    store: &Store<Mode>,
     query: &str,
     root: &std::path::Path,
 ) -> Result<()> {
@@ -771,9 +774,9 @@ fn cmd_query_ref_name_only(
 ///
 /// For table chunks: parent is a stored section chunk → fetch from DB.
 /// For windowed chunks: parent was never stored → read source file at line range.
-fn resolve_parent_context(
+fn resolve_parent_context<Mode>(
     results: &[UnifiedResult],
-    store: &Store,
+    store: &Store<Mode>,
     root: &std::path::Path,
 ) -> HashMap<String, ParentContext> {
     let mut parents = HashMap::new();

@@ -73,8 +73,8 @@ pub struct RiskSummary {
 /// 4. Risk scoring -> per-function risk
 /// 5. Note matching -> relevant notes for changed files (non-fatal)
 /// 6. Staleness check -> warn if changed files are stale (non-fatal)
-pub fn review_diff(
-    store: &Store,
+pub fn review_diff<Mode>(
+    store: &Store<Mode>,
     diff_text: &str,
     root: &Path,
 ) -> Result<Option<ReviewResult>, AnalysisError> {
@@ -184,8 +184,8 @@ pub fn review_diff(
 
 /// Match notes to a set of changed file paths.
 /// Returns an error if notes cannot be loaded (caller decides how to handle).
-fn match_notes(
-    store: &Store,
+fn match_notes<Mode>(
+    store: &Store<Mode>,
     changed_files: &HashSet<&str>,
 ) -> Result<Vec<ReviewNoteEntry>, AnalysisError> {
     let _span = tracing::info_span!("match_notes").entered();

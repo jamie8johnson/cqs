@@ -9,13 +9,14 @@ use std::path::Path;
 use anyhow::Result;
 use cqs::config::Config;
 use cqs::reference::{self, ReferenceIndex};
-use cqs::store::Store;
+use cqs::store::{ReadOnly, Store};
 use cqs::ResolvedTarget;
 
 /// Resolve a target string to a [`ResolvedTarget`] (CLI wrapper).
 ///
 /// Wraps the library's `resolve_target` with anyhow error conversion.
-pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget> {
+/// Generic over the store's typestate — resolution is a pure query.
+pub fn resolve_target<Mode>(store: &Store<Mode>, target: &str) -> Result<ResolvedTarget> {
     let _span = tracing::info_span!("resolve_target", target).entered();
     Ok(cqs::resolve_target(store, target)?)
 }
@@ -81,7 +82,10 @@ pub(crate) fn resolve_reference_store(root: &Path, ref_name: &str) -> Result<Sto
 }
 
 /// Like [`resolve_reference_store`] but opens the store in read-only mode.
-pub(crate) fn resolve_reference_store_readonly(root: &Path, ref_name: &str) -> Result<Store> {
+pub(crate) fn resolve_reference_store_readonly(
+    root: &Path,
+    ref_name: &str,
+) -> Result<Store<ReadOnly>> {
     use anyhow::Context;
     let ref_db = resolve_reference_db(root, ref_name)?;
     Store::open_readonly(&ref_db)

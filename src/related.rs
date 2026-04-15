@@ -31,8 +31,8 @@ pub struct RelatedResult {
 /// 1. Shared callers — called by the same functions as target
 /// 2. Shared callees — calls the same functions as target
 /// 3. Shared types — uses the same types (via type_edges)
-pub fn find_related(
-    store: &Store,
+pub fn find_related<Mode>(
+    store: &Store<Mode>,
     target_name: &str,
     limit: usize,
 ) -> Result<RelatedResult, AnalysisError> {
@@ -74,7 +74,7 @@ pub fn find_related(
 
 /// Resolve (name, overlap_count) pairs to RelatedFunction by batch-looking up chunks.
 /// Uses a single batch query instead of N individual `get_chunks_by_name` calls.
-fn resolve_to_related(store: &Store, pairs: &[(String, u32)]) -> Vec<RelatedFunction> {
+fn resolve_to_related<Mode>(store: &Store<Mode>, pairs: &[(String, u32)]) -> Vec<RelatedFunction> {
     if pairs.is_empty() {
         return Vec::new();
     }
@@ -106,8 +106,8 @@ fn resolve_to_related(store: &Store, pairs: &[(String, u32)]) -> Vec<RelatedFunc
 
 /// Find functions that share types with the target via type_edges.
 /// Uses batch type-edge queries instead of LIKE-based signature scanning.
-fn find_type_overlap(
-    store: &Store,
+fn find_type_overlap<Mode>(
+    store: &Store<Mode>,
     target_name: &str,
     type_names: &[String],
     limit: usize,

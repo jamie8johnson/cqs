@@ -35,8 +35,8 @@ fn max_changed_functions() -> usize {
 /// Map diff hunks to function names using the index.
 /// For each hunk, finds chunks whose line range overlaps the hunk's range.
 /// Returns deduplicated function names.
-pub fn map_hunks_to_functions(
-    store: &Store,
+pub fn map_hunks_to_functions<Mode>(
+    store: &Store<Mode>,
     hunks: &[crate::diff_parse::DiffHunk],
 ) -> Vec<ChangedFunction> {
     let _span = tracing::info_span!("map_hunks_to_functions", hunk_count = hunks.len()).entered();
@@ -108,8 +108,8 @@ pub fn map_hunks_to_functions(
 /// Run impact analysis across all changed functions from a diff.
 /// Fetches call graph and test chunks once, then analyzes each function.
 /// Results are deduplicated by name.
-pub fn analyze_diff_impact(
-    store: &Store,
+pub fn analyze_diff_impact<Mode>(
+    store: &Store<Mode>,
     changed: Vec<ChangedFunction>,
     root: &Path,
 ) -> Result<DiffImpactResult, AnalysisError> {
@@ -122,8 +122,8 @@ pub fn analyze_diff_impact(
 /// Paths in the returned result are relative to `root`.
 /// Use when the caller already has the graph/test_chunks (e.g., `review_diff`
 /// which also needs them for risk scoring).
-pub fn analyze_diff_impact_with_graph(
-    store: &Store,
+pub fn analyze_diff_impact_with_graph<Mode>(
+    store: &Store<Mode>,
     changed: Vec<ChangedFunction>,
     graph: &crate::store::CallGraph,
     test_chunks: &[crate::store::ChunkSummary],

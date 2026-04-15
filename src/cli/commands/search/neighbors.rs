@@ -70,8 +70,8 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Find top-K nearest neighbors by brute-force cosine similarity.
-fn find_neighbors(
-    store: &Store,
+fn find_neighbors<Mode>(
+    store: &Store<Mode>,
     target: &ChunkSummary,
     limit: usize,
 ) -> Result<Vec<(ChunkSummary, f32)>> {
@@ -127,8 +127,8 @@ fn find_neighbors(
 }
 
 /// Fetch ChunkSummary for a set of chunk IDs.
-fn fetch_chunk_summaries(
-    store: &Store,
+fn fetch_chunk_summaries<Mode>(
+    store: &Store<Mode>,
     ids: &[&str],
 ) -> Result<std::collections::HashMap<String, ChunkSummary>> {
     // Group IDs by origin (file) and fetch per-file, then filter
@@ -153,7 +153,7 @@ fn fetch_chunk_summaries(
 // ─── CLI command ───────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_neighbors(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
     limit: usize,
     json: bool,

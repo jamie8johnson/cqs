@@ -10,11 +10,16 @@ use crate::store::helpers::{CallGraph, CallerInfo, ChunkSummary, StoreError};
 use crate::Store;
 
 /// A named store for cross-project context.
+///
+/// `CrossProjectContext` only issues read queries (callers, callees,
+/// test chunks), so the handle is `Store<ReadOnly>` — the typestate
+/// refactor (GitHub #946) makes it a compile-time error to accidentally
+/// call a write method on a cross-project reference store.
 pub struct NamedStore {
     /// Human-readable project name (e.g. "cqs", "openclaw").
     pub name: String,
     /// The open Store handle.
-    pub store: Store,
+    pub store: Store<crate::store::ReadOnly>,
 }
 
 impl std::fmt::Debug for NamedStore {
@@ -77,13 +82,10 @@ impl CrossProjectContext {
         let config = crate::config::Config::load(root);
 
         let db_path = root.join(".cqs/index.db");
-        let local_store = match Store::open_readonly(&db_path) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "open_readonly failed, trying writable");
-                Store::open(&db_path)?
-            }
-        };
+        // #946 typestate: cross-project reads only — open read-only. If the DB
+        // doesn't exist yet, propagate the error; creating it here would
+        // corrupt the invariant that cross-project queries never mutate.
+        let local_store = Store::open_readonly(&db_path)?;
         let mut stores = vec![NamedStore {
             name: "local".to_string(),
             store: local_store,
@@ -330,7 +332,7 @@ mod tests {
 
         NamedStore {
             name: name.to_string(),
-            store,
+            store: store.into_readonly(),
         }
     }
 

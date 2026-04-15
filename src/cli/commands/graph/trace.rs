@@ -39,8 +39,8 @@ pub(crate) struct TraceOutput {
 ///
 /// Shared between CLI (`cmd_trace --json`) and batch (`dispatch_trace`).
 /// Takes the BFS path (or None) and resolves chunk metadata via batch lookup.
-pub(crate) fn build_trace_output(
-    store: &Store,
+pub(crate) fn build_trace_output<Mode>(
+    store: &Store<Mode>,
     source_name: &str,
     target_name: &str,
     path: Option<&[String]>,
@@ -97,7 +97,7 @@ pub(crate) fn build_trace_output(
 // ─── CLI command ────────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_trace(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     source: &str,
     target: &str,
     max_depth: usize,
@@ -288,7 +288,11 @@ pub(crate) fn cmd_trace(
 }
 
 /// Format trace path as Mermaid graph TD diagram
-fn format_mermaid(store: &Store, root: &std::path::Path, names: &[String]) -> Result<()> {
+fn format_mermaid<Mode>(
+    store: &Store<Mode>,
+    root: &std::path::Path,
+    names: &[String],
+) -> Result<()> {
     println!("graph TD");
 
     // CQ-5: Batch lookup instead of N individual search_by_name calls

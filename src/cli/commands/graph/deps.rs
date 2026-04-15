@@ -72,7 +72,7 @@ pub(crate) fn build_deps_forward(users: &[ChunkSummary], root: &Path) -> Vec<Dep
 /// Forward (default): `cqs deps Config` -- who uses this type?
 /// Reverse: `cqs deps --reverse func_name` -- what types does this function use?
 pub(crate) fn cmd_deps(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
     reverse: bool,
     cross_project: bool,
