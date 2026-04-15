@@ -232,7 +232,7 @@ predicates = "3"
 serial_test = "3"
 
 [patch.crates-io]
-cuvs = { git = "https://github.com/jamie8johnson/cuvs-patched.git", branch = "main" }  # adds search_with_filter (upstream PR rapidsai/cuvs#2019)
+cuvs = { git = "https://github.com/jamie8johnson/cuvs-patched.git", branch = "add-serialize-deserialize" }  # adds search_with_filter + CAGRA serialize/deserialize wrappers
 
 [profile.release]
 lto = "thin"

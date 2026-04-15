@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **CAGRA index persistence (#950).** CAGRA graphs are now serialized to `{cqs_dir}/index.cagra` via native `cuvsCagraSerialize` plus a JSON sidecar (`index.cagra.meta`) with magic/version/dim/chunk_count/splade_generation/id_map/blake3. On startup the daemon deserializes instead of rebuilding, eliminating the ~30s CAGRA cold start on every `systemctl --user restart cqs-watch` / `cqs index` cycle. Stale sidecars (dim or chunk_count drift) and corrupt blobs are detected and rebuilt from the store automatically. Set `CQS_CAGRA_PERSIST=0` to disable.
+
 ## [1.25.0] - 2026-04-14
 
 ### Changed

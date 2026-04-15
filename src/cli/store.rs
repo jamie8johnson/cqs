@@ -262,6 +262,42 @@ pub(crate) fn build_vector_index_with_config(
             0
         });
         if chunk_count >= cagra_threshold && cqs::cagra::CagraIndex::gpu_available() {
+            // Issue #950: try the persisted index first. cuVS native
+            // deserialize is fast (~sub-second even for tens of thousands of
+            // vectors) compared to the ~30s rebuild on a mid-size repo, so
+            // the daemon cold-start cost drops dramatically across
+            // systemctl restarts / `cqs index` cycles. `load` validates
+            // magic, dim, chunk_count, and blake3 before handing the blob
+            // to cuVS, so a stale file falls through to rebuild rather
+            // than corrupting results.
+            let cagra_path = cqs_dir.join("index.cagra");
+            if cqs::cagra::cagra_persist_enabled() && cagra_path.exists() {
+                match cqs::cagra::CagraIndex::load(&cagra_path, store.dim(), chunk_count as usize) {
+                    Ok(idx) => {
+                        tracing::info!(
+                            backend = "cagra",
+                            source = "persisted",
+                            vectors = idx.len(),
+                            chunk_count,
+                            cagra_threshold,
+                            "Vector index backend selected"
+                        );
+                        return Ok(Some(Box::new(idx) as Box<dyn cqs::index::VectorIndex>));
+                    }
+                    Err(e) => {
+                        // Sidecar mismatch / stale / corrupt — nuke both files
+                        // so the next run doesn't pay the same load-then-fail
+                        // cost and instead jumps straight to the rebuild path.
+                        tracing::warn!(
+                            error = %e,
+                            path = %cagra_path.display(),
+                            "CAGRA persisted load failed, rebuilding from store"
+                        );
+                        cqs::cagra::CagraIndex::delete_persisted(&cagra_path);
+                    }
+                }
+            }
+
             match cqs::cagra::CagraIndex::build_from_store(store, store.dim()) {
                 Ok(idx) => {
                     // OB-NEW-7: single structured log per backend selection so
@@ -269,11 +305,27 @@ pub(crate) fn build_vector_index_with_config(
                     // of string-matching three distinct format messages.
                     tracing::info!(
                         backend = "cagra",
+                        source = "rebuilt",
                         vectors = idx.len(),
                         chunk_count,
                         cagra_threshold,
                         "Vector index backend selected"
                     );
+
+                    // Best-effort persist: a failed save is never fatal —
+                    // we just rebuild on next startup. Keeping the warn at
+                    // info level so operators can tell persistence is off
+                    // without having to dig through debug logs.
+                    if cqs::cagra::cagra_persist_enabled() {
+                        if let Err(e) = idx.save_with_store(&cagra_path, store) {
+                            tracing::warn!(
+                                error = %e,
+                                path = %cagra_path.display(),
+                                "Failed to persist CAGRA index (will rebuild next restart)"
+                            );
+                        }
+                    }
+
                     return Ok(Some(Box::new(idx) as Box<dyn cqs::index::VectorIndex>));
                 }
                 Err(e) => {

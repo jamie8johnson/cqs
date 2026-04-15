@@ -216,7 +216,7 @@ src/
     cleaning.rs - Extensible tag-based cleaning rules (7 rules)
     webhelp.rs  - Web help site detection and multi-page merge
   cache.rs      - Global embedding cache (SQLite, keyed by content_hash + model_fingerprint)
-  cagra.rs      - GPU-accelerated CAGRA index (optional)
+  cagra.rs      - GPU-accelerated CAGRA index (optional), save/load via cuvsCagraSerialize
   nl/           - NL description generation, JSDoc parsing
     mod.rs      - Core NL generation, type-aware embeddings, call context
     fts.rs      - FTS5 normalization, tokenization
