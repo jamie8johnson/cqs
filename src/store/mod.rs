@@ -254,7 +254,14 @@ pub struct ReadWrite;
 /// ```
 pub struct Store<Mode = ReadWrite> {
     pub(crate) pool: SqlitePool,
-    pub(crate) rt: Runtime,
+    /// Tokio runtime driving async sqlx operations.
+    ///
+    /// #968: Stored as `Arc<Runtime>` so callers (e.g. the daemon)
+    /// can construct one multi-thread runtime and hand the same `Arc`
+    /// to `Store`, `EmbeddingCache`, and `QueryCache`. `Runtime::block_on`
+    /// takes `&self`, so the `Arc` derefs transparently at call sites.
+    /// When no caller supplies one, each open builds its own `Arc`.
+    pub(crate) rt: Arc<Runtime>,
     /// Embedding dimension for this store (read from metadata on open, default `EMBEDDING_DIM`).
     pub(crate) dim: usize,
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
@@ -288,8 +295,10 @@ struct StoreOpenConfig {
     mmap_size: String,
     cache_size: String,
     /// Pre-existing runtime to reuse. If `Some`, skips runtime creation
-    /// (~15ms saving). If `None`, creates a new one per `use_current_thread`.
-    runtime: Option<Runtime>,
+    /// (~15ms saving) and also lets callers share one runtime across
+    /// multiple consumers (Store + EmbeddingCache + QueryCache) per #968.
+    /// If `None`, creates a new one per `use_current_thread`.
+    runtime: Option<Arc<Runtime>>,
 }
 
 /// Filesystem types where SQLite `mmap_size > 0` hurts performance.
@@ -625,6 +634,13 @@ impl<Mode> Store<Mode> {
     pub fn set_dim(&mut self, dim: usize) {
         self.dim = dim;
     }
+
+    /// Borrow the underlying tokio runtime. #968: callers that want to
+    /// share this runtime with `EmbeddingCache::open_with_runtime` or
+    /// `QueryCache::open_with_runtime` call `Arc::clone(store.runtime())`.
+    pub fn runtime(&self) -> &Arc<Runtime> {
+        &self.rt
+    }
 }
 
 impl Store<ReadWrite> {
@@ -659,21 +675,38 @@ impl Store<ReadWrite> {
 
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
+        Self::open_with_config(path, Self::default_open_config(path, None))
+    }
+
+    /// Open an existing index with connection pooling using a pre-existing
+    /// tokio runtime. Same semantics as [`Store::open`] but reuses the
+    /// caller-supplied runtime instead of constructing a new one.
+    ///
+    /// #968: the daemon creates one multi-thread runtime and passes the
+    /// same `Arc` to `Store`, `EmbeddingCache`, and `QueryCache` so a
+    /// single worker pool drives all three (no longer ~12 idle threads
+    /// across three separate runtimes).
+    pub fn open_with_runtime(path: &Path, runtime: Arc<Runtime>) -> Result<Self, StoreError> {
+        Self::open_with_config(path, Self::default_open_config(path, Some(runtime)))
+    }
+
+    /// Shared config builder for `open` / `open_with_runtime`. Keeping the
+    /// defaults in one place guarantees the runtime-sharing variant stays in
+    /// lockstep with the standalone version as pool / mmap / cache defaults
+    /// evolve.
+    fn default_open_config(path: &Path, runtime: Option<Arc<Runtime>>) -> StoreOpenConfig {
         let max_connections = std::env::var("CQS_MAX_CONNECTIONS")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(4);
-        Self::open_with_config(
-            path,
-            StoreOpenConfig {
-                read_only: false,
-                use_current_thread: false,
-                max_connections,
-                mmap_size: resolve_mmap_size("268435456", path), // 256MB default
-                cache_size: cache_size_from_env("-16384"),       // 16MB
-                runtime: None,
-            },
-        )
+        StoreOpenConfig {
+            read_only: false,
+            use_current_thread: false,
+            max_connections,
+            mmap_size: resolve_mmap_size("268435456", path), // 256MB default
+            cache_size: cache_size_from_env("-16384"),       // 16MB
+            runtime,
+        }
     }
 }
 
@@ -720,9 +753,12 @@ impl Store<ReadOnly> {
 
     /// Open in read-only pooled mode using a pre-existing tokio runtime.
     /// Saves ~15ms per invocation by avoiding runtime creation.
+    ///
+    /// #968: accepts `Arc<Runtime>` so the daemon can share one runtime
+    /// across `Store`, `EmbeddingCache`, and `QueryCache`.
     pub fn open_readonly_pooled_with_runtime(
         path: &Path,
-        runtime: Runtime,
+        runtime: Arc<Runtime>,
     ) -> Result<Self, StoreError> {
         open_with_config_impl::<ReadOnly>(
             path,
@@ -788,17 +824,26 @@ fn open_with_config_impl<Mode>(
     let _span = tracing::info_span!("store_open", %mode, path = %path.display()).entered();
 
     // Reuse provided runtime or build a new one.
-    let rt = if let Some(rt) = config.runtime {
+    //
+    // #968: `runtime` is `Arc<Runtime>` so one runtime can be shared across
+    // Store + EmbeddingCache + QueryCache. When no runtime is supplied we
+    // build a fresh one and wrap it in `Arc` immediately so the internal
+    // field type stays uniform.
+    let rt: Arc<Runtime> = if let Some(rt) = config.runtime {
         rt
     } else if config.use_current_thread {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
+        Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?,
+        )
     } else {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(config.max_connections as usize)
-            .enable_all()
-            .build()?
+        Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(config.max_connections as usize)
+                .enable_all()
+                .build()?,
+        )
     };
 
     // Use SqliteConnectOptions::filename() to avoid URL parsing issues with

@@ -177,6 +177,12 @@ pub(crate) struct BatchContext {
     // the class of runtime errors from PR #945 / #944 / dispatch_gc is
     // structurally impossible on this path.
     store: RefCell<Store<ReadOnly>>,
+    /// #968: the tokio runtime driving `store`. Kept here as well so
+    /// `invalidate()` and `check_index_staleness()` can re-open the
+    /// store on the same runtime — without this they would rebuild a
+    /// fresh current-thread runtime on every index swap and drift
+    /// apart from the daemon's shared pool.
+    runtime: std::sync::Arc<tokio::runtime::Runtime>,
     // Stable caches — keep OnceLock (not index-derived)
     //
     // RM-V1.25-28: `OnceLock<Arc<Embedder>>` so the watch outer scope
@@ -326,8 +332,13 @@ impl BatchContext {
             tracing::info!("index.db identity changed, invalidating mutable caches");
             self.invalidate_mutable_caches();
 
-            // Re-open the Store to reset its internal OnceLock caches
-            match Store::open_readonly_pooled(&index_path) {
+            // Re-open the Store to reset its internal OnceLock caches.
+            // #968: reuse the shared runtime so this re-open doesn't spin
+            // up a transient current_thread runtime on every index swap.
+            match Store::open_readonly_pooled_with_runtime(
+                &index_path,
+                std::sync::Arc::clone(&self.runtime),
+            ) {
                 Ok(new_store) => {
                     // DS-43: Check if index dimension changed — OnceLock model_config
                     // can't be cleared, so warn the user to restart the batch session.
@@ -378,8 +389,13 @@ impl BatchContext {
         self.invalidate_mutable_caches();
 
         let index_path = self.cqs_dir.join(cqs::INDEX_DB_FILENAME);
-        let new_store = Store::open_readonly_pooled(&index_path)
-            .map_err(|e| anyhow::anyhow!("Failed to re-open Store: {e}"))?;
+        // #968: pass the shared runtime so manual refreshes keep using
+        // the same worker pool as the session they're refreshing.
+        let new_store = Store::open_readonly_pooled_with_runtime(
+            &index_path,
+            std::sync::Arc::clone(&self.runtime),
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to re-open Store: {e}"))?;
         *self.store.borrow_mut() = new_store;
 
         // Update identity to current so we don't immediately re-invalidate.
@@ -465,7 +481,13 @@ impl BatchContext {
         // index can grow the shared ~/.cache/cqs/embeddings.db past the
         // 10GB cap (CQS_CACHE_MAX_SIZE) without ever trimming. Kick off
         // a single post-warm eviction so the daemon self-heals on boot.
-        evict_global_embedding_cache("daemon startup");
+        //
+        // #968: reuse the batch context's runtime so this one-shot open
+        // doesn't spawn a fresh current_thread runtime.
+        evict_global_embedding_cache_with_runtime(
+            "daemon startup",
+            Some(std::sync::Arc::clone(&self.runtime)),
+        );
     }
 
     /// RM-V1.25-28: Install a shared Embedder from the outer watch scope.
@@ -856,14 +878,22 @@ fn build_vector_index<Mode: crate::cli::store::ClearHnswDirty>(
 /// RM-V1.25-5: Evict the global embedding cache if it exceeds its size cap.
 ///
 /// `EmbeddingCache::evict` is a no-op below `CQS_CACHE_MAX_SIZE` (default
-/// 10GB), so it's cheap to call. Opens the cache read-only-ish (WAL-mode
-/// SQLite, one connection), runs the eviction, then drops. Used by the
-/// daemon startup and the watch reindex path to keep the shared cache
-/// bounded even when the user never runs a full `cqs index`.
-pub(crate) fn evict_global_embedding_cache(trigger: &str) {
+/// 10GB), so it's cheap to call. Opens the cache (WAL-mode SQLite, one
+/// connection), runs the eviction, then drops. Used by the daemon
+/// startup and the watch reindex path to keep the shared cache bounded
+/// even when the user never runs a full `cqs index`.
+///
+/// #968: takes an optional shared runtime so the daemon's one
+/// multi-thread pool drives this open instead of spinning up a fresh
+/// `current_thread` runtime. Pass `None` to fall back to the per-open
+/// runtime constructor (used by non-daemon callers like `cqs index`).
+pub(crate) fn evict_global_embedding_cache_with_runtime(
+    trigger: &str,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+) {
     let _span = tracing::debug_span!("daemon_cache_evict", trigger).entered();
     let cache_path = cqs::cache::EmbeddingCache::default_path();
-    let cache = match cqs::cache::EmbeddingCache::open(&cache_path) {
+    let cache = match cqs::cache::EmbeddingCache::open_with_runtime(&cache_path, runtime) {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(
@@ -949,7 +979,37 @@ fn write_json_line(
 ///
 /// Used by both `cmd_batch` and `cmd_chat`.
 pub(crate) fn create_context() -> Result<BatchContext> {
-    let (store, root, cqs_dir) = open_project_store_readonly()?;
+    create_context_with_runtime(None)
+}
+
+/// #968: Variant that reuses a caller-supplied tokio runtime so the daemon
+/// (`watch_and_serve`) can build one `Arc<Runtime>` at process start and
+/// hand the same handle to both its outer read-write Store and the batch
+/// context's read-only Store. Subsequent `EmbeddingCache` / `QueryCache`
+/// opens through [`BatchContext::warm`] pick up the same runtime via
+/// [`cqs::Store::runtime`]. When `runtime` is `None`, behaves exactly as
+/// the pre-968 `create_context` and constructs its own current-thread
+/// runtime for the read-only Store.
+pub(crate) fn create_context_with_runtime(
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+) -> Result<BatchContext> {
+    let root = super::config::find_project_root();
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let index_path = cqs_dir.join("index.db");
+    if !index_path.exists() {
+        anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
+    }
+    let store = if let Some(rt) = runtime {
+        Store::open_readonly_pooled_with_runtime(&index_path, rt).map_err(|e| {
+            anyhow::anyhow!("Failed to open index at {}: {}", index_path.display(), e)
+        })?
+    } else {
+        let (s, _root, _cqs_dir) = open_project_store_readonly()?;
+        s
+    };
+    // #968: cache the store's runtime Arc so subsequent re-opens and
+    // lazily-opened caches stay on the same pool.
+    let runtime = std::sync::Arc::clone(store.runtime());
 
     // Capture initial index.db identity (inode/size/mtime on unix).
     // DS-V1.25-6: previously this was mtime alone, which sub-second
@@ -961,6 +1021,7 @@ pub(crate) fn create_context() -> Result<BatchContext> {
 
     Ok(BatchContext {
         store: RefCell::new(store),
+        runtime,
         embedder: OnceLock::new(),
         config: OnceLock::new(),
         reranker: OnceLock::new(),
@@ -1000,9 +1061,13 @@ pub(in crate::cli::batch) fn create_test_context(
         Store::open(&index_path).map_err(|e| anyhow::anyhow!("Failed to open test store: {e}"))?;
     let root = cqs_dir.parent().unwrap_or(cqs_dir).to_path_buf();
     let index_id = DbFileIdentity::from_path(&index_path);
+    let store_ro = store.into_readonly();
+    // #968: cache the runtime Arc so test contexts re-open on the same pool.
+    let runtime = std::sync::Arc::clone(store_ro.runtime());
 
     Ok(BatchContext {
-        store: RefCell::new(store.into_readonly()),
+        store: RefCell::new(store_ro),
+        runtime,
         embedder: OnceLock::new(),
         config: OnceLock::new(),
         reranker: OnceLock::new(),
