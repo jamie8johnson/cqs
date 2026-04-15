@@ -2,81 +2,56 @@
 
 ## Right Now
 
-**v1.25.0 + 11th audit merged. Wave A in flight. Waves B/C/D queued for autopilot. (2026-04-14 ~23:45 CDT)**
+**Waves A+B+C (3/4) + slow-tests gating merged. #987 hotfix rerunning. Wave D queued. (2026-04-15 ~11:35 CDT)**
 
-Main at `ea7c72b` (#976 audit batch). Working branches in flight:
-- **#978** `chore/post-audit-tears` — this tears update (will merge once CI green)
-- **#979** `wave-a/quick-wins` — Wave A fixes (#961 WSL mmap, #962 CAGRA itopk, #963 reranker batch)
+Main at `0a9c5e3`. Merged this session:
+- #979 Wave A quick wins — `7ccda3b`
+- #981 Wave B Commands/BatchCmd unification — `14f122d`
+- #983 Wave C2 atomic_replace — `7b24995`
+- #984 Wave C3 ModelConfig abstraction — `edd5093`
+- #985 Wave C4 CAGRA persistence — `4f23563`
+- #982 Wave C1 Store typestate — `f8b6e8d`
+- #988 CI slow-tests gating (#980) — `0a9c5e3`
 
-### What landed today (massive day)
+**In flight:** #987 `fix/post-946-cagra-save-with-store-generic` — 1-line fix making `CagraIndex::save_with_store` generic over `Mode`. Merge-order artifact: #985 defined it with default `Mode = ReadWrite`, #982 then made `build_vector_index_with_config<Mode>` pass `&Store<Mode>` through. **Only breaks `--features gpu-index` builds** — CI uses default features so main-on-GitHub compiles fine. The hotfix branch has been rebased onto post-#988 main so its CI now inherits the slow-tests gating (~18 min instead of ~2h). Monitor `bf5vemyx3` polling for CI completion.
 
-**Morning — v1.25.0:**
-- #942 determinism fixes (hash iteration + SPLADE-at-α=1.0 + rowid re-sort)
-- #943 eval-output-location fix (watch-reindex contamination — root cause of 2 days of drift)
-- #944 v1.25.0 release — new per-category alpha defaults + multi_step router fix
-- #945 notes mutation daemon bypass
+### Slow-tests gating — what #988 did
 
-**Afternoon — 11th full audit:**
-- 16 categories × 2 batches × 8 parallel opus auditor agents → **236 findings**
-- Triaged into P1 (49) / P2 (47) / P3 (97) / P4 trivial (16) / P4 issues (32)
-- Executed in 3 waves of implementer agents (wave 1 shared tree, 2+3 worktree-isolated)
-- **PR #976 merged 20:40 CDT** — 126 commits closing 166/236 findings
-- **PR #977 merged 19:33 CDT** — #856 atexit Mutex UB fix (dependent follow-up)
-- 11 stale issues closed, 25 P4 issues filed (#951-#975), 5 refactor issues (#946-#950)
-- `cqs-training` pushed (research/sparse.md clean-sweep data + 15 scripts + gitignore cleanup)
+5 CLI integration test binaries were eating ~2h of CI on every PR (`cli_batch_test` 34m39s, `cli_graph_test` 33m30s, `cli_commands_test` 30m40s, `cli_test` 14m49s, `cli_health_test` 5m02s) — each test cold-loads the full ONNX/HNSW/SPLADE/reranker stack per `cqs` subprocess invocation.
 
-**Evening — Wave A kickoff:**
-- 3 worktree-isolated opus agents, all produced 1-commit branches:
-  - `fix/961-wsl-mmap-autodetect` — detect 9P/DrvFS/NTFS/CIFS, force `mmap_size=0` unless user override
-  - `fix/963-reranker-batch` — `CQS_RERANKER_BATCH` chunking (default 32), mirrors `embed_documents`
-  - `fix/962-cagra-itopk-env` — `CQS_CAGRA_ITOPK_MIN/MAX`, `GRAPH_DEGREE`, `INTERMEDIATE_GRAPH_DEGREE` with corpus-size log₂ scaling
-- Bundled into **PR #979** `wave-a/quick-wins`.
+Fix: `slow-tests = []` Cargo feature + `#![cfg(feature = "slow-tests")]` file-gate on all 5. New `.github/workflows/slow-tests.yml` runs them daily at 08:00 UTC plus `workflow_dispatch`. PR CI now ~18 min. Follow-up (#980 covers) is to switch them to the in-process fixture pattern like `cli_notes_test`/`router_test` already use.
 
-### CI caveat — slow integration tests
+### Disk cleanup this session
 
-A CI `test` job cancelled at 1h48m during the audit-PR merge sequence because I assumed it was hung. **It was not.** `tests/cli_health_test.rs` has pre-existing CLI integration tests (`test_health_cli_text` ≈ 303s each) that shell out to `cqs` and cold-load the whole ONNX/HNSW/SPLADE stack per invocation. Normal test-job time on this repo is ~22 min.
+- cargo clean profile dev: **-19G** (33G → 14G target)
+- training-data archive: **-25G** uncompressed (96G → 71G, with 18G of compressed provenance in `~/training-data/archive/`)
+- 37 stale branches deleted (all squash-merged); 17 stale worktrees removed
+- Total reclaimed: **~44G**
 
-**Filed #980** (`tier-2 / performance / testing`) with the in-process-fixture fix proposal. Today's new tests (`cli_notes_test.rs`, `router_test.rs`) use the correct in-process pattern and are fast (0.16s).
+Archive contents preserved:
+- `loras-removed-from-registry.tar.zst` (6.5G) — 12 removed-from-registry E5 LoRA variants
+- `loras-v9-basin.tar.zst` (2.8G) — basin-cluster variants (same-ceiling as v9-200k)
+- `splade-nondeployed.tar.zst` (1.4G) — naver baseline + v2 training run (NB: splade-code-v1 kept, it's the source of the deployed model)
+- `exp-null-results.tar.zst` (3.4G) — v11-band + v11-distill (null results per sparse.md)
+- `sweep-margin-losers.tar.zst` (2.5G) — 0.01/0.03/0.08/0.1/0.15 (0.05 confirmed winner)
+- JSONL chains (v9 intermediate, CSN raw, stack intermediate, combined superseded) — ~1.6G combined compressed
 
-**Do not cancel running CI under 30 min without a specific hang signal.**
+### `into_readonly()` design note
 
-### Wave-merge caveat
+`Store<ReadWrite>` gained `pub fn into_readonly(self) -> Store<ReadOnly>`. Zero-cost type-level erasure — the SQLite connection stays open in RW mode but the `ReadOnly` phantom blocks write-gated methods at compile time. Implementation uses `ManuallyDrop` + `ptr::read` because `Store<Mode>` impls `Drop`.
 
-My first two merge scripts printed "MERGED" unconditionally without checking `gh pr merge` exit status. Three of the claimed merges didn't happen — branch-protection rejected them because:
-1. Cancelled runs leave stale "fail" status that blocks required checks
-2. Re-triggered CI creates fresh runs but the old statuses can linger
-3. `gh pr merge --admin` overrides "fail" / "stale" but **not "in progress"** — if any required check is still running, even admin is blocked
+Filed **#986** (tier-2 / refactor / testing) as the follow-up: closure-based `Store::open_readonly_after_init<F>` would give semantic RO at the SQLite level too, at the cost of one WAL checkpoint + reopen per fixture. Migration is mechanical across ~6-8 test call sites.
 
-Fix pattern:
-1. Always check `$?` after `gh pr merge`
-2. Empty commit (`git commit --allow-empty`) retriggers fresh CI that supersedes stale statuses
-3. `--admin` is available (I'm authenticated as repo owner); use it only when a stale status is the real blocker, not to bypass actually-failing tests
+### Wave D plan (prompts preserved below)
 
-### Next session — pull list queued, autopilot contract
+Two worktree-isolated opus agents, parallel:
+- **D1 #972** — extract `translate_cli_args_to_batch` pure function from `src/cli/dispatch.rs:457-494`; new `tests/daemon_forward_test.rs` (`#[cfg(unix)]`) with arg-translation tests + mock `UnixListener` E2E + notes-mutation-bypass regression. Regression seed: remove a command from the notes block-list, confirm a test fails.
+- **D2 #964** — `LazyLock<Vec<&'static str>>` for `language_names()`; `LazyLock<AhoCorasick>` for `extract_type_hints` / `BEHAVIORAL_VERBS` / `CONCEPTUAL_NOUNS` / `NL_INDICATORS` / `MULTISTEP_PATTERNS` / `STRUCTURAL_PATTERNS`. Classifier outputs must be bitwise-identical.
 
-**Wave B** (1 agent, bigger refactor):
-- #947 Commands/BatchCmd unification — half-day refactor, kills daemon/CLI parity drift class. Touches `src/cli/definitions.rs`, `src/cli/dispatch.rs`, `src/cli/batch/`.
+### Residual puzzles
 
-**Wave C** (4 parallel worktrees):
-- #946 Store typestate (closes write-on-readonly class)
-- #948 `atomic_replace` helper (closes fs-persist durability class)
-- #949 Model abstraction (unblocks BGE→E5 default switch)
-- #950 CAGRA persistence (daemon hot-restart 30s → 5s)
-
-**Wave D** (2 parallel worktrees):
-- #972 Daemon `try_daemon_query` test scaffold
-- #964 Aho-Corasick `classify_query` (pre-req for classifier accuracy work)
-
-Order: A → B → C → D sequential between waves (later waves benefit from earlier fixes); parallel within each. Rebuild + install binary after each wave merge so daemon uses current code.
-
-### Architecture state
-
-- **Version:** v1.25.0, Schema v20
-- **Binary:** last rebuilt + installed from post-merge main (`ea7c72b`), daemon active
-- **Index:** clean (post-GC, 13,279 chunks down from 81%-dup 69,444)
-- **Per-category SPLADE α defaults:** identifier 0.90, structural 0.60, conceptual 0.85, behavioral 0.05, rest 1.0 (tuned on *dirty* index; re-fit pending — CPU Lane)
-- **Determinism:** end-to-end after #942 + #943 + wave-1 sort hardening (15+ sites)
-- **Test count:** 1404 lib tests pre-wave-A; +new Wave A tests (WSL mountinfo parser etc.)
+- **Classifier accuracy** — 4.5pp oracle gap (49.4% − 37.4%) entirely in `classify_query()`, not alpha picks. Wave D #964 is the pre-req for the real investigation (centroid matching on BGE embeddings is the recommended starting point per ROADMAP).
+- **Alpha defaults on clean index** — current v1.25.0 defaults were fit on dirty data. Re-sweep pending.
 
 ### Eval numbers (honest, post-clean-index)
 
@@ -86,35 +61,45 @@ Order: A → B → C → D sequential between waves (later waves benefit from ea
 | V2 (265q clean) | E5 v9-200k fully routed | 37.4% | 56.6% | 78.1% |
 | V2 (265q clean) | Oracle per-category α | 49.4% | — | — |
 
-**E5 v9-200k ties BGE on R@1, slight edge on R@5/R@20 — at 1/3 the embedding dim.** Gated on #949 (model abstraction) for low-friction default switch.
+E5 v9-200k ties BGE on R@1, slight edge on R@5/R@20, at 1/3 the embedding dim. Default switch unlocked by #949 (Wave C3 merged).
 
-Pre-2026-04-14 numbers (44.9% R@1 etc.) were measured against the dirty (81% worktree-dup) index; see GC prune_all suffix-match bug fixed in wave 1.
+## Pending Changes
 
-### Residual puzzles
+Uncommitted on main: `docs/notes.toml` (4 re-added session notes after a git-stash-drop incident). Will land after #987 via a `chore/post-wave-c-tears` branch alongside this file and `ROADMAP.md`.
 
-- **Classifier accuracy** — 4.5pp oracle gap entirely in `classify_query()`, not alpha picks. Today: negation 100%, identifier 84%, structural 19%, behavioral 5%, conceptual 3%, cross_language 0%. Wave D #964 (Aho-Corasick) is a pre-req; actual investigation + centroid-matching-on-BGE-embeddings proposed in ROADMAP.
-- **Alpha defaults on clean index** — today's defaults were fit on dirty data. Re-sweep on clean infra to find real optima.
+## Architecture state
 
-## PR status
+- **Version:** v1.25.0, Schema v20
+- **Binary:** installed from local build of `f8b6e8d` + the pending `save_with_store<Mode>` fix. Daemon active.
+- **Index:** clean (13,279 chunks)
+- **Test count:** 1415+ lib tests. 5 CLI integration binaries now gated behind `slow-tests` feature.
+- **New this session (landed):** `cqs::fs::atomic_replace`, `ModelConfig::{InputNames, PoolingStrategy, output_name}`, `CagraIndex::{save, load, delete_persisted}` + `.cagra.meta`, `Store<ReadOnly>`/`Store<ReadWrite>` typestate + `into_readonly()`, `slow-tests` feature gating.
 
-- #978 tears (this one) — open, CI running
-- #979 Wave A quick-wins — open, CI running
-- #980 slow-CLI-tests issue — filed 2026-04-14 evening
+## Operational pitfalls (do not repeat)
 
-## Open Issues (40, tiered)
+1. **Multiple watchers racing.** Early attempts spawned two bash watchers on the same PRs; the old one merged prematurely. Use `Monitor` (single task lifecycle) not ad-hoc backgrounded shell scripts.
+2. **CI clippy is not `--all-targets`.** CI uses `cargo clippy -- -D warnings` (+ `cargo test --verbose` default features, *no* `gpu-index`). Locally `cargo clippy --all-targets --features gpu-index` misses warnings that CI promotes to errors. Match exactly before pushing.
+3. **Agent mid-refactor handoff.** Wave C1 agent stopped at commit 2/N with the working tree dirty. Always `git status` on the worktree after an agent reports done.
+4. **`/tmp` is transient on WSL.** Shell-script logs in `/tmp/*.log` vanish on restarts. Monitor's output file is harness-managed and survives the session.
+5. **Merge-order artifacts from parallel PRs.** Four Wave C PRs were branched from the same base; #982 + #985 independently touched the same `save_with_store` surface with different typing assumptions. Main compiled green per PR (default features) but broke `--features gpu-index` builds once both were squashed. Always `cargo build --release --features gpu-index` on post-merge main after a multi-PR batch.
+6. **`git stash drop` is destructive.** A force-drop lost 4 session notes (recoverable via `cqs notes add`) and the tears/ROADMAP diff (this file is the reconstruction). If you must stash with a rebase mid-flight, `git stash apply` first, verify the stash was a dupe, then drop.
 
-- **Tier 1 (11)** — fix-worthy near-term: #946-#950 refactors, #953 migration backup, #961 WSL mmap (→ Wave A), #962 CAGRA itopk (→ Wave A), #963 reranker batch (→ Wave A), #972 daemon tests
-- **Tier 2 (10)** — real impact, harder: #956 Metal/ROCm, #957 SPLADE/reranker presets, #964 Aho-Corasick, #968 shared runtime, #973 dispatch_search tests, #63 paste RUSTSEC, #916 mmap SPLADE, #917 streaming SPLADE, #921 WSL SPLADE save, #923 INDEX_DB_FILENAME, #980 CLI test perf
-- **Tier 3 (19)** — low urgency/blocked upstream: #106 ort RC, #389 CAGRA CPU retain, #717 HNSW RAM, #255 reference packages, plus 15 minor perf/refactor/test items
+## Open Issues (current cut)
+
+Tier 1 remaining: **#972** daemon tests (Wave D), **#964** Aho-Corasick (Wave D), **#953** migration backup, **#980** slow CLI test perf (partially addressed by #988, full in-process rewrite still open), **#986** `open_readonly_after_init` (closes #946 follow-up).
+
+Closed this session: #961, #962, #963, #947, #948, #949, #950, #946 (via #979/#981/#983/#984/#985/#982).
 
 Filter: `gh issue list --state open --label tier-N`
 
 ## Architecture notes
-- Deterministic search path + deterministic eval pipeline (end-to-end)
-- SPLADE always-on, α controls fusion weight only
-- HNSW dirty flag self-heals via checksum verification (per-kind after wave 2 AC-V1.25-8)
-- cuVS 26.4 + patched with `search_with_filter` (upstream rapidsai/cuvs#2019)
-- Eval results write to `~/.cache/cqs/evals/` (outside watched project dir)
+
+- Deterministic search + deterministic eval (end-to-end)
+- SPLADE always-on, α controls fusion weight only (SPLADE model at `~/.cache/huggingface/splade-onnx/`, hash-identical to `~/training-data/splade-code-v1/onnx/model.onnx` — keep that training dir)
+- HNSW dirty flag self-heals via per-kind checksum verification (AC-V1.25-8)
+- cuVS 26.4 patched with `search_with_filter` + `add-serialize-deserialize` (for #950) — tracks rapidsai/cuvs#2019
+- CAGRA persistence: `.cagra` + `.cagra.meta` sidecar with blake3 checksum + `CQS_CAGRA_PERSIST` toggle
+- `atomic_replace(tmp, final)`: fsync tmp → rename → fsync parent → EXDEV copy fallback
+- ModelConfig drives ONNX inputs/output/pooling (BGE/E5/custom all describe via config)
+- Store typestate: `Store<ReadOnly>`/`Store<ReadWrite>`; write methods on `impl Store<ReadWrite>`; daemon holds `ReadOnly` so write-on-readonly is a compile error
 - Daemon (`cqs watch --serve`), thread-per-connection capped at 64 (SEC-V1.25-1)
-- WSL mmap auto-detect lands in Wave A (#961) — disables mmap on 9P/NTFS/CIFS
-- CAGRA itopk env overrides with corpus-log₂ scaling land in Wave A (#962)
