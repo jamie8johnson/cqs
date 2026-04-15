@@ -99,16 +99,21 @@ pub(in crate::cli::batch) fn dispatch_search(
     // Classify query for per-category routing (SPLADE alpha + base/enriched index).
     let classification = cqs::search::router::classify_query(&args.query);
 
-    // Per-category SPLADE routing: if --splade flag is set, use it directly.
-    // Otherwise, resolve per-category alpha from classification.
-    let (use_splade, splade_alpha) = if args.splade {
-        (true, args.splade_alpha)
-    } else {
-        (
+    // SPLADE alpha resolution (matches cmd_query semantics):
+    //   --splade-alpha X : explicit constant α (sweeps, debug)
+    //   otherwise        : per-category router
+    //   --splade         : force on even for Unknown category
+    let (use_splade, splade_alpha) = match args.splade_alpha {
+        Some(alpha) => (true, alpha),
+        None => (
             true,
             cqs::search::router::resolve_splade_alpha(&classification.category),
-        )
+        ),
     };
+    // `args.splade` is retained for CLI parity but the per-category
+    // router always runs on batch queries — classify_query always
+    // returns a category (possibly Unknown), so router is always live.
+    let _ = args.splade;
 
     // Phase 5: base/enriched index routing.
     let use_base = matches!(

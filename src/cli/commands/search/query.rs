@@ -174,22 +174,34 @@ pub(crate) fn cmd_query(
     // Type boost from adaptive routing (boost, not filter — won't exclude results)
     let type_boost_types = classification.as_ref().and_then(|c| c.type_hints.clone());
 
-    // Resolve per-category SPLADE alpha. --splade flag overrides (uses cli.splade_alpha
-    // for all categories). Otherwise, resolve from env → config → default.
+    // Resolve SPLADE alpha:
+    //   --splade-alpha X  : explicit constant α for all queries (sweeps, debug)
+    //   otherwise         : per-category router when classification succeeds
+    //   --splade          : force SPLADE on even for Unknown category
     //
     // IMPORTANT: SPLADE is always enabled when a category is classified, even at
     // α=1.0 — the α knob controls scoring weight (α=1.0 = pure dense) but SPLADE
     // still contributes to the *candidate pool*. Skipping SPLADE at α=1.0 loses
     // ~10pp R@1 on categories where sparse surfaces candidates dense misses
     // (multi_step, negation, cross_language).
+    //
+    // Semantics fix: prior to this, `--splade` bypassed the router and used
+    // `cli.splade_alpha`'s clap default (0.7) for every query. That was a
+    // regression introduced when routing landed — the flag predates routing.
+    // Now the router runs whenever classification succeeds, regardless of
+    // `--splade`. Explicit `--splade-alpha` still overrides.
+    //
     // OB-NEW-1: `resolve_splade_alpha` emits the structured "SPLADE routing"
     // log internally — no call-site log needed here.
-    let (use_splade, splade_alpha) = if cli.splade {
-        (true, cli.splade_alpha)
-    } else if let Some(ref c) = classification {
-        (true, cqs::search::router::resolve_splade_alpha(&c.category))
-    } else {
-        (false, cli.splade_alpha)
+    let (use_splade, splade_alpha) = match (cli.splade_alpha, classification.as_ref()) {
+        // Explicit α override wins in all cases.
+        (Some(alpha), _) => (true, alpha),
+        // Classified query → per-category router.
+        (None, Some(c)) => (true, cqs::search::router::resolve_splade_alpha(&c.category)),
+        // Unknown category + --splade → force on at legacy α=0.7.
+        (None, None) if cli.splade => (true, 0.7),
+        // Unknown category, no flags → SPLADE off (dense-only).
+        (None, None) => (false, 1.0),
     };
 
     #[allow(clippy::needless_update)]
