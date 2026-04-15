@@ -1200,13 +1200,7 @@ llm_max_tokens = 200
         std::env::remove_var("CQS_EMBEDDING_MODEL");
         let embedding_cfg = crate::embedder::EmbeddingConfig {
             model: String::new(),
-            repo: None,
-            onnx_path: None,
-            tokenizer_path: None,
-            dim: None,
-            max_seq_length: None,
-            query_prefix: None,
-            doc_prefix: None,
+            ..Default::default()
         };
         let cfg = crate::embedder::ModelConfig::resolve(None, Some(&embedding_cfg));
         assert_eq!(
