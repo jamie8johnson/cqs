@@ -286,36 +286,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
         }
         BatchCmd::Search { args } => {
             log_query("search", &args.query);
-            handlers::dispatch_search(
-                ctx,
-                &handlers::SearchParams {
-                    query: args.query,
-                    limit: args.limit,
-                    name_only: args.name_only,
-                    rrf: args.rrf,
-                    rerank: args.rerank,
-                    splade: args.splade,
-                    splade_alpha: args.splade_alpha,
-                    lang: args.lang,
-                    path: args.path,
-                    include_type: args.include_type,
-                    exclude_type: args.exclude_type,
-                    tokens: args.tokens,
-                    no_demote: args.no_demote,
-                    name_boost: args.name_boost,
-                    ref_name: args.ref_name,
-                    include_refs: args.include_refs,
-                    no_content: args.no_content,
-                    context: args.context,
-                    expand: args.expand,
-                    no_stale_check: args.no_stale_check,
-                    // CQ-V1.25-1: SearchArgs' threshold is non-optional (default 0.3).
-                    // `None` in SearchParams preserves the old semantics where the
-                    // batch handler's hard-coded default kicks in only if the flag
-                    // was omitted. We send the always-present value now.
-                    threshold: Some(args.threshold),
-                },
-            )
+            handlers::dispatch_search(ctx, &args)
         }
         BatchCmd::Deps { args } => {
             handlers::dispatch_deps(ctx, &args.name, args.reverse, args.cross_project)
@@ -332,17 +303,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
         }
         BatchCmd::Gather { args } => {
             log_query("gather", &args.query);
-            handlers::dispatch_gather(
-                ctx,
-                &handlers::GatherParams {
-                    query: &args.query,
-                    expand: args.expand,
-                    direction: args.direction,
-                    limit: args.limit,
-                    tokens: args.tokens,
-                    ref_name: args.ref_name.as_deref(),
-                },
-            )
+            handlers::dispatch_gather(ctx, &args)
         }
         BatchCmd::Impact { args } => handlers::dispatch_impact(
             ctx,
