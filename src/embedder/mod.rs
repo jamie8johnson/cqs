@@ -749,7 +749,9 @@ impl Embedder {
     ///
     /// Returns `EmbedderError::Tokenizer` if tokenization of the batch fails.
     fn embed_batch(&self, texts: &[String]) -> Result<Vec<Embedding>, EmbedderError> {
+        use ort::session::SessionInputValue;
         use ort::value::Tensor;
+        use std::borrow::Cow;
 
         let _span = tracing::info_span!("embed_batch", count = texts.len()).entered();
 
@@ -788,13 +790,34 @@ impl Embedder {
         // Create padded arrays
         let input_ids_arr = pad_2d_i64(&input_ids, max_len, 0);
         let attention_mask_arr = pad_2d_i64(&attention_mask, max_len, 0);
-        // token_type_ids: all zeros, same shape as input_ids
-        let token_type_ids_arr = Array2::<i64>::zeros((texts.len(), max_len));
 
         // Create tensors
         let input_ids_tensor = Tensor::from_array(input_ids_arr).map_err(ort_err)?;
         let attention_mask_tensor = Tensor::from_array(attention_mask_arr).map_err(ort_err)?;
-        let token_type_ids_tensor = Tensor::from_array(token_type_ids_arr).map_err(ort_err)?;
+
+        // Build the named input map. Tensor names come from `ModelConfig::input_names`
+        // so non-BERT models (different naming) and distilled variants (no
+        // token_type_ids) are supported without touching encoder code.
+        let names = &self.model_config.input_names;
+        let mut inputs: Vec<(Cow<'_, str>, SessionInputValue<'_>)> = Vec::with_capacity(3);
+        inputs.push((
+            Cow::Borrowed(names.ids.as_str()),
+            SessionInputValue::from(input_ids_tensor),
+        ));
+        inputs.push((
+            Cow::Borrowed(names.mask.as_str()),
+            SessionInputValue::from(attention_mask_tensor),
+        ));
+        if let Some(ref tt_name) = names.token_types {
+            // token_type_ids: all zeros, same shape as input_ids.
+            // Only added when the model wants it.
+            let token_type_ids_arr = Array2::<i64>::zeros((texts.len(), max_len));
+            let token_type_ids_tensor = Tensor::from_array(token_type_ids_arr).map_err(ort_err)?;
+            inputs.push((
+                Cow::Borrowed(tt_name.as_str()),
+                SessionInputValue::from(token_type_ids_tensor),
+            ));
+        }
 
         // Run inference (lazy init session)
         let mut guard = self.session()?;
@@ -802,18 +825,14 @@ impl Embedder {
             .as_mut()
             .expect("session() guarantees initialized after Ok return");
         let _inference = tracing::debug_span!("inference", max_len).entered();
-        let outputs = session
-            .run(ort::inputs![
-                "input_ids" => input_ids_tensor,
-                "attention_mask" => attention_mask_tensor,
-                "token_type_ids" => token_type_ids_tensor,
-            ])
-            .map_err(ort_err)?;
+        let outputs = session.run(inputs).map_err(ort_err)?;
 
-        // Get the last_hidden_state output: shape [batch, seq_len, dim]
-        let output = outputs.get("last_hidden_state").ok_or_else(|| {
+        // Get the configured output tensor: shape [batch, seq_len, dim]
+        let output_name = self.model_config.output_name.as_str();
+        let output = outputs.get(output_name).ok_or_else(|| {
             EmbedderError::InferenceFailed(format!(
-                "ONNX model has no 'last_hidden_state' output. Available: {:?}",
+                "ONNX model has no '{}' output. Available: {:?}",
+                output_name,
                 outputs.keys().collect::<Vec<_>>()
             ))
         })?;
@@ -851,33 +870,23 @@ impl Embedder {
                 batch_size, shape[0]
             )));
         }
-        // Mean-pooling via ndarray (vectorized, SIMD-friendly)
+        // Reshape flat output into [batch, seq, dim] for pooling dispatch.
         let hidden = Array3::from_shape_vec((batch_size, seq_len, embedding_dim), data.to_vec())
             .map_err(|e| EmbedderError::InferenceFailed(format!("tensor reshape failed: {e}")))?;
 
-        // Build mask: [batch, seq, 1] for broadcasting
-        let mask_2d = Array2::from_shape_fn((batch_size, seq_len), |(i, j)| {
-            attention_mask[i].get(j).copied().unwrap_or(0) as f32
-        });
-        let mask_3d = mask_2d.clone().insert_axis(Axis(2));
+        // Dispatch on the configured pooling strategy. Each pooler returns
+        // an unnormalized per-batch vector; L2 normalization is applied
+        // uniformly after to keep the contract (unit-length embeddings)
+        // invariant across strategies.
+        let pooled_batch: Vec<Vec<f32>> = match self.model_config.pooling {
+            PoolingStrategy::Mean => mean_pool(&hidden, &attention_mask, embedding_dim),
+            PoolingStrategy::Cls => cls_pool(&hidden),
+            PoolingStrategy::LastToken => last_token_pool(&hidden, &attention_mask),
+        };
 
-        // Masked sum: (hidden * mask).sum(axis=1) / mask.sum(axis=1)
-        let masked = &hidden * &mask_3d;
-        let summed = masked.sum_axis(Axis(1)); // [batch, dim]
-        let counts = mask_2d.sum_axis(Axis(1)).insert_axis(Axis(1)); // [batch, 1]
-
-        let results = (0..batch_size)
-            .map(|i| {
-                let count = counts[[i, 0]];
-                let row = summed.row(i);
-                let pooled: Vec<f32> = if count > 0.0 {
-                    row.iter().map(|v| v / count).collect()
-                } else {
-                    tracing::warn!(batch_idx = i, "Zero attention mask — producing zero vector");
-                    vec![0.0f32; embedding_dim]
-                };
-                Embedding::new(normalize_l2(pooled))
-            })
+        let results = pooled_batch
+            .into_iter()
+            .map(|v| Embedding::new(normalize_l2(v)))
             .collect();
 
         Ok(results)
@@ -996,6 +1005,98 @@ fn normalize_l2(mut v: Vec<f32>) -> Vec<f32> {
         v.iter_mut().for_each(|x| *x *= inv_norm);
     }
     v
+}
+
+// ---------------------------------------------------------------------------
+// Pooling strategies
+// ---------------------------------------------------------------------------
+//
+// Each pooler takes the `[batch, seq, dim]` hidden-state tensor and returns
+// one `Vec<f32>` per batch item (unnormalized). The caller normalizes.
+//
+// Mean pooling is the BGE / E5 / v9-200k path. CLS and LastToken are present
+// for future non-BERT models (tested with synthetic fixtures today; wiring
+// for a real model is handled via `ModelConfig::pooling`).
+
+/// Mean-pool the masked token positions.
+///
+/// Builds the attention mask as a `[batch, seq, 1]` broadcast tensor, multiplies
+/// in-place against hidden states, sums along the sequence axis, and divides
+/// by the mask sum. Matches BGE reference / sentence-transformers mean pooling.
+///
+/// Batches whose attention mask is all zero return a zero vector and log a
+/// warning — this preserves pre-refactor behavior.
+fn mean_pool(
+    hidden: &Array3<f32>,
+    attention_mask: &[Vec<i64>],
+    embedding_dim: usize,
+) -> Vec<Vec<f32>> {
+    let (batch_size, seq_len, _) = hidden.dim();
+    let mask_2d = Array2::from_shape_fn((batch_size, seq_len), |(i, j)| {
+        attention_mask[i].get(j).copied().unwrap_or(0) as f32
+    });
+    let mask_3d = mask_2d.clone().insert_axis(Axis(2));
+
+    let masked = hidden * &mask_3d;
+    let summed = masked.sum_axis(Axis(1)); // [batch, dim]
+    let counts = mask_2d.sum_axis(Axis(1)).insert_axis(Axis(1)); // [batch, 1]
+
+    (0..batch_size)
+        .map(|i| {
+            let count = counts[[i, 0]];
+            let row = summed.row(i);
+            if count > 0.0 {
+                row.iter().map(|v| v / count).collect()
+            } else {
+                tracing::warn!(batch_idx = i, "Zero attention mask — producing zero vector");
+                vec![0.0f32; embedding_dim]
+            }
+        })
+        .collect()
+}
+
+/// CLS-pool: return the hidden state of the first token for each batch item.
+///
+/// Used by some DistilBERT-derived embedders trained specifically for CLS
+/// pooling. On those models, using mean pooling degrades quality silently
+/// (no error; just worse retrieval) — hence the configurable dispatch.
+fn cls_pool(hidden: &Array3<f32>) -> Vec<Vec<f32>> {
+    let (batch_size, _, _) = hidden.dim();
+    (0..batch_size)
+        .map(|i| hidden.slice(ndarray::s![i, 0usize, ..]).to_vec())
+        .collect()
+}
+
+/// Last-token pool: return the hidden state of the last non-padding token,
+/// located via the attention mask (rightmost `1`).
+///
+/// Used by autoregressive / decoder-only embedders (Qwen3-Embedding,
+/// some Mistral-based embedders) where the final token's hidden state is the
+/// trained embedding location.
+///
+/// If the mask is all zero (pathological) the function falls back to the
+/// first token and logs a warning. If a batch item's mask has no `1`s we
+/// use index 0.
+fn last_token_pool(hidden: &Array3<f32>, attention_mask: &[Vec<i64>]) -> Vec<Vec<f32>> {
+    let (batch_size, seq_len, _) = hidden.dim();
+    (0..batch_size)
+        .map(|i| {
+            // Find the last position where the mask is set.
+            let mask_row = attention_mask.get(i);
+            let last_idx = mask_row
+                .and_then(|row| {
+                    row.iter().take(seq_len).rposition(|&m| m != 0).or_else(|| {
+                        tracing::warn!(
+                            batch_idx = i,
+                            "last_token_pool: zero attention mask — using index 0"
+                        );
+                        None
+                    })
+                })
+                .unwrap_or(0);
+            hidden.slice(ndarray::s![i, last_idx, ..]).to_vec()
+        })
+        .collect()
 }
 
 #[cfg(test)]
