@@ -674,6 +674,108 @@ pub(super) enum Commands {
 // Re-export the subcommand types used in Commands variants
 pub(super) use super::commands::{CacheCommand, NotesCommand, ProjectCommand, RefCommand};
 
+/// Classifier used by `try_daemon_query` to decide whether a CLI command can
+/// be forwarded to the batch daemon.
+///
+/// #947: replaces the hand-maintained allowlist that previously lived inline
+/// in `try_daemon_query`. The rule is simple: every `Commands` variant must
+/// classify itself here, the `match` is exhaustive (no wildcard), and adding
+/// a new CLI variant without picking a classification fails to compile.
+///
+/// The policy:
+/// - `Cli`: command is CLI-only, do not forward. Reasons include process
+///   lifecycle (init/index/watch/chat/completions), read-write store access
+///   (gc, notes mutations, suggest --apply — batch holds a `Store<ReadOnly>`),
+///   or not-yet-implemented on the batch side.
+/// - `Daemon`: command has a matching `BatchCmd` variant and can be forwarded.
+/// - `DaemonIfReadonly(&dyn Fn())`: for `Notes`, only the `list` subcommand
+///   is daemon-compatible; mutations (`add` / `update` / `remove`) must hit
+///   the CLI so the filesystem reindex runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BatchSupport {
+    /// CLI-only: daemon path should return early (None) and fall through.
+    Cli,
+    /// Daemon-dispatchable: forward to batch handler.
+    Daemon,
+}
+
+impl Commands {
+    /// Classify this variant for daemon dispatch.
+    ///
+    /// Exhaustive match: adding a new `Commands` variant forces an explicit
+    /// classification decision. This is the whole point of the refactor —
+    /// no more silent daemon-forwarding drift.
+    pub(crate) fn batch_support(&self) -> BatchSupport {
+        match self {
+            // Process / lifecycle — never daemon.
+            Commands::Init
+            | Commands::Index { .. }
+            | Commands::Watch { .. }
+            | Commands::Batch
+            | Commands::Chat
+            | Commands::Completions { .. }
+            | Commands::Doctor { .. }
+            // Telemetry / audit / training — CLI-only tooling.
+            | Commands::AuditMode { .. }
+            | Commands::Telemetry { .. }
+            | Commands::TrainData { .. }
+            | Commands::TrainPairs { .. }
+            | Commands::Cache { .. }
+            // Registry commands — not on batch surface.
+            | Commands::Ref { .. }
+            | Commands::Project { .. }
+            | Commands::ExportModel { .. }
+            // Not-yet-on-batch commands. Candidates for a future BatchCmd.
+            | Commands::Affected { .. }
+            | Commands::Brief { .. }
+            | Commands::Neighbors { .. }
+            | Commands::Reconstruct { .. } => BatchSupport::Cli,
+
+            #[cfg(feature = "convert")]
+            Commands::Convert { .. } => BatchSupport::Cli,
+
+            // Notes: list is daemon-compatible; mutations must hit CLI for
+            // the filesystem reindex. Inline-decide here so the call-site stays
+            // trivial.
+            Commands::Notes { subcmd } => match subcmd {
+                NotesCommand::List { .. } => BatchSupport::Daemon,
+                _ => BatchSupport::Cli,
+            },
+
+            // All remaining commands have a matching `BatchCmd` variant.
+            Commands::Stats { .. }
+            | Commands::Blame { .. }
+            | Commands::Deps { .. }
+            | Commands::Callers { .. }
+            | Commands::Callees { .. }
+            | Commands::Onboard { .. }
+            | Commands::Diff { .. }
+            | Commands::Drift { .. }
+            | Commands::Explain { .. }
+            | Commands::Similar { .. }
+            | Commands::Impact { .. }
+            | Commands::ImpactDiff { .. }
+            | Commands::Review { .. }
+            | Commands::Ci { .. }
+            | Commands::Trace { .. }
+            | Commands::TestMap { .. }
+            | Commands::Context { .. }
+            | Commands::Dead { .. }
+            | Commands::Gather { .. }
+            | Commands::Gc { .. }
+            | Commands::Health { .. }
+            | Commands::Stale { .. }
+            | Commands::Suggest { .. }
+            | Commands::Read { .. }
+            | Commands::Related { .. }
+            | Commands::Where { .. }
+            | Commands::Scout { .. }
+            | Commands::Plan { .. }
+            | Commands::Task { .. } => BatchSupport::Daemon,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,5 +846,53 @@ mod tests {
     fn parse_finite_f32_rejects_garbage() {
         assert!(parse_finite_f32("not a number").is_err());
         assert!(parse_finite_f32("").is_err());
+    }
+
+    // #947: spot-check the batch-support classifier. The exhaustive match in
+    // `Commands::batch_support` does the real work — if a new variant is
+    // added without classification, the whole crate fails to compile. These
+    // tests pin the policy for a few sensitive variants so an accidental
+    // flip (e.g. classifying Init as Daemon) shows up as a failing test.
+    #[test]
+    fn batch_support_lifecycle_commands_are_cli_only() {
+        use clap::Parser;
+        // Lifecycle commands must never forward to the daemon.
+        let cli = Cli::try_parse_from(["cqs", "init"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Cli);
+
+        let cli = Cli::try_parse_from(["cqs", "chat"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Cli);
+
+        let cli = Cli::try_parse_from(["cqs", "index"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Cli);
+    }
+
+    #[test]
+    fn batch_support_notes_mutations_are_cli_only() {
+        use clap::Parser;
+        // v1.25.0: notes add/update/remove reindex the filesystem; list mode
+        // is daemon-safe. The classifier must distinguish them.
+        let cli = Cli::try_parse_from(["cqs", "notes", "list"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Daemon);
+
+        let cli = Cli::try_parse_from(["cqs", "notes", "add", "foo"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Cli);
+
+        let cli = Cli::try_parse_from(["cqs", "notes", "remove", "foo"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Cli);
+    }
+
+    #[test]
+    fn batch_support_search_commands_daemon_dispatchable() {
+        use clap::Parser;
+        // The flagship query surface must hit the daemon (3-19ms vs 2s CLI).
+        let cli = Cli::try_parse_from(["cqs", "scout", "foo"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Daemon);
+
+        let cli = Cli::try_parse_from(["cqs", "impact", "foo"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Daemon);
+
+        let cli = Cli::try_parse_from(["cqs", "stale"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Daemon);
     }
 }

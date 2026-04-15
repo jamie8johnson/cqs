@@ -3,6 +3,8 @@
 use anyhow::Result;
 
 use super::config::{apply_config_defaults, find_project_root};
+#[cfg(unix)]
+use super::definitions::BatchSupport;
 use super::definitions::{Cli, Commands};
 use super::telemetry;
 use super::{batch, chat, watch};
@@ -473,43 +475,18 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
         .unwrap_or("search");
     let _span = tracing::debug_span!("try_daemon_query", cmd = cmd_label).entered();
 
-    // Only forward commands that the batch handler can dispatch.
-    // None = default search (most common invocation: `cqs "query"`)
+    // #947: the hand-maintained allowlist is gone. Every `Commands` variant
+    // classifies itself via `batch_support()`; the match there is exhaustive,
+    // so adding a new CLI command forces an explicit daemon-forwarding
+    // decision at compile time. API-V1.25-1 and the later notes-mutation
+    // regression (PR #945) are now structurally impossible — no surface
+    // change can silently flip a command's daemon behavior.
     //
-    // API-V1.25-1: Commands below are NOT in the batch dispatcher (no matching
-    // `BatchCmd` variant). Forwarding them would produce a confusing
-    // "unrecognized subcommand" error instead of the CLI fallback a user would
-    // get with `CQS_NO_DAEMON=1`. Route them straight to the CLI Group A/B path.
-    match &cli.command {
-        Some(Commands::Init)
-        | Some(Commands::Index { .. })
-        | Some(Commands::Watch { .. })
-        | Some(Commands::Batch)
-        | Some(Commands::Chat)
-        | Some(Commands::Completions { .. })
-        | Some(Commands::TrainData { .. })
-        | Some(Commands::TrainPairs { .. })
-        | Some(Commands::Cache { .. })
-        | Some(Commands::Doctor { .. })
-        | Some(Commands::Affected { .. })
-        | Some(Commands::Brief { .. })
-        | Some(Commands::Neighbors { .. })
-        | Some(Commands::Reconstruct { .. })
-        | Some(Commands::AuditMode { .. })
-        | Some(Commands::Telemetry { .. })
-        | Some(Commands::Ref { .. })
-        | Some(Commands::Project { .. })
-        | Some(Commands::ExportModel { .. }) => return None,
-        #[cfg(feature = "convert")]
-        Some(Commands::Convert { .. }) => return None,
-        // notes add/update/remove are filesystem mutations on docs/notes.toml
-        // followed by a reindex. The batch handler only supports `notes --warnings`
-        // / `--patterns` (list modes) and rejects the subcommand tokens. Route
-        // mutations to the CLI handler at Group A instead.
-        Some(Commands::Notes { subcmd }) if !matches!(subcmd, NotesCommand::List { .. }) => {
+    // None (= default search `cqs "query"`) is always daemon-dispatchable.
+    if let Some(cmd) = &cli.command {
+        if cmd.batch_support() == BatchSupport::Cli {
             return None;
         }
-        None | Some(_) => {}
     }
 
     let sock_path = super::daemon_socket_path(cqs_dir);
