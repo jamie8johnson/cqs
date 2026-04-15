@@ -297,33 +297,22 @@ pub fn rewrite_notes_file(
         }
     }
 
-    if let Err(rename_err) = std::fs::rename(&tmp_path, notes_path) {
-        // Rename can fail with EXDEV on cross-device (Docker overlayfs, some CI).
-        // Write a second temp in the destination directory (guaranteed same device),
-        // then rename atomically.
-        let dest_dir = notes_path.parent().unwrap_or(Path::new("."));
-        let dest_tmp = dest_dir.join(format!(".notes.{:016x}.tmp", suffix));
-        if let Err(copy_err) = std::fs::copy(&tmp_path, &dest_tmp) {
-            let _ = std::fs::remove_file(&tmp_path);
-            let _ = std::fs::remove_file(&dest_tmp);
-            return Err(NoteError::Io(std::io::Error::new(
-                copy_err.kind(),
-                format!(
-                    "rename {} -> {} failed ({}), copy fallback also failed: {}",
-                    tmp_path.display(),
-                    notes_path.display(),
-                    rename_err,
-                    copy_err
-                ),
-            )));
-        }
+    // atomic_replace: fsync tmp, rename with EXDEV fallback, fsync parent dir.
+    // Previously the notes path open-coded the rename + fs::copy fallback but
+    // never fsynced the tmp or the parent dir, so a power cut between write
+    // and rename could lose notes that appeared committed to the user.
+    crate::fs::atomic_replace(&tmp_path, notes_path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp_path);
-        // Same-device rename is atomic
-        if let Err(e) = std::fs::rename(&dest_tmp, notes_path) {
-            let _ = std::fs::remove_file(&dest_tmp);
-            return Err(NoteError::Io(e));
-        }
-    }
+        NoteError::Io(std::io::Error::new(
+            e.kind(),
+            format!(
+                "Failed to persist {} -> {}: {}",
+                tmp_path.display(),
+                notes_path.display(),
+                e
+            ),
+        ))
+    })?;
 
     Ok(file.note)
 }
