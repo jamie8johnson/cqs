@@ -236,10 +236,13 @@ pub struct ReadWrite;
 ///
 /// # Memory-mapped I/O
 /// `open()` sets `PRAGMA mmap_size = 256MB` per connection with a 4-connection pool,
-/// reserving up to 1GB of virtual address space. `open_readonly()` uses 64MB × 1.
-/// This is intentional and benign on 64-bit systems (128TB virtual address space).
-/// Mmap pages are demand-paged from the database file and evicted under memory
-/// pressure — actual RSS reflects only accessed pages, not the mmap reservation.
+/// reserving up to 1GB of virtual address space. `open_readonly_pooled()` keeps the
+/// full 256MB × 1. `open_readonly()` uses 64MB × 1. `open_readonly_small()` uses
+/// 16MB × 1 for reference indexes where virtual address fragmentation matters more
+/// than search throughput. This is intentional and benign on 64-bit systems (128TB
+/// virtual address space). Mmap pages are demand-paged from the database file and
+/// evicted under memory pressure — actual RSS reflects only accessed pages, not
+/// the mmap reservation.
 /// # Example
 /// ```no_run
 /// use cqs::Store;
@@ -730,6 +733,36 @@ impl Store<ReadOnly> {
                 mmap_size: resolve_mmap_size("268435456", path),
                 cache_size: cache_size_from_env("-16384"),
                 runtime: Some(runtime),
+            },
+        )
+    }
+
+    /// Open an existing index in read-only mode with the smallest practical
+    /// resource footprint: 16MB mmap, 1MB SQLite page cache, single connection,
+    /// current-thread tokio runtime.
+    ///
+    /// Intended for reference indexes with modest corpora (< ~5k chunks) where
+    /// virtual address space — not throughput — is the scarce resource. A
+    /// cross-project session that caches 4–5 references would otherwise reserve
+    /// hundreds of MB of mmap (64MB × N via [`open_readonly`]), which has bitten
+    /// us before on WSL due to virtual address fragmentation.
+    ///
+    /// Primary project indexes should keep using [`open_readonly_pooled`]
+    /// (256MB mmap) or [`open_readonly`] (64MB mmap) — those pay for the
+    /// larger reservation with full-scan search throughput.
+    ///
+    /// Environment overrides (`CQS_MMAP_SIZE`, `CQS_SQLITE_CACHE_SIZE`) still
+    /// win, and slow-FS auto-detection still zeroes mmap on WSL 9P / NFS / SMB.
+    pub fn open_readonly_small(path: &Path) -> Result<Self, StoreError> {
+        open_with_config_impl::<ReadOnly>(
+            path,
+            StoreOpenConfig {
+                read_only: true,
+                use_current_thread: true,
+                max_connections: 1,
+                mmap_size: resolve_mmap_size("16777216", path), // 16MB default
+                cache_size: cache_size_from_env("-1024"),       // 1MB
+                runtime: None,
             },
         )
     }
@@ -1489,5 +1522,67 @@ mod tests {
         store
             .init(&ModelInfo::default())
             .expect("second init() should be idempotent but failed");
+    }
+
+    #[test]
+    fn open_readonly_small_roundtrip() {
+        // #970: open_readonly_small right-sizes the mmap/cache for reference
+        // indexes. Verify it still reads back data written by a normal Store.
+        use crate::embedder::Embedding;
+        use crate::parser::{Chunk, ChunkType, Language};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+
+        // Build a small fixture index with a regular read-write store.
+        {
+            let store = Store::open(&db_path).unwrap();
+            store.init(&ModelInfo::default()).unwrap();
+
+            let content = "fn small() {}";
+            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+            let chunk = Chunk {
+                id: format!("small.rs:1:{}", &hash[..8]),
+                file: std::path::PathBuf::from("small.rs"),
+                language: Language::Rust,
+                chunk_type: ChunkType::Function,
+                name: "small".to_string(),
+                signature: "fn small()".to_string(),
+                content: content.to_string(),
+                doc: None,
+                line_start: 1,
+                line_end: 1,
+                content_hash: hash,
+                parent_id: None,
+                window_idx: None,
+                parent_type_name: None,
+            };
+            // A unit-vector embedding of the store's configured dim.
+            let mut v = vec![0.0f32; store.dim()];
+            if !v.is_empty() {
+                v[0] = 1.0;
+            }
+            let embedding = Embedding::new(v);
+            store.upsert_chunk(&chunk, &embedding, Some(100)).unwrap();
+        }
+
+        // Re-open with the small constructor and confirm the fixture is visible.
+        let ro = Store::open_readonly_small(&db_path)
+            .expect("open_readonly_small should succeed on a populated index");
+
+        ro.check_model_version()
+            .expect("schema/model check should pass on small-mode open");
+
+        let stats = ro.stats().expect("stats() should work on small-mode store");
+        assert_eq!(
+            stats.total_chunks, 1,
+            "small-mode store must see the fixture chunk"
+        );
+
+        let chunks = ro
+            .get_chunks_by_origin("small.rs")
+            .expect("get_chunks_by_origin should work on small-mode store");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].name, "small");
     }
 }

@@ -103,7 +103,12 @@ fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
     }
 
     let db_path = cfg.path.join(crate::INDEX_DB_FILENAME);
-    let store = match Store::open_readonly(&db_path) {
+    // RM-V1.25-21 (#970): reference indexes hold a Store for as long as the LRU
+    // cache keeps them resident. Use `open_readonly_small` (16MB mmap, 1MB
+    // cache) instead of `open_readonly` (64MB mmap) so a 4-reference session
+    // reserves tens of MB of mmap instead of hundreds. Reference queries are
+    // low-volume compared to primary-index full-scan reads.
+    let store = match Store::open_readonly_small(&db_path) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(
@@ -178,12 +183,14 @@ impl ReferenceIndex {
 
 /// Load reference indexes from config, skipping any that fail to open.
 ///
-/// References are loaded in parallel via rayon — each Store::open_readonly +
+/// References are loaded in parallel via rayon — each Store::open_readonly_small +
 /// HnswIndex::try_load is independent I/O (10-50ms each). Both Store and
 /// HnswIndex are Send + Sync.
 pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
     let _span = tracing::debug_span!("load_references", count = configs.len()).entered();
-    // RM-29: Cap concurrency — each ref loads Store (~64MB) + HNSW (~50-200MB)
+    // RM-29: Cap concurrency — each ref loads Store (~16MB mmap via
+    // open_readonly_small) + HNSW (~50-200MB). The Store mmap shrunk in
+    // #970 but HNSW dominates, so the 4-thread cap still applies.
     let threads = std::env::var("CQS_RAYON_THREADS")
         .ok()
         .and_then(|v| {
