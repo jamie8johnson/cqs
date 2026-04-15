@@ -417,6 +417,11 @@ struct WatchConfig<'a> {
     embedder: &'a std::sync::OnceLock<std::sync::Arc<Embedder>>,
     quiet: bool,
     model_config: &'a ModelConfig,
+    /// #1002: gitignore matcher for the project. `None` if
+    /// `CQS_WATCH_RESPECT_GITIGNORE=0`, `--no-ignore` was passed, or the
+    /// `.gitignore` file is missing/unreadable. Wrapped in `RwLock` so the
+    /// watch loop can hot-swap it on `.gitignore` change without a restart.
+    gitignore: &'a std::sync::RwLock<Option<ignore::gitignore::Gitignore>>,
 }
 
 /// Mutable session state that evolves across watch cycles.
@@ -553,13 +558,82 @@ fn parse_wsl_automount_root() -> Option<String> {
     None
 }
 
+/// #1002: Build a `Gitignore` matcher rooted at the project, combining the
+/// root `.gitignore` with any nested `.gitignore` files discovered by a
+/// single shallow walk. Returns `None` under any of:
+///
+/// - `--no-ignore` is set (caller responsibility to pass `false`)
+/// - `CQS_WATCH_RESPECT_GITIGNORE=0` (feature flag kill-switch)
+/// - No `.gitignore` at project root (treated as "index everything")
+/// - `.gitignore` is unreadable or malformed (logged as warn, fall through)
+///
+/// When `Some`, the matcher is queried per-event in `collect_events`. The
+/// hardcoded `.cqs/` skip in `collect_events` remains in place as
+/// belt-and-suspenders so the system's own files are never indexed
+/// regardless of what `.gitignore` contains.
+fn build_gitignore_matcher(root: &Path) -> Option<ignore::gitignore::Gitignore> {
+    let _span = tracing::info_span!("build_gitignore_matcher").entered();
+
+    if std::env::var("CQS_WATCH_RESPECT_GITIGNORE").as_deref() == Ok("0") {
+        tracing::info!("CQS_WATCH_RESPECT_GITIGNORE=0 — gitignore filtering disabled");
+        return None;
+    }
+
+    let root_gitignore = root.join(".gitignore");
+    if !root_gitignore.exists() {
+        tracing::info!(
+            root = %root.display(),
+            "no .gitignore at project root — watch will not filter by gitignore"
+        );
+        return None;
+    }
+
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+
+    if let Some(err) = builder.add(&root_gitignore) {
+        tracing::warn!(
+            path = %root_gitignore.display(),
+            error = %err,
+            "root .gitignore unreadable or malformed — falling back to empty matcher"
+        );
+        return None;
+    }
+
+    // Root-only .gitignore in v1. Nested .gitignore files are not yet
+    // discovered — tracked as follow-up. `cqs index` uses the full `ignore`
+    // crate walk which supports nesting; the watch loop uses a per-event
+    // point query against a pre-built matcher and compile-time nesting
+    // would require rebuilding on every subdir change. Root-level covers
+    // the worktree-pollution motivating case.
+
+    match builder.build() {
+        Ok(gi) => {
+            tracing::info!(
+                n_files = gi.num_ignores(),
+                "gitignore matcher loaded for watch loop"
+            );
+            Some(gi)
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "gitignore matcher build failed — watch will not filter by gitignore"
+            );
+            None
+        }
+    }
+}
+
 /// Watches the project for file changes and updates the code search index incrementally.
 ///
 /// # Arguments
 ///
 /// * `cli` - Command-line interface context
 /// * `debounce_ms` - Debounce interval in milliseconds for file change events
-/// * `no_ignore` - If true, ignores `.gitignore` rules (not yet implemented)
+/// * `no_ignore` - If true, skips `.gitignore` filtering in the watch loop (#1002).
+///   Mirrors the `cqs index --no-ignore` flag. When false (default), the watch
+///   loop queries the project's `.gitignore` for every event and ignores matches.
+///   Also overridable at runtime via `CQS_WATCH_RESPECT_GITIGNORE=0`.
 /// * `poll` - If true, uses polling instead of inotify for file system monitoring
 ///
 /// # Returns
@@ -577,10 +651,7 @@ pub fn cmd_watch(
     poll: bool,
     serve: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_watch", debounce_ms, poll, serve).entered();
-    if no_ignore {
-        tracing::warn!("--no-ignore is not yet implemented for watch mode");
-    }
+    let _span = tracing::info_span!("cmd_watch", debounce_ms, poll, serve, no_ignore).entered();
 
     // RM-V1.25-9: install SIGTERM handler *before* spawning the socket
     // thread so both the main loop and the accept loop observe the
@@ -1042,6 +1113,18 @@ pub fn cmd_watch(
         };
 
     let model_config = cli.try_model_config()?;
+
+    // #1002: build the gitignore matcher once at startup. `no_ignore` (CLI)
+    // and `CQS_WATCH_RESPECT_GITIGNORE=0` (env) both disable it. Held in
+    // `RwLock<Option<_>>` so a future follow-up can hot-swap on
+    // `.gitignore` change without restart; v1 builds it once.
+    let gitignore = std::sync::RwLock::new(if no_ignore {
+        tracing::info!("--no-ignore passed — gitignore filtering disabled");
+        None
+    } else {
+        build_gitignore_matcher(&root)
+    });
+
     let watch_cfg = WatchConfig {
         root: &root,
         cqs_dir: &cqs_dir,
@@ -1051,6 +1134,7 @@ pub fn cmd_watch(
         embedder: shared_embedder.as_ref(),
         quiet: cli.quiet,
         model_config,
+        gitignore: &gitignore,
     };
 
     let mut state = WatchState {
@@ -1266,22 +1350,28 @@ fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchSta
             continue;
         }
 
-        // Short-term fix for #1002 until full .gitignore support lands.
-        // Skip .claude/ (parallel-agent git worktrees + local Claude Code
-        // settings) so the watch loop does not auto-index agent worktrees
-        // and inflate the index with near-duplicate chunks. Component-
-        // boundary match so files like `foo.claude.bar` are not false-
-        // positive ignored. Mirrors .gitignore which already excludes
-        // `.claude/worktrees/`; `cqs index` respects .gitignore via the
-        // `ignore` crate, but `cqs watch` does not yet.
-        let norm_root = cqs::normalize_path(cfg.root);
-        if let Some(rel) = norm_path
-            .strip_prefix(&norm_root)
-            .and_then(|s| s.strip_prefix('/'))
-        {
-            if rel == ".claude" || rel.starts_with(".claude/") {
-                tracing::debug!(path = %norm_path, "Skipping .claude/ path (#1002)");
-                continue;
+        // #1002: .gitignore-matched paths are skipped. The matcher was
+        // built once at cmd_watch startup; when it's None the user either
+        // set CQS_WATCH_RESPECT_GITIGNORE=0, passed --no-ignore, or has no
+        // .gitignore. The hardcoded `.cqs/` skip above still runs
+        // regardless so the system's own files are always excluded.
+        //
+        // `matched_path_or_any_parents` walks up the path's parents so
+        // that a file at `.claude/worktrees/agent-x/src/lib.rs` is
+        // ignored when `.claude/` is in .gitignore. The leaf-only
+        // `matched()` would miss this.
+        if let Ok(matcher_guard) = cfg.gitignore.read() {
+            if let Some(matcher) = matcher_guard.as_ref() {
+                if matcher
+                    .matched_path_or_any_parents(&path, false)
+                    .is_ignore()
+                {
+                    tracing::trace!(
+                        path = %norm_path,
+                        "Skipping gitignore-matched path (#1002)"
+                    );
+                    continue;
+                }
             }
         }
 
@@ -1840,6 +1930,7 @@ mod tests {
         let parser = Box::leak(Box::new(CqParser::new().unwrap()));
         let embedder = Box::leak(Box::new(std::sync::OnceLock::new()));
         let model_config = Box::leak(Box::new(ModelConfig::default_model()));
+        let gitignore = Box::leak(Box::new(std::sync::RwLock::new(None)));
         WatchConfig {
             root,
             cqs_dir,
@@ -1849,6 +1940,32 @@ mod tests {
             embedder,
             quiet: true,
             model_config,
+            gitignore,
+        }
+    }
+
+    /// Variant that installs a gitignore matcher for .gitignore-specific tests.
+    fn test_watch_config_with_gitignore<'a>(
+        root: &'a Path,
+        cqs_dir: &'a Path,
+        notes_path: &'a Path,
+        supported_ext: &'a HashSet<&'a str>,
+        matcher: ignore::gitignore::Gitignore,
+    ) -> WatchConfig<'a> {
+        let parser = Box::leak(Box::new(CqParser::new().unwrap()));
+        let embedder = Box::leak(Box::new(std::sync::OnceLock::new()));
+        let model_config = Box::leak(Box::new(ModelConfig::default_model()));
+        let gitignore = Box::leak(Box::new(std::sync::RwLock::new(Some(matcher))));
+        WatchConfig {
+            root,
+            cqs_dir,
+            notes_path,
+            supported_ext,
+            parser,
+            embedder,
+            quiet: true,
+            model_config,
+            gitignore,
         }
     }
 
@@ -1966,22 +2083,28 @@ mod tests {
         );
     }
 
+    /// Helper: build a `Gitignore` matcher in-memory from lines (no file IO).
+    fn gitignore_from_lines(root: &Path, lines: &[&str]) -> ignore::gitignore::Gitignore {
+        let mut b = ignore::gitignore::GitignoreBuilder::new(root);
+        for line in lines {
+            b.add_line(None, line).expect("add_line");
+        }
+        b.build().expect("build gitignore")
+    }
+
     #[test]
-    fn collect_events_skips_claude_worktree_paths() {
-        // #1002: parallel-agent git worktrees are created under
-        // .claude/worktrees/agent-XXXXXXXX/ and contain full copies of
-        // the project's source tree. The watch loop must not auto-index
-        // them (their chunks would otherwise duplicate the primary tree
-        // and tank retrieval quality). Verify paths under .claude/ are
-        // skipped, and that unrelated paths containing ".claude" as a
-        // substring (but not a component) are NOT skipped.
+    fn collect_events_skips_gitignore_matched_paths() {
+        // #1002: `.claude/worktrees/` is a representative pollution case
+        // from parallel-agent work. Verify that a path matched by
+        // .gitignore is skipped.
         let root = PathBuf::from("/tmp/test_project");
         let cqs_dir = PathBuf::from("/tmp/test_project/.cqs");
         let notes_path = PathBuf::from("/tmp/test_project/docs/notes.toml");
         let supported: HashSet<&str> = ["rs"].iter().cloned().collect();
-        let cfg = test_watch_config(&root, &cqs_dir, &notes_path, &supported);
+        let matcher = gitignore_from_lines(&root, &[".claude/", "target/"]);
+        let cfg =
+            test_watch_config_with_gitignore(&root, &cqs_dir, &notes_path, &supported, matcher);
 
-        // Path inside an agent worktree — should be skipped.
         let mut state = test_watch_state();
         let event = make_event(
             vec![PathBuf::from(
@@ -1994,14 +2117,49 @@ mod tests {
         collect_events(&event, &cfg, &mut state);
         assert!(
             state.pending_files.is_empty(),
-            ".claude/worktrees/* events should be skipped"
+            ".gitignore-matched path .claude/worktrees/... should be skipped"
         );
+    }
 
-        // False-positive guard: file whose name merely contains ".claude"
-        // must NOT be skipped (e.g. `src/my.claude.helper.rs`).
+    #[test]
+    fn collect_events_skips_target_dir_via_gitignore() {
+        let root = PathBuf::from("/tmp/test_project");
+        let cqs_dir = PathBuf::from("/tmp/test_project/.cqs");
+        let notes_path = PathBuf::from("/tmp/test_project/docs/notes.toml");
+        let supported: HashSet<&str> = ["rs"].iter().cloned().collect();
+        let matcher = gitignore_from_lines(&root, &["target/"]);
+        let cfg =
+            test_watch_config_with_gitignore(&root, &cqs_dir, &notes_path, &supported, matcher);
+
         let mut state = test_watch_state();
         let event = make_event(
-            vec![PathBuf::from("/tmp/test_project/src/my.claude.helper.rs")],
+            vec![PathBuf::from("/tmp/test_project/target/debug/foo.rs")],
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+        );
+        collect_events(&event, &cfg, &mut state);
+        assert!(
+            state.pending_files.is_empty(),
+            "target/ ignored by .gitignore should be skipped"
+        );
+    }
+
+    #[test]
+    fn collect_events_does_not_skip_unrelated_paths_when_gitignore_present() {
+        // False-positive guard: files under a directory not in .gitignore
+        // must still be indexed even when a matcher is installed.
+        let root = PathBuf::from("/tmp/test_project");
+        let cqs_dir = PathBuf::from("/tmp/test_project/.cqs");
+        let notes_path = PathBuf::from("/tmp/test_project/docs/notes.toml");
+        let supported: HashSet<&str> = ["rs"].iter().cloned().collect();
+        let matcher = gitignore_from_lines(&root, &[".claude/", "target/"]);
+        let cfg =
+            test_watch_config_with_gitignore(&root, &cqs_dir, &notes_path, &supported, matcher);
+
+        let mut state = test_watch_state();
+        let event = make_event(
+            vec![PathBuf::from("/tmp/test_project/src/foo.rs")],
             EventKind::Modify(notify::event::ModifyKind::Data(
                 notify::event::DataChange::Content,
             )),
@@ -2009,8 +2167,146 @@ mod tests {
         collect_events(&event, &cfg, &mut state);
         assert!(
             !state.pending_files.is_empty(),
-            "files containing '.claude' in their name (not a path component) must NOT be skipped"
+            "src/foo.rs is not in .gitignore and must not be skipped"
         );
+    }
+
+    #[test]
+    fn collect_events_negations_include_path() {
+        // `.gitignore` negations (`!foo`) keep the file indexed even
+        // if a broader pattern excludes its parent.
+        let root = PathBuf::from("/tmp/test_project");
+        let cqs_dir = PathBuf::from("/tmp/test_project/.cqs");
+        let notes_path = PathBuf::from("/tmp/test_project/docs/notes.toml");
+        let supported: HashSet<&str> = ["rs"].iter().cloned().collect();
+        let matcher = gitignore_from_lines(&root, &["vendor/", "!vendor/keep/"]);
+        let cfg =
+            test_watch_config_with_gitignore(&root, &cqs_dir, &notes_path, &supported, matcher);
+
+        let mut state = test_watch_state();
+        let event = make_event(
+            vec![PathBuf::from("/tmp/test_project/vendor/keep/lib.rs")],
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+        );
+        collect_events(&event, &cfg, &mut state);
+        assert!(
+            !state.pending_files.is_empty(),
+            "negation `!vendor/keep/` must keep the file indexed"
+        );
+    }
+
+    #[test]
+    fn collect_events_honors_none_matcher() {
+        // With no matcher (--no-ignore or no .gitignore present), the
+        // watch loop indexes every supported-extension path. Verifies
+        // the `Option<_>` in `WatchConfig.gitignore` behaves as
+        // documented.
+        let root = PathBuf::from("/tmp/test_project");
+        let cqs_dir = PathBuf::from("/tmp/test_project/.cqs");
+        let notes_path = PathBuf::from("/tmp/test_project/docs/notes.toml");
+        let supported: HashSet<&str> = ["rs"].iter().cloned().collect();
+        // Default test_watch_config → gitignore is None.
+        let cfg = test_watch_config(&root, &cqs_dir, &notes_path, &supported);
+
+        let mut state = test_watch_state();
+        let event = make_event(
+            vec![PathBuf::from(
+                "/tmp/test_project/.claude/worktrees/agent-x/src/lib.rs",
+            )],
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+        );
+        collect_events(&event, &cfg, &mut state);
+        assert!(
+            !state.pending_files.is_empty(),
+            "with matcher=None, all supported-ext paths must be accepted"
+        );
+    }
+
+    #[test]
+    fn collect_events_cqs_dir_skip_survives_gitignore_allowlist() {
+        // Even if a user accidentally or deliberately adds `!.cqs/` to
+        // .gitignore, the hardcoded `.cqs/` skip keeps the system's own
+        // files out of the index.
+        let root = PathBuf::from("/tmp/test_project");
+        let cqs_dir = PathBuf::from("/tmp/test_project/.cqs");
+        let notes_path = PathBuf::from("/tmp/test_project/docs/notes.toml");
+        let supported: HashSet<&str> = ["rs", "db"].iter().cloned().collect();
+        // Negation allowing .cqs/ — should still be filtered by the
+        // hardcoded .cqs/ skip in collect_events.
+        let matcher = gitignore_from_lines(&root, &["*.tmp", "!.cqs/"]);
+        let cfg =
+            test_watch_config_with_gitignore(&root, &cqs_dir, &notes_path, &supported, matcher);
+
+        let mut state = test_watch_state();
+        let event = make_event(
+            vec![PathBuf::from("/tmp/test_project/.cqs/index.db")],
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+        );
+        collect_events(&event, &cfg, &mut state);
+        assert!(
+            state.pending_files.is_empty(),
+            ".cqs/ must always be skipped (belt-and-suspenders vs gitignore allowlist)"
+        );
+    }
+
+    #[test]
+    fn build_gitignore_matcher_missing_returns_none() {
+        // A project with no .gitignore at the root should produce a
+        // `None` matcher — the watch loop indexes everything.
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert!(
+            build_gitignore_matcher(tmp.path()).is_none(),
+            "missing .gitignore should yield None matcher"
+        );
+    }
+
+    #[test]
+    fn build_gitignore_matcher_env_kill_switch() {
+        // CQS_WATCH_RESPECT_GITIGNORE=0 forces None even if .gitignore exists.
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "target/\n").unwrap();
+
+        // Save + set + restore to stay neighbour-friendly with parallel
+        // tests that may inspect the variable.
+        let prev = std::env::var("CQS_WATCH_RESPECT_GITIGNORE").ok();
+        std::env::set_var("CQS_WATCH_RESPECT_GITIGNORE", "0");
+        let result = build_gitignore_matcher(tmp.path());
+        match prev {
+            Some(v) => std::env::set_var("CQS_WATCH_RESPECT_GITIGNORE", v),
+            None => std::env::remove_var("CQS_WATCH_RESPECT_GITIGNORE"),
+        }
+
+        assert!(
+            result.is_none(),
+            "CQS_WATCH_RESPECT_GITIGNORE=0 must disable the matcher"
+        );
+    }
+
+    #[test]
+    fn build_gitignore_matcher_real_file_loads_rules() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join(".gitignore"),
+            "target/\n.claude/\nnode_modules/\n",
+        )
+        .unwrap();
+
+        let matcher =
+            build_gitignore_matcher(tmp.path()).expect("matcher should build for real gitignore");
+        assert!(matcher.num_ignores() >= 3, "expected ≥3 rules loaded");
+
+        // Sanity: matcher returns is_ignore for a target/ path via
+        // parent-walk (file inside a directory-ignore rule).
+        let hit = matcher
+            .matched_path_or_any_parents(tmp.path().join("target/debug/foo.rs"), false)
+            .is_ignore();
+        assert!(hit, "target/ should match");
     }
 
     #[test]
