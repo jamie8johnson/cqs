@@ -1,11 +1,12 @@
 //! TC-HP-1: Spec guard for `resolve_splade_alpha`.
 //!
 //! `resolve_splade_alpha` determines the SPLADE fusion weight for every query
-//! routed through search. The v1.25.0 per-category defaults (`IdentifierLookup=0.90`,
-//! `Structural=0.60`, `Conceptual=0.85`, `Behavioral=0.05`, rest=`1.0`) were derived
-//! from a 21-point alpha sweep on a 265-query eval and are load-bearing for the
-//! 90.9% R@1 headline number. A PR that swaps the match arms or deletes a category
-//! arm would ship unnoticed without this test.
+//! routed through search. The v1.26.0 per-category defaults (`IdentifierLookup=1.00`,
+//! `Structural=0.90`, `Conceptual=0.70`, `Behavioral=0.00`, `Negation=0.80`, rest=`1.0`)
+//! were derived from the 2026-04-15 21-point alpha re-sweep on a genuinely clean
+//! 14,882-chunk index (the 2026-04-14 sweep used a worktree-polluted 96,029-chunk
+//! index and chose worse alphas). A PR that swaps the match arms or deletes a
+//! category arm would ship unnoticed without this test.
 //!
 //! Precedence under test:
 //!   per-category env (`CQS_SPLADE_ALPHA_{CATEGORY}`) > global env (`CQS_SPLADE_ALPHA`)
@@ -43,30 +44,30 @@ fn clear_all_alpha_env() {
     }
 }
 
-/// v1.25.0 spec: the full category → default-alpha table.
+/// v1.26.0 spec: the full category → default-alpha table.
 ///
 /// This is intentionally exhaustive over every `QueryCategory` variant. If a
 /// tenth variant is ever added, the match in `resolve_splade_alpha` MUST grow
 /// a new arm (no silent catch-all drift) — and this table has to follow so the
-/// change is reviewed. Tied to the 2026-04-14 alpha sweep documented inline in
+/// change is reviewed. Tied to the 2026-04-15 alpha sweep documented inline in
 /// `src/search/router.rs`.
-const V1_25_0_DEFAULTS: &[(QueryCategory, f32)] = &[
-    (QueryCategory::IdentifierLookup, 0.90),
-    (QueryCategory::Structural, 0.60),
-    (QueryCategory::Conceptual, 0.85),
-    (QueryCategory::Behavioral, 0.05),
+const V1_26_0_DEFAULTS: &[(QueryCategory, f32)] = &[
+    (QueryCategory::IdentifierLookup, 1.00),
+    (QueryCategory::Structural, 0.90),
+    (QueryCategory::Conceptual, 0.70),
+    (QueryCategory::Behavioral, 0.00),
+    (QueryCategory::Negation, 0.80),
     (QueryCategory::TypeFiltered, 1.00),
     (QueryCategory::MultiStep, 1.00),
-    (QueryCategory::Negation, 1.00),
     (QueryCategory::CrossLanguage, 1.00),
     (QueryCategory::Unknown, 1.00),
 ];
 
 #[test]
 #[serial]
-fn test_resolve_splade_alpha_v1_25_0_defaults() {
+fn test_resolve_splade_alpha_v1_26_0_defaults() {
     clear_all_alpha_env();
-    for (cat, expected) in V1_25_0_DEFAULTS {
+    for (cat, expected) in V1_26_0_DEFAULTS {
         let got = resolve_splade_alpha(cat);
         assert!(
             (got - expected).abs() < f32::EPSILON,
@@ -93,7 +94,7 @@ fn test_resolve_splade_alpha_per_category_env_override() {
     // Other categories are untouched by a different category's env var.
     let struct_alpha = resolve_splade_alpha(&QueryCategory::Structural);
     assert!(
-        (struct_alpha - 0.60).abs() < f32::EPSILON,
+        (struct_alpha - 0.90).abs() < f32::EPSILON,
         "Unrelated category should still use its default; got {struct_alpha}"
     );
     clear_all_alpha_env();
@@ -105,7 +106,7 @@ fn test_resolve_splade_alpha_global_env_override() {
     clear_all_alpha_env();
     std::env::set_var(GLOBAL_ENV_KEY, "0.25");
     // Every variant should pick up the global override when no per-cat override is set.
-    for (cat, _default) in V1_25_0_DEFAULTS {
+    for (cat, _default) in V1_26_0_DEFAULTS {
         let got = resolve_splade_alpha(cat);
         assert!(
             (got - 0.25).abs() < f32::EPSILON,
@@ -144,8 +145,8 @@ fn test_resolve_splade_alpha_rejects_nan_falls_back_to_default() {
     std::env::set_var("CQS_SPLADE_ALPHA_STRUCTURAL", "NaN");
     let got = resolve_splade_alpha(&QueryCategory::Structural);
     assert!(
-        (got - 0.60).abs() < f32::EPSILON,
-        "NaN per-cat env must be rejected; expected Structural default 0.60, got {got}"
+        (got - 0.90).abs() < f32::EPSILON,
+        "NaN per-cat env must be rejected; expected Structural default 0.90, got {got}"
     );
     clear_all_alpha_env();
 }
@@ -157,8 +158,8 @@ fn test_resolve_splade_alpha_rejects_infinity_falls_back_to_default() {
     std::env::set_var("CQS_SPLADE_ALPHA_CONCEPTUAL", "inf");
     let got = resolve_splade_alpha(&QueryCategory::Conceptual);
     assert!(
-        (got - 0.85).abs() < f32::EPSILON,
-        "Infinity per-cat env must be rejected; expected Conceptual default 0.85, got {got}"
+        (got - 0.70).abs() < f32::EPSILON,
+        "Infinity per-cat env must be rejected; expected Conceptual default 0.70, got {got}"
     );
     clear_all_alpha_env();
 
@@ -202,8 +203,8 @@ fn test_resolve_splade_alpha_invalid_string_falls_back() {
     std::env::set_var("CQS_SPLADE_ALPHA_BEHAVIORAL", "banana");
     let got = resolve_splade_alpha(&QueryCategory::Behavioral);
     assert!(
-        (got - 0.05).abs() < f32::EPSILON,
-        "Unparseable per-cat env must fall through to default; got {got}"
+        got.abs() < f32::EPSILON,
+        "Unparseable per-cat env must fall through to default (0.00); got {got}"
     );
     clear_all_alpha_env();
 }
@@ -233,76 +234,82 @@ mod splade_routing {
         (classification.category, alpha)
     }
 
-    /// Structural query → α=0.60 from the v1.25.0 sweep.
+    /// Structural query → α=0.90 from the 2026-04-15 sweep.
     #[test]
     #[serial]
-    fn test_routing_structural_lands_on_alpha_0_60() {
+    fn test_routing_structural_lands_on_alpha_0_90() {
         clear_all_alpha_env();
         let (cat, alpha) = route("functions that return Result");
         assert_eq!(cat, QueryCategory::Structural);
         assert!(
-            (alpha - 0.60).abs() < f32::EPSILON,
-            "Structural query should route to α=0.60, got {alpha}"
+            (alpha - 0.90).abs() < f32::EPSILON,
+            "Structural query should route to α=0.90, got {alpha}"
         );
         clear_all_alpha_env();
     }
 
-    /// Behavioral query → α=0.05 (the load-bearing sparse-heavy signal).
+    /// Behavioral query → α=0.00 (dense-only, sparse fully suppressed).
     #[test]
     #[serial]
-    fn test_routing_behavioral_lands_on_alpha_0_05() {
+    fn test_routing_behavioral_lands_on_alpha_0_00() {
         clear_all_alpha_env();
         let (cat, alpha) = route("validates user input");
         assert_eq!(cat, QueryCategory::Behavioral);
         assert!(
-            (alpha - 0.05).abs() < f32::EPSILON,
-            "Behavioral query should route to α=0.05, got {alpha}"
+            alpha.abs() < f32::EPSILON,
+            "Behavioral query should route to α=0.00, got {alpha}"
         );
         clear_all_alpha_env();
     }
 
-    /// Conceptual query → α=0.85.
+    /// Conceptual query → α=0.70.
     #[test]
     #[serial]
-    fn test_routing_conceptual_lands_on_alpha_0_85() {
+    fn test_routing_conceptual_lands_on_alpha_0_70() {
         clear_all_alpha_env();
         let (cat, alpha) = route("dependency injection pattern");
         assert_eq!(cat, QueryCategory::Conceptual);
         assert!(
-            (alpha - 0.85).abs() < f32::EPSILON,
-            "Conceptual query should route to α=0.85, got {alpha}"
+            (alpha - 0.70).abs() < f32::EPSILON,
+            "Conceptual query should route to α=0.70, got {alpha}"
         );
         clear_all_alpha_env();
     }
 
-    /// Identifier lookup → α=0.90 (the dense-side plateau edge).
+    /// Identifier lookup → α=1.00 (sparse-only, the v1.26.0 plateau).
     #[test]
     #[serial]
-    fn test_routing_identifier_lands_on_alpha_0_90() {
+    fn test_routing_identifier_lands_on_alpha_1_00() {
         clear_all_alpha_env();
         let (cat, alpha) = route("HashMap::new");
         assert_eq!(cat, QueryCategory::IdentifierLookup);
         assert!(
-            (alpha - 0.90).abs() < f32::EPSILON,
-            "Identifier lookup should route to α=0.90, got {alpha}"
+            (alpha - 1.00).abs() < f32::EPSILON,
+            "Identifier lookup should route to α=1.00, got {alpha}"
         );
         clear_all_alpha_env();
     }
 
-    /// Catch-all categories (Negation, MultiStep, CrossLanguage,
-    /// TypeFiltered, Unknown) land on α=1.0.
+    /// Negation → α=0.80 (explicit arm in v1.26.0, was catch-all in v1.25.0).
+    #[test]
+    #[serial]
+    fn test_routing_negation_lands_on_alpha_0_80() {
+        clear_all_alpha_env();
+        let (cat, alpha) = route("sort without allocating");
+        assert_eq!(cat, QueryCategory::Negation);
+        assert!(
+            (alpha - 0.80).abs() < f32::EPSILON,
+            "Negation should route to α=0.80, got {alpha}"
+        );
+        clear_all_alpha_env();
+    }
+
+    /// Catch-all categories (MultiStep, CrossLanguage, TypeFiltered, Unknown)
+    /// land on α=1.00.
     #[test]
     #[serial]
     fn test_routing_catch_all_lands_on_alpha_1_00() {
         clear_all_alpha_env();
-
-        // Negation — "sort without allocating"
-        let (cat, alpha) = route("sort without allocating");
-        assert_eq!(cat, QueryCategory::Negation);
-        assert!(
-            (alpha - 1.00).abs() < f32::EPSILON,
-            "Negation should route to α=1.0, got {alpha}"
-        );
 
         // CrossLanguage — "Python equivalent of map in Rust"
         let (cat, alpha) = route("Python equivalent of map in Rust");
@@ -340,10 +347,9 @@ mod splade_routing {
     }
 }
 
-/// TC-HP-10 companion: the `_ => 1.0` catch-all covers 5 of 9 variants. This
-/// test pins every variant to its expected alpha so a future refactor that
-/// moves the early-returning arms cannot silently route `Behavioral` (α=0.05)
-/// through the fallback.
+/// TC-HP-10 companion: every `QueryCategory` variant must resolve to a value
+/// in [0,1]. Ensures a future refactor that moves the early-returning arms
+/// cannot accidentally route a category outside the documented contract.
 #[test]
 #[serial]
 fn test_resolve_splade_alpha_catch_all_coverage() {
@@ -363,12 +369,12 @@ fn test_resolve_splade_alpha_catch_all_coverage() {
     ];
     assert_eq!(
         categories.len(),
-        V1_25_0_DEFAULTS.len(),
-        "Every QueryCategory variant must be listed in V1_25_0_DEFAULTS"
+        V1_26_0_DEFAULTS.len(),
+        "Every QueryCategory variant must be listed in V1_26_0_DEFAULTS"
     );
     for cat in categories {
         // Just ensure the lookup returns SOMETHING in [0,1] — spec values are
-        // covered by `test_resolve_splade_alpha_v1_25_0_defaults`.
+        // covered by `test_resolve_splade_alpha_v1_26_0_defaults`.
         let got = resolve_splade_alpha(&cat);
         assert!(
             (0.0..=1.0).contains(&got),
