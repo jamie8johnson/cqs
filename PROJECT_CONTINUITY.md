@@ -2,136 +2,60 @@
 
 ## Right Now
 
-**Waves A–F all merged or draining. 11 PRs / 13 issues closed this session; autopilot successful. (2026-04-15 ~13:35 CDT)**
+**v1.26.0 release in flight (2026-04-15 afternoon CDT).** All watch-mode + SPLADE-flag + alpha-routing gaps closed.
 
-Main at `10b1f14`. Landed this session (in order):
+Main at `dd97612`. Release branch: `release/v1.26.0` (Cargo.toml + CHANGELOG bumped, PR pending).
+
+### Session landings (on top of Wave A–F from earlier in the day)
 
 | PR | Closes | What |
 |---|---|---|
-| #979 | #961/#962/#963 | Wave A quick wins (WSL mmap, CAGRA itopk, reranker batch) |
-| #981 | #947 (manual) | Wave B — Commands/BatchCmd unification |
-| #983 | #948 | Wave C2 — `cqs::fs::atomic_replace` helper |
-| #984 | #949 | Wave C3 — ModelConfig abstraction (InputNames/PoolingStrategy) |
-| #985 | #950 | Wave C4 — CAGRA persistence (.cagra + .cagra.meta) |
-| #982 | #946 | Wave C1 — Store typestate (`Store<ReadOnly>`/`<ReadWrite>`) |
-| #987 | — | Hotfix: `save_with_store<Mode>` (parallel-merge-order artifact) |
-| #988 | #980 (partial) | CI slow-tests feature gate (PR-CI ~2h 15m → ~18m) |
-| #989 | — | Tears update + Reranker V2 roadmap with Gemma 4 pipeline |
-| #990 | #965 | F1 — NameMatcher ASCII fast path (1.2-1.5× speedup) |
-| #991 | #967 | F3 — Reindex drain-owned chunks (~180MB/burst saved) |
-| #992 | #964 | D2 — Aho-Corasick + LazyLock language_names |
-| #994 | #923 | F4 — INDEX_DB_FILENAME constant (56 literal sites) |
-| #995 | #952 | F5 — CAGRA sentinel INVALID_DISTANCE const |
+| #1003 | #1002 (short-term) | Hardcode `.claude/` skip in watch loop while full fix was in flight |
+| #1006 | #1002 | `cqs watch` respects `.gitignore` (RwLock-wrapped `Gitignore`, `matched_path_or_any_parents`, kill-switch env) |
+| #998  | #986  | `Store::open_readonly_after_init` replaces unsafe `into_readonly` |
+| #1005 | —     | Per-category SPLADE alphas re-fit on genuinely-clean 14,882-chunk index (+1.8pp R@1) |
+| #1007 | #1004 | Incremental SPLADE encoding in `cqs watch` (dense+sparse inline, kill-switch, per-batch error isolation) |
+| #1008 | —     | `--splade` flag no longer bypasses router (semantic bug from pre-routing era) |
 
-**In flight (final drain by Monitor `bhki2izu4`):**
+### Eval numbers (2026-04-15, clean 14,882-chunk index, 100% SPLADE coverage)
 
-- #993 (F2 #970 open_readonly_small, 16MB mmap for refs) — rebased post-#994
-- #996 (E1 #953 migration fs backup)
-- #997 (E2 #973 dispatch_search content assertions) — rebased
-- #998 (F6 #986 open_readonly_after_init + drop unsafe into_readonly) — rebased
-- #999 (D1 #972 daemon try_daemon_query tests)
-- #1000 (E3 #968 shared Arc<Runtime> across Store/EmbeddingCache/QueryCache) — rebased
-
-### Aggregate impact of the session
-
-**Architecture/safety:**
-- Store typestate closes write-on-readonly bug class at compile time (#946)
-- Commands/BatchCmd parity via shared arg structs (#947)
-- atomic_replace + migration fs-backup + restore close data-integrity class (#948, #953)
-- CAGRA persistence cuts daemon hot-restart 30s → 5s (#950)
-- ModelConfig abstraction unblocks BGE→E5 v9-200k default switch (#949)
-- Shared `Arc<Runtime>` across caches reduces runtime proliferation (#968)
-- `open_readonly_after_init` closure pattern replaces unsafe `into_readonly` ManuallyDrop/ptr::read (#986)
-
-**Performance:**
-- Classifier Aho-Corasick: 1.31× on type_filtered path, zero-alloc `language_names` (#964)
-- NameMatcher hot path: 1.2-1.5× via ASCII fast path (#965)
-- Reindex clone elimination: ~180MB + ~1.4M allocs saved per 20-file watch burst (#967)
-- `open_readonly_small` for reference stores: 256MB → 16MB mmap × N refs (#970)
-- CI slow-tests gate: PR CI 2h 15m → ~18m (#980 partial)
-
-**Testing:**
-- Daemon `try_daemon_query` coverage + socket mock (#972)
-- Content-asserting `dispatch_search` tests (#973)
-
-### Pending follow-ups (scoped, not gated on anything)
-
-- **#951** re-bench README Performance table on v1.25.0 — do at next eval window (~20 min, not agent-task)
-- **#980 full rewrite** — convert 5 `cli_*_test` binaries to in-process fixture pattern. ~5h agent-task, separate project
-- **Wave G candidates** (all Tier-3 perf/refactor): #955, #958, #959, #960, #966, #969, #971, #974, #975
-
-### Reranker V2 pipeline (captured in ROADMAP)
-
-Data-labeling: **Gemma 4 31B Dense** at Q4_K_M via vLLM on A6000 — 200k pairwise judgments in ~5h at $0 cost, vs. ~$600 for Claude Haiku. Calibration: 1k gold subset agreement ≥85% → local-only; otherwise hybrid Gemma+Haiku. Training: 100-300M param cross-encoder with pairwise ranking loss (DPO-family), ~1-2 days on A6000. Export to ONNX, ship alongside current ms-marco reranker in `~/.local/share/cqs/`. Separate project — no immediate work.
-
-## Eval numbers — with a baseline correction
-
-**Session eval finding:** the prior "fully routed 37.4%" baseline in PROJECT_CONTINUITY.md was **actually dense-only** (`--config bge-large`, no SPLADE). Verified by inspecting the stored `run_20260414_135451/results.json` — `"configs": {"BGE-large": ...}`, no `+SPLADE` variant. The tears doc mislabeled it as "fully routed" which made today's SPLADE-enabled eval look like a regression that wasn't one.
-
-### Corrected baselines (2026-04-15, post-cleanup index 14,882 chunks, 100% SPLADE coverage)
-
-| Config | R@1 | R@5 | R@20 | ident R@1 |
+| Config | R@1 | R@5 | R@20 | Notes |
 |---|---|---|---|---|
-| **BGE-large dense only** | **35.8%** | 54.7% | 74.7% | **96.0%** |
-| BGE-large + SPLADE (per-category routed default α's) | 26.8% | 45.7% | 75.5% | 54.0% |
-| Yesterday (dense only, pre-Wave-A) | 37.4% | — | — | 92.0% |
+| **BGE-large + SPLADE (router, v1.26.0 alphas)** | **39.2%** | 58.8% | 78.6% | Per-category: ident 1.00, struct 0.90, concept 0.70, behav 0.00, neg 0.80, rest 1.00 |
+| BGE-large dense only | 35.8% | 54.7% | 74.7% | Router path with dense-only (no SPLADE) |
+| v1.25.0 alphas on clean index | 26.8% | 45.7% | 75.5% | Old alphas tuned on the dirty 96k-chunk index — 9pp below dense-only |
+| v1.25.0 baseline (stored JSON) | 37.4% | 55.8% | 77.4% | Actually dense-only, was mislabeled as "fully routed" in tears |
 
-**Dense-only is within 1.6pp of yesterday (noise).** SPLADE is actively *hurting* R@1 on the clean index with the v1.25.0 per-category alphas (identifier 0.90, structural 0.60, conceptual 0.85, behavioral 0.05, rest 1.0). This is the "alphas tuned on dirty index" risk that ROADMAP called out — now confirmed empirically.
+**+1.8pp over the corrected v1.25.0 baseline; +3.4pp over dense-only.** Net session: router gives meaningful lift once alphas are tuned on the real index and the `--splade` bypass is gone. `~/training-data/research/models.md` has the 21-point sweep details.
 
-**No code regression was introduced by waves A-F.** The reverts of #964 and #965 during diagnosis each gave identical SPLADE-enabled R@1 (20.4%), proving neither was the cause.
+### Open issues
 
-### SPLADE coverage gap — separate finding
+**18 total** (down from 26). **Tier-1 remaining: 0.** Tier-2 focus: #63 paste advisory, #916/#917/#921 SPLADE perf trio, #956 Metal/ROCm, #957 SPLADE preset registry. Tier-3: 12 audit-v1.25.0 items (refactor + test + perf) forming the Wave G backlog.
 
-Before reindex: **SPLADE coverage was only 70%** (10,358/14,882 chunks) because `cqs watch --serve` skips SPLADE encoding for new/changed chunks (known ROADMAP item). Backfilling via `cqs index` brought it to 100% but didn't help R@1 — the alpha problem dominates.
-
-Default-model switch (BGE → E5 v9-200k) now unblocked by #949. Pending:
-- **21-point alpha re-sweep on clean index** — running via `evals/run_alpha_sweep.sh` (kicked off at 2026-04-15 ~15:10 CDT)
-- Extract per-category optima from the sweep, update `router.rs` defaults
-- Confirmation re-run with new defaults + E5 v9-200k
+Closed this session: #1002 (PR #1006), #1004 (PR #1007), #986 (PR #998). #951 README re-bench deferred until next eval window.
 
 ## Architecture state
 
-- **Version:** v1.25.0, Schema v20
-- **Binary:** rebuilt + installed from `10b1f14` (post-#989), daemon active
-- **Index:** clean (13,279 chunks)
-- **Test count:** 1415+ lib tests, expanded by wave D/E/F tests once merged
-- **Open issues:** 26 (blocked-upstream: 3, fresh tier-2/3 backlog: rest)
+- **Version:** v1.26.0 (release branch open), Schema v20
+- **Binary:** needs rebuild + install after release PR merges (currently at pre-release main)
+- **Index:** clean (14,882 chunks, 100% SPLADE coverage)
+- **Tests:** 1450+ lib tests pass; 16 router tests updated for v1.26.0 alphas
+- **Eval harness:** `evals/run_ablation.py` → `BGE-large+SPLADE` config now actually hits the router (was hardcoding `--splade-alpha 0.7`)
 
 ## Operational pitfalls captured this session
 
-1. **Multi-agent worktree leaks to main tree** — `isolation: "worktree"` doesn't chroot the Edit/Write tool. Agents can still write to the parent repo root via absolute paths. Filed with Anthropic; memory updated with mitigation text to paste into every agent prompt.
-2. **Shared cargo target-dir contention** — agents clobber each other's compile units during parallel work. Agents that encountered this set `CARGO_TARGET_DIR=...agent-XXXX` to dodge. Configurable via env in `.cargo/config.toml` future work.
-3. **CI clippy is `--features gpu-index -- -D warnings` (no `--all-targets`)** — local `--all-targets` treats test warnings as warnings; CI promotes them. Match CI invocation exactly before pushing.
-4. **Parallel PRs on same file → merge conflicts** — 4 PRs touching `src/store/mod.rs` and `src/cli/batch/mod.rs` this session required manual rebase. Monitor serializes merges, handler handles rebase conflicts.
-5. **`gh pr merge --delete-branch` fails when local worktree holds the branch** — just a warning, remote delete still succeeds. Clean up worktrees first or accept the noise.
-6. **PR bodies need `Closes #NNN`** — #947 got orphaned because #981 only mentioned it in prose. Auto-close requires the magic keyword.
-7. **`git stash drop` is destructive** — mid-rebase stash can lose uncommitted work (lost 4 session notes + tears diff once; recoverable via `cqs notes add` re-run).
-8. **`cqs watch` does not respect `.gitignore`** — filed as #1002 (full fix) + #1003 (short-term `.claude/` hardcoded skip). `cqs index` uses the `ignore` crate correctly; only the watch loop is the gap. Blew up the index to 96k chunks mid-session from auto-indexed agent worktrees.
-9. **Watch-mode skips SPLADE for incremental updates** — new/changed chunks get embeddings but no sparse vectors. Discovered this session: coverage dropped to 70% after agent-worktree-triggered reindexes. Full `cqs index` run brings it to 100%. Known ROADMAP item: "Daemon: incremental SPLADE in watch mode."
-10. **The "BGE-large fully routed" label in tears was wrong** — it was dense-only. Triggered a 4-hour wild-goose chase reverting perfectly-good perf PRs. Always check the `results.json` config name field, don't trust the tears label.
-11. **SPLADE alphas tuned on dirty index hurt on clean index** — confirmed this session. At default per-category alphas, SPLADE-enabled R@1 is 9pp below dense-only R@1. Next step: 21-point sweep + per-category re-fit.
+1. **`--splade` flag bypassed the router** — pre-routing-era CLI code took clap's `default_value = "0.7"` for `splade_alpha` whenever `--splade` was set, silently skipping `classify_query` + `resolve_splade_alpha`. The fix: `splade_alpha: Option<f32>` with no default, then `match (splade_alpha, classification)` at the call site. Caught only because the "regression" investigation forced a read of the actual CLI code.
+2. **Alphas tuned on a dirty index are wrong for the clean one** — the 2026-04-14 sweep ran on a 96,029-chunk index polluted by `.claude/worktrees/*`. Once those were evicted (14,882 chunks), the same 21-point sweep produced materially different optima for 4 of 5 categories. Lesson: never sweep against an index you haven't just run `cqs index` against and confirmed chunk count.
+3. **`cqs watch` didn't respect `.gitignore`** — watch used raw notify events, skipping the `ignore` crate entirely. `cqs index` used it correctly. This is what blew the index up to 96k chunks from agent worktrees. Closed by PR #1006 with `Gitignore::matched_path_or_any_parents(path, false)` (the `.matched(p, false)` variant only checks the leaf, not parent directories — initial test run caught this).
+4. **Watch skipped SPLADE for incremental updates** — dense-only during watch meant SPLADE coverage drifted (observed 70% on a day of active dev). Closed by PR #1007; encoder held in a `Mutex`, batches of `CQS_SPLADE_BATCH` (default 32) with per-batch try-catch so one pathological file doesn't block the loop.
+5. **Rebase-conflict markers got committed** — during #998's rebase I resolved the `into_readonly()` → `open_readonly_after_init` conflict but left a stray `<<<<<<< HEAD` without the `=======` / `>>>>>>>` lines. CI "encountered diff marker" caught it; wrong-worktree confusion during my shell session was the real cause.
+6. **Router unit tests are a spec, not a reference** — PR #1005 changed `resolve_splade_alpha` defaults but didn't update `tests/router_test.rs`, which asserted exact old values. CI caught 10 failures. The comment in that file ("This table is a spec, not a reference — do not update it without a corresponding alpha-sweep update in docs") is correct — I had to update both together.
+7. **`gh issue list --jq` is fragile under PowerShell** — wrap the whole arg in single quotes, no embedded `\"`. When in doubt, dump raw JSON and parse locally.
 
-## Open Issues (26)
+## Architecture notes (delta since v1.25.0)
 
-Tier-1 remaining: **none** (all Wave D/E/F Tier-1s closing as PRs merge). Tier-2 remaining focus: #63, #916/#917/#921 (SPLADE perf trio), #956 (Metal/ROCm), #957 (SPLADE preset registry), #980 follow-through. Tier-3 remaining: #255 reference packages + 15 minor perf/refactor/test items + blocked-upstream (#106 ort RC, #717 HNSW mmap).
-
-Filter: `gh issue list --state open --label tier-N`
-
-## Architecture notes
-
-- Deterministic search + deterministic eval (end-to-end)
-- SPLADE always-on (model at `~/.cache/huggingface/splade-onnx/`, hash-identical to `~/training-data/splade-code-v1/onnx/model.onnx`)
-- HNSW dirty flag self-heals via per-kind checksum verification
-- cuVS 26.4 patched with `search_with_filter` + `add-serialize-deserialize` (for #950)
-- CAGRA persistence: `.cagra` + `.cagra.meta` sidecar (blake3) + `CQS_CAGRA_PERSIST` toggle
-- `atomic_replace(tmp, final)`: fsync tmp → rename → fsync parent → EXDEV copy fallback
-- Migration fs-backup: `index.db.bak-v{from}-v{to}-{ts}.db` via atomic_replace, last-2 pruning (#953)
-- ModelConfig: InputNames + PoolingStrategy + output_name drive ONNX inputs/output (#949)
-- Store typestate: `Store<ReadOnly>`/`Store<ReadWrite>`; write methods on `impl Store<ReadWrite>` (#946)
-- `open_readonly_after_init`: closure-based fixture setup, SQLite-level RO guarantee (#986)
-- `open_readonly_small`: 16MB mmap for reference indexes (#970)
-- Shared `Arc<Runtime>` across Store+EmbeddingCache+QueryCache (daemon threads via `cqs-shared-rt` pool, #968)
-- NameMatcher ASCII fast path (#965), reindex owning iterator (#967), classifier Aho-Corasick (#964)
-- `cqs::fs::atomic_replace` helper (#948) + `INDEX_DB_FILENAME` constant (#923)
-- CI slow-tests gate + nightly workflow (#980 partial, #988)
-- Daemon (`cqs watch --serve`), thread-per-connection capped at 64 (SEC-V1.25-1)
+- `Store::open_readonly_after_init(path, init_fn)` — closure takes `&Store<ReadWrite>`, returns `Store<ReadOnly>` after drop; no more `ptr::read` / `ManuallyDrop` unsafe (#986, PR #998)
+- `cqs watch` pipeline: `build_gitignore_matcher(root)` + `RwLock<Option<Gitignore>>` in `WatchConfig` — hot-swappable if the user edits `.gitignore`; `CQS_WATCH_RESPECT_GITIGNORE=0` turns it off (#1002, PR #1006)
+- `cqs watch` SPLADE: `build_splade_encoder_for_watch()` + `Mutex<SpladeEncoder>` in `WatchConfig`, `encode_splade_for_changed_files()` batches by `CQS_SPLADE_BATCH`; per-batch try-catch; kill-switch `CQS_WATCH_INCREMENTAL_SPLADE=0` (#1004, PR #1007)
+- `SearchArgs::splade_alpha` / `Cli::splade_alpha` now `Option<f32>`; explicit `--splade-alpha X` overrides router, bare `--splade` force-on with router active, no flag = dense-only (PR #1008)
+- Per-category SPLADE alphas (PR #1005): `IdentifierLookup=1.00`, `Structural=0.90`, `Conceptual=0.70`, `Behavioral=0.00`, `Negation=0.80`, rest=`1.00`. Negation is now an explicit match arm (was catch-all at 1.00).

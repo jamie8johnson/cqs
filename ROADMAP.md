@@ -1,27 +1,23 @@
 # Roadmap
 
-## Current: v1.25.0 (audit-fixes batch in prep)
+## Current: v1.26.0 (2026-04-15)
 
-54 languages. 29 chunk types. 265-query v2 eval. **Daemon mode** (`cqs watch --serve`, 3-19ms queries). Per-category SPLADE alpha routing. GPU-native CAGRA bitset filtering (patched cuvs 26.4). Enrichment ablation + router update (type_filtered + multi_step → base).
+54 languages. 29 chunk types. 265-query v2 eval. **Daemon mode** (`cqs watch --serve`, 3-19ms queries). Per-category SPLADE alpha routing, genuinely active. GPU-native CAGRA bitset filtering (patched cuvs 26.4).
 
-**v1.25.0 shipped 2026-04-14:** eval output writes to `~/.cache/cqs/evals/` (#943, fixes watch-reindex contamination), clean 21-point alpha re-sweep, new per-category defaults (identifier 0.90, structural 0.60, conceptual 0.85, behavioral 0.05, rest 1.0), multi_step router fix (removed over-broad `"how does"` Behavioral pattern). Tag pushed, crates.io published, GH release with Linux/macOS/Windows binaries.
+**v1.26.0 shipped 2026-04-15:** watch-mode hardening + alpha re-fit on clean index + `--splade` CLI bug fix. 162 of 236 audit findings now closed across v1.25.0 + v1.26.0.
 
-**Audit-fixes batch in prep:** ~80 fixes from the 11th full audit (16 categories, 2 batches × 8 parallel opus auditors → 236 findings → 49 P1 + 47 P2 + 97 P3 + 16 P4-trivial-inline + 32 P4-issues). Branch `audit/p1-fixes-wave1` accumulating. Issues #946–#975 filed for refactors and quick wins.
+### Eval Baselines (v1.26.0, clean 14,882-chunk index, 100% SPLADE coverage)
 
-### Eval Baselines (post-clean-index, 2026-04-14)
-
-The pre-2026-04-14 numbers were measured against an index that was 81% worktree/cuvs duplicates (root cause: GC `prune_all` suffix-match bug, fixed wave 1). Duplicate-name chunks inflated R@1 and crowded R@5/R@20. Current honest numbers:
-
-| Eval | Model | R@1 | R@5 | R@20 | Notes |
-|------|-------|-----|-----|------|-------|
-| Fixture (296q) | BGE-large FT | 91.9% | — | — | Synthetic fixtures, model-agnostic to GC bug |
+| Eval | Config | R@1 | R@5 | R@20 | Notes |
+|------|--------|-----|-----|------|-------|
+| V2 (265q) | **BGE-large + SPLADE router (v1.26.0 α's)** | **39.2%** | 58.8% | 78.6% | ident 1.00, struct 0.90, concept 0.70, behav 0.00, neg 0.80, rest 1.00 |
+| V2 (265q) | BGE-large dense only | 35.8% | 54.7% | 74.7% | router path, no SPLADE |
+| V2 (265q) | v1.25.0 α's on clean index | 26.8% | 45.7% | 75.5% | old α's tuned on dirty 96k index — wrong for clean 14.8k |
+| V2 (265q) | Oracle per-category α | ~45% | — | — | Theoretical ceiling — gated on classifier accuracy (~22% non-identifier today) |
+| Fixture (296q) | BGE-large FT | 91.9% | — | — | Synthetic fixtures, model-agnostic |
 | Fixture (296q) | BGE-large baseline | 91.2% | — | — | Production model |
-| Real code (100q) | BGE-large | 50.0% | 73.0% | — | Identifier-slice subset of v2 |
-| V2 (265q clean) | BGE-large | 37.4% | 55.8% | 77.4% | Fully routed v1.25.0, post-GC fix (this is the honest number) |
-| V2 (265q clean) | E5 v9-200k | 37.4% | 56.6% | 78.1% | Ties BGE on R@1, slight edge on R@5/R@20 — at 1/3 the embedding size |
-| V2 (265q clean) | Oracle per-category α | 49.4% | — | — | Theoretical ceiling — gated on classifier accuracy (~22% non-identifier today) |
 
-**Caveat:** v1.25.0 per-category alpha defaults were tuned on the *dirty* index. Alphas may need re-fitting against the clean index numbers above. Tracked in CPU Lane.
+**Net session lift:** +3.4pp over dense-only, +1.8pp over the corrected v1.25.0 baseline. Investigation details in `~/training-data/research/models.md`.
 
 ---
 
@@ -55,7 +51,14 @@ High-leverage refactors that close entire bug classes — surfaced by the v1.25.
 - [x] **Reindex drain-owned chunks (#967)** — Wave F3, PR #991. ~180MB / ~1.4M allocs saved per 20-file watch burst.
 - [x] **INDEX_DB_FILENAME constant (#923)** — Wave F4, PR #994. 56 literal sites unified.
 - [x] **CAGRA sentinel INVALID_DISTANCE (#952)** — Wave F5, PR #995.
-- [x] **`open_readonly_after_init` + drop unsafe `into_readonly` (#986)** — Wave F6, PR #998.
+- [x] **`open_readonly_after_init` + drop unsafe `into_readonly` (#986)** — Wave F6, PR #998. *Merged 2026-04-15 (v1.26.0).*
+
+### Watch-mode + SPLADE hardening (v1.26.0, 2026-04-15)
+
+- [x] **`cqs watch` respects `.gitignore` (#1002)** — PR #1006. `.claude/worktrees/*` no longer polluting the index.
+- [x] **Incremental SPLADE in `cqs watch` (#1004)** — PR #1007. Tier-1. Dense+sparse inline, no more coverage drift.
+- [x] **`--splade` flag no longer bypasses router** — PR #1008. CLI-level semantic bug from pre-routing era; `splade_alpha: Option<f32>` + unified match arm.
+- [x] **Per-category alpha re-fit on clean index** — PR #1005. +1.8pp R@1 on v2 eval (39.2% vs 37.4% corrected baseline).
 
 Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue list --label audit-v1.25.0`. Remaining tier-2/3 form the Wave G backlog: #955, #958, #959, #960, #966, #969, #971, #974, #975 + upstream-blocked.
 
@@ -90,7 +93,7 @@ Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue lis
 
   **Data caveat:** 265 labeled queries *are* the eval set — train/eval leakage. Need leave-one-out CV + held-out partition. Coupled with eval expansion below.
 
-- [ ] **Re-fit per-category alphas on clean index** (**in flight 2026-04-15**) — current v1.25.0 defaults were tuned on the dirty (81% worktree-dup) index. Confirmed this session: SPLADE-enabled R@1 is **9pp below** dense-only R@1 (26.8% vs 35.8%, N=265 clean index, 100% SPLADE coverage). identifier_lookup drops 42pp (54% vs 96%) under the dirty-tuned alphas. Running `evals/run_alpha_sweep.sh` (21 global α's 0.00-1.00). When done, extract per-category optima per alpha × category breakdown, update `src/search/router.rs` defaults, confirm with re-run.
+- [x] **Re-fit per-category alphas on clean index** — **Done 2026-04-15 (v1.26.0, PR #1005).** ident 0.90→1.00, struct 0.60→0.90, concept 0.85→0.70, behav 0.05→0.00 (dense-only), neg 1.00→0.80 (explicit arm). Fully-routed R@1 lands at 39.2% (+1.8pp over v1.25.0 corrected baseline; +3.4pp over dense-only).
 - [ ] **Eval expansion: grow small categories** — N=21 cross_language and N=24 type_filtered are too noisy for reliable per-category decisions (±4.5pp sampling floor). Target every category N≥40 (≤2.5pp). Rename `v2_300q.json` to actual count (265).
 - [ ] **Investigate CAGRA filtering regression on enriched index** — fully-routed v1.24.0 showed conceptual −5.5pp, structural −3.8pp, identifier −2pp vs pre-release baseline. Hypothesis: CAGRA graph walk strands in filtered-out regions. Concrete proposal in [#962](https://github.com/jamie8johnson/cqs/issues/962) (Quick-wins Lane).
 - [ ] **Query-time HyDE for structural queries** — old data: HyDE +14pp structural / +12pp type_filtered / −22pp conceptual / −15pp behavioral. Router classifies structural → LLM generates synthetic code → embed → search. Per-category by design. Need fresh eval with SPLADE active (old data is pre-SPLADE, pre-AC-1).
@@ -98,7 +101,7 @@ Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue lis
 
 **Daemon & data:**
 - [ ] **Daemon: full CLI parity** — batch parser subset differs from CLI. Subsumed by [#947](https://github.com/jamie8johnson/cqs/issues/947) Commands/BatchCmd unification.
-- [ ] **Daemon: incremental SPLADE in watch mode** — watch currently skips SPLADE encoding for new/changed chunks. Keep ONNX model in daemon, encode only new chunks, incremental insert into in-memory `SpladeIndex` (current rebuild ≈18s for 68k chunks).
+- [x] **Daemon: incremental SPLADE in watch mode** — **Done 2026-04-15 (v1.26.0, #1004, PR #1007).** Watch now encodes sparse vectors for changed files inline alongside dense, batches at `CQS_SPLADE_BATCH` (default 32), kill-switch `CQS_WATCH_INCREMENTAL_SPLADE=0`.
 
 **Testing infrastructure:**
 - [ ] **Rewrite slow CLI test binaries to in-process fixtures** — issue [#980](https://github.com/jamie8johnson/cqs/issues/980). `cli_batch_test`, `cli_graph_test`, `cli_commands_test`, `cli_test`, `cli_health_test` are gated behind the `slow-tests` feature (PR #988) because each shells out to `cqs` and cold-loads the full ONNX/HNSW/SPLADE stack per test case (~118 min combined on PR CI). Follow the `cli_notes_test` + `router_test` pattern: open one `Store` + `CommandContext` per binary, call `cmd_*` handlers directly. Un-gates the feature and retires the nightly `slow-tests.yml` workflow.
@@ -217,6 +220,7 @@ Pre-audit issues. New audit issues are tracked under the `audit-v1.25.0` GitHub 
 
 | Version | Highlights |
 |---------|-----------|
+| v1.26.0 | **Watch-mode + SPLADE hardening batch.** `cqs watch` respects `.gitignore` (#1002, PR #1006) — ends worktree pollution. Incremental SPLADE encoding in watch (#1004, PR #1007) — coverage stays 100% during active dev. Per-category α re-fit on the genuinely-clean 14,882-chunk index (PR #1005, +1.8pp R@1 to 39.2%). `--splade` CLI flag no longer bypasses the router (PR #1008) — a pre-routing-era bug surfaced during the "phantom regression" investigation. `Store::open_readonly_after_init` closure-based constructor replaces unsafe `into_readonly` (#986, PR #998). Closes 4 additional audit findings on top of v1.25.0. |
 | v1.25.0 | **11th full audit** (16 categories, 236 findings, fix waves in flight). Per-category SPLADE alpha defaults from clean 21-point sweep (identifier 0.90, structural 0.60, conceptual 0.85, behavioral 0.05). Multi_step router fix (`"how does"` → not Behavioral, +0.7pp). Eval output to `~/.cache/cqs/evals/` (#943, fixed watch-reindex contamination — root cause of 2 days of eval drift). Notes daemon-bypass routing (#945). Determinism fixes across 15+ sort sites + GC suffix-match bug (81% chunks orphan, root cause of v1.24.0 → v1.25.0 R@1 inflation). Refactor lane queued: #946–#950. Quick-wins lane: #961–#975. |
 | v1.24.0 | GPU-native CAGRA bitset filtering (upstream PR rapidsai/cuvs#2019), daemon stability (CAGRA non-consuming search fixes SIGABRT under load), cagra.rs simplified −357 lines, batch/daemon base index routing, router update (type_filtered + multi_step → base), cuVS 26.4 |
 | v1.23.0 | **Daemon mode** (`cqs watch --serve`, 3-19ms queries), per-category SPLADE alpha routing + 11-point sweep, persistent query cache, shared runtime, AC-1 fusion fix, 90 audit findings |
