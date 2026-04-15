@@ -542,60 +542,24 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
         );
     }
 
-    // Build batch-format request from CLI args.
-    // Strip global flags (--json, -q, --quiet, --model, etc.) — they live
-    // on the top-level Cli struct, not on the subcommand. The batch handler
-    // always outputs JSON, so --json is implicit.
+    // #972: arg-stripping and `-n`→`--limit` remap live in
+    // `cqs::daemon_translate::translate_cli_args_to_batch`, a pure helper in
+    // the library crate. Integration tests pin its behaviour separately
+    // (tests/daemon_forward_test.rs). The caller still owns side effects:
+    // emitting the `--model ignored` warning and framing the JSON request.
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
-    let global_flags: &[&str] = &["--json", "-q", "--quiet"];
-    let global_with_value: &[&str] = &["--model", "-n", "--limit"];
-    let mut args: Vec<String> = Vec::new();
-    let mut skip_next = false;
-    let mut stripped_model: Option<String> = None;
-    for (i, arg) in raw_args.iter().enumerate() {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-        if global_flags.contains(&arg.as_str()) {
-            continue;
-        }
-        if global_with_value.contains(&arg.as_str()) {
-            // Remap -n/--limit: the batch parser uses --limit on the subcommand
-            if arg == "-n" || arg == "--limit" {
-                args.push("--limit".to_string());
-                // Next arg is the value — pass it through
-                continue;
-            }
-            // API-V1.25-8: `--model` is stripped because the daemon runs a
-            // single loaded model. Surface the mismatch to the user rather
-            // than silently ignoring their flag.
-            if arg == "--model" {
-                if let Some(val) = raw_args.get(i + 1) {
-                    stripped_model = Some(val.clone());
-                }
-            }
-            skip_next = true;
-            continue;
-        }
-        args.push(arg.clone());
-    }
-    if let Some(m) = &stripped_model {
+    // API-V1.25-8: `--model` is stripped because the daemon runs a single
+    // loaded model. Surface the mismatch to the user rather than silently
+    // ignoring their flag.
+    if let Some(m) = cqs::daemon_translate::stripped_model_value(&raw_args) {
         tracing::warn!(
             requested_model = %m,
             "Daemon ignores --model; query will run against daemon's loaded model. \
              Set CQS_NO_DAEMON=1 to force CLI mode with the requested model."
         );
     }
-    // Default search (no subcommand): `cqs "query"` → args after stripping
-    // are just the query + flags. Prepend "search" so the batch parser sees it.
-    let (command, cmd_args): (&str, &[String]) = if cli.command.is_none() {
-        ("search", &args)
-    } else if let Some((first, rest)) = args.split_first() {
-        (first.as_str(), rest)
-    } else {
-        ("", &[])
-    };
+    let (command, cmd_args) =
+        cqs::daemon_translate::translate_cli_args_to_batch(&raw_args, cli.command.is_some());
     let request = serde_json::json!({
         "command": command,
         "args": cmd_args,
