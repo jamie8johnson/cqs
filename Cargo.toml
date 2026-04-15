@@ -103,6 +103,7 @@ cuvs = { version = "=26.4", optional = true }  # pinned — strict version coupl
 
 # Text processing
 regex = "1"
+aho-corasick = "1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

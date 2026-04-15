@@ -5,6 +5,8 @@
 //! Pure logic — no I/O, no store access, infallible.
 
 use crate::language::{ChunkType, REGISTRY};
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
+use std::sync::LazyLock;
 
 /// Query categories for adaptive routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +137,12 @@ const NL_INDICATORS: &[&str] = &[
     "using",
 ];
 
+/// Aho-Corasick automaton over [`NL_INDICATORS`] for whole-query scans.
+/// Match ids are not used — only the presence of a whole-word match matters.
+static NL_INDICATORS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+    AhoCorasick::new(NL_INDICATORS).expect("NL_INDICATORS is a valid pattern set (static)")
+});
+
 /// Behavioral verbs suggesting a behavioral search
 const BEHAVIORAL_VERBS: &[&str] = &[
     "validates",
@@ -168,6 +176,12 @@ const BEHAVIORAL_VERBS: &[&str] = &[
     "renders",
 ];
 
+/// Aho-Corasick automaton over [`BEHAVIORAL_VERBS`].
+/// Only whole-word matches trigger behavioral classification.
+static BEHAVIORAL_VERBS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+    AhoCorasick::new(BEHAVIORAL_VERBS).expect("BEHAVIORAL_VERBS is a valid pattern set (static)")
+});
+
 /// Abstract nouns suggesting conceptual search
 const CONCEPTUAL_NOUNS: &[&str] = &[
     "pattern",
@@ -185,6 +199,12 @@ const CONCEPTUAL_NOUNS: &[&str] = &[
     "technique",
     "methodology",
 ];
+
+/// Aho-Corasick automaton over [`CONCEPTUAL_NOUNS`].
+/// Only whole-word matches trigger conceptual classification.
+static CONCEPTUAL_NOUNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+    AhoCorasick::new(CONCEPTUAL_NOUNS).expect("CONCEPTUAL_NOUNS is a valid pattern set (static)")
+});
 
 /// Negation tokens matched against word-split query tokens (not substrings).
 ///
@@ -228,7 +248,12 @@ const LANGUAGE_ALIASES: &[&str] = &["c++", "c#"];
 ///
 /// Combines all registered language names from `REGISTRY.all()` with
 /// common aliases that don't appear as registry keys.
-fn language_names() -> Vec<&'static str> {
+///
+/// Materialized once at first use — the registry is immutable and the
+/// alias list is a compile-time constant, so every subsequent call
+/// returns a borrow of the same `Vec`. Previously this allocated a new
+/// `Vec<&'static str>` on every `classify_query` call.
+static LANGUAGE_NAMES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut names: Vec<&'static str> = REGISTRY.all().map(|def| def.name).collect();
     for alias in LANGUAGE_ALIASES {
         if !names.contains(alias) {
@@ -236,6 +261,11 @@ fn language_names() -> Vec<&'static str> {
         }
     }
     names
+});
+
+/// Return the cached language-name list as a borrowed slice.
+fn language_names() -> &'static [&'static str] {
+    LANGUAGE_NAMES.as_slice()
 }
 
 /// Structural query patterns
@@ -252,6 +282,14 @@ const STRUCTURAL_PATTERNS: &[&str] = &[
     "extending",
     "deriving",
 ];
+
+/// Aho-Corasick automaton over [`STRUCTURAL_PATTERNS`]. These are matched as
+/// raw substrings in the query (same as the previous `query.contains(pat)`),
+/// so any match — word-bounded or not — triggers structural classification.
+static STRUCTURAL_PATTERNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+    AhoCorasick::new(STRUCTURAL_PATTERNS)
+        .expect("STRUCTURAL_PATTERNS is a valid pattern set (static)")
+});
 
 /// Multi-step conjunction patterns.
 ///
@@ -271,6 +309,14 @@ const MULTISTEP_PATTERNS: &[&str] = &[
     "both ",
     "between ",
 ];
+
+/// Aho-Corasick automaton over [`MULTISTEP_PATTERNS`]. Raw substring match —
+/// the pattern strings already carry their own trailing / leading space
+/// where word-boundary semantics are needed.
+static MULTISTEP_PATTERNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+    AhoCorasick::new(MULTISTEP_PATTERNS)
+        .expect("MULTISTEP_PATTERNS is a valid pattern set (static)")
+});
 
 // ── Classification ───────────────────────────────────────────────────
 
@@ -494,7 +540,7 @@ pub fn classify_query(query: &str) -> Classification {
     //    2026-04-13: route to base. Enrichment ablation at 78% summary coverage
     //    showed +2.9pp R@1 on base vs enriched (23.5% vs 20.6%, N=34).
     //    Summaries inject vocabulary that displaces the conjunction terms.
-    if MULTISTEP_PATTERNS.iter().any(|p| query_lower.contains(p)) {
+    if MULTISTEP_PATTERNS_AC.is_match(&query_lower) {
         return Classification {
             category: QueryCategory::MultiStep,
             confidence: Confidence::Low,
@@ -517,7 +563,7 @@ pub fn classify_query(query: &str) -> Classification {
 /// Check if a query looks like an identifier lookup.
 /// All tokens must be valid identifier characters (a-z, 0-9, _, :, .)
 /// and no natural language indicator words.
-fn is_identifier_query(_query: &str, words: &[&str]) -> bool {
+fn is_identifier_query(query: &str, words: &[&str]) -> bool {
     // Single-word queries with identifier chars
     if words.len() == 1 {
         let w = words[0];
@@ -525,8 +571,10 @@ fn is_identifier_query(_query: &str, words: &[&str]) -> bool {
         if !w.chars().any(|c| c.is_alphabetic()) {
             return false;
         }
-        // NL indicator words are not identifiers
-        if NL_INDICATORS.contains(&w) {
+        // NL indicator words are not identifiers. On a single-word query the
+        // word itself IS the whole query and carries no whitespace, so the
+        // AC word-boundary match reduces to "some pattern equals w".
+        if ac_has_word_bounded_match(&NL_INDICATORS_AC, query) {
             return false;
         }
         // Pure identifier chars (including :: and .)
@@ -538,7 +586,7 @@ fn is_identifier_query(_query: &str, words: &[&str]) -> bool {
     // Multi-word: require at least one strong identifier signal
     // (underscore, ::, ., or mixed case within a single token)
     if words.len() <= 3 {
-        let has_nl = words.iter().any(|w| NL_INDICATORS.contains(w));
+        let has_nl = ac_has_word_bounded_match(&NL_INDICATORS_AC, query);
         if has_nl {
             return false;
         }
@@ -587,7 +635,7 @@ fn is_cross_language_query(query: &str, words: &[&str]) -> bool {
 /// Check if query is structural (about code structure, not behavior).
 fn is_structural_query(query: &str) -> bool {
     // Structural patterns like "functions that return"
-    if STRUCTURAL_PATTERNS.iter().any(|p| query.contains(p)) {
+    if STRUCTURAL_PATTERNS_AC.is_match(query) {
         return true;
     }
     // Contains structural keywords as NL words (not identifiers)
@@ -603,8 +651,8 @@ fn is_structural_query(query: &str) -> bool {
 /// checks instead of raw substring contains so hyphenated identifiers like
 /// `code-that-was-deleted-yesterday` don't false-fire. The word-boundary
 /// phrase must be surrounded by whitespace or sit at a string boundary.
-fn is_behavioral_query(query: &str, words: &[&str]) -> bool {
-    if words.iter().any(|w| BEHAVIORAL_VERBS.contains(w)) {
+fn is_behavioral_query(query: &str, _words: &[&str]) -> bool {
+    if ac_has_word_bounded_match(&BEHAVIORAL_VERBS_AC, query) {
         return true;
     }
     // "how does" / "what does" removed 2026-04-14 — they caught 100% of
@@ -641,101 +689,161 @@ fn contains_phrase(query: &str, phrase: &str) -> bool {
     false
 }
 
+/// Check whether any pattern in `ac` has at least one whole-word match in
+/// `query`. A match is whole-word iff both sides of the match are either
+/// a string boundary or ASCII whitespace.
+///
+/// Used in place of the previous `words.iter().any(|w| SET.contains(w))`
+/// check: tokens split by whitespace are exactly the strings whose first
+/// and last bytes sit at ASCII whitespace (or the string boundary), so an
+/// AC match with whitespace on both sides represents a token that equals
+/// one of the patterns. No regex, no allocation, single pass over `query`.
+///
+/// Uses [`AhoCorasick::find_overlapping_iter`] so shared-prefix patterns
+/// (e.g. `"a"` / `"all"` / `"an"` in [`NL_INDICATORS`]) all get a chance
+/// to fire: a leftmost-first `find_iter` would return the first pattern
+/// that matches at position 0, and if that pattern is not word-bounded
+/// the helper would wrongly report "no match" even when a longer sibling
+/// pattern *is* word-bounded at the same start. Requires
+/// [`MatchKind::Standard`], which is the default for [`AhoCorasick::new`].
+fn ac_has_word_bounded_match(ac: &AhoCorasick, query: &str) -> bool {
+    let bytes = query.as_bytes();
+    for m in ac.find_overlapping_iter(query) {
+        let left_ok = m.start() == 0 || bytes[m.start() - 1].is_ascii_whitespace();
+        let right_ok = m.end() == bytes.len() || bytes[m.end()].is_ascii_whitespace();
+        if left_ok && right_ok {
+            return true;
+        }
+    }
+    false
+}
+
 /// Check if query is about abstract concepts.
 fn is_conceptual_query(query: &str, words: &[&str]) -> bool {
-    if words.iter().any(|w| CONCEPTUAL_NOUNS.contains(w)) {
+    if ac_has_word_bounded_match(&CONCEPTUAL_NOUNS_AC, query) {
         return true;
     }
     // Short queries (1-3 words) that aren't identifiers and aren't structural
     words.len() <= 3
-        && words.iter().any(|w| NL_INDICATORS.contains(w))
+        && ac_has_word_bounded_match(&NL_INDICATORS_AC, query)
         && !is_structural_query(query)
 }
+
+/// Patterns for [`extract_type_hints`] — the pattern string and the
+/// [`ChunkType`] it maps to. Order matters: output hints preserve this
+/// declaration order so tests that assert on hint ordering keep passing.
+const TYPE_HINT_PATTERNS: &[(&str, ChunkType)] = &[
+    // Test
+    ("test function", ChunkType::Test),
+    ("test method", ChunkType::Test),
+    ("all tests", ChunkType::Test),
+    ("every test", ChunkType::Test),
+    // Function / Method
+    ("all functions", ChunkType::Function),
+    ("every function", ChunkType::Function),
+    ("all methods", ChunkType::Method),
+    ("every method", ChunkType::Method),
+    // Type definitions
+    ("all structs", ChunkType::Struct),
+    ("every struct", ChunkType::Struct),
+    ("all enums", ChunkType::Enum),
+    ("every enum", ChunkType::Enum),
+    ("all traits", ChunkType::Trait),
+    ("every trait", ChunkType::Trait),
+    ("all interfaces", ChunkType::Interface),
+    ("every interface", ChunkType::Interface),
+    ("all classes", ChunkType::Class),
+    ("every class", ChunkType::Class),
+    ("type alias", ChunkType::TypeAlias),
+    ("all type aliases", ChunkType::TypeAlias),
+    // OOP / module constructs
+    ("all modules", ChunkType::Module),
+    ("every module", ChunkType::Module),
+    ("all objects", ChunkType::Object),
+    ("every object", ChunkType::Object),
+    ("all namespaces", ChunkType::Namespace),
+    ("every namespace", ChunkType::Namespace),
+    ("all impl blocks", ChunkType::Impl),
+    ("implementation block", ChunkType::Impl),
+    ("extension method", ChunkType::Extension),
+    ("all extensions", ChunkType::Extension),
+    // Members
+    ("all constants", ChunkType::Constant),
+    ("every constant", ChunkType::Constant),
+    ("all variables", ChunkType::Variable),
+    ("every variable", ChunkType::Variable),
+    ("all properties", ChunkType::Property),
+    ("every property", ChunkType::Property),
+    ("constructor", ChunkType::Constructor),
+    ("all constructors", ChunkType::Constructor),
+    // C# specific
+    ("all delegates", ChunkType::Delegate),
+    ("every delegate", ChunkType::Delegate),
+    ("all events", ChunkType::Event),
+    ("every event", ChunkType::Event),
+    // Macros
+    ("all macros", ChunkType::Macro),
+    ("every macro", ChunkType::Macro),
+    ("macro_rules", ChunkType::Macro),
+    // Web / API
+    ("endpoint", ChunkType::Endpoint),
+    ("all endpoints", ChunkType::Endpoint),
+    ("all services", ChunkType::Service),
+    ("every service", ChunkType::Service),
+    ("middleware", ChunkType::Middleware),
+    ("all middleware", ChunkType::Middleware),
+    // Database / FFI / config
+    ("stored procedure", ChunkType::StoredProc),
+    ("all stored procedures", ChunkType::StoredProc),
+    ("extern function", ChunkType::Extern),
+    ("all externs", ChunkType::Extern),
+    ("ffi declaration", ChunkType::Extern),
+    ("config key", ChunkType::ConfigKey),
+    ("all config keys", ChunkType::ConfigKey),
+    // Docs / Solidity
+    ("all sections", ChunkType::Section),
+    ("every section", ChunkType::Section),
+    ("all modifiers", ChunkType::Modifier),
+    ("every modifier", ChunkType::Modifier),
+];
+
+/// Aho-Corasick automaton over [`TYPE_HINT_PATTERNS`] — one pass over
+/// `query` finds every matching pattern id.
+///
+/// Uses [`MatchKind::Standard`] because [`AhoCorasick::find_overlapping_iter`]
+/// (which we need: sibling patterns like `"constructor"` / `"all constructors"`
+/// overlap in the haystack, and both must fire to match the previous
+/// `for (pat, _) in patterns { if query.contains(pat) {..} }` semantics)
+/// is only valid under the Standard match kind.
+static TYPE_HINT_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+    AhoCorasickBuilder::new()
+        .match_kind(MatchKind::Standard)
+        .build(TYPE_HINT_PATTERNS.iter().map(|(p, _)| *p))
+        .expect("TYPE_HINT_PATTERNS is a valid pattern set (static input)")
+});
 
 /// Extract chunk type hints from the query text.
 ///
 /// Returns the types to boost (not filter) in search results.
 /// Only extracts when confidence is reasonable — avoids false positives.
+///
+/// Previously this scanned ~72 patterns with individual `query.contains(p)`
+/// probes. Now uses a single Aho-Corasick pass via [`TYPE_HINT_AC`].
+///
+/// Output order is preserved: a hint is pushed the first time its pattern
+/// id appears in declaration order, and duplicate `ChunkType`s across
+/// different matched patterns are kept (e.g. two Test-mapped patterns both
+/// matching still yields `[Test, Test]`, matching the previous loop).
 pub fn extract_type_hints(query: &str) -> Option<Vec<ChunkType>> {
+    // Collect the set of pattern ids that match at least once.
+    let mut matched = [false; TYPE_HINT_PATTERNS.len()];
+    for m in TYPE_HINT_AC.find_overlapping_iter(query) {
+        matched[m.pattern().as_usize()] = true;
+    }
+
     let mut types = Vec::new();
-
-    let patterns: &[(&str, ChunkType)] = &[
-        // Test
-        ("test function", ChunkType::Test),
-        ("test method", ChunkType::Test),
-        ("all tests", ChunkType::Test),
-        ("every test", ChunkType::Test),
-        // Function / Method
-        ("all functions", ChunkType::Function),
-        ("every function", ChunkType::Function),
-        ("all methods", ChunkType::Method),
-        ("every method", ChunkType::Method),
-        // Type definitions
-        ("all structs", ChunkType::Struct),
-        ("every struct", ChunkType::Struct),
-        ("all enums", ChunkType::Enum),
-        ("every enum", ChunkType::Enum),
-        ("all traits", ChunkType::Trait),
-        ("every trait", ChunkType::Trait),
-        ("all interfaces", ChunkType::Interface),
-        ("every interface", ChunkType::Interface),
-        ("all classes", ChunkType::Class),
-        ("every class", ChunkType::Class),
-        ("type alias", ChunkType::TypeAlias),
-        ("all type aliases", ChunkType::TypeAlias),
-        // OOP / module constructs
-        ("all modules", ChunkType::Module),
-        ("every module", ChunkType::Module),
-        ("all objects", ChunkType::Object),
-        ("every object", ChunkType::Object),
-        ("all namespaces", ChunkType::Namespace),
-        ("every namespace", ChunkType::Namespace),
-        ("all impl blocks", ChunkType::Impl),
-        ("implementation block", ChunkType::Impl),
-        ("extension method", ChunkType::Extension),
-        ("all extensions", ChunkType::Extension),
-        // Members
-        ("all constants", ChunkType::Constant),
-        ("every constant", ChunkType::Constant),
-        ("all variables", ChunkType::Variable),
-        ("every variable", ChunkType::Variable),
-        ("all properties", ChunkType::Property),
-        ("every property", ChunkType::Property),
-        ("constructor", ChunkType::Constructor),
-        ("all constructors", ChunkType::Constructor),
-        // C# specific
-        ("all delegates", ChunkType::Delegate),
-        ("every delegate", ChunkType::Delegate),
-        ("all events", ChunkType::Event),
-        ("every event", ChunkType::Event),
-        // Macros
-        ("all macros", ChunkType::Macro),
-        ("every macro", ChunkType::Macro),
-        ("macro_rules", ChunkType::Macro),
-        // Web / API
-        ("endpoint", ChunkType::Endpoint),
-        ("all endpoints", ChunkType::Endpoint),
-        ("all services", ChunkType::Service),
-        ("every service", ChunkType::Service),
-        ("middleware", ChunkType::Middleware),
-        ("all middleware", ChunkType::Middleware),
-        // Database / FFI / config
-        ("stored procedure", ChunkType::StoredProc),
-        ("all stored procedures", ChunkType::StoredProc),
-        ("extern function", ChunkType::Extern),
-        ("all externs", ChunkType::Extern),
-        ("ffi declaration", ChunkType::Extern),
-        ("config key", ChunkType::ConfigKey),
-        ("all config keys", ChunkType::ConfigKey),
-        // Docs / Solidity
-        ("all sections", ChunkType::Section),
-        ("every section", ChunkType::Section),
-        ("all modifiers", ChunkType::Modifier),
-        ("every modifier", ChunkType::Modifier),
-    ];
-
-    for (pattern, chunk_type) in patterns {
-        if query.contains(pattern) {
+    for (idx, (_, chunk_type)) in TYPE_HINT_PATTERNS.iter().enumerate() {
+        if matched[idx] {
             types.push(*chunk_type);
         }
     }
@@ -1097,5 +1205,75 @@ mod tests {
         // Behavioral after word-boundary tightening.
         let c = classify_query("code that handles retries");
         assert_eq!(c.category, QueryCategory::Behavioral);
+    }
+
+    // ── Micro-benchmark (#964) ───────────────────────────────────────
+    //
+    // Sanity check for the Aho-Corasick + LazyLock rewrite. Runs
+    // classify_query on a mix of query shapes and prints per-call
+    // timing. Does not assert on timing — CI machines have wildly
+    // different performance envelopes.
+    //
+    // Marked #[ignore] so the default `cargo test` run does not pay
+    // the timing cost; invoke in release for a realistic number:
+    //   cargo test --release --features gpu-index --lib -- \
+    //     search::router::tests::bench_classify_query_throughput \
+    //     --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_classify_query_throughput() {
+        // Four query shapes that exercise different branches of classify_query:
+        //   1. Type-filtered — runs the full 72-pattern extract_type_hints
+        //      table, which was the heaviest contributor before the AC rewrite.
+        //   2. Behavioral — fires on a BEHAVIORAL_VERBS word.
+        //   3. Cross-language — two language names, full language_names scan.
+        //   4. Unknown — walks every branch (no early return) so the whole
+        //      classifier is stressed.
+        let queries: &[(&str, &str)] = &[
+            (
+                "type_filtered",
+                "find all test functions and every interface and all traits in the codebase shown",
+            ),
+            (
+                "behavioral",
+                "find the function that validates user input in the python module and logs it",
+            ),
+            (
+                "cross_language",
+                "port the python logging and tracing module into a rust crate with serde",
+            ),
+            (
+                "unknown",
+                "zephyr quartz wonder blooming river sunset gentle breeze stormy afternoon light",
+            ),
+        ];
+
+        // Warm the LazyLocks so construction cost isn't folded into timing.
+        for (_, q) in queries {
+            let _ = classify_query(q);
+        }
+
+        const ITERATIONS: usize = 10_000;
+        for (label, query) in queries {
+            assert!(
+                query.len() >= 60 && query.len() <= 95,
+                "keep bench queries near the 80-char target ({} = {} chars)",
+                label,
+                query.len()
+            );
+            let start = std::time::Instant::now();
+            let mut sink = 0u32;
+            for _ in 0..ITERATIONS {
+                let c = classify_query(query);
+                // Prevent the optimizer from eliding the call.
+                sink = sink.wrapping_add(c.category as u32);
+            }
+            let elapsed = start.elapsed();
+            let per_call_ns = elapsed.as_nanos() / ITERATIONS as u128;
+            eprintln!(
+                "classify_query bench [{:<14}]: {} iters in {:>9.3?} ({:>5} ns/call, sink={})",
+                label, ITERATIONS, elapsed, per_call_ns, sink
+            );
+        }
     }
 }
