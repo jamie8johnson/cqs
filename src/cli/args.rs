@@ -75,13 +75,23 @@ pub(crate) struct SearchArgs {
     #[arg(long)]
     pub rerank: bool,
 
-    /// Enable SPLADE sparse-dense hybrid search (requires SPLADE model)
+    /// Force-enable SPLADE sparse-dense hybrid search.
+    ///
+    /// Default behavior already runs SPLADE with per-category routing when the
+    /// classifier matches a known category. This flag forces SPLADE on even
+    /// for Unknown-category queries. Combine with `--splade-alpha` to pin
+    /// a specific fusion weight across all categories.
     #[arg(long)]
     pub splade: bool,
 
-    /// SPLADE fusion weight: 1.0 = pure cosine, 0.0 = pure sparse (default: 0.7)
-    #[arg(long, default_value = "0.7", value_parser = parse_finite_f32)]
-    pub splade_alpha: f32,
+    /// SPLADE fusion weight (None = use per-category router).
+    ///
+    /// When set, overrides the per-category router with a constant α for all
+    /// queries: 1.0 = pure cosine, 0.0 = pure sparse, 0.7 was the legacy
+    /// one-size default. Leaving this unset lets `classify_query` pick per
+    /// category (the production path).
+    #[arg(long, value_parser = parse_finite_f32)]
+    pub splade_alpha: Option<f32>,
 
     /// Show only file:line, no code
     #[arg(long)]
