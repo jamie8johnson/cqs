@@ -2,9 +2,35 @@
 
 ## Right Now
 
-**v1.26.0 release in flight (2026-04-15 afternoon CDT).** All watch-mode + SPLADE-flag + alpha-routing gaps closed.
+**v1.26.0 SHIPPED (2026-04-15 evening CDT). Now: eval expansion via local Gemma 4 31B.**
 
-Main at `dd97612`. Release branch: `release/v1.26.0` (Cargo.toml + CHANGELOG bumped, PR pending).
+Main at `28f76b9` (Release v1.26.0). crates.io published `cqs 1.26.0`. Local binary installed, `cqs-watch` daemon active on v1.26.0. GitHub release workflow built binaries for Linux/macOS/Windows.
+
+### Next goal: bigger, honest v3 eval dataset
+
+Current eval (265q) has sampling-floor problems: cross_language N=21 (±10pp SE), type_filtered N=24. Per-category routing decisions live in the noise at that scale. Expansion target: N≥100 per category, ~1000 queries total, with proper train/dev/test split (600/200/200).
+
+Wired up today to make this tractable:
+
+- **vLLM Gemma 4 31B AWQ** serving at `http://127.0.0.1:8000/v1` (model id `gemma-4-31b`)
+  - Env: `~/miniforge3/envs/vllm-serve/` (separate from `cqs-train` because cqs-train runs CUDA 13 and vLLM wants 12.8)
+  - Launch command + notes in `~/.claude/projects/-mnt-c-Projects-cqs/memory/reference_vllm_gemma.md`
+  - A6000 is maxed at ~47.6 GB (19.6 weights + 20 KV + 7 overhead) — if training needs the GPU, `pkill -f 'vllm serve'` first
+  - Log: `~/logs/vllm-serve.log`. Restart after reboot: re-run the launch command from memory file (no systemd unit yet).
+  - Known issue: requires `transformers` from git (5.6.0.dev0) because 4.57.6 doesn't recognize `gemma4` arch. vLLM 0.19 warns about the version but runs.
+- **Labeling harness** at `evals/llm_client.py` — async OpenAI-compatible client with three prompt modes (`classify`, `generate`, `validate`) and blake3→SQLite cache at `~/.cache/cqs/llm-cache.db`. Smoke-tested end-to-end: classify/generate/validate all functional.
+
+### Plan (what's not done yet)
+
+1. **Telemetry mining** — 16,731 logged cqs invocations in `~/.config/cqs/` (or wherever telemetry lives). Cluster real queries, stratify-sample ~1500. No API cost.
+2. **LLM-generated scale-up** — walk indexed chunks, have Gemma generate 2-3 queries each across categories, filter to ~1000 diverse.
+3. **Multi-judge labeling** — Gemma + Claude Sonnet + one other model label each query's category and gold-answer chunk. Majority vote; hand-adjudicate ties.
+4. **v3 split** — 600 train (centroids, alpha sweep) / 200 dev (threshold tuning) / 200 test (frozen).
+5. **Cross-project test set** — run against openclaw, a Python project, a TypeScript project. Catches cqs-only overfitting.
+6. **Calibration gate** — before step 3 commits 200k labels, 100-query calibration run with both Gemma and Claude. If <70% agreement, bigger model or API-only.
+7. **Then** centroid classifier (the original target), alpha re-sweep on expanded eval, measure lift.
+
+### Session landings (on top of Wave A–F from earlier in the day)
 
 ### Session landings (on top of Wave A–F from earlier in the day)
 
@@ -36,11 +62,14 @@ Closed this session: #1002 (PR #1006), #1004 (PR #1007), #986 (PR #998). #951 RE
 
 ## Architecture state
 
-- **Version:** v1.26.0 (release branch open), Schema v20
-- **Binary:** needs rebuild + install after release PR merges (currently at pre-release main)
-- **Index:** clean (14,882 chunks, 100% SPLADE coverage)
+- **Version:** v1.26.0 RELEASED, Schema v20
+- **Binary:** rebuilt + installed from `28f76b9`; `cqs-watch` daemon running v1.26.0
+- **crates.io:** `cqs 1.26.0` published
+- **GitHub release:** artifacts built by `release.yml` workflow for Linux/macOS/Windows
+- **Index:** clean (14,917 chunks, 100% SPLADE coverage)
 - **Tests:** 1450+ lib tests pass; 16 router tests updated for v1.26.0 alphas
 - **Eval harness:** `evals/run_ablation.py` → `BGE-large+SPLADE` config now actually hits the router (was hardcoding `--splade-alpha 0.7`)
+- **Labeling infra:** vLLM Gemma 4 31B AWQ at :8000, `evals/llm_client.py` client with SQLite cache at `~/.cache/cqs/llm-cache.db`
 
 ## Operational pitfalls captured this session
 
