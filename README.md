@@ -171,6 +171,14 @@ model = "bge-large"              # built-in preset
 # dim = 1024
 # query_prefix = "query: "
 # doc_prefix = "passage: "
+#
+# Architecture (only set for non-BERT models — defaults are BERT):
+# output_name = "last_hidden_state"          # some models expose "sentence_embedding"
+# pooling = "mean"                           # or "cls" or "lasttoken"
+# [embedding.input_names]
+# ids = "input_ids"
+# mask = "attention_mask"
+# # token_types omitted for distilled / non-BERT models (no segment embeddings)
 ```
 
 ## Watch Mode
