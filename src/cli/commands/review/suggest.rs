@@ -153,7 +153,7 @@ fn apply_suggestions(
     // Re-index notes. Opens a read-write store for the mutation — the
     // CLI already holds a read-only handle via CommandContext, but the
     // #946 typestate won't let us use it here.
-    let index_path = cqs_dir.join("index.db");
+    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
     let rw_store = cqs::Store::open(&index_path)?;
     let notes = cqs::parse_notes(&notes_path)?;
     cqs::index_notes(&notes, &notes_path, &rw_store)?;

@@ -304,7 +304,7 @@ impl BatchContext {
         }
         self.last_staleness_check.set(Some(now));
 
-        let index_path = self.cqs_dir.join("index.db");
+        let index_path = self.cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let current_id = match DbFileIdentity::from_path(&index_path) {
             Some(id) => id,
             None => {
@@ -377,7 +377,7 @@ impl BatchContext {
         let _span = tracing::info_span!("batch_manual_invalidation").entered();
         self.invalidate_mutable_caches();
 
-        let index_path = self.cqs_dir.join("index.db");
+        let index_path = self.cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let new_store = Store::open_readonly_pooled(&index_path)
             .map_err(|e| anyhow::anyhow!("Failed to re-open Store: {e}"))?;
         *self.store.borrow_mut() = new_store;
@@ -954,7 +954,7 @@ pub(crate) fn create_context() -> Result<BatchContext> {
     // Capture initial index.db identity (inode/size/mtime on unix).
     // DS-V1.25-6: previously this was mtime alone, which sub-second
     // replacements on WSL NTFS could miss.
-    let index_id = DbFileIdentity::from_path(&cqs_dir.join("index.db"));
+    let index_id = DbFileIdentity::from_path(&cqs_dir.join(cqs::INDEX_DB_FILENAME));
     if index_id.is_none() {
         tracing::debug!("Could not stat index.db — staleness detection will be skipped until first successful stat");
     }
@@ -989,7 +989,7 @@ pub(crate) fn create_context() -> Result<BatchContext> {
 /// Create a BatchContext for testing with a temporary store.
 #[cfg(test)]
 fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
-    let index_path = cqs_dir.join("index.db");
+    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
     let store =
         Store::open(&index_path).map_err(|e| anyhow::anyhow!("Failed to open test store: {e}"))?;
     let root = cqs_dir.parent().unwrap_or(cqs_dir).to_path_buf();
@@ -1172,7 +1172,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).unwrap();
-        let index_path = cqs_dir.join("index.db");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let store = Store::open(&index_path).unwrap();
         store.init(&ModelInfo::default()).unwrap();
         drop(store);
@@ -1228,7 +1228,7 @@ mod tests {
         // Touch index.db to simulate concurrent `cqs index`
         // Sleep to ensure mtime changes (filesystem granularity is ~1s on some FS)
         thread::sleep(Duration::from_secs(2));
-        let index_path = cqs_dir.join("index.db");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         // Append a byte to force mtime change
         {
             use std::io::Write;
@@ -1270,7 +1270,7 @@ mod tests {
             "First check should not invalidate"
         );
 
-        let index_path = cqs_dir.join("index.db");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let original_mtime = std::fs::metadata(&index_path).unwrap().modified().unwrap();
         let original_ino = std::fs::metadata(&index_path).unwrap().ino();
 

@@ -27,7 +27,7 @@ impl TestStore {
     /// Create an initialized test store in a temporary directory
     pub fn new() -> Self {
         let dir = TempDir::new().expect("Failed to create temp dir");
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
         let store = Store::open(&db_path).expect("Failed to open store");
         store
             .init(&ModelInfo::default())
@@ -38,14 +38,14 @@ impl TestStore {
     /// Get the database path for this test store
     #[allow(dead_code)]
     pub fn db_path(&self) -> PathBuf {
-        self._dir.path().join("index.db")
+        self._dir.path().join(cqs::INDEX_DB_FILENAME)
     }
 
     /// Create a test store with custom model info
     #[allow(dead_code)]
     pub fn with_model(model: &ModelInfo) -> Self {
         let dir = TempDir::new().expect("Failed to create temp dir");
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
         let store = Store::open(&db_path).expect("Failed to open store");
         store.init(model).expect("Failed to init store");
         Self { store, _dir: dir }

@@ -167,7 +167,7 @@ fn reindex_notes(root: &std::path::Path, store: &cqs::Store) -> (usize, Option<S
 
 /// Open a read-write store for notes mutations that need to reindex.
 fn open_rw_store(root: &std::path::Path) -> Result<cqs::Store> {
-    let index_path = cqs::resolve_index_dir(root).join("index.db");
+    let index_path = cqs::resolve_index_dir(root).join(cqs::INDEX_DB_FILENAME);
     cqs::Store::open(&index_path)
         .map_err(|e| anyhow::anyhow!("Failed to open index at {}: {}", index_path.display(), e))
 }

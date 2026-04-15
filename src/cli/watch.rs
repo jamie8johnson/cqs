@@ -607,7 +607,7 @@ pub fn cmd_watch(
     };
 
     let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
+    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
 
     if !index_path.exists() {
         bail!("No index found. Run 'cqs index' first.");

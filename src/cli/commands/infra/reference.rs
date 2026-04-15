@@ -122,7 +122,7 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
             tracing::debug!(path = %ref_dir.display(), error = %e, "Failed to set file permissions");
         }
     }
-    let db_path = ref_dir.join("index.db");
+    let db_path = ref_dir.join(cqs::INDEX_DB_FILENAME);
 
     // Enumerate files
     let parser = CqParser::new()?;
@@ -197,7 +197,7 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
             .references
             .iter()
             .map(|r| {
-                let chunks = Store::open_readonly(&r.path.join("index.db"))
+                let chunks = Store::open_readonly(&r.path.join(cqs::INDEX_DB_FILENAME))
                     .map_err(|e| {
                         tracing::warn!(
                             name = %r.name,
@@ -231,7 +231,7 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
     println!("{}", "─".repeat(60));
 
     for r in &config.references {
-        let chunks = Store::open(&r.path.join("index.db"))
+        let chunks = Store::open(&r.path.join(cqs::INDEX_DB_FILENAME))
             .map_err(|e| {
                 tracing::warn!(
                     name = %r.name,
@@ -322,7 +322,7 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
         );
     }
 
-    let db_path = ref_config.path.join("index.db");
+    let db_path = ref_config.path.join(cqs::INDEX_DB_FILENAME);
     let ref_dir = &ref_config.path;
 
     // Get current chunk count before modifying anything

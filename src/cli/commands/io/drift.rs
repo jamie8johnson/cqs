@@ -91,7 +91,7 @@ pub(crate) fn cmd_drift(
     let ref_store =
         crate::cli::commands::resolve::resolve_reference_store_readonly(&root, reference)?;
 
-    let index_path = cqs_dir.join("index.db");
+    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
     if !index_path.exists() {
         bail!("Project index not found. Run 'cqs init && cqs index' first.");
     }
