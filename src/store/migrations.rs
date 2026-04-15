@@ -17,8 +17,11 @@
 //! - Test migrations with real indexes before release
 //! - Keep migrations idempotent where possible (use IF NOT EXISTS)
 
+use std::path::Path;
+
 use sqlx::SqlitePool;
 
+use super::backup;
 use super::helpers::StoreError;
 
 // Used by tests and future migrations
@@ -27,16 +30,50 @@ use super::helpers::CURRENT_SCHEMA_VERSION;
 
 /// Run all migrations from stored version to current version.
 ///
-/// v1.22.0 audit DS-W6: re-reads `schema_version` inside the migration
-/// transaction before executing DDL. Two concurrent processes both reading
-/// version=17 from the pool, then both running `ALTER TABLE ADD COLUMN`,
-/// would crash the second with "duplicate column name" on a perfectly
-/// healthy DB. The double-check under the transaction's implicit exclusive
-/// lock prevents this: the second process sees the version has already
-/// advanced and short-circuits.
-pub async fn migrate(pool: &SqlitePool, from: i32, to: i32) -> Result<(), StoreError> {
+/// ## Backup and recovery (issue #953)
+///
+/// Before any DDL runs, a filesystem snapshot of `db_path` (and its
+/// `-wal`/`-shm` sidecars) is taken to a sibling `.bak-v{from}-v{to}-{ts}.db`
+/// file via `crate::fs::atomic_replace`. This covers two failure modes that
+/// SQLite's transactional rollback does not:
+///
+/// 1. A commit-time I/O failure mid-WAL-write (disk full, fs quota, network
+///    FS disconnect, user pulling USB). The in-memory pool state can think
+///    the rollback completed while the on-disk file sees partial pages.
+/// 2. A bug inside a migration function that writes logically-inconsistent
+///    state — the transaction commits cleanly but the data is wrong.
+///
+/// On any migration error, the DB is restored from the backup atomically so
+/// the caller sees either pre-migrate or post-migrate state, never a
+/// partial write. On success, the newest two backups (including this one)
+/// are retained and older ones are pruned.
+///
+/// If the backup step itself fails (e.g. parent dir is read-only), the
+/// migration proceeds without a snapshot and a warning is logged.
+/// Setting `CQS_MIGRATE_REQUIRE_BACKUP=1` promotes that warning to a hard
+/// error.
+///
+/// ## Concurrent-migrate safety (v1.22.0 audit DS-W6)
+///
+/// Re-reads `schema_version` inside the migration transaction before executing
+/// DDL. Two concurrent processes both reading version=17 from the pool, then
+/// both running `ALTER TABLE ADD COLUMN`, would crash the second with
+/// "duplicate column name" on a perfectly healthy DB. The double-check under
+/// the transaction's implicit exclusive lock prevents this: the second
+/// process sees the version has already advanced and short-circuits.
+pub async fn migrate(
+    pool: &SqlitePool,
+    db_path: &Path,
+    from: i32,
+    to: i32,
+) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate", from, to).entered();
+
     if from == to {
-        return Ok(()); // Already at target version
+        // Fast path: no work to do. Do NOT take a backup — this path runs
+        // on every `cqs` command when the DB is already at the current
+        // version, and a disk write here would be unacceptable overhead.
+        return Ok(());
     }
     if from > to {
         return Err(StoreError::SchemaNewerThanCq(from));
@@ -48,6 +85,64 @@ pub async fn migrate(pool: &SqlitePool, from: i32, to: i32) -> Result<(), StoreE
         "Starting schema migration"
     );
 
+    // Snapshot the DB before any DDL runs. On failure the restore path uses
+    // `atomic_replace` to put the DB back in its pre-migrate state.
+    let backup_path = backup::backup_before_migrate(pool, db_path, from, to).await?;
+
+    match run_migration_tx(pool, from, to).await {
+        Ok(()) => {
+            tracing::info!(new_version = to, "Schema migration complete");
+            // Best-effort prune of older backups; failure here is not a
+            // migration failure — the user's DB is at the correct version.
+            if let Err(e) = backup::prune_old_backups(db_path) {
+                tracing::warn!(error = %e, "Failed to prune old migration backups");
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if let Some(ref bak) = backup_path {
+                match backup::restore_from_backup(db_path, bak) {
+                    Ok(()) => {
+                        tracing::warn!(
+                            error = %e,
+                            backup = %bak.display(),
+                            "Migration failed; DB restored from backup"
+                        );
+                    }
+                    Err(restore_err) => {
+                        // We can't put the DB back. Surface both errors in
+                        // the log — the user needs to manually `cqs index
+                        // --force` or copy `bak` into place.
+                        tracing::error!(
+                            migration_error = %e,
+                            restore_error = %restore_err,
+                            backup = %bak.display(),
+                            db = %db_path.display(),
+                            "Migration failed AND restore failed. \
+                             Manually copy the backup into place or run \
+                             'cqs index --force'."
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    error = %e,
+                    db = %db_path.display(),
+                    "Migration failed and no backup was available for restore. \
+                     Run 'cqs index --force' to rebuild from source."
+                );
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Run the migration transaction: re-check version under the write lock,
+/// dispatch each version step, stamp the new `schema_version`, commit.
+///
+/// Split out of `migrate()` so the caller can always invoke the
+/// backup-and-restore pipeline regardless of how the transaction fails.
+async fn run_migration_tx(pool: &SqlitePool, from: i32, to: i32) -> Result<(), StoreError> {
     let mut tx = pool.begin().await?;
 
     // DS-W6: re-read version under the write lock. A concurrent process may
@@ -73,14 +168,31 @@ pub async fn migrate(pool: &SqlitePool, from: i32, to: i32) -> Result<(), StoreE
     for version in actual_from..to {
         tracing::info!(from = version, to = version + 1, "Running migration step");
         run_migration(&mut tx, version, version + 1).await?;
+
+        // Test-only hook: when the thread-local `TEST_FAIL_AFTER_VERSION`
+        // is set to N by a test, return an error without committing so
+        // the test can exercise the backup-restore path. Per-thread (not
+        // a process-global atomic or env var) so tests running in parallel
+        // don't inject failures into each other.
+        //
+        // Gated on `cfg(test)` so it cannot be triggered in a release binary.
+        #[cfg(test)]
+        {
+            let target = tests::TEST_FAIL_AFTER_VERSION.with(|c| c.get());
+            if target != 0 && target == version + 1 {
+                return Err(StoreError::Runtime(format!(
+                    "test hook: injected failure after migration step v{} -> v{}",
+                    version,
+                    version + 1
+                )));
+            }
+        }
     }
     sqlx::query("UPDATE metadata SET value = ?1 WHERE key = 'schema_version'")
         .bind(to.to_string())
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-
-    tracing::info!(new_version = to, "Schema migration complete");
 
     Ok(())
 }
@@ -503,6 +615,21 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
 
+    std::thread_local! {
+        /// Test-only failure-injection flag read by `run_migration_tx`.
+        /// Tests that want to exercise the `migrate()` backup/restore path
+        /// set this to `target_version`; after the migration step that
+        /// bumps the version to that value completes, `run_migration_tx`
+        /// returns an error without committing. `0` = disabled.
+        ///
+        /// Thread-local rather than global so parallel tests don't inject
+        /// failures into each other — each `#[test]` runs on its own
+        /// thread, and the hook only fires on threads that explicitly set
+        /// this cell.
+        pub(super) static TEST_FAIL_AFTER_VERSION: std::cell::Cell<i32> =
+            const { std::cell::Cell::new(0) };
+    }
+
     #[test]
     fn test_migration_not_supported_error() {
         // Verify unknown migrations produce clear errors
@@ -539,7 +666,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, 15, 15).await;
+            let result = migrate(&pool, &db_path, 15, 15).await;
             assert!(result.is_ok(), "same-version migration should be no-op");
         });
     }
@@ -565,7 +692,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, 15, 14).await;
+            let result = migrate(&pool, &db_path, 15, 14).await;
             assert!(result.is_err(), "downgrade should fail");
             match result.unwrap_err() {
                 StoreError::SchemaNewerThanCq(v) => assert_eq!(v, 15),
@@ -641,7 +768,7 @@ mod tests {
             assert!(table_check.is_none(), "type_edges should not exist yet");
 
             // Run migration from v10 to v11
-            migrate(&pool, 10, 11).await.unwrap();
+            migrate(&pool, &db_path, 10, 11).await.unwrap();
 
             // Verify type_edges now exists
             let table_check: Option<(String,)> = sqlx::query_as(
@@ -747,7 +874,7 @@ mod tests {
                 .unwrap();
 
             // Run migration from v12 to v13
-            migrate(&pool, 12, 13).await.unwrap();
+            migrate(&pool, &db_path, 12, 13).await.unwrap();
 
             // Verify enrichment_hash column exists by inserting a row that uses it
             sqlx::query(
@@ -858,7 +985,7 @@ mod tests {
             assert!(table_check.is_none(), "llm_summaries should not exist yet");
 
             // Run migration from v13 to v14
-            migrate(&pool, 13, 14).await.unwrap();
+            migrate(&pool, &db_path, 13, 14).await.unwrap();
 
             // Verify llm_summaries table exists
             let table_check: Option<(String,)> = sqlx::query_as(
@@ -977,7 +1104,7 @@ mod tests {
                 .unwrap();
 
             // Run migration from v14 to v15
-            migrate(&pool, 14, 15).await.unwrap();
+            migrate(&pool, &db_path, 14, 15).await.unwrap();
 
             // Verify dimensions updated to 768
             let dims: (String,) =
@@ -1071,7 +1198,7 @@ mod tests {
             .unwrap();
 
             // Run migration from v15 to v16
-            migrate(&pool, 15, 16).await.unwrap();
+            migrate(&pool, &db_path, 15, 16).await.unwrap();
 
             // Verify existing rows have purpose='summary'
             let count: (i64,) =
@@ -1175,7 +1302,7 @@ mod tests {
                 .unwrap();
 
             // Run full chain migration from v12 to v14
-            migrate(&pool, 12, 14).await.unwrap();
+            migrate(&pool, &db_path, 12, 14).await.unwrap();
 
             // Verify enrichment_hash column exists (from v12→v13)
             sqlx::query(
@@ -1248,7 +1375,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, 8, 11).await;
+            let result = migrate(&pool, &db_path, 8, 11).await;
             assert!(result.is_err(), "unsupported range should fail");
             match result.unwrap_err() {
                 StoreError::MigrationNotSupported(from, to) => {
@@ -1331,7 +1458,7 @@ mod tests {
             .await
             .unwrap();
 
-            migrate(&pool, 17, 18).await.unwrap();
+            migrate(&pool, &db_path, 17, 18).await.unwrap();
 
             // Column exists and defaults to NULL for pre-existing rows.
             let (embedding_existing, embedding_base): (Vec<u8>, Option<Vec<u8>>) =
@@ -1429,12 +1556,12 @@ mod tests {
                 .unwrap();
 
             // First call: 17→18 succeeds.
-            migrate(&pool, 17, 18).await.unwrap();
+            migrate(&pool, &db_path, 17, 18).await.unwrap();
 
             // Second call at the same target version: should be a no-op.
             // This is the property users actually depend on — re-running
             // `cqs index` should not fail just because the schema is current.
-            migrate(&pool, 18, 18).await.unwrap();
+            migrate(&pool, &db_path, 18, 18).await.unwrap();
         });
     }
 
@@ -1550,7 +1677,7 @@ mod tests {
             .unwrap();
 
             // Run the migration.
-            migrate(&pool, 18, 19).await.unwrap();
+            migrate(&pool, &db_path, 18, 19).await.unwrap();
 
             // Orphan rows dropped, live rows survive.
             let (count,): (i64,) = sqlx::query_as(
@@ -1706,7 +1833,7 @@ mod tests {
             }
 
             // Run v19 → v20 migration.
-            migrate(&pool, 19, 20).await.unwrap();
+            migrate(&pool, &db_path, 19, 20).await.unwrap();
 
             // Migration itself bumps the generation once.
             let (gen_after_migration,): (String,) =
@@ -1797,5 +1924,447 @@ mod tests {
                 "INSERT should NOT bump the generation (no DELETE happened)"
             );
         });
+    }
+
+    // ========================================================================
+    // Issue #953: filesystem backup before migrate() runs DDL.
+    //
+    // The four tests below cover the happy-path backup creation, the
+    // failure-path restore, the pruning policy, and the absent-WAL edge case.
+    // ========================================================================
+
+    /// Helper: build a minimal v19 schema on `pool` so migrate(19 -> 20) can
+    /// run against it. Each #953 test uses this so the test body focuses on
+    /// backup/restore behaviour rather than schema setup.
+    async fn seed_v19_schema(pool: &sqlx::SqlitePool) {
+        sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE chunks (
+                id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                language TEXT NOT NULL,
+                chunk_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                signature TEXT NOT NULL,
+                content TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                line_start INTEGER NOT NULL,
+                line_end INTEGER NOT NULL,
+                embedding BLOB NOT NULL,
+                embedding_base BLOB,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                enrichment_version INTEGER NOT NULL DEFAULT 0
+            )",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE sparse_vectors (
+                chunk_id TEXT NOT NULL,
+                token_id INTEGER NOT NULL,
+                weight REAL NOT NULL,
+                PRIMARY KEY (chunk_id, token_id),
+                FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+            )",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("CREATE INDEX idx_sparse_token ON sparse_vectors(token_id)")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO metadata (key, value) VALUES ('schema_version', '19'),
+                                                      ('splade_generation', '7')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Issue #953, happy path: a successful migrate() leaves a
+    /// `.bak-v{from}-v{to}-{ts}.db` file in the DB's parent directory.
+    ///
+    /// This is what gives users a recovery path when a future migration
+    /// fails on real data — they can `mv` the backup back into place
+    /// instead of re-indexing their corpus from source.
+    #[test]
+    fn test_migrate_writes_backup_file_on_success() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true)
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+            seed_v19_schema(&pool).await;
+
+            // Seed one chunk so the DB is not empty — lets us catch a bug
+            // where the backup captures a zero-length file instead of the
+            // live one.
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 created_at, updated_at) \
+                 VALUES ('c1', 'file:lib.rs', 'file', 'rust', 'function', 'c1', \
+                 '', '', 'h', 1, 10, X'00', '2026-04-15', '2026-04-15')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            migrate(&pool, &db_path, 19, 20).await.unwrap();
+
+            // Enumerate backups — exactly one should exist after this run.
+            let backups: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+                .filter(|n| n.starts_with("test.bak-v19-v20-") && n.ends_with(".db"))
+                .collect();
+            assert_eq!(
+                backups.len(),
+                1,
+                "expected exactly one .bak-v19-v20-*.db file, got: {:?}",
+                backups
+            );
+
+            // Backup should be non-empty (not a placeholder for a failed copy).
+            let bak_path = dir.path().join(&backups[0]);
+            let bak_bytes = std::fs::read(&bak_path).unwrap();
+            assert!(
+                !bak_bytes.is_empty(),
+                "backup DB file should not be zero-length"
+            );
+            // SQLite files start with the 16-byte header "SQLite format 3\0".
+            assert!(
+                bak_bytes.starts_with(b"SQLite format 3\0"),
+                "backup should be a valid SQLite database file"
+            );
+        });
+    }
+
+    /// Issue #953, failure path: when a migration step returns `Err` mid-way
+    /// (simulating either a bug inside a migration function or a
+    /// commit-time I/O failure), the restore-from-backup path runs and the
+    /// DB file is byte-identical to its pre-migrate state.
+    ///
+    /// Uses the thread-local `TEST_FAIL_AFTER_VERSION` hook (gated on
+    /// `cfg(test)` inside `run_migration_tx`) to trigger the failure
+    /// deterministically. Thread-local so parallel v17→v18 tests on other
+    /// threads don't see the injected failure.
+    #[test]
+    fn test_migrate_restores_db_on_failure() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Phase 1: set up a v17 DB, close the pool so SQLite checkpoints
+        // and removes the WAL, then snapshot the main DB file bytes. These
+        // bytes are what restore must reproduce.
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true)
+                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                        .synchronous(sqlx::sqlite::SqliteSynchronous::Full),
+                )
+                .await
+                .unwrap();
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    enrichment_version INTEGER NOT NULL DEFAULT 0
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '17')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            // Checkpoint and close so the WAL is drained into the main DB.
+            // After this, the on-disk bytes capture the full pre-migrate state.
+            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+        });
+
+        let pre_migrate_bytes = std::fs::read(&db_path).unwrap();
+
+        // Phase 2: reopen, set the failure hook, run migrate(17 -> 19).
+        // The hook makes step v18 succeed then fail the overall migration.
+        // On error, restore should put the DB file back to pre_migrate_bytes.
+        TEST_FAIL_AFTER_VERSION.with(|c| c.set(18));
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(false)
+                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                        .synchronous(sqlx::sqlite::SqliteSynchronous::Full),
+                )
+                .await
+                .unwrap();
+
+            let err = migrate(&pool, &db_path, 17, 19).await.unwrap_err();
+            match err {
+                StoreError::Runtime(msg) => assert!(
+                    msg.contains("injected failure"),
+                    "expected injected-failure error, got: {}",
+                    msg
+                ),
+                other => panic!("expected Runtime(injected failure), got: {:?}", other),
+            }
+            // Close the pool so the WAL is finalised and the on-disk bytes
+            // reflect the restored state rather than in-memory cache.
+            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .execute(&pool)
+                .await
+                .ok();
+            pool.close().await;
+        });
+
+        TEST_FAIL_AFTER_VERSION.with(|c| c.set(0));
+
+        // The DB file must be byte-identical to the pre-migrate snapshot.
+        // If restore didn't fire, the ALTER from migrate_v17_to_v18 would
+        // have changed the schema pages and the bytes would differ.
+        let post_migrate_bytes = std::fs::read(&db_path).unwrap();
+        assert_eq!(
+            post_migrate_bytes, pre_migrate_bytes,
+            "DB file bytes must match pre-migrate state after failed migration + restore"
+        );
+    }
+
+    /// Issue #953, prune policy: after a successful migrate, only the newest
+    /// `KEEP_BACKUPS` (2) backups survive. Older ones are deleted.
+    ///
+    /// Setup seeds 5 fake `.bak-v*.db` files with staggered mtimes so there
+    /// is a deterministic ordering, runs migrate which creates a 6th (the
+    /// one produced by this run), and asserts that 3 survive: the two
+    /// newest pre-existing backups and this run's backup.
+    #[test]
+    fn test_migrate_prunes_old_backups_keeping_newest_two() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Seed 5 pre-existing fake backups with distinct mtimes. Using
+        // different filenames per from/to spans because the filename
+        // already encodes a unique ts suffix in real usage; here we set
+        // mtimes explicitly to control the sort order.
+        let now = std::time::SystemTime::now();
+        let five_secs = std::time::Duration::from_secs(5);
+        let fake_backups = [
+            ("test.bak-v10-v11-100.db", now - five_secs * 5), // oldest
+            ("test.bak-v11-v12-200.db", now - five_secs * 4),
+            ("test.bak-v12-v13-300.db", now - five_secs * 3),
+            ("test.bak-v13-v14-400.db", now - five_secs * 2),
+            ("test.bak-v14-v15-500.db", now - five_secs), // newest pre-existing
+        ];
+        for (name, mtime) in &fake_backups {
+            let path = dir.path().join(name);
+            // Valid SQLite header so any future "is this a real DB" check
+            // wouldn't reject these synthetic ones during pruning.
+            std::fs::write(&path, b"SQLite format 3\0filler").unwrap();
+            // File::set_modified is stable as of Rust 1.75; cqs MSRV is 1.93.
+            let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            f.set_modified(*mtime).unwrap();
+        }
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true)
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+            seed_v19_schema(&pool).await;
+
+            migrate(&pool, &db_path, 19, 20).await.unwrap();
+        });
+
+        // After migrate, the prune keeps KEEP_BACKUPS (2) newest. This run
+        // just produced a new backup (newer mtime than any fake), so the
+        // survivors must be: the two newest fakes (v13-v14, v14-v15) +
+        // this run's v19-v20. That is three files total.
+        let mut survivors: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+            .filter(|n| n.starts_with("test.bak-v") && n.ends_with(".db"))
+            .collect();
+        survivors.sort();
+        assert_eq!(
+            survivors.len(),
+            3,
+            "expected 3 surviving backups (2 newest pre-existing + this run), got: {:?}",
+            survivors
+        );
+        // Explicit: the oldest three pre-existing backups must have been pruned.
+        for deleted in &[
+            "test.bak-v10-v11-100.db",
+            "test.bak-v11-v12-200.db",
+            "test.bak-v12-v13-300.db",
+        ] {
+            assert!(
+                !survivors.iter().any(|s| s == deleted),
+                "{} should have been pruned",
+                deleted
+            );
+        }
+        // The two newest pre-existing backups must still be present.
+        for kept in &["test.bak-v13-v14-400.db", "test.bak-v14-v15-500.db"] {
+            assert!(
+                survivors.iter().any(|s| s == kept),
+                "{} should have been kept (among newest 2)",
+                kept
+            );
+        }
+    }
+
+    /// Issue #953, absent-WAL edge case: on a cleanly-closed SQLite DB the
+    /// `-wal` and `-shm` sidecars can be absent. The backup must succeed
+    /// without them (don't error on missing source), and the happy-path
+    /// prune should leave a usable backup .db file behind.
+    ///
+    /// Regression for the shape where `copy_triplet` would bail on the
+    /// first missing sidecar and leave the backup half-written.
+    #[test]
+    fn test_migrate_backup_works_when_wal_is_absent() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Phase 1: fully write the v19 schema, then TRUNCATE the WAL so
+        // there are no sidecar files on disk before migrate() runs.
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true)
+                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+            seed_v19_schema(&pool).await;
+            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+        });
+
+        // Confirm the pre-migration state matches the scenario we want to
+        // exercise: main DB present, no sidecars. (On a WAL-mode DB,
+        // opening the pool below will recreate them.)
+        assert!(db_path.exists(), "main DB should exist");
+        let wal_sidecar = {
+            let mut s = db_path.as_os_str().to_os_string();
+            s.push("-wal");
+            std::path::PathBuf::from(s)
+        };
+        assert!(
+            !wal_sidecar.exists(),
+            "precondition: no -wal sidecar on disk"
+        );
+
+        // Phase 2: reopen and migrate. Backup path should succeed.
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(false)
+                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+            migrate(&pool, &db_path, 19, 20).await.unwrap();
+            pool.close().await;
+        });
+
+        // A valid backup .db exists and parses as SQLite.
+        let backups: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+            .filter(|n| n.starts_with("test.bak-v19-v20-") && n.ends_with(".db"))
+            .collect();
+        assert_eq!(
+            backups.len(),
+            1,
+            "expected one backup .db from this run, got: {:?}",
+            backups
+        );
+        let bak_path = dir.path().join(&backups[0]);
+        let bak_bytes = std::fs::read(&bak_path).unwrap();
+        assert!(
+            bak_bytes.starts_with(b"SQLite format 3\0"),
+            "backup should be a valid SQLite database file"
+        );
     }
 }
