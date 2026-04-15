@@ -4,41 +4,28 @@ use anyhow::{Context, Result};
 
 use super::super::commands::BatchInput;
 use super::super::BatchContext;
+use crate::cli::args::GatherArgs;
 use crate::cli::validate_finite_f32;
 
-/// Parameters for the gather dispatch operation.
-pub(in crate::cli::batch) struct GatherParams<'a> {
-    pub query: &'a str,
-    pub expand: usize,
-    pub direction: cqs::GatherDirection,
-    pub limit: usize,
-    pub tokens: Option<usize>,
-    pub ref_name: Option<&'a str>,
-}
-
 /// Performs a semantic search gather operation with optional cross-index querying and token budget constraints.
+///
+/// #947: takes `&GatherArgs` directly (the shared CLI/batch struct) instead
+/// of a batch-local `GatherParams`. Both paths deserialize into the same
+/// struct, so there is no per-field drift to reason about.
 pub(in crate::cli::batch) fn dispatch_gather(
     ctx: &BatchContext,
-    params: &GatherParams<'_>,
+    args: &GatherArgs,
 ) -> Result<serde_json::Value> {
-    let GatherParams {
-        query,
-        expand,
-        direction,
-        limit,
-        tokens,
-        ref_name,
-    } = params;
-    let (expand, direction, limit, tokens, ref_name) =
-        (*expand, *direction, *limit, *tokens, *ref_name);
+    let query = args.query.as_str();
+    let ref_name = args.ref_name.as_deref();
     let _span = tracing::info_span!("batch_gather", query, ?ref_name).entered();
 
     let embedder = ctx.embedder()?;
 
     let opts = cqs::GatherOptions {
-        expand_depth: expand.clamp(0, 5),
-        direction,
-        limit: limit.clamp(1, 100),
+        expand_depth: args.expand.clamp(0, 5),
+        direction: args.direction,
+        limit: args.limit.clamp(1, 100),
         ..cqs::GatherOptions::default()
     };
 
@@ -66,7 +53,7 @@ pub(in crate::cli::batch) fn dispatch_gather(
     };
 
     // Token-budget packing
-    let token_info: Option<(usize, usize)> = if let Some(budget) = tokens {
+    let token_info: Option<(usize, usize)> = if let Some(budget) = args.tokens {
         let embedder = ctx.embedder()?;
         let chunks = std::mem::take(&mut result.chunks);
         let (packed, used) = crate::cli::commands::pack_gather_chunks(

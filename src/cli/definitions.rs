@@ -351,49 +351,31 @@ pub(super) enum Commands {
     },
     /// Show type dependencies: who uses a type, or what types a function uses
     Deps {
-        /// Type name (forward) or function name (with --reverse)
-        name: String,
-        /// Reverse: show types used by a function instead of type users
-        #[arg(long)]
-        reverse: bool,
-        /// Query across all configured reference projects
-        #[arg(long)]
-        cross_project: bool,
+        #[command(flatten)]
+        args: args::DepsArgs,
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Find functions that call a given function
     Callers {
-        /// Function name to search for
-        name: String,
-        /// Query callers across all configured reference projects
-        #[arg(long)]
-        cross_project: bool,
+        #[command(flatten)]
+        args: args::CallersArgs,
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Find functions called by a given function
     Callees {
-        /// Function name to search for
-        name: String,
-        /// Query callees across all configured reference projects
-        #[arg(long)]
-        cross_project: bool,
+        #[command(flatten)]
+        args: args::CallersArgs,
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Guided codebase tour: entry point → call chain → types → tests
     Onboard {
-        /// Concept or query to explore
-        query: String,
-        /// Callee expansion depth
-        #[arg(short = 'd', long, default_value = "3")]
-        depth: usize,
+        #[command(flatten)]
+        args: args::OnboardArgs,
         #[command(flatten)]
         output: TextJsonArgs,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
     },
     /// Brute-force nearest neighbors for a function by cosine similarity
     Neighbors {
@@ -417,53 +399,24 @@ pub(super) enum Commands {
     },
     /// Semantic diff between indexed snapshots
     Diff {
-        /// Reference name to compare from
-        source: String,
-        /// Reference name or "project" (default: project)
-        target: Option<String>,
-        /// Similarity threshold for "modified" (default: 0.95)
-        ///
-        /// `-t` here means "match threshold" — pairs above this are "unchanged",
-        /// below are "modified". Different from search's `-t` (min similarity 0.3).
-        /// See top-level threshold doc for rationale.
-        #[arg(short = 't', long, default_value = "0.95", value_parser = parse_finite_f32)]
-        threshold: f32,
-        /// Filter by language
-        #[arg(short = 'l', long)]
-        lang: Option<String>,
+        #[command(flatten)]
+        args: args::DiffArgs,
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Detect semantic drift between a reference and the project
     Drift {
-        /// Reference name to compare against
-        reference: String,
-        /// Similarity threshold (default: 0.95)
-        ///
-        /// See Diff's `-t` doc — same overload rationale applies.
-        #[arg(short = 't', long, default_value = "0.95", value_parser = parse_finite_f32)]
-        threshold: f32,
-        /// Minimum drift to show (default: 0.0)
-        #[arg(long, default_value = "0.0", value_parser = parse_finite_f32)]
-        min_drift: f32,
-        /// Filter by language
-        #[arg(short = 'l', long)]
-        lang: Option<String>,
-        /// Maximum entries to show
-        #[arg(short = 'n', long)]
-        limit: Option<usize>,
+        #[command(flatten)]
+        args: args::DriftArgs,
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Generate a function card (signature, callers, callees, similar)
     Explain {
-        /// Function name or file:function
-        name: String,
+        #[command(flatten)]
+        args: args::ExplainArgs,
         #[command(flatten)]
         output: TextJsonArgs,
-        /// Maximum token budget (includes source content within budget)
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
     },
     /// Find code similar to a given function
     Similar {
@@ -482,45 +435,24 @@ pub(super) enum Commands {
     /// Impact analysis from a git diff — what callers and tests are affected
     #[command(name = "impact-diff")]
     ImpactDiff {
-        /// Git ref to diff against (default: unstaged changes)
-        #[arg(long)]
-        base: Option<String>,
-        /// Read diff from stdin instead of running git
-        #[arg(long)]
-        stdin: bool,
+        #[command(flatten)]
+        args: args::ImpactDiffArgs,
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Comprehensive diff review: impact + notes + risk scoring
     Review {
-        /// Git ref to diff against (default: unstaged changes)
-        #[arg(long)]
-        base: Option<String>,
-        /// Read diff from stdin instead of running git
-        #[arg(long)]
-        stdin: bool,
+        #[command(flatten)]
+        args: args::ReviewArgs,
         #[command(flatten)]
         output: TextJsonArgs,
-        /// Maximum token budget for output (truncates callers/tests lists)
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
     },
     /// CI pipeline analysis: impact + risk + dead code + gate
     Ci {
-        /// Git ref to diff against (default: unstaged changes)
-        #[arg(long)]
-        base: Option<String>,
-        /// Read diff from stdin instead of running git
-        #[arg(long)]
-        stdin: bool,
+        #[command(flatten)]
+        args: args::CiArgs,
         #[command(flatten)]
         output: TextJsonArgs,
-        /// Gate threshold: high, medium, off (default: high)
-        #[arg(long, default_value = "high")]
-        gate: GateThreshold,
-        /// Maximum token budget for output
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
     },
     /// Trace call chain between two functions
     Trace {
@@ -531,14 +463,8 @@ pub(super) enum Commands {
     },
     /// Find tests that exercise a function
     TestMap {
-        /// Function name or file:function
-        name: String,
-        /// Max call chain depth to search
-        #[arg(long, default_value = "5")]
-        depth: usize,
-        /// Search for tests across all configured reference projects
-        #[arg(long)]
-        cross_project: bool,
+        #[command(flatten)]
+        args: args::TestMapArgs,
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -606,26 +532,21 @@ pub(super) enum Commands {
     /// Check index freshness — list stale and missing files
     Stale {
         #[command(flatten)]
+        args: args::StaleArgs,
+        #[command(flatten)]
         output: TextJsonArgs,
-        /// Show counts only, skip file list
-        #[arg(long)]
-        count_only: bool,
     },
     /// Auto-suggest notes from codebase patterns (dead code, untested hotspots)
     Suggest {
         #[command(flatten)]
+        args: args::SuggestArgs,
+        #[command(flatten)]
         output: TextJsonArgs,
-        /// Apply suggestions (add notes to docs/notes.toml)
-        #[arg(long)]
-        apply: bool,
     },
     /// Read a file with notes injected as comments
     Read {
-        /// File path relative to project root
-        path: String,
-        /// Focus on a specific function (returns only that function + type deps)
-        #[arg(long)]
-        focus: Option<String>,
+        #[command(flatten)]
+        args: args::ReadArgs,
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -638,21 +559,15 @@ pub(super) enum Commands {
     },
     /// Find functions related by shared callers, callees, or types
     Related {
-        /// Function name or file:function
-        name: String,
-        /// Max results per category
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
+        #[command(flatten)]
+        args: args::RelatedArgs,
         #[command(flatten)]
         output: TextJsonArgs,
     },
     /// Suggest where to add new code matching a description
     Where {
-        /// Description of the code to add
-        description: String,
-        /// Max file suggestions
-        #[arg(short = 'n', long, default_value = "3")]
-        limit: usize,
+        #[command(flatten)]
+        args: args::WhereArgs,
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -665,32 +580,17 @@ pub(super) enum Commands {
     },
     /// Task planning with template classification: classify + scout + checklist
     Plan {
-        /// Task description to plan
-        description: String,
-        /// Max scout file groups
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
+        #[command(flatten)]
+        args: args::PlanArgs,
         #[command(flatten)]
         output: TextJsonArgs,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
     },
     /// One-shot implementation context: scout + code + impact + placement + notes
     Task {
-        /// Task description
-        description: String,
-        /// Max file groups to return
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
+        #[command(flatten)]
+        args: args::TaskArgs,
         #[command(flatten)]
         output: TextJsonArgs,
-        /// Maximum token budget (waterfall across sections)
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
-        /// Compact output (~200 tokens): files, at-risk functions, test coverage
-        #[arg(long)]
-        brief: bool,
     },
     /// Convert documents (PDF, HTML, CHM) to Markdown
     #[cfg(feature = "convert")]
@@ -774,6 +674,108 @@ pub(super) enum Commands {
 // Re-export the subcommand types used in Commands variants
 pub(super) use super::commands::{CacheCommand, NotesCommand, ProjectCommand, RefCommand};
 
+/// Classifier used by `try_daemon_query` to decide whether a CLI command can
+/// be forwarded to the batch daemon.
+///
+/// #947: replaces the hand-maintained allowlist that previously lived inline
+/// in `try_daemon_query`. The rule is simple: every `Commands` variant must
+/// classify itself here, the `match` is exhaustive (no wildcard), and adding
+/// a new CLI variant without picking a classification fails to compile.
+///
+/// The policy:
+/// - `Cli`: command is CLI-only, do not forward. Reasons include process
+///   lifecycle (init/index/watch/chat/completions), read-write store access
+///   (gc, notes mutations, suggest --apply — batch holds a `Store<ReadOnly>`),
+///   or not-yet-implemented on the batch side.
+/// - `Daemon`: command has a matching `BatchCmd` variant and can be forwarded.
+/// - `DaemonIfReadonly(&dyn Fn())`: for `Notes`, only the `list` subcommand
+///   is daemon-compatible; mutations (`add` / `update` / `remove`) must hit
+///   the CLI so the filesystem reindex runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BatchSupport {
+    /// CLI-only: daemon path should return early (None) and fall through.
+    Cli,
+    /// Daemon-dispatchable: forward to batch handler.
+    Daemon,
+}
+
+impl Commands {
+    /// Classify this variant for daemon dispatch.
+    ///
+    /// Exhaustive match: adding a new `Commands` variant forces an explicit
+    /// classification decision. This is the whole point of the refactor —
+    /// no more silent daemon-forwarding drift.
+    pub(crate) fn batch_support(&self) -> BatchSupport {
+        match self {
+            // Process / lifecycle — never daemon.
+            Commands::Init
+            | Commands::Index { .. }
+            | Commands::Watch { .. }
+            | Commands::Batch
+            | Commands::Chat
+            | Commands::Completions { .. }
+            | Commands::Doctor { .. }
+            // Telemetry / audit / training — CLI-only tooling.
+            | Commands::AuditMode { .. }
+            | Commands::Telemetry { .. }
+            | Commands::TrainData { .. }
+            | Commands::TrainPairs { .. }
+            | Commands::Cache { .. }
+            // Registry commands — not on batch surface.
+            | Commands::Ref { .. }
+            | Commands::Project { .. }
+            | Commands::ExportModel { .. }
+            // Not-yet-on-batch commands. Candidates for a future BatchCmd.
+            | Commands::Affected { .. }
+            | Commands::Brief { .. }
+            | Commands::Neighbors { .. }
+            | Commands::Reconstruct { .. } => BatchSupport::Cli,
+
+            #[cfg(feature = "convert")]
+            Commands::Convert { .. } => BatchSupport::Cli,
+
+            // Notes: list is daemon-compatible; mutations must hit CLI for
+            // the filesystem reindex. Inline-decide here so the call-site stays
+            // trivial.
+            Commands::Notes { subcmd } => match subcmd {
+                NotesCommand::List { .. } => BatchSupport::Daemon,
+                _ => BatchSupport::Cli,
+            },
+
+            // All remaining commands have a matching `BatchCmd` variant.
+            Commands::Stats { .. }
+            | Commands::Blame { .. }
+            | Commands::Deps { .. }
+            | Commands::Callers { .. }
+            | Commands::Callees { .. }
+            | Commands::Onboard { .. }
+            | Commands::Diff { .. }
+            | Commands::Drift { .. }
+            | Commands::Explain { .. }
+            | Commands::Similar { .. }
+            | Commands::Impact { .. }
+            | Commands::ImpactDiff { .. }
+            | Commands::Review { .. }
+            | Commands::Ci { .. }
+            | Commands::Trace { .. }
+            | Commands::TestMap { .. }
+            | Commands::Context { .. }
+            | Commands::Dead { .. }
+            | Commands::Gather { .. }
+            | Commands::Gc { .. }
+            | Commands::Health { .. }
+            | Commands::Stale { .. }
+            | Commands::Suggest { .. }
+            | Commands::Read { .. }
+            | Commands::Related { .. }
+            | Commands::Where { .. }
+            | Commands::Scout { .. }
+            | Commands::Plan { .. }
+            | Commands::Task { .. } => BatchSupport::Daemon,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -844,5 +846,53 @@ mod tests {
     fn parse_finite_f32_rejects_garbage() {
         assert!(parse_finite_f32("not a number").is_err());
         assert!(parse_finite_f32("").is_err());
+    }
+
+    // #947: spot-check the batch-support classifier. The exhaustive match in
+    // `Commands::batch_support` does the real work — if a new variant is
+    // added without classification, the whole crate fails to compile. These
+    // tests pin the policy for a few sensitive variants so an accidental
+    // flip (e.g. classifying Init as Daemon) shows up as a failing test.
+    #[test]
+    fn batch_support_lifecycle_commands_are_cli_only() {
+        use clap::Parser;
+        // Lifecycle commands must never forward to the daemon.
+        let cli = Cli::try_parse_from(["cqs", "init"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Cli);
+
+        let cli = Cli::try_parse_from(["cqs", "chat"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Cli);
+
+        let cli = Cli::try_parse_from(["cqs", "index"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Cli);
+    }
+
+    #[test]
+    fn batch_support_notes_mutations_are_cli_only() {
+        use clap::Parser;
+        // v1.25.0: notes add/update/remove reindex the filesystem; list mode
+        // is daemon-safe. The classifier must distinguish them.
+        let cli = Cli::try_parse_from(["cqs", "notes", "list"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Daemon);
+
+        let cli = Cli::try_parse_from(["cqs", "notes", "add", "foo"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Cli);
+
+        let cli = Cli::try_parse_from(["cqs", "notes", "remove", "foo"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Cli);
+    }
+
+    #[test]
+    fn batch_support_search_commands_daemon_dispatchable() {
+        use clap::Parser;
+        // The flagship query surface must hit the daemon (3-19ms vs 2s CLI).
+        let cli = Cli::try_parse_from(["cqs", "scout", "foo"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Daemon);
+
+        let cli = Cli::try_parse_from(["cqs", "impact", "foo"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Daemon);
+
+        let cli = Cli::try_parse_from(["cqs", "stale"]).unwrap();
+        assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Daemon);
     }
 }
