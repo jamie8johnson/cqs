@@ -6,11 +6,11 @@ use clap::{Parser, Subcommand};
 use super::BatchContext;
 
 use crate::cli::args::{
-    BlameArgs, ContextArgs, DeadArgs, GatherArgs, ImpactArgs, ScoutArgs, SearchArgs, SimilarArgs,
-    TraceArgs,
+    BlameArgs, CallersArgs, CiArgs, ContextArgs, DeadArgs, DepsArgs, DiffArgs, DriftArgs,
+    ExplainArgs, GatherArgs, ImpactArgs, ImpactDiffArgs, NotesListArgs, OnboardArgs, PlanArgs,
+    ReadArgs, RelatedArgs, ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs, StaleArgs, SuggestArgs,
+    TaskArgs, TestMapArgs, TraceArgs, WhereArgs,
 };
-use crate::cli::parse_nonzero_usize;
-use crate::cli::GateThreshold;
 
 use super::handlers;
 
@@ -45,38 +45,23 @@ pub(crate) enum BatchCmd {
     },
     /// Type dependencies: who uses a type, or what types a function uses
     Deps {
-        /// Type name or function name
-        name: String,
-        /// Show types used by function (instead of type users)
-        #[arg(long)]
-        reverse: bool,
-        /// Query across all configured reference projects
-        #[arg(long)]
-        cross_project: bool,
+        #[command(flatten)]
+        args: DepsArgs,
     },
     /// Find callers of a function
     Callers {
-        /// Function name
-        name: String,
-        /// Query callers across all configured reference projects
-        #[arg(long)]
-        cross_project: bool,
+        #[command(flatten)]
+        args: CallersArgs,
     },
     /// Find callees of a function
     Callees {
-        /// Function name
-        name: String,
-        /// Query callees across all configured reference projects
-        #[arg(long)]
-        cross_project: bool,
+        #[command(flatten)]
+        args: CallersArgs,
     },
     /// Function card: signature, callers, callees, similar
     Explain {
-        /// Function name or file:function
-        name: String,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
+        #[command(flatten)]
+        args: ExplainArgs,
     },
     /// Find similar code
     Similar {
@@ -96,14 +81,8 @@ pub(crate) enum BatchCmd {
     /// Map function to tests
     #[command(name = "test-map")]
     TestMap {
-        /// Function name or file:function
-        name: String,
-        /// Max call chain depth
-        #[arg(long, default_value = "5")]
-        depth: usize,
-        /// Search for tests across all configured reference projects
-        #[arg(long)]
-        cross_project: bool,
+        #[command(flatten)]
+        args: TestMapArgs,
     },
     /// Trace call path between two functions
     Trace {
@@ -117,11 +96,8 @@ pub(crate) enum BatchCmd {
     },
     /// Find related functions by co-occurrence
     Related {
-        /// Function name or file:function
-        name: String,
-        /// Max results per category
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
+        #[command(flatten)]
+        args: RelatedArgs,
     },
     /// Module-level context for a file
     Context {
@@ -132,14 +108,8 @@ pub(crate) enum BatchCmd {
     Stats,
     /// Guided codebase tour
     Onboard {
-        /// Concept to explore
-        query: String,
-        /// Callee expansion depth
-        #[arg(short = 'd', long, default_value = "3")]
-        depth: usize,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
+        #[command(flatten)]
+        args: OnboardArgs,
     },
     /// Pre-investigation dashboard
     Scout {
@@ -148,128 +118,66 @@ pub(crate) enum BatchCmd {
     },
     /// Suggest where to add new code
     Where {
-        /// Description of what to add
-        description: String,
-        /// Max suggestions
-        #[arg(short = 'n', long, default_value = "3")]
-        limit: usize,
+        #[command(flatten)]
+        args: WhereArgs,
     },
     /// Read file with note injection
     Read {
-        /// File path relative to project root
-        path: String,
-        /// Focus on a specific function (focused read mode)
-        #[arg(long)]
-        focus: Option<String>,
+        #[command(flatten)]
+        args: ReadArgs,
     },
     /// Check index freshness
     Stale {
-        /// Show counts only, skip file list
-        #[arg(long)]
-        count_only: bool,
+        #[command(flatten)]
+        args: StaleArgs,
     },
     /// Codebase quality snapshot
     Health,
     /// Semantic drift detection between reference and project
     Drift {
-        /// Reference name to compare against
-        reference: String,
-        /// Similarity threshold (default: 0.95)
-        ///
-        /// `-t` alias matches the CLI subcommand so forwarded invocations
-        /// (`cqs drift ref -t 0.9`) parse cleanly on the daemon side.
-        #[arg(short = 't', long, default_value = "0.95", value_parser = crate::cli::parse_finite_f32)]
-        threshold: f32,
-        /// Minimum drift to show (default: 0.0)
-        #[arg(long, default_value = "0.0", value_parser = crate::cli::parse_finite_f32)]
-        min_drift: f32,
-        /// Filter by language
-        #[arg(short = 'l', long)]
-        lang: Option<String>,
-        /// Maximum entries to show
-        #[arg(short = 'n', long)]
-        limit: Option<usize>,
+        #[command(flatten)]
+        args: DriftArgs,
     },
     /// List notes
     Notes {
-        /// Show only warnings (negative sentiment)
-        #[arg(long)]
-        warnings: bool,
-        /// Show only patterns (positive sentiment)
-        #[arg(long)]
-        patterns: bool,
+        #[command(flatten)]
+        args: NotesListArgs,
     },
     /// One-shot implementation context (terminal — no pipeline chaining)
     Task {
-        /// Task description
-        description: String,
-        /// Max file groups
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
+        #[command(flatten)]
+        args: TaskArgs,
     },
     /// Comprehensive diff review
     Review {
-        /// Base git reference
-        #[arg(long)]
-        base: Option<String>,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
+        #[command(flatten)]
+        args: ReviewArgs,
     },
     /// CI pipeline: review + dead code + gate
     Ci {
-        /// Base git reference
-        #[arg(long)]
-        base: Option<String>,
-        /// Gate threshold (high, medium, off)
-        #[arg(long, default_value = "off")]
-        gate: GateThreshold,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
+        #[command(flatten)]
+        args: CiArgs,
     },
     /// Semantic diff between indexed snapshots
     Diff {
-        /// Source reference name
-        source: String,
-        /// Target reference (default: project)
-        target: Option<String>,
-        /// Similarity threshold
-        ///
-        /// `-t` alias matches the CLI subcommand so forwarded invocations
-        /// (`cqs diff a b -t 0.9`) parse cleanly on the daemon side.
-        #[arg(short = 't', long, default_value = "0.95", value_parser = crate::cli::parse_finite_f32)]
-        threshold: f32,
-        /// Filter by language
-        #[arg(short = 'l', long)]
-        lang: Option<String>,
+        #[command(flatten)]
+        args: DiffArgs,
     },
     /// Diff-aware impact analysis
     #[command(name = "impact-diff")]
     ImpactDiff {
-        /// Base git reference
-        #[arg(long)]
-        base: Option<String>,
+        #[command(flatten)]
+        args: ImpactDiffArgs,
     },
     /// Task planning with template classification
     Plan {
-        /// Task description
-        description: String,
-        /// Max file groups
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
+        #[command(flatten)]
+        args: PlanArgs,
     },
     /// Auto-suggest notes from patterns
     Suggest {
-        /// Apply suggestions (otherwise dry-run)
-        #[arg(long)]
-        apply: bool,
+        #[command(flatten)]
+        args: SuggestArgs,
     },
     /// Garbage collection: prune stale index entries
     Gc,
@@ -409,20 +317,16 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
                 },
             )
         }
-        BatchCmd::Deps {
-            name,
-            reverse,
-            cross_project,
-        } => handlers::dispatch_deps(ctx, &name, reverse, cross_project),
-        BatchCmd::Callers {
-            name,
-            cross_project,
-        } => handlers::dispatch_callers(ctx, &name, cross_project),
-        BatchCmd::Callees {
-            name,
-            cross_project,
-        } => handlers::dispatch_callees(ctx, &name, cross_project),
-        BatchCmd::Explain { name, tokens } => handlers::dispatch_explain(ctx, &name, tokens),
+        BatchCmd::Deps { args } => {
+            handlers::dispatch_deps(ctx, &args.name, args.reverse, args.cross_project)
+        }
+        BatchCmd::Callers { args } => {
+            handlers::dispatch_callers(ctx, &args.name, args.cross_project)
+        }
+        BatchCmd::Callees { args } => {
+            handlers::dispatch_callees(ctx, &args.name, args.cross_project)
+        }
+        BatchCmd::Explain { args } => handlers::dispatch_explain(ctx, &args.name, args.tokens),
         BatchCmd::Similar { args } => {
             handlers::dispatch_similar(ctx, &args.name, args.limit, args.threshold)
         }
@@ -448,11 +352,9 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             args.type_impact,
             args.cross_project,
         ),
-        BatchCmd::TestMap {
-            name,
-            depth,
-            cross_project,
-        } => handlers::dispatch_test_map(ctx, &name, depth, cross_project),
+        BatchCmd::TestMap { args } => {
+            handlers::dispatch_test_map(ctx, &args.name, args.depth, args.cross_project)
+        }
         BatchCmd::Trace { args } => handlers::dispatch_trace(
             ctx,
             &args.source,
@@ -463,72 +365,57 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
         BatchCmd::Dead { args } => {
             handlers::dispatch_dead(ctx, args.include_pub, &args.min_confidence)
         }
-        BatchCmd::Related { name, limit } => handlers::dispatch_related(ctx, &name, limit),
+        BatchCmd::Related { args } => handlers::dispatch_related(ctx, &args.name, args.limit),
         BatchCmd::Context { args } => {
             handlers::dispatch_context(ctx, &args.path, args.summary, args.compact, args.tokens)
         }
         BatchCmd::Stats => handlers::dispatch_stats(ctx),
-        BatchCmd::Onboard {
-            query,
-            depth,
-            tokens,
-        } => {
-            log_query("onboard", &query);
-            handlers::dispatch_onboard(ctx, &query, depth, tokens)
+        BatchCmd::Onboard { args } => {
+            log_query("onboard", &args.query);
+            handlers::dispatch_onboard(ctx, &args.query, args.depth, args.tokens)
         }
         BatchCmd::Scout { args } => {
             log_query("scout", &args.query);
             handlers::dispatch_scout(ctx, &args.query, args.limit, args.tokens)
         }
-        BatchCmd::Where { description, limit } => {
-            log_query("where", &description);
-            handlers::dispatch_where(ctx, &description, limit)
+        BatchCmd::Where { args } => {
+            log_query("where", &args.description);
+            handlers::dispatch_where(ctx, &args.description, args.limit)
         }
-        BatchCmd::Read { path, focus } => handlers::dispatch_read(ctx, &path, focus.as_deref()),
-        BatchCmd::Stale { count_only } => handlers::dispatch_stale(ctx, count_only),
+        BatchCmd::Read { args } => handlers::dispatch_read(ctx, &args.path, args.focus.as_deref()),
+        BatchCmd::Stale { args } => handlers::dispatch_stale(ctx, args.count_only),
         BatchCmd::Health => handlers::dispatch_health(ctx),
-        BatchCmd::Drift {
-            reference,
-            threshold,
-            min_drift,
-            lang,
-            limit,
-        } => handlers::dispatch_drift(
+        BatchCmd::Drift { args } => handlers::dispatch_drift(
             ctx,
-            &reference,
-            threshold,
-            min_drift,
-            lang.as_deref(),
-            limit,
+            &args.reference,
+            args.threshold,
+            args.min_drift,
+            args.lang.as_deref(),
+            args.limit,
         ),
-        BatchCmd::Notes { warnings, patterns } => handlers::dispatch_notes(ctx, warnings, patterns),
-        BatchCmd::Task {
-            description,
-            limit,
-            tokens,
-        } => {
-            log_query("task", &description);
-            handlers::dispatch_task(ctx, &description, limit, tokens)
+        BatchCmd::Notes { args } => handlers::dispatch_notes(ctx, args.warnings, args.patterns),
+        BatchCmd::Task { args } => {
+            log_query("task", &args.description);
+            handlers::dispatch_task(ctx, &args.description, args.limit, args.tokens)
         }
-        BatchCmd::Review { base, tokens } => {
-            handlers::dispatch_review(ctx, base.as_deref(), tokens)
+        BatchCmd::Review { args } => {
+            handlers::dispatch_review(ctx, args.base.as_deref(), args.tokens)
         }
-        BatchCmd::Ci { base, gate, tokens } => {
-            handlers::dispatch_ci(ctx, base.as_deref(), &gate, tokens)
+        BatchCmd::Ci { args } => {
+            handlers::dispatch_ci(ctx, args.base.as_deref(), &args.gate, args.tokens)
         }
-        BatchCmd::Diff {
-            source,
-            target,
-            threshold,
-            lang,
-        } => handlers::dispatch_diff(ctx, &source, target.as_deref(), threshold, lang.as_deref()),
-        BatchCmd::ImpactDiff { base } => handlers::dispatch_impact_diff(ctx, base.as_deref()),
-        BatchCmd::Plan {
-            description,
-            limit,
-            tokens,
-        } => handlers::dispatch_plan(ctx, &description, limit, tokens),
-        BatchCmd::Suggest { apply } => handlers::dispatch_suggest(ctx, apply),
+        BatchCmd::Diff { args } => handlers::dispatch_diff(
+            ctx,
+            &args.source,
+            args.target.as_deref(),
+            args.threshold,
+            args.lang.as_deref(),
+        ),
+        BatchCmd::ImpactDiff { args } => handlers::dispatch_impact_diff(ctx, args.base.as_deref()),
+        BatchCmd::Plan { args } => {
+            handlers::dispatch_plan(ctx, &args.description, args.limit, args.tokens)
+        }
+        BatchCmd::Suggest { args } => handlers::dispatch_suggest(ctx, args.apply),
         BatchCmd::Gc => handlers::dispatch_gc(ctx),
         BatchCmd::Refresh => handlers::dispatch_refresh(ctx),
         BatchCmd::Help => handlers::dispatch_help(),
@@ -572,7 +459,7 @@ mod tests {
     fn test_parse_callers() {
         let input = BatchInput::try_parse_from(["callers", "my_func"]).unwrap();
         match input.cmd {
-            BatchCmd::Callers { ref name, .. } => assert_eq!(name, "my_func"),
+            BatchCmd::Callers { ref args } => assert_eq!(args.name, "my_func"),
             _ => panic!("Expected Callers command"),
         }
     }
@@ -698,12 +585,9 @@ mod tests {
     fn test_parse_where() {
         let input = BatchInput::try_parse_from(["where", "new CLI command"]).unwrap();
         match input.cmd {
-            BatchCmd::Where {
-                ref description,
-                limit,
-            } => {
-                assert_eq!(description, "new CLI command");
-                assert_eq!(limit, 3); // default
+            BatchCmd::Where { ref args } => {
+                assert_eq!(args.description, "new CLI command");
+                assert_eq!(args.limit, 3); // default
             }
             _ => panic!("Expected Where command"),
         }
@@ -713,12 +597,9 @@ mod tests {
     fn test_parse_read() {
         let input = BatchInput::try_parse_from(["read", "src/lib.rs"]).unwrap();
         match input.cmd {
-            BatchCmd::Read {
-                ref path,
-                ref focus,
-            } => {
-                assert_eq!(path, "src/lib.rs");
-                assert!(focus.is_none());
+            BatchCmd::Read { ref args } => {
+                assert_eq!(args.path, "src/lib.rs");
+                assert!(args.focus.is_none());
             }
             _ => panic!("Expected Read command"),
         }
@@ -730,12 +611,9 @@ mod tests {
             BatchInput::try_parse_from(["read", "src/lib.rs", "--focus", "enumerate_files"])
                 .unwrap();
         match input.cmd {
-            BatchCmd::Read {
-                ref path,
-                ref focus,
-            } => {
-                assert_eq!(path, "src/lib.rs");
-                assert_eq!(focus.as_deref(), Some("enumerate_files"));
+            BatchCmd::Read { ref args } => {
+                assert_eq!(args.path, "src/lib.rs");
+                assert_eq!(args.focus.as_deref(), Some("enumerate_files"));
             }
             _ => panic!("Expected Read command"),
         }
@@ -744,7 +622,7 @@ mod tests {
     #[test]
     fn test_parse_stale() {
         let input = BatchInput::try_parse_from(["stale"]).unwrap();
-        assert!(matches!(input.cmd, BatchCmd::Stale { count_only: _ }));
+        assert!(matches!(input.cmd, BatchCmd::Stale { .. }));
     }
 
     #[test]
@@ -757,9 +635,9 @@ mod tests {
     fn test_parse_notes() {
         let input = BatchInput::try_parse_from(["notes"]).unwrap();
         match input.cmd {
-            BatchCmd::Notes { warnings, patterns } => {
-                assert!(!warnings);
-                assert!(!patterns);
+            BatchCmd::Notes { ref args } => {
+                assert!(!args.warnings);
+                assert!(!args.patterns);
             }
             _ => panic!("Expected Notes command"),
         }
@@ -769,9 +647,9 @@ mod tests {
     fn test_parse_notes_warnings() {
         let input = BatchInput::try_parse_from(["notes", "--warnings"]).unwrap();
         match input.cmd {
-            BatchCmd::Notes { warnings, patterns } => {
-                assert!(warnings);
-                assert!(!patterns);
+            BatchCmd::Notes { ref args } => {
+                assert!(args.warnings);
+                assert!(!args.patterns);
             }
             _ => panic!("Expected Notes command"),
         }
@@ -781,9 +659,9 @@ mod tests {
     fn test_parse_notes_patterns() {
         let input = BatchInput::try_parse_from(["notes", "--patterns"]).unwrap();
         match input.cmd {
-            BatchCmd::Notes { warnings, patterns } => {
-                assert!(!warnings);
-                assert!(patterns);
+            BatchCmd::Notes { ref args } => {
+                assert!(!args.warnings);
+                assert!(args.patterns);
             }
             _ => panic!("Expected Notes command"),
         }
@@ -830,8 +708,10 @@ mod tests {
 
         // Pipeable variants: should return true.
         let callers = BatchCmd::Callers {
-            name: "foo".into(),
-            cross_project: false,
+            args: crate::cli::args::CallersArgs {
+                name: "foo".into(),
+                cross_project: false,
+            },
         };
         assert!(callers.is_pipeable());
 
@@ -850,7 +730,10 @@ mod tests {
         assert!(!BatchCmd::Gc.is_pipeable());
         assert!(!BatchCmd::Refresh.is_pipeable());
         assert!(!BatchCmd::Help.is_pipeable());
-        assert!(!BatchCmd::Stale { count_only: false }.is_pipeable());
+        assert!(!BatchCmd::Stale {
+            args: crate::cli::args::StaleArgs { count_only: false },
+        }
+        .is_pipeable());
 
         let dead = BatchCmd::Dead {
             args: crate::cli::args::DeadArgs {
