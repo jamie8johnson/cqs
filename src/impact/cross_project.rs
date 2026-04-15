@@ -284,32 +284,33 @@ mod tests {
     use super::*;
     use crate::store::calls::cross_project::NamedStore;
     use crate::Store;
-    use std::collections::HashMap as StdMap;
 
     /// Helper: build a NamedStore backed by a temp Store with synthetic call edges.
     // NOTE: similar helper exists in store/calls/cross_project.rs
     fn make_named_store(name: &str, forward_edges: Vec<(&str, &str)>) -> NamedStore {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
-        let store = Store::open(&db_path).unwrap();
         let model_info = crate::store::helpers::ModelInfo::default();
-        store.init(&model_info).unwrap();
 
-        for (caller, callee) in &forward_edges {
-            store
-                .rt
-                .block_on(async {
-                    sqlx::query(
-                        "INSERT OR IGNORE INTO function_calls (file, caller_name, callee_name, caller_line, call_line)
-                         VALUES ('test.rs', ?1, ?2, 1, 1)",
-                    )
-                    .bind(caller)
-                    .bind(callee)
-                    .execute(&store.pool)
-                    .await
-                })
-                .unwrap();
-        }
+        let store = Store::<crate::store::ReadOnly>::open_readonly_after_init(&db_path, |store| {
+            store.init(&model_info)?;
+            for (caller, callee) in &forward_edges {
+                store
+                    .rt
+                    .block_on(async {
+                        sqlx::query(
+                            "INSERT OR IGNORE INTO function_calls (file, caller_name, callee_name, caller_line, call_line)
+                             VALUES ('test.rs', ?1, ?2, 1, 1)",
+                        )
+                        .bind(caller)
+                        .bind(callee)
+                        .execute(&store.pool)
+                        .await
+                    })?;
+            }
+            Ok(())
+        })
+        .unwrap();
 
         // Keep the tempdir alive so the db file survives for the test duration.
         // `into_path` disables automatic cleanup; tests are short-lived so this is fine.
@@ -317,7 +318,7 @@ mod tests {
 
         NamedStore {
             name: name.to_string(),
-            store: store.into_readonly(),
+            store,
         }
     }
 

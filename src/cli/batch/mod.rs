@@ -1052,21 +1052,27 @@ pub(crate) fn create_context_with_runtime(
 /// Visibility: `pub(in crate::cli::batch)` under `#[cfg(test)]` so submodule
 /// tests (handlers/search.rs tests for issue #973) can reuse the same fixture
 /// wiring as the in-file `mod tests`.
+///
+/// The store is opened RO at the SQLite connection level via
+/// [`Store::open_readonly_after_init`] (#986) — the DB is expected to be
+/// pre-initialized by `setup_test_store` so the closure is a no-op, but
+/// the constructor path matches production code that may need fixture setup.
 #[cfg(test)]
 pub(in crate::cli::batch) fn create_test_context(
     cqs_dir: &std::path::Path,
 ) -> Result<BatchContext> {
     let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
-    let store =
-        Store::open(&index_path).map_err(|e| anyhow::anyhow!("Failed to open test store: {e}"))?;
+    // #986: open_readonly_after_init returns Store<ReadOnly> directly —
+    // the unsafe into_readonly() type-erasure is gone.
+    let store = Store::<ReadOnly>::open_readonly_after_init(&index_path, |_| Ok(()))
+        .map_err(|e| anyhow::anyhow!("Failed to open test store: {e}"))?;
     let root = cqs_dir.parent().unwrap_or(cqs_dir).to_path_buf();
     let index_id = DbFileIdentity::from_path(&index_path);
-    let store_ro = store.into_readonly();
     // #968: cache the runtime Arc so test contexts re-open on the same pool.
-    let runtime = std::sync::Arc::clone(store_ro.runtime());
+    let runtime = std::sync::Arc::clone(store.runtime());
 
     Ok(BatchContext {
-        store: RefCell::new(store_ro),
+        store: RefCell::new(store),
         runtime,
         embedder: OnceLock::new(),
         config: OnceLock::new(),

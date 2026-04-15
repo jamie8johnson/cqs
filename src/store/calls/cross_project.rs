@@ -284,47 +284,49 @@ mod tests {
     ) -> NamedStore {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
-        let store = Store::open(&db_path).unwrap();
         let model_info = crate::store::helpers::ModelInfo::default();
-        store.init(&model_info).unwrap();
 
-        // Insert function_calls rows so get_call_graph() builds the graph.
-        // We need to insert into function_calls table for each edge.
-        for (caller, callees) in &forward {
-            for callee in callees {
-                store
-                    .rt
-                    .block_on(async {
-                        sqlx::query(
-                            "INSERT OR IGNORE INTO function_calls (file, caller_name, callee_name, caller_line, call_line)
-                             VALUES ('test.rs', ?1, ?2, 1, 1)",
-                        )
-                        .bind(caller)
-                        .bind(callee)
-                        .execute(&store.pool)
-                        .await
-                    })
-                    .unwrap();
+        let store = Store::<crate::store::ReadOnly>::open_readonly_after_init(&db_path, |store| {
+            store.init(&model_info)?;
+
+            // Insert function_calls rows so get_call_graph() builds the graph.
+            // We need to insert into function_calls table for each edge.
+            for (caller, callees) in &forward {
+                for callee in callees {
+                    store
+                        .rt
+                        .block_on(async {
+                            sqlx::query(
+                                "INSERT OR IGNORE INTO function_calls (file, caller_name, callee_name, caller_line, call_line)
+                                 VALUES ('test.rs', ?1, ?2, 1, 1)",
+                            )
+                            .bind(caller)
+                            .bind(callee)
+                            .execute(&store.pool)
+                            .await
+                        })?;
+                }
             }
-        }
-        // Also insert reverse edges that aren't covered by forward
-        for (callee, callers) in &reverse {
-            for caller in callers {
-                store
-                    .rt
-                    .block_on(async {
-                        sqlx::query(
-                            "INSERT OR IGNORE INTO function_calls (file, caller_name, callee_name, caller_line, call_line)
-                             VALUES ('test.rs', ?1, ?2, 1, 1)",
-                        )
-                        .bind(caller)
-                        .bind(callee)
-                        .execute(&store.pool)
-                        .await
-                    })
-                    .unwrap();
+            // Also insert reverse edges that aren't covered by forward
+            for (callee, callers) in &reverse {
+                for caller in callers {
+                    store
+                        .rt
+                        .block_on(async {
+                            sqlx::query(
+                                "INSERT OR IGNORE INTO function_calls (file, caller_name, callee_name, caller_line, call_line)
+                                 VALUES ('test.rs', ?1, ?2, 1, 1)",
+                            )
+                            .bind(caller)
+                            .bind(callee)
+                            .execute(&store.pool)
+                            .await
+                        })?;
+                }
             }
-        }
+            Ok(())
+        })
+        .unwrap();
 
         // Keep the tempdir alive so the db file survives for the test duration.
         // `into_path` disables automatic cleanup; tests are short-lived so this is fine.
@@ -332,7 +334,7 @@ mod tests {
 
         NamedStore {
             name: name.to_string(),
-            store: store.into_readonly(),
+            store,
         }
     }
 
