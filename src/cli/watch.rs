@@ -422,6 +422,12 @@ struct WatchConfig<'a> {
     /// `.gitignore` file is missing/unreadable. Wrapped in `RwLock` so the
     /// watch loop can hot-swap it on `.gitignore` change without a restart.
     gitignore: &'a std::sync::RwLock<Option<ignore::gitignore::Gitignore>>,
+    /// #1004: SPLADE encoder held resident in the daemon so incremental
+    /// reindex cycles can encode sparse vectors for new/changed chunks.
+    /// `None` when the SPLADE model is absent, fails to load, or
+    /// `CQS_WATCH_INCREMENTAL_SPLADE=0`. `Mutex` serializes GPU access
+    /// since the encoder holds a CUDA context.
+    splade_encoder: Option<&'a std::sync::Mutex<cqs::splade::SpladeEncoder>>,
 }
 
 /// Mutable session state that evolves across watch cycles.
@@ -622,6 +628,161 @@ fn build_gitignore_matcher(root: &Path) -> Option<ignore::gitignore::Gitignore> 
             None
         }
     }
+}
+
+/// #1004: Build the resident SPLADE encoder for the daemon's incremental
+/// reindex path. Returns `None` when:
+///
+/// - `CQS_WATCH_INCREMENTAL_SPLADE=0` (feature flag kill-switch)
+/// - No SPLADE model configured (no `CQS_SPLADE_MODEL`, no default at
+///   `~/.cache/huggingface/splade-onnx/`)
+/// - Encoder fails to load (corrupted ONNX, tokenizer mismatch, etc.)
+///
+/// A `None` encoder is not fatal: the daemon continues without
+/// incremental SPLADE. Existing sparse vectors are preserved; coverage
+/// drifts until a manual `cqs index` runs. A `warn!` is logged on load
+/// failure so operators see the cause.
+fn build_splade_encoder_for_watch() -> Option<cqs::splade::SpladeEncoder> {
+    let _span = tracing::info_span!("build_splade_encoder_for_watch").entered();
+
+    if std::env::var("CQS_WATCH_INCREMENTAL_SPLADE").as_deref() == Ok("0") {
+        tracing::info!(
+            "CQS_WATCH_INCREMENTAL_SPLADE=0 — daemon runs dense-only, \
+             sparse coverage will drift until manual 'cqs index'"
+        );
+        return None;
+    }
+
+    let dir = match cqs::splade::resolve_splade_model_dir() {
+        Some(d) => d,
+        None => {
+            tracing::info!("No SPLADE model configured — incremental SPLADE disabled");
+            return None;
+        }
+    };
+
+    // Match the encoder's default score threshold used elsewhere (0.01).
+    match cqs::splade::SpladeEncoder::new(&dir, 0.01) {
+        Ok(enc) => {
+            tracing::info!(
+                model_dir = %dir.display(),
+                "SPLADE encoder loaded for incremental encoding"
+            );
+            Some(enc)
+        }
+        Err(e) => {
+            tracing::warn!(
+                model_dir = %dir.display(),
+                error = %e,
+                "SPLADE encoder load failed — existing sparse_vectors untouched, \
+                 coverage will drift until manual 'cqs index'"
+            );
+            None
+        }
+    }
+}
+
+/// #1004: Encode + upsert sparse vectors for the chunks that were just
+/// (re)indexed. Called after a successful `reindex_files` when an encoder
+/// is resident. Best-effort: encoding failures are logged and skipped
+/// so a pathological chunk cannot block the watch loop.
+fn encode_splade_for_changed_files(
+    encoder_mu: &std::sync::Mutex<cqs::splade::SpladeEncoder>,
+    store: &Store,
+    changed_files: &[PathBuf],
+) {
+    let batch_size = splade_batch_size();
+    let _span = tracing::info_span!(
+        "encode_splade_for_changed_files",
+        n_files = changed_files.len(),
+        batch_size
+    )
+    .entered();
+
+    // Gather chunks for the changed files. `get_chunks_by_origin` returns
+    // ChunkSummary which carries id + content. These are the chunks we
+    // need to encode (re-encode over existing sparse_vectors is fine —
+    // upsert_sparse_vectors deletes then inserts atomically).
+    let mut batch: Vec<(String, String)> = Vec::new();
+    for file in changed_files {
+        let origin = file.display().to_string();
+        let chunks = match store.get_chunks_by_origin(&origin) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    origin = %origin,
+                    error = %e,
+                    "SPLADE encode: failed to fetch chunks for file — skipping"
+                );
+                continue;
+            }
+        };
+        for chunk in chunks {
+            batch.push((chunk.id, chunk.content));
+        }
+    }
+
+    if batch.is_empty() {
+        tracing::debug!("SPLADE encode: no chunks to encode, nothing to do");
+        return;
+    }
+
+    let mut encoded: Vec<(String, cqs::splade::SparseVector)> = Vec::with_capacity(batch.len());
+    let encoder = match encoder_mu.lock() {
+        Ok(e) => e,
+        Err(poisoned) => {
+            tracing::warn!("SPLADE encoder mutex poisoned — recovering");
+            poisoned.into_inner()
+        }
+    };
+
+    for sub in batch.chunks(batch_size) {
+        let texts: Vec<&str> = sub.iter().map(|(_, t)| t.as_str()).collect();
+        match encoder.encode_batch(&texts) {
+            Ok(sparse_batch) => {
+                for ((chunk_id, _), sparse) in sub.iter().zip(sparse_batch.into_iter()) {
+                    encoded.push((chunk_id.clone(), sparse));
+                }
+                tracing::debug!(batch_size = sub.len(), "SPLADE batch encoded");
+            }
+            Err(e) => {
+                // Don't block the watch loop on a single bad batch — log + skip.
+                // Coverage gap for these chunks self-heals on next 'cqs index'.
+                tracing::warn!(
+                    batch_size = sub.len(),
+                    error = %e,
+                    "SPLADE batch encode failed — skipping batch"
+                );
+            }
+        }
+    }
+    drop(encoder);
+
+    if encoded.is_empty() {
+        return;
+    }
+
+    match store.upsert_sparse_vectors(&encoded) {
+        Ok(inserted) => tracing::info!(
+            chunks_encoded = encoded.len(),
+            rows_inserted = inserted,
+            "SPLADE incremental encode complete"
+        ),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "SPLADE upsert failed — sparse_vectors not updated for this cycle"
+        ),
+    }
+}
+
+/// SPLADE batch size for incremental encoding. Mirrors the reranker
+/// batch pattern (#963). Default 32 matches the reranker default.
+fn splade_batch_size() -> usize {
+    std::env::var("CQS_SPLADE_BATCH")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(32)
 }
 
 /// Watches the project for file changes and updates the code search index incrementally.
@@ -1125,6 +1286,15 @@ pub fn cmd_watch(
         build_gitignore_matcher(&root)
     });
 
+    // #1004: build the SPLADE encoder once at startup. `None` means
+    // incremental SPLADE is disabled for this daemon lifetime — either
+    // the model isn't configured, failed to load, or the operator set
+    // `CQS_WATCH_INCREMENTAL_SPLADE=0`. Existing sparse vectors in the
+    // DB are preserved in all cases.
+    let splade_encoder_storage = build_splade_encoder_for_watch().map(std::sync::Mutex::new);
+    let splade_encoder_ref: Option<&std::sync::Mutex<cqs::splade::SpladeEncoder>> =
+        splade_encoder_storage.as_ref();
+
     let watch_cfg = WatchConfig {
         root: &root,
         cqs_dir: &cqs_dir,
@@ -1135,6 +1305,7 @@ pub fn cmd_watch(
         quiet: cli.quiet,
         model_config,
         gitignore: &gitignore,
+        splade_encoder: splade_encoder_ref,
     };
 
     let mut state = WatchState {
@@ -1501,15 +1672,34 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                 println!("Indexed {} chunk(s)", count);
             }
 
-            // OB-NEW-10: When SPLADE is configured but watch skipped sparse
-            // re-encoding (watch never runs the SPLADE encoder, only the v20
-            // DELETE trigger invalidates on removals), surface the drift at
-            // debug level once per reindex cycle.
-            if count > 0 && cqs::splade::resolve_splade_model_dir().is_some() {
-                tracing::debug!(
-                    new_chunks = count,
-                    "Watch skipped SPLADE encoding, sparse coverage will drift until manual 'cqs index'"
-                );
+            // #1004: incremental SPLADE encoding. Encoder is held in
+            // WatchConfig and stays resident for the daemon's lifetime.
+            // We encode every chunk in the files that were reindexed —
+            // upsert_sparse_vectors is idempotent, so re-encoding an
+            // unchanged chunk is correct just slightly wasteful. The
+            // cheaper content-hash-dedup optimization is a follow-up.
+            if count > 0 {
+                match cfg.splade_encoder {
+                    Some(encoder_mu) => {
+                        // Build the list of files that actually had chunks
+                        // reindexed (excluding deleted ones, which are
+                        // handled by the FK CASCADE on DELETE FROM chunks).
+                        // We re-use the original `files` snapshot — the
+                        // ones that survived parsing are still tracked.
+                        encode_splade_for_changed_files(encoder_mu, store, &files);
+                    }
+                    None if cqs::splade::resolve_splade_model_dir().is_some() => {
+                        tracing::debug!(
+                            new_chunks = count,
+                            "SPLADE model present but encoder disabled this daemon — \
+                             sparse coverage will drift until manual 'cqs index' \
+                             (CQS_WATCH_INCREMENTAL_SPLADE=0 or load failed)"
+                        );
+                    }
+                    None => {
+                        // No SPLADE model configured — nothing to do.
+                    }
+                }
             }
 
             // Incremental HNSW update: insert changed chunks into existing Owned index.
@@ -1941,6 +2131,7 @@ mod tests {
             quiet: true,
             model_config,
             gitignore,
+            splade_encoder: None,
         }
     }
 
@@ -1966,6 +2157,7 @@ mod tests {
             quiet: true,
             model_config,
             gitignore,
+            splade_encoder: None,
         }
     }
 
@@ -2307,6 +2499,73 @@ mod tests {
             .matched_path_or_any_parents(tmp.path().join("target/debug/foo.rs"), false)
             .is_ignore();
         assert!(hit, "target/ should match");
+    }
+
+    // ===== #1004 SPLADE builder / batch-size tests =====
+
+    #[test]
+    fn splade_batch_size_env_override() {
+        let prev = std::env::var("CQS_SPLADE_BATCH").ok();
+        std::env::set_var("CQS_SPLADE_BATCH", "16");
+        let got = splade_batch_size();
+        match prev {
+            Some(v) => std::env::set_var("CQS_SPLADE_BATCH", v),
+            None => std::env::remove_var("CQS_SPLADE_BATCH"),
+        }
+        assert_eq!(got, 16);
+    }
+
+    #[test]
+    fn splade_batch_size_default_is_32() {
+        let prev = std::env::var("CQS_SPLADE_BATCH").ok();
+        std::env::remove_var("CQS_SPLADE_BATCH");
+        let got = splade_batch_size();
+        if let Some(v) = prev {
+            std::env::set_var("CQS_SPLADE_BATCH", v);
+        }
+        assert_eq!(got, 32);
+    }
+
+    #[test]
+    fn splade_batch_size_invalid_falls_back_to_default() {
+        let prev = std::env::var("CQS_SPLADE_BATCH").ok();
+        std::env::set_var("CQS_SPLADE_BATCH", "not-a-number");
+        let got = splade_batch_size();
+        match prev {
+            Some(v) => std::env::set_var("CQS_SPLADE_BATCH", v),
+            None => std::env::remove_var("CQS_SPLADE_BATCH"),
+        }
+        assert_eq!(got, 32, "unparseable value falls back to default");
+    }
+
+    #[test]
+    fn splade_batch_size_zero_falls_back_to_default() {
+        let prev = std::env::var("CQS_SPLADE_BATCH").ok();
+        std::env::set_var("CQS_SPLADE_BATCH", "0");
+        let got = splade_batch_size();
+        match prev {
+            Some(v) => std::env::set_var("CQS_SPLADE_BATCH", v),
+            None => std::env::remove_var("CQS_SPLADE_BATCH"),
+        }
+        assert_eq!(got, 32, "0 is not a valid batch size, falls back");
+    }
+
+    #[test]
+    fn build_splade_encoder_env_kill_switch_returns_none() {
+        // CQS_WATCH_INCREMENTAL_SPLADE=0 must return None regardless of
+        // whether a SPLADE model is configured. Verifies the feature-flag
+        // kill-switch fires before any model-load work.
+        let prev = std::env::var("CQS_WATCH_INCREMENTAL_SPLADE").ok();
+        std::env::set_var("CQS_WATCH_INCREMENTAL_SPLADE", "0");
+        let got = build_splade_encoder_for_watch();
+        match prev {
+            Some(v) => std::env::set_var("CQS_WATCH_INCREMENTAL_SPLADE", v),
+            None => std::env::remove_var("CQS_WATCH_INCREMENTAL_SPLADE"),
+        }
+        assert!(
+            got.is_none(),
+            "CQS_WATCH_INCREMENTAL_SPLADE=0 must disable the encoder"
+        );
     }
 
     #[test]
