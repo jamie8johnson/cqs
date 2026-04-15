@@ -138,34 +138,27 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }
         // Special: open stores on arbitrary paths, not via CommandContext
         Some(Commands::Diff {
-            ref source,
-            ref target,
-            threshold,
-            ref lang,
+            ref args,
             ref output,
         }) => {
             return cmd_diff(
-                source,
-                target.as_deref(),
-                threshold,
-                lang.as_deref(),
+                &args.source,
+                args.target.as_deref(),
+                args.threshold,
+                args.lang.as_deref(),
                 output.json,
             )
         }
         Some(Commands::Drift {
-            ref reference,
-            threshold,
-            min_drift,
-            ref lang,
-            limit,
+            ref args,
             ref output,
         }) => {
             return cmd_drift(
-                reference,
-                threshold,
-                min_drift,
-                lang.as_deref(),
-                limit,
+                &args.reference,
+                args.threshold,
+                args.min_drift,
+                args.lang.as_deref(),
+                args.limit,
                 output.json,
             )
         }
@@ -204,27 +197,27 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }) => cmd_brief(&ctx, path, output.json),
         Some(Commands::Stats { ref output }) => cmd_stats(&ctx, output.json),
         Some(Commands::Deps {
-            ref name,
-            reverse,
-            cross_project,
+            ref args,
             ref output,
-        }) => cmd_deps(&ctx, name, reverse, cross_project, output.json),
+        }) => cmd_deps(
+            &ctx,
+            &args.name,
+            args.reverse,
+            args.cross_project,
+            output.json,
+        ),
         Some(Commands::Callers {
-            ref name,
-            cross_project,
+            ref args,
             ref output,
-        }) => cmd_callers(&ctx, name, cross_project, output.json),
+        }) => cmd_callers(&ctx, &args.name, args.cross_project, output.json),
         Some(Commands::Callees {
-            ref name,
-            cross_project,
+            ref args,
             ref output,
-        }) => cmd_callees(&ctx, name, cross_project, output.json),
+        }) => cmd_callees(&ctx, &args.name, args.cross_project, output.json),
         Some(Commands::Onboard {
-            ref query,
-            depth,
+            ref args,
             ref output,
-            tokens,
-        }) => cmd_onboard(&ctx, query, depth, output.json, tokens),
+        }) => cmd_onboard(&ctx, &args.query, args.depth, output.json, args.tokens),
         Some(Commands::Neighbors {
             ref name,
             limit,
@@ -232,10 +225,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }) => cmd_neighbors(&ctx, name, limit, output.json),
         Some(Commands::Notes { ref subcmd }) => cmd_notes(&ctx, subcmd),
         Some(Commands::Explain {
-            ref name,
+            ref args,
             ref output,
-            tokens,
-        }) => cmd_explain(&ctx, name, output.json, tokens),
+        }) => cmd_explain(&ctx, &args.name, output.json, args.tokens),
         Some(Commands::Similar {
             ref args,
             ref output,
@@ -256,28 +248,29 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             )
         }
         Some(Commands::ImpactDiff {
-            ref base,
-            stdin,
+            ref args,
             ref output,
-        }) => cmd_impact_diff(&ctx, base.as_deref(), stdin, output.json),
+        }) => cmd_impact_diff(&ctx, args.base.as_deref(), args.stdin, output.json),
         Some(Commands::Review {
-            ref base,
-            stdin,
+            ref args,
             ref output,
-            tokens,
         }) => {
             let format = output.effective_format();
-            cmd_review(&ctx, base.as_deref(), stdin, &format, tokens)
+            cmd_review(&ctx, args.base.as_deref(), args.stdin, &format, args.tokens)
         }
         Some(Commands::Ci {
-            ref base,
-            stdin,
+            ref args,
             ref output,
-            ref gate,
-            tokens,
         }) => {
             let format = output.effective_format();
-            cmd_ci(&ctx, base.as_deref(), stdin, &format, gate, tokens)
+            cmd_ci(
+                &ctx,
+                args.base.as_deref(),
+                args.stdin,
+                &format,
+                &args.gate,
+                args.tokens,
+            )
         }
         Some(Commands::Trace {
             ref args,
@@ -294,11 +287,15 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             )
         }
         Some(Commands::TestMap {
-            ref name,
-            depth,
-            cross_project,
+            ref args,
             ref output,
-        }) => cmd_test_map(&ctx, name, depth, cross_project, output.json),
+        }) => cmd_test_map(
+            &ctx,
+            &args.name,
+            args.depth,
+            args.cross_project,
+            output.json,
+        ),
         Some(Commands::Context {
             ref args,
             ref output,
@@ -329,46 +326,54 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }),
         Some(Commands::Health { ref output }) => cmd_health(&ctx, output.json),
         Some(Commands::Stale {
+            ref args,
             ref output,
-            count_only,
-        }) => cmd_stale(&ctx, output.json, count_only),
-        Some(Commands::Suggest { ref output, apply }) => cmd_suggest(&ctx, output.json, apply),
+        }) => cmd_stale(&ctx, output.json, args.count_only),
+        Some(Commands::Suggest {
+            ref args,
+            ref output,
+        }) => cmd_suggest(&ctx, output.json, args.apply),
         Some(Commands::Read {
-            ref path,
-            ref focus,
+            ref args,
             ref output,
-        }) => cmd_read(&ctx, path, focus.as_deref(), output.json),
+        }) => cmd_read(&ctx, &args.path, args.focus.as_deref(), output.json),
         Some(Commands::Reconstruct {
             ref path,
             ref output,
         }) => cmd_reconstruct(&ctx, path, output.json),
         Some(Commands::Related {
-            ref name,
-            limit,
+            ref args,
             ref output,
-        }) => cmd_related(&ctx, name, limit, output.json),
+        }) => cmd_related(&ctx, &args.name, args.limit, output.json),
         Some(Commands::Where {
-            ref description,
-            limit,
+            ref args,
             ref output,
-        }) => cmd_where(&ctx, description, limit, output.json),
+        }) => cmd_where(&ctx, &args.description, args.limit, output.json),
         Some(Commands::Scout {
             ref args,
             ref output,
         }) => cmd_scout(&ctx, &args.query, args.limit, output.json, args.tokens),
         Some(Commands::Plan {
-            ref description,
-            limit,
+            ref args,
             ref output,
-            tokens,
-        }) => cmd_plan(&ctx, description, limit, output.json, tokens),
+        }) => cmd_plan(
+            &ctx,
+            &args.description,
+            args.limit,
+            output.json,
+            args.tokens,
+        ),
         Some(Commands::Task {
-            ref description,
-            limit,
+            ref args,
             ref output,
-            tokens,
-            brief,
-        }) => cmd_task(&ctx, description, limit, output.json, tokens, brief),
+        }) => cmd_task(
+            &ctx,
+            &args.description,
+            args.limit,
+            output.json,
+            args.tokens,
+            args.brief,
+        ),
         Some(Commands::TrainPairs {
             ref output,
             limit,

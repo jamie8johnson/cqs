@@ -214,8 +214,8 @@ mod tests {
     fn test_cmd_callers() {
         let cli = Cli::try_parse_from(["cqs", "callers", "my_function"]).unwrap();
         match cli.command {
-            Some(Commands::Callers { name, output, .. }) => {
-                assert_eq!(name, "my_function");
+            Some(Commands::Callers { args, output, .. }) => {
+                assert_eq!(args.name, "my_function");
                 assert!(!output.json);
             }
             _ => panic!("Expected Callers command"),
@@ -226,8 +226,8 @@ mod tests {
     fn test_cmd_callees_json() {
         let cli = Cli::try_parse_from(["cqs", "callees", "my_function", "--json"]).unwrap();
         match cli.command {
-            Some(Commands::Callees { name, output, .. }) => {
-                assert_eq!(name, "my_function");
+            Some(Commands::Callees { args, output, .. }) => {
+                assert_eq!(args.name, "my_function");
                 assert!(output.json);
             }
             _ => panic!("Expected Callees command"),
@@ -667,7 +667,7 @@ mod tests {
         let cli =
             Cli::try_parse_from(["cqs", "explain", "search_filtered", "--tokens", "3000"]).unwrap();
         match cli.command {
-            Some(Commands::Explain { tokens, .. }) => assert_eq!(tokens, Some(3000)),
+            Some(Commands::Explain { ref args, .. }) => assert_eq!(args.tokens, Some(3000)),
             _ => panic!("Expected Explain command"),
         }
     }
@@ -689,15 +689,13 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "review"]).unwrap();
         match cli.command {
             Some(Commands::Review {
-                base,
-                stdin,
+                ref args,
                 ref output,
-                tokens,
             }) => {
-                assert!(base.is_none());
-                assert!(!stdin);
+                assert!(args.base.is_none());
+                assert!(!args.stdin);
                 assert!(!output.json);
-                assert!(tokens.is_none());
+                assert!(args.tokens.is_none());
             }
             _ => panic!("Expected Review command"),
         }
@@ -707,8 +705,8 @@ mod tests {
     fn test_cmd_review_base_flag() {
         let cli = Cli::try_parse_from(["cqs", "review", "--base", "main"]).unwrap();
         match cli.command {
-            Some(Commands::Review { base, .. }) => {
-                assert_eq!(base, Some("main".to_string()));
+            Some(Commands::Review { ref args, .. }) => {
+                assert_eq!(args.base, Some("main".to_string()));
             }
             _ => panic!("Expected Review command"),
         }
@@ -720,9 +718,10 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "review", "--stdin", "--json"]).unwrap();
         match cli.command {
             Some(Commands::Review {
-                stdin, ref output, ..
+                ref args,
+                ref output,
             }) => {
-                assert!(stdin);
+                assert!(args.stdin);
                 assert!(output.json);
             }
             _ => panic!("Expected Review command"),
@@ -733,8 +732,8 @@ mod tests {
     fn test_cmd_review_tokens_flag() {
         let cli = Cli::try_parse_from(["cqs", "review", "--tokens", "4000"]).unwrap();
         match cli.command {
-            Some(Commands::Review { tokens, .. }) => {
-                assert_eq!(tokens, Some(4000));
+            Some(Commands::Review { ref args, .. }) => {
+                assert_eq!(args.tokens, Some(4000));
             }
             _ => panic!("Expected Review command"),
         }
@@ -958,17 +957,14 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "ci"]).unwrap();
         match cli.command {
             Some(Commands::Ci {
-                base,
-                stdin,
+                ref args,
                 ref output,
-                gate,
-                tokens,
             }) => {
-                assert!(base.is_none());
-                assert!(!stdin);
+                assert!(args.base.is_none());
+                assert!(!args.stdin);
                 assert!(!output.json);
-                assert!(matches!(gate, GateThreshold::High));
-                assert!(tokens.is_none());
+                assert!(matches!(args.gate, GateThreshold::High));
+                assert!(args.tokens.is_none());
             }
             _ => panic!("Expected Ci command"),
         }
@@ -978,8 +974,8 @@ mod tests {
     fn test_cmd_ci_gate_medium() {
         let cli = Cli::try_parse_from(["cqs", "ci", "--gate", "medium"]).unwrap();
         match cli.command {
-            Some(Commands::Ci { gate, .. }) => {
-                assert!(matches!(gate, GateThreshold::Medium));
+            Some(Commands::Ci { ref args, .. }) => {
+                assert!(matches!(args.gate, GateThreshold::Medium));
             }
             _ => panic!("Expected Ci command"),
         }
@@ -989,8 +985,8 @@ mod tests {
     fn test_cmd_ci_gate_off() {
         let cli = Cli::try_parse_from(["cqs", "ci", "--gate", "off"]).unwrap();
         match cli.command {
-            Some(Commands::Ci { gate, .. }) => {
-                assert!(matches!(gate, GateThreshold::Off));
+            Some(Commands::Ci { ref args, .. }) => {
+                assert!(matches!(args.gate, GateThreshold::Off));
             }
             _ => panic!("Expected Ci command"),
         }
@@ -1003,14 +999,12 @@ mod tests {
             Cli::try_parse_from(["cqs", "ci", "--stdin", "--json", "--tokens", "5000"]).unwrap();
         match cli.command {
             Some(Commands::Ci {
-                stdin,
+                ref args,
                 ref output,
-                tokens,
-                ..
             }) => {
-                assert!(stdin);
+                assert!(args.stdin);
                 assert!(output.json);
-                assert_eq!(tokens, Some(5000));
+                assert_eq!(args.tokens, Some(5000));
             }
             _ => panic!("Expected Ci command"),
         }
@@ -1020,8 +1014,8 @@ mod tests {
     fn test_cmd_ci_base_flag() {
         let cli = Cli::try_parse_from(["cqs", "ci", "--base", "HEAD~3"]).unwrap();
         match cli.command {
-            Some(Commands::Ci { base, .. }) => {
-                assert_eq!(base, Some("HEAD~3".to_string()));
+            Some(Commands::Ci { ref args, .. }) => {
+                assert_eq!(args.base, Some("HEAD~3".to_string()));
             }
             _ => panic!("Expected Ci command"),
         }
