@@ -660,6 +660,10 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_BATCH_IDLE_MINUTES` | `5` | Minutes of inactivity before `cqs batch` / `cqs chat` clears ONNX sessions (`0` disables eviction). |
 | `CQS_BUSY_TIMEOUT_MS` | `5000` | SQLite busy timeout in milliseconds |
 | `CQS_CACHE_MAX_SIZE` | `1073741824` (1 GB) | Global embedding cache size limit |
+| `CQS_CAGRA_GRAPH_DEGREE` | `64` | CAGRA output graph degree at build time (cuVS default 64; higher → better recall, longer build) |
+| `CQS_CAGRA_INTERMEDIATE_GRAPH_DEGREE` | `128` | CAGRA pruned-input graph degree at build time (cuVS default 128) |
+| `CQS_CAGRA_ITOPK_MAX` | (log₂(n)·32 clamped 128-4096) | Upper clamp on CAGRA `itopk_size`. Default scales with corpus size (1k→320, 100k→532, 1M→640). Raise for better recall on large indexes at the cost of search latency. |
+| `CQS_CAGRA_ITOPK_MIN` | `128` | Lower clamp on CAGRA `itopk_size`. `itopk_size = (k*2).clamp(min, max)`. |
 | `CQS_CAGRA_MAX_BYTES` | (auto) | Max GPU memory for CAGRA index |
 | `CQS_CAGRA_THRESHOLD` | `50000` | Min chunks to trigger CAGRA over HNSW |
 | `CQS_DAEMON_TIMEOUT_MS` | `2000` | Daemon client connect/read timeout in milliseconds (CLI → daemon) |
