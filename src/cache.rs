@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -38,7 +39,10 @@ pub struct CacheStats {
 /// The index pipeline works identically with or without a functioning cache.
 pub struct EmbeddingCache {
     pool: sqlx::SqlitePool,
-    rt: tokio::runtime::Runtime,
+    /// #968: `Arc<Runtime>` so the daemon can share one multi-thread runtime
+    /// across `Store`, `EmbeddingCache`, and `QueryCache` instead of each
+    /// constructor spinning up its own worker pool.
+    rt: Arc<tokio::runtime::Runtime>,
     max_size_bytes: u64,
 }
 
@@ -55,10 +59,12 @@ impl EmbeddingCache {
         Self::open_with_runtime(path, None)
     }
 
-    /// Open with a pre-existing runtime (saves ~15ms by avoiding runtime creation).
+    /// Open with a pre-existing runtime (saves ~15ms by avoiding runtime
+    /// creation and, per #968, lets the daemon share one runtime across
+    /// `Store`, `EmbeddingCache`, and `QueryCache`).
     pub fn open_with_runtime(
         path: &Path,
-        runtime: Option<tokio::runtime::Runtime>,
+        runtime: Option<Arc<tokio::runtime::Runtime>>,
     ) -> Result<Self, CacheError> {
         let _span = tracing::info_span!("embedding_cache_open", path = %path.display()).entered();
 
@@ -71,13 +77,15 @@ impl EmbeddingCache {
             }
         }
 
-        let rt = if let Some(rt) = runtime {
+        let rt: Arc<tokio::runtime::Runtime> = if let Some(rt) = runtime {
             rt
         } else {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| CacheError::Io(std::io::Error::other(e)))?
+            Arc::new(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| CacheError::Io(std::io::Error::other(e)))?,
+            )
         };
 
         // Use SqliteConnectOptions to avoid URL-encoding issues with special paths
@@ -619,10 +627,12 @@ mod tests {
         let path = dir.path().join("evict_test.db");
 
         // Create cache with tiny max size
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
         let url = format!("sqlite:{}?mode=rwc", path.display());
         let pool = rt.block_on(async {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -882,7 +892,10 @@ mod tests {
 /// Best-effort: all failures are logged and silently skipped.
 pub struct QueryCache {
     pool: sqlx::SqlitePool,
-    rt: tokio::runtime::Runtime,
+    /// #968: `Arc<Runtime>` so callers (e.g. the daemon) can share one
+    /// runtime across `Store`, `EmbeddingCache`, and `QueryCache`. When
+    /// no runtime is supplied `open` constructs its own.
+    rt: Arc<tokio::runtime::Runtime>,
 }
 
 impl QueryCache {
@@ -895,6 +908,16 @@ impl QueryCache {
 
     /// Open or create the query cache.
     pub fn open(path: &Path) -> Result<Self, CacheError> {
+        Self::open_with_runtime(path, None)
+    }
+
+    /// Open with a pre-existing runtime (saves ~15ms by avoiding runtime
+    /// creation and, per #968, lets the daemon share one runtime across
+    /// `Store`, `EmbeddingCache`, and `QueryCache`).
+    pub fn open_with_runtime(
+        path: &Path,
+        runtime: Option<Arc<tokio::runtime::Runtime>>,
+    ) -> Result<Self, CacheError> {
         let _span = tracing::info_span!("query_cache_open", path = %path.display()).entered();
 
         if let Some(parent) = path.parent() {
@@ -906,10 +929,16 @@ impl QueryCache {
             }
         }
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| CacheError::Io(std::io::Error::other(e)))?;
+        let rt: Arc<tokio::runtime::Runtime> = if let Some(rt) = runtime {
+            rt
+        } else {
+            Arc::new(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| CacheError::Io(std::io::Error::other(e)))?,
+            )
+        };
 
         // SHL-V1.25-12: query cache honours CQS_BUSY_TIMEOUT_MS too. Default
         // here is 2s because the query cache is write-lighter than the
@@ -1066,5 +1095,105 @@ impl QueryCache {
             tracing::info!(pruned = rows, days, "Query cache pruned");
         }
         Ok(rows)
+    }
+}
+
+// ─── #968 shared-runtime integration tests ──────────────────────────────────
+//
+// Confirms that one `Arc<Runtime>` can drive Store + EmbeddingCache +
+// QueryCache simultaneously, as the daemon does, and that the runtime
+// drops cleanly once every consumer is released.
+#[cfg(test)]
+mod shared_runtime_tests {
+    use super::*;
+
+    /// Build the same kind of multi-thread runtime the daemon uses.
+    fn build_daemon_runtime() -> Arc<tokio::runtime::Runtime> {
+        let worker_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(4);
+        Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(worker_threads)
+                .enable_all()
+                .build()
+                .unwrap(),
+        )
+    }
+
+    /// #968 core invariant: the daemon can build one `Arc<Runtime>` and hand
+    /// the same handle to `Store::open_with_runtime`,
+    /// `EmbeddingCache::open_with_runtime`, and
+    /// `QueryCache::open_with_runtime`; all three operate concurrently and
+    /// drop cleanly without deadlocking or panicking.
+    #[test]
+    fn test_shared_runtime_drives_all_three() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let shared_rt = build_daemon_runtime();
+
+        // --- Store ---
+        let store_path = dir.path().join("index.db");
+        let store =
+            crate::store::Store::open_with_runtime(&store_path, Arc::clone(&shared_rt)).unwrap();
+        store
+            .init(&crate::store::ModelInfo::default())
+            .expect("store init");
+        // Sanity: the store's runtime is the same Arc we handed in.
+        assert!(Arc::ptr_eq(store.runtime(), &shared_rt));
+
+        // --- EmbeddingCache ---
+        let emb_path = dir.path().join("embeddings.db");
+        let emb_cache =
+            EmbeddingCache::open_with_runtime(&emb_path, Some(Arc::clone(&shared_rt))).unwrap();
+        // Round-trip one entry so the cache actually uses the runtime.
+        let entries = vec![("h1".to_string(), vec![0.1_f32; 8])];
+        assert_eq!(emb_cache.write_batch(&entries, "fp", 8).unwrap(), 1);
+        let got = emb_cache.read_batch(&["h1"], "fp", 8).unwrap();
+        assert_eq!(got.len(), 1);
+
+        // --- QueryCache ---
+        let q_path = dir.path().join("query_cache.db");
+        let q_cache = QueryCache::open_with_runtime(&q_path, Some(Arc::clone(&shared_rt))).unwrap();
+        let q_emb = crate::embedder::Embedding::new(vec![0.2_f32; 8]);
+        q_cache.put("select x", "fp", &q_emb);
+        let got = q_cache.get("select x", "fp").expect("round-trip");
+        assert_eq!(got.as_slice().len(), 8);
+
+        // Four live Arcs: shared_rt + the three consumers.
+        assert_eq!(Arc::strong_count(&shared_rt), 4);
+
+        // Drop consumers — runtime must outlive all of them already.
+        drop(store);
+        drop(emb_cache);
+        drop(q_cache);
+        assert_eq!(Arc::strong_count(&shared_rt), 1);
+    }
+
+    /// #968: `Store::open_readonly_pooled_with_runtime` — the pre-968
+    /// template path — keeps working under the new `Arc<Runtime>`
+    /// signature. Guards against the template drifting from
+    /// `Store::open_with_runtime` as new knobs land.
+    #[test]
+    fn test_open_readonly_pooled_with_runtime_works() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let shared_rt = build_daemon_runtime();
+        let path = dir.path().join("ro.db");
+
+        // Initialize the DB under ReadWrite first — open_readonly_pooled
+        // refuses to create a new DB.
+        {
+            let rw = crate::store::Store::open_with_runtime(&path, Arc::clone(&shared_rt)).unwrap();
+            rw.init(&crate::store::ModelInfo::default()).unwrap();
+        }
+
+        let ro =
+            crate::store::Store::open_readonly_pooled_with_runtime(&path, Arc::clone(&shared_rt))
+                .unwrap();
+        assert!(Arc::ptr_eq(ro.runtime(), &shared_rt));
+        // `chunk_count` flows through `self.rt.block_on`, so a live
+        // runtime on the shared Arc is what makes the read path work.
+        let count = ro.chunk_count().unwrap();
+        assert_eq!(count, 0);
     }
 }

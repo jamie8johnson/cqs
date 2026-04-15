@@ -87,6 +87,30 @@ extern "C" fn on_sigterm(_sig: libc::c_int) {
 #[cfg(unix)]
 const MAX_CONCURRENT_DAEMON_CLIENTS: usize = 64;
 
+/// Build the tokio runtime that the daemon shares across `Store`,
+/// `EmbeddingCache`, and `QueryCache` (#968).
+///
+/// Uses `multi_thread` with `worker_threads = min(num_cpus, 4)` to match
+/// `Store::open`'s pre-968 default (that was the heaviest of the three).
+/// One shared pool replaces three separate per-struct runtimes that
+/// previously idled ~6–12 OS threads in the daemon with no overlap.
+fn build_shared_runtime() -> std::io::Result<Arc<tokio::runtime::Runtime>> {
+    let worker_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(4);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .thread_name("cqs-shared-rt")
+        .build()?;
+    tracing::debug!(
+        worker_threads,
+        "Built shared tokio runtime for Store/EmbeddingCache/QueryCache"
+    );
+    Ok(Arc::new(rt))
+}
+
 /// Install a SIGTERM handler so `systemctl stop cqs-watch` triggers a
 /// clean drain via `SHUTDOWN_REQUESTED` rather than a hard kill. The
 /// existing ctrlc-based SIGINT handler already flips `check_interrupted`;
@@ -735,6 +759,17 @@ pub fn cmd_watch(
     let shared_embedder: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Embedder>>> =
         std::sync::Arc::new(std::sync::OnceLock::new());
 
+    // #968: Build ONE tokio runtime and share it across the outer Store
+    // (read-write, for reindex writes) and the daemon thread's inner
+    // Store (read-only, for queries) plus its EmbeddingCache/QueryCache.
+    // Without this each constructor spawned its own 1-4 worker threads
+    // that never overlapped usefully. `shared_rt` must be declared before
+    // the daemon thread spawn below so we can `Arc::clone` into the
+    // closure; it stays alive until this function returns, after the
+    // daemon thread is joined.
+    let shared_rt = build_shared_runtime()
+        .with_context(|| "Failed to build shared tokio runtime for daemon")?;
+
     // Spawn dedicated socket handler thread — runs independently of the file
     // watcher so queries are served immediately, even during the slow poll scan.
     //
@@ -754,12 +789,16 @@ pub fn cmd_watch(
             // Arc<Embedder>.
             let daemon_embedder = std::sync::Arc::clone(&shared_embedder);
             let daemon_model_config = cli.try_model_config()?.clone();
+            // #968: Clone the shared runtime handle into the daemon closure so
+            // its BatchContext opens its Store/EmbeddingCache/QueryCache on
+            // the same multi-thread pool as the outer watch loop.
+            let daemon_runtime = Arc::clone(&shared_rt);
             // Stays non-blocking: the accept loop below polls so it can
             // notice SHUTDOWN_REQUESTED on SIGTERM (RM-V1.25-9).
             let thread = std::thread::spawn(move || {
                 // BatchContext created inside the thread — RefCell is !Send
                 // but thread-local ownership is fine.
-                let ctx = match super::batch::create_context() {
+                let ctx = match super::batch::create_context_with_runtime(Some(daemon_runtime)) {
                     Ok(ctx) => {
                         // RM-V1.25-28: seed the BatchContext's OnceLock if
                         // the shared slot is already populated; otherwise
@@ -962,7 +1001,11 @@ pub fn cmd_watch(
 
     // Open store and reuse across reindex operations within a cycle.
     // Re-opened after each reindex cycle to clear stale OnceLock caches (DS-9).
-    let mut store = Store::open(&index_path)
+    // #968: `shared_rt` is declared above the daemon-thread spawn so the
+    // closure can `Arc::clone` it; the outer store shares that runtime
+    // here so the daemon's inner read-only store and its caches all run
+    // on one multi-thread pool instead of three isolated runtimes.
+    let mut store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
         .with_context(|| format!("Failed to open store at {}", index_path.display()))?;
 
     // DS-W5: Track the database file identity so we detect when `cqs index --force`
@@ -1066,12 +1109,16 @@ pub fn cmd_watch(
                     if current_id != db_id {
                         info!("index.db replaced (likely cqs index --force), reopening store");
                         drop(store);
-                        store = Store::open(&index_path).with_context(|| {
-                            format!(
-                                "Failed to re-open store at {} after DB replacement",
-                                index_path.display()
-                            )
-                        })?;
+                        // #968: reuse the shared runtime on re-open so the
+                        // replacement store keeps running on the same
+                        // multi-thread worker pool as its predecessor.
+                        store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
+                            .with_context(|| {
+                                format!(
+                                    "Failed to re-open store at {} after DB replacement",
+                                    index_path.display()
+                                )
+                            })?;
                         // db_id updated below in the DS-9 reopen path
                         state.hnsw_index = None;
                         state.incremental_count = 0;
@@ -1101,8 +1148,15 @@ pub fn cmd_watch(
                     // CQS_CACHE_MAX_SIZE cap (default 10GB). Gated by
                     // `last_cache_evict.elapsed()` so we don't churn the
                     // SQLite file on every single reindex cycle.
+                    //
+                    // #968: reuse the shared runtime so this one-shot eviction
+                    // piggybacks on the existing worker pool rather than
+                    // spinning up a fresh current_thread runtime.
                     if last_cache_evict.elapsed() >= Duration::from_secs(3600) {
-                        super::batch::evict_global_embedding_cache("watch reindex cycle");
+                        super::batch::evict_global_embedding_cache_with_runtime(
+                            "watch reindex cycle",
+                            Some(Arc::clone(&shared_rt)),
+                        );
                         last_cache_evict = std::time::Instant::now();
                     }
 
