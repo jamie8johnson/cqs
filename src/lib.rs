@@ -104,6 +104,11 @@ pub(crate) mod structural;
 pub(crate) mod task;
 pub(crate) mod where_to_add;
 
+// #972: pure arg-shaping translator for daemon-forward mode. Lives in the
+// library (not `src/cli/`) so integration tests can exercise it without
+// reaching into the binary-only `cli` module tree.
+pub mod daemon_translate;
+
 #[cfg(test)]
 pub mod test_helpers;
 

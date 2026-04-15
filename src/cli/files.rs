@@ -19,21 +19,12 @@ use anyhow::{bail, Context, Result};
 /// for the socket relies entirely on filesystem permissions — the socket is
 /// created with mode 0o600 so only the owning user can connect. Do not treat
 /// the hash as a secret or unguessable token.
+///
+/// #972: the implementation lives in `cqs::daemon_translate::daemon_socket_path`
+/// so integration tests can compute the same path. This wrapper keeps the
+/// existing `super::daemon_socket_path(...)` call sites inside `cli/`.
 pub(crate) fn daemon_socket_path(cqs_dir: &Path) -> PathBuf {
-    let sock_dir = std::env::var("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    // Note: Hash is collision-avoidance only (per-project socket naming);
-    // not a security property — the socket relies on filesystem
-    // permissions (0o600) for access control.
-    let sock_name = format!("cqs-{:x}.sock", {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        cqs_dir.hash(&mut h);
-        h.finish()
-    });
-    sock_dir.join(sock_name)
+    cqs::daemon_translate::daemon_socket_path(cqs_dir)
 }
 
 /// Enumerate files to index (delegates to library implementation)
