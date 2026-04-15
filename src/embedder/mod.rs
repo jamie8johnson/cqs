@@ -1210,6 +1210,90 @@ mod tests {
         assert!(v.is_empty());
     }
 
+    // ===== Pooling strategy tests =====
+    //
+    // These exercise mean_pool / cls_pool / last_token_pool with synthetic
+    // [batch, seq, dim] tensors. No model file is needed — we're testing
+    // the reducer, not the whole encode path.
+
+    fn make_hidden(values: Vec<Vec<Vec<f32>>>) -> Array3<f32> {
+        let batch = values.len();
+        let seq = values[0].len();
+        let dim = values[0][0].len();
+        let flat: Vec<f32> = values.into_iter().flatten().flatten().collect();
+        Array3::from_shape_vec((batch, seq, dim), flat).expect("synthetic shape mismatch")
+    }
+
+    #[test]
+    fn mean_pool_respects_mask() {
+        // 1 batch, 3 tokens, 2-dim hidden state. Mask: [1, 1, 0] — last
+        // position is padding, so it must be excluded.
+        let hidden = make_hidden(vec![vec![
+            vec![1.0, 2.0],
+            vec![3.0, 4.0],
+            vec![100.0, 200.0], // should be ignored
+        ]]);
+        let mask = vec![vec![1i64, 1, 0]];
+        let pooled = mean_pool(&hidden, &mask, 2);
+        assert_eq!(pooled.len(), 1, "one batch item");
+        // Mean of [1,2] and [3,4] = [2,3]
+        assert!((pooled[0][0] - 2.0).abs() < 1e-6);
+        assert!((pooled[0][1] - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mean_pool_zero_mask_returns_zero_vector() {
+        let hidden = make_hidden(vec![vec![vec![5.0, 5.0], vec![6.0, 6.0]]]);
+        let mask = vec![vec![0i64, 0]];
+        let pooled = mean_pool(&hidden, &mask, 2);
+        assert_eq!(pooled[0], vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn cls_pool_returns_first_token() {
+        // CLS pooling must return the [0]-th token regardless of mask.
+        let hidden = make_hidden(vec![
+            vec![vec![1.0, 2.0], vec![9.9, 9.9]],
+            vec![vec![3.0, 4.0], vec![7.7, 7.7]],
+        ]);
+        let pooled = cls_pool(&hidden);
+        assert_eq!(pooled.len(), 2);
+        assert_eq!(pooled[0], vec![1.0, 2.0]);
+        assert_eq!(pooled[1], vec![3.0, 4.0]);
+    }
+
+    #[test]
+    fn last_token_pool_picks_last_unmasked() {
+        // Mask: [1, 1, 1, 0] — last real token is index 2.
+        // Mask: [1, 0, 0, 0] — last real token is index 0.
+        let hidden = make_hidden(vec![
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 0.0],
+                vec![42.0, 43.0], // <- expected
+                vec![9.0, 9.0],
+            ],
+            vec![
+                vec![11.0, 12.0], // <- expected
+                vec![0.0, 0.0],
+                vec![0.0, 0.0],
+                vec![0.0, 0.0],
+            ],
+        ]);
+        let mask = vec![vec![1i64, 1, 1, 0], vec![1i64, 0, 0, 0]];
+        let pooled = last_token_pool(&hidden, &mask);
+        assert_eq!(pooled[0], vec![42.0, 43.0]);
+        assert_eq!(pooled[1], vec![11.0, 12.0]);
+    }
+
+    #[test]
+    fn last_token_pool_zero_mask_falls_back_to_index_0() {
+        let hidden = make_hidden(vec![vec![vec![7.0, 8.0], vec![9.0, 10.0]]]);
+        let mask = vec![vec![0i64, 0]];
+        let pooled = last_token_pool(&hidden, &mask);
+        assert_eq!(pooled[0], vec![7.0, 8.0]);
+    }
+
     // ===== ExecutionProvider tests =====
 
     #[test]

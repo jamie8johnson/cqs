@@ -513,6 +513,10 @@ mod tests {
         assert_eq!(cfg.doc_prefix, "passage: ");
         assert_eq!(cfg.onnx_path, "onnx/model.onnx");
         assert_eq!(cfg.tokenizer_path, "tokenizer.json");
+        // Architecture: BERT inputs + last_hidden_state + mean pooling
+        assert_eq!(cfg.input_names, InputNames::bert());
+        assert_eq!(cfg.output_name, "last_hidden_state");
+        assert_eq!(cfg.pooling, PoolingStrategy::Mean);
     }
 
     #[test]
@@ -527,6 +531,10 @@ mod tests {
             "Represent this sentence for searching relevant passages: "
         );
         assert_eq!(cfg.doc_prefix, "");
+        // Architecture: BERT inputs + last_hidden_state + mean pooling
+        assert_eq!(cfg.input_names, InputNames::bert());
+        assert_eq!(cfg.output_name, "last_hidden_state");
+        assert_eq!(cfg.pooling, PoolingStrategy::Mean);
     }
 
     #[test]
@@ -538,6 +546,156 @@ mod tests {
         assert_eq!(cfg.onnx_path, "model.onnx");
         assert_eq!(cfg.query_prefix, "query: ");
         assert_eq!(cfg.doc_prefix, "passage: ");
+        // Architecture: BERT inputs + last_hidden_state + mean pooling
+        assert_eq!(cfg.input_names, InputNames::bert());
+        assert_eq!(cfg.output_name, "last_hidden_state");
+        assert_eq!(cfg.pooling, PoolingStrategy::Mean);
+    }
+
+    // ===== Architecture type tests =====
+
+    #[test]
+    fn input_names_bert_defaults() {
+        let n = InputNames::bert();
+        assert_eq!(n.ids, "input_ids");
+        assert_eq!(n.mask, "attention_mask");
+        assert_eq!(n.token_types.as_deref(), Some("token_type_ids"));
+    }
+
+    #[test]
+    fn input_names_no_token_types() {
+        let n = InputNames::bert_no_token_types();
+        assert_eq!(n.ids, "input_ids");
+        assert_eq!(n.mask, "attention_mask");
+        assert!(
+            n.token_types.is_none(),
+            "bert_no_token_types should drop segment embeddings"
+        );
+    }
+
+    #[test]
+    fn input_names_default_matches_bert() {
+        assert_eq!(InputNames::default(), InputNames::bert());
+    }
+
+    #[test]
+    fn input_names_serde_empty_fills_defaults() {
+        // `{}` should fill in both string fields via serde defaults,
+        // leaving token_types = None.
+        let parsed: InputNames = serde_json::from_str("{}").unwrap();
+        assert_eq!(parsed.ids, "input_ids");
+        assert_eq!(parsed.mask, "attention_mask");
+        assert!(parsed.token_types.is_none());
+    }
+
+    #[test]
+    fn input_names_serde_custom() {
+        let j = r#"{ "ids": "tokens", "mask": "mask", "token_types": null }"#;
+        let parsed: InputNames = serde_json::from_str(j).unwrap();
+        assert_eq!(parsed.ids, "tokens");
+        assert_eq!(parsed.mask, "mask");
+        assert!(parsed.token_types.is_none());
+    }
+
+    #[test]
+    fn pooling_strategy_serde_roundtrip() {
+        // The serde rename_all = "lowercase" rule means we accept
+        // "mean" / "cls" / "lasttoken".
+        let mean: PoolingStrategy = serde_json::from_str("\"mean\"").unwrap();
+        assert_eq!(mean, PoolingStrategy::Mean);
+        let cls: PoolingStrategy = serde_json::from_str("\"cls\"").unwrap();
+        assert_eq!(cls, PoolingStrategy::Cls);
+        let last: PoolingStrategy = serde_json::from_str("\"lasttoken\"").unwrap();
+        assert_eq!(last, PoolingStrategy::LastToken);
+    }
+
+    #[test]
+    fn pooling_strategy_default_is_mean() {
+        assert_eq!(PoolingStrategy::default(), PoolingStrategy::Mean);
+    }
+
+    // Synthetic non-BERT preset test: prove that a custom EmbeddingConfig
+    // declaring CLS pooling + no token_types flows through resolve() without
+    // losing those overrides. This is the plumbing test — actual encoding
+    // against a real non-BERT model is out of scope for unit tests.
+    #[test]
+    fn resolve_custom_non_bert_architecture() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBEDDING_MODEL");
+        let embedding_cfg = EmbeddingConfig {
+            model: "synthetic-distilbert".to_string(),
+            repo: Some("org/distil".to_string()),
+            onnx_path: Some("model.onnx".to_string()),
+            tokenizer_path: None,
+            dim: Some(384),
+            max_seq_length: Some(128),
+            query_prefix: None,
+            doc_prefix: None,
+            input_names: Some(InputNames::bert_no_token_types()),
+            output_name: Some("sentence_embedding".to_string()),
+            pooling: Some(PoolingStrategy::Cls),
+        };
+        let resolved = ModelConfig::resolve(None, Some(&embedding_cfg));
+        assert_eq!(resolved.name, "synthetic-distilbert");
+        assert_eq!(resolved.dim, 384);
+        assert_eq!(resolved.pooling, PoolingStrategy::Cls);
+        assert_eq!(resolved.output_name, "sentence_embedding");
+        assert!(
+            resolved.input_names.token_types.is_none(),
+            "Custom config must not re-introduce token_type_ids"
+        );
+    }
+
+    // If architecture fields are absent from a custom config, resolve() must
+    // default to BERT + last_hidden_state + mean — i.e. existing custom configs
+    // (pre-949) keep working unchanged.
+    #[test]
+    fn resolve_custom_without_architecture_uses_bert_defaults() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBEDDING_MODEL");
+        let mut cfg = EmbeddingConfig::default();
+        cfg.model = "legacy-custom".to_string();
+        cfg.repo = Some("org/legacy".to_string());
+        cfg.dim = Some(768);
+        // No input_names / output_name / pooling overrides.
+        let resolved = ModelConfig::resolve(None, Some(&cfg));
+        assert_eq!(resolved.name, "legacy-custom");
+        assert_eq!(resolved.input_names, InputNames::bert());
+        assert_eq!(resolved.output_name, "last_hidden_state");
+        assert_eq!(resolved.pooling, PoolingStrategy::Mean);
+    }
+
+    #[test]
+    fn embedding_config_serde_with_architecture() {
+        // Full roundtrip including pooling + input_names from JSON.
+        let json = r#"{
+            "model": "custom",
+            "repo": "org/model",
+            "dim": 768,
+            "pooling": "cls",
+            "output_name": "pooled",
+            "input_names": { "ids": "tok", "mask": "m" }
+        }"#;
+        let cfg: EmbeddingConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.pooling, Some(PoolingStrategy::Cls));
+        assert_eq!(cfg.output_name.as_deref(), Some("pooled"));
+        let names = cfg.input_names.as_ref().unwrap();
+        assert_eq!(names.ids, "tok");
+        assert_eq!(names.mask, "m");
+        assert!(
+            names.token_types.is_none(),
+            "Absent token_types deserializes to None"
+        );
+    }
+
+    #[test]
+    fn embedding_config_serde_without_architecture_keeps_all_none() {
+        // Absent fields mean "use BERT defaults later in resolve()".
+        let json = r#"{ "model": "bge-large" }"#;
+        let cfg: EmbeddingConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.pooling.is_none());
+        assert!(cfg.output_name.is_none());
+        assert!(cfg.input_names.is_none());
     }
 
     // ===== from_preset tests =====
