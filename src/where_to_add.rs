@@ -92,8 +92,8 @@ impl Default for PlacementOptions {
 
 /// Suggest where to place new code matching a description.
 /// Uses default search parameters. For custom parameters, use [`suggest_placement_with_options`].
-pub fn suggest_placement(
-    store: &Store,
+pub fn suggest_placement<Mode>(
+    store: &Store<Mode>,
     embedder: &Embedder,
     description: &str,
     limit: usize,
@@ -114,8 +114,8 @@ pub fn suggest_placement(
 /// 2. Groups results by file, ranks by aggregate score
 /// 3. Extracts local patterns from each file
 /// 4. Suggests insertion point after the most similar function
-pub fn suggest_placement_with_options(
-    store: &Store,
+pub fn suggest_placement_with_options<Mode>(
+    store: &Store<Mode>,
     embedder: &Embedder,
     description: &str,
     limit: usize,
@@ -131,8 +131,8 @@ pub fn suggest_placement_with_options(
 }
 
 /// Core placement logic. Requires `opts.query_embedding` to be set.
-fn suggest_placement_with_options_core(
-    store: &Store,
+fn suggest_placement_with_options_core<Mode>(
+    store: &Store<Mode>,
     description: &str,
     limit: usize,
     opts: &PlacementOptions,

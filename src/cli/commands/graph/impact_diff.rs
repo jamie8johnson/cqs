@@ -19,7 +19,7 @@ fn empty_impact_json() -> serde_json::Value {
 }
 
 pub(crate) fn cmd_impact_diff(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     base: Option<&str>,
     from_stdin: bool,
     json: bool,

@@ -174,7 +174,7 @@ mod tests {
 }
 
 pub(crate) fn cmd_scout(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     task: &str,
     limit: usize,
     json: bool,

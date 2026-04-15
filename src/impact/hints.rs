@@ -52,8 +52,8 @@ pub fn compute_hints_with_graph(
 /// Convenience wrapper that loads graph internally. Pass `prefetched_caller_count`
 /// to avoid re-querying callers when the caller already has them (e.g., `explain`
 /// fetches callers before this).
-pub fn compute_hints(
-    store: &Store,
+pub fn compute_hints<Mode>(
+    store: &Store<Mode>,
     function_name: &str,
     prefetched_caller_count: Option<usize>,
 ) -> Result<FunctionHints, StoreError> {

@@ -71,7 +71,7 @@ pub(crate) fn build_stale(report: &StaleReport) -> StaleOutput {
 
 /// Report stale (modified) and missing files in the index
 pub(crate) fn cmd_stale(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     json: bool,
     count_only: bool,
 ) -> Result<()> {

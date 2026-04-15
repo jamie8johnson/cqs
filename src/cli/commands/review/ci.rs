@@ -7,7 +7,7 @@ use cqs::ReviewResult;
 use cqs::RiskLevel;
 
 pub(crate) fn cmd_ci(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     base: Option<&str>,
     from_stdin: bool,
     format: &crate::cli::OutputFormat,

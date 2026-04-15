@@ -417,36 +417,24 @@ pub(in crate::cli::batch) fn dispatch_plan(
 }
 
 /// Runs garbage collection on the index.
-/// In batch mode, GC skips HNSW rebuild (the batch session holds the index)
-/// and reports what was pruned.
-pub(in crate::cli::batch) fn dispatch_gc(ctx: &BatchContext) -> Result<serde_json::Value> {
+///
+/// **Not available via the daemon path.** GC mutates the DB
+/// (chunks/calls/type_edges/summaries/sparse_vectors pruning), but the
+/// daemon only opens a `Store<ReadOnly>`. The typestate refactor in
+/// GitHub #946 makes this a compile-time invariant: `prune_all` is on
+/// `impl Store<ReadWrite>` so the daemon path cannot accidentally
+/// call it. Returns an error instructing the user to run `cqs gc`
+/// directly; the dispatcher in `cli/dispatch.rs` already classifies
+/// `Commands::Gc` as `BatchSupport::Cli` so this branch is unreachable
+/// in practice, but the stub exists to keep the batch command surface
+/// complete and to document the invariant.
+pub(in crate::cli::batch) fn dispatch_gc(_ctx: &BatchContext) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_gc").entered();
-
-    let file_set = ctx.file_set()?;
-    let (stale_count, missing_count) = match ctx.store().count_stale_files(&file_set, &ctx.root) {
-        Ok(counts) => counts,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to count stale files");
-            (0, 0)
-        }
-    };
-
-    let prune = ctx
-        .store()
-        .prune_all(&file_set, &ctx.root)
-        .context("Failed to prune stale entries from index")?;
-
-    let output = crate::cli::commands::GcOutput {
-        stale_files: stale_count as usize,
-        missing_files: missing_count as usize,
-        pruned_chunks: prune.pruned_chunks as usize,
-        pruned_calls: prune.pruned_calls as usize,
-        pruned_type_edges: prune.pruned_type_edges as usize,
-        pruned_summaries: prune.pruned_summaries,
-        hnsw_rebuilt: false,
-        hnsw_vectors: None,
-    };
-    Ok(serde_json::to_value(&output)?)
+    anyhow::bail!(
+        "gc requires a writable store; run `cqs gc` outside the daemon. \
+         (Commands::Gc is BatchSupport::Cli in dispatch.rs; reaching this \
+         branch means a daemon classifier regressed — see #946.)"
+    )
 }
 
 /// Manually invalidates all mutable caches and re-opens the Store.

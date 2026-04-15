@@ -11,7 +11,7 @@ use crate::cli::commands::resolve::resolve_target;
 use crate::cli::OutputFormat;
 
 pub(crate) fn cmd_impact(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
     depth: usize,
     format: &OutputFormat,

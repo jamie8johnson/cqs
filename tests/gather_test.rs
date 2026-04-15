@@ -235,7 +235,7 @@ fn test_gather_callees_only() {
 
 /// Helper: build a ReferenceIndex from a TestStore
 fn make_ref_index(store: &TestStore, name: &str) -> ReferenceIndex {
-    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
     ReferenceIndex {
         name: name.to_string(),
         store: ref_store,

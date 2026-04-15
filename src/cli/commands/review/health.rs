@@ -7,7 +7,10 @@ use colored::Colorize;
 
 use cqs::Parser;
 
-pub(crate) fn cmd_health(ctx: &crate::cli::CommandContext, json: bool) -> Result<()> {
+pub(crate) fn cmd_health(
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
+    json: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_health").entered();
 
     let store = &ctx.store;

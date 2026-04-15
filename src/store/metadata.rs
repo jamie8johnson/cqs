@@ -9,7 +9,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use super::helpers::DEFAULT_MODEL_NAME;
 use super::migrations;
-use super::{NoteSummary, Store, StoreError, CURRENT_SCHEMA_VERSION};
+use super::{NoteSummary, ReadWrite, Store, StoreError, CURRENT_SCHEMA_VERSION};
 
 /// Which HNSW index a dirty-flag operation applies to.
 ///
@@ -35,7 +35,7 @@ impl HnswKind {
     }
 }
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Validates and optionally migrates the database schema version to match the current expected version.
     /// Queries the metadata table for the stored schema version and compares it against the current version. If the stored version is older, attempts to migrate the schema. Returns an error if the stored version is newer than the current version (indicating the database is incompatible), if the schema is corrupted, or if migration fails without a supported migration path.
     /// # Arguments
@@ -192,51 +192,6 @@ impl Store {
         }
     }
 
-    /// Update the `updated_at` metadata timestamp to now.
-    /// Call after indexing operations complete (pipeline, watch reindex, note sync)
-    /// to track when the index was last modified.
-    pub fn touch_updated_at(&self) -> Result<(), StoreError> {
-        let now = chrono::Utc::now().to_rfc3339();
-        self.rt.block_on(async {
-            sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES ('updated_at', ?1)")
-                .bind(&now)
-                .execute(&self.pool)
-                .await?;
-            Ok(())
-        })
-    }
-
-    /// Mark the given HNSW index as dirty (out of sync with SQLite).
-    /// Call before writing chunks to SQLite. Clear after successful HNSW save.
-    /// On load, a dirty flag means a crash occurred between SQLite commit and
-    /// HNSW save — the affected HNSW index should not be trusted.
-    ///
-    /// AC-V1.25-8: tracked per-kind so that clearing after an enriched rebuild
-    /// does not mask a still-stale base index.
-    ///
-    /// DS-V1.25-3: the flag update goes through `begin_write`, which acquires
-    /// `WRITE_LOCK` before opening the SQLite transaction. Previously this
-    /// ran as a bare pool write and could race with a concurrent chunks
-    /// mutation: if thread A was mid-write of new chunks while thread B
-    /// cleared the dirty flag, the on-disk state could briefly advertise a
-    /// clean HNSW that didn't yet reflect the in-flight chunks. The daemon
-    /// is read-only today so the hazard isn't exploited in practice, but
-    /// the invariant is now enforced instead of documented.
-    pub fn set_hnsw_dirty(&self, kind: HnswKind, dirty: bool) -> Result<(), StoreError> {
-        let val = if dirty { "1" } else { "0" };
-        let key = kind.metadata_key();
-        self.rt.block_on(async {
-            let (_guard, mut tx) = self.begin_write().await?;
-            sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
-                .bind(key)
-                .bind(val)
-                .execute(&mut *tx)
-                .await?;
-            tx.commit().await?;
-            Ok(())
-        })
-    }
-
     /// Check if the given HNSW index is marked as dirty (potentially stale).
     ///
     /// Returns `false` when the per-kind key doesn't exist. For backward
@@ -265,32 +220,6 @@ impl Store {
         })
     }
 
-    /// Set a metadata key/value pair, or delete it if `value` is `None`.
-    pub(crate) fn set_metadata_opt(
-        &self,
-        key: &str,
-        value: Option<&str>,
-    ) -> Result<(), StoreError> {
-        self.rt.block_on(async {
-            match value {
-                Some(v) => {
-                    sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
-                        .bind(key)
-                        .bind(v)
-                        .execute(&self.pool)
-                        .await?;
-                }
-                None => {
-                    sqlx::query("DELETE FROM metadata WHERE key = ?1")
-                        .bind(key)
-                        .execute(&self.pool)
-                        .await?;
-                }
-            }
-            Ok(())
-        })
-    }
-
     /// Get a metadata value by key, returning `None` if the key doesn't exist.
     pub(crate) fn get_metadata_opt(&self, key: &str) -> Result<Option<String>, StoreError> {
         self.rt.block_on(async {
@@ -303,29 +232,14 @@ impl Store {
         })
     }
 
-    /// Store a pending LLM batch ID so interrupted processes can resume polling.
-    pub fn set_pending_batch_id(&self, batch_id: Option<&str>) -> Result<(), StoreError> {
-        self.set_metadata_opt("pending_llm_batch", batch_id)
-    }
-
     /// Get the pending LLM batch ID, if any.
     pub fn get_pending_batch_id(&self) -> Result<Option<String>, StoreError> {
         self.get_metadata_opt("pending_llm_batch")
     }
 
-    /// Store a pending doc-comment batch ID so interrupted processes can resume polling.
-    pub fn set_pending_doc_batch_id(&self, batch_id: Option<&str>) -> Result<(), StoreError> {
-        self.set_metadata_opt("pending_doc_batch", batch_id)
-    }
-
     /// Get the pending doc-comment batch ID, if any.
     pub fn get_pending_doc_batch_id(&self) -> Result<Option<String>, StoreError> {
         self.get_metadata_opt("pending_doc_batch")
-    }
-
-    /// Store a pending HyDE batch ID so interrupted processes can resume polling.
-    pub fn set_pending_hyde_batch_id(&self, batch_id: Option<&str>) -> Result<(), StoreError> {
-        self.set_metadata_opt("pending_hyde_batch", batch_id)
     }
 
     /// Get the pending HyDE batch ID, if any.
@@ -428,6 +342,96 @@ impl Store {
         }
         *guard = Some(Arc::clone(&built));
         Ok(built)
+    }
+}
+
+// Write methods live on `impl Store<ReadWrite>` — the compiler refuses to
+// call them on a `Store<ReadOnly>`. Closes the bug class in GitHub #946.
+impl Store<ReadWrite> {
+    /// Update the `updated_at` metadata timestamp to now.
+    /// Call after indexing operations complete (pipeline, watch reindex, note sync)
+    /// to track when the index was last modified.
+    pub fn touch_updated_at(&self) -> Result<(), StoreError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.rt.block_on(async {
+            sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES ('updated_at', ?1)")
+                .bind(&now)
+                .execute(&self.pool)
+                .await?;
+            Ok(())
+        })
+    }
+
+    /// Mark the given HNSW index as dirty (out of sync with SQLite).
+    /// Call before writing chunks to SQLite. Clear after successful HNSW save.
+    /// On load, a dirty flag means a crash occurred between SQLite commit and
+    /// HNSW save — the affected HNSW index should not be trusted.
+    ///
+    /// AC-V1.25-8: tracked per-kind so that clearing after an enriched rebuild
+    /// does not mask a still-stale base index.
+    ///
+    /// DS-V1.25-3: the flag update goes through `begin_write`, which acquires
+    /// `WRITE_LOCK` before opening the SQLite transaction. Previously this
+    /// ran as a bare pool write and could race with a concurrent chunks
+    /// mutation: if thread A was mid-write of new chunks while thread B
+    /// cleared the dirty flag, the on-disk state could briefly advertise a
+    /// clean HNSW that didn't yet reflect the in-flight chunks. The daemon
+    /// is read-only today so the hazard isn't exploited in practice, but
+    /// the invariant is now enforced instead of documented.
+    pub fn set_hnsw_dirty(&self, kind: HnswKind, dirty: bool) -> Result<(), StoreError> {
+        let val = if dirty { "1" } else { "0" };
+        let key = kind.metadata_key();
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+            sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
+                .bind(key)
+                .bind(val)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+    }
+
+    /// Set a metadata key/value pair, or delete it if `value` is `None`.
+    pub(crate) fn set_metadata_opt(
+        &self,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.rt.block_on(async {
+            match value {
+                Some(v) => {
+                    sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
+                        .bind(key)
+                        .bind(v)
+                        .execute(&self.pool)
+                        .await?;
+                }
+                None => {
+                    sqlx::query("DELETE FROM metadata WHERE key = ?1")
+                        .bind(key)
+                        .execute(&self.pool)
+                        .await?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Store a pending LLM batch ID so interrupted processes can resume polling.
+    pub fn set_pending_batch_id(&self, batch_id: Option<&str>) -> Result<(), StoreError> {
+        self.set_metadata_opt("pending_llm_batch", batch_id)
+    }
+
+    /// Store a pending doc-comment batch ID so interrupted processes can resume polling.
+    pub fn set_pending_doc_batch_id(&self, batch_id: Option<&str>) -> Result<(), StoreError> {
+        self.set_metadata_opt("pending_doc_batch", batch_id)
+    }
+
+    /// Store a pending HyDE batch ID so interrupted processes can resume polling.
+    pub fn set_pending_hyde_batch_id(&self, batch_id: Option<&str>) -> Result<(), StoreError> {
+        self.set_metadata_opt("pending_hyde_batch", batch_id)
     }
 }
 

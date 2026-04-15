@@ -356,7 +356,7 @@ fn test_search_reference_by_name() {
     insert_chunks(&store, &[c1, c2], 1.0);
 
     // Create a reference index (open separate Store to same DB)
-    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
     let ref_idx = ReferenceIndex {
         name: "test-ref".to_string(),
         store: ref_store,
@@ -389,7 +389,7 @@ fn test_search_reference_by_name_threshold() {
     let c1 = test_chunk("test_fn", "fn test_fn() {}");
     insert_chunks(&store, &[c1], 1.0);
 
-    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
     let ref_idx = ReferenceIndex {
         name: "test-ref".to_string(),
         store: ref_store,

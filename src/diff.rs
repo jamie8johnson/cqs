@@ -80,9 +80,9 @@ impl From<&ChunkIdentity> for ChunkKey {
 /// Loads `ChunkIdentity` (no content/embeddings) for all chunks in both stores.
 /// At ~500 bytes per identity, a 100k-chunk codebase uses ~50 MB — well within
 /// normal process memory. The `language_filter` param pushes filtering into SQL.
-pub fn semantic_diff(
-    source_store: &Store,
-    target_store: &Store,
+pub fn semantic_diff<Mode1, Mode2>(
+    source_store: &Store<Mode1>,
+    target_store: &Store<Mode2>,
     source_label: &str,
     target_label: &str,
     threshold: f32,

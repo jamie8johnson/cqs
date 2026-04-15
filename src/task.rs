@@ -67,8 +67,8 @@ pub struct TaskSummary {
 ///
 /// Loads the call graph and test chunks once, then runs scout → gather → impact →
 /// placement in sequence, sharing resources across phases.
-pub fn task(
-    store: &Store,
+pub fn task<Mode>(
+    store: &Store<Mode>,
     embedder: &Embedder,
     description: &str,
     root: &Path,
@@ -97,8 +97,8 @@ pub fn task(
 ///
 /// Use this in batch mode where `BatchContext` caches these resources across
 /// commands, avoiding repeated loading per pipeline stage.
-pub fn task_with_resources(
-    store: &Store,
+pub fn task_with_resources<Mode>(
+    store: &Store<Mode>,
     embedder: &Embedder,
     description: &str,
     root: &Path,

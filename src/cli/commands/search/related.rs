@@ -59,7 +59,7 @@ pub(crate) fn build_related_output(result: &cqs::RelatedResult, root: &Path) -> 
 // ─── CLI command ────────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_related(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
     limit: usize,
     json: bool,

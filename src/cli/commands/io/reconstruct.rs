@@ -20,7 +20,7 @@ struct ReconstructOutput {
 }
 
 pub(crate) fn cmd_reconstruct(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     path: &str,
     json: bool,
 ) -> Result<()> {

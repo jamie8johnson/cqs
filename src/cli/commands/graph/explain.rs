@@ -39,8 +39,8 @@ pub(crate) struct ExplainData {
 ///   to load fresh).
 /// * `embedder` — required only when `max_tokens` is `Some`. Batch passes its cached one;
 ///   CLI passes `None` to create a fresh one internally.
-pub(crate) fn build_explain_data(
-    store: &Store,
+pub(crate) fn build_explain_data<Mode>(
+    store: &Store<Mode>,
     cqs_dir: &Path,
     target: &str,
     max_tokens: Option<usize>,
@@ -301,7 +301,7 @@ pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOu
 // ─── CLI command ────────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_explain(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     target: &str,
     json: bool,
     max_tokens: Option<usize>,

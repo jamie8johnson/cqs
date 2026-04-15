@@ -19,7 +19,7 @@
 //! DS-W4, EH-1/2/3/4, API-14) apply here. Do not add a fourth write site
 //! without wiring the bump.
 
-use super::Store;
+use super::{ReadWrite, Store};
 use crate::splade::SparseVector;
 use crate::store::StoreError;
 
@@ -76,7 +76,7 @@ pub(crate) async fn bump_splade_generation_tx(
     Ok(())
 }
 
-impl Store {
+impl Store<ReadWrite> {
     /// Upsert sparse vectors for a batch of chunks.
     /// Replaces existing vectors for the same chunk_id.
     ///
@@ -210,7 +210,9 @@ impl Store {
             Ok(total)
         })
     }
+}
 
+impl<Mode> Store<Mode> {
     /// Load all sparse vectors for building the in-memory SpladeIndex.
     /// Returns Vec of (chunk_id, sparse_vector).
     ///
@@ -352,7 +354,9 @@ impl Store {
             Ok(result)
         })
     }
+}
 
+impl Store<ReadWrite> {
     /// Delete sparse vectors for chunks that no longer exist.
     ///
     /// **As of v19 this is a no-op on clean data** — the `sparse_vectors` →
@@ -395,7 +399,9 @@ impl Store {
             Ok(affected as usize)
         })
     }
+}
 
+impl<Mode> Store<Mode> {
     /// Read the current SPLADE generation counter from the metadata table.
     ///
     /// Returns `0` when the key is missing (fresh DB, no sparse vectors ever

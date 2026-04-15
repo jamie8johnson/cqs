@@ -65,7 +65,7 @@ pub(crate) fn build_callees(name: &str, callees: &[(String, u32)]) -> CalleesOut
 
 /// Find functions that call the specified function
 pub(crate) fn cmd_callers(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
     cross_project: bool,
     json: bool,
@@ -145,7 +145,7 @@ pub(crate) fn cmd_callers(
 
 /// Find functions called by the specified function
 pub(crate) fn cmd_callees(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
     cross_project: bool,
     json: bool,

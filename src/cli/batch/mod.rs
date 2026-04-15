@@ -29,7 +29,7 @@ use clap::Parser;
 use cqs::embedder::ModelConfig;
 use cqs::index::VectorIndex;
 use cqs::reference::ReferenceIndex;
-use cqs::store::Store;
+use cqs::store::{ReadOnly, Store};
 use cqs::Embedder;
 
 use super::open_project_store_readonly;
@@ -170,7 +170,13 @@ const STALENESS_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_
 pub(crate) struct BatchContext {
     // Wrapped in RefCell so we can re-open it when the index changes.
     // Access via store() method which checks staleness first.
-    store: RefCell<Store>,
+    //
+    // #946 typestate: BatchContext is the daemon's shared store, which only
+    // ever dispatches read-only queries (daemon handlers never mutate). The
+    // compiler refuses to call a write method on a `Store<ReadOnly>`, so
+    // the class of runtime errors from PR #945 / #944 / dispatch_gc is
+    // structurally impossible on this path.
+    store: RefCell<Store<ReadOnly>>,
     // Stable caches — keep OnceLock (not index-derived)
     //
     // RM-V1.25-28: `OnceLock<Arc<Embedder>>` so the watch outer scope
@@ -428,7 +434,7 @@ impl BatchContext {
     }
 
     /// Borrow the Store, checking for index staleness first.
-    pub fn store(&self) -> std::cell::Ref<'_, Store> {
+    pub fn store(&self) -> std::cell::Ref<'_, Store<ReadOnly>> {
         self.check_index_staleness();
         self.store.borrow()
     }
@@ -839,8 +845,8 @@ impl BatchContext {
 }
 
 /// Build the best available vector index for the store.
-fn build_vector_index(
-    store: &Store,
+fn build_vector_index<Mode: crate::cli::store::ClearHnswDirty>(
+    store: &Store<Mode>,
     cqs_dir: &std::path::Path,
     ef_search: Option<usize>,
 ) -> Result<Option<Box<dyn VectorIndex>>> {
@@ -990,7 +996,7 @@ fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
     let index_id = DbFileIdentity::from_path(&index_path);
 
     Ok(BatchContext {
-        store: RefCell::new(store),
+        store: RefCell::new(store.into_readonly()),
         embedder: OnceLock::new(),
         config: OnceLock::new(),
         reranker: OnceLock::new(),
@@ -1388,7 +1394,7 @@ mod tests {
     // TC-7: sanitize_json_floats is no-op on clean values
     #[test]
     fn test_sanitize_json_floats_clean_passthrough() {
-        let mut val = serde_json::json!({"a": 1, "b": "text", "c": [true, null, 3.14]});
+        let mut val = serde_json::json!({"a": 1, "b": "text", "c": [true, null, 2.5]});
         let expected = val.clone();
         sanitize_json_floats(&mut val);
         assert_eq!(val, expected);

@@ -384,7 +384,7 @@ pub fn rel_display(path: &Path, root: &Path) -> String {
 pub fn index_notes(
     notes: &[note::Note],
     notes_path: &Path,
-    store: &Store,
+    store: &Store<store::ReadWrite>,
 ) -> anyhow::Result<usize> {
     let _span =
         tracing::info_span!("index_notes", path = %notes_path.display(), count = notes.len())

@@ -34,7 +34,7 @@ struct BriefData {
 }
 
 /// Build brief data for a file: load chunks, count callers and test coverage.
-fn build_brief_data(store: &Store, path: &str) -> Result<BriefData> {
+fn build_brief_data<Mode>(store: &Store<Mode>, path: &str) -> Result<BriefData> {
     let _span = tracing::info_span!("build_brief_data", path).entered();
 
     let chunks = store
@@ -109,7 +109,11 @@ fn build_brief_data(store: &Store, path: &str) -> Result<BriefData> {
     })
 }
 
-pub(crate) fn cmd_brief(ctx: &crate::cli::CommandContext, path: &str, json: bool) -> Result<()> {
+pub(crate) fn cmd_brief(
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
+    path: &str,
+    json: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_brief", path).entered();
     let store = &ctx.store;
     let root = &ctx.root;

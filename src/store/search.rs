@@ -34,7 +34,7 @@ fn rrf_k() -> f32 {
     })
 }
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Search FTS5 index for keyword matches.
     ///
     /// # Search Method Overview
@@ -220,6 +220,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::ReadOnly;
     use proptest::prelude::*;
 
     // ===== Property-based tests for RRF =====
@@ -232,7 +233,7 @@ mod tests {
             fts in prop::collection::vec("[a-z]{1,5}", 0..20),
             limit in 1usize..50
         ) {
-            let result = Store::rrf_fuse_test(&semantic, &fts, limit);
+            let result = Store::<ReadOnly>::rrf_fuse_test(&semantic, &fts, limit);
             for (_, score) in &result {
                 prop_assert!(*score > 0.0, "RRF score should be positive: {}", score);
             }
@@ -247,7 +248,7 @@ mod tests {
             fts in prop::collection::vec("[a-z]{1,5}", 0..20),
             limit in 1usize..50
         ) {
-            let result = Store::rrf_fuse_test(&semantic, &fts, limit);
+            let result = Store::<ReadOnly>::rrf_fuse_test(&semantic, &fts, limit);
             // Conservative upper bound: sum of first N terms of 1/(K+r+1) for both lists
             // where N is max list length (20). With duplicates, actual max is ~0.3
             let max_possible = 0.5; // generous bound accounting for duplicates
@@ -267,7 +268,7 @@ mod tests {
             fts in prop::collection::vec("[a-z]{1,5}", 0..30),
             limit in 1usize..20
         ) {
-            let result = Store::rrf_fuse_test(&semantic, &fts, limit);
+            let result = Store::<ReadOnly>::rrf_fuse_test(&semantic, &fts, limit);
             prop_assert!(
                 result.len() <= limit,
                 "Result length {} exceeds limit {}",
@@ -282,7 +283,7 @@ mod tests {
             fts in prop::collection::vec("[a-z]{1,5}", 1..20),
             limit in 1usize..50
         ) {
-            let result = Store::rrf_fuse_test(&semantic, &fts, limit);
+            let result = Store::<ReadOnly>::rrf_fuse_test(&semantic, &fts, limit);
             for window in result.windows(2) {
                 prop_assert!(
                     window[0].1 >= window[1].1,
@@ -306,7 +307,7 @@ mod tests {
             let mut fts = vec![common_id.clone()];
             fts.extend(only_fts);
 
-            let result = Store::rrf_fuse_test(&semantic, &fts, 100);
+            let result = Store::<ReadOnly>::rrf_fuse_test(&semantic, &fts, 100);
 
             let common_score = result.iter()
                 .find(|(id, _)| id == &common_id)

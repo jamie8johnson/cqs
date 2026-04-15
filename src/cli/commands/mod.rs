@@ -76,7 +76,6 @@ pub(crate) use index::cmd_gc;
 pub(crate) use index::cmd_index;
 pub(crate) use index::cmd_stale;
 pub(crate) use index::cmd_stats;
-pub(crate) use index::GcOutput;
 
 // -- io --
 pub(crate) use io::cmd_blame;
@@ -123,8 +122,8 @@ pub(crate) use train::cmd_train_pairs;
 ///
 /// `named_items` is a list of `(name, score)` pairs. Content is fetched from `store` via
 /// `get_chunks_by_names_batch`. Items without content in the store are silently dropped.
-pub(crate) fn fetch_and_pack_content(
-    store: &cqs::Store,
+pub(crate) fn fetch_and_pack_content<Mode>(
+    store: &cqs::Store<Mode>,
     embedder: &cqs::Embedder,
     named_items: &[(String, f32)],
     budget: usize,

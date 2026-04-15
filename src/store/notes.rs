@@ -8,7 +8,7 @@ use std::path::Path;
 use sqlx::Row;
 
 use super::helpers::{NoteStats, NoteSummary, StoreError};
-use super::Store;
+use super::{ReadWrite, Store};
 use crate::nl::normalize_for_fts;
 use crate::note::Note;
 use crate::note::{SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
@@ -57,7 +57,7 @@ async fn insert_note_with_fts(
     Ok(())
 }
 
-impl Store {
+impl Store<ReadWrite> {
     /// Insert or update notes in batch
     pub fn upsert_notes_batch(
         &self,
@@ -133,7 +133,9 @@ impl Store {
             Ok(notes.len())
         })
     }
+}
 
+impl<Mode> Store<Mode> {
     /// Check if notes file needs reindexing based on mtime.
     /// Returns `Ok(Some(mtime))` if reindex needed (with the file's current mtime),
     /// or `Ok(None)` if no reindex needed. This avoids reading file metadata twice.

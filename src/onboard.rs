@@ -90,8 +90,8 @@ pub struct OnboardSummary {
 /// Produce a guided tour of a concept in the codebase.
 ///
 /// Returns an ordered reading list: entry point → callees → callers → types → tests.
-pub fn onboard(
-    store: &Store,
+pub fn onboard<Mode>(
+    store: &Store<Mode>,
     embedder: &Embedder,
     concept: &str,
     root: &Path,
@@ -315,8 +315,8 @@ fn gathered_to_onboard(c: GatheredChunk) -> OnboardEntry {
 /// `fetch_and_assemble` uses FTS which can fuzzy-match (e.g., "search" → "test_is_pipeable_search").
 /// This function does a direct `search_by_name` with multiple results, then picks the one
 /// with an exact name match, preferring the file from scout.
-fn fetch_entry_point(
-    store: &Store,
+fn fetch_entry_point<Mode>(
+    store: &Store<Mode>,
     entry_name: &str,
     entry_file: &Path,
     root: &Path,

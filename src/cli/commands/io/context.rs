@@ -22,7 +22,7 @@ pub(crate) struct CompactData {
 }
 
 /// Build compact-mode data: chunks with caller/callee counts.
-pub(crate) fn build_compact_data(store: &Store, path: &str) -> Result<CompactData> {
+pub(crate) fn build_compact_data<Mode>(store: &Store<Mode>, path: &str) -> Result<CompactData> {
     let _span = tracing::info_span!("build_compact_data", path).entered();
     let chunks = store
         .get_chunks_by_origin(path)
@@ -105,7 +105,11 @@ pub(crate) struct FullData {
 
 /// Build full-mode data: chunks with external callers/callees/dependent files.
 /// Shared between CLI summary mode (uses counts) and full mode (uses details).
-pub(crate) fn build_full_data(store: &Store, path: &str, root: &Path) -> Result<FullData> {
+pub(crate) fn build_full_data<Mode>(
+    store: &Store<Mode>,
+    path: &str,
+    root: &Path,
+) -> Result<FullData> {
     let _span = tracing::info_span!("build_full_data", path).entered();
     let chunks = store
         .get_chunks_by_origin(path)
@@ -323,7 +327,7 @@ pub(crate) fn pack_by_relevance(
 // ─── CLI command ────────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_context(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     path: &str,
     json: bool,
     summary: bool,
@@ -388,8 +392,8 @@ pub(crate) fn cmd_context(
 
 /// Build token-packed content set if max_tokens is requested.
 #[allow(clippy::type_complexity)]
-fn build_token_pack(
-    store: &Store,
+fn build_token_pack<Mode>(
+    store: &Store<Mode>,
     chunks: &[ChunkSummary],
     max_tokens: Option<usize>,
     model_config: &cqs::embedder::ModelConfig,

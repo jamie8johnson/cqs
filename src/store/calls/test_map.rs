@@ -2,9 +2,9 @@
 
 use super::{TEST_CHUNKS_SQL, TEST_CHUNK_NAMES_SQL};
 use crate::store::helpers::{ChunkRow, ChunkSummary, StoreError};
-use crate::store::Store;
+use crate::store::{ReadWrite, Store};
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Async helper for find_test_chunks (reused by find_dead_code)
     /// Loads only lightweight columns (no content/doc) since callers only need
     /// name, file, and line_start. The SQL WHERE clause still filters on content
@@ -35,24 +35,6 @@ impl Store {
         Ok(rows.into_iter().map(|(name,)| name).collect())
     }
 
-    /// Delete function_calls for files no longer in the chunks table.
-    /// Used by GC to clean up orphaned call graph entries after pruning chunks.
-    pub fn prune_stale_calls(&self) -> Result<u64, StoreError> {
-        let _span = tracing::info_span!("prune_stale_calls").entered();
-        self.rt.block_on(async {
-            let result = sqlx::query(
-                "DELETE FROM function_calls WHERE file NOT IN (SELECT DISTINCT origin FROM chunks)",
-            )
-            .execute(&self.pool)
-            .await?;
-            let count = result.rows_affected();
-            if count > 0 {
-                tracing::info!(pruned = count, "Pruned stale call graph entries");
-            }
-            Ok(count)
-        })
-    }
-
     /// Find test chunks using language-specific heuristics.
     /// Identifies test functions across all supported languages by:
     /// - Name patterns: `test_*` (Rust/Python), `Test*` (Go)
@@ -75,5 +57,25 @@ impl Store {
         let arc = std::sync::Arc::new(chunks);
         let _ = self.test_chunks_cache.set(std::sync::Arc::clone(&arc));
         Ok(arc)
+    }
+}
+
+impl Store<ReadWrite> {
+    /// Delete function_calls for files no longer in the chunks table.
+    /// Used by GC to clean up orphaned call graph entries after pruning chunks.
+    pub fn prune_stale_calls(&self) -> Result<u64, StoreError> {
+        let _span = tracing::info_span!("prune_stale_calls").entered();
+        self.rt.block_on(async {
+            let result = sqlx::query(
+                "DELETE FROM function_calls WHERE file NOT IN (SELECT DISTINCT origin FROM chunks)",
+            )
+            .execute(&self.pool)
+            .await?;
+            let count = result.rows_affected();
+            if count > 0 {
+                tracing::info!(pruned = count, "Pruned stale call graph entries");
+            }
+            Ok(count)
+        })
     }
 }

@@ -109,8 +109,8 @@ pub(crate) struct FocusedReadResult {
 
 /// Build focused-read output: header + hints + notes + target + type deps.
 /// Shared between CLI `cmd_read --focus` and batch `dispatch_read --focus`.
-pub(crate) fn build_focused_output(
-    store: &Store,
+pub(crate) fn build_focused_output<Mode>(
+    store: &Store<Mode>,
     focus: &str,
     root: &Path,
     audit_state: &cqs::audit::AuditMode,
@@ -290,7 +290,7 @@ struct FocusedReadJsonOutput {
 // ─── CLI commands ───────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_read(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     path: &str,
     focus: Option<&str>,
     json: bool,
@@ -339,7 +339,11 @@ pub(crate) fn cmd_read(
     Ok(())
 }
 
-fn cmd_read_focused(ctx: &crate::cli::CommandContext, focus: &str, json: bool) -> Result<()> {
+fn cmd_read_focused(
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
+    focus: &str,
+    json: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_read_focused", %focus).entered();
 
     let store = &ctx.store;

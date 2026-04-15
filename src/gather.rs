@@ -367,8 +367,8 @@ pub(crate) fn bfs_expand(
 /// Batch-fetch chunks for expanded names, deduplicate by id, assemble `GatheredChunk`s.
 ///
 /// Returns `(chunks, search_degraded)`.
-pub(crate) fn fetch_and_assemble(
-    store: &Store,
+pub(crate) fn fetch_and_assemble<Mode>(
+    store: &Store<Mode>,
     name_scores: &HashMap<String, (f32, usize)>,
     root: &Path,
 ) -> (Vec<GatheredChunk>, bool) {
@@ -429,8 +429,8 @@ pub(crate) fn sort_and_truncate(chunks: &mut Vec<GatheredChunk>, limit: usize) {
 ///
 /// Embeds the query internally (or uses `opts.query_embedding` if pre-computed).
 /// Loads the call graph internally. For pre-loaded graph, use [`gather_with_graph`].
-pub fn gather(
-    store: &Store,
+pub fn gather<Mode>(
+    store: &Store<Mode>,
     embedder: &Embedder,
     description: &str,
     opts: &GatherOptions,
@@ -448,8 +448,8 @@ pub fn gather(
 ///
 /// Use when the caller already has the graph (e.g., batch mode or `task()`
 /// which shares the graph across phases).
-pub fn gather_with_graph(
-    store: &Store,
+pub fn gather_with_graph<Mode>(
+    store: &Store<Mode>,
     query_embedding: &crate::Embedding,
     query_text: &str,
     opts: &GatherOptions,
@@ -522,8 +522,8 @@ pub fn gather_with_graph(
 /// 3. For each seed embedding, search the project store for similar code (bridge)
 /// 4. BFS expand project-side bridges via the project call graph
 /// 5. Return both reference seeds (context) and expanded project chunks
-pub fn gather_cross_index(
-    project_store: &Store,
+pub fn gather_cross_index<Mode: Sync>(
+    project_store: &Store<Mode>,
     ref_idx: &crate::reference::ReferenceIndex,
     query_embedding: &crate::Embedding,
     query_text: &str,
@@ -543,8 +543,8 @@ pub fn gather_cross_index(
 
 /// Like [`gather_cross_index`] but accepts an optional HNSW index for O(log n)
 /// bridge searches instead of brute-force scans per reference seed.
-pub fn gather_cross_index_with_index(
-    project_store: &Store,
+pub fn gather_cross_index_with_index<Mode: Sync>(
+    project_store: &Store<Mode>,
     ref_idx: &crate::reference::ReferenceIndex,
     query_embedding: &crate::Embedding,
     query_text: &str,

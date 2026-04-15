@@ -323,5 +323,5 @@ fn test_task_with_resources_end_to_end() {
     let task_result = result.unwrap();
     // Verify the pipeline ran — even if search returns no results, structure should be valid
     assert_eq!(task_result.description, "validate user input");
-    assert!(task_result.summary.total_files >= 0);
+    let _ = task_result.summary.total_files;
 }

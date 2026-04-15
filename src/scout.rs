@@ -126,8 +126,8 @@ impl Default for ScoutOptions {
 /// Run scout analysis for a task description.
 ///
 /// Uses default search parameters. For custom parameters, use [`scout_with_options`].
-pub fn scout(
-    store: &Store,
+pub fn scout<Mode>(
+    store: &Store<Mode>,
     embedder: &Embedder,
     task: &str,
     root: &Path,
@@ -137,8 +137,8 @@ pub fn scout(
 }
 
 /// Run scout analysis with configurable search parameters.
-pub fn scout_with_options(
-    store: &Store,
+pub fn scout_with_options<Mode>(
+    store: &Store<Mode>,
     embedder: &Embedder,
     task: &str,
     root: &Path,
@@ -168,8 +168,8 @@ pub fn scout_with_options(
 }
 
 /// Pre-loaded resources for scout_core, avoiding repeated lookups.
-pub(crate) struct ScoutResources<'a> {
-    pub store: &'a Store,
+pub(crate) struct ScoutResources<'a, Mode> {
+    pub store: &'a Store<Mode>,
     pub query_embedding: &'a crate::Embedding,
     pub task: &'a str,
     pub root: &'a Path,
@@ -183,7 +183,9 @@ pub(crate) struct ScoutResources<'a> {
 ///
 /// Use this when you already have the call graph and test chunks loaded
 /// (e.g., from `cqs task` which shares them across phases).
-pub(crate) fn scout_core(res: &ScoutResources<'_>) -> Result<ScoutResult, AnalysisError> {
+pub(crate) fn scout_core<Mode>(
+    res: &ScoutResources<'_, Mode>,
+) -> Result<ScoutResult, AnalysisError> {
     let store = res.store;
     let query_embedding = res.query_embedding;
     let task = res.task;
@@ -426,7 +428,10 @@ fn classify_role(score: f32, name: &str, file: &str, modify_threshold: f32) -> C
 /// Matches when a mention is a suffix of a result file path (e.g., mention "search.rs"
 /// matches result "src/search.rs") at a path-component boundary.
 /// This avoids false matches from short concept words like "audit" or "security".
-fn find_relevant_notes(store: &Store, result_files: &HashSet<String>) -> Vec<NoteSummary> {
+fn find_relevant_notes<Mode>(
+    store: &Store<Mode>,
+    result_files: &HashSet<String>,
+) -> Vec<NoteSummary> {
     let all_notes = match store.list_notes_summaries() {
         Ok(n) => n,
         Err(e) => {

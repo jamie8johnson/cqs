@@ -276,7 +276,7 @@ const WATERFALL_PLACEMENT: f64 = 0.10;
 // Notes section takes whatever budget remains (no explicit constant needed).
 
 pub(crate) fn cmd_task(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     description: &str,
     limit: usize,
     json: bool,

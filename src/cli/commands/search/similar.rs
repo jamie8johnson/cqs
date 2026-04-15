@@ -13,7 +13,7 @@ use crate::cli::display;
 use crate::cli::commands::resolve::parse_target;
 
 /// Resolve a name to a chunk ID by searching by name and optionally filtering by file
-fn resolve_target(store: &Store, name: &str) -> Result<(String, String)> {
+fn resolve_target<Mode>(store: &Store<Mode>, name: &str) -> Result<(String, String)> {
     let (file_filter, func_name) = parse_target(name);
 
     let results = store.search_by_name(func_name, 20)?;
@@ -39,7 +39,7 @@ fn resolve_target(store: &Store, name: &str) -> Result<(String, String)> {
 }
 
 pub(crate) fn cmd_similar(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
     limit: usize,
     threshold: f32,

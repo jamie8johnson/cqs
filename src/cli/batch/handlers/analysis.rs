@@ -96,32 +96,31 @@ pub(in crate::cli::batch) fn dispatch_health(ctx: &BatchContext) -> Result<serde
     Ok(serde_json::to_value(&report)?)
 }
 
-/// Suggests notes from codebase patterns and optionally applies them.
+/// Suggests notes from codebase patterns. `--apply` is rejected on the
+/// daemon path.
+///
+/// The daemon holds a `Store<ReadOnly>`, so the reindex half of
+/// `--apply` (which goes through `index_notes` → `replace_notes_for_file`)
+/// cannot compile here. `Commands::Suggest` is classified as
+/// `BatchSupport::Cli` precisely because of this — a user who runs
+/// `cqs suggest --apply` falls through to the CLI path, which opens a
+/// `Store<ReadWrite>`. Bailing when `apply=true` documents that
+/// invariant instead of silently producing a stale (unapplied) result.
 pub(in crate::cli::batch) fn dispatch_suggest(
     ctx: &BatchContext,
     apply: bool,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_suggest", apply).entered();
 
-    let suggestions = cqs::suggest::suggest_notes(&ctx.store(), &ctx.root)?;
-
-    if apply && !suggestions.is_empty() {
-        let notes_path = ctx.root.join("docs/notes.toml");
-        let entries: Vec<cqs::NoteEntry> = suggestions
-            .iter()
-            .map(|s| cqs::NoteEntry {
-                sentiment: s.sentiment,
-                text: s.text.clone(),
-                mentions: s.mentions.clone(),
-            })
-            .collect();
-        cqs::rewrite_notes_file(&notes_path, |notes| {
-            notes.extend(entries);
-            Ok(())
-        })?;
-        let notes = cqs::parse_notes(&notes_path)?;
-        cqs::index_notes(&notes, &notes_path, &ctx.store())?;
+    if apply {
+        anyhow::bail!(
+            "suggest --apply requires a writable store; run `cqs suggest --apply` outside \
+             the daemon. (Commands::Suggest is BatchSupport::Cli; reaching this branch \
+             means a classifier regressed — see #946.)"
+        );
     }
+
+    let suggestions = cqs::suggest::suggest_notes(&ctx.store(), &ctx.root)?;
 
     let json_val: Vec<_> = suggestions
         .iter()
@@ -138,7 +137,7 @@ pub(in crate::cli::batch) fn dispatch_suggest(
     Ok(serde_json::json!({
         "suggestions": json_val,
         "total": suggestions.len(),
-        "applied": apply,
+        "applied": false,
     }))
 }
 

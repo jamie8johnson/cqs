@@ -74,7 +74,7 @@ pub(crate) fn build_dead_output(
 
 /// Find functions/methods with no callers in the indexed codebase
 pub(crate) fn cmd_dead(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     json: bool,
     include_pub: bool,
     min_level: DeadConfidence,

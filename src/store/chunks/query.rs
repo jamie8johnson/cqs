@@ -14,7 +14,7 @@ use crate::store::helpers::{
 };
 use crate::store::Store;
 
-impl Store {
+impl<Mode> Store<Mode> {
     /// Get the number of chunks in the index
     pub fn chunk_count(&self) -> Result<u64, StoreError> {
         let _span = tracing::debug_span!("chunk_count").entered();

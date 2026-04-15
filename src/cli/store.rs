@@ -11,9 +11,13 @@ use super::config::find_project_root;
 use super::definitions;
 
 /// Shared helper: locate project root and index, open store with the given opener.
-fn open_store_with(
-    opener: fn(&Path) -> std::result::Result<cqs::Store, cqs::store::StoreError>,
-) -> Result<(cqs::Store, PathBuf, PathBuf)> {
+///
+/// Generic over the typestate returned by `opener`, so both `Store::open`
+/// (→ `Store<ReadWrite>`) and `Store::open_readonly_pooled`
+/// (→ `Store<ReadOnly>`) compose through the same helper.
+fn open_store_with<Mode>(
+    opener: fn(&Path) -> std::result::Result<cqs::Store<Mode>, cqs::store::StoreError>,
+) -> Result<(cqs::Store<Mode>, PathBuf, PathBuf)> {
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");
@@ -37,16 +41,28 @@ pub(crate) fn open_project_store() -> Result<(cqs::Store, PathBuf, PathBuf)> {
 /// Same as [`open_project_store`] but uses `Store::open_readonly_pooled()` which creates a
 /// `current_thread` tokio runtime (1 OS thread) instead of `multi_thread` (4 OS threads).
 /// Keeps full 256MB mmap and 16MB cache for search performance.
-pub(crate) fn open_project_store_readonly() -> Result<(cqs::Store, PathBuf, PathBuf)> {
+pub(crate) fn open_project_store_readonly(
+) -> Result<(cqs::Store<cqs::store::ReadOnly>, PathBuf, PathBuf)> {
     open_store_with(cqs::Store::open_readonly_pooled)
 }
 
 /// Shared context for CLI commands that need an open store.
 /// Created once in dispatch, passed to all store-using handlers.
 /// Eliminates per-handler `open_project_store_readonly()` calls.
-pub(crate) struct CommandContext<'a> {
+///
+/// The `Mode` type parameter records whether the store was opened read-only
+/// or read-write. Commands that only read (search, explain, etc.) take
+/// `&CommandContext<'_, ReadOnly>`; commands that mutate (gc, suggest
+/// --apply, notes add) take `&CommandContext<'_, ReadWrite>`. This makes
+/// GitHub #946 structurally impossible: a read-only command cannot
+/// accidentally call a write method at compile time.
+///
+/// `Mode` defaults to `ReadWrite` so pre-typestate call sites keep
+/// compiling. New code that only needs reads should prefer
+/// `CommandContext<'_, ReadOnly>`.
+pub(crate) struct CommandContext<'a, Mode = cqs::store::ReadWrite> {
     pub cli: &'a definitions::Cli,
-    pub store: cqs::Store,
+    pub store: cqs::Store<Mode>,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
     reranker: OnceLock<cqs::Reranker>,
@@ -55,7 +71,7 @@ pub(crate) struct CommandContext<'a> {
     splade_index: OnceLock<Option<cqs::splade::index::SpladeIndex>>,
 }
 
-impl<'a> CommandContext<'a> {
+impl<'a> CommandContext<'a, cqs::store::ReadOnly> {
     /// Open the project store in read-only mode and build a command context.
     pub fn open_readonly(cli: &'a definitions::Cli) -> Result<Self> {
         let (store, root, cqs_dir) = open_project_store_readonly()?;
@@ -70,7 +86,9 @@ impl<'a> CommandContext<'a> {
             splade_index: OnceLock::new(),
         })
     }
+}
 
+impl<'a> CommandContext<'a, cqs::store::ReadWrite> {
     /// Open the project store in read-write mode and build a command context.
     ///
     /// Used by write commands (gc, etc.) that need the lazy embedder/reranker
@@ -89,7 +107,9 @@ impl<'a> CommandContext<'a> {
             splade_index: OnceLock::new(),
         })
     }
+}
 
+impl<'a, Mode> CommandContext<'a, Mode> {
     /// Get the resolved model config from the CLI.
     #[allow(deprecated)]
     pub fn model_config(&self) -> &cqs::embedder::ModelConfig {
@@ -227,8 +247,8 @@ impl<'a> CommandContext<'a> {
 /// CAGRA rebuilds index each CLI invocation (~1s for 474 vectors).
 /// Only worth it when search time savings exceed rebuild cost.
 /// Threshold: 5000 vectors (where CAGRA search is ~10x faster than HNSW).
-pub(crate) fn build_vector_index(
-    store: &cqs::Store,
+pub(crate) fn build_vector_index<Mode: ClearHnswDirty>(
+    store: &cqs::Store<Mode>,
     cqs_dir: &Path,
 ) -> Result<Option<Box<dyn cqs::index::VectorIndex>>> {
     build_vector_index_with_config(store, cqs_dir, None)
@@ -244,8 +264,16 @@ pub(crate) fn build_vector_index(
 /// Returns `Ok(Some(index))` with a boxed vector index implementation if indexing succeeds, or `Ok(None)` if the index is stale or unavailable.
 /// # Errors
 /// Returns an error if the HNSW index building fails or store operations encounter errors.
-pub(crate) fn build_vector_index_with_config(
-    store: &cqs::Store,
+///
+/// Generic over the store's typestate. The self-heal write (clearing the
+/// `hnsw_dirty` flag after a successful checksum verify) is gated to
+/// `Store<ReadWrite>` via [`try_clear_hnsw_dirty`]; a daemon with a
+/// `Store<ReadOnly>` will still observe the verify result but cannot
+/// persist the cleared flag. That's intentional — the daemon never
+/// mutates the DB, and the next writable open (`cqs index`, `cqs gc`)
+/// re-runs this path and performs the clear.
+pub(crate) fn build_vector_index_with_config<Mode: ClearHnswDirty>(
+    store: &cqs::Store<Mode>,
     cqs_dir: &Path,
     ef_search: Option<usize>,
 ) -> Result<Option<Box<dyn cqs::index::VectorIndex>>> {
@@ -380,9 +408,7 @@ pub(crate) fn build_vector_index_with_config(
                 tracing::info!(
                     "HNSW dirty flag set but checksums pass — clearing flag (self-heal)"
                 );
-                if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Enriched, false) {
-                    tracing::warn!(error = %e, "Failed to clear dirty flag");
-                }
+                Mode::try_clear_hnsw_dirty(store, cqs::HnswKind::Enriched);
             }
             Err(e) => {
                 tracing::warn!(
@@ -401,6 +427,35 @@ pub(crate) fn build_vector_index_with_config(
     ))
 }
 
+/// Typestate bridge for self-heal operations that conditionally clear the
+/// `hnsw_dirty` flag. `ReadWrite` performs the write; `ReadOnly` is a
+/// no-op that logs a debug trace. Keeps [`build_vector_index_with_config`]
+/// generic over `Mode` without per-site feature flags or match arms.
+pub(crate) trait ClearHnswDirty: 'static {
+    /// Clear the dirty flag for `kind` if this typestate supports writes,
+    /// or no-op otherwise.
+    fn try_clear_hnsw_dirty(store: &cqs::Store<Self>, kind: cqs::HnswKind)
+    where
+        Self: Sized;
+}
+
+impl ClearHnswDirty for cqs::store::ReadWrite {
+    fn try_clear_hnsw_dirty(store: &cqs::Store<Self>, kind: cqs::HnswKind) {
+        if let Err(e) = store.set_hnsw_dirty(kind, false) {
+            tracing::warn!(error = %e, "Failed to clear dirty flag");
+        }
+    }
+}
+
+impl ClearHnswDirty for cqs::store::ReadOnly {
+    fn try_clear_hnsw_dirty(_store: &cqs::Store<Self>, kind: cqs::HnswKind) {
+        tracing::debug!(
+            ?kind,
+            "HNSW self-heal skipped on read-only store; next writable open will clear the flag"
+        );
+    }
+}
+
 /// Phase 5: load the base (non-enriched) HNSW index for adaptive routing.
 ///
 /// Returns `Ok(None)` when:
@@ -412,8 +467,8 @@ pub(crate) fn build_vector_index_with_config(
 ///   plain HNSW is sufficient
 ///
 /// The router falls back to the enriched index when this returns `None`.
-pub(crate) fn build_base_vector_index(
-    store: &cqs::Store,
+pub(crate) fn build_base_vector_index<Mode: ClearHnswDirty>(
+    store: &cqs::Store<Mode>,
     cqs_dir: &Path,
 ) -> Result<Option<Box<dyn cqs::index::VectorIndex>>> {
     let _span = tracing::info_span!("build_base_vector_index").entered();
@@ -447,9 +502,7 @@ pub(crate) fn build_base_vector_index(
                 tracing::info!(
                     "Base HNSW dirty flag set but checksums pass — clearing flag (self-heal)"
                 );
-                if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Base, false) {
-                    tracing::warn!(error = %e, "Failed to clear dirty flag");
-                }
+                Mode::try_clear_hnsw_dirty(store, cqs::HnswKind::Base);
             }
             Err(e) => {
                 tracing::warn!(

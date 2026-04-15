@@ -178,7 +178,7 @@ pub(crate) fn build_test_map_output(target_name: &str, matches: &[TestMatch]) ->
 // ─── CLI command ────────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_test_map(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
     max_depth: usize,
     cross_project: bool,

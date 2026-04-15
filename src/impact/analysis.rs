@@ -42,8 +42,8 @@ impl Default for ImpactOptions {
 /// Paths in the returned result are relative to `root`.
 /// When `opts.include_types` is true, also performs one-hop type expansion: finds
 /// other functions that share type dependencies with the target via `type_edges`.
-pub fn analyze_impact(
-    store: &Store,
+pub fn analyze_impact<Mode>(
+    store: &Store<Mode>,
     target_name: &str,
     root: &Path,
     opts: &ImpactOptions,
@@ -104,8 +104,8 @@ pub fn analyze_impact(
 /// to avoid N+1 per-caller `search_by_name` calls.
 /// Returns `(callers, degraded)` — `degraded` is true when the batch name search
 /// failed and caller snippets may be incomplete.
-fn build_caller_info(
-    store: &Store,
+fn build_caller_info<Mode>(
+    store: &Store<Mode>,
     target_name: &str,
     root: &Path,
 ) -> Result<(Vec<CallerDetail>, bool), StoreError> {
@@ -218,8 +218,8 @@ pub(crate) fn find_affected_tests_with_chunks(
 /// Find transitive callers up to the given depth.
 /// Uses `reverse_bfs` to discover all ancestor names in a single graph traversal,
 /// then batch-fetches chunk locations with `search_by_names_batch` to avoid N+1 queries.
-fn find_transitive_callers(
-    store: &Store,
+fn find_transitive_callers<Mode>(
+    store: &Store<Mode>,
     graph: &crate::store::CallGraph,
     target_name: &str,
     depth: usize,
@@ -267,7 +267,11 @@ fn find_transitive_callers(
 /// Suggest tests for untested callers in an impact result.
 /// Loads its own call graph and test chunks — only called when `--suggest-tests`
 /// is set, so the normal path pays zero overhead.
-pub fn suggest_tests(store: &Store, impact: &ImpactResult, root: &Path) -> Vec<TestSuggestion> {
+pub fn suggest_tests<Mode>(
+    store: &Store<Mode>,
+    impact: &ImpactResult,
+    root: &Path,
+) -> Vec<TestSuggestion> {
     let _span = tracing::info_span!("suggest_tests", function = %impact.function_name).entered();
     let graph = match store.get_call_graph() {
         Ok(g) => g,
@@ -412,8 +416,8 @@ fn suggest_test_file(source: &str) -> String {
 /// 2. Filter out common types (String, Vec, etc.)
 /// 3. For each remaining type, find other users via `get_type_users_batch`
 /// 4. Aggregate by function name, track which types are shared
-fn find_type_impacted(
-    store: &Store,
+fn find_type_impacted<Mode>(
+    store: &Store<Mode>,
     target_name: &str,
     root: &Path,
 ) -> Result<Vec<TypeImpacted>, StoreError> {

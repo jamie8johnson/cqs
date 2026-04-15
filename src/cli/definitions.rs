@@ -762,16 +762,32 @@ impl Commands {
             | Commands::Context { .. }
             | Commands::Dead { .. }
             | Commands::Gather { .. }
-            | Commands::Gc { .. }
             | Commands::Health { .. }
             | Commands::Stale { .. }
-            | Commands::Suggest { .. }
             | Commands::Read { .. }
             | Commands::Related { .. }
             | Commands::Where { .. }
             | Commands::Scout { .. }
             | Commands::Plan { .. }
             | Commands::Task { .. } => BatchSupport::Daemon,
+
+            // #946 typestate: Gc mutates the DB (prune_all + HNSW rebuild).
+            // Daemon holds `Store<ReadOnly>`, so `prune_all` is literally
+            // not callable there. Must go through the CLI path, which
+            // opens `Store<ReadWrite>` via `CommandContext::open_readwrite`.
+            Commands::Gc { .. } => BatchSupport::Cli,
+
+            // #946 typestate: Suggest with --apply rewrites notes.toml and
+            // calls `index_notes` → `replace_notes_for_file` (a write).
+            // Classify on the `apply` flag: read-only dry-run is daemon-
+            // dispatchable; the write variant must hit CLI.
+            Commands::Suggest { ref args, .. } => {
+                if args.apply {
+                    BatchSupport::Cli
+                } else {
+                    BatchSupport::Daemon
+                }
+            }
         }
     }
 }

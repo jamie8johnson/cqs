@@ -44,9 +44,13 @@ pub struct DriftResult {
 /// Detect semantic drift between a reference and the project.
 /// Uses `semantic_diff()` internally, filtering to only the "modified" entries
 /// and presenting them as drift (1.0 - similarity).
-pub fn detect_drift(
-    ref_store: &Store,
-    project_store: &Store,
+///
+/// Generic over the typestate of both stores (`Mode1`, `Mode2`) — drift
+/// detection only reads, so a `Store<ReadOnly>` reference and a
+/// `Store<ReadWrite>` project compose freely.
+pub fn detect_drift<Mode1, Mode2>(
+    ref_store: &Store<Mode1>,
+    project_store: &Store<Mode2>,
     ref_name: &str,
     threshold: f32,
     min_drift: f32,

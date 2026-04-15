@@ -65,7 +65,11 @@ pub(crate) fn build_suggest_output(
 // CLI command
 // ---------------------------------------------------------------------------
 
-pub(crate) fn cmd_suggest(ctx: &crate::cli::CommandContext, json: bool, apply: bool) -> Result<()> {
+pub(crate) fn cmd_suggest(
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
+    json: bool,
+    apply: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_suggest", apply).entered();
 
     let store = &ctx.store;
@@ -84,12 +88,12 @@ pub(crate) fn cmd_suggest(ctx: &crate::cli::CommandContext, json: bool, apply: b
 
     if json {
         if apply {
-            apply_suggestions(&suggestions, root, store)?;
+            apply_suggestions(&suggestions, root, &ctx.cqs_dir)?;
         }
         let output = build_suggest_output(&suggestions, apply);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if apply {
-        apply_suggestions(&suggestions, root, store)?;
+        apply_suggestions(&suggestions, root, &ctx.cqs_dir)?;
         println!(
             "Applied {} suggestion{}.",
             suggestions.len(),
@@ -117,11 +121,19 @@ pub(crate) fn cmd_suggest(ctx: &crate::cli::CommandContext, json: bool, apply: b
     Ok(())
 }
 
-/// Applies suggested notes to the notes file and re-indexes them in the store.
+/// Applies suggested notes to the notes file and re-indexes them.
+///
+/// The `CommandContext` holds a `Store<ReadOnly>` (suggest is a Group B
+/// read-only command), but `--apply` needs to write. This helper opens
+/// a scoped `Store<ReadWrite>` just for the reindex, mirroring the
+/// pattern used by `cmd_gc` and `cmd_notes_mutate`. The typestate
+/// enforces that the write path compiles only when we explicitly
+/// promote the store; an accidental call to a write method on `ctx.store`
+/// is now a compile error.
 fn apply_suggestions(
     suggestions: &[cqs::suggest::SuggestedNote],
     root: &std::path::Path,
-    store: &cqs::Store,
+    cqs_dir: &std::path::Path,
 ) -> Result<()> {
     let notes_path = root.join("docs/notes.toml");
 
@@ -138,9 +150,13 @@ fn apply_suggestions(
         Ok(())
     })?;
 
-    // Re-index notes
+    // Re-index notes. Opens a read-write store for the mutation — the
+    // CLI already holds a read-only handle via CommandContext, but the
+    // #946 typestate won't let us use it here.
+    let index_path = cqs_dir.join("index.db");
+    let rw_store = cqs::Store::open(&index_path)?;
     let notes = cqs::parse_notes(&notes_path)?;
-    cqs::index_notes(&notes, &notes_path, store)?;
+    cqs::index_notes(&notes, &notes_path, &rw_store)?;
 
     Ok(())
 }

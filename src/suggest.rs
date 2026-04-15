@@ -30,34 +30,29 @@ pub struct SuggestedNote {
     pub reason: String,
 }
 
-/// A detector function that scans for a specific anti-pattern.
-/// Takes a store and project root, returns suggested notes or an error.
-/// Errors are non-fatal — other detectors still run.
-type Detector = fn(&Store, &Path) -> Result<Vec<SuggestedNote>, StoreError>;
-
-/// Registry of all active detectors, run in order by `suggest_notes`.
-/// To add a new detector: define a `fn(&Store, &Path) -> Result<Vec<SuggestedNote>>`
-/// and append it here.
-const DETECTORS: &[(&str, Detector)] = &[
-    ("detect_dead_clusters", |store, _root| {
-        detect_dead_clusters(store)
-    }),
-    ("detect_risk_patterns", |store, _root| {
-        detect_risk_patterns(store)
-    }),
-    ("detect_stale_mentions", detect_stale_mentions),
-];
-
 /// Scan the index for anti-patterns and suggest notes.
 /// Each detector runs independently — if one fails, the others still produce results.
-pub fn suggest_notes(store: &Store, root: &Path) -> Result<Vec<SuggestedNote>, StoreError> {
+///
+/// Previously a `fn(&Store, &Path) -> ...` registry; the #946 typestate
+/// refactor made `Store` generic over `Mode`, so fn pointer registries
+/// that pin a concrete `Mode` don't compose. Inlining the sequence keeps
+/// the "each detector independent, errors non-fatal" contract while
+/// letting callers pass either `Store<ReadOnly>` or `Store<ReadWrite>`.
+pub fn suggest_notes<Mode>(
+    store: &Store<Mode>,
+    root: &Path,
+) -> Result<Vec<SuggestedNote>, StoreError> {
     let _span = tracing::info_span!("suggest_notes").entered();
 
     let mut suggestions = Vec::new();
 
-    for (name, detector) in DETECTORS {
+    for (name, result) in [
+        ("detect_dead_clusters", detect_dead_clusters(store)),
+        ("detect_risk_patterns", detect_risk_patterns(store)),
+        ("detect_stale_mentions", detect_stale_mentions(store, root)),
+    ] {
         let _span = tracing::info_span!("detector", name).entered();
-        match detector(store, root) {
+        match result {
             Ok(mut s) => suggestions.append(&mut s),
             Err(e) => tracing::warn!(error = %e, detector = name, "Detector failed"),
         }
@@ -82,7 +77,7 @@ pub fn suggest_notes(store: &Store, root: &Path) -> Result<Vec<SuggestedNote>, S
 }
 
 /// Detect files with 5+ dead (uncalled) functions.
-fn detect_dead_clusters(store: &Store) -> Result<Vec<SuggestedNote>, StoreError> {
+fn detect_dead_clusters<Mode>(store: &Store<Mode>) -> Result<Vec<SuggestedNote>, StoreError> {
     let (confident, _) = store.find_dead_code(true)?;
 
     // Group by file
@@ -105,7 +100,7 @@ fn detect_dead_clusters(store: &Store) -> Result<Vec<SuggestedNote>, StoreError>
 }
 
 /// Detect untested hotspots and high-risk functions.
-fn detect_risk_patterns(store: &Store) -> Result<Vec<SuggestedNote>, StoreError> {
+fn detect_risk_patterns<Mode>(store: &Store<Mode>) -> Result<Vec<SuggestedNote>, StoreError> {
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
     let hotspots = find_hotspots(&graph, SUGGEST_HOTSPOT_POOL);
@@ -184,8 +179,8 @@ pub(crate) fn is_pascal_case(s: &str) -> bool {
 /// Core logic: find stale mentions across all notes.
 /// Returns `(note_text, stale_mentions)` pairs for each note with at least one
 /// stale mention. Shared by `detect_stale_mentions` and `check_note_staleness`.
-fn find_stale_mentions(
-    store: &Store,
+fn find_stale_mentions<Mode>(
+    store: &Store<Mode>,
     root: &Path,
 ) -> Result<Vec<(String, Vec<String>)>, StoreError> {
     let notes = store.list_notes_summaries()?;
@@ -241,7 +236,10 @@ fn find_stale_mentions(
 }
 
 /// Detect notes with stale mentions (deleted files, removed functions).
-fn detect_stale_mentions(store: &Store, root: &Path) -> Result<Vec<SuggestedNote>, StoreError> {
+fn detect_stale_mentions<Mode>(
+    store: &Store<Mode>,
+    root: &Path,
+) -> Result<Vec<SuggestedNote>, StoreError> {
     let stale_pairs = find_stale_mentions(store, root)?;
 
     Ok(stale_pairs
@@ -269,8 +267,8 @@ fn detect_stale_mentions(store: &Store, root: &Path) -> Result<Vec<SuggestedNote
 /// Check all notes for stale mentions.
 /// Returns `(note_text, stale_mentions)` pairs for each note that has at least
 /// one stale mention. Reusable by `notes list --check` and future `health` integration.
-pub fn check_note_staleness(
-    store: &Store,
+pub fn check_note_staleness<Mode>(
+    store: &Store<Mode>,
     root: &Path,
 ) -> Result<Vec<(String, Vec<String>)>, StoreError> {
     let _span = tracing::info_span!("check_note_staleness").entered();

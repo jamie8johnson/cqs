@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use cqs::plan::plan;
 
 pub(crate) fn cmd_plan(
-    ctx: &crate::cli::CommandContext,
+    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     description: &str,
     limit: usize,
     json: bool,
