@@ -79,8 +79,11 @@ impl<Mode> Store<Mode> {
                 return Err(StoreError::SchemaNewerThanCq(version));
             }
             if version < CURRENT_SCHEMA_VERSION && version > 0 {
-                // Attempt migration instead of failing
-                match migrations::migrate(&self.pool, version, CURRENT_SCHEMA_VERSION).await {
+                // Attempt migration instead of failing. `path` flows into
+                // the migration's backup/restore pipeline (#953) — a
+                // filesystem snapshot of the DB is taken before DDL runs
+                // so a mid-migration failure can be rolled back atomically.
+                match migrations::migrate(&self.pool, path, version, CURRENT_SCHEMA_VERSION).await {
                     Ok(()) => {
                         tracing::info!(
                             path = %path_str,

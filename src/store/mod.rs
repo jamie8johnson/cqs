@@ -17,6 +17,7 @@
 //! - `metadata` - Metadata get/set and version validation
 //! - `search` - FTS search, name search, RRF fusion
 
+mod backup;
 pub mod calls;
 mod chunks;
 mod metadata;
