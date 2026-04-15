@@ -5,6 +5,7 @@
 //! Pure logic — no I/O, no store access, infallible.
 
 use crate::language::{ChunkType, REGISTRY};
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use std::sync::LazyLock;
 
 /// Query categories for adaptive routing.
@@ -663,90 +664,121 @@ fn is_conceptual_query(query: &str, words: &[&str]) -> bool {
         && !is_structural_query(query)
 }
 
+/// Patterns for [`extract_type_hints`] — the pattern string and the
+/// [`ChunkType`] it maps to. Order matters: output hints preserve this
+/// declaration order so tests that assert on hint ordering keep passing.
+const TYPE_HINT_PATTERNS: &[(&str, ChunkType)] = &[
+    // Test
+    ("test function", ChunkType::Test),
+    ("test method", ChunkType::Test),
+    ("all tests", ChunkType::Test),
+    ("every test", ChunkType::Test),
+    // Function / Method
+    ("all functions", ChunkType::Function),
+    ("every function", ChunkType::Function),
+    ("all methods", ChunkType::Method),
+    ("every method", ChunkType::Method),
+    // Type definitions
+    ("all structs", ChunkType::Struct),
+    ("every struct", ChunkType::Struct),
+    ("all enums", ChunkType::Enum),
+    ("every enum", ChunkType::Enum),
+    ("all traits", ChunkType::Trait),
+    ("every trait", ChunkType::Trait),
+    ("all interfaces", ChunkType::Interface),
+    ("every interface", ChunkType::Interface),
+    ("all classes", ChunkType::Class),
+    ("every class", ChunkType::Class),
+    ("type alias", ChunkType::TypeAlias),
+    ("all type aliases", ChunkType::TypeAlias),
+    // OOP / module constructs
+    ("all modules", ChunkType::Module),
+    ("every module", ChunkType::Module),
+    ("all objects", ChunkType::Object),
+    ("every object", ChunkType::Object),
+    ("all namespaces", ChunkType::Namespace),
+    ("every namespace", ChunkType::Namespace),
+    ("all impl blocks", ChunkType::Impl),
+    ("implementation block", ChunkType::Impl),
+    ("extension method", ChunkType::Extension),
+    ("all extensions", ChunkType::Extension),
+    // Members
+    ("all constants", ChunkType::Constant),
+    ("every constant", ChunkType::Constant),
+    ("all variables", ChunkType::Variable),
+    ("every variable", ChunkType::Variable),
+    ("all properties", ChunkType::Property),
+    ("every property", ChunkType::Property),
+    ("constructor", ChunkType::Constructor),
+    ("all constructors", ChunkType::Constructor),
+    // C# specific
+    ("all delegates", ChunkType::Delegate),
+    ("every delegate", ChunkType::Delegate),
+    ("all events", ChunkType::Event),
+    ("every event", ChunkType::Event),
+    // Macros
+    ("all macros", ChunkType::Macro),
+    ("every macro", ChunkType::Macro),
+    ("macro_rules", ChunkType::Macro),
+    // Web / API
+    ("endpoint", ChunkType::Endpoint),
+    ("all endpoints", ChunkType::Endpoint),
+    ("all services", ChunkType::Service),
+    ("every service", ChunkType::Service),
+    ("middleware", ChunkType::Middleware),
+    ("all middleware", ChunkType::Middleware),
+    // Database / FFI / config
+    ("stored procedure", ChunkType::StoredProc),
+    ("all stored procedures", ChunkType::StoredProc),
+    ("extern function", ChunkType::Extern),
+    ("all externs", ChunkType::Extern),
+    ("ffi declaration", ChunkType::Extern),
+    ("config key", ChunkType::ConfigKey),
+    ("all config keys", ChunkType::ConfigKey),
+    // Docs / Solidity
+    ("all sections", ChunkType::Section),
+    ("every section", ChunkType::Section),
+    ("all modifiers", ChunkType::Modifier),
+    ("every modifier", ChunkType::Modifier),
+];
+
+/// Aho-Corasick automaton over [`TYPE_HINT_PATTERNS`] — one pass over
+/// `query` finds every matching pattern id.
+///
+/// Uses [`MatchKind::Standard`] because [`AhoCorasick::find_overlapping_iter`]
+/// (which we need: sibling patterns like `"constructor"` / `"all constructors"`
+/// overlap in the haystack, and both must fire to match the previous
+/// `for (pat, _) in patterns { if query.contains(pat) {..} }` semantics)
+/// is only valid under the Standard match kind.
+static TYPE_HINT_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+    AhoCorasickBuilder::new()
+        .match_kind(MatchKind::Standard)
+        .build(TYPE_HINT_PATTERNS.iter().map(|(p, _)| *p))
+        .expect("TYPE_HINT_PATTERNS is a valid pattern set (static input)")
+});
+
 /// Extract chunk type hints from the query text.
 ///
 /// Returns the types to boost (not filter) in search results.
 /// Only extracts when confidence is reasonable — avoids false positives.
+///
+/// Previously this scanned ~72 patterns with individual `query.contains(p)`
+/// probes. Now uses a single Aho-Corasick pass via [`TYPE_HINT_AC`].
+///
+/// Output order is preserved: a hint is pushed the first time its pattern
+/// id appears in declaration order, and duplicate `ChunkType`s across
+/// different matched patterns are kept (e.g. two Test-mapped patterns both
+/// matching still yields `[Test, Test]`, matching the previous loop).
 pub fn extract_type_hints(query: &str) -> Option<Vec<ChunkType>> {
+    // Collect the set of pattern ids that match at least once.
+    let mut matched = [false; TYPE_HINT_PATTERNS.len()];
+    for m in TYPE_HINT_AC.find_overlapping_iter(query) {
+        matched[m.pattern().as_usize()] = true;
+    }
+
     let mut types = Vec::new();
-
-    let patterns: &[(&str, ChunkType)] = &[
-        // Test
-        ("test function", ChunkType::Test),
-        ("test method", ChunkType::Test),
-        ("all tests", ChunkType::Test),
-        ("every test", ChunkType::Test),
-        // Function / Method
-        ("all functions", ChunkType::Function),
-        ("every function", ChunkType::Function),
-        ("all methods", ChunkType::Method),
-        ("every method", ChunkType::Method),
-        // Type definitions
-        ("all structs", ChunkType::Struct),
-        ("every struct", ChunkType::Struct),
-        ("all enums", ChunkType::Enum),
-        ("every enum", ChunkType::Enum),
-        ("all traits", ChunkType::Trait),
-        ("every trait", ChunkType::Trait),
-        ("all interfaces", ChunkType::Interface),
-        ("every interface", ChunkType::Interface),
-        ("all classes", ChunkType::Class),
-        ("every class", ChunkType::Class),
-        ("type alias", ChunkType::TypeAlias),
-        ("all type aliases", ChunkType::TypeAlias),
-        // OOP / module constructs
-        ("all modules", ChunkType::Module),
-        ("every module", ChunkType::Module),
-        ("all objects", ChunkType::Object),
-        ("every object", ChunkType::Object),
-        ("all namespaces", ChunkType::Namespace),
-        ("every namespace", ChunkType::Namespace),
-        ("all impl blocks", ChunkType::Impl),
-        ("implementation block", ChunkType::Impl),
-        ("extension method", ChunkType::Extension),
-        ("all extensions", ChunkType::Extension),
-        // Members
-        ("all constants", ChunkType::Constant),
-        ("every constant", ChunkType::Constant),
-        ("all variables", ChunkType::Variable),
-        ("every variable", ChunkType::Variable),
-        ("all properties", ChunkType::Property),
-        ("every property", ChunkType::Property),
-        ("constructor", ChunkType::Constructor),
-        ("all constructors", ChunkType::Constructor),
-        // C# specific
-        ("all delegates", ChunkType::Delegate),
-        ("every delegate", ChunkType::Delegate),
-        ("all events", ChunkType::Event),
-        ("every event", ChunkType::Event),
-        // Macros
-        ("all macros", ChunkType::Macro),
-        ("every macro", ChunkType::Macro),
-        ("macro_rules", ChunkType::Macro),
-        // Web / API
-        ("endpoint", ChunkType::Endpoint),
-        ("all endpoints", ChunkType::Endpoint),
-        ("all services", ChunkType::Service),
-        ("every service", ChunkType::Service),
-        ("middleware", ChunkType::Middleware),
-        ("all middleware", ChunkType::Middleware),
-        // Database / FFI / config
-        ("stored procedure", ChunkType::StoredProc),
-        ("all stored procedures", ChunkType::StoredProc),
-        ("extern function", ChunkType::Extern),
-        ("all externs", ChunkType::Extern),
-        ("ffi declaration", ChunkType::Extern),
-        ("config key", ChunkType::ConfigKey),
-        ("all config keys", ChunkType::ConfigKey),
-        // Docs / Solidity
-        ("all sections", ChunkType::Section),
-        ("every section", ChunkType::Section),
-        ("all modifiers", ChunkType::Modifier),
-        ("every modifier", ChunkType::Modifier),
-    ];
-
-    for (pattern, chunk_type) in patterns {
-        if query.contains(pattern) {
+    for (idx, (_, chunk_type)) in TYPE_HINT_PATTERNS.iter().enumerate() {
+        if matched[idx] {
             types.push(*chunk_type);
         }
     }
