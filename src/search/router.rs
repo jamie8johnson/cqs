@@ -5,6 +5,7 @@
 //! Pure logic — no I/O, no store access, infallible.
 
 use crate::language::{ChunkType, REGISTRY};
+use std::sync::LazyLock;
 
 /// Query categories for adaptive routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,7 +229,12 @@ const LANGUAGE_ALIASES: &[&str] = &["c++", "c#"];
 ///
 /// Combines all registered language names from `REGISTRY.all()` with
 /// common aliases that don't appear as registry keys.
-fn language_names() -> Vec<&'static str> {
+///
+/// Materialized once at first use — the registry is immutable and the
+/// alias list is a compile-time constant, so every subsequent call
+/// returns a borrow of the same `Vec`. Previously this allocated a new
+/// `Vec<&'static str>` on every `classify_query` call.
+static LANGUAGE_NAMES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut names: Vec<&'static str> = REGISTRY.all().map(|def| def.name).collect();
     for alias in LANGUAGE_ALIASES {
         if !names.contains(alias) {
@@ -236,6 +242,11 @@ fn language_names() -> Vec<&'static str> {
         }
     }
     names
+});
+
+/// Return the cached language-name list as a borrowed slice.
+fn language_names() -> &'static [&'static str] {
+    LANGUAGE_NAMES.as_slice()
 }
 
 /// Structural query patterns
