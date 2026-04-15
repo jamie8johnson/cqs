@@ -175,6 +175,9 @@ pub enum AnalysisError {
 /// Name of the per-project index directory (created by `cqs init`).
 pub const INDEX_DIR: &str = ".cqs";
 
+/// Filename of the SQLite index database inside [`INDEX_DIR`].
+pub const INDEX_DB_FILENAME: &str = "index.db";
+
 /// Legacy index directory name (pre-v0.9.7). Used for auto-migration.
 const LEGACY_INDEX_DIR: &str = ".cq";
 

@@ -58,7 +58,7 @@ fn resolve_reference_db(root: &Path, ref_name: &str) -> Result<std::path::PathBu
             )
         })?;
 
-    let ref_db = ref_cfg.path.join("index.db");
+    let ref_db = ref_cfg.path.join(cqs::INDEX_DB_FILENAME);
     if !ref_db.exists() {
         bail!(
             "Reference '{}' has no index at {}. Run 'cqs ref update {}' first.",

@@ -89,7 +89,7 @@ pub(crate) fn cmd_doctor(model_override: Option<&str>, fix: bool) -> Result<()> 
     let _span = tracing::info_span!("cmd_doctor", fix).entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
+    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
     let mut any_failed = false;
     let mut issues: Vec<DoctorIssue> = Vec::new();
 
@@ -235,7 +235,7 @@ pub(crate) fn cmd_doctor(model_override: Option<&str>, fix: bool) -> Result<()> 
         println!();
         println!("References:");
         for r in &config.references {
-            let db_path = r.path.join("index.db");
+            let db_path = r.path.join(cqs::INDEX_DB_FILENAME);
             if !r.path.exists() {
                 println!(
                     "  {} {}: path missing ({})",

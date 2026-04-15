@@ -300,7 +300,7 @@ mod tests {
     /// Panics if temporary directory creation fails, if opening the Store fails, or if Store initialization fails.
     fn make_test_store() -> (crate::Store, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         let store = crate::Store::open(&db_path).unwrap();
         store.init(&crate::store::ModelInfo::default()).unwrap();
         (store, dir)

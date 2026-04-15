@@ -1401,7 +1401,7 @@ mod tests {
 
     fn make_test_store_initialized() -> (Store, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         let store = Store::open(&db_path).unwrap();
         store.init(&ModelInfo::default()).unwrap();
         (store, dir)
@@ -1412,7 +1412,7 @@ mod tests {
         // Two readonly stores opened against the same DB should both succeed (WAL allows
         // multiple readers).
         let (_writer, dir) = make_test_store_initialized();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
 
         let ro1 = Store::open_readonly(&db_path).expect("first readonly open failed");
         let ro2 = Store::open_readonly(&db_path).expect("second readonly open failed");
@@ -1427,7 +1427,7 @@ mod tests {
         // A readonly store opened while a writer Store is alive should succeed.
         // SQLite WAL mode permits concurrent readers alongside a writer.
         let (writer, dir) = make_test_store_initialized();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
 
         let ro = Store::open_readonly(&db_path).expect("readonly open failed while writer active");
         assert!(ro.check_model_version().is_ok());
@@ -1479,7 +1479,7 @@ mod tests {
         // Schema uses INSERT OR REPLACE / CREATE TABLE IF NOT EXISTS, so a second
         // init() must be a no-op rather than a conflict.
         let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         let store = Store::open(&db_path).unwrap();
 
         store

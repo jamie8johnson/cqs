@@ -9,7 +9,7 @@ use cqs::Store;
 use tempfile::TempDir;
 
 fn create_project(dir: &TempDir) -> Store {
-    let db_path = dir.path().join("index.db");
+    let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
     let store = Store::open(&db_path).expect("open store");
     store.init(&ModelInfo::default()).expect("init store");
     store

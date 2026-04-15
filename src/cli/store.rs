@@ -20,7 +20,7 @@ fn open_store_with<Mode>(
 ) -> Result<(cqs::Store<Mode>, PathBuf, PathBuf)> {
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
+    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
 
     if !index_path.exists() {
         anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
@@ -554,7 +554,7 @@ mod base_index_tests {
         // Set up a real Store + a real index_base.hnsw.* fixture so we
         // exercise the actual file-load path, not just the early return.
         let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
         let store = cqs::Store::open(&db_path).unwrap();
         store.init(&cqs::store::ModelInfo::default()).unwrap();
         // Mark the store as clean so we don't get filtered out by the
@@ -606,7 +606,7 @@ mod base_index_tests {
         let _guard = ENV_LOCK.lock().unwrap();
 
         let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
         let store = cqs::Store::open(&db_path).unwrap();
         store.init(&cqs::store::ModelInfo::default()).unwrap();
         store.set_hnsw_dirty(cqs::HnswKind::Base, false).unwrap();

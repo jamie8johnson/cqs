@@ -96,7 +96,7 @@ pub(crate) fn cmd_diff(
     // Resolve target store
     let target_label = target.unwrap_or("project");
     let target_store = if target_label == "project" {
-        let index_path = cqs_dir.join("index.db");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         if !index_path.exists() {
             bail!("Project index not found. Run 'cqs init && cqs index' first.");
         }

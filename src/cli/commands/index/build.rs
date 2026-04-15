@@ -64,7 +64,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
 
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
+    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
 
     // Ensure .cqs directory exists with restrictive permissions
     if !cqs_dir.exists() {

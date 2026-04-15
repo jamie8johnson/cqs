@@ -367,7 +367,7 @@ mod tests {
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         let store = crate::Store::open(&db_path).unwrap();
         store.init(&ModelInfo::default()).unwrap();
 
@@ -431,7 +431,7 @@ mod tests {
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         let store = crate::Store::open(&db_path).unwrap();
         store.init(&ModelInfo::default()).unwrap();
 
@@ -471,7 +471,7 @@ mod tests {
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
         let store = crate::Store::open(&db_path).unwrap();
         store.init(&ModelInfo::default()).unwrap();
 

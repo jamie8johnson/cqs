@@ -53,7 +53,7 @@ mod tests {
     fn test_warn_stale_results_empty_origins() {
         // Create a temp store
         let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
         let store = Store::open(&db_path).unwrap();
         store.init(&cqs::store::ModelInfo::default()).unwrap();
 
@@ -68,7 +68,7 @@ mod tests {
     #[test]
     fn test_warn_stale_results_nonexistent_origins() {
         let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
         let store = Store::open(&db_path).unwrap();
         store.init(&cqs::store::ModelInfo::default()).unwrap();
 
