@@ -1266,6 +1266,25 @@ fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchSta
             continue;
         }
 
+        // Short-term fix for #1002 until full .gitignore support lands.
+        // Skip .claude/ (parallel-agent git worktrees + local Claude Code
+        // settings) so the watch loop does not auto-index agent worktrees
+        // and inflate the index with near-duplicate chunks. Component-
+        // boundary match so files like `foo.claude.bar` are not false-
+        // positive ignored. Mirrors .gitignore which already excludes
+        // `.claude/worktrees/`; `cqs index` respects .gitignore via the
+        // `ignore` crate, but `cqs watch` does not yet.
+        let norm_root = cqs::normalize_path(cfg.root);
+        if let Some(rel) = norm_path
+            .strip_prefix(&norm_root)
+            .and_then(|s| s.strip_prefix('/'))
+        {
+            if rel == ".claude" || rel.starts_with(".claude/") {
+                tracing::debug!(path = %norm_path, "Skipping .claude/ path (#1002)");
+                continue;
+            }
+        }
+
         // Check if it's notes.toml
         let norm_notes = cqs::normalize_path(cfg.notes_path);
         if norm_path == norm_notes {
@@ -1944,6 +1963,53 @@ mod tests {
         assert!(
             state.pending_files.is_empty(),
             ".cqs dir events should be skipped"
+        );
+    }
+
+    #[test]
+    fn collect_events_skips_claude_worktree_paths() {
+        // #1002: parallel-agent git worktrees are created under
+        // .claude/worktrees/agent-XXXXXXXX/ and contain full copies of
+        // the project's source tree. The watch loop must not auto-index
+        // them (their chunks would otherwise duplicate the primary tree
+        // and tank retrieval quality). Verify paths under .claude/ are
+        // skipped, and that unrelated paths containing ".claude" as a
+        // substring (but not a component) are NOT skipped.
+        let root = PathBuf::from("/tmp/test_project");
+        let cqs_dir = PathBuf::from("/tmp/test_project/.cqs");
+        let notes_path = PathBuf::from("/tmp/test_project/docs/notes.toml");
+        let supported: HashSet<&str> = ["rs"].iter().cloned().collect();
+        let cfg = test_watch_config(&root, &cqs_dir, &notes_path, &supported);
+
+        // Path inside an agent worktree — should be skipped.
+        let mut state = test_watch_state();
+        let event = make_event(
+            vec![PathBuf::from(
+                "/tmp/test_project/.claude/worktrees/agent-a1b2c3d4/src/lib.rs",
+            )],
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+        );
+        collect_events(&event, &cfg, &mut state);
+        assert!(
+            state.pending_files.is_empty(),
+            ".claude/worktrees/* events should be skipped"
+        );
+
+        // False-positive guard: file whose name merely contains ".claude"
+        // must NOT be skipped (e.g. `src/my.claude.helper.rs`).
+        let mut state = test_watch_state();
+        let event = make_event(
+            vec![PathBuf::from("/tmp/test_project/src/my.claude.helper.rs")],
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+        );
+        collect_events(&event, &cfg, &mut state);
+        assert!(
+            !state.pending_files.is_empty(),
+            "files containing '.claude' in their name (not a path component) must NOT be skipped"
         );
     }
 
