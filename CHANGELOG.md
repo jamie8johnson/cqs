@@ -7,8 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-04-15
+
 ### Added
-- **CAGRA index persistence (#950).** CAGRA graphs are now serialized to `{cqs_dir}/index.cagra` via native `cuvsCagraSerialize` plus a JSON sidecar (`index.cagra.meta`) with magic/version/dim/chunk_count/splade_generation/id_map/blake3. On startup the daemon deserializes instead of rebuilding, eliminating the ~30s CAGRA cold start on every `systemctl --user restart cqs-watch` / `cqs index` cycle. Stale sidecars (dim or chunk_count drift) and corrupt blobs are detected and rebuilt from the store automatically. Set `CQS_CAGRA_PERSIST=0` to disable.
+- **CAGRA index persistence (#950, PR #985).** CAGRA graphs are now serialized to `{cqs_dir}/index.cagra` via native `cuvsCagraSerialize` plus a JSON sidecar (`index.cagra.meta`) with magic/version/dim/chunk_count/splade_generation/id_map/blake3. On startup the daemon deserializes instead of rebuilding, eliminating the ~30s CAGRA cold start on every `systemctl --user restart cqs-watch` / `cqs index` cycle. Stale sidecars (dim or chunk_count drift) and corrupt blobs are detected and rebuilt from the store automatically. Set `CQS_CAGRA_PERSIST=0` to disable.
+- **`cqs watch` respects `.gitignore` (#1002, PR #1006).** The watcher now loads the repo's `.gitignore` at startup and skips matched paths during `collect_events`. Closes a long-standing gap where bulk git operations (worktrees, rebases) polluted the index with `.claude/worktrees/*` and other ignored paths. Kill switch: `CQS_WATCH_RESPECT_GITIGNORE=0`.
+- **Incremental SPLADE encoding in `cqs watch` (#1004, PR #1007).** The watcher now encodes sparse vectors for changed files inline alongside the dense pass, keeping SPLADE coverage at ~100% during long watch sessions. Previously only the dense embeddings were updated, and SPLADE drifted (observed 70% coverage after a day of active development). Batch size via `CQS_SPLADE_BATCH` (default 32). Kill switch: `CQS_WATCH_INCREMENTAL_SPLADE=0`.
+- **Store typestate `Store<ReadOnly>` / `Store<ReadWrite>` (#946, PR #982).** Compile-time mode markers make read-only vs read-write guarantees explicit. Removes runtime branching in the daemon hot path.
+- **`Store::open_readonly_after_init` replaces unsafe `into_readonly` (#986, PR #998).** A blessed closure-based constructor opens `Store<ReadWrite>`, runs a fixture init closure, drops the RW handle (flushing WAL via `Drop`), then reopens `Store<ReadOnly>`. The returned store is read-only at both the type-system and SQLite-connection levels. Replaces the prior `into_readonly()` which used `ptr::read + ManuallyDrop` to field-transfer ownership and made any future `Mode`-dependent field addition silently memory-unsafe.
+- **`atomic_replace` helper (#948, PR #983).** Single entry point for crash-safe file rotation; replaces 4 open-coded tempfile+rename sites.
+- **`ModelConfig` abstraction (#949, PR #984).** Pooling strategy and input-name layout now live on a typed config instead of scattered `if model_kind == ...` branches.
+- **`INDEX_DB_FILENAME` constant (#923, PR #994).** One source of truth for the DB filename; replaces 56 literals.
+- **Unified `Commands` / `BatchCmd` arg types (Wave B, #947, PR #981).** CLI and batch paths now share a single set of argument structs; behavior delta between the two paths is no longer possible.
+
+### Changed
+- **Per-category SPLADE alpha defaults re-fit on a genuinely clean index (PR #1005).** The 2026-04-14 sweep (v1.25.0) ran on a 96,029-chunk index polluted by `.claude/worktrees/*`; once those paths were evicted (14,882 chunks post-cleanup) a 21-point re-sweep produced materially different optima:
+  - `identifier_lookup`: 0.90 → **1.00**
+  - `structural`: 0.60 → **0.90**
+  - `conceptual`: 0.85 → **0.70**
+  - `behavioral`: 0.05 → **0.00** (dense-only; sparse fully suppressed)
+  - `negation`: 1.00 → **0.80** (now an explicit match arm)
+  - rest (`type_filtered`, `multi_step`, `cross_language`, `unknown`): 1.00 (unchanged)
+  
+  Fully-routed R@1 lands at **39.2%** on the v2 265-query eval (+1.8pp over the v1.25.0 baseline). The corollary lesson is recorded in `~/training-data/research/models.md`: tune alphas only on the genuinely-clean index, not on whatever `cqs watch` happens to have indexed.
+- **`--splade` CLI flag no longer bypasses the router (PR #1008).** Before: `--splade` alone took clap's default `0.7` for every query, silently skipping per-category routing. After: `--splade-alpha X` is an explicit constant-alpha override; otherwise the router runs (force-on even for `Unknown` if `--splade` is set). The `splade_alpha` field became `Option<f32>` in `SearchArgs` / `Cli`; call sites resolve via a single `match (splade_alpha, classification)`. This made the phantom "R@1 regression" above reproducible and is why the re-fit landed alongside the flag fix.
+- **`Store::open_readonly_small` (#970, PR #993).** Separate read-only constructor for reference indexes right-sizes the mmap/cache instead of inheriting the full read-write configuration. Reduces resident memory for reference-index consumers.
+- **`save_with_store` generic over `Store<Mode>` (#987).** HNSW save path now accepts either read-only or read-write stores, matching the new typestate.
+- **Parser stage drains owned chunks (#967, PR #991).** Eliminates a per-batch `Clone` hot-spot in the indexing pipeline.
+- **Aho-Corasick + `LazyLock` language names (#964, PR #992).** Language-name lookups now O(1) via a pre-built Aho-Corasick automaton.
+- **Eliminate `NameMatcher::score` allocations (#965, PR #990).** Hot path no longer allocates per candidate.
+- **CAGRA sentinel-init replaces length-probe framing (#952, PR #995).** Simpler initialization path.
+- **Shared tokio runtime across `Store`, `EmbeddingCache`, `QueryCache` (#968, PR #1000).** One runtime instead of three; reduces thread count and CPU overhead in the daemon.
+
+### Fixed
+- **Pre-migration filesystem backup (#953, PR #996).** `Store::migrate()` now snapshots the DB file before running DDL. Schema upgrades are reversible even if a mid-migration failure leaves SQLite in an inconsistent state.
+- **`atexit` Mutex UB in ORT provider setup (#856, PR #977).** Provider registration no longer takes a `Mutex` in an `atexit` handler — that pattern is UB per the C++ standard and surfaced as intermittent aborts on shutdown.
+- **Notes mutations route around daemon batch handler (#945).** Stale-note cleanup commands now go direct to SQLite instead of through the read-only daemon.
+
+### Post-audit
+126 commits across Waves A/B/C/D/E/F closed 166 of 236 audit findings (#976, #978, #979, #989, #1001). Tier-1 items all merged (#1004). Tier-2 remaining: #921 (WSL 9P SPLADE save), #917/#916 (streaming SPLADE serialize / mmap), #957 (SPLADE preset registry), #956 (decouple gpu-index from CUDA), #63 (paste RUSTSEC advisory monitor).
 
 ## [1.25.0] - 2026-04-14
 
