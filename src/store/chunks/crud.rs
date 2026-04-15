@@ -139,8 +139,15 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
 
-            // 2. Batch INSERT into temp table (100 rows per batch, 3 params each = 300 < 999 limit)
-            const BATCH_SIZE: usize = 100;
+            // 2. Batch INSERT into temp table. PF-V1.25-9: previously
+            // `BATCH_SIZE = 100` (100 × 3 = 300 binds), sized for the
+            // pre-3.32 SQLite 999-variable limit. Modern SQLite permits
+            // 32766; `max_rows_per_statement(3)` derives ~10822 rows per
+            // statement. On a full reindex with 50k updated embeddings
+            // that's ~5 INSERTs instead of 500 — a 100× reduction in
+            // SQL round-trips.
+            use crate::store::helpers::sql::max_rows_per_statement;
+            const BATCH_SIZE: usize = max_rows_per_statement(3);
             for batch_start in (0..updates.len()).step_by(BATCH_SIZE) {
                 let batch_end = (batch_start + BATCH_SIZE).min(updates.len());
                 let batch = &updates[batch_start..batch_end];

@@ -250,7 +250,16 @@ pub fn search_across_projects(
                 .collect();
             let mut all_results: Vec<CrossProjectResult> =
                 project_results.into_iter().flatten().collect();
-            all_results.sort_by(|a, b| b.score.total_cmp(&a.score));
+            // Secondary sort on (project, file, line_start, name) keeps equal-
+            // score results deterministically ordered across process invocations.
+            all_results.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then(a.project_name.cmp(&b.project_name))
+                    .then(a.file.cmp(&b.file))
+                    .then(a.line_start.cmp(&b.line_start))
+                    .then(a.name.cmp(&b.name))
+            });
             all_results.truncate(limit);
             tracing::info!(
                 result_count = all_results.len(),
@@ -277,8 +286,18 @@ pub fn search_across_projects(
 
     let mut all_results: Vec<CrossProjectResult> = project_results.into_iter().flatten().collect();
 
-    // Sort by score descending, take top N
-    all_results.sort_by(|a, b| b.score.total_cmp(&a.score));
+    // Sort by score descending, take top N. Secondary sort on
+    // (project, file, line_start, name) keeps equal-score results
+    // deterministically ordered across process invocations so the
+    // truncate() picks the same survivors on every run.
+    all_results.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then(a.project_name.cmp(&b.project_name))
+            .then(a.file.cmp(&b.file))
+            .then(a.line_start.cmp(&b.line_start))
+            .then(a.name.cmp(&b.name))
+    });
     all_results.truncate(limit);
 
     tracing::info!(
@@ -319,7 +338,7 @@ fn search_single_project(
 
     let store = crate::Store::open_readonly(&index_path)?;
     let cqs_dir = index_path.parent().unwrap_or(entry.path.as_path());
-    let index = crate::hnsw::HnswIndex::try_load_with_ef(cqs_dir, None, Some(store.dim()));
+    let index = crate::hnsw::HnswIndex::try_load_with_ef(cqs_dir, None, store.dim());
     let filter = crate::store::helpers::SearchFilter {
         query_text: query_text.to_string(),
         enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval

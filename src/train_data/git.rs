@@ -3,11 +3,47 @@
 //! Thin wrappers around `git log`, `git diff-tree`, `git show`, and
 //! `git rev-parse` that return parsed Rust types. All functions accept
 //! a repo path and use `git -C <repo>` to avoid changing directories.
+//!
+//! SEC-V1.25-11: All entry points canonicalize the repo path and require
+//! a `.git` (directory or file — worktrees use a file) to exist at the
+//! canonical location before running any git command. This blocks path-
+//! traversal via relative `../` segments and refuses to operate on a
+//! non-git directory.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::TrainDataError;
+
+/// Resolve and validate a git repository path.
+///
+/// SEC-V1.25-11:
+///   * Canonicalize to reject `../` traversal before it reaches git.
+///   * Reject paths that don't look like a git repository (no `.git`
+///     entry present). This doubles as a clearer error message than
+///     git's own "not a git repository".
+fn validate_git_repo(repo: &Path) -> Result<PathBuf, TrainDataError> {
+    let canonical = repo.canonicalize().map_err(|e| {
+        TrainDataError::Git(format!(
+            "cannot resolve repo path {}: {}",
+            repo.display(),
+            e
+        ))
+    })?;
+    // A normal working tree has a `.git` directory; a linked worktree has a
+    // `.git` file. A bare repo has `HEAD`/`refs/`/`objects/` at the root.
+    let has_git_dir = canonical.join(".git").exists();
+    let looks_bare = canonical.join("HEAD").exists()
+        && canonical.join("refs").exists()
+        && canonical.join("objects").exists();
+    if !has_git_dir && !looks_bare {
+        return Err(TrainDataError::Git(format!(
+            "not a git repository: {}",
+            canonical.display()
+        )));
+    }
+    Ok(canonical)
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -29,9 +65,12 @@ pub struct CommitInfo {
 pub fn git_log(repo: &Path, max_commits: usize) -> Result<Vec<CommitInfo>, TrainDataError> {
     let _span = tracing::info_span!("git_log", repo = %repo.display(), max_commits).entered();
 
+    // SEC-V1.25-11: resolve + validate before passing to git.
+    let canonical_repo = validate_git_repo(repo)?;
+
     let mut cmd = Command::new("git");
     cmd.args(["-C"])
-        .arg(repo)
+        .arg(&canonical_repo)
         .args(["log", "--format=%H%x00%s%x00%aI", "--no-merges"]);
 
     if max_commits > 0 {
@@ -99,9 +138,12 @@ pub fn git_diff_tree(repo: &Path, sha: &str) -> Result<String, TrainDataError> {
         )));
     }
 
+    // SEC-V1.25-11: resolve + validate before passing to git.
+    let canonical_repo = validate_git_repo(repo)?;
+
     let output = Command::new("git")
         .args(["-C"])
-        .arg(repo)
+        .arg(&canonical_repo)
         .args(["diff-tree", "--root", "--no-commit-id", "-r", "-p", sha])
         .output()
         .map_err(|e| {
@@ -150,10 +192,13 @@ pub fn git_show(repo: &Path, sha: &str, path: &str) -> Result<Option<String>, Tr
         )));
     }
 
+    // SEC-V1.25-11: resolve + validate before passing to git.
+    let canonical_repo = validate_git_repo(repo)?;
+
     let spec = format!("{}:{}", sha, path);
     let output = Command::new("git")
         .args(["-C"])
-        .arg(repo)
+        .arg(&canonical_repo)
         .args(["show", &spec])
         .output()
         .map_err(|e| {
@@ -196,9 +241,20 @@ pub fn git_show(repo: &Path, sha: &str, path: &str) -> Result<Option<String>, Tr
 pub fn is_shallow(repo: &Path) -> bool {
     let _span = tracing::info_span!("is_shallow", repo = %repo.display()).entered();
 
+    // SEC-V1.25-11: resolve + validate before passing to git. Returns false
+    // (conservative default) on any resolution failure, matching the existing
+    // contract that is_shallow never panics on a missing repo.
+    let canonical_repo = match validate_git_repo(repo) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(repo = %repo.display(), error = %e, "Not a valid git repo; treating as non-shallow");
+            return false;
+        }
+    };
+
     let output = match Command::new("git")
         .args(["-C"])
-        .arg(repo)
+        .arg(&canonical_repo)
         .args(["rev-parse", "--is-shallow-repository"])
         .output()
     {
@@ -437,5 +493,51 @@ mod tests {
     fn is_shallow_on_nonexistent_path() {
         // Should return false (conservative default), not panic
         assert!(!is_shallow(Path::new("/nonexistent/repo/path")));
+    }
+
+    // SEC-V1.25-11: validate_git_repo rejects non-repo directories and traversal.
+    #[test]
+    fn validate_git_repo_rejects_non_repo() {
+        let dir = TempDir::new().unwrap();
+        // A fresh empty tempdir is NOT a git repo.
+        let result = validate_git_repo(dir.path());
+        assert!(
+            result.is_err(),
+            "empty dir should be rejected as non-git-repo"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not a git repository"),
+            "error should mention non-git-repo, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn validate_git_repo_accepts_real_repo() {
+        let dir = create_test_repo();
+        let result = validate_git_repo(dir.path());
+        assert!(
+            result.is_ok(),
+            "valid repo should be accepted: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn validate_git_repo_rejects_nonexistent_path() {
+        let result = validate_git_repo(Path::new("/nonexistent/train_data/fake_repo"));
+        assert!(result.is_err(), "nonexistent path should fail canonicalize");
+    }
+
+    // SEC-V1.25-11: git_log refuses non-repo paths up front.
+    #[test]
+    fn git_log_rejects_non_repo() {
+        let dir = TempDir::new().unwrap();
+        let result = git_log(dir.path(), 0);
+        assert!(
+            result.is_err(),
+            "git_log should reject a non-repo directory"
+        );
     }
 }

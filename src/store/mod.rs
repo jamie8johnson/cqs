@@ -115,6 +115,9 @@ pub use helpers::UnifiedResult;
 /// Current database schema version.
 pub use helpers::CURRENT_SCHEMA_VERSION;
 
+/// Which HNSW index a dirty-flag operation applies to (enriched vs base).
+pub use metadata::HnswKind;
+
 /// Name of the embedding model (compile-time default for BGE-large).
 /// Runtime code should use `Store::stored_model_name()` or `ModelInfo::new()`.
 /// This constant exists for callers outside the store (e.g. `doctor.rs`).
@@ -224,6 +227,10 @@ pub struct Store {
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
     notes_summaries_cache: RwLock<Option<Arc<Vec<NoteSummary>>>>,
+    /// PF-V1.25-4: cached `OwnedNoteBoostIndex` derived from `notes_summaries_cache`.
+    /// Built lazily on first `cached_note_boost_index()` call, invalidated
+    /// alongside the notes cache in `invalidate_notes_cache`.
+    note_boost_cache: RwLock<Option<Arc<crate::search::scoring::OwnedNoteBoostIndex>>>,
     /// Cached call graph — populated on first access, valid until `clear_caches()`.
     /// `OnceLock` is write-once within a cache epoch. `clear_caches(&mut self)` swaps
     /// in a fresh OnceLock, which is safe because `&mut self` guarantees exclusive access.
@@ -244,7 +251,7 @@ struct StoreOpenConfig {
     use_current_thread: bool,
     max_connections: u32,
     mmap_size: String,
-    cache_size: &'static str,
+    cache_size: String,
     /// Pre-existing runtime to reuse. If `Some`, skips runtime creation
     /// (~15ms saving). If `None`, creates a new one per `use_current_thread`.
     runtime: Option<Runtime>,
@@ -257,6 +264,18 @@ fn mmap_size_from_env(default_bytes: &str) -> String {
         .ok()
         .and_then(|v| v.parse::<u64>().ok().map(|n| n.to_string()))
         .unwrap_or_else(|| default_bytes.to_string())
+}
+
+/// Read `CQS_SQLITE_CACHE_SIZE` env var, falling back to `default_kib`.
+/// SQLite `cache_size` PRAGMA uses a negative kibibyte count (e.g. `-16384`
+/// for 16 MB). The env var should be a signed integer in that same format —
+/// negative means kibibytes, positive means a page count. Accepting only
+/// i64 keeps parsing simple while letting tuners pick either convention.
+fn cache_size_from_env(default_kib: &str) -> String {
+    std::env::var("CQS_SQLITE_CACHE_SIZE")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok().map(|n| n.to_string()))
+        .unwrap_or_else(|| default_kib.to_string())
 }
 
 impl Store {
@@ -285,7 +304,7 @@ impl Store {
                 use_current_thread: false,
                 max_connections,
                 mmap_size: mmap_size_from_env("268435456"), // 256MB default
-                cache_size: "-16384",                       // 16MB
+                cache_size: cache_size_from_env("-16384"),  // 16MB
                 runtime: None,
             },
         )
@@ -308,7 +327,7 @@ impl Store {
                 use_current_thread: true,
                 max_connections: 1,
                 mmap_size: mmap_size_from_env("268435456"),
-                cache_size: "-16384",
+                cache_size: cache_size_from_env("-16384"),
                 runtime: None,
             },
         )
@@ -325,7 +344,7 @@ impl Store {
                 use_current_thread: true,
                 max_connections: 1,
                 mmap_size: mmap_size_from_env("67108864"), // 64MB default
-                cache_size: "-4096",                       // 4MB
+                cache_size: cache_size_from_env("-4096"),  // 4MB
                 runtime: None,
             },
         )
@@ -344,7 +363,7 @@ impl Store {
                 use_current_thread: true,
                 max_connections: 1,
                 mmap_size: mmap_size_from_env("268435456"),
-                cache_size: "-16384",
+                cache_size: cache_size_from_env("-16384"),
                 runtime: Some(runtime),
             },
         )
@@ -375,12 +394,7 @@ impl Store {
             .filename(path)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(std::time::Duration::from_millis(
-                std::env::var("CQS_BUSY_TIMEOUT_MS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(5000),
-            ))
+            .busy_timeout(helpers::sql::busy_timeout_from_env(5000))
             // NORMAL synchronous in WAL mode: fsync on checkpoint, not every commit.
             // Trade-off: a crash can lose the last few committed transactions (WAL
             // tail not yet fsynced), but the database remains consistent. Acceptable
@@ -526,6 +540,7 @@ impl Store {
             dim,
             closed: AtomicBool::new(false),
             notes_summaries_cache: RwLock::new(None),
+            note_boost_cache: RwLock::new(None),
             call_graph_cache: std::sync::OnceLock::new(),
             test_chunks_cache: std::sync::OnceLock::new(),
             chunk_type_map_cache: std::sync::OnceLock::new(),
@@ -580,6 +595,12 @@ impl Store {
         let _span = tracing::debug_span!("store_clear_caches").entered();
         *self
             .notes_summaries_cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        // PF-V1.25-4: note_boost_cache is derived from notes_summaries_cache;
+        // clear alongside it so a reset doesn't leave stale boost data.
+        *self
+            .note_boost_cache
             .write()
             .unwrap_or_else(|e| e.into_inner()) = None;
         self.call_graph_cache = std::sync::OnceLock::new();

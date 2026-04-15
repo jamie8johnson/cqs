@@ -18,4 +18,4 @@ pub(crate) use candidate::{
 };
 pub(crate) use filter::{build_filter_sql, compile_glob_filter, extract_file_from_chunk_id};
 pub(crate) use name_match::NameMatcher;
-pub(crate) use note_boost::NoteBoostIndex;
+pub(crate) use note_boost::{NoteBoost, NoteBoostIndex, OwnedNoteBoostIndex};

@@ -253,9 +253,23 @@ const STRUCTURAL_PATTERNS: &[&str] = &[
     "deriving",
 ];
 
-/// Multi-step conjunction patterns
+/// Multi-step conjunction patterns.
+///
+/// AC-V1.25-10: bare " and " / " or " were removed because they fired on
+/// any conjunction in a query ("find foo and bar"), sweeping near-every
+/// multi-word NL query into `QueryCategory::MultiStep`. The remaining
+/// patterns require explicit sequencing / enumeration phrasing
+/// ("first do X then do Y") so the category actually captures multi-step
+/// intent, not any coordinated phrase.
 const MULTISTEP_PATTERNS: &[&str] = &[
-    "and then", "before ", "after ", " and ", " or ", "first ", "then ", "both ", "between ",
+    "and then",
+    "before ",
+    "after ",
+    " or also ",
+    "first ",
+    "then ",
+    "both ",
+    "between ",
 ];
 
 // ── Classification ───────────────────────────────────────────────────
@@ -269,13 +283,28 @@ const MULTISTEP_PATTERNS: &[&str] = &[
 ///
 /// Returns a value in [0.0, 1.0] where 1.0 means pure dense and < 1.0 activates
 /// SPLADE with that fusion weight.
+///
+/// OB-NEW-1: emits a single structured `tracing::info!` recording the
+/// resolved alpha, its source (`per_cat_env` / `global_env` / `default`),
+/// and the category. Callers no longer need to log the decision themselves;
+/// rooting the log inside this function makes the env-precedence visible and
+/// eliminates the drift that existed between the CLI and batch-handler logs.
 pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
+    let _span = tracing::debug_span!("resolve_splade_alpha", category = %category).entered();
+
     // Per-category env override: CQS_SPLADE_ALPHA_CONCEPTUAL_SEARCH etc.
     let cat_key = format!("CQS_SPLADE_ALPHA_{}", category.to_string().to_uppercase());
     if let Ok(val) = std::env::var(&cat_key) {
         if let Ok(alpha) = val.parse::<f32>() {
             if alpha.is_finite() {
-                return alpha.clamp(0.0, 1.0);
+                let alpha = alpha.clamp(0.0, 1.0);
+                tracing::info!(
+                    category = %category,
+                    alpha,
+                    source = "per_cat_env",
+                    "SPLADE routing"
+                );
+                return alpha;
             }
             tracing::warn!(var = %cat_key, value = %val, "Non-finite alpha, using default");
         } else {
@@ -287,7 +316,14 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
     if let Ok(val) = std::env::var("CQS_SPLADE_ALPHA") {
         if let Ok(alpha) = val.parse::<f32>() {
             if alpha.is_finite() {
-                return alpha.clamp(0.0, 1.0);
+                let alpha = alpha.clamp(0.0, 1.0);
+                tracing::info!(
+                    category = %category,
+                    alpha,
+                    source = "global_env",
+                    "SPLADE routing"
+                );
+                return alpha;
             }
         }
     }
@@ -301,7 +337,7 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
     // Oracle R@1 with these values: 49.4% vs 44.9% for best uniform α=0.95.
     // The earlier v1.24.0 defaults were fit to corrupted data; plateaus
     // are resolved here to the mid-point for robustness.
-    match category {
+    let alpha = match category {
         // Double plateau: 0.10–0.30 and 0.85–0.90 both at 98%. α=1.0 drops
         // to 94%. Pick 0.90 (dense-side plateau edge, +4pp over 1.0).
         QueryCategory::IdentifierLookup => 0.90,
@@ -318,7 +354,15 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
         // pure dense scoring is best. SPLADE still contributes to the
         // candidate pool (always-on), α just weights the scoring.
         _ => 1.0,
-    }
+    };
+
+    tracing::info!(
+        category = %category,
+        alpha,
+        source = "default",
+        "SPLADE routing"
+    );
+    alpha
 }
 
 /// Pure function — no I/O, cannot fail, completes in <1ms.
@@ -515,6 +559,12 @@ fn is_identifier_query(_query: &str, words: &[&str]) -> bool {
 }
 
 /// Check if query mentions multiple programming languages or translation.
+///
+/// AC-V1.25-9: the translation-verb check uses word-token matching for
+/// "port" / "ports" / "convert" / "translate" / "equivalent". Previously
+/// the "port " substring probe false-fired on "report", "reports",
+/// "airport" etc. — any word with "port " inside it at a word boundary
+/// inside a longer compound would look like a translation verb.
 fn is_cross_language_query(query: &str, words: &[&str]) -> bool {
     let names = language_names();
     let lang_count = names
@@ -524,12 +574,11 @@ fn is_cross_language_query(query: &str, words: &[&str]) -> bool {
     if lang_count >= 2 {
         return true;
     }
-    if lang_count >= 1
-        && (query.contains("equivalent")
-            || query.contains("translate")
-            || query.contains("port ")
-            || query.contains("convert "))
-    {
+    let has_translate_verb = query.contains("equivalent")
+        || query.contains("translate")
+        || query.contains("convert ")
+        || words.iter().any(|w| *w == "port" || *w == "ports");
+    if lang_count >= 1 && has_translate_verb {
         return true;
     }
     false
@@ -549,6 +598,11 @@ fn is_structural_query(query: &str) -> bool {
 }
 
 /// Check if query describes behavior.
+///
+/// AC-V1.25-15: the "code that" / "function that" probes use word-boundary
+/// checks instead of raw substring contains so hyphenated identifiers like
+/// `code-that-was-deleted-yesterday` don't false-fire. The word-boundary
+/// phrase must be surrounded by whitespace or sit at a string boundary.
 fn is_behavioral_query(query: &str, words: &[&str]) -> bool {
     if words.iter().any(|w| BEHAVIORAL_VERBS.contains(w)) {
         return true;
@@ -559,7 +613,32 @@ fn is_behavioral_query(query: &str, words: &[&str]) -> bool {
     // Unknown). Net loss: ~3 queries / 265. "code that" / "function that"
     // are kept — they're more specific phrasings used by genuine behavioral
     // queries ("function that embeds a batch of text documents").
-    query.contains("code that") || query.contains("function that")
+    contains_phrase(query, "code that") || contains_phrase(query, "function that")
+}
+
+/// Check whether `phrase` appears in `query` surrounded by whitespace or
+/// string boundaries — a word-boundary check without regex overhead.
+///
+/// Used by [`is_behavioral_query`] so hyphenated or compounded identifiers
+/// that happen to contain the phrase as a substring don't false-fire.
+fn contains_phrase(query: &str, phrase: &str) -> bool {
+    let bytes = query.as_bytes();
+    let pbytes = phrase.as_bytes();
+    let plen = pbytes.len();
+    if plen == 0 || bytes.len() < plen {
+        return false;
+    }
+    for start in 0..=bytes.len() - plen {
+        if &bytes[start..start + plen] != pbytes {
+            continue;
+        }
+        let left_ok = start == 0 || bytes[start - 1].is_ascii_whitespace();
+        let right_ok = start + plen == bytes.len() || bytes[start + plen].is_ascii_whitespace();
+        if left_ok && right_ok {
+            return true;
+        }
+    }
+    false
 }
 
 /// Check if query is about abstract concepts.
@@ -921,5 +1000,102 @@ mod tests {
         // Should be identifier (single word, valid identifier chars)
         // but Medium confidence since it's also a common word
         assert_eq!(c.category, QueryCategory::IdentifierLookup);
+    }
+
+    // ── AC-V1.25-10 MultiStep pattern tightening ─────────────────────
+
+    #[test]
+    fn test_classify_plain_and_is_not_multistep() {
+        // "find foo and bar" is a single search intent, not a multi-step
+        // query. Previously " and " alone pushed this into MultiStep.
+        let c = classify_query("find foo and bar");
+        assert_ne!(
+            c.category,
+            QueryCategory::MultiStep,
+            "plain conjunction should not classify as MultiStep"
+        );
+    }
+
+    #[test]
+    fn test_classify_plain_or_is_not_multistep() {
+        // "find foo or bar" is a single search intent with alternation,
+        // not a multi-step query.
+        let c = classify_query("find foo or bar");
+        assert_ne!(
+            c.category,
+            QueryCategory::MultiStep,
+            "plain disjunction should not classify as MultiStep"
+        );
+    }
+
+    #[test]
+    fn test_classify_first_then_is_multistep() {
+        // Explicit sequencing must still classify as MultiStep.
+        let c = classify_query("first do X then do Y");
+        assert_eq!(c.category, QueryCategory::MultiStep);
+    }
+
+    #[test]
+    fn test_classify_and_then_is_multistep() {
+        // "and then" explicitly chains two steps.
+        let c = classify_query("find errors and then retry them");
+        assert_eq!(c.category, QueryCategory::MultiStep);
+    }
+
+    // ── AC-V1.25-9 cross-language classifier word-boundary ──────────
+
+    #[test]
+    fn test_classify_report_is_not_cross_language() {
+        // Previously "port " substring probe matched "report" and
+        // classified any language + "report" query as CrossLanguage.
+        let c = classify_query("show the error report in python");
+        assert_ne!(
+            c.category,
+            QueryCategory::CrossLanguage,
+            "'report' should not trigger cross-language via 'port ' substring"
+        );
+    }
+
+    #[test]
+    fn test_classify_port_verb_stays_cross_language() {
+        // "port X to Y" with a language name is still CrossLanguage.
+        let c = classify_query("port the logging module to rust");
+        assert_eq!(c.category, QueryCategory::CrossLanguage);
+    }
+
+    // ── AC-V1.25-15 behavioral classifier word-boundary ─────────────
+
+    #[test]
+    fn test_classify_word_bounded_code_that_not_behavioral() {
+        // A token-attached "code that" like `barcode that1` contains the
+        // literal "code that" substring but is not the phrase "code that"
+        // as a word. Previously the substring probe classified this as
+        // Behavioral; the word-boundary check should not.
+        let c = classify_query("barcode that1 lives forever");
+        assert_ne!(
+            c.category,
+            QueryCategory::Behavioral,
+            "token-attached 'code that' should not classify as Behavioral via substring"
+        );
+    }
+
+    #[test]
+    fn test_classify_word_bounded_function_that_not_behavioral() {
+        // "malfunction that" attaches "function that" to "mal"; should
+        // not match the word-bounded phrase check.
+        let c = classify_query("malfunction that3 happened");
+        assert_ne!(
+            c.category,
+            QueryCategory::Behavioral,
+            "token-attached 'function that' should not classify as Behavioral"
+        );
+    }
+
+    #[test]
+    fn test_classify_behavioral_code_that_still_fires() {
+        // "code that ..." as a real NL phrase still classifies as
+        // Behavioral after word-boundary tightening.
+        let c = classify_query("code that handles retries");
+        assert_eq!(c.category, QueryCategory::Behavioral);
     }
 }

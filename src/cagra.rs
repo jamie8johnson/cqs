@@ -15,6 +15,8 @@
 //! built once and reused for all searches. No rebuild machinery needed.
 
 #[cfg(feature = "gpu-index")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "gpu-index")]
 use std::sync::Mutex;
 
 #[cfg(feature = "gpu-index")]
@@ -70,6 +72,14 @@ pub struct CagraIndex {
     gpu: Mutex<GpuState>,
     /// Mapping from internal index to chunk ID
     id_map: Vec<String>,
+    /// RM-V1.25-19: Set when a mutex poison is observed. The CUDA stream
+    /// may be in an inconsistent posture after a mid-op panic
+    /// (cudaMalloc'd buffer unfreed, stream corked, resources leaked),
+    /// so subsequent searches against the same `GpuState` could
+    /// double-free or CUDA-fault. `BatchContext::vector_index` checks
+    /// `is_poisoned()` and forces a rebuild via `build_from_store`
+    /// rather than reusing the poisoned state.
+    poisoned: AtomicBool,
 }
 
 #[cfg(feature = "gpu-index")]
@@ -121,6 +131,7 @@ impl CagraIndex {
             dim,
             gpu: Mutex::new(GpuState { resources, index }),
             id_map,
+            poisoned: AtomicBool::new(false),
         })
     }
 
@@ -143,17 +154,32 @@ impl CagraIndex {
 
         if query.len() != self.dim {
             tracing::warn!(
-                "Query dimension mismatch: expected {}, got {}",
-                self.dim,
-                query.len()
+                expected_dim = self.dim,
+                actual_dim = query.len(),
+                "Query dimension mismatch"
             );
             return Vec::new();
         }
 
         let gpu = self.gpu.lock().unwrap_or_else(|poisoned| {
-            tracing::debug!("CAGRA GPU mutex poisoned, recovering");
+            // RM-V1.25-19: a prior panic left the CUDA stream in an
+            // unknown state. Flag the index so the caller forces a
+            // rebuild on the next `vector_index()` access; return an
+            // empty result here rather than run a new kernel against
+            // possibly-corrupted resources.
+            self.poisoned.store(true, Ordering::Release);
+            tracing::warn!(
+                "CAGRA GPU mutex poisoned — results from this call are discarded \
+                 and the index will be rebuilt on the next vector_index() access"
+            );
             poisoned.into_inner()
         });
+
+        if self.poisoned.load(Ordering::Acquire) {
+            // Don't dispatch new kernels; the caller should have already
+            // rebuilt us. This is a safety net for racing clients.
+            return Vec::new();
+        }
 
         self.search_impl(&gpu, query, k, None)
     }
@@ -191,7 +217,12 @@ impl CagraIndex {
         // copies data to GPU but the DLTensor shape pointer still references the host
         // ndarray's internal shape storage.
         let mut neighbors_host: Array2<u32> = Array2::zeros((1, k));
-        let mut distances_host: Array2<f32> = Array2::zeros((1, k));
+        // AC-V1.25-7: initialize distances to +∞ so unfilled slots are
+        // detectable. When `index.len() < k`, cuVS returns only `index.len()`
+        // real pairs and leaves the rest of the buffer untouched — if we
+        // zero-filled, those untouched slots look like perfect-match hits
+        // (distance 0.0 → score 1.0) pointing at chunk_id 0.
+        let mut distances_host: Array2<f32> = Array2::from_elem((1, k), f32::INFINITY);
 
         let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&gpu.resources) {
             Ok(t) => t,
@@ -262,8 +293,13 @@ impl CagraIndex {
 
         for i in 0..k {
             let idx = neighbor_row[i] as usize;
+            let dist = distance_row[i];
+            // AC-V1.25-7: skip unfilled slots (buffer pre-seeded with +∞) so
+            // we don't emit phantom perfect-match results when k > index.len().
+            if !dist.is_finite() {
+                continue;
+            }
             if idx < self.id_map.len() {
-                let dist = distance_row[i];
                 let score = 1.0 - dist / 2.0;
                 results.push(IndexResult {
                     id: self.id_map[idx].clone(),
@@ -294,6 +330,13 @@ impl VectorIndex for CagraIndex {
         "CAGRA"
     }
 
+    /// RM-V1.25-19: expose the poison flag so `BatchContext::vector_index`
+    /// can force a full rebuild instead of reusing a possibly-corrupt
+    /// CUDA context after a prior panic.
+    fn is_poisoned(&self) -> bool {
+        self.poisoned.load(Ordering::Acquire)
+    }
+
     fn dim(&self) -> usize {
         self.dim
     }
@@ -313,9 +356,9 @@ impl VectorIndex for CagraIndex {
 
         if query.len() != self.dim {
             tracing::warn!(
-                "Query dimension mismatch: expected {}, got {}",
-                self.dim,
-                query.len()
+                expected_dim = self.dim,
+                actual_dim = query.len(),
+                "Query dimension mismatch"
             );
             return Vec::new();
         }
@@ -350,9 +393,21 @@ impl VectorIndex for CagraIndex {
         );
 
         let gpu = self.gpu.lock().unwrap_or_else(|poisoned| {
-            tracing::debug!("CAGRA GPU mutex poisoned, recovering");
+            // RM-V1.25-19: same recovery path as `search()`. See that
+            // comment for the rationale — CUDA state may be corrupt, we
+            // flag for rebuild and drop the work rather than kernel-launch
+            // against a bad stream.
+            self.poisoned.store(true, Ordering::Release);
+            tracing::warn!(
+                "CAGRA GPU mutex poisoned (filtered path) — results discarded \
+                 and index will be rebuilt on next vector_index()"
+            );
             poisoned.into_inner()
         });
+
+        if self.poisoned.load(Ordering::Acquire) {
+            return Vec::new();
+        }
 
         // Upload bitset to device
         let bitset_host = ndarray_015::Array1::from_vec(bitset);
@@ -477,6 +532,7 @@ impl CagraIndex {
             dim,
             gpu: Mutex::new(GpuState { resources, index }),
             id_map,
+            poisoned: AtomicBool::new(false),
         })
     }
 }

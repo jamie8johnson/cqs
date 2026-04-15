@@ -19,8 +19,11 @@ impl Store {
     ) -> Result<std::collections::HashMap<String, u64>, StoreError> {
         let mut result = std::collections::HashMap::new();
 
-        const BATCH_SIZE: usize = 500;
-        for batch in names.chunks(BATCH_SIZE) {
+        // PF-V1.25-8: 500 was sized for the pre-3.32 SQLite 999-var limit.
+        // `max_rows_per_statement(1)` returns ~32466 (one bind per row).
+        use crate::store::helpers::sql::max_rows_per_statement;
+        let batch_size = max_rows_per_statement(1);
+        for batch in names.chunks(batch_size) {
             let placeholders = super::super::helpers::make_placeholders(batch.len());
             let sql = format!(
                 "SELECT {group_column}, {count_expr} FROM function_calls WHERE {filter_column} IN ({placeholders}) GROUP BY {group_column}",

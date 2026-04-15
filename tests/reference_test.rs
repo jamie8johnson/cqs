@@ -130,6 +130,8 @@ fn test_search_reference_applies_weight() {
         store: ref_store,
         index: None,
         weight: 0.7,
+        db_path: std::path::PathBuf::new(),
+        loaded_identity: None,
     };
 
     let query = mock_embedding(1.0);
@@ -160,6 +162,8 @@ fn test_search_reference_weight_filters_below_threshold() {
         store: ref_store,
         index: None,
         weight: 0.5, // Low weight
+        db_path: std::path::PathBuf::new(),
+        loaded_identity: None,
     };
 
     let query = mock_embedding(1.0);
@@ -185,6 +189,8 @@ fn test_search_reference_by_name_weight() {
         store: ref_store,
         index: None,
         weight: 0.6,
+        db_path: std::path::PathBuf::new(),
+        loaded_identity: None,
     };
 
     let results =
@@ -235,6 +241,8 @@ fn test_search_reference_unweighted_returns_raw_scores() {
         store: ref_store,
         index: None,
         weight: 0.5, // Low weight — should NOT be applied
+        db_path: std::path::PathBuf::new(),
+        loaded_identity: None,
     };
 
     let query = mock_embedding(1.0);
@@ -269,12 +277,16 @@ fn test_search_reference_unweighted_vs_weighted() {
         store: ref_store_w,
         index: None,
         weight,
+        db_path: std::path::PathBuf::new(),
+        loaded_identity: None,
     };
     let ref_idx_u = ReferenceIndex {
         name: "unweighted".to_string(),
         store: ref_store_u,
         index: None,
         weight,
+        db_path: std::path::PathBuf::new(),
+        loaded_identity: None,
     };
 
     let query = mock_embedding(1.0);
@@ -322,6 +334,8 @@ fn test_search_reference_by_name_unweighted() {
         store: ref_store,
         index: None,
         weight: 0.5,
+        db_path: std::path::PathBuf::new(),
+        loaded_identity: None,
     };
 
     let results =
@@ -350,6 +364,8 @@ fn test_search_reference_by_name_unweighted_threshold() {
         store: ref_store,
         index: None,
         weight: 0.5,
+        db_path: std::path::PathBuf::new(),
+        loaded_identity: None,
     };
 
     // Very high threshold should filter everything

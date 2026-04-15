@@ -15,11 +15,11 @@
 //! For memory-constrained environments, consider running `cqs index` manually instead
 //! of using watch mode.
 
-use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
@@ -52,26 +52,109 @@ impl Drop for SocketCleanupGuard {
     }
 }
 
+/// RM-V1.25-9: Set on SIGTERM so the watch loop drains and exits
+/// cleanly instead of being hard-killed mid-write when systemd
+/// sends `stop`. `ctrlc` without the `termination` feature only
+/// traps SIGINT, and we don't want to grow a dep just for this
+/// one unix-only hook.
+#[cfg(unix)]
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(unix)]
+fn is_shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(Ordering::Acquire)
+}
+
+/// RM-V1.25-8: observable from both SIGTERM (SHUTDOWN_REQUESTED) and
+/// Ctrl+C (`check_interrupted`). The socket accept loop polls this so
+/// the watch main loop can tell the daemon thread to drain without
+/// having to route a separate shutdown channel.
+#[cfg(unix)]
+fn daemon_should_exit() -> bool {
+    is_shutdown_requested() || check_interrupted()
+}
+
+/// Signal handler — async-signal-safe: only a relaxed atomic store.
+#[cfg(unix)]
+extern "C" fn on_sigterm(_sig: libc::c_int) {
+    SHUTDOWN_REQUESTED.store(true, Ordering::Release);
+}
+
+/// SEC-V1.25-1: cap concurrent daemon client threads so a misbehaving
+/// (or malicious) local client can't spawn unbounded handlers and exhaust
+/// fds, threads, or stacks. 64 is comfortably above typical agent traffic
+/// and still bounded — at 2 MB stack each this is ~128 MB worst case.
+#[cfg(unix)]
+const MAX_CONCURRENT_DAEMON_CLIENTS: usize = 64;
+
+/// Install a SIGTERM handler so `systemctl stop cqs-watch` triggers a
+/// clean drain via `SHUTDOWN_REQUESTED` rather than a hard kill. The
+/// existing ctrlc-based SIGINT handler already flips `check_interrupted`;
+/// this adds SIGTERM as a second shutdown path.
+#[cfg(unix)]
+fn install_sigterm_handler() {
+    // SAFETY: libc::signal is async-signal-safe to call before any
+    // threads start depending on the old disposition. We call it at
+    // the top of cmd_watch, prior to spawning the socket thread.
+    unsafe {
+        let prev = libc::signal(libc::SIGTERM, on_sigterm as *const () as libc::sighandler_t);
+        if prev == libc::SIG_ERR {
+            let e = std::io::Error::last_os_error();
+            tracing::warn!(error = %e, "Failed to install SIGTERM handler; watch will rely on SIGINT only");
+        } else {
+            tracing::debug!("SIGTERM handler installed for clean daemon shutdown");
+        }
+    }
+}
+
 /// Handle a single client connection on the daemon socket.
 #[cfg(unix)]
 /// Reads one JSON-line request, dispatches via the shared BatchContext, writes response.
+///
+/// SEC-V1.25-1: `batch_ctx` is a shared `Mutex<BatchContext>`; reads and
+/// writes happen without the lock so concurrent clients can parse their
+/// requests in parallel. Only the dispatch itself acquires the mutex, so a
+/// slow/malicious client's 5 s read window no longer wedges the accept loop
+/// or sibling handlers.
 fn handle_socket_client(
     mut stream: std::os::unix::net::UnixStream,
-    batch_ctx: &super::batch::BatchContext,
+    batch_ctx: &Mutex<super::batch::BatchContext>,
 ) {
-    let _span = tracing::info_span!("daemon_query").entered();
+    let span = tracing::info_span!("daemon_query", command = tracing::field::Empty);
+    let _enter = span.enter();
     let start = std::time::Instant::now();
 
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(30))).ok();
+    // EH-14: explicit warn on timeout failures rather than silent `.ok()` —
+    // without a timeout a wedged client would pin the handler thread forever.
+    if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(5))) {
+        tracing::warn!(
+            error = %e,
+            "Failed to set read timeout on daemon stream — slow client could pin handler"
+        );
+    }
+    if let Err(e) = stream.set_write_timeout(Some(Duration::from_secs(30))) {
+        tracing::warn!(
+            error = %e,
+            "Failed to set write timeout on daemon stream — slow client could pin handler"
+        );
+    }
 
-    // Read request (max 1MB)
-    let mut reader = std::io::BufReader::new(&stream);
+    // Read request (max 1MB). Wrap reader in .take() so allocation is
+    // bounded *before* we accept a giant line — the post-hoc size check
+    // below still fires if a client sends exactly the cap worth of data.
+    use std::io::Read as _;
+    let mut reader = std::io::BufReader::new(&stream).take(1_048_577);
     let mut line = String::new();
     match std::io::BufRead::read_line(&mut reader, &mut line) {
         Ok(0) => return,
         Ok(n) if n > 1_048_576 => {
-            let _ = write_daemon_error(&mut stream, "request too large");
+            let delivered = write_daemon_error_tracked(&mut stream, "request too large");
+            tracing::info!(
+                status = "client_error",
+                delivered,
+                latency_ms = start.elapsed().as_millis() as u64,
+                "Daemon query complete"
+            );
             return;
         }
         Err(e) => {
@@ -84,7 +167,13 @@ fn handle_socket_client(
     let request: serde_json::Value = match serde_json::from_str(line.trim()) {
         Ok(v) => v,
         Err(e) => {
-            let _ = write_daemon_error(&mut stream, &format!("invalid JSON: {e}"));
+            let delivered = write_daemon_error_tracked(&mut stream, &format!("invalid JSON: {e}"));
+            tracing::info!(
+                status = "parse_error",
+                delivered,
+                latency_ms = start.elapsed().as_millis() as u64,
+                "Daemon query complete"
+            );
             return;
         }
     };
@@ -103,10 +192,59 @@ fn handle_socket_client(
         })
         .unwrap_or_default();
 
-    tracing::debug!(command, args = ?args, "Daemon request");
+    // Record command on the span so every event inside this handler is
+    // enriched with it, without needing to repeat `command` on each log.
+    //
+    // SEC-V1.25-16: `notes add`/`update`/`remove` carry the note body
+    // as the first arg, which may contain source snippets or secrets.
+    // Log only `notes/<subcommand>` so operators see the shape of
+    // activity without the body reaching the journal.
+    let command_for_log: String = if command == "notes" {
+        let sub = args.first().map(String::as_str).unwrap_or("<unknown>");
+        // Only pass the subcommand itself through, never args beyond it.
+        match sub {
+            "add" | "update" | "remove" | "list" => format!("notes/{sub}"),
+            _ => "notes/<unknown>".to_string(),
+        }
+    } else {
+        command.to_string()
+    };
+    span.record("command", command_for_log.as_str());
+
+    // SEC-V1.25-9: avoid echoing full query args — search strings and
+    // notes bodies may contain snippets of private source or secrets.
+    // Log only a length + 80-char preview at debug level; the full
+    // command name is already on the span.
+    //
+    // SEC-V1.25-16: for notes mutations the body *is* the sensitive
+    // payload, so skip the preview entirely and record only the arg
+    // count.
+    let args_preview: String = if command == "notes" {
+        "<redacted>".to_string()
+    } else {
+        let joined = args.join(" ");
+        let end = joined
+            .char_indices()
+            .nth(80)
+            .map(|(i, _)| i)
+            .unwrap_or(joined.len());
+        joined[..end].to_string()
+    };
+    tracing::debug!(
+        command = %command_for_log,
+        args_len = args.len(),
+        args_preview = %args_preview,
+        "Daemon request"
+    );
 
     if command.is_empty() {
-        let _ = write_daemon_error(&mut stream, "missing 'command' field");
+        let delivered = write_daemon_error_tracked(&mut stream, "missing 'command' field");
+        tracing::info!(
+            status = "client_error",
+            delivered,
+            latency_ms = start.elapsed().as_millis() as u64,
+            "Daemon query complete"
+        );
         return;
     }
 
@@ -117,29 +255,57 @@ fn handle_socket_client(
             format!("{} {}", command, shell_words::join(&args))
         };
         let mut output = Vec::new();
-        batch_ctx.dispatch_line(&full_line, &mut output);
+        // SEC-V1.25-1: hold the BatchContext lock only across dispatch.
+        // Poisoned mutex → recover the inner ctx (dispatch_line itself
+        // catches panics via catch_unwind above, but some unrelated
+        // panic path could still leave the lock poisoned).
+        {
+            let ctx = batch_ctx
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            ctx.dispatch_line(&full_line, &mut output);
+        }
         String::from_utf8(output).map_err(|e| format!("non-UTF-8 output: {e}"))
     }));
 
-    match result {
+    let (status, delivered) = match result {
         Ok(Ok(output)) => {
             let resp = serde_json::json!({
                 "status": "ok",
                 "output": output.trim_end(),
             });
-            let _ = writeln!(stream, "{}", resp);
+            let delivered = match writeln!(stream, "{}", resp) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::debug!(error = %e, "Failed to write daemon response");
+                    false
+                }
+            };
+            ("ok", delivered)
         }
         Ok(Err(e)) => {
-            let _ = write_daemon_error(&mut stream, &e);
+            let delivered = write_daemon_error_tracked(&mut stream, &e);
+            ("client_error", delivered)
         }
-        Err(_) => {
-            let _ = write_daemon_error(&mut stream, "internal error (panic in dispatch)");
-            tracing::error!("Daemon query panicked — daemon continues");
+        Err(payload) => {
+            let msg = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&'static str>().copied())
+                .unwrap_or("<non-string panic payload>");
+            let delivered =
+                write_daemon_error_tracked(&mut stream, "internal error (panic in dispatch)");
+            tracing::error!(
+                panic_msg = %msg,
+                "Daemon query panicked — daemon continues"
+            );
+            ("panic", delivered)
         }
-    }
+    };
 
     tracing::info!(
-        command,
+        status,
+        delivered,
         latency_ms = start.elapsed().as_millis() as u64,
         "Daemon query complete"
     );
@@ -153,6 +319,21 @@ fn write_daemon_error(
     use std::io::Write;
     let resp = serde_json::json!({ "status": "error", "message": message });
     writeln!(stream, "{}", resp)
+}
+
+/// Like `write_daemon_error`, but logs on failure and returns whether
+/// the write reached the client. Used by `handle_socket_client` to
+/// populate the `delivered` telemetry field instead of silently
+/// swallowing write errors with `let _ = ...`.
+#[cfg(unix)]
+fn write_daemon_error_tracked(stream: &mut std::os::unix::net::UnixStream, message: &str) -> bool {
+    match write_daemon_error(stream, message) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::debug!(error = %e, "Failed to write daemon error response");
+            false
+        }
+    }
 }
 
 /// Opaque identity of a database file for detecting replacements (DS-W5).
@@ -197,13 +378,19 @@ fn max_pending_files() -> usize {
 /// Immutable references shared across the watch loop.
 ///
 /// Does not include `Store` because it is re-opened each cycle (DS-9).
+///
+/// RM-V1.25-28: `embedder` now points at a shared `Arc<OnceLock<Arc<Embedder>>>`
+/// that the daemon thread also holds. First side to populate it wins; the
+/// other side's future lazy-init short-circuits to the same instance.
+/// Eliminates the ~500 MB duplicate footprint that existed when the outer
+/// watch loop and the daemon thread each owned independent OnceLocks.
 struct WatchConfig<'a> {
     root: &'a Path,
     cqs_dir: &'a Path,
     notes_path: &'a Path,
     supported_ext: &'a HashSet<&'a str>,
     parser: &'a CqParser,
-    embedder: &'a OnceCell<Embedder>,
+    embedder: &'a std::sync::OnceLock<std::sync::Arc<Embedder>>,
     quiet: bool,
     model_config: &'a ModelConfig,
 }
@@ -217,6 +404,10 @@ struct WatchState {
     last_indexed_mtime: HashMap<PathBuf, SystemTime>,
     hnsw_index: Option<HnswIndex>,
     incremental_count: usize,
+    /// RM-V1.25-23: number of file events dropped this debounce cycle
+    /// because pending_files was at cap. Logged once per cycle in
+    /// process_file_changes, cleared after.
+    dropped_this_cycle: usize,
 }
 
 /// Track exponential backoff state for embedder initialization retries.
@@ -263,16 +454,20 @@ impl EmbedderBackoff {
     }
 }
 
-/// Try to initialize the embedder, returning a reference from the OnceCell.
-/// Deduplicates the 7-line pattern that appeared twice in cmd_watch.
-/// Uses `backoff` to apply exponential backoff on repeated failures (RM-24).
+/// Try to initialize the shared embedder, returning a reference from the
+/// Arc-backed OnceLock. Deduplicates the 7-line pattern that appeared
+/// twice in cmd_watch. Uses `backoff` to apply exponential backoff on
+/// repeated failures (RM-24).
+///
+/// RM-V1.25-28: the OnceLock is shared with the daemon thread; whichever
+/// side initializes first wins, and the other reuses the same Arc.
 fn try_init_embedder<'a>(
-    embedder: &'a OnceCell<Embedder>,
+    embedder: &'a std::sync::OnceLock<std::sync::Arc<Embedder>>,
     backoff: &mut EmbedderBackoff,
     model_config: &ModelConfig,
 ) -> Option<&'a Embedder> {
     match embedder.get() {
-        Some(e) => Some(e),
+        Some(e) => Some(e.as_ref()),
         None => {
             if !backoff.should_retry() {
                 return None;
@@ -280,7 +475,7 @@ fn try_init_embedder<'a>(
             match Embedder::new(model_config.clone()) {
                 Ok(e) => {
                     backoff.reset();
-                    Some(embedder.get_or_init(|| e))
+                    Some(embedder.get_or_init(|| std::sync::Arc::new(e)).as_ref())
                 }
                 Err(e) => {
                     warn!(error = %e, "Failed to initialize embedder");
@@ -363,6 +558,12 @@ pub fn cmd_watch(
         tracing::warn!("--no-ignore is not yet implemented for watch mode");
     }
 
+    // RM-V1.25-9: install SIGTERM handler *before* spawning the socket
+    // thread so both the main loop and the accept loop observe the
+    // shutdown flag immediately when systemd stops the unit.
+    #[cfg(unix)]
+    install_sigterm_handler();
+
     let root = find_project_root();
 
     // Auto-detect when polling is needed: WSL + DrvFS mount path.
@@ -384,6 +585,26 @@ pub fn cmd_watch(
     if cqs::config::is_wsl() && !use_poll {
         tracing::warn!("WSL detected: inotify may be unreliable on Windows filesystem mounts. Use --poll or 'cqs index' periodically.");
     }
+
+    // SHL-V1.25-13: the 500ms default is tuned for inotify on native
+    // Linux. WSL DrvFS (/mnt/, //wsl$) exposes NTFS which has 1s mtime
+    // resolution — anything under ~1000ms risks double-fire for a single
+    // save. Poll mode also benefits from a longer window. When the user
+    // did not override via flag or env, auto-bump to 1500ms for these
+    // paths. `CQS_WATCH_DEBOUNCE_MS` takes precedence over the flag.
+    let debounce_ms = if let Some(env_ms) = std::env::var("CQS_WATCH_DEBOUNCE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        env_ms
+    } else if debounce_ms == 500 && use_poll {
+        tracing::info!(
+            "Auto-bumping watch debounce to 1500ms for WSL/poll mode (override via --debounce or CQS_WATCH_DEBOUNCE_MS)"
+        );
+        1500
+    } else {
+        debounce_ms
+    };
 
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");
@@ -407,8 +628,49 @@ pub fn cmd_watch(
                     );
                 }
                 Err(_) => {
-                    std::fs::remove_file(&sock_path).ok();
-                    tracing::debug!(path = %sock_path.display(), "Removed stale socket file");
+                    // SEC-V1.25-15 / PB-V1.25-19: don't blindly unlink whatever
+                    // is at sock_path — an attacker (or a stale test artifact)
+                    // could leave a symlink or regular file there and trick us
+                    // into deleting something we shouldn't. Use symlink_metadata
+                    // (no follow) and refuse to remove anything that isn't a
+                    // socket or a plain file in the cqs dir.
+                    use std::os::unix::fs::FileTypeExt;
+                    match std::fs::symlink_metadata(&sock_path) {
+                        Ok(md) => {
+                            let ft = md.file_type();
+                            if ft.is_symlink() || ft.is_dir() {
+                                anyhow::bail!(
+                                    "Refusing to remove non-socket path {} (symlink/dir); resolve manually before starting daemon",
+                                    sock_path.display()
+                                );
+                            }
+                            if !(ft.is_socket() || ft.is_file()) {
+                                anyhow::bail!(
+                                    "Refusing to remove non-socket path {} (unexpected file type); resolve manually before starting daemon",
+                                    sock_path.display()
+                                );
+                            }
+                            if let Err(e) = std::fs::remove_file(&sock_path) {
+                                tracing::warn!(
+                                    error = %e,
+                                    path = %sock_path.display(),
+                                    "Failed to remove stale socket file"
+                                );
+                            } else {
+                                tracing::debug!(path = %sock_path.display(), "Removed stale socket file");
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            // Raced with another cleanup — nothing to do.
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                path = %sock_path.display(),
+                                "Failed to stat socket path before cleanup"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -417,7 +679,15 @@ pub fn cmd_watch(
         listener.set_nonblocking(true)?;
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600)).ok();
+            if let Err(e) =
+                std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))
+            {
+                tracing::warn!(
+                    error = %e,
+                    path = %sock_path.display(),
+                    "Failed to set socket permissions to 0o600"
+                );
+            }
         }
         tracing::info!(
             socket = %sock_path.display(),
@@ -426,34 +696,15 @@ pub fn cmd_watch(
         );
         if !cli.quiet {
             println!("Daemon listening on {}", sock_path.display());
-            // Log query-behavior env vars so it's obvious which config the daemon
-            // is running under. Env vars set on client subprocesses do NOT affect
-            // daemon-served queries — only the daemon's own env applies.
-            let query_env_vars = [
-                "CQS_SPLADE_ALPHA",
-                "CQS_DISABLE_BASE_INDEX",
-                "CQS_FORCE_BASE_INDEX",
-                "CQS_CAGRA_THRESHOLD",
-                "CQS_INTEGRITY_CHECK",
-                "CQS_EF_SEARCH",
-            ];
-            let set_vars: Vec<String> = query_env_vars
-                .iter()
-                .filter_map(|k| std::env::var(k).ok().map(|v| format!("{k}={v}")))
-                .collect();
-            let per_cat_vars: Vec<String> = std::env::vars()
-                .filter(|(k, _)| k.starts_with("CQS_SPLADE_ALPHA_"))
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect();
-            if !set_vars.is_empty() || !per_cat_vars.is_empty() {
-                println!("Query env: {}", set_vars.join(", "));
-                if !per_cat_vars.is_empty() {
-                    println!("Per-category SPLADE overrides: {}", per_cat_vars.join(", "));
-                }
-            } else {
-                println!("Query env: (using defaults from code)");
-            }
         }
+        // OB-NEW-2: Self-maintaining env snapshot — iterate every CQS_*
+        // variable instead of a hardcoded whitelist that drifts as new
+        // knobs are added. Env vars set on client subprocesses do NOT
+        // affect daemon-served queries; only the daemon's own env applies.
+        let cqs_vars: Vec<(String, String)> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("CQS_"))
+            .collect();
+        tracing::info!(cqs_vars = ?cqs_vars, "Daemon env snapshot");
         Some((listener, sock_path))
     } else {
         None
@@ -462,22 +713,77 @@ pub fn cmd_watch(
     let _socket_guard = socket_listener
         .as_ref()
         .map(|(_, path)| SocketCleanupGuard(path.clone()));
+    // PB-V1.25-2 / PB-V1.25-18: on non-unix platforms the daemon
+    // socket path is #[cfg(unix)]-only, so --serve would otherwise
+    // silently no-op. Warn both on stderr (so interactive users notice
+    // without --log-level=warn) and via tracing (for systemd-style
+    // journals that scrape our output).
     #[cfg(not(unix))]
     if serve {
-        tracing::warn!("--serve is not supported on Windows (no Unix domain sockets)");
+        eprintln!(
+            "Warning: --serve is unix-only (daemon socket uses Unix domain sockets); \
+             falling back to plain watch mode"
+        );
+        tracing::warn!("--serve requested on non-unix platform; daemon disabled");
     }
+
+    // RM-V1.25-28: Allocate the shared embedder slot before spawning the
+    // daemon thread so the Arc can be cloned into the thread's closure
+    // and adopted by its BatchContext. The slot starts empty; whichever
+    // side initializes first (daemon via `ctx.warm()` or watch via
+    // `try_init_embedder`) wins and the other reuses the same Arc.
+    let shared_embedder: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Embedder>>> =
+        std::sync::Arc::new(std::sync::OnceLock::new());
 
     // Spawn dedicated socket handler thread — runs independently of the file
     // watcher so queries are served immediately, even during the slow poll scan.
+    //
+    // RM-V1.25-8: keep the `JoinHandle` in a named `socket_thread` so the
+    // main loop can `.take().join()` it on shutdown with a bounded wait.
+    // Previously the handle was stashed under `_socket_thread` and dropped
+    // on function exit, detaching the thread. In that window the daemon's
+    // BatchContext (~500MB+ ONNX sessions, SQLite pool, HNSW Arc, optional
+    // CAGRA GPU resources) lived past the main loop's return with no
+    // WAL checkpoint and no `Drop` ordering. Under `cargo install` or shell
+    // Ctrl+C the orphaned thread could also block stdout writes.
     #[cfg(unix)]
-    let _socket_thread = if serve {
+    let mut socket_thread: Option<std::thread::JoinHandle<()>> = if serve {
         if let Some((listener, _)) = socket_listener.take() {
-            listener.set_nonblocking(false)?;
+            // RM-V1.25-28: Clone the shared OnceLock into the daemon closure
+            // so both the outer watch loop and BatchContext see the same
+            // Arc<Embedder>.
+            let daemon_embedder = std::sync::Arc::clone(&shared_embedder);
+            let daemon_model_config = cli.try_model_config()?.clone();
+            // Stays non-blocking: the accept loop below polls so it can
+            // notice SHUTDOWN_REQUESTED on SIGTERM (RM-V1.25-9).
             let thread = std::thread::spawn(move || {
                 // BatchContext created inside the thread — RefCell is !Send
                 // but thread-local ownership is fine.
                 let ctx = match super::batch::create_context() {
                     Ok(ctx) => {
+                        // RM-V1.25-28: seed the BatchContext's OnceLock if
+                        // the shared slot is already populated; otherwise
+                        // populate the shared slot with a fresh Embedder
+                        // so the outer watch loop sees it on first use.
+                        if let Some(existing) = daemon_embedder.get() {
+                            ctx.adopt_embedder(std::sync::Arc::clone(existing));
+                            tracing::info!("Daemon adopted shared embedder");
+                        } else {
+                            match Embedder::new(daemon_model_config) {
+                                Ok(emb) => {
+                                    let arc = std::sync::Arc::new(emb);
+                                    // Try to install in the shared slot;
+                                    // another thread may have raced us.
+                                    let winning_arc =
+                                        daemon_embedder.get_or_init(|| std::sync::Arc::clone(&arc));
+                                    ctx.adopt_embedder(std::sync::Arc::clone(winning_arc));
+                                    tracing::info!("Daemon built and shared embedder");
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Daemon embedder init failed — will retry lazily");
+                                }
+                            }
+                        }
                         ctx.warm();
                         ctx
                     }
@@ -486,12 +792,100 @@ pub fn cmd_watch(
                         return;
                     }
                 };
-                tracing::info!("Daemon query thread ready");
-                for stream in listener.incoming() {
-                    match stream {
-                        Ok(s) => handle_socket_client(s, &ctx),
+                // SEC-V1.25-1: wrap the BatchContext in Arc<Mutex> so each
+                // accepted connection gets its own handler thread. Without
+                // this, a single malicious client sitting on the 5 s read
+                // timeout (or a slow legitimate client) could wedge the
+                // accept loop for `5 * N` seconds and DoS the daemon.
+                let ctx = Arc::new(Mutex::new(ctx));
+                let in_flight = Arc::new(AtomicUsize::new(0));
+                tracing::info!(
+                    max_concurrent = MAX_CONCURRENT_DAEMON_CLIENTS,
+                    "Daemon query thread ready"
+                );
+                // RM-V1.25-3: Periodically sweep idle ONNX sessions even if
+                // no client connects. `check_idle_timeout` only fires on
+                // `dispatch_line`, so a warmed-but-untouched daemon would
+                // otherwise pin ~500MB+ indefinitely. Tick once per minute.
+                let mut last_idle_sweep = std::time::Instant::now();
+                let idle_sweep_interval = Duration::from_secs(60);
+                // RM-V1.25-9: Poll accept with a short sleep so the loop
+                // can notice SIGTERM and drain cleanly instead of blocking
+                // indefinitely on a syscall that systemd has to kill.
+                // Listener was set non-blocking at bind time.
+                // RM-V1.25-8: also break on Ctrl+C (`check_interrupted`) so
+                // the main loop's `.join()` on shutdown completes promptly.
+                loop {
+                    if daemon_should_exit() {
+                        tracing::info!("Daemon accept loop draining on shutdown signal");
+                        break;
+                    }
+                    // RM-V1.25-3: passive idle sweep — inspects the
+                    // `last_command_time` set by real dispatches and drops
+                    // sessions after IDLE_TIMEOUT_MINUTES. Skip if a handler
+                    // holds the mutex (we'll try again next tick).
+                    if last_idle_sweep.elapsed() >= idle_sweep_interval {
+                        if let Ok(ctx_guard) = ctx.try_lock() {
+                            ctx_guard.sweep_idle_sessions();
+                        }
+                        last_idle_sweep = std::time::Instant::now();
+                    }
+                    match listener.accept() {
+                        Ok((stream, _addr)) => {
+                            // SEC-V1.25-1: back-pressure. If we're already at
+                            // `MAX_CONCURRENT_DAEMON_CLIENTS` in-flight
+                            // handlers, reject this connection quickly rather
+                            // than spawning an unbounded number of threads.
+                            // Daemon is local-only, but we still want a hard
+                            // cap so a misbehaving client can't exhaust fds
+                            // or thread stacks.
+                            let current = in_flight.load(Ordering::Acquire);
+                            if current >= MAX_CONCURRENT_DAEMON_CLIENTS {
+                                let mut s = stream;
+                                let _ = write_daemon_error(
+                                    &mut s,
+                                    "daemon busy (too many concurrent clients)",
+                                );
+                                tracing::warn!(
+                                    in_flight = current,
+                                    cap = MAX_CONCURRENT_DAEMON_CLIENTS,
+                                    "Rejecting new daemon connection — at concurrency cap"
+                                );
+                                continue;
+                            }
+                            in_flight.fetch_add(1, Ordering::AcqRel);
+                            let ctx_clone = Arc::clone(&ctx);
+                            let in_flight_clone = Arc::clone(&in_flight);
+                            // Spawn a fresh thread per accepted connection so
+                            // read/parse/write I/O happens in parallel. Only
+                            // the dispatch itself is serialized via the
+                            // BatchContext mutex inside handle_socket_client.
+                            if let Err(e) = std::thread::Builder::new()
+                                .name("cqs-daemon-client".to_string())
+                                .spawn(move || {
+                                    handle_socket_client(stream, &ctx_clone);
+                                    in_flight_clone.fetch_sub(1, Ordering::AcqRel);
+                                })
+                            {
+                                // Couldn't spawn a thread — decrement the
+                                // counter we just bumped and log. The
+                                // connection is dropped when `stream` falls
+                                // out of scope at the end of the match arm.
+                                in_flight.fetch_sub(1, Ordering::AcqRel);
+                                tracing::warn!(
+                                    error = %e,
+                                    "Failed to spawn daemon client thread — dropping connection"
+                                );
+                            }
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
                         Err(e) => {
-                            tracing::debug!(error = %e, "Socket accept error");
+                            // Warn, not debug: EMFILE/ENFILE/ECONNABORTED are
+                            // operator-actionable (raise ulimit, etc.) and
+                            // should be visible at the default log level.
+                            tracing::warn!(error = %e, "Socket accept failed");
                         }
                     }
                 }
@@ -563,9 +957,8 @@ pub fn cmd_watch(
         notes_path
     });
 
-    // Lazy-initialized embedder (~500MB, avoids startup delay unless changes occur).
-    // Once initialized, stays in memory for fast reindexing. See module docs for memory details.
-    let embedder: OnceCell<Embedder> = OnceCell::new();
+    // Embedder is declared above (before daemon thread spawn) so its
+    // OnceLock can be shared with the daemon thread — see RM-V1.25-28.
 
     // Open store and reuse across reindex operations within a cycle.
     // Re-opened after each reindex cycle to clear stale OnceLock caches (DS-9).
@@ -612,7 +1005,7 @@ pub fn cmd_watch(
         notes_path: &notes_path,
         supported_ext: &supported_ext,
         parser: &parser,
-        embedder: &embedder,
+        embedder: shared_embedder.as_ref(),
         quiet: cli.quiet,
         model_config,
     };
@@ -628,9 +1021,14 @@ pub fn cmd_watch(
         last_indexed_mtime: HashMap::with_capacity(1024),
         hnsw_index,
         incremental_count,
+        dropped_this_cycle: 0,
     };
 
     let mut cycles_since_clear: u32 = 0;
+    // RM-V1.25-5: Track last eviction of the global embedding cache so
+    // the reindex path only trims once per hour, keeping the WAL file
+    // from churning on every micro-edit.
+    let mut last_cache_evict = std::time::Instant::now();
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -697,14 +1095,30 @@ pub fn cmd_watch(
                     store.clear_caches();
                     db_id = db_file_identity(&index_path);
 
+                    // RM-V1.25-5: Periodically evict the global embedding
+                    // cache so long-running watch sessions don't let the
+                    // shared ~/.cache/cqs/embeddings.db grow past its
+                    // CQS_CACHE_MAX_SIZE cap (default 10GB). Gated by
+                    // `last_cache_evict.elapsed()` so we don't churn the
+                    // SQLite file on every single reindex cycle.
+                    if last_cache_evict.elapsed() >= Duration::from_secs(3600) {
+                        super::batch::evict_global_embedding_cache("watch reindex cycle");
+                        last_cache_evict = std::time::Instant::now();
+                    }
+
                     // DS-1: Release lock after all reindex work (including HNSW rebuild)
                     drop(lock);
                 } else {
                     cycles_since_clear += 1;
                     // Clear embedder session and HNSW index after ~5 minutes idle
                     // (3000 cycles at 100ms). Frees GPU/memory when watch is idle.
+                    //
+                    // RM-V1.25-28: the shared Arc<Embedder> is also held by
+                    // the daemon thread's BatchContext. clear_session is
+                    // safe either way: the ONNX session is behind a Mutex
+                    // and the tokenizer is Mutex<Option<Arc<…>>>.
                     if cycles_since_clear >= 3000 {
-                        if let Some(emb) = embedder.get() {
+                        if let Some(emb) = shared_embedder.get() {
                             emb.clear_session();
                         }
                         state.hnsw_index = None;
@@ -726,6 +1140,52 @@ pub fn cmd_watch(
         if check_interrupted() {
             println!("\nStopping watch...");
             break;
+        }
+
+        #[cfg(unix)]
+        if is_shutdown_requested() {
+            tracing::info!("SIGTERM received, draining watch loop");
+            if !cli.quiet {
+                println!("\nSIGTERM received, stopping watch...");
+            }
+            break;
+        }
+    }
+
+    // RM-V1.25-8: bounded join of the daemon socket thread. The thread
+    // already observes `daemon_should_exit()` at the top of its accept
+    // loop (Ctrl+C and SIGTERM both satisfy it), so in the common case
+    // this returns within one poll cycle (~100ms). Enforce an outer
+    // timeout so a wedged handler (e.g. waiting on a long embedder
+    // inference) can't keep the process alive past ~5 s after the
+    // user asked it to stop.
+    #[cfg(unix)]
+    if let Some(handle) = socket_thread.take() {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let poll = Duration::from_millis(50);
+        let mut handle_opt = Some(handle);
+        while std::time::Instant::now() < deadline {
+            match handle_opt.as_ref() {
+                Some(h) if h.is_finished() => {
+                    if let Err(e) = handle_opt.take().unwrap().join() {
+                        tracing::warn!(?e, "Daemon socket thread panicked during shutdown");
+                    } else {
+                        tracing::info!("Daemon socket thread joined cleanly");
+                    }
+                    break;
+                }
+                Some(_) => std::thread::sleep(poll),
+                None => break,
+            }
+        }
+        if handle_opt.is_some() {
+            tracing::warn!(
+                "Daemon socket thread did not finish within 5s shutdown window — detaching (BatchContext Drop may race with process exit)"
+            );
+            // Intentionally drop `handle_opt` to detach — this is the
+            // pre-fix behaviour, preserved only when the 5 s budget is
+            // exhausted. In-flight embedder inference is the usual
+            // culprit.
         }
     }
 
@@ -784,7 +1244,12 @@ fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchSta
             if state.pending_files.len() < max_pending_files() {
                 state.pending_files.insert(rel.to_path_buf());
             } else {
-                tracing::warn!(
+                // RM-V1.25-23: log per-event at debug (spammy on bulk
+                // drops) and accumulate a counter; the once-per-cycle
+                // summary fires in process_file_changes so operators
+                // see the total truncation even if the level is info.
+                state.dropped_this_cycle = state.dropped_this_cycle.saturating_add(1);
+                tracing::debug!(
                     max = max_pending_files(),
                     path = %rel.display(),
                     "Watch pending_files full, dropping file event"
@@ -803,6 +1268,18 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
     let files: Vec<PathBuf> = state.pending_files.drain().collect();
     let _span = info_span!("process_file_changes", file_count = files.len()).entered();
     state.pending_files.shrink_to(64);
+
+    // RM-V1.25-23: surface truncated cycles at warn level so operators
+    // notice the gap. The per-event drops are logged at debug to keep
+    // the journal clean on bulk edits.
+    if state.dropped_this_cycle > 0 {
+        tracing::warn!(
+            dropped = state.dropped_this_cycle,
+            cap = max_pending_files(),
+            "Watch event queue full this cycle; dropping events. Run `cqs index` to catch up"
+        );
+        state.dropped_this_cycle = 0;
+    }
     if !cfg.quiet {
         println!("\n{} file(s) changed, reindexing...", files.len());
         for f in &files {
@@ -831,9 +1308,15 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
     // batch is not — files indexed so far are visible, remaining are
     // stale. Self-heals after HNSW rebuild. Acceptable for a dev tool.
     //
-    // Mark HNSW dirty before writing chunks (RT-DATA-6).
-    if let Err(e) = store.set_hnsw_dirty(true) {
-        tracing::warn!(error = %e, "Cannot set HNSW dirty flag — skipping reindex to prevent stale index on crash");
+    // Mark both HNSW kinds dirty before writing chunks (RT-DATA-6). The base
+    // index derives from the same chunks as enriched, so a crash mid-write
+    // can leave either graph stale.
+    if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Enriched, true) {
+        tracing::warn!(error = %e, "Cannot set enriched HNSW dirty flag — skipping reindex to prevent stale index on crash");
+        return;
+    }
+    if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Base, true) {
+        tracing::warn!(error = %e, "Cannot set base HNSW dirty flag — skipping reindex to prevent stale index on crash");
         return;
     }
     match reindex_files(cfg.root, store, &files, cfg.parser, emb, cfg.quiet) {
@@ -855,6 +1338,17 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                 println!("Indexed {} chunk(s)", count);
             }
 
+            // OB-NEW-10: When SPLADE is configured but watch skipped sparse
+            // re-encoding (watch never runs the SPLADE encoder, only the v20
+            // DELETE trigger invalidates on removals), surface the drift at
+            // debug level once per reindex cycle.
+            if count > 0 && cqs::splade::resolve_splade_model_dir().is_some() {
+                tracing::debug!(
+                    new_chunks = count,
+                    "Watch skipped SPLADE encoding, sparse coverage will drift until manual 'cqs index'"
+                );
+            }
+
             // Incremental HNSW update: insert changed chunks into existing Owned index.
             // Falls back to full rebuild on first run or after hnsw_rebuild_threshold() inserts.
             let needs_full_rebuild =
@@ -869,8 +1363,8 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                         let n = index.len();
                         state.hnsw_index = Some(index);
                         state.incremental_count = 0;
-                        if let Err(e) = store.set_hnsw_dirty(false) {
-                            tracing::warn!(error = %e, "Failed to clear HNSW dirty flag — unnecessary rebuild on next load");
+                        if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Enriched, false) {
+                            tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag — unnecessary rebuild on next load");
                         }
                         info!(vectors = n, "HNSW index rebuilt (full)");
                         if !cfg.quiet {
@@ -885,12 +1379,24 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                         state.hnsw_index = None;
                         for ext in cqs::hnsw::HNSW_ALL_EXTENSIONS {
                             let path = cfg.cqs_dir.join(format!("index.{}", ext));
-                            if path.exists() {
-                                let _ = std::fs::remove_file(&path);
+                            if let Err(e) = std::fs::remove_file(&path) {
+                                if e.kind() != std::io::ErrorKind::NotFound {
+                                    tracing::warn!(
+                                        error = %e,
+                                        path = %path.display(),
+                                        "Failed to delete stale HNSW file"
+                                    );
+                                }
                             }
                             let base_path = cfg.cqs_dir.join(format!("index_base.{}", ext));
-                            if base_path.exists() {
-                                let _ = std::fs::remove_file(&base_path);
+                            if let Err(e) = std::fs::remove_file(&base_path) {
+                                if e.kind() != std::io::ErrorKind::NotFound {
+                                    tracing::warn!(
+                                        error = %e,
+                                        path = %base_path.display(),
+                                        "Failed to delete stale base HNSW file"
+                                    );
+                                }
                             }
                         }
                     }
@@ -903,6 +1409,9 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                 match super::commands::build_hnsw_base_index(store, cfg.cqs_dir) {
                     Ok(Some(n)) => {
                         info!(vectors = n, "Base HNSW index rebuilt");
+                        if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Base, false) {
+                            tracing::warn!(error = %e, "Failed to clear base HNSW dirty flag — unnecessary rebuild on next load");
+                        }
                         if !cfg.quiet {
                             println!("  HNSW base index: {} vectors (full rebuild)", n);
                         }
@@ -934,8 +1443,10 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                                     // Save updated index to disk for search processes
                                     if let Err(e) = index.save(cfg.cqs_dir, "index") {
                                         warn!(error = %e, "Failed to save HNSW after incremental insert");
-                                    } else if let Err(e) = store.set_hnsw_dirty(false) {
-                                        tracing::warn!(error = %e, "Failed to clear HNSW dirty flag — unnecessary rebuild on next load");
+                                    } else if let Err(e) =
+                                        store.set_hnsw_dirty(cqs::HnswKind::Enriched, false)
+                                    {
+                                        tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag — unnecessary rebuild on next load");
                                     }
                                     info!(
                                         inserted = n,
@@ -1254,7 +1765,7 @@ mod tests {
         // These fields are unused by collect_events but required by the struct.
         // We leak a parser since tests don't call process_file_changes.
         let parser = Box::leak(Box::new(CqParser::new().unwrap()));
-        let embedder = Box::leak(Box::new(OnceCell::new()));
+        let embedder = Box::leak(Box::new(std::sync::OnceLock::new()));
         let model_config = Box::leak(Box::new(ModelConfig::default_model()));
         WatchConfig {
             root,
@@ -1277,6 +1788,7 @@ mod tests {
             last_indexed_mtime: HashMap::new(),
             hnsw_index: None,
             incremental_count: 0,
+            dropped_this_cycle: 0,
         }
     }
 

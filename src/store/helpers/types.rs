@@ -347,6 +347,13 @@ impl UnifiedResult {
         }
     }
 
+    /// Unique chunk id for deterministic tie-breaking when sorting by score.
+    pub fn id(&self) -> &str {
+        match self {
+            UnifiedResult::Code(r) => &r.chunk.id,
+        }
+    }
+
     /// Serialize to JSON with consistent field order.
     pub fn to_json(&self) -> serde_json::Value {
         match self {

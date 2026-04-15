@@ -389,7 +389,7 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
 
     // Prune chunks for deleted files
     let existing_files: HashSet<_> = files.into_iter().collect();
-    let pruned = store.prune_missing(&existing_files)?;
+    let pruned = store.prune_missing(&existing_files, source)?;
 
     // Guard: if pruning would remove >50% of existing chunks, warn loudly
     if pruned > 0 && existing_chunks > 0 {

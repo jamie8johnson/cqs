@@ -113,7 +113,7 @@ pub(crate) fn cmd_notes(ctx: &crate::cli::CommandContext, subcmd: &NotesCommand)
             check,
         } => cmd_notes_list(ctx, *warnings, *patterns, *json, *check),
         // Mutations delegated to cmd_notes_mutate (Group A, no CommandContext)
-        _ => unreachable!("mutations handled by cmd_notes_mutate in dispatch Group A"),
+        _ => anyhow::bail!("internal: notes dispatch routing bug — please file an issue"),
     }
 }
 
@@ -144,7 +144,7 @@ pub(crate) fn cmd_notes_mutate(cli: &Cli, subcmd: &NotesCommand) -> Result<()> {
         ),
         NotesCommand::Remove { text, no_reindex } => cmd_notes_remove(cli, text, *no_reindex),
         NotesCommand::List { .. } => {
-            unreachable!("list handled by cmd_notes in dispatch Group B")
+            anyhow::bail!("internal: notes dispatch routing bug — please file an issue")
         }
     }
 }

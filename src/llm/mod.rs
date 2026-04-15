@@ -202,6 +202,7 @@ pub enum LlmProvider {
 }
 
 /// Resolved LLM configuration (env vars > config file > constants).
+#[derive(Debug)]
 pub struct LlmConfig {
     pub provider: LlmProvider,
     pub api_base: String,
@@ -213,7 +214,11 @@ pub struct LlmConfig {
 
 impl LlmConfig {
     /// Resolve config with priority: env vars > config file > hardcoded constants.
-    pub fn resolve(config: &crate::config::Config) -> Self {
+    ///
+    /// SEC-V1.25-13: Returns `Err` if `CQS_LLM_API_BASE` uses cleartext `http://`
+    /// and the explicit opt-in `CQS_LLM_ALLOW_INSECURE=1` is not set. Prevents
+    /// the API key from being sent in the clear on every call.
+    pub fn resolve(config: &crate::config::Config) -> Result<Self, LlmError> {
         let _span = tracing::info_span!("resolve_llm_config").entered();
 
         let (api_base, api_base_source) = if let Ok(val) = std::env::var("CQS_LLM_API_BASE") {
@@ -242,10 +247,35 @@ impl LlmConfig {
                     })
                 })
                 .unwrap_or_else(|| api_base.clone());
-            tracing::warn!(
-                api_base = %safe_url,
-                "LLM API base does not use HTTPS — API key will be sent in cleartext"
-            );
+            // SEC-V1.25-13: cleartext http:// leaks the API key on every call.
+            // A `warn!` alone is not enough — demand explicit opt-in via
+            // CQS_LLM_ALLOW_INSECURE=1 for localhost testing.
+            if api_base.starts_with("http://") {
+                if std::env::var("CQS_LLM_ALLOW_INSECURE").as_deref() != Ok("1") {
+                    tracing::error!(
+                        api_base = %safe_url,
+                        "CQS_LLM_API_BASE uses http:// (cleartext); refusing to send API key in clear. \
+                         Set CQS_LLM_ALLOW_INSECURE=1 to override (e.g. for localhost testing)."
+                    );
+                    return Err(LlmError::Api {
+                        status: 0,
+                        message: format!(
+                            "CQS_LLM_API_BASE uses http:// (cleartext): {}. API key would be sent in clear. \
+                             Set CQS_LLM_ALLOW_INSECURE=1 to override (e.g. for localhost testing).",
+                            safe_url
+                        ),
+                    });
+                }
+                tracing::warn!(
+                    api_base = %safe_url,
+                    "CQS_LLM_API_BASE is http://; CQS_LLM_ALLOW_INSECURE acknowledged — API key sent in clear"
+                );
+            } else {
+                tracing::warn!(
+                    api_base = %safe_url,
+                    "LLM API base does not use HTTPS — API key will be sent in cleartext"
+                );
+            }
         }
 
         let provider = match std::env::var("CQS_LLM_PROVIDER").ok().as_deref() {
@@ -307,13 +337,13 @@ impl LlmConfig {
             .or(config.llm_hyde_max_tokens)
             .unwrap_or(HYDE_MAX_TOKENS);
 
-        Self {
+        Ok(Self {
             provider,
             api_base,
             model,
             max_tokens,
             hyde_max_tokens,
-        }
+        })
     }
 }
 
@@ -527,7 +557,7 @@ mod tests {
         std::env::remove_var("CQS_LLM_MAX_TOKENS");
 
         let config = crate::config::Config::default();
-        let llm = LlmConfig::resolve(&config);
+        let llm = LlmConfig::resolve(&config).unwrap();
 
         restore_llm_env_vars(saved);
 
@@ -545,7 +575,7 @@ mod tests {
             llm_max_tokens: Some(200),
             ..Default::default()
         };
-        let llm = LlmConfig::resolve(&config);
+        let llm = LlmConfig::resolve(&config).unwrap();
         assert_eq!(llm.model, "claude-sonnet-4-20250514");
         assert_eq!(llm.api_base, "https://custom.api/v1");
         assert_eq!(llm.max_tokens, 200);
@@ -567,7 +597,7 @@ mod tests {
         std::env::remove_var("CQS_LLM_API_BASE"); // ensure primary is clear
         std::env::set_var("CQS_LLM_MAX_TOKENS", "500");
 
-        let llm = LlmConfig::resolve(&config);
+        let llm = LlmConfig::resolve(&config).unwrap();
 
         // Clean up env vars
         std::env::remove_var("CQS_LLM_MODEL");
@@ -592,7 +622,7 @@ mod tests {
         std::env::remove_var("CQS_LLM_MAX_TOKENS");
 
         let config = crate::config::Config::default();
-        let llm = LlmConfig::resolve(&config);
+        let llm = LlmConfig::resolve(&config).unwrap();
 
         restore_llm_env_vars(saved);
 
@@ -614,7 +644,7 @@ mod tests {
         std::env::remove_var("CQS_LLM_MAX_TOKENS");
 
         let config = crate::config::Config::default();
-        let llm = LlmConfig::resolve(&config);
+        let llm = LlmConfig::resolve(&config).unwrap();
 
         restore_llm_env_vars(saved);
 
@@ -622,6 +652,69 @@ mod tests {
             llm.api_base, "https://legacy/v1",
             "CQS_API_BASE should work as fallback when CQS_LLM_API_BASE is not set"
         );
+    }
+
+    // SEC-V1.25-13: http:// is rejected unless CQS_LLM_ALLOW_INSECURE=1 is also set.
+    #[test]
+    fn llm_config_rejects_http_without_allow_insecure() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let saved = save_llm_env_vars();
+        let saved_allow = std::env::var("CQS_LLM_ALLOW_INSECURE").ok();
+
+        std::env::set_var("CQS_LLM_API_BASE", "http://localhost:8080/v1");
+        std::env::remove_var("CQS_LLM_ALLOW_INSECURE");
+        std::env::remove_var("CQS_API_BASE");
+        std::env::remove_var("CQS_LLM_MODEL");
+        std::env::remove_var("CQS_LLM_MAX_TOKENS");
+
+        let config = crate::config::Config::default();
+        let result = LlmConfig::resolve(&config);
+
+        restore_llm_env_vars(saved);
+        match saved_allow {
+            Some(v) => std::env::set_var("CQS_LLM_ALLOW_INSECURE", v),
+            None => std::env::remove_var("CQS_LLM_ALLOW_INSECURE"),
+        }
+
+        assert!(
+            result.is_err(),
+            "http:// LLM API base must be rejected without CQS_LLM_ALLOW_INSECURE=1"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("cleartext") || err_msg.contains("http://"),
+            "error should mention cleartext http://, got: {}",
+            err_msg
+        );
+    }
+
+    // SEC-V1.25-13: With CQS_LLM_ALLOW_INSECURE=1 the http:// override is allowed.
+    #[test]
+    fn llm_config_allows_http_with_allow_insecure() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let saved = save_llm_env_vars();
+        let saved_allow = std::env::var("CQS_LLM_ALLOW_INSECURE").ok();
+
+        std::env::set_var("CQS_LLM_API_BASE", "http://localhost:8080/v1");
+        std::env::set_var("CQS_LLM_ALLOW_INSECURE", "1");
+        std::env::remove_var("CQS_API_BASE");
+        std::env::remove_var("CQS_LLM_MODEL");
+        std::env::remove_var("CQS_LLM_MAX_TOKENS");
+
+        let config = crate::config::Config::default();
+        let result = LlmConfig::resolve(&config);
+
+        restore_llm_env_vars(saved);
+        match saved_allow {
+            Some(v) => std::env::set_var("CQS_LLM_ALLOW_INSECURE", v),
+            None => std::env::remove_var("CQS_LLM_ALLOW_INSECURE"),
+        }
+
+        assert!(
+            result.is_ok(),
+            "CQS_LLM_ALLOW_INSECURE=1 should permit http:// base"
+        );
+        assert_eq!(result.unwrap().api_base, "http://localhost:8080/v1");
     }
 
     #[test]
@@ -633,7 +726,7 @@ mod tests {
         };
 
         std::env::set_var("CQS_LLM_MAX_TOKENS", "not_a_number");
-        let llm = LlmConfig::resolve(&config);
+        let llm = LlmConfig::resolve(&config).unwrap();
         std::env::remove_var("CQS_LLM_MAX_TOKENS");
 
         // Invalid env var should fall through to config value

@@ -332,7 +332,10 @@ pub(in crate::cli::batch) fn dispatch_related(
     limit: usize,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_related", name).entered();
-    let limit = limit.clamp(1, 100);
+    // CQ-V1.25-2: shared with CLI's cmd_related. Previously 100 here vs
+    // unbounded in CLI — lowered to 50 (per-category) to match and stop
+    // quadratic blow-up on related-related queries.
+    let limit = limit.clamp(1, crate::cli::RELATED_LIMIT_MAX);
 
     let result = cqs::find_related(&ctx.store(), name, limit)?;
     let output = crate::cli::commands::build_related_output(&result, &ctx.root);

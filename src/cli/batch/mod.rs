@@ -18,7 +18,7 @@ pub(crate) use pipeline::{execute_pipeline, has_pipe_token};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime};
@@ -34,14 +34,115 @@ use cqs::Embedder;
 
 use super::open_project_store_readonly;
 
+/// Opaque identity of `index.db` used to detect that it has been replaced
+/// or rewritten between two observations.
+///
+/// Combines inode (unix), size, and mtime. This catches:
+///
+/// - **Replacement via rename** (e.g. `cqs index --force` writes a fresh
+///   `index.db.tmp` then renames it over `index.db`): the new inode
+///   differs, so the identity changes even if size/mtime happened to
+///   match.
+/// - **In-place size change**: size differs.
+/// - **Overwrite that kept the size**: mtime differs (modulo the
+///   filesystem's mtime resolution).
+///
+/// ## Why not mtime alone?
+///
+/// DS-V1.25-6: WSL DrvFS / NTFS report mtime at 1-second resolution.
+/// A tight `cqs index --force` followed by a daemon query burst could
+/// share the same mtime bucket, causing `BatchContext` to keep serving
+/// results from the orphaned inode. Mixing in inode and size closes
+/// that sub-second race: the rename-over gives a new inode immediately,
+/// regardless of whether the mtime ticked.
+///
+/// On non-unix platforms the inode fields are omitted and the struct
+/// falls back to `(size, mtime)`; replacement on Windows still changes
+/// the mtime and/or the size, so this is weaker than unix but strictly
+/// better than mtime alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DbFileIdentity {
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    inode: u64,
+    size: u64,
+    mtime: Option<SystemTime>,
+}
+
+impl DbFileIdentity {
+    /// Read the identity fields for `path`, returning `None` if the
+    /// metadata stat fails (path missing, permission denied, etc.).
+    fn from_path(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        // mtime is best-effort — some exotic filesystems don't record
+        // it. Falling back to `None` here still leaves inode + size as
+        // useful discriminators.
+        let mtime = meta.modified().ok();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Some(Self {
+                dev: meta.dev(),
+                inode: meta.ino(),
+                size: meta.len(),
+                mtime,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Some(Self {
+                size: meta.len(),
+                mtime,
+            })
+        }
+    }
+}
+
 /// Maximum batch stdin line length (1MB). Lines exceeding this are rejected
 /// to prevent unbounded memory allocation from malicious input.
 const MAX_BATCH_LINE_LEN: usize = 1_048_576;
 
-/// Idle timeout for ONNX sessions (embedder, reranker) in minutes.
-/// After this many minutes without a command, sessions are cleared to free memory.
-/// Matches watch mode's ~5-minute idle clear pattern.
-const IDLE_TIMEOUT_MINUTES: u64 = 5;
+/// Default idle timeout for ONNX sessions (embedder, reranker) in minutes.
+/// After this many minutes without a command, sessions are cleared to free
+/// memory. Matches watch mode's ~5-minute idle clear pattern. Override via
+/// `CQS_BATCH_IDLE_MINUTES` (workstation users with 48GB VRAM can push to
+/// 60+; laptops with shared GPU may want 2).
+const DEFAULT_IDLE_TIMEOUT_MINUTES: u64 = 5;
+
+/// Resolve the idle-timeout minutes from env; 0 disables eviction entirely.
+fn idle_timeout_minutes() -> u64 {
+    std::env::var("CQS_BATCH_IDLE_MINUTES")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES)
+}
+
+/// Default number of reference indexes kept in the LRU cache. A "reference"
+/// is a sibling cqs project loaded via `@name` syntax. Memory-constrained
+/// environments can keep 2; workstation users can bump via `CQS_REFS_LRU_SIZE`.
+const DEFAULT_REFS_LRU_SIZE: usize = 2;
+
+/// Resolve the refs-cache LRU size from env, clamping to at least 1 slot.
+fn refs_lru_size() -> std::num::NonZeroUsize {
+    let size = std::env::var("CQS_REFS_LRU_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_REFS_LRU_SIZE);
+    // SAFETY: filter above guarantees size > 0; const fallback is 2.
+    std::num::NonZeroUsize::new(size).unwrap_or(std::num::NonZeroUsize::new(1).unwrap())
+}
+
+/// Minimum interval between `fs::metadata` calls on `index.db` during a
+/// batch session. PF-V1.25-10: `store()` is called on virtually every
+/// handler hop, and `ctx.store()` calls `check_index_staleness` which in
+/// turn calls `fs::metadata`. Most filesystem mtime resolutions are 1 ms
+/// on Linux ext4 / WSL, so polling more often than ~100 ms cannot detect
+/// anything mtime-based — we just pay a syscall per poll. 100 ms caps the
+/// syscall rate at ~10 Hz per batch session while keeping reindex
+/// detection latency well under a second.
+const STALENESS_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 // ─── BatchContext ────────────────────────────────────────────────────────────
 
@@ -71,7 +172,15 @@ pub(crate) struct BatchContext {
     // Access via store() method which checks staleness first.
     store: RefCell<Store>,
     // Stable caches — keep OnceLock (not index-derived)
-    embedder: OnceLock<Embedder>,
+    //
+    // RM-V1.25-28: `OnceLock<Arc<Embedder>>` so the watch outer scope
+    // can hand the same Embedder instance down into the daemon thread.
+    // Previously BatchContext owned its own Embedder and the watch
+    // loop owned a second one — two ~500 MB ONNX sessions could be
+    // resident at the same time. `BatchContext::new_with_embedder`
+    // accepts a pre-built Arc; `create_context` (CLI path) still
+    // creates a fresh one lazily via `warm`.
+    embedder: OnceLock<std::sync::Arc<Embedder>>,
     config: OnceLock<cqs::config::Config>,
     reranker: OnceLock<cqs::Reranker>,
     // Time-bounded (30min expiry), not index-derived — keep OnceLock
@@ -91,8 +200,18 @@ pub(crate) struct BatchContext {
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
     pub model_config: cqs::embedder::ModelConfig,
-    /// Last-seen mtime of index.db, used to detect concurrent index updates.
-    index_mtime: Cell<Option<SystemTime>>,
+    /// Last-seen identity (inode + size + mtime on unix; size + mtime
+    /// elsewhere) of index.db, used to detect concurrent index updates.
+    ///
+    /// DS-V1.25-6: previously this tracked `SystemTime` alone. WSL NTFS
+    /// has 1-s mtime resolution, so a fast `cqs index --force` plus a
+    /// daemon query burst could share the same mtime bucket and keep
+    /// serving results from the orphaned inode. `DbFileIdentity` mixes
+    /// in inode + size so sub-second replacements still register.
+    index_id: Cell<Option<DbFileIdentity>>,
+    /// When the staleness check last ran. Used to rate-limit `fs::metadata`
+    /// on `index.db` — see [`STALENESS_CHECK_INTERVAL`]. PF-V1.25-10.
+    last_staleness_check: Cell<Option<Instant>>,
     error_count: AtomicU64,
     /// Tracks when the last command was processed.
     /// Used to clear ONNX sessions (embedder, reranker) after idle timeout.
@@ -103,52 +222,91 @@ impl BatchContext {
     /// Check idle timeout and clear ONNX sessions if enough time has passed.
     ///
     /// Call this at the start of each command. Clears embedder and reranker
-    /// sessions after IDLE_TIMEOUT_MINUTES of no commands, freeing ~500MB+.
-    /// Sessions re-initialize lazily on next use.
+    /// sessions after `CQS_BATCH_IDLE_MINUTES` (default 5) of no commands,
+    /// freeing ~500MB+. Set to 0 to disable eviction entirely. Sessions
+    /// re-initialize lazily on next use.
     pub(crate) fn check_idle_timeout(&self) {
-        let elapsed = self.last_command_time.get().elapsed();
-        let timeout = std::time::Duration::from_secs(IDLE_TIMEOUT_MINUTES * 60);
-        if elapsed >= timeout {
-            if let Some(emb) = self.embedder.get() {
-                emb.clear_session();
-                tracing::info!(
-                    idle_minutes = elapsed.as_secs() / 60,
-                    "Cleared embedder session after idle timeout"
-                );
-            }
-            if let Some(rr) = self.reranker.get() {
-                rr.clear_session();
-                tracing::info!(
-                    idle_minutes = elapsed.as_secs() / 60,
-                    "Cleared reranker session after idle timeout"
-                );
-            }
-            // RM-3: Also clear SPLADE encoder session
-            if let Some(splade) = self.splade_encoder.get().and_then(|opt| opt.as_ref()) {
-                splade.clear_session();
-                tracing::info!(
-                    idle_minutes = elapsed.as_secs() / 60,
-                    "Cleared SPLADE session after idle timeout"
-                );
-            }
-        }
+        self.sweep_idle_sessions();
         self.last_command_time.set(Instant::now());
     }
 
-    /// Check if index.db mtime changed since last access. If so, clear all
-    /// mutable caches and re-open the Store (which resets its internal
+    /// Clear ONNX sessions if idle too long without resetting the clock.
+    ///
+    /// RM-V1.25-3: called both from `check_idle_timeout` (on command arrival)
+    /// and from a periodic accept-loop tick (watch.rs), so a truly idle daemon
+    /// still releases ~500MB+ after the idle timeout. Unlike
+    /// `check_idle_timeout` it does NOT update `last_command_time`; the tick
+    /// is a passive observer.
+    ///
+    /// SHL-V1.25-16: timeout is configurable via `CQS_BATCH_IDLE_MINUTES`
+    /// (default 5). Set to 0 to disable eviction entirely.
+    pub(crate) fn sweep_idle_sessions(&self) {
+        let timeout_minutes = idle_timeout_minutes();
+        if timeout_minutes == 0 {
+            return;
+        }
+        let elapsed = self.last_command_time.get().elapsed();
+        let timeout = std::time::Duration::from_secs(timeout_minutes * 60);
+        if elapsed < timeout {
+            return;
+        }
+        if let Some(emb) = self.embedder.get() {
+            emb.clear_session();
+            tracing::info!(
+                idle_minutes = elapsed.as_secs() / 60,
+                "Cleared embedder session after idle timeout"
+            );
+        }
+        if let Some(rr) = self.reranker.get() {
+            rr.clear_session();
+            tracing::info!(
+                idle_minutes = elapsed.as_secs() / 60,
+                "Cleared reranker session after idle timeout"
+            );
+        }
+        // RM-3: Also clear SPLADE encoder session
+        if let Some(splade) = self.splade_encoder.get().and_then(|opt| opt.as_ref()) {
+            splade.clear_session();
+            tracing::info!(
+                idle_minutes = elapsed.as_secs() / 60,
+                "Cleared SPLADE session after idle timeout"
+            );
+        }
+    }
+
+    /// Check if index.db identity changed since last access. If so, clear
+    /// all mutable caches and re-open the Store (which resets its internal
     /// OnceLock caches like call_graph_cache, test_chunks_cache).
+    ///
+    /// DS-V1.25-6: identity is `(inode, size, mtime)` on unix and
+    /// `(size, mtime)` elsewhere. The extra discriminators catch
+    /// sub-second replacements on filesystems with 1-s mtime resolution
+    /// (WSL NTFS/DrvFS): a `cqs index --force` rename-over yields a new
+    /// inode immediately, so the batch session invalidates even when two
+    /// events share the same mtime bucket.
+    ///
+    /// PF-V1.25-10: rate-limited to at most once per [`STALENESS_CHECK_INTERVAL`].
+    /// Every `ctx.store()` and every `vector_index` / `file_set` / etc. accessor
+    /// calls this; before the rate-limit it ran `fs::metadata` on every call,
+    /// producing dozens of syscalls per pipelined batch command for no benefit.
     pub(crate) fn check_index_staleness(&self) {
+        let now = Instant::now();
+        if let Some(prev) = self.last_staleness_check.get() {
+            if now.duration_since(prev) < STALENESS_CHECK_INTERVAL {
+                return;
+            }
+        }
+        self.last_staleness_check.set(Some(now));
+
         let index_path = self.cqs_dir.join("index.db");
-        let current_mtime = match std::fs::metadata(&index_path).and_then(|m| m.modified()) {
-            Ok(t) => t,
-            Err(e) => {
+        let current_id = match DbFileIdentity::from_path(&index_path) {
+            Some(id) => id,
+            None => {
                 // v1.22.0 audit EH-8: previously silent return. If the DB
                 // becomes temporarily unstattable (permissions, concurrent
                 // rebuild, NFS glitch), every subsequent command in the batch
                 // session keeps using stale caches forever.
                 tracing::warn!(
-                    error = %e,
                     path = %index_path.display(),
                     "Cannot stat index.db for staleness check — caches may remain stale"
                 );
@@ -156,10 +314,10 @@ impl BatchContext {
             }
         };
 
-        let last = self.index_mtime.get();
-        if last.is_some() && last != Some(current_mtime) {
+        let last = self.index_id.get();
+        if last.is_some() && last != Some(current_id) {
             let _span = tracing::info_span!("batch_index_invalidation").entered();
-            tracing::info!("index.db mtime changed, invalidating mutable caches");
+            tracing::info!("index.db identity changed, invalidating mutable caches");
             self.invalidate_mutable_caches();
 
             // Re-open the Store to reset its internal OnceLock caches
@@ -183,10 +341,10 @@ impl BatchContext {
                 }
             }
         }
-        self.index_mtime.set(Some(current_mtime));
+        self.index_id.set(Some(current_id));
     }
 
-    /// Clear all mutable caches. Called on index mtime change or manual refresh.
+    /// Clear all mutable caches. Called on index identity change or manual refresh.
     ///
     /// v1.22.0 audit (CQ-2 / RM-3 / EH-8 / TC-2, quintuple-confirmed across
     /// five independent auditors): previously this omitted `splade_index`,
@@ -218,10 +376,13 @@ impl BatchContext {
             .map_err(|e| anyhow::anyhow!("Failed to re-open Store: {e}"))?;
         *self.store.borrow_mut() = new_store;
 
-        // Update mtime to current so we don't immediately re-invalidate
-        if let Ok(mtime) = std::fs::metadata(&index_path).and_then(|m| m.modified()) {
-            self.index_mtime.set(Some(mtime));
+        // Update identity to current so we don't immediately re-invalidate.
+        if let Some(id) = DbFileIdentity::from_path(&index_path) {
+            self.index_id.set(Some(id));
         }
+        // PF-V1.25-10: treat the manual refresh as a fresh staleness check
+        // so the next batch command hits the rate-limit fast path.
+        self.last_staleness_check.set(Some(Instant::now()));
 
         tracing::info!("Manual cache invalidation complete");
         Ok(())
@@ -252,12 +413,15 @@ impl BatchContext {
                     let _ = write_json_line(out, &value);
                 }
                 Err(e) => {
-                    let err = serde_json::json!({"error": format!("{e}")});
+                    // EH-12: use anyhow chain formatter (`:#`) so the real
+                    // root cause (e.g. CUDA OOM) surfaces to daemon clients
+                    // instead of the flattened top-level "embedding failed".
+                    let err = serde_json::json!({"error": format!("{e:#}")});
                     let _ = write_json_line(out, &err);
                 }
             },
             Err(e) => {
-                let err = serde_json::json!({"error": format!("{e}")});
+                let err = serde_json::json!({"error": format!("{e:#}")});
                 let _ = write_json_line(out, &err);
             }
         }
@@ -271,34 +435,56 @@ impl BatchContext {
 
     /// Pre-warm the embedder so the first query doesn't pay the ~500ms ONNX init.
     /// Called once at session start. Errors are logged but non-fatal.
+    ///
+    /// RM-V1.25-28: if the watch outer scope installed a shared Embedder
+    /// via `adopt_embedder`, the OnceLock is already populated and this
+    /// is a no-op for model loading (cache eviction still runs).
     pub fn warm(&self) {
-        if self.embedder.get().is_some() {
-            return;
-        }
-        let _span = tracing::info_span!("batch_warm").entered();
-        match Embedder::new(self.model_config.clone()) {
-            Ok(e) => {
-                let _ = self.embedder.set(e);
-                tracing::info!("Embedder pre-warmed");
+        if self.embedder.get().is_none() {
+            let _span = tracing::info_span!("batch_warm").entered();
+            match Embedder::new(self.model_config.clone()) {
+                Ok(e) => {
+                    let _ = self.embedder.set(std::sync::Arc::new(e));
+                    tracing::info!("Embedder pre-warmed");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Embedder warm failed — will retry on first query");
+                }
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "Embedder warm failed — will retry on first query");
-            }
         }
+        // RM-V1.25-5: Evict global EmbeddingCache at daemon startup.
+        // `evict()` was previously only called at the tail of the full
+        // `cqs index` pipeline (src/cli/pipeline/mod.rs), so long-lived
+        // daemons / watch sessions on machines that never run a manual
+        // index can grow the shared ~/.cache/cqs/embeddings.db past the
+        // 10GB cap (CQS_CACHE_MAX_SIZE) without ever trimming. Kick off
+        // a single post-warm eviction so the daemon self-heals on boot.
+        evict_global_embedding_cache("daemon startup");
+    }
+
+    /// RM-V1.25-28: Install a shared Embedder from the outer watch scope.
+    ///
+    /// Returns `true` if the Arc was installed, `false` if the OnceLock was
+    /// already populated (lazy init already happened, or another caller won
+    /// the race). The caller can use this result to decide whether to fall
+    /// back to its own lazily-initialized embedder.
+    pub fn adopt_embedder(&self, shared: std::sync::Arc<Embedder>) -> bool {
+        self.embedder.set(shared).is_ok()
     }
 
     /// Get or create the embedder (~500ms first call).
     pub fn embedder(&self) -> Result<&Embedder> {
         if let Some(e) = self.embedder.get() {
-            return Ok(e);
+            return Ok(e.as_ref());
         }
         let _span = tracing::info_span!("batch_embedder_init").entered();
         let e = Embedder::new(self.model_config.clone())?;
         // Race is fine — OnceLock ensures only one value is stored
-        let _ = self.embedder.set(e);
+        let _ = self.embedder.set(std::sync::Arc::new(e));
         Ok(self
             .embedder
             .get()
+            .map(|arc| arc.as_ref())
             .expect("embedder OnceLock populated by set() above"))
     }
 
@@ -358,6 +544,13 @@ impl BatchContext {
         };
         let splade_path = self.cqs_dir.join(cqs::splade::index::SPLADE_INDEX_FILENAME);
         let store = self.store();
+        // RM-V1.25-11: time the build so operators can diagnose first-query
+        // latency spikes after a reindex. Full rebuild on a 200k-chunk repo
+        // with SPLADE-Code 0.6B takes ~45 s — scoped-down fix in lieu of
+        // an incremental update path; actual fix is tracked as P2 follow-up.
+        // The `rebuilt` flag comes back from `load_or_build` so we can split
+        // the log into a cheap cache hit vs a visible rebuild.
+        let build_start = Instant::now();
         let (idx, rebuilt) = cqs::splade::index::SpladeIndex::load_or_build(
             &splade_path,
             generation,
@@ -372,16 +565,37 @@ impl BatchContext {
                 }
             },
         );
+        let build_ms = build_start.elapsed().as_millis() as u64;
         if idx.is_empty() {
             // no vectors — cosine-only; leave the RefCell as None
             return;
         }
-        tracing::info!(
-            chunks = idx.len(),
-            tokens = idx.unique_tokens(),
-            rebuilt,
-            "SPLADE index ready (batch)"
-        );
+        if rebuilt {
+            tracing::info!(
+                chunks = idx.len(),
+                tokens = idx.unique_tokens(),
+                rebuild_ms = build_ms,
+                "SPLADE index rebuilt from SQLite (batch)"
+            );
+            // Surface very-long rebuilds at warn so operators notice. Empirical
+            // threshold: 10 s on a 200k-chunk SPLADE-Code index is already
+            // "user waited visibly"; 30 s is "probably a problem."
+            if build_ms > 30_000 {
+                tracing::warn!(
+                    rebuild_ms = build_ms,
+                    chunks = idx.len(),
+                    "SPLADE index rebuild exceeded 30s — first daemon query after \
+                     reindex will have been blocked this long"
+                );
+            }
+        } else {
+            tracing::info!(
+                chunks = idx.len(),
+                tokens = idx.unique_tokens(),
+                load_ms = build_ms,
+                "SPLADE index loaded from disk (batch)"
+            );
+        }
         *self.splade_index.borrow_mut() = Some(idx);
     }
 
@@ -397,14 +611,28 @@ impl BatchContext {
     /// Checks index staleness before returning cached value. If the index.db
     /// changed, rebuilds the vector index from the fresh Store.
     /// Returns a cloneable Arc so callers can hold a reference past RefCell borrow scope.
+    ///
+    /// RM-V1.25-19: if the cached index reports `is_poisoned()` (only the
+    /// CAGRA GPU backend currently does), the cache slot is cleared and a
+    /// fresh index is built. Reusing a poisoned CUDA context risks
+    /// double-free and CUDA faults.
     pub fn vector_index(&self) -> Result<Option<std::sync::Arc<dyn VectorIndex>>> {
         self.check_index_staleness();
         {
             let cached = self.hnsw.borrow();
             if let Some(arc) = cached.as_ref() {
-                return Ok(Some(std::sync::Arc::clone(arc)));
+                if arc.is_poisoned() {
+                    tracing::warn!(
+                        name = arc.name(),
+                        "Cached vector index is poisoned — discarding and rebuilding"
+                    );
+                } else {
+                    return Ok(Some(std::sync::Arc::clone(arc)));
+                }
             }
         }
+        // Clear any poisoned cache before rebuilding.
+        *self.hnsw.borrow_mut() = None;
         let _span = tracing::info_span!("batch_vector_index_init").entered();
         let store = self.store.borrow();
         let idx = build_vector_index(&store, &self.cqs_dir, self.config().ef_search)?;
@@ -437,13 +665,29 @@ impl BatchContext {
     ///
     /// Uses cached config (RM-21) and loads only the target reference (RM-16),
     /// not all references.
+    ///
+    /// RM-V1.25-7: before serving a cached entry, peek its `is_stale()` so
+    /// a concurrent `cqs ref update <name>` (which rewrites the reference's
+    /// `index.db` without touching the primary project's `.cqs/index.db`)
+    /// forces a fresh load. Without this, a long-lived daemon would keep
+    /// serving results from a closed WAL snapshot / stale HNSW bytes for
+    /// days.
     pub fn get_ref(&self, name: &str) -> Result<()> {
         let _span = tracing::info_span!("batch_get_ref", %name).entered();
-        let refs = self.refs.borrow();
-        if refs.contains(name) {
-            return Ok(());
+        {
+            let mut refs = self.refs.borrow_mut();
+            if let Some(existing) = refs.peek(name) {
+                if existing.is_stale() {
+                    tracing::info!(
+                        reference = %name,
+                        "Cached reference stale (index.db mtime/size changed) — evicting for reload"
+                    );
+                    refs.pop(name);
+                } else {
+                    return Ok(());
+                }
+            }
         }
-        drop(refs);
 
         let config = self.config();
         // Filter to just the target reference instead of loading all (RM-16)
@@ -603,6 +847,45 @@ fn build_vector_index(
     crate::cli::build_vector_index_with_config(store, cqs_dir, ef_search)
 }
 
+/// RM-V1.25-5: Evict the global embedding cache if it exceeds its size cap.
+///
+/// `EmbeddingCache::evict` is a no-op below `CQS_CACHE_MAX_SIZE` (default
+/// 10GB), so it's cheap to call. Opens the cache read-only-ish (WAL-mode
+/// SQLite, one connection), runs the eviction, then drops. Used by the
+/// daemon startup and the watch reindex path to keep the shared cache
+/// bounded even when the user never runs a full `cqs index`.
+pub(crate) fn evict_global_embedding_cache(trigger: &str) {
+    let _span = tracing::debug_span!("daemon_cache_evict", trigger).entered();
+    let cache_path = cqs::cache::EmbeddingCache::default_path();
+    let cache = match cqs::cache::EmbeddingCache::open(&cache_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %cache_path.display(),
+                "Cache evict skipped — open failed"
+            );
+            return;
+        }
+    };
+    match cache.evict() {
+        Ok(n) if n > 0 => {
+            tracing::info!(
+                evicted = n,
+                trigger,
+                path = %cache_path.display(),
+                "Global embedding cache evicted"
+            );
+        }
+        Ok(_) => {
+            tracing::debug!(trigger, "Global embedding cache under cap, no eviction");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, trigger, "Global cache eviction failed");
+        }
+    }
+}
+
 // ─── JSON serialization helpers ──────────────────────────────────────────────
 
 /// Recursively replace NaN/Infinity f64 values with null in a serde_json::Value.
@@ -662,12 +945,12 @@ fn write_json_line(
 pub(crate) fn create_context() -> Result<BatchContext> {
     let (store, root, cqs_dir) = open_project_store_readonly()?;
 
-    // Capture initial index.db mtime
-    let index_mtime = std::fs::metadata(cqs_dir.join("index.db"))
-        .and_then(|m| m.modified())
-        .ok();
-    if index_mtime.is_none() {
-        tracing::debug!("Could not read index.db mtime — staleness detection will be skipped until first successful stat");
+    // Capture initial index.db identity (inode/size/mtime on unix).
+    // DS-V1.25-6: previously this was mtime alone, which sub-second
+    // replacements on WSL NTFS could miss.
+    let index_id = DbFileIdentity::from_path(&cqs_dir.join("index.db"));
+    if index_id.is_none() {
+        tracing::debug!("Could not stat index.db — staleness detection will be skipped until first successful stat");
     }
 
     Ok(BatchContext {
@@ -684,11 +967,14 @@ pub(crate) fn create_context() -> Result<BatchContext> {
         notes_cache: RefCell::new(None),
         splade_encoder: OnceLock::new(),
         splade_index: RefCell::new(None),
-        refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(2).unwrap())),
+        refs: RefCell::new(lru::LruCache::new(refs_lru_size())),
         root,
         cqs_dir,
         model_config: ModelConfig::resolve(None, None).apply_env_overrides(),
-        index_mtime: Cell::new(index_mtime),
+        index_id: Cell::new(index_id),
+        // PF-V1.25-10: None means the first check runs unconditionally; the
+        // 100ms rate-limit kicks in only after the first successful stat.
+        last_staleness_check: Cell::new(None),
         error_count: AtomicU64::new(0),
         last_command_time: Cell::new(Instant::now()),
     })
@@ -701,9 +987,7 @@ fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
     let store =
         Store::open(&index_path).map_err(|e| anyhow::anyhow!("Failed to open test store: {e}"))?;
     let root = cqs_dir.parent().unwrap_or(cqs_dir).to_path_buf();
-    let index_mtime = std::fs::metadata(&index_path)
-        .and_then(|m| m.modified())
-        .ok();
+    let index_id = DbFileIdentity::from_path(&index_path);
 
     Ok(BatchContext {
         store: RefCell::new(store),
@@ -719,11 +1003,12 @@ fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
         notes_cache: RefCell::new(None),
         splade_encoder: OnceLock::new(),
         splade_index: RefCell::new(None),
-        refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(2).unwrap())),
+        refs: RefCell::new(lru::LruCache::new(refs_lru_size())),
         root,
         cqs_dir: cqs_dir.to_path_buf(),
         model_config: ModelConfig::resolve(None, None).apply_env_overrides(),
-        index_mtime: Cell::new(index_mtime),
+        index_id: Cell::new(index_id),
+        last_staleness_check: Cell::new(None),
         error_count: AtomicU64::new(0),
         last_command_time: Cell::new(Instant::now()),
     })
@@ -842,7 +1127,10 @@ pub(crate) fn cmd_batch() -> Result<()> {
                     }
                     Err(e) => {
                         ctx.error_count.fetch_add(1, Ordering::Relaxed);
-                        let error_json = serde_json::json!({"error": format!("{}", e)});
+                        // EH-12: `:#` preserves anyhow's context chain so the
+                        // root cause (e.g. CUDA OOM) reaches the caller
+                        // instead of being flattened to a single message.
+                        let error_json = serde_json::json!({"error": format!("{e:#}")});
                         if write_json_line(&mut stdout, &error_json).is_err() {
                             break;
                         }
@@ -850,7 +1138,7 @@ pub(crate) fn cmd_batch() -> Result<()> {
                 },
                 Err(e) => {
                     ctx.error_count.fetch_add(1, Ordering::Relaxed);
-                    let error_json = serde_json::json!({"error": format!("{}", e)});
+                    let error_json = serde_json::json!({"error": format!("{e:#}")});
                     if write_json_line(&mut stdout, &error_json).is_err() {
                         break;
                     }
@@ -951,6 +1239,78 @@ mod tests {
         assert!(
             ctx.notes_cache.borrow().is_none(),
             "Mtime change should invalidate cache"
+        );
+    }
+
+    /// DS-V1.25-6: BatchContext freshness detection must catch a rename-over
+    /// replacement even if the new file's mtime happens to match the old one.
+    /// Previously the check used `SystemTime` alone, so on WSL NTFS (1-s mtime
+    /// resolution) a tight `cqs index --force` + query burst could re-use a
+    /// stale pool against the orphaned inode. The fix mixes inode + size
+    /// into the identity so the rename-over is detected immediately.
+    #[cfg(unix)]
+    #[test]
+    fn test_sub_second_rename_replacement_invalidates_cache() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        // Populate a cache and run the first check to capture baseline identity.
+        *ctx.notes_cache.borrow_mut() = Some(vec![]);
+        ctx.check_index_staleness();
+        assert!(
+            ctx.notes_cache.borrow().is_some(),
+            "First check should not invalidate"
+        );
+
+        let index_path = cqs_dir.join("index.db");
+        let original_mtime = std::fs::metadata(&index_path).unwrap().modified().unwrap();
+        let original_ino = std::fs::metadata(&index_path).unwrap().ino();
+
+        // Build a fresh SQLite DB in a sibling path, then rename it over the
+        // original. The new file has a distinct inode — this is exactly the
+        // `cqs index --force` rename-over pattern.
+        let replacement = cqs_dir.join("index.db.replacement");
+        let store = Store::open(&replacement).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+        drop(store);
+
+        // Force-set mtime on the replacement to match the original so we are
+        // explicitly testing the inode-based discriminator rather than an
+        // incidental mtime bump.
+        {
+            use std::fs::File;
+            let f = File::open(&replacement).unwrap();
+            f.set_modified(original_mtime).unwrap();
+        }
+        std::fs::rename(&replacement, &index_path).unwrap();
+
+        // Sanity: the replacement changed the inode even though mtime matches.
+        let new_meta = std::fs::metadata(&index_path).unwrap();
+        assert_ne!(
+            new_meta.ino(),
+            original_ino,
+            "Test precondition: rename-over must change inode"
+        );
+        assert_eq!(
+            new_meta.modified().unwrap(),
+            original_mtime,
+            "Test precondition: mtime matches — this is the sub-second race",
+        );
+
+        // PF-V1.25-10 added a 100ms rate-limit on staleness checks. The setup
+        // above (create replacement Store + init + drop + rename) is faster
+        // than that on modern disks, so clear the throttle so the check runs.
+        ctx.last_staleness_check.set(None);
+
+        // The staleness check should now invalidate even though mtime is
+        // identical. Without the DS-V1.25-6 fix this would silently pass
+        // through and keep the stale cache.
+        ctx.check_index_staleness();
+        assert!(
+            ctx.notes_cache.borrow().is_none(),
+            "DS-V1.25-6: rename-over replacement (same mtime, new inode) should invalidate cache"
         );
     }
 

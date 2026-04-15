@@ -51,6 +51,11 @@ pub fn pdf_to_markdown(path: &Path) -> Result<String> {
 /// 1. `CQS_PDF_SCRIPT` environment variable
 /// 2. `scripts/pdf_to_md.py` relative to CWD
 /// 3. Relative to the cqs binary location
+///
+/// SEC-V1.25-8: If `CQS_PDF_SCRIPT` is set, the script is rejected unless it
+/// is owned by the current effective user and is not group/world writable.
+/// A daemon that inherits a stale env pointing at `/tmp/evil.py` no longer
+/// executes attacker code — it bails with a clear error.
 fn find_pdf_script() -> Result<String> {
     // Check env var first
     if let Ok(script) = std::env::var("CQS_PDF_SCRIPT") {
@@ -64,6 +69,10 @@ fn find_pdf_script() -> Result<String> {
             anyhow::bail!("CQS_PDF_SCRIPT must have .py extension (got: {}).", script);
         }
         if p.exists() {
+            // SEC-V1.25-8: enforce ownership + permissions on unix before trusting.
+            #[cfg(unix)]
+            validate_script_safety(&p)
+                .with_context(|| format!("CQS_PDF_SCRIPT safety check failed for {}", script))?;
             return Ok(script);
         }
         tracing::warn!(path = %script, "CQS_PDF_SCRIPT set but file not found");
@@ -87,6 +96,32 @@ fn find_pdf_script() -> Result<String> {
         "scripts/pdf_to_md.py not found. \
          Run cqs convert from the project root, or set CQS_PDF_SCRIPT env var."
     )
+}
+
+/// SEC-V1.25-8: Validate that the script is owned by the current effective user
+/// and is not group/world writable. A daemon inheriting a stale env pointing at
+/// `/tmp/evil.py` must not execute attacker code.
+#[cfg(unix)]
+fn validate_script_safety(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let md = std::fs::metadata(path).with_context(|| format!("metadata for {}", path.display()))?;
+    // SAFETY: geteuid() is always safe — no state, no args, no errors.
+    let effective_uid = unsafe { libc::geteuid() };
+    if md.uid() != effective_uid {
+        anyhow::bail!(
+            "CQS_PDF_SCRIPT must be owned by current user (script uid={}, euid={})",
+            md.uid(),
+            effective_uid
+        );
+    }
+    let mode = md.mode();
+    if mode & 0o022 != 0 {
+        anyhow::bail!(
+            "CQS_PDF_SCRIPT must not be group- or world-writable (mode={:o})",
+            mode & 0o777
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -264,6 +299,69 @@ mod tests {
             "error should mention .py requirement, got: {}",
             msg
         );
+    }
+
+    // SEC-V1.25-8: world-writable script is rejected.
+    #[test]
+    #[serial_test::serial]
+    #[cfg(unix)]
+    fn test_find_pdf_script_world_writable_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let script = dir.path().join("world_writable.py");
+        fs::write(&script, "# evil").unwrap();
+        // World-writable: mode 0o666.
+        fs::set_permissions(&script, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        let _guard = EnvGuard::set("CQS_PDF_SCRIPT", script.to_str().unwrap());
+
+        let result = find_pdf_script();
+        assert!(result.is_err(), "world-writable script must be rejected");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("writable") || msg.contains("mode"),
+            "error should mention writable/mode, got: {}",
+            msg
+        );
+    }
+
+    // SEC-V1.25-8: user-owned, non-world-writable script passes.
+    #[test]
+    #[serial_test::serial]
+    #[cfg(unix)]
+    fn test_find_pdf_script_user_owned_accepted() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let script = dir.path().join("safe.py");
+        fs::write(&script, "# placeholder").unwrap();
+        fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let _guard = EnvGuard::set("CQS_PDF_SCRIPT", script.to_str().unwrap());
+
+        let result = find_pdf_script();
+        assert!(
+            result.is_ok(),
+            "user-owned non-writable script must be accepted, got: {:?}",
+            result
+        );
+    }
+
+    // SEC-V1.25-8: group-writable script is rejected.
+    #[test]
+    #[serial_test::serial]
+    #[cfg(unix)]
+    fn test_find_pdf_script_group_writable_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let script = dir.path().join("group_writable.py");
+        fs::write(&script, "# evil").unwrap();
+        // Group-writable: mode 0o664.
+        fs::set_permissions(&script, std::fs::Permissions::from_mode(0o664)).unwrap();
+
+        let _guard = EnvGuard::set("CQS_PDF_SCRIPT", script.to_str().unwrap());
+
+        let result = find_pdf_script();
+        assert!(result.is_err(), "group-writable script must be rejected");
     }
 }
 

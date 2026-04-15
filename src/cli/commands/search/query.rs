@@ -179,16 +179,12 @@ pub(crate) fn cmd_query(ctx: &crate::cli::CommandContext, query: &str) -> Result
     // still contributes to the *candidate pool*. Skipping SPLADE at α=1.0 loses
     // ~10pp R@1 on categories where sparse surfaces candidates dense misses
     // (multi_step, negation, cross_language).
+    // OB-NEW-1: `resolve_splade_alpha` emits the structured "SPLADE routing"
+    // log internally — no call-site log needed here.
     let (use_splade, splade_alpha) = if cli.splade {
         (true, cli.splade_alpha)
     } else if let Some(ref c) = classification {
-        let alpha = cqs::search::router::resolve_splade_alpha(&c.category);
-        tracing::info!(
-            category = %c.category,
-            alpha,
-            "SPLADE routing"
-        );
-        (true, alpha)
+        (true, cqs::search::router::resolve_splade_alpha(&c.category))
     } else {
         (false, cli.splade_alpha)
     };

@@ -3,7 +3,7 @@
 
 use clap::Args;
 
-use super::parse_nonzero_usize;
+use super::{parse_finite_f32, parse_nonzero_usize};
 use cqs::store::DeadConfidence;
 
 /// Arguments shared between CLI `gather` and batch `gather`.
@@ -96,7 +96,7 @@ pub(crate) struct SimilarArgs {
     #[arg(short = 'n', long, default_value = "5")]
     pub limit: usize,
     /// Min similarity threshold
-    #[arg(short = 't', long, default_value = "0.3")]
+    #[arg(short = 't', long, default_value = "0.3", value_parser = parse_finite_f32)]
     pub threshold: f32,
 }
 

@@ -12,6 +12,8 @@ use std::path::Path;
 
 use thiserror::Error;
 
+use crate::store::helpers::sql::{busy_timeout_from_env, max_rows_per_statement};
+
 #[derive(Error, Debug)]
 pub enum CacheError {
     #[error("Cache database error: {0}")]
@@ -79,11 +81,13 @@ impl EmbeddingCache {
         };
 
         // Use SqliteConnectOptions to avoid URL-encoding issues with special paths
+        // SHL-V1.25-12: honour CQS_BUSY_TIMEOUT_MS like the main Store pool
+        // so the cache doesn't surrender at 5s while the store still waits.
         let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .busy_timeout(std::time::Duration::from_secs(5))
+            .busy_timeout(busy_timeout_from_env(5000))
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
         let pool = rt.block_on(async {
@@ -171,8 +175,12 @@ impl EmbeddingCache {
         self.rt.block_on(async {
             let mut result = HashMap::new();
 
-            // Batch in groups of 100 to avoid SQLite variable limit
-            for batch in content_hashes.chunks(100) {
+            // SHL-V1.25-4: Batch size matches modern SQLite variable limit
+            // (32766). Two vars per row accounts for the shared model_fingerprint
+            // bind plus the content_hash bind, with headroom for either being
+            // added to in the future. Cache hit lookups for a 50k-chunk index
+            // now fire 2-3 SELECTs instead of 500.
+            for batch in content_hashes.chunks(max_rows_per_statement(2)) {
                 let placeholders: Vec<String> =
                     (0..batch.len()).map(|i| format!("?{}", i + 2)).collect();
                 let sql = format!(
@@ -903,11 +911,14 @@ impl QueryCache {
             .build()
             .map_err(|e| CacheError::Io(std::io::Error::other(e)))?;
 
+        // SHL-V1.25-12: query cache honours CQS_BUSY_TIMEOUT_MS too. Default
+        // here is 2s because the query cache is write-lighter than the
+        // embedding cache — still tunable by the global env knob.
         let connect_opts = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .busy_timeout(std::time::Duration::from_secs(2))
+            .busy_timeout(busy_timeout_from_env(2000))
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
         let pool = rt.block_on(async {
@@ -932,6 +943,32 @@ impl QueryCache {
             Ok::<_, sqlx::Error>(pool)
         })?;
 
+        // SEC-V1.25-4: restrict DB + WAL/SHM sidecar files to 0o600 to
+        // match EmbeddingCache::open. Query text may be sensitive (user
+        // prompts, internal tooling queries), and multi-user boxes must
+        // not leave this world-readable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            for suffix in &["", "-wal", "-shm"] {
+                let db_file = path.with_extension(
+                    path.extension()
+                        .map(|e| format!("{}{}", e.to_string_lossy(), suffix))
+                        .unwrap_or_else(|| suffix.trim_start_matches('-').to_string()),
+                );
+                if db_file.exists() {
+                    if let Err(e) = std::fs::set_permissions(&db_file, perms.clone()) {
+                        tracing::warn!(
+                            path = %db_file.display(),
+                            error = %e,
+                            "Failed to set query cache permissions to 0o600"
+                        );
+                    }
+                }
+            }
+        }
+
         tracing::debug!(path = %path.display(), "Query cache opened");
         Ok(Self { pool, rt })
     }
@@ -939,17 +976,48 @@ impl QueryCache {
     /// Look up a cached query embedding.
     pub fn get(&self, query: &str, model_fp: &str) -> Option<crate::embedder::Embedding> {
         self.rt.block_on(async {
-            let row: Option<(Vec<u8>,)> = sqlx::query_as(
+            // EH-17 / OB-NEW-6: log sqlite failures instead of treating them
+            // as a silent cache miss. A corrupted / locked cache is a real
+            // signal, not background noise.
+            let row: Option<(Vec<u8>,)> = match sqlx::query_as(
                 "SELECT embedding FROM query_cache WHERE query = ?1 AND model_fp = ?2",
             )
             .bind(query)
             .bind(model_fp)
             .fetch_optional(&self.pool)
             .await
-            .ok()?;
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let preview_len = query.len().min(40);
+                    tracing::warn!(
+                        query_preview = %&query[..preview_len],
+                        error = %e,
+                        "query cache read failed"
+                    );
+                    return None;
+                }
+            };
 
             let (bytes,) = row?;
+            // EH-17 / OB-NEW-6: a malformed embedding blob (length not a
+            // multiple of 4) means the row is corrupt. Don't let it sit in
+            // the DB forever — log it and delete so future reads skip the
+            // cost of re-checking the same bad row.
             if bytes.len() % std::mem::size_of::<f32>() != 0 {
+                tracing::warn!(
+                    raw_len = bytes.len(),
+                    "query cache entry has malformed embedding blob; deleting"
+                );
+                if let Err(e) =
+                    sqlx::query("DELETE FROM query_cache WHERE query = ?1 AND model_fp = ?2")
+                        .bind(query)
+                        .bind(model_fp)
+                        .execute(&self.pool)
+                        .await
+                {
+                    tracing::warn!(error = %e, "failed to delete malformed query cache row");
+                }
                 return None;
             }
             let floats: Vec<f32> = bytes
@@ -978,7 +1046,10 @@ impl QueryCache {
             .execute(&self.pool)
             .await
         }) {
-            tracing::debug!(error = %e, "Query cache write failed (non-fatal)");
+            // EH-17 / OB-NEW-6: write failures on the query cache are
+            // corruption / disk-full risks, not noise. Promote from debug!
+            // to warn! so operators see them in default logs.
+            tracing::warn!(error = %e, "Query cache write failed (non-fatal)");
         }
     }
 

@@ -1,3 +1,6 @@
+// DS-5 / DS-V1.25-3: WRITE_LOCK guard is held across .await inside block_on().
+// This is safe — block_on runs single-threaded, no concurrent tasks can deadlock.
+#![allow(clippy::await_holding_lock)]
 //! Metadata get/set and version validation for the Store.
 
 use std::path::Path;
@@ -7,6 +10,30 @@ use std::sync::Arc;
 use super::helpers::DEFAULT_MODEL_NAME;
 use super::migrations;
 use super::{NoteSummary, Store, StoreError, CURRENT_SCHEMA_VERSION};
+
+/// Which HNSW index a dirty-flag operation applies to.
+///
+/// The enriched and base indexes have independent save lifecycles: rebuilding
+/// one does not imply the other is clean. Tracking a single shared flag meant
+/// a successful enriched rebuild would clear the base's dirty flag even if
+/// base still held stale data. AC-V1.25-8 — keep the two flags independent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HnswKind {
+    /// Enriched HNSW index (stored as `index.hnsw.*`).
+    Enriched,
+    /// Base (non-enriched) HNSW index (stored as `index_base.hnsw.*`).
+    Base,
+}
+
+impl HnswKind {
+    /// Metadata key used to persist this kind's dirty flag.
+    fn metadata_key(self) -> &'static str {
+        match self {
+            HnswKind::Enriched => "hnsw_dirty_enriched",
+            HnswKind::Base => "hnsw_dirty_base",
+        }
+    }
+}
 
 impl Store {
     /// Validates and optionally migrates the database schema version to match the current expected version.
@@ -179,30 +206,62 @@ impl Store {
         })
     }
 
-    /// Mark the HNSW index as dirty (out of sync with SQLite).
+    /// Mark the given HNSW index as dirty (out of sync with SQLite).
     /// Call before writing chunks to SQLite. Clear after successful HNSW save.
     /// On load, a dirty flag means a crash occurred between SQLite commit and
-    /// HNSW save — the HNSW index should not be trusted.
-    pub fn set_hnsw_dirty(&self, dirty: bool) -> Result<(), StoreError> {
+    /// HNSW save — the affected HNSW index should not be trusted.
+    ///
+    /// AC-V1.25-8: tracked per-kind so that clearing after an enriched rebuild
+    /// does not mask a still-stale base index.
+    ///
+    /// DS-V1.25-3: the flag update goes through `begin_write`, which acquires
+    /// `WRITE_LOCK` before opening the SQLite transaction. Previously this
+    /// ran as a bare pool write and could race with a concurrent chunks
+    /// mutation: if thread A was mid-write of new chunks while thread B
+    /// cleared the dirty flag, the on-disk state could briefly advertise a
+    /// clean HNSW that didn't yet reflect the in-flight chunks. The daemon
+    /// is read-only today so the hazard isn't exploited in practice, but
+    /// the invariant is now enforced instead of documented.
+    pub fn set_hnsw_dirty(&self, kind: HnswKind, dirty: bool) -> Result<(), StoreError> {
         let val = if dirty { "1" } else { "0" };
+        let key = kind.metadata_key();
         self.rt.block_on(async {
-            sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES ('hnsw_dirty', ?1)")
+            let (_guard, mut tx) = self.begin_write().await?;
+            sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
+                .bind(key)
                 .bind(val)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
+            tx.commit().await?;
             Ok(())
         })
     }
 
-    /// Check if the HNSW index is marked as dirty (potentially stale).
-    /// Returns `false` if the key doesn't exist (pre-v13 indexes).
-    pub fn is_hnsw_dirty(&self) -> Result<bool, StoreError> {
+    /// Check if the given HNSW index is marked as dirty (potentially stale).
+    ///
+    /// Returns `false` when the per-kind key doesn't exist. For backward
+    /// compatibility with pre-AC-V1.25-8 databases that used a single
+    /// `hnsw_dirty` key, we fall back to reading that key when the per-kind
+    /// key is absent — the old flag logically applied to both indexes.
+    pub fn is_hnsw_dirty(&self, kind: HnswKind) -> Result<bool, StoreError> {
+        let key = kind.metadata_key();
         self.rt.block_on(async {
             let row: Option<(String,)> =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = ?1")
+                    .bind(key)
+                    .fetch_optional(&self.pool)
+                    .await?;
+            if let Some((v,)) = row {
+                return Ok(v == "1");
+            }
+            // Legacy databases used a single 'hnsw_dirty' key for both kinds.
+            // Treat it as applying to whichever kind is being queried until
+            // the next set_hnsw_dirty call splits them apart.
+            let legacy: Option<(String,)> =
                 sqlx::query_as("SELECT value FROM metadata WHERE key = 'hnsw_dirty'")
                     .fetch_optional(&self.pool)
                     .await?;
-            Ok(row.is_some_and(|(v,)| v == "1"))
+            Ok(legacy.is_some_and(|(v,)| v == "1"))
         })
     }
 
@@ -310,6 +369,9 @@ impl Store {
     /// Invalidate the cached notes summaries.
     /// Must be called after any operation that modifies notes (upsert, replace, delete)
     /// so subsequent reads see fresh data.
+    ///
+    /// PF-V1.25-4: also invalidates the derived `note_boost_cache` so the
+    /// next scoring path rebuilds the lookup from fresh notes.
     pub(crate) fn invalidate_notes_cache(&self) {
         match self.notes_summaries_cache.write() {
             Ok(mut guard) => *guard = None,
@@ -318,6 +380,54 @@ impl Store {
                 *p.into_inner() = None;
             }
         }
+        match self.note_boost_cache.write() {
+            Ok(mut guard) => *guard = None,
+            Err(p) => {
+                tracing::warn!(
+                    "note boost cache write lock poisoned during invalidation, recovering"
+                );
+                *p.into_inner() = None;
+            }
+        }
+    }
+
+    /// Get the cached `OwnedNoteBoostIndex`, building from
+    /// [`Store::cached_notes_summaries`] on first access or after invalidation.
+    ///
+    /// PF-V1.25-4: previously every search rebuilt a fresh
+    /// `NoteBoostIndex::new(&notes)` per call, which reran the
+    /// O(notes × mentions) HashMap fill even though notes change far less
+    /// often than searches fire. Now the owned index is computed once per
+    /// notes-table revision and shared via `Arc` across all search paths.
+    ///
+    /// Returns `Arc` of a `pub(crate)` type — callers outside the crate
+    /// cannot access the type directly, hence `pub(crate)` on this accessor.
+    pub(crate) fn cached_note_boost_index(
+        &self,
+    ) -> Result<Arc<crate::search::scoring::OwnedNoteBoostIndex>, StoreError> {
+        // Fast path: read lock, check if populated
+        {
+            let guard = self.note_boost_cache.read().unwrap_or_else(|p| {
+                tracing::warn!("note boost cache read lock poisoned, recovering");
+                p.into_inner()
+            });
+            if let Some(ref idx) = *guard {
+                return Ok(Arc::clone(idx));
+            }
+        }
+        // Cache miss — get notes, build index, write-lock to store.
+        let notes = self.cached_notes_summaries()?;
+        let built = Arc::new(crate::search::scoring::OwnedNoteBoostIndex::new(&notes));
+        let mut guard = self.note_boost_cache.write().unwrap_or_else(|p| {
+            tracing::warn!("note boost cache write lock poisoned, recovering");
+            p.into_inner()
+        });
+        // Double-check in case a concurrent read populated while we waited.
+        if let Some(ref existing) = *guard {
+            return Ok(Arc::clone(existing));
+        }
+        *guard = Some(Arc::clone(&built));
+        Ok(built)
     }
 }
 
@@ -367,27 +477,78 @@ mod tests {
     #[test]
     fn test_hnsw_dirty_roundtrip() {
         let (store, _dir) = setup_store();
-        store.set_hnsw_dirty(true).unwrap();
-        assert!(store.is_hnsw_dirty().unwrap());
+        store.set_hnsw_dirty(HnswKind::Enriched, true).unwrap();
+        assert!(store.is_hnsw_dirty(HnswKind::Enriched).unwrap());
     }
 
     #[test]
     fn test_hnsw_dirty_default_false() {
         let (store, _dir) = setup_store();
-        assert!(!store.is_hnsw_dirty().unwrap());
+        assert!(!store.is_hnsw_dirty(HnswKind::Enriched).unwrap());
+        assert!(!store.is_hnsw_dirty(HnswKind::Base).unwrap());
     }
 
     #[test]
     fn test_hnsw_dirty_toggle() {
         let (store, _dir) = setup_store();
-        store.set_hnsw_dirty(true).unwrap();
-        assert!(store.is_hnsw_dirty().unwrap());
+        store.set_hnsw_dirty(HnswKind::Enriched, true).unwrap();
+        assert!(store.is_hnsw_dirty(HnswKind::Enriched).unwrap());
 
-        store.set_hnsw_dirty(false).unwrap();
-        assert!(!store.is_hnsw_dirty().unwrap());
+        store.set_hnsw_dirty(HnswKind::Enriched, false).unwrap();
+        assert!(!store.is_hnsw_dirty(HnswKind::Enriched).unwrap());
 
-        store.set_hnsw_dirty(true).unwrap();
-        assert!(store.is_hnsw_dirty().unwrap());
+        store.set_hnsw_dirty(HnswKind::Enriched, true).unwrap();
+        assert!(store.is_hnsw_dirty(HnswKind::Enriched).unwrap());
+    }
+
+    /// AC-V1.25-8: the two kinds must track independently. Clearing one
+    /// must not clear the other — that was the bug before the split.
+    #[test]
+    fn test_hnsw_dirty_per_kind_independent() {
+        let (store, _dir) = setup_store();
+        store.set_hnsw_dirty(HnswKind::Enriched, true).unwrap();
+        store.set_hnsw_dirty(HnswKind::Base, true).unwrap();
+        assert!(store.is_hnsw_dirty(HnswKind::Enriched).unwrap());
+        assert!(store.is_hnsw_dirty(HnswKind::Base).unwrap());
+
+        // Clearing enriched must NOT clear base.
+        store.set_hnsw_dirty(HnswKind::Enriched, false).unwrap();
+        assert!(!store.is_hnsw_dirty(HnswKind::Enriched).unwrap());
+        assert!(
+            store.is_hnsw_dirty(HnswKind::Base).unwrap(),
+            "clearing enriched must not clear base"
+        );
+
+        // Clearing base must NOT affect enriched (already clear).
+        store.set_hnsw_dirty(HnswKind::Base, false).unwrap();
+        assert!(!store.is_hnsw_dirty(HnswKind::Base).unwrap());
+        assert!(!store.is_hnsw_dirty(HnswKind::Enriched).unwrap());
+    }
+
+    /// Backward compatibility: databases written before the split used a
+    /// single `hnsw_dirty` key. When the per-kind key is absent, fall back
+    /// to that legacy value for both kinds.
+    #[test]
+    fn test_hnsw_dirty_legacy_fallback() {
+        let (store, _dir) = setup_store();
+        // Simulate a legacy database with only the old key set.
+        store.set_metadata_opt("hnsw_dirty", Some("1")).unwrap();
+        assert!(
+            store.is_hnsw_dirty(HnswKind::Enriched).unwrap(),
+            "legacy hnsw_dirty=1 should read as dirty for Enriched"
+        );
+        assert!(
+            store.is_hnsw_dirty(HnswKind::Base).unwrap(),
+            "legacy hnsw_dirty=1 should read as dirty for Base"
+        );
+
+        // Writing the per-kind key takes precedence over the legacy one.
+        store.set_hnsw_dirty(HnswKind::Enriched, false).unwrap();
+        assert!(!store.is_hnsw_dirty(HnswKind::Enriched).unwrap());
+        assert!(
+            store.is_hnsw_dirty(HnswKind::Base).unwrap(),
+            "base still falls back to legacy until its per-kind key is set"
+        );
     }
 
     // ===== TC-16: cache invalidation =====

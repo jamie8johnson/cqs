@@ -73,6 +73,20 @@ impl HnswIndex {
             return Vec::new();
         }
 
+        // TC-ADV-2: reject non-finite query vectors before they reach the
+        // dense library. `hnsw_rs`/`anndists` asserts `dist_unchecked >= ε`
+        // on the cosine distance result; a NaN query produces NaN and the
+        // assert panics. We would rather return an empty result than crash
+        // the search loop on a malformed query (encoder bug, query-cache
+        // corruption, bit rot).
+        if !query.as_slice().iter().all(|v| v.is_finite()) {
+            tracing::warn!(
+                "Query embedding contains non-finite values (NaN/Inf), \
+                 returning empty results"
+            );
+            return Vec::new();
+        }
+
         // Adaptive ef_search: baseline self.ef_search or 2*k (whichever is larger),
         // capped at index size (searching more than the index is pointless for small indexes).
         let index_size = self.id_map.len();

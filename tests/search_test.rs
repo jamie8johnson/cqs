@@ -362,6 +362,8 @@ fn test_search_reference_by_name() {
         store: ref_store,
         index: None,
         weight: 0.8,
+        db_path: std::path::PathBuf::new(),
+        loaded_identity: None,
     };
 
     // Search by name
@@ -393,6 +395,8 @@ fn test_search_reference_by_name_threshold() {
         store: ref_store,
         index: None,
         weight: 0.5, // Low weight
+        db_path: std::path::PathBuf::new(),
+        loaded_identity: None,
     };
 
     // High threshold should filter out results (score * weight < threshold)

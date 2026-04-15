@@ -371,9 +371,15 @@ pub(crate) fn token_pack<T>(
 ) -> (Vec<T>, usize) {
     debug_assert_eq!(items.len(), token_counts.len());
 
-    // Build index order sorted by score descending
+    // Build index order sorted by score descending. Secondary sort on the
+    // original index keeps equal-score items deterministically ordered, so
+    // the subsequent packing picks the same items on every invocation.
     let mut order: Vec<usize> = (0..items.len()).collect();
-    order.sort_by(|&a, &b| score_fn(&items[b]).total_cmp(&score_fn(&items[a])));
+    order.sort_by(|&a, &b| {
+        score_fn(&items[b])
+            .total_cmp(&score_fn(&items[a]))
+            .then(a.cmp(&b))
+    });
 
     // Greedy pack in score order, tracking which indices to keep
     let mut used: usize = 0;
@@ -435,7 +441,9 @@ pub(crate) fn index_pack(
         return (Vec::new(), 0);
     }
     let mut order: Vec<usize> = (0..token_counts.len()).collect();
-    order.sort_by(|&a, &b| score_fn(b).total_cmp(&score_fn(a)));
+    // Secondary sort on the original index keeps equal-score items
+    // deterministically ordered across process invocations.
+    order.sort_by(|&a, &b| score_fn(b).total_cmp(&score_fn(a)).then(a.cmp(&b)));
 
     let mut used = 0;
     let mut kept = Vec::new();

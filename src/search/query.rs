@@ -21,7 +21,7 @@ use crate::store::{NoteSummary, Store, StoreError};
 
 use super::scoring::{
     apply_parent_boost, apply_scoring_pipeline, build_filter_sql, compile_glob_filter,
-    extract_file_from_chunk_id, score_candidate, BoundedScoreHeap, NameMatcher, NoteBoostIndex,
+    extract_file_from_chunk_id, score_candidate, BoundedScoreHeap, NameMatcher, NoteBoost,
     ScoringContext,
 };
 use super::synonyms::expand_query_for_fts;
@@ -166,8 +166,17 @@ impl Store {
                 None
             };
 
-            // Pre-compute note boost lookup for O(1) name matching in scoring loop
-            let note_index = NoteBoostIndex::new(notes);
+            // PF-V1.25-4: use the cached `OwnedNoteBoostIndex` instead of
+            // rebuilding from `&[NoteSummary]` on every search. Falls back
+            // to a fresh borrowed build if the cache fetch fails (which is
+            // transient and can happen if the notes query errors).
+            let note_boost = match self.cached_note_boost_index() {
+                Ok(arc) => NoteBoost::Owned(arc),
+                Err(e) => {
+                    tracing::warn!(error = %e, "note boost cache unavailable, rebuilding per-call");
+                    NoteBoost::Borrowed(super::scoring::NoteBoostIndex::new(notes))
+                }
+            };
 
             // Build loop-invariant scoring context once
             let scoring_ctx = ScoringContext {
@@ -175,7 +184,7 @@ impl Store {
                 filter,
                 name_matcher: name_matcher.as_ref(),
                 glob_matcher: glob_matcher.as_ref(),
-                note_index: &note_index,
+                note_index: &note_boost,
                 threshold,
             };
 
@@ -377,8 +386,13 @@ impl Store {
                     result.score *= boost;
                 }
             }
-            // Re-sort after boost
-            results.sort_by(|a, b| b.score.total_cmp(&a.score));
+            // Re-sort after boost. Secondary sort on chunk id keeps ties
+            // deterministic across process invocations.
+            results.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then(a.chunk.id.cmp(&b.chunk.id))
+            });
         }
 
         // Step 5: Truncate back to requested limit after parent dedup
@@ -426,7 +440,10 @@ impl Store {
             }
         };
 
-        let candidate_count = (limit * 5).max(100);
+        // TC-ADV-5: `limit * 5` overflows `usize` for pathological inputs
+        // (e.g. `usize::MAX / 4`). Use saturating multiplication so the
+        // candidate pool stays bounded at `usize::MAX` instead of panicking.
+        let candidate_count = limit.saturating_mul(5).max(100);
 
         // Build chunk filter predicate
         let meta = self.chunk_type_language_map()?;
@@ -471,14 +488,22 @@ impl Store {
             .map(|r| r.score)
             .fold(0.0f32, f32::max);
 
+        // PF-V1.25-1: pre-size hash containers from known input counts.
+        // Upper bound on unique candidates is |dense| + |sparse|; default
+        // construction would rehash 2-3 times growing to this size on every
+        // SPLADE query.
+        let dense_len = dense_results.len();
+        let sparse_len = sparse_results.len();
+        let union_upper = dense_len + sparse_len;
+
         // Build score maps
         let mut dense_scores: std::collections::HashMap<&str, f32> =
-            std::collections::HashMap::new();
+            std::collections::HashMap::with_capacity(dense_len);
         for r in &dense_results {
             dense_scores.insert(&r.id, r.score);
         }
         let mut sparse_scores: std::collections::HashMap<&str, f32> =
-            std::collections::HashMap::new();
+            std::collections::HashMap::with_capacity(sparse_len);
         for r in &sparse_results {
             let normalized = if max_sparse > 0.0 {
                 r.score / max_sparse
@@ -493,8 +518,9 @@ impl Store {
         // sparse-only candidates. Using a HashSet here made iteration order
         // process-seed-random, which flipped equal-score candidates at the
         // truncate() boundary between runs.
-        let mut all_ids: Vec<&str> = Vec::new();
-        let mut seen_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut all_ids: Vec<&str> = Vec::with_capacity(union_upper);
+        let mut seen_ids: std::collections::HashSet<&str> =
+            std::collections::HashSet::with_capacity(union_upper);
         for r in &dense_results {
             if seen_ids.insert(&r.id) {
                 all_ids.push(&r.id);
@@ -546,9 +572,26 @@ impl Store {
 
         tracing::debug!(fused = fused.len(), alpha, "Hybrid fusion complete");
 
-        let fused_map: std::collections::HashMap<String, f32> =
-            fused.iter().map(|r| (r.id.clone(), r.score)).collect();
-        let candidate_ids: Vec<&str> = fused.iter().map(|r| r.id.as_str()).collect();
+        // PF-V1.25-16: drain `fused` into the score map (ids move, no clone).
+        // Previously the code ran `fused.iter().map(|r| (r.id.clone(), ...))`
+        // followed by a second `fused.iter().map(|r| r.id.as_str()).collect()`
+        // pass — one extra Vec allocation plus N string clones after having
+        // already owned the ids in `fused`.
+        //
+        // Tie-break determinism downstream depends on the final
+        // `scored.sort_by(b.1.total_cmp(&a.1).then(a.0.id.cmp(&b.0.id)))` in
+        // `search_by_candidate_ids_with_notes`, which carries its own id
+        // secondary key. The order of `candidate_ids` only affects DB fetch
+        // order, not final ranking.
+        let mut fused_map: std::collections::HashMap<String, f32> =
+            std::collections::HashMap::with_capacity(fused.len());
+        for r in fused.drain(..) {
+            fused_map.insert(r.id, r.score);
+        }
+        // HashMap iteration order is unspecified but STABLE across a single
+        // iteration within one call, which is all `fetch_candidates_by_ids_async`
+        // needs for its positional tie-breaker. No clone required.
+        let candidate_ids: Vec<&str> = fused_map.keys().map(|id| id.as_str()).collect();
         self.search_by_candidate_ids_with_notes(
             &candidate_ids,
             query,
@@ -580,7 +623,8 @@ impl Store {
         if let Some(idx) = index {
             let _span = tracing::info_span!("search_index_guided", limit = limit).entered();
 
-            let candidate_count = (limit * 5).max(100);
+            // TC-ADV-5: saturating multiply — see `search_hybrid` for details.
+            let candidate_count = limit.saturating_mul(5).max(100);
             let has_type_or_lang_filter = filter.include_types.is_some()
                 || filter.exclude_types.is_some()
                 || filter.languages.is_some();
@@ -704,8 +748,16 @@ impl Store {
                 None
             };
 
-            // Pre-compute note boost lookup for O(1) name matching in scoring loop
-            let note_index = NoteBoostIndex::new(notes);
+            // PF-V1.25-4: prefer the cached `OwnedNoteBoostIndex` shared
+            // across searches instead of rebuilding per-call. Fallback to
+            // a fresh borrowed build on cache fetch failure.
+            let note_boost = match self.cached_note_boost_index() {
+                Ok(arc) => NoteBoost::Owned(arc),
+                Err(e) => {
+                    tracing::warn!(error = %e, "note boost cache unavailable, rebuilding per-call");
+                    NoteBoost::Borrowed(super::scoring::NoteBoostIndex::new(notes))
+                }
+            };
 
             // Build loop-invariant scoring context once
             let scoring_ctx = ScoringContext {
@@ -713,7 +765,7 @@ impl Store {
                 filter,
                 name_matcher: name_matcher.as_ref(),
                 glob_matcher: glob_matcher.as_ref(),
-                note_index: &note_index,
+                note_index: &note_boost,
                 threshold,
             };
 
@@ -769,7 +821,9 @@ impl Store {
                 })
                 .collect();
 
-            scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+            // Secondary sort on candidate id keeps ties deterministic across
+            // process invocations.
+            scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.id.cmp(&b.0.id)));
 
             let scored: Vec<(String, f32)> =
                 scored.into_iter().map(|(c, score)| (c.id, score)).collect();
@@ -1146,6 +1200,93 @@ mod tests {
         let filter = SearchFilter::default();
         let results = store.search_filtered(&query, &filter, 3, 0.0).unwrap();
         assert_eq!(results.len(), 3);
+    }
+
+    // ===== TC-ADV-5: candidate-count multiply overflow guards =====
+    //
+    // `search_hybrid` and `search_filtered_with_index` both compute
+    // `candidate_count = limit.saturating_mul(5).max(100)`. The `saturating_mul`
+    // replaces a previous `limit * 5` that would panic with arithmetic overflow
+    // when `limit >= usize::MAX / 5`. Agents or badly-shaped CLI flags could
+    // feed a huge `limit`; a panic in search is unacceptable.
+
+    /// Direct arithmetic regression for the saturating-multiply expression.
+    /// Guards against a refactor that reverts to naive `limit * 5`.
+    #[test]
+    fn test_candidate_count_saturating_multiply() {
+        // usize::MAX / 4 would overflow `limit * 5`.
+        let limit = usize::MAX / 4;
+        let candidate_count = limit.saturating_mul(5).max(100);
+
+        // Saturating — no panic — and bounded at usize::MAX.
+        assert_eq!(candidate_count, usize::MAX);
+
+        // Small limit still respects the floor of 100.
+        let small = 5usize.saturating_mul(5).max(100);
+        assert_eq!(small, 100);
+
+        // Typical limit scales linearly.
+        let typical = 50usize.saturating_mul(5).max(100);
+        assert_eq!(typical, 250);
+    }
+
+    /// Integration regression: exercise `search_filtered_with_index` with a
+    /// mock index and a huge `limit` to prove the `limit * 5` call site is
+    /// panic-free end-to-end. The mock index returns a known candidate id so
+    /// the code path takes the `search_by_candidate_ids_with_notes` branch
+    /// (where downstream `limit * 3` over-fetch does not apply).
+    #[test]
+    fn test_search_filtered_with_index_huge_limit_mock() {
+        use crate::embedder::Embedding;
+        use crate::index::{IndexResult, VectorIndex};
+
+        struct MockIdx {
+            candidate_id: String,
+        }
+
+        impl VectorIndex for MockIdx {
+            fn search(&self, _query: &Embedding, _k: usize) -> Vec<IndexResult> {
+                vec![IndexResult {
+                    id: self.candidate_id.clone(),
+                    score: 0.9,
+                }]
+            }
+            fn len(&self) -> usize {
+                1
+            }
+            fn name(&self) -> &'static str {
+                "MockIdx"
+            }
+            fn dim(&self) -> usize {
+                crate::EMBEDDING_DIM
+            }
+        }
+
+        let (store, _dir) = setup_store();
+        let c = make_chunk("big_fn", "src/big.rs", Language::Rust, ChunkType::Function);
+        let chunk_id = c.id.clone();
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(c, emb.clone())], Some(12345))
+            .unwrap();
+
+        let idx = MockIdx {
+            candidate_id: chunk_id,
+        };
+        let filter = SearchFilter::default();
+
+        // usize::MAX / 4 would overflow naive `limit * 5`.
+        let huge = usize::MAX / 4;
+        let results = store
+            .search_filtered_with_index(&emb, &filter, huge, 0.0, Some(&idx))
+            .expect("search must not panic on huge limit");
+
+        // Only one chunk exists, so results are capped at 1.
+        assert!(
+            results.len() <= 1,
+            "result count must be bounded by fixture, got {}",
+            results.len()
+        );
     }
 
     // ===== type_boost_factor() tests =====

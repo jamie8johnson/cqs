@@ -25,6 +25,15 @@ use crate::store::StoreError;
 
 use sqlx::Row;
 
+/// Number of distinct chunk_ids fetched per page by [`Store::load_all_sparse_vectors`].
+///
+/// PF-V1.25-19: sized so the per-batch row Vec fits comfortably in a few MB
+/// even at the upper bound of tokens-per-chunk (~100-500). With 1000 chunks
+/// × 200 avg tokens/row × ~80B/row ≈ 16 MB per batch. The single-query
+/// `fetch_all` path that preceded this could hit multiple GB on a large
+/// index. Larger values reduce round-trip count but cap the memory win.
+const LOAD_SPARSE_CHUNK_ID_BATCH: i64 = 1000;
+
 /// Bump the SPLADE generation counter inside an existing write transaction.
 ///
 /// This is the one place the counter gets incremented. Every write path that
@@ -204,44 +213,101 @@ impl Store {
 
     /// Load all sparse vectors for building the in-memory SpladeIndex.
     /// Returns Vec of (chunk_id, sparse_vector).
+    ///
+    /// PF-V1.25-19: previously ran a single `SELECT ... FROM sparse_vectors
+    /// ORDER BY chunk_id` + `fetch_all`, which materialized the entire
+    /// `sparse_vectors` table as a `Vec<SqliteRow>` in memory before
+    /// grouping. On a 60k-chunk index with ~100 tokens/chunk that's 6M
+    /// rows × ~80B/row ≈ 500MB peak, on top of the final grouped Vec.
+    ///
+    /// Now paginates by chunk_id in batches of up to
+    /// [`LOAD_SPARSE_CHUNK_ID_BATCH`] distinct chunk_ids, using a cursor on
+    /// `chunk_id`. Each batch's rows are fully grouped before discarding
+    /// the row Vec, so peak memory is bounded to one batch (~5-20 MB) plus
+    /// the growing result.
     pub fn load_all_sparse_vectors(&self) -> Result<Vec<(String, SparseVector)>, StoreError> {
         let _span = tracing::info_span!("load_all_sparse_vectors").entered();
         self.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query(
-                "SELECT chunk_id, token_id, weight FROM sparse_vectors ORDER BY chunk_id",
-            )
-            .fetch_all(&self.pool)
-            .await?;
-
-            // Group by chunk_id
             let mut result: Vec<(String, SparseVector)> = Vec::new();
-            let mut current_id: Option<String> = None;
-            let mut current_vec: SparseVector = Vec::new();
+            let mut total_entries: usize = 0;
+            // Cursor: chunk_id ordering. Empty string sorts before any real id
+            // (SQLite BINARY collation, which is the default), so using "" as
+            // the initial cursor fetches the full range on the first query.
+            let mut last_chunk_id = String::new();
 
-            for row in &rows {
-                let chunk_id: String = row.get("chunk_id");
-                let token_id: i64 = row.get("token_id");
-                let weight: f64 = row.get("weight");
+            loop {
+                // Fetch up to LOAD_SPARSE_CHUNK_ID_BATCH distinct chunk_ids
+                // past the cursor, and all their rows, in one query. The
+                // subquery's LIMIT bounds the outer rows to one batch.
+                let rows: Vec<_> = sqlx::query(
+                    "SELECT chunk_id, token_id, weight FROM sparse_vectors \
+                     WHERE chunk_id IN ( \
+                         SELECT DISTINCT chunk_id FROM sparse_vectors \
+                         WHERE chunk_id > ?1 \
+                         ORDER BY chunk_id \
+                         LIMIT ?2 \
+                     ) \
+                     ORDER BY chunk_id, token_id",
+                )
+                .bind(&last_chunk_id)
+                .bind(LOAD_SPARSE_CHUNK_ID_BATCH)
+                .fetch_all(&self.pool)
+                .await?;
 
-                if current_id.as_ref() != Some(&chunk_id) {
-                    if let Some(id) = current_id.take() {
-                        result.push((id, std::mem::take(&mut current_vec)));
+                if rows.is_empty() {
+                    break;
+                }
+                total_entries += rows.len();
+
+                // Group rows by chunk_id (rows are already ORDER BY chunk_id,
+                // so we can stream through linearly). Each chunk_id belongs
+                // entirely to this batch — the subquery guarantees complete
+                // groups, never splitting a chunk across pages.
+                let mut current_id: Option<String> = None;
+                let mut current_vec: SparseVector = Vec::new();
+                let mut last_id_in_batch = String::new();
+                let mut distinct_ids_in_batch: i64 = 0;
+
+                for row in &rows {
+                    let chunk_id: String = row.get("chunk_id");
+                    let token_id: i64 = row.get("token_id");
+                    let weight: f64 = row.get("weight");
+
+                    if current_id.as_ref() != Some(&chunk_id) {
+                        if let Some(id) = current_id.take() {
+                            result.push((id, std::mem::take(&mut current_vec)));
+                        }
+                        last_id_in_batch = chunk_id.clone();
+                        distinct_ids_in_batch += 1;
+                        current_id = Some(chunk_id);
                     }
-                    current_id = Some(chunk_id);
+                    if token_id < 0 || token_id > u32::MAX as i64 {
+                        tracing::warn!(
+                            token_id,
+                            chunk_id = %current_id.as_deref().unwrap_or("?"),
+                            "Invalid token_id, skipping"
+                        );
+                        continue;
+                    }
+                    current_vec.push((token_id as u32, weight as f32));
                 }
-                if token_id < 0 || token_id > u32::MAX as i64 {
-                    tracing::warn!(token_id, chunk_id = %current_id.as_deref().unwrap_or("?"), "Invalid token_id, skipping");
-                    continue;
+                if let Some(id) = current_id {
+                    result.push((id, current_vec));
                 }
-                current_vec.push((token_id as u32, weight as f32));
-            }
-            if let Some(id) = current_id {
-                result.push((id, current_vec));
+
+                // If the batch returned fewer distinct chunk_ids than the
+                // page budget, the next query would find nothing — skip
+                // the empty round-trip. Otherwise advance the cursor past
+                // the last-seen id and loop.
+                if distinct_ids_in_batch < LOAD_SPARSE_CHUNK_ID_BATCH {
+                    break;
+                }
+                last_chunk_id = last_id_in_batch;
             }
 
             tracing::info!(
                 chunks = result.len(),
-                total_entries = rows.len(),
+                total_entries,
                 "Sparse vectors loaded"
             );
             Ok(result)
@@ -541,6 +607,21 @@ mod tests {
             before, after,
             "zero-orphan prune must NOT bump the generation"
         );
+    }
+
+    #[test]
+    fn test_prune_orphan_on_clean_db_is_noop() {
+        // TC-ADV-13: the zero-rows branch must be a true no-op on a clean
+        // DB that has never held any sparse vectors. A regression flipping
+        // the `if affected > 0` guard to `>= 0` would bump the generation
+        // on every `cqs index` even when no work was done.
+        let (store, _dir) = setup_store();
+
+        let before = store.splade_generation().unwrap();
+        let pruned = store.prune_orphan_sparse_vectors().unwrap();
+        assert_eq!(pruned, 0, "fresh DB must have zero orphans to prune");
+        let after = store.splade_generation().unwrap();
+        assert_eq!(before, after, "no-op prune on clean DB must not bump");
     }
 
     #[test]

@@ -10,6 +10,17 @@
 //! helper centralizes the derivation so call sites don't need to
 //! re-derive the constant.
 
+/// Read `CQS_BUSY_TIMEOUT_MS` env var, falling back to `default_ms`. Single
+/// source of truth so every SQLite pool (store, embedding cache, query
+/// cache) honours the same tuning knob.
+pub fn busy_timeout_from_env(default_ms: u64) -> std::time::Duration {
+    let ms = std::env::var("CQS_BUSY_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default_ms);
+    std::time::Duration::from_millis(ms)
+}
+
 /// SQLite's `SQLITE_MAX_VARIABLE_NUMBER` since v3.32 (2020).
 /// Single source of truth — all batch-size derivations reference this.
 pub const SQLITE_MAX_VARIABLES: usize = 32766;
@@ -31,9 +42,14 @@ pub const fn max_rows_per_statement(vars_per_row: usize) -> usize {
 }
 
 /// Maximum batch size that is pre-built and cached at startup.
-/// Bumped from 999 to match the modern SQLite limit so cached
-/// placeholder strings cover the full useful range.
-const PLACEHOLDER_CACHE_MAX: usize = 10_000;
+///
+/// SHL-V1.25-14: sized exactly to cover the caller-facing max
+/// (`max_rows_per_statement(1) = SQLITE_MAX_VARIABLES - SAFETY_MARGIN_VARS
+/// = 32466`). With the previous 10_000 cap, single-bind batches beyond
+/// 10k fell off the cache and re-built the ~120KB placeholder string
+/// every call, negating the cache's purpose. The extra ~22k strings
+/// cost ~1-2MB at startup in exchange for zero-alloc on the hot path.
+const PLACEHOLDER_CACHE_MAX: usize = SQLITE_MAX_VARIABLES - SAFETY_MARGIN_VARS;
 
 /// Pre-built placeholder strings for n = 1..=PLACEHOLDER_CACHE_MAX.
 /// Index 0 is unused; index n holds the string for n placeholders.
@@ -69,15 +85,27 @@ fn build_placeholders(n: usize) -> String {
 
 /// Build a comma-separated list of numbered SQL placeholders: "?1,?2,...,?N".
 ///
-/// Common batch sizes (1-999) are served from a static cache; larger values are built on demand.
-pub(crate) fn make_placeholders(n: usize) -> String {
+/// Batch sizes up to [`PLACEHOLDER_CACHE_MAX`] are served from a static
+/// cache as `Cow::Borrowed(&'static str)`; larger values build a fresh
+/// `String` on demand and return `Cow::Owned`. The cache covers the full
+/// caller-facing range — no production call site should fall off it.
+///
+/// PF-V1.25-7: previously returned `String` via `PLACEHOLDER_CACHE[n].clone()`,
+/// which re-allocated the full placeholder string on every cache hit. A 500-id
+/// batch cost ~4KB memcpy per call; on a hot reindex or batch-search loop
+/// this adds up to measurable allocator pressure. The cache hit now returns a
+/// `&'static str` borrow via `Cow::Borrowed`.
+///
+/// SHL-V1.25-14: `PLACEHOLDER_CACHE_MAX` is bound to `SQLITE_MAX_VARIABLES -
+/// SAFETY_MARGIN_VARS` so large batches don't miss the cache.
+pub(crate) fn make_placeholders(n: usize) -> std::borrow::Cow<'static, str> {
     assert!(
         n <= 100_000,
         "make_placeholders called with unreasonable n={n}"
     );
     if n <= PLACEHOLDER_CACHE_MAX {
-        PLACEHOLDER_CACHE[n].clone()
+        std::borrow::Cow::Borrowed(PLACEHOLDER_CACHE[n].as_str())
     } else {
-        build_placeholders(n)
+        std::borrow::Cow::Owned(build_placeholders(n))
     }
 }

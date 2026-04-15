@@ -11,22 +11,25 @@ use super::{HnswError, HnswIndex, HnswInner, MAX_LAYER};
 impl HnswIndex {
     /// Build a new HNSW index from embeddings (single-pass).
     ///
-    /// # When to use `build` vs `build_batched`
+    /// # When to use `build_with_dim` vs `build_batched_with_dim`
     ///
-    /// - **`build`**: Use when all embeddings fit comfortably in memory (<50k chunks,
-    ///   ~150MB for 50k x 768 x 4 bytes). Slightly higher graph quality since all
-    ///   vectors are available during construction.
+    /// - **`build_with_dim`**: Use when all embeddings fit comfortably in memory
+    ///   (<50k chunks, ~150MB for 50k x 768 x 4 bytes). Slightly higher graph
+    ///   quality since all vectors are available during construction.
     ///
-    /// - **`build_batched`**: Use for large indexes (>50k chunks) or memory-constrained
-    ///   environments. Streams embeddings in batches to avoid OOM. Graph quality is
-    ///   marginally lower but negligible for practical search accuracy.
+    /// - **`build_batched_with_dim`**: Use for large indexes (>50k chunks) or
+    ///   memory-constrained environments. Streams embeddings in batches to avoid
+    ///   OOM. Graph quality is marginally lower but negligible for practical
+    ///   search accuracy.
     ///
     /// **Warning:** This loads all embeddings into memory at once.
-    /// For large indexes (>50k chunks), prefer `build_batched()` to avoid OOM.
+    /// For large indexes (>50k chunks), prefer `build_batched_with_dim()` to
+    /// avoid OOM.
     ///
     /// # Deprecation Notice
     ///
-    /// This method is soft-deprecated for new code. Prefer `build_batched()` which:
+    /// This method is soft-deprecated for new code. Prefer
+    /// `build_batched_with_dim()` which:
     /// - Streams embeddings in configurable batch sizes
     /// - Avoids OOM on large indexes
     /// - Has negligible quality difference in practice
@@ -34,8 +37,12 @@ impl HnswIndex {
     /// # Production routing
     ///
     /// `build_hnsw_index()` in `cli/commands/index.rs` unconditionally uses
-    /// `build_batched()` with 10k-row batches for all index sizes. This method
-    /// is only used in tests.
+    /// `build_batched_with_dim()` with 10k-row batches for all index sizes.
+    /// This method is only used in tests.
+    ///
+    /// (Historical note: the earlier `build_batched()` convenience wrapper that
+    /// hardcoded 768-dim was removed in v0.9.0 as part of the configurable-model
+    /// migration — see "configurable models disaster" in `CLAUDE.md`.)
     ///
     /// # Arguments
     /// * `embeddings` - Vector of (chunk_id, embedding) pairs
@@ -200,7 +207,12 @@ impl HnswIndex {
             } else {
                 100
             };
-            tracing::info!(
+            // PF-V1.25-15: demoted from info! to debug!. A 60k-chunk build
+            // emits 50+ batches; at info level they drown out meaningful
+            // log messages with no user-actionable signal per batch.
+            // The final "HNSW index built" message at end-of-build (emitted
+            // as info!) is sufficient for progress tracking.
+            tracing::debug!(
                 "HNSW build progress: {} / ~{} vectors ({}%)",
                 total_inserted,
                 capacity,

@@ -180,9 +180,12 @@ fn test_prune_missing() {
         .upsert_chunk(&chunk2, &mock_embedding(1.0), Some(12345))
         .unwrap();
 
-    // Prune with only test.rs existing
+    // Prune with only test.rs existing. Use a nonexistent temp path as
+    // `root` — neither test.rs nor other.rs live on disk, so the filesystem
+    // fallback in `origin_exists` resolves to false for anything not in the set.
     let existing: HashSet<PathBuf> = vec![PathBuf::from("test.rs")].into_iter().collect();
-    let pruned = store.prune_missing(&existing).unwrap();
+    let fake_root = std::env::temp_dir().join("cqs-prune-missing-test-root-nonexistent");
+    let pruned = store.prune_missing(&existing, &fake_root).unwrap();
 
     assert_eq!(pruned, 1);
 

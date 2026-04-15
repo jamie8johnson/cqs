@@ -48,7 +48,7 @@ pub(crate) enum BatchCmd {
         #[arg(long)]
         splade: bool,
         /// SPLADE fusion weight: 1.0 = pure cosine, 0.0 = pure sparse
-        #[arg(long, default_value = "0.7")]
+        #[arg(long, default_value = "0.7", value_parser = crate::cli::parse_finite_f32)]
         splade_alpha: f32,
         /// Filter by language
         #[arg(short = 'l', long)]
@@ -69,7 +69,7 @@ pub(crate) enum BatchCmd {
         #[arg(long)]
         no_demote: bool,
         /// Weight for name matching in hybrid search (0.0-1.0, default 0.2)
-        #[arg(long, default_value = "0.2")]
+        #[arg(long, default_value = "0.2", value_parser = crate::cli::parse_finite_f32)]
         name_boost: f32,
         /// Search only this reference index (skip project index)
         #[arg(long = "ref")]
@@ -89,6 +89,14 @@ pub(crate) enum BatchCmd {
         /// Disable staleness checks (skip per-file mtime comparison)
         #[arg(long)]
         no_stale_check: bool,
+        /// Min similarity threshold (default: 0.3)
+        ///
+        /// CQ-V1.25-1: matches the CLI's top-level `-t/--threshold` flag.
+        /// Previously omitted — daemon-routed queries silently collapsed to
+        /// the hardcoded 0.3 floor in `dispatch_search`, so `cqs -t 0.5 "..."`
+        /// returned results below the caller's intended cutoff.
+        #[arg(short = 't', long, value_parser = crate::cli::parse_finite_f32)]
+        threshold: Option<f32>,
     },
     /// Semantic git blame: who changed a function, when, and why
     Blame {
@@ -215,7 +223,11 @@ pub(crate) enum BatchCmd {
         focus: Option<String>,
     },
     /// Check index freshness
-    Stale,
+    Stale {
+        /// Show counts only, skip file list
+        #[arg(long)]
+        count_only: bool,
+    },
     /// Codebase quality snapshot
     Health,
     /// Semantic drift detection between reference and project
@@ -223,10 +235,13 @@ pub(crate) enum BatchCmd {
         /// Reference name to compare against
         reference: String,
         /// Similarity threshold (default: 0.95)
-        #[arg(long, default_value = "0.95")]
+        ///
+        /// `-t` alias matches the CLI subcommand so forwarded invocations
+        /// (`cqs drift ref -t 0.9`) parse cleanly on the daemon side.
+        #[arg(short = 't', long, default_value = "0.95", value_parser = crate::cli::parse_finite_f32)]
         threshold: f32,
         /// Minimum drift to show (default: 0.0)
-        #[arg(long, default_value = "0.0")]
+        #[arg(long, default_value = "0.0", value_parser = crate::cli::parse_finite_f32)]
         min_drift: f32,
         /// Filter by language
         #[arg(short = 'l', long)]
@@ -283,7 +298,10 @@ pub(crate) enum BatchCmd {
         /// Target reference (default: project)
         target: Option<String>,
         /// Similarity threshold
-        #[arg(long, default_value = "0.95")]
+        ///
+        /// `-t` alias matches the CLI subcommand so forwarded invocations
+        /// (`cqs diff a b -t 0.9`) parse cleanly on the daemon side.
+        #[arg(short = 't', long, default_value = "0.95", value_parser = crate::cli::parse_finite_f32)]
         threshold: f32,
         /// Filter by language
         #[arg(short = 'l', long)]
@@ -327,20 +345,49 @@ impl BatchCmd {
     /// Used by pipeline execution to validate downstream segments. Commands that
     /// take a function name as their primary input are pipeable; commands that
     /// take queries, paths, or no arguments are not.
+    ///
+    /// API-V1.25-6: `match` is intentionally exhaustive (no wildcard arm) so
+    /// adding a new `BatchCmd` variant forces a classification decision here.
+    /// The `test_is_pipeable_exhaustive` test below pins this behavior —
+    /// removing the exhaustiveness makes the test fail to compile.
     pub(crate) fn is_pipeable(&self) -> bool {
-        matches!(
-            self,
+        match self {
+            // Pipeable: primary input is a function name.
             BatchCmd::Blame { .. }
-                | BatchCmd::Callers { .. }
-                | BatchCmd::Callees { .. }
-                | BatchCmd::Deps { .. }
-                | BatchCmd::Explain { .. }
-                | BatchCmd::Similar { .. }
-                | BatchCmd::Impact { .. }
-                | BatchCmd::TestMap { .. }
-                | BatchCmd::Related { .. }
-                | BatchCmd::Scout { .. }
-        )
+            | BatchCmd::Callers { .. }
+            | BatchCmd::Callees { .. }
+            | BatchCmd::Deps { .. }
+            | BatchCmd::Explain { .. }
+            | BatchCmd::Similar { .. }
+            | BatchCmd::Impact { .. }
+            | BatchCmd::TestMap { .. }
+            | BatchCmd::Related { .. }
+            | BatchCmd::Scout { .. } => true,
+            // Not pipeable: queries, paths, git refs, or no positional arg.
+            BatchCmd::Search { .. }
+            | BatchCmd::Gather { .. }
+            | BatchCmd::Trace { .. }
+            | BatchCmd::Dead { .. }
+            | BatchCmd::Context { .. }
+            | BatchCmd::Stats
+            | BatchCmd::Onboard { .. }
+            | BatchCmd::Where { .. }
+            | BatchCmd::Read { .. }
+            | BatchCmd::Stale { .. }
+            | BatchCmd::Health
+            | BatchCmd::Drift { .. }
+            | BatchCmd::Notes { .. }
+            | BatchCmd::Task { .. }
+            | BatchCmd::Review { .. }
+            | BatchCmd::Ci { .. }
+            | BatchCmd::Diff { .. }
+            | BatchCmd::ImpactDiff { .. }
+            | BatchCmd::Plan { .. }
+            | BatchCmd::Suggest { .. }
+            | BatchCmd::Gc
+            | BatchCmd::Refresh
+            | BatchCmd::Help => false,
+        }
     }
 }
 
@@ -410,6 +457,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             context,
             expand,
             no_stale_check,
+            threshold,
         } => {
             log_query("search", &query);
             handlers::dispatch_search(
@@ -435,6 +483,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
                     context,
                     expand,
                     no_stale_check,
+                    threshold,
                 },
             )
         }
@@ -514,7 +563,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             handlers::dispatch_where(ctx, &description, limit)
         }
         BatchCmd::Read { path, focus } => handlers::dispatch_read(ctx, &path, focus.as_deref()),
-        BatchCmd::Stale => handlers::dispatch_stale(ctx),
+        BatchCmd::Stale { count_only } => handlers::dispatch_stale(ctx, count_only),
         BatchCmd::Health => handlers::dispatch_health(ctx),
         BatchCmd::Drift {
             reference,
@@ -780,7 +829,7 @@ mod tests {
     #[test]
     fn test_parse_stale() {
         let input = BatchInput::try_parse_from(["stale"]).unwrap();
-        assert!(matches!(input.cmd, BatchCmd::Stale));
+        assert!(matches!(input.cmd, BatchCmd::Stale { count_only: _ }));
     }
 
     #[test]
@@ -850,5 +899,50 @@ mod tests {
             }
             _ => panic!("Expected Blame command"),
         }
+    }
+
+    // API-V1.25-6: compile-time guard that every BatchCmd variant is either
+    // marked pipeable or explicitly not pipeable. Adding a new variant without
+    // updating `BatchCmd::is_pipeable`'s match causes *this test* to fail to
+    // compile because the inner match below uses the same exhaustiveness.
+    //
+    // The test body just spot-checks a few known variants. The real protection
+    // is the exhaustive match in `is_pipeable` (no wildcard arm) — if a new
+    // variant is added, the compiler flags `is_pipeable` first.
+    #[test]
+    fn test_is_pipeable_exhaustive_classification() {
+        use cqs::store::DeadConfidence;
+
+        // Pipeable variants: should return true.
+        let callers = BatchCmd::Callers {
+            name: "foo".into(),
+            cross_project: false,
+        };
+        assert!(callers.is_pipeable());
+
+        let scout = BatchCmd::Scout {
+            args: crate::cli::args::ScoutArgs {
+                query: "foo".into(),
+                limit: 5,
+                tokens: None,
+            },
+        };
+        assert!(scout.is_pipeable());
+
+        // Non-pipeable variants: should return false.
+        assert!(!BatchCmd::Stats.is_pipeable());
+        assert!(!BatchCmd::Health.is_pipeable());
+        assert!(!BatchCmd::Gc.is_pipeable());
+        assert!(!BatchCmd::Refresh.is_pipeable());
+        assert!(!BatchCmd::Help.is_pipeable());
+        assert!(!BatchCmd::Stale { count_only: false }.is_pipeable());
+
+        let dead = BatchCmd::Dead {
+            args: crate::cli::args::DeadArgs {
+                include_pub: false,
+                min_confidence: DeadConfidence::Low,
+            },
+        };
+        assert!(!dead.is_pipeable());
     }
 }

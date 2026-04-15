@@ -50,6 +50,10 @@ pub(crate) fn cmd_similar(
     let store = &ctx.store;
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
+    // CQ-V1.25-2: clamp via shared constant so CLI and batch return the
+    // same number of results. Previously CLI had no clamp; `cqs -n 10000`
+    // cascaded into unbounded allocation in search_filtered_with_index.
+    let limit = limit.clamp(1, crate::cli::SIMILAR_LIMIT_MAX);
 
     // Resolve name to chunk
     let (chunk_id, chunk_name) = resolve_target(store, name)?;
@@ -81,7 +85,7 @@ pub(crate) fn cmd_similar(
     };
 
     // Load vector index
-    let index = HnswIndex::try_load_with_ef(cqs_dir, None, Some(store.dim()));
+    let index = HnswIndex::try_load_with_ef(cqs_dir, None, store.dim());
 
     // Search with the chunk's embedding as query (request one extra to exclude self)
     let results = store.search_filtered_with_index(

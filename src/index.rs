@@ -71,6 +71,18 @@ pub trait VectorIndex: Send + Sync {
         }
         results
     }
+
+    /// RM-V1.25-19: Has this index observed a panic / poisoned mutex mid-op?
+    ///
+    /// The default answer is `false`; only the CAGRA GPU backend currently
+    /// tracks this. When `true`, the caller should discard the index and
+    /// rebuild rather than continue searching against possibly-corrupted
+    /// CUDA state (stream in a bad posture, buffer ownership ambiguous,
+    /// etc.). HNSW / brute-force search don't manage any GPU context so
+    /// they never surface poisoning.
+    fn is_poisoned(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

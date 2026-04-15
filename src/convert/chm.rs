@@ -179,6 +179,11 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
 /// Checks that the candidate actually executes successfully (exit code 0 or
 /// recognizable help output). This prevents accidentally running an unrelated
 /// binary that happens to share the name.
+///
+/// SEC-V1.25-10: Rejects any binary whose resolved location is in a
+/// user-writable directory (e.g. /tmp, /var/tmp, or a world-writable dir).
+/// This blocks PATH injection where an attacker drops `7z` in a writable
+/// directory earlier in PATH.
 fn find_7z() -> Result<String> {
     // Check common names first, then env-based Windows install paths
     let mut candidates: Vec<String> =
@@ -191,20 +196,43 @@ fn find_7z() -> Result<String> {
         candidates.push(format!(r"{}\7-Zip\7z.exe", pf));
     }
     for name in &candidates {
-        match std::process::Command::new(name)
+        // Resolve the candidate to an absolute path so we can vet the parent directory.
+        // If the name already is absolute (Windows ProgramFiles paths), we use it directly;
+        // otherwise consult PATH.
+        let resolved = std::path::PathBuf::from(name);
+        let resolved = if resolved.is_absolute() {
+            if resolved.is_file() {
+                Some(resolved)
+            } else {
+                None
+            }
+        } else {
+            super::resolve_on_path(name)
+        };
+        let Some(resolved) = resolved else { continue };
+        if !super::is_safe_executable_path(&resolved) {
+            tracing::warn!(
+                candidate = %name,
+                path = %resolved.display(),
+                "Refusing 7z candidate in user-writable directory (SEC-V1.25-10)"
+            );
+            continue;
+        }
+        match std::process::Command::new(&resolved)
             .arg("--help")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
         {
             Ok(status) if status.success() || status.code() == Some(0) => {
-                return Ok(name.to_string());
+                return Ok(resolved.to_string_lossy().to_string());
             }
             _ => continue,
         }
     }
     anyhow::bail!(
-        "7z not found. Install: `sudo apt install p7zip-full` (Linux), `brew install p7zip` (macOS), or 7-Zip (Windows)"
+        "7z not found (or only available in a user-writable directory that cqs refuses to trust). \
+         Install: `sudo apt install p7zip-full` (Linux), `brew install p7zip` (macOS), or 7-Zip (Windows)"
     )
 }
 

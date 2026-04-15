@@ -1,4 +1,11 @@
--- cq index schema v18
+-- cq index schema v20
+-- v20: AFTER DELETE trigger on chunks bumps splade_generation so any persisted
+--      splade.index.bin is invalidated when underlying chunks are removed
+--      (catches the race `delete_by_origin` left behind when CASCADE alone
+--      wasn't enough to drive rebuild scheduling).
+-- v19: FK(chunk_id) ON DELETE CASCADE on sparse_vectors → chunks(id) so SPLADE
+--      rows can't outlive the chunks they describe; splade_generation is also
+--      bumped on migration to invalidate any pre-v19 splade.index.bin.
 -- v18: embedding_base column for dual embeddings (adaptive retrieval Phase 5)
 -- v17: sparse_vectors table + enrichment_version column
 -- v16: composite PK on llm_summaries

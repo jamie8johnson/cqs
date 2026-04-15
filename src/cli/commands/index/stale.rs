@@ -86,7 +86,7 @@ pub(crate) fn cmd_stale(
     let files = cqs::enumerate_files(root, &exts, false)?;
     let file_set: HashSet<_> = files.into_iter().collect();
 
-    let report = store.list_stale_files(&file_set)?;
+    let report = store.list_stale_files(&file_set, root)?;
 
     if json {
         let output = build_stale(&report);

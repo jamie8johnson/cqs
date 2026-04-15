@@ -20,6 +20,18 @@ use crate::normalize_slashes;
 /// Beyond this cap, results are truncated and a warning is emitted.
 const DEFAULT_MAX_CHANGED_FUNCTIONS: usize = 500;
 
+/// Resolve the effective cap, checking `CQS_IMPACT_MAX_CHANGED_FUNCTIONS`
+/// first. Zero or unparseable values fall back to the default. Read at
+/// every call because impact analysis is infrequent and tuning the cap
+/// mid-session should not require restart.
+fn max_changed_functions() -> usize {
+    std::env::var("CQS_IMPACT_MAX_CHANGED_FUNCTIONS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_CHANGED_FUNCTIONS)
+}
+
 /// Map diff hunks to function names using the index.
 /// For each hunk, finds chunks whose line range overlaps the hunk's range.
 /// Returns deduplicated function names.
@@ -128,22 +140,28 @@ pub fn analyze_diff_impact_with_graph(
                 caller_count: 0,
                 test_count: 0,
                 truncated: false,
+                truncated_functions: 0,
             },
         });
     }
 
-    // RT-RES-9: Cap changed functions to prevent unbounded processing on massive diffs
-    let truncated = changed.len() > DEFAULT_MAX_CHANGED_FUNCTIONS;
+    // RT-RES-9 / SHL-V1.25-7: cap changed functions to prevent unbounded
+    // processing on massive diffs. The cap is overridable via
+    // CQS_IMPACT_MAX_CHANGED_FUNCTIONS. `truncated_functions` surfaces the
+    // dropped count in the summary so JSON consumers can detect silent
+    // truncation without scraping stderr.
+    let cap = max_changed_functions();
+    let total = changed.len();
+    let truncated = total > cap;
+    let truncated_functions = if truncated { total - cap } else { 0 };
     let changed = if truncated {
         tracing::warn!(
-            total = changed.len(),
-            cap = DEFAULT_MAX_CHANGED_FUNCTIONS,
+            total,
+            cap,
+            dropped = truncated_functions,
             "Changed functions exceed cap, truncating"
         );
-        changed
-            .into_iter()
-            .take(DEFAULT_MAX_CHANGED_FUNCTIONS)
-            .collect()
+        changed.into_iter().take(cap).collect()
     } else {
         changed
     };
@@ -253,6 +271,7 @@ pub fn analyze_diff_impact_with_graph(
         caller_count: all_callers.len(),
         test_count: all_tests.len(),
         truncated,
+        truncated_functions,
     };
 
     Ok(DiffImpactResult {
@@ -606,6 +625,10 @@ mod tests {
             "should be capped at DEFAULT_MAX_CHANGED_FUNCTIONS"
         );
         assert_eq!(result.changed_functions.len(), 500);
+        assert_eq!(
+            result.summary.truncated_functions, 100,
+            "SHL-V1.25-7: truncated_functions counts the dropped excess"
+        );
     }
 
     /// When changed functions are within the cap, truncated is false.
@@ -631,5 +654,6 @@ mod tests {
         assert!(!result.summary.truncated);
         assert_eq!(result.summary.changed_count, 10);
         assert_eq!(result.changed_functions.len(), 10);
+        assert_eq!(result.summary.truncated_functions, 0);
     }
 }

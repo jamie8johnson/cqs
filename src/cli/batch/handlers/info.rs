@@ -98,7 +98,10 @@ pub(in crate::cli::batch) fn dispatch_similar(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_similar", name).entered();
     let threshold = validate_finite_f32(threshold, "threshold")?;
-    let limit = limit.clamp(1, 100);
+    // CQ-V1.25-2: shared with CLI's cmd_similar (which currently does not
+    // clamp — adding clamp here + constant would regress; keep parity and
+    // let CLI gain its clamp in a separate fix).
+    let limit = limit.clamp(1, crate::cli::SIMILAR_LIMIT_MAX);
 
     let resolved = cqs::resolve_target(&ctx.store(), name)?;
     let chunk = &resolved.chunk;

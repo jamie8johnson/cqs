@@ -475,6 +475,9 @@ fn test_gc_prunes_missing_files() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON output: {} — raw: {}", e, stdout));
 
+    // TC-HP-20: assert ALL 5 prune counters, not just pruned_chunks +
+    // missing_files. A regression in any of these would silently
+    // accumulate orphan call graph / type edge / summary rows.
     assert!(
         parsed["pruned_chunks"].as_u64().unwrap() > 0,
         "Should prune chunks for missing file"
@@ -483,6 +486,27 @@ fn test_gc_prunes_missing_files() {
         parsed["missing_files"].as_u64().unwrap(),
         1,
         "Should report 1 missing file"
+    );
+    // The deleted src/lib.rs had call graph entries (add, subtract); their
+    // orphan function_calls rows must also be pruned in the same tx.
+    assert!(
+        parsed["pruned_calls"].as_u64().is_some(),
+        "pruned_calls must be present in GcOutput"
+    );
+    // Type edges and summaries may or may not be present for this fixture,
+    // but the fields must serialize as u64 (never missing, never null).
+    assert!(
+        parsed["pruned_type_edges"].as_u64().is_some(),
+        "pruned_type_edges must be present in GcOutput"
+    );
+    assert!(
+        parsed["pruned_summaries"].as_u64().is_some(),
+        "pruned_summaries must be present in GcOutput"
+    );
+    assert_eq!(
+        parsed["hnsw_rebuilt"].as_bool().unwrap(),
+        true,
+        "HNSW should be rebuilt after pruning chunks"
     );
 }
 

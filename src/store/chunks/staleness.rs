@@ -4,10 +4,34 @@
 //! Staleness checks and pruning for missing/stale files.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::store::helpers::{StaleFile, StaleReport, StoreError};
 use crate::store::Store;
+
+/// Decide whether a chunk origin refers to a file that exists.
+///
+/// Used by all four staleness helpers in this module. Replaces the
+/// over-loose path-suffix matching that retained 81% of chunks as
+/// orphans on this repo (root cause of v1.22.0 → v1.25.0 eval drift).
+///
+/// The check is: exact membership in `existing_files`, falling back to a
+/// filesystem `exists()` probe against `root` for paths that may have been
+/// stored under a different relative/absolute form. Filesystem existence is
+/// case-correct on every OS (including macOS case-fold), so the previous
+/// `#[cfg(target_os = "macos")]` branch is no longer needed.
+fn origin_exists(origin: &str, existing_files: &HashSet<PathBuf>, root: &Path) -> bool {
+    let origin_path = PathBuf::from(origin);
+    if existing_files.contains(&origin_path) {
+        return true;
+    }
+    let absolute = if origin_path.is_absolute() {
+        origin_path
+    } else {
+        root.join(&origin_path)
+    };
+    absolute.exists()
+}
 
 /// Result of running all GC prune operations atomically.
 #[derive(Debug, Clone)]
@@ -29,7 +53,11 @@ impl Store {
     /// - Existing files often number 10k+, exceeding SQLite's parameter limit (~999)
     /// - Sending full file list to SQLite would require chunked queries anyway
     /// - HashSet lookup is O(1), and we already have the set from enumerate_files()
-    pub fn prune_missing(&self, existing_files: &HashSet<PathBuf>) -> Result<u32, StoreError> {
+    pub fn prune_missing(
+        &self,
+        existing_files: &HashSet<PathBuf>,
+        root: &Path,
+    ) -> Result<u32, StoreError> {
         let _span = tracing::info_span!("prune_missing", existing = existing_files.len()).entered();
         self.rt.block_on(async {
             let rows: Vec<(String,)> = sqlx::query_as(
@@ -38,41 +66,13 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
 
-            // Collect missing origins
-            //
-            // PB-24: On macOS (HFS+/APFS case-insensitive), PathBuf comparison
-            // is case-sensitive but the filesystem is not. Normalize both sides
-            // to lowercase so we don't falsely mark files as missing.
-            //
-            // Also handles absolute/relative path mismatches: if the stored origin
-            // is absolute and the existing_files set has relative (or vice versa),
-            // fall back to suffix matching so stale chunks from moved/deleted files
-            // are correctly detected.
+            // AC / CQ-V1.25-4 / CQ-V1.25-6 / PB-V1.25-7: reconcile stored origins
+            // against current filesystem state via `origin_exists`. The previous
+            // `ends_with` heuristic retained 81% of chunks as orphans whenever a
+            // worktree or subdirectory tail-matched a root file name.
             let missing: Vec<String> = rows
                 .into_iter()
-                .filter(|(origin,)| {
-                    let origin_path = PathBuf::from(origin);
-                    #[cfg(target_os = "macos")]
-                    {
-                        let origin_lower = origin.to_lowercase();
-                        !existing_files
-                            .iter()
-                            .any(|p| p.to_string_lossy().to_lowercase() == origin_lower)
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        if existing_files.contains(&origin_path) {
-                            false // exact match — not missing
-                        } else {
-                            // Suffix match: catch absolute/relative mismatches
-                            !existing_files.iter().any(|p| {
-                                let p_str = p.to_string_lossy();
-                                let o_str = origin_path.to_string_lossy();
-                                p_str.ends_with(o_str.as_ref()) || o_str.ends_with(p_str.as_ref())
-                            })
-                        }
-                    }
-                })
+                .filter(|(origin,)| !origin_exists(origin, existing_files, root))
                 .map(|(origin,)| origin)
                 .collect();
 
@@ -148,6 +148,7 @@ impl Store {
     pub fn prune_all(
         &self,
         existing_files: &HashSet<PathBuf>,
+        root: &Path,
     ) -> Result<PruneAllResult, StoreError> {
         let _span = tracing::info_span!("prune_all", existing = existing_files.len()).entered();
         self.rt.block_on(async {
@@ -158,33 +159,10 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
 
-            // PB-1: Same filtering logic as prune_missing — macOS case-fold
-            // and suffix-match fallback for absolute/relative path mismatches.
+            // Same filesystem-existence reconciliation as `prune_missing`.
             let missing: Vec<String> = rows
                 .into_iter()
-                .filter(|(origin,)| {
-                    let origin_path = PathBuf::from(origin);
-                    #[cfg(target_os = "macos")]
-                    {
-                        let origin_lower = origin.to_lowercase();
-                        !existing_files
-                            .iter()
-                            .any(|p| p.to_string_lossy().to_lowercase() == origin_lower)
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        if existing_files.contains(&origin_path) {
-                            false // exact match — not missing
-                        } else {
-                            // Suffix match: catch absolute/relative mismatches
-                            !existing_files.iter().any(|p| {
-                                let p_str = p.to_string_lossy();
-                                let o_str = origin_path.to_string_lossy();
-                                p_str.ends_with(o_str.as_ref()) || o_str.ends_with(p_str.as_ref())
-                            })
-                        }
-                    }
-                })
+                .filter(|(origin,)| !origin_exists(origin, existing_files, root))
                 .map(|(origin,)| origin)
                 .collect();
 
@@ -290,9 +268,10 @@ impl Store {
     pub fn count_stale_files(
         &self,
         existing_files: &HashSet<PathBuf>,
+        root: &Path,
     ) -> Result<(u64, u64), StoreError> {
         let _span = tracing::debug_span!("count_stale_files").entered();
-        let report = self.list_stale_files(existing_files)?;
+        let report = self.list_stale_files(existing_files, root)?;
         Ok((report.stale.len() as u64, report.missing.len() as u64))
     }
 
@@ -302,6 +281,7 @@ impl Store {
     pub fn list_stale_files(
         &self,
         existing_files: &HashSet<PathBuf>,
+        root: &Path,
     ) -> Result<StaleReport, StoreError> {
         let _span = tracing::debug_span!("list_stale_files").entered();
         self.rt.block_on(async {
@@ -318,25 +298,9 @@ impl Store {
             for (origin, stored_mtime) in rows {
                 let path = PathBuf::from(&origin);
 
-                // PB-2: On macOS (HFS+/APFS case-insensitive), PathBuf comparison
-                // is case-sensitive but the filesystem is not. Normalize both sides
-                // to lowercase so we don't falsely mark files as missing.
-                // Same pattern as prune_missing.
-                let found = {
-                    #[cfg(target_os = "macos")]
-                    {
-                        let origin_lower = origin.to_lowercase();
-                        existing_files
-                            .iter()
-                            .any(|p| p.to_string_lossy().to_lowercase() == origin_lower)
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        existing_files.contains(&path)
-                    }
-                };
-
-                if !found {
+                // Filesystem existence check — same logic as prune_*. Replaces
+                // the previous macOS case-fold + set-contains special case.
+                if !origin_exists(&origin, existing_files, root) {
                     missing.push(path);
                     continue;
                 }
@@ -354,7 +318,14 @@ impl Store {
                     }
                 };
 
-                let current_mtime = path
+                // Resolve the path against `root` for metadata lookup so
+                // relative origins work regardless of current directory.
+                let lookup_path: PathBuf = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    root.join(&path)
+                };
+                let current_mtime = lookup_path
                     .metadata()
                     .and_then(|m| m.modified())
                     .ok()
@@ -464,9 +435,9 @@ mod tests {
 
     #[test]
     fn test_list_stale_files_empty_index() {
-        let (store, _dir) = setup_store();
+        let (store, dir) = setup_store();
         let existing = HashSet::new();
-        let report = store.list_stale_files(&existing).unwrap();
+        let report = store.list_stale_files(&existing, dir.path()).unwrap();
         assert!(report.stale.is_empty());
         assert!(report.missing.is_empty());
         assert_eq!(report.total_indexed, 0);
@@ -515,7 +486,7 @@ mod tests {
 
         let mut existing = HashSet::new();
         existing.insert(file_path);
-        let report = store.list_stale_files(&existing).unwrap();
+        let report = store.list_stale_files(&existing, dir.path()).unwrap();
         assert!(report.stale.is_empty());
         assert!(report.missing.is_empty());
         assert_eq!(report.total_indexed, 1);
@@ -554,7 +525,7 @@ mod tests {
 
         let mut existing = HashSet::new();
         existing.insert(file_path);
-        let report = store.list_stale_files(&existing).unwrap();
+        let report = store.list_stale_files(&existing, dir.path()).unwrap();
         assert_eq!(report.stale.len(), 1);
         assert_eq!(report.stale[0].stored_mtime, 1000);
         assert!(report.stale[0].current_mtime > 1000);
@@ -564,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_list_stale_files_detects_missing() {
-        let (store, _dir) = setup_store();
+        let (store, dir) = setup_store();
 
         let c = make_chunk("gone", "/nonexistent/file.rs");
         store
@@ -573,7 +544,7 @@ mod tests {
 
         // existing_files doesn't contain the path
         let existing = HashSet::new();
-        let report = store.list_stale_files(&existing).unwrap();
+        let report = store.list_stale_files(&existing, dir.path()).unwrap();
         assert!(report.stale.is_empty());
         assert_eq!(report.missing.len(), 1);
         assert_eq!(report.total_indexed, 1);
@@ -612,7 +583,7 @@ mod tests {
 
         let mut existing = HashSet::new();
         existing.insert(file_path);
-        let report = store.list_stale_files(&existing).unwrap();
+        let report = store.list_stale_files(&existing, dir.path()).unwrap();
         assert_eq!(
             report.stale.len(),
             1,
@@ -758,5 +729,301 @@ mod tests {
             stale.is_empty(),
             "Unknown origin should not appear in stale set"
         );
+    }
+
+    // ===== prune_all tests (TC-HP-3) =====
+
+    /// Helper: build a Chunk rooted at `dir` with the given relative path.
+    fn chunk_at(dir: &std::path::Path, rel: &str, name: &str) -> Chunk {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, format!("fn {name}() {{}}")).unwrap();
+        let content = format!("fn {name}() {{}}");
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        Chunk {
+            id: format!("{}:1:{}", path.display(), &hash[..8]),
+            file: path,
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {name}()"),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        }
+    }
+
+    /// TC-HP-3 (happy path): `prune_all` removes chunks for files deleted
+    /// from disk, counts reflect the prune, remaining chunks intact.
+    #[test]
+    fn test_prune_all_happy_path() {
+        let (store, dir) = setup_store();
+
+        // Index 3 files
+        let c1 = chunk_at(dir.path(), "src/a.rs", "a");
+        let c2 = chunk_at(dir.path(), "src/b.rs", "b");
+        let c3 = chunk_at(dir.path(), "src/c.rs", "c");
+        let files_on_disk = vec![c1.file.clone(), c2.file.clone(), c3.file.clone()];
+        store
+            .upsert_chunks_batch(
+                &[
+                    (c1, mock_embedding(1.0)),
+                    (c2, mock_embedding(2.0)),
+                    (c3, mock_embedding(3.0)),
+                ],
+                Some(1000),
+            )
+            .unwrap();
+
+        // Delete one file from disk
+        std::fs::remove_file(&files_on_disk[1]).unwrap();
+
+        // existing_files contains only the two remaining files
+        let existing: HashSet<_> = vec![files_on_disk[0].clone(), files_on_disk[2].clone()]
+            .into_iter()
+            .collect();
+
+        let result = store.prune_all(&existing, dir.path()).unwrap();
+        assert_eq!(result.pruned_chunks, 1, "Should prune exactly 1 chunk");
+        // No function_calls / type_edges / summaries were inserted, so these
+        // counters should be zero.
+        assert_eq!(result.pruned_calls, 0);
+        assert_eq!(result.pruned_type_edges, 0);
+        assert_eq!(result.pruned_summaries, 0);
+
+        // Remaining chunks are intact
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 2);
+    }
+
+    /// Regression: the old `ends_with` heuristic treated chunk origin
+    /// `cuvs-fork-push/CHANGELOG.md` as matching the root file
+    /// `CHANGELOG.md`, leaving the orphan in the DB. With the filesystem
+    /// existence check, the nested origin is correctly pruned when the
+    /// nested directory does not exist on disk.
+    #[test]
+    fn test_prune_all_suffix_match_regression() {
+        let (store, dir) = setup_store();
+
+        // Root-level file that does exist on disk
+        let root_chunk = chunk_at(dir.path(), "CHANGELOG.md", "root_changelog");
+        // Synthetic chunk whose origin tail-matches the root file, but whose
+        // directory does not exist on disk.
+        let mut orphan = make_chunk("orphan_changelog", "cuvs-fork-push/CHANGELOG.md");
+        orphan.id = format!(
+            "cuvs-fork-push/CHANGELOG.md:1:{}",
+            &orphan.content_hash[..8]
+        );
+
+        let existing: HashSet<_> = vec![root_chunk.file.clone()].into_iter().collect();
+
+        store
+            .upsert_chunks_batch(
+                &[
+                    (root_chunk, mock_embedding(1.0)),
+                    (orphan, mock_embedding(2.0)),
+                ],
+                Some(1000),
+            )
+            .unwrap();
+
+        let result = store.prune_all(&existing, dir.path()).unwrap();
+        assert_eq!(
+            result.pruned_chunks, 1,
+            "Expected orphan cuvs-fork-push/CHANGELOG.md to be pruned (would have been retained by the old ends_with heuristic)"
+        );
+
+        // Only the root CHANGELOG.md remains
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 1);
+    }
+
+    /// Regression: `.claude/worktrees/agent-X/src/foo.rs` must be pruned
+    /// when only `src/foo.rs` is on disk. The suffix match retained these
+    /// as "not missing" because the worktree tail matched the real path.
+    #[test]
+    fn test_prune_all_worktree_regression() {
+        let (store, dir) = setup_store();
+
+        // Legitimate root-level source file
+        let real = chunk_at(dir.path(), "src/foo.rs", "foo_real");
+        // Worktree duplicate — synthesize without writing to disk so the
+        // filesystem check confirms it does not exist.
+        let mut worktree = make_chunk("foo_worktree", ".claude/worktrees/agent-X/src/foo.rs");
+        worktree.id = format!(
+            ".claude/worktrees/agent-X/src/foo.rs:1:{}",
+            &worktree.content_hash[..8]
+        );
+
+        let existing: HashSet<_> = vec![real.file.clone()].into_iter().collect();
+
+        store
+            .upsert_chunks_batch(
+                &[(real, mock_embedding(1.0)), (worktree, mock_embedding(2.0))],
+                Some(1000),
+            )
+            .unwrap();
+
+        let result = store.prune_all(&existing, dir.path()).unwrap();
+        assert_eq!(
+            result.pruned_chunks, 1,
+            "Worktree duplicate origin should be pruned"
+        );
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 1);
+    }
+
+    /// TC-HP-3 gap-fill: the happy-path test above asserts
+    /// `pruned_calls/type_edges/summaries == 0` because nothing was inserted
+    /// into those tables. This test actually populates each of the four
+    /// cascade tables and verifies that deleting the source file propagates
+    /// through every counter. A refactor that short-circuits any of steps
+    /// 2b / 2c / 2d would survive the happy-path test — this one catches it.
+    #[test]
+    fn test_prune_all_cascade_populates_all_counters() {
+        use crate::parser::{CallSite, FunctionCalls, TypeRef};
+
+        let (store, dir) = setup_store();
+
+        // Keeper + victim files.
+        let keeper_chunk = chunk_at(dir.path(), "src/keep.rs", "keep");
+        let victim_chunk = chunk_at(dir.path(), "src/victim.rs", "victim");
+        let keeper_file = keeper_chunk.file.clone();
+        let victim_file = victim_chunk.file.clone();
+        let victim_chunk_id = victim_chunk.id.clone();
+        let victim_content_hash = victim_chunk.content_hash.clone();
+
+        store
+            .upsert_chunks_batch(
+                &[
+                    (keeper_chunk, mock_embedding(1.0)),
+                    (victim_chunk, mock_embedding(2.0)),
+                ],
+                Some(1000),
+            )
+            .unwrap();
+
+        // function_calls orphan: two call sites from victim.rs. Once the
+        // file is gone, both rows become orphans per the `DELETE WHERE file
+        // NOT IN (SELECT DISTINCT origin FROM chunks)` query in prune_all.
+        store
+            .upsert_function_calls(
+                &victim_file,
+                &[FunctionCalls {
+                    name: "victim".to_string(),
+                    line_start: 1,
+                    calls: vec![
+                        CallSite {
+                            callee_name: "helper_a".to_string(),
+                            line_number: 2,
+                        },
+                        CallSite {
+                            callee_name: "helper_b".to_string(),
+                            line_number: 3,
+                        },
+                    ],
+                }],
+            )
+            .unwrap();
+
+        // type_edges orphan: one edge whose source_chunk_id is the victim
+        // chunk. After the chunk is deleted, the edge becomes an orphan.
+        store
+            .upsert_type_edges(
+                &victim_chunk_id,
+                &[TypeRef {
+                    type_name: "Config".to_string(),
+                    line_number: 2,
+                    kind: None,
+                }],
+            )
+            .unwrap();
+
+        // llm_summaries orphan: one summary row tied to the victim chunk's
+        // content_hash. When the chunk is deleted, no chunk row references
+        // that hash any more — the summary becomes an orphan.
+        store
+            .upsert_summaries_batch(&[(
+                victim_content_hash,
+                "summary body".to_string(),
+                "test-model".to_string(),
+                "general".to_string(),
+            )])
+            .unwrap();
+
+        // Simulate the source file being deleted on disk. `prune_all` filters
+        // against existing_files via `origin_exists`, and the filesystem check
+        // kicks in when we drop the path from the HashSet — we don't have to
+        // `remove_file` because `chunk_at` wrote a placeholder file that we
+        // can safely ignore (the check prefers the HashSet hit first).
+        std::fs::remove_file(&victim_file).unwrap();
+        let existing: HashSet<_> = vec![keeper_file.clone()].into_iter().collect();
+
+        let result = store.prune_all(&existing, dir.path()).unwrap();
+        assert_eq!(
+            result.pruned_chunks, 1,
+            "Victim chunk should be pruned (keeper intact)"
+        );
+        assert!(
+            result.pruned_calls >= 2,
+            "Both function_calls rows for victim.rs must be pruned, got {}",
+            result.pruned_calls
+        );
+        // type_edges has FK `source_chunk_id REFERENCES chunks(id) ON DELETE
+        // CASCADE`, so the rows disappear when the chunk is deleted in step
+        // 2a. The explicit `DELETE FROM type_edges WHERE source_chunk_id NOT
+        // IN (SELECT id FROM chunks)` at step 2c finds nothing to prune — the
+        // zero counter is correct behavior, not a leak.
+        assert_eq!(
+            result.pruned_type_edges, 0,
+            "type_edges cascade-deletes with chunks — the explicit DELETE sees zero orphans"
+        );
+        assert!(
+            result.pruned_summaries >= 1,
+            "llm_summaries rows for victim hash must be pruned, got {}",
+            result.pruned_summaries
+        );
+
+        // Keeper chunk survives; no other side effects.
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 1);
+    }
+
+    /// TC-HP-3 gap-fill: baseline "nothing to prune". When every file still
+    /// exists on disk, prune_all must return an all-zero `PruneAllResult`.
+    /// Regression guard for refactors that change the default branch to
+    /// unconditionally prune orphans when there are none.
+    #[test]
+    fn test_prune_all_nothing_to_prune_returns_zeroes() {
+        let (store, dir) = setup_store();
+
+        let c1 = chunk_at(dir.path(), "src/x.rs", "x");
+        let c2 = chunk_at(dir.path(), "src/y.rs", "y");
+        let files_on_disk = [c1.file.clone(), c2.file.clone()];
+        store
+            .upsert_chunks_batch(
+                &[(c1, mock_embedding(1.0)), (c2, mock_embedding(2.0))],
+                Some(1000),
+            )
+            .unwrap();
+
+        let existing: HashSet<_> = files_on_disk.iter().cloned().collect();
+        let result = store.prune_all(&existing, dir.path()).unwrap();
+        assert_eq!(result.pruned_chunks, 0);
+        assert_eq!(result.pruned_calls, 0);
+        assert_eq!(result.pruned_type_edges, 0);
+        assert_eq!(result.pruned_summaries, 0);
+
+        // Chunks are untouched.
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 2);
     }
 }

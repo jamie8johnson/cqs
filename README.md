@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 91.2% Recall@1 on fixtures, 50% R@1 on real code (100q lookup), 73% R@5 — the agent-relevant metric. 54 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 91.2% Recall@1 on fixtures; on a real 11k-chunk codebase (v1.25.0 clean post-GC index, 265-query V2 live eval) the router scores 37.4% R@1 / 55.8% R@5 / 77.4% R@20 (oracle ceiling 49.4% R@1). Identifier lookup is 50% R@1 / 73% R@5 on a 100-query slice — the agent-relevant metric. 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -29,6 +29,8 @@ Code intelligence and RAG for AI agents. Semantic search, call graph analysis, i
 ```bash
 cargo install cqs
 ```
+
+> **Note:** `cargo install` clones a patched `cuvs` fork from [github.com/jamie8johnson/cuvs-patched](https://github.com/jamie8johnson/cuvs-patched) even for CPU builds, because it is wired in via `[patch.crates-io]`. The patch exposes `search_with_filter` for GPU-native bitset filtering and will be dropped once upstream [rapidsai/cuvs#2019](https://github.com/rapidsai/cuvs/pull/2019) merges.
 
 **Upgrading?** Schema changes require rebuilding the index:
 ```bash
@@ -597,7 +599,7 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, interfaces, constants, tests, endpoints, modules, and 19 other chunk types across 54 languages (plus L5X/L5K PLC exports). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination (SQ-11). Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 91.2% Recall@1 on fixture eval (BGE-large, 296 queries across 7 languages). 50% R@1 on real-code lookup queries (100q), 73% R@5. Per-category: 100% identifier, 62% structural, 50% behavioral, 25% conceptual (265q eval across 8 categories). Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
+3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 91.2% Recall@1 on fixture eval (BGE-large, 296 queries across 7 languages). On the v1.25.0 live 265-query V2 eval against a real 11k-chunk codebase (post-GC clean index, today), the full router scores 37.4% R@1 / 55.8% R@5 / 77.4% R@20; per-category oracle ceiling is 49.4% R@1. Identifier lookup is 50% R@1 / 73% R@5 on a 100-query slice. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
@@ -635,14 +637,18 @@ Two eval suites measure different things:
 | v9-200k LoRA (preset) | 110M | 81.4% | 99.3% | 0.898 |
 | E5-base (preset) | 110M | 75.3% | 99.0% | 0.869 |
 
-**Live codebase eval** (265 queries, 8 categories — real code, diverse query types):
+**Live codebase eval** (v1.25.0 full router, 265-query V2, real 11k-chunk cqs codebase, clean post-GC index, today):
 
-| Config | Recall@1 (265q) | Recall@5 |
-|--------|-----------------|----------|
-| BGE-large baseline | 48.5% | 66.7% |
-| + LLM summaries | 48.5% | 67.9% |
+| Config | Recall@1 | Recall@5 | Recall@20 |
+|--------|----------|----------|-----------|
+| Full router (per-category alpha + clean multi_step) | **37.4%** | **55.8%** | **77.4%** |
+| Oracle ceiling (best alpha per-category, known category) | **49.4%** | — | — |
 
-The fixture eval measures retrieval from small synthetic fixtures (high ceiling). The live eval measures retrieval from a real 11k-chunk codebase across identifier lookup, behavioral, conceptual, structural, negation, and multi-step queries. The gap reflects that real-world queries are harder than synthetic benchmarks.
+Identifier-lookup slice (100-query subset): 50% R@1, 73% R@5 — this is the metric that matters most for agent search.
+
+The older `48.5% / 66.7%` numbers came from a pre-v1.25.0 index contaminated by watch-reindex races between eval runs (fixed by PR #943) and pre-determinism-fix SPLADE noise (fixed by PR #942). They are historical and no longer representative.
+
+The fixture eval measures retrieval from small synthetic fixtures (high ceiling). The live eval measures retrieval from a real 11k-chunk codebase across identifier lookup, behavioral, conceptual, structural, negation, type-filtered, multi-step, and cross-language queries. The gap reflects that real-world queries are harder than synthetic benchmarks.
 
 Best production config: **BGE-large** (`cqs index`). LLM summaries provide marginal R@5 improvement. Use `CQS_EMBEDDING_MODEL=v9-200k` for resource-constrained environments.
 
@@ -651,16 +657,22 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CQS_API_BASE` | (none) | LLM API base URL (legacy alias for `CQS_LLM_API_BASE`) |
+| `CQS_BATCH_IDLE_MINUTES` | `5` | Minutes of inactivity before `cqs batch` / `cqs chat` clears ONNX sessions (`0` disables eviction). |
 | `CQS_BUSY_TIMEOUT_MS` | `5000` | SQLite busy timeout in milliseconds |
 | `CQS_CACHE_MAX_SIZE` | `1073741824` (1 GB) | Global embedding cache size limit |
 | `CQS_CAGRA_MAX_BYTES` | (auto) | Max GPU memory for CAGRA index |
 | `CQS_CAGRA_THRESHOLD` | `50000` | Min chunks to trigger CAGRA over HNSW |
+| `CQS_DAEMON_TIMEOUT_MS` | `2000` | Daemon client connect/read timeout in milliseconds (CLI → daemon) |
 | `CQS_DEFERRED_FLUSH_INTERVAL` | `50` | Chunks between deferred flushes during indexing |
+| `CQS_DISABLE_BASE_INDEX` | (none) | Set to `1` to skip the base (non-enriched) HNSW at query time (eval A/B) |
 | `CQS_EMBED_BATCH_SIZE` | `64` | ONNX inference batch size (reduce if GPU OOM) |
 | `CQS_EMBED_CHANNEL_DEPTH` | `64` | Embedding pipeline channel depth (bounds memory) |
 | `CQS_EMBEDDING_DIM` | (auto) | Override embedding dimension for custom ONNX models |
 | `CQS_EMBEDDING_MODEL` | `bge-large` | Embedding model preset (`bge-large`, `v9-200k`, `e5-base`) or custom repo |
+| `CQS_EVAL_OUTPUT` | (none) | Path to write per-query eval diagnostics JSON (used by eval harness) |
+| `CQS_EVAL_TIMEOUT_SECS` | `300` | Per-query timeout in seconds inside `evals/run_ablation.py` |
 | `CQS_FILE_BATCH_SIZE` | `5000` | Files per parse batch in pipeline |
+| `CQS_FORCE_BASE_INDEX` | (none) | Set to `1` to force search via the base (non-enriched) HNSW index |
 | `CQS_GATHER_MAX_NODES` | `200` | Max BFS nodes in `gather` context assembly |
 | `CQS_HNSW_EF_CONSTRUCTION` | `200` | HNSW construction-time search width |
 | `CQS_HNSW_EF_SEARCH` | `100` | HNSW query-time search width |
@@ -672,6 +684,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_HYDE_MAX_TOKENS` | (config) | Max tokens for HyDE query prediction |
 | `CQS_IDLE_TIMEOUT_SECS` | `30` | SQLite connection idle timeout in seconds |
 | `CQS_INTEGRITY_CHECK` | `0` | Set to `1` to enable PRAGMA quick_check on write-mode store opens |
+| `CQS_IMPACT_MAX_CHANGED_FUNCTIONS` | `500` | Cap on changed functions processed by `impact --diff` / `review --diff`. Excess is dropped and surfaced as `summary.truncated_functions` in JSON. |
 | `CQS_IMPACT_MAX_NODES` | `10000` | Max BFS nodes in impact analysis |
 | `CQS_LLM_API_BASE` | `https://api.anthropic.com/v1` | LLM API base URL |
 | `CQS_LLM_MAX_CONTENT_CHARS` | `8000` | Max content chars in LLM prompts |
@@ -680,27 +693,67 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_LLM_PROVIDER` | `anthropic` | LLM provider (`anthropic`) |
 | `CQS_MAX_CONNECTIONS` | `4` | SQLite write-pool max connections |
 | `CQS_MAX_CONTRASTIVE_CHUNKS` | `30000` | Max chunks for contrastive summary matrix (memory = N*N*4 bytes) |
+| `CQS_MAX_FILE_SIZE` | `1048576` (1 MB) | Per-file size cap (bytes) for indexing. Files above this are skipped with an `info!` log; bump for generated code (`bindings.rs`, compiled TS, migrations). |
 | `CQS_MAX_QUERY_BYTES` | `32768` | Max query input bytes for embedding |
 | `CQS_MAX_SEQ_LENGTH` | (auto) | Override max sequence length for custom ONNX models |
 | `CQS_MD_MAX_SECTION_LINES` | `150` | Max markdown section lines before overflow split |
 | `CQS_MD_MIN_SECTION_LINES` | `30` | Min markdown section lines (smaller sections merge) |
 | `CQS_MMAP_SIZE` | `268435456` (256 MB) | SQLite memory-mapped I/O size |
+| `CQS_NO_DAEMON` | (none) | Set to `1` to force CLI mode (skip daemon connection attempt) |
 | `CQS_ONNX_DIR` | (auto) | Custom ONNX model directory (must contain `model.onnx` + `tokenizer.json`) |
 | `CQS_PARSE_CHANNEL_DEPTH` | `512` | Parse pipeline channel depth |
 | `CQS_PDF_SCRIPT` | (auto) | Path to `pdf_to_md.py` for PDF conversion |
 | `CQS_QUERY_CACHE_SIZE` | `128` | Embedding query cache entries |
 | `CQS_RAYON_THREADS` | (auto) | Rayon thread pool size for parallel operations |
+| `CQS_REFS_LRU_SIZE` | `2` | Slots in the batch-mode reference-index LRU cache (sibling projects loaded via `@name`). |
 | `CQS_RERANKER_MAX_LENGTH` | `512` | Max input length for cross-encoder reranker |
 | `CQS_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder model for `--rerank` |
 | `CQS_RRF_K` | `60` | RRF fusion constant (higher = more weight to top results) |
-| `CQS_SKIP_ENRICHMENT` | (none) | Comma-separated enrichment layers to skip |
+| `CQS_SKIP_ENRICHMENT` | (none) | Comma-separated enrichment layers to skip (e.g. `llm,hyde,callgraph`) |
+| `CQS_SKIP_INTEGRITY_CHECK` | (none) | Set to `1` to skip `PRAGMA quick_check` on write-mode store opens |
+| `CQS_SPLADE_ALPHA` | (per-category default) | Global SPLADE fusion alpha override (0.0 = pure sparse, 1.0 = pure dense) |
+| `CQS_SPLADE_ALPHA_{CATEGORY}` | (per-category default) | Per-category SPLADE alpha override (e.g. `CQS_SPLADE_ALPHA_CONCEPTUAL`); takes precedence over `CQS_SPLADE_ALPHA` |
+| `CQS_SPLADE_BATCH` | `32` | Initial chunk batch size for SPLADE encoding during indexing |
 | `CQS_SPLADE_MAX_CHARS` | `4000` | Max chars per chunk for SPLADE encoding |
+| `CQS_SPLADE_MAX_INDEX_BYTES` | `2147483648` (2 GB) | Max `splade.index.bin` size before index build refuses to persist |
+| `CQS_SPLADE_MAX_SEQ` | `256` | Max sequence length (tokens) for SPLADE ONNX inference |
+| `CQS_SPLADE_MODEL` | (auto) | Path to SPLADE ONNX model directory (supports `~`-prefixed paths) |
+| `CQS_SPLADE_RESET_EVERY` | `0` | Reset the ORT session every N SPLADE batches to bound arena growth (0 = disabled) |
 | `CQS_SPLADE_THRESHOLD` | `0.01` | SPLADE sparse activation threshold |
+| `CQS_SQLITE_CACHE_SIZE` | `-16384` (`-4096` for `open_readonly`) | SQLite `cache_size` PRAGMA. Negative = kibibytes, positive = page count. |
 | `CQS_TELEMETRY` | `0` | Set to `1` to enable command usage telemetry |
 | `CQS_TEST_MAP_MAX_NODES` | `10000` | Max BFS nodes in test-map traversal |
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
+| `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
+| `CQS_WATCH_DEBOUNCE_MS` | `500` (inotify) / `1500` (WSL/poll auto) | Watch debounce window (milliseconds). Takes precedence over `--debounce`. |
 | `CQS_WATCH_MAX_PENDING` | `10000` | Max pending file changes before watch forces flush |
 | `CQS_WATCH_REBUILD_THRESHOLD` | `100` | Files changed before watch triggers full HNSW rebuild |
+
+## Per-category SPLADE alpha
+
+Hybrid retrieval fuses a dense (BGE-large) and sparse (SPLADE) candidate pool. The fusion weight `alpha` controls how much each side contributes to the final score: `alpha = 1.0` means pure dense, `alpha = 0.0` means pure sparse, and values in between interpolate ranks via RRF.
+
+SPLADE is always generating candidates; `alpha` only weights the scoring. v1.25.0 ships per-category defaults tuned on a 21-point alpha sweep (265 queries × 8 categories, oracle R@1 49.4% vs 44.9% for the best uniform `alpha=0.95`).
+
+| Category | Default alpha | Rationale |
+|----------|---------------|-----------|
+| `identifier` | `0.90` | Dense-side plateau edge; identifiers hit both dense and sparse signals |
+| `structural` | `0.60` | Mid-plateau `0.40–0.85`; sparse matches structural keywords (`async`, `trait`, `impl`) |
+| `conceptual` | `0.85` | Dense-heavy — semantic understanding dominates; sparse is a small nudge |
+| `behavioral` | `0.05` | Heavy sparse — action verbs match lexically better than semantically |
+| `type_filtered` | `1.00` | Pure dense; the type filter already narrows candidates |
+| `multi_step` | `1.00` | Pure dense; semantic chaining matters more than exact tokens |
+| `negation` | `1.00` | Pure dense; SPLADE can't model "not X" cleanly |
+| `cross_language` | `1.00` | Pure dense; translations don't share tokens across languages |
+| `unknown` | `1.00` | Pure dense; safest default when the router can't classify |
+
+**Override precedence** (highest to lowest):
+
+1. `CQS_SPLADE_ALPHA_{CATEGORY}` (e.g. `CQS_SPLADE_ALPHA_CONCEPTUAL=0.95`) — per-category override
+2. `CQS_SPLADE_ALPHA=<value>` — global override applied to every category
+3. The per-category default from the table above
+
+Overrides are clamped to `[0.0, 1.0]`. Non-finite or unparseable values fall through to the next layer with a `tracing::warn!`.
 
 ## RAG Efficiency
 
@@ -783,7 +836,7 @@ Building from source:
 cargo build --release --features gpu-index
 ```
 
-> **Note:** v1.24.0 uses a patched cuvs crate that exposes `search_with_filter` for GPU-native bitset filtering. This is applied transparently via `[patch.crates-io]`. Once upstream rapidsai/cuvs#2019 merges, the patch will be removed.
+> **Note:** cqs uses a patched cuvs crate that exposes `search_with_filter` for GPU-native bitset filtering. This is applied transparently via `[patch.crates-io]`. Once upstream rapidsai/cuvs#2019 merges, the patch will be removed.
 
 ### WSL2
 

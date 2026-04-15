@@ -206,7 +206,7 @@ pub(crate) fn cmd_stats(ctx: &crate::cli::CommandContext, json: bool) -> Result<
     let files = crate::cli::enumerate_files(root, &parser, false)?;
     let file_set: HashSet<_> = files.into_iter().collect();
     let (stale_count, missing_count) = store
-        .count_stale_files(&file_set)
+        .count_stale_files(&file_set, root)
         .context("Failed to count stale files")?;
 
     // Use count_vectors to avoid loading full HNSW index just for stats

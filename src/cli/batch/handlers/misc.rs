@@ -191,7 +191,8 @@ pub(in crate::cli::batch) fn dispatch_scout(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_scout", query).entered();
     let embedder = ctx.embedder()?;
-    let limit = limit.clamp(1, 50);
+    // CQ-V1.25-2: shared with CLI's cmd_scout.
+    let limit = limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
     let result = cqs::scout(&ctx.store(), embedder, query, &ctx.root, limit)?;
 
     let Some(budget) = tokens else {
@@ -435,7 +436,7 @@ pub(in crate::cli::batch) fn dispatch_gc(ctx: &BatchContext) -> Result<serde_jso
     let _span = tracing::info_span!("batch_gc").entered();
 
     let file_set = ctx.file_set()?;
-    let (stale_count, missing_count) = match ctx.store().count_stale_files(&file_set) {
+    let (stale_count, missing_count) = match ctx.store().count_stale_files(&file_set, &ctx.root) {
         Ok(counts) => counts,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to count stale files");
@@ -445,7 +446,7 @@ pub(in crate::cli::batch) fn dispatch_gc(ctx: &BatchContext) -> Result<serde_jso
 
     let prune = ctx
         .store()
-        .prune_all(&file_set)
+        .prune_all(&file_set, &ctx.root)
         .context("Failed to prune stale entries from index")?;
 
     let output = crate::cli::commands::GcOutput {

@@ -5,13 +5,15 @@
 //!
 //! **Activation:** Telemetry is active when either:
 //! - `CQS_TELEMETRY=1` env var is set, OR
-//! - `.cqs/telemetry.jsonl` already exists (created by a previous `cqs telemetry reset`)
+//! - `CQS_TELEMETRY` is unset AND `.cqs/telemetry.jsonl` already exists
+//!   (created by a previous `cqs telemetry reset`)
 //!
 //! This means: once you opt in (via env var or `cqs telemetry reset`), telemetry
 //! stays on for all processes that use this project directory — including subagents
 //! and non-interactive shells that may not inherit the env var.
 //!
-//! **Opt out:** Delete `.cqs/telemetry.jsonl` and unset `CQS_TELEMETRY`.
+//! **Opt out:** Set `CQS_TELEMETRY=0` (hard opt-out, overrides the existence
+//! check), or delete `.cqs/telemetry.jsonl` and unset `CQS_TELEMETRY`.
 //!
 //! Local file only. No network calls. Auto-archives at 10 MB.
 
@@ -33,10 +35,19 @@ pub fn log_command(
     query: Option<&str>,
     result_count: Option<usize>,
 ) {
-    // Active if env var is set OR telemetry file already exists (opt-in persists)
+    // Active if env var is explicitly "1" OR (env unset AND telemetry file
+    // already exists). RM-V1.25-25: when CQS_TELEMETRY is set to any
+    // non-"1" value (including "0"), treat that as a hard opt-out so the
+    // env var actually disables collection even when the file exists.
     let path = cqs_dir.join("telemetry.jsonl");
-    if std::env::var("CQS_TELEMETRY").as_deref() != Ok("1") && !path.exists() {
-        return;
+    match std::env::var("CQS_TELEMETRY") {
+        Ok(v) if v == "1" => {}
+        Ok(_) => return,
+        Err(_) => {
+            if !path.exists() {
+                return;
+            }
+        }
     }
 
     let timestamp = SystemTime::now()
@@ -53,6 +64,15 @@ pub fn log_command(
 
     // path already declared above for existence check
     let _ = (|| -> std::io::Result<()> {
+        // DS-V1.25-8: single-writer assumption — telemetry is per-process, but
+        // multiple cqs invocations (CLI + agents + `cqs watch`) write to the
+        // same `.cqs/telemetry.jsonl` concurrently. The advisory `flock` on
+        // `telemetry.lock` enforces ordering *only if every writer takes the
+        // lock* (classic advisory-lock caveat). Do not bypass it: skipping the
+        // `try_lock` call will race with `cqs telemetry reset` (which takes
+        // the blocking `lock`) and can either lose writes or corrupt a
+        // half-rotated file.
+        //
         // DS-NEW-2: advisory lock to prevent races with concurrent telemetry reset.
         // Non-blocking try_lock — if reset holds it, skip this write silently.
         let lock_path = cqs_dir.join("telemetry.lock");
@@ -85,15 +105,18 @@ pub fn log_command(
                 }
             }
         }
-        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        // SEC-V1.25-5: set 0o600 at creation via OpenOptionsExt::mode to
+        // close the umask race. The post-open set_permissions approach
+        // left a window where the file was visible with default perms
+        // (often 0o644).
+        let mut opts = OpenOptions::new();
+        opts.create(true).append(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            {
-                tracing::debug!(path = %path.display(), error = %e, "Failed to set file permissions");
-            }
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
         }
+        let mut file = opts.open(&path)?;
         if let Err(e) = writeln!(file, "{}", entry) {
             tracing::warn!(error = %e, "Failed to write telemetry entry");
         }
@@ -114,9 +137,17 @@ pub fn log_routed(
     fallback: bool,
     result_count: Option<usize>,
 ) {
+    // RM-V1.25-25: mirrors log_command — explicit non-"1" env opts out
+    // even when the telemetry file is present.
     let path = cqs_dir.join("telemetry.jsonl");
-    if std::env::var("CQS_TELEMETRY").as_deref() != Ok("1") && !path.exists() {
-        return;
+    match std::env::var("CQS_TELEMETRY") {
+        Ok(v) if v == "1" => {}
+        Ok(_) => return,
+        Err(_) => {
+            if !path.exists() {
+                return;
+            }
+        }
     }
 
     let timestamp = SystemTime::now()
@@ -136,6 +167,12 @@ pub fn log_routed(
     });
 
     let _ = (|| -> std::io::Result<()> {
+        // DS-V1.25-8: see the corresponding block in `log_command` above for the
+        // full single-writer rationale. In short: telemetry is per-process but
+        // many cqs invocations (CLI + agents + `cqs watch`) share the file, and
+        // `flock` enforces ordering only when every writer takes it. Do not
+        // bypass.
+        //
         // Advisory lock to prevent races with concurrent telemetry reset.
         // Non-blocking try_lock — if reset holds it, skip this write silently.
         let lock_path = cqs_dir.join("telemetry.lock");
@@ -168,15 +205,18 @@ pub fn log_routed(
             }
         }
 
-        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        // SEC-V1.25-5: set 0o600 at creation via OpenOptionsExt::mode to
+        // close the umask race. The post-open set_permissions approach
+        // left a window where the file was visible with default perms
+        // (often 0o644).
+        let mut opts = OpenOptions::new();
+        opts.create(true).append(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            {
-                tracing::debug!(path = %path.display(), error = %e, "Failed to set file permissions");
-            }
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
         }
+        let mut file = opts.open(&path)?;
         if let Err(e) = writeln!(file, "{}", entry) {
             tracing::warn!(error = %e, "Failed to write telemetry entry");
         }
