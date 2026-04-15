@@ -224,6 +224,15 @@ gpu-index = ["cuvs", "ndarray_015"]
 llm-summaries = ["dep:reqwest"]
 tree-sitter-elm = ["dep:tree-sitter-elm"]
 
+# Opt-in for the cold-load-per-invocation CLI integration tests
+# (cli_batch_test, cli_graph_test, cli_commands_test, cli_test,
+# cli_health_test). They shell out to the `cqs` binary and each
+# test cold-loads the full model stack, adding ~2h to CI. Gated
+# here so PR CI skips them; a nightly job runs
+# `cargo test --features "gpu-index slow-tests"` for coverage.
+# See issue #980.
+slow-tests = []
+
 [dev-dependencies]
 insta = "1"
 proptest = "1"
