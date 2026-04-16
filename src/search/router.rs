@@ -414,9 +414,19 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
     let _span = tracing::debug_span!("resolve_splade_alpha", category = %category).entered();
 
     // Per-category env override: CQS_SPLADE_ALPHA_CONCEPTUAL_SEARCH etc.
+    //
+    // Rust 1.95 if-let guards collapse the previous nested
+    // `if let Ok(val) { if let Ok(alpha) { ... } else { warn } }` into a
+    // single match: each Ok-arm carries the env value straight into its
+    // tracing call without an extra `else` block. The happy-path arm keeps
+    // the inner `if alpha.is_finite()` so the non-finite warning can re-use
+    // the already-parsed `alpha` without a second `parse::<f32>()` round
+    // (clippy::collapsible_match would inline the predicate at the cost of
+    // re-parsing in the second arm — not worth it for a hot path).
     let cat_key = format!("CQS_SPLADE_ALPHA_{}", category.to_string().to_uppercase());
-    if let Ok(val) = std::env::var(&cat_key) {
-        if let Ok(alpha) = val.parse::<f32>() {
+    #[allow(clippy::collapsible_match)]
+    match std::env::var(&cat_key) {
+        Ok(val) if let Ok(alpha) = val.parse::<f32>() => {
             if alpha.is_finite() {
                 let alpha = alpha.clamp(0.0, 1.0);
                 tracing::info!(
@@ -428,14 +438,17 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
                 return alpha;
             }
             tracing::warn!(var = %cat_key, value = %val, "Non-finite alpha, using default");
-        } else {
+        }
+        Ok(val) => {
             tracing::warn!(var = %cat_key, value = %val, "Invalid alpha, using default");
         }
+        Err(_) => {}
     }
 
     // Global env override: CQS_SPLADE_ALPHA
-    if let Ok(val) = std::env::var("CQS_SPLADE_ALPHA") {
-        if let Ok(alpha) = val.parse::<f32>() {
+    #[allow(clippy::collapsible_match)]
+    match std::env::var("CQS_SPLADE_ALPHA") {
+        Ok(val) if let Ok(alpha) = val.parse::<f32>() => {
             if alpha.is_finite() {
                 let alpha = alpha.clamp(0.0, 1.0);
                 tracing::info!(
@@ -447,6 +460,7 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
                 return alpha;
             }
         }
+        _ => {}
     }
 
     // Per-category defaults from the 21-point alpha sweep on the genuinely

@@ -128,6 +128,10 @@ impl<Mode> Store<Mode> {
         let notes = match self.cached_notes_summaries() {
             Ok(n) => n,
             Err(e) => {
+                // Rust 1.95: hint that the notes-load failure path is cold so
+                // the optimizer keeps the happy path (Ok) inline in this
+                // per-query function.
+                core::hint::cold_path();
                 tracing::warn!(error = %e, "Failed to load notes for search boosting");
                 std::sync::Arc::new(Vec::new())
             }
@@ -173,6 +177,10 @@ impl<Mode> Store<Mode> {
             let note_boost = match self.cached_note_boost_index() {
                 Ok(arc) => NoteBoost::Owned(arc),
                 Err(e) => {
+                    // Rust 1.95: cache-fetch failure is the cold path; the
+                    // borrowed rebuild only fires when the cache layer has
+                    // already failed once.
+                    core::hint::cold_path();
                     tracing::warn!(error = %e, "note boost cache unavailable, rebuilding per-call");
                     NoteBoost::Borrowed(super::scoring::NoteBoostIndex::new(notes))
                 }
@@ -468,6 +476,10 @@ impl<Mode> Store<Mode> {
         let dense_results = if let Some(idx) = index {
             idx.search_with_filter(query, candidate_count, &predicate)
         } else {
+            // Rust 1.95: hybrid search without a vector index is a misconfig
+            // (build error or partial index load). Mark cold so the dense
+            // leg's normal path stays the predicted branch.
+            core::hint::cold_path();
             tracing::warn!("No vector index available for dense leg of hybrid search");
             Vec::new()
         };
