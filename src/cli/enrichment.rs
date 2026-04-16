@@ -95,6 +95,21 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
         }
     };
 
+    // #966: normalize whitespace once per content_hash. Summaries/hyde are keyed
+    // by content_hash so the same physical string was being re-normalized by every
+    // chunk sharing that content. On a 100k-chunk reindex the per-chunk
+    // split_whitespace().collect::<Vec<_>>().join(" ") produced ~1KB of churn each
+    // (~100MB allocator pressure). Pre-computing in two HashMaps (~20MB) eliminates
+    // that churn and the per-chunk hash function now only borrows &str.
+    let all_summaries_norm: HashMap<String, String> = all_summaries
+        .iter()
+        .map(|(k, v)| (k.clone(), normalize_ws(v)))
+        .collect();
+    let all_hyde_norm: HashMap<String, String> = all_hyde
+        .iter()
+        .map(|(k, v)| (k.clone(), normalize_ws(v)))
+        .collect();
+
     // PERF-29: Pre-fetch all enrichment hashes once instead of per-page queries.
     // Same trade-off as summaries above: ~32 bytes per hash × N chunks is small.
     let all_enrichment_hashes = match store.get_all_enrichment_hashes() {
@@ -141,6 +156,11 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                 let has_callees = callees.is_some_and(|v| !v.is_empty());
                 let summary = all_summaries.get(&cs.content_hash).map(|s| s.as_str());
                 let hyde = all_hyde.get(&cs.content_hash).map(|s| s.as_str());
+                // #966: pre-normalized variants used for hashing only.
+                // generate_nl_with_call_context_and_summary() still sees the raw
+                // summary/hyde so NL output is unchanged.
+                let summary_norm = all_summaries_norm.get(&cs.content_hash).map(|s| s.as_str());
+                let hyde_norm = all_hyde_norm.get(&cs.content_hash).map(|s| s.as_str());
 
                 // Skip chunks with nothing to add: no call context, no summary, no hyde
                 if !has_callers && !has_callees && summary.is_none() && hyde.is_none() {
@@ -172,8 +192,15 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                 };
 
                 // Compute enrichment hash from post-filtered call context + summary (RT-DATA-2, SQ-6).
-                let enrichment_hash =
-                    compute_enrichment_hash_with_summary(&ctx, &callee_doc_freq, summary, hyde);
+                // #966: pass pre-normalized summary/hyde so the hash function can
+                // just stream bytes via blake3::Hasher instead of re-normalizing
+                // and accumulating a String per chunk.
+                let enrichment_hash = compute_enrichment_hash_with_summary(
+                    &ctx,
+                    &callee_doc_freq,
+                    summary_norm,
+                    hyde_norm,
+                );
 
                 // Skip if already enriched with the same call context + summary
                 if let Some(stored) = all_enrichment_hashes.get(&cs.id) {
@@ -230,22 +257,50 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
     Ok(enriched_count)
 }
 
+/// RB-6 / #966: normalize whitespace so LLM-generated strings with
+/// non-deterministic leading/trailing/internal whitespace collapse to the
+/// same canonical form before hashing.
+///
+/// Factored out of `compute_enrichment_hash_with_summary` so the normalized
+/// form can be cached once per `content_hash` instead of recomputed per
+/// chunk in the reindex hot path.
+fn normalize_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Compute enrichment hash including optional LLM summary (SQ-6).
 /// Extends `compute_enrichment_hash` to also include the summary text.
 /// If the summary changes, the hash changes, triggering re-embedding.
+///
+/// #966: `summary` and `hyde` MUST ALREADY be whitespace-normalized by the
+/// caller (see `normalize_ws`). In production the caller normalizes once
+/// per unique `content_hash` and reuses the result across every chunk that
+/// shares content, avoiding ~100MB of per-chunk String churn on 100k-chunk
+/// reindexes. Tests call `normalize_ws` inline.
+///
+/// Uses `blake3::Hasher` streaming — no intermediate `String` accumulator.
+/// The byte layout must stay identical to the pre-#966 `write!` version so
+/// existing enrichment_hash values in the store remain valid (otherwise
+/// every reindex would invalidate every cache entry). Layout is:
+///     "c:{caller}|" per sorted caller
+///     "e:{callee}|" per sorted filtered callee
+///     "s:{normalized_summary}"   (no trailing separator, only if present)
+///     "h:{normalized_hyde}"      (no trailing separator, only if present)
+/// Hash is truncated to the first 32 hex chars to match pre-#966 output.
 fn compute_enrichment_hash_with_summary(
     ctx: &cqs::CallContext,
     callee_doc_freq: &HashMap<String, f32>,
     summary: Option<&str>,
     hyde: Option<&str>,
 ) -> String {
-    use std::fmt::Write;
-    let mut input = String::new();
+    let mut hasher = blake3::Hasher::new();
 
     let mut callers: Vec<&str> = ctx.callers.iter().map(|s| s.as_str()).collect();
     callers.sort_unstable();
     for c in &callers {
-        let _ = write!(input, "c:{c}|");
+        hasher.update(b"c:");
+        hasher.update(c.as_bytes());
+        hasher.update(b"|");
     }
 
     let mut callees: Vec<&str> = ctx
@@ -259,22 +314,22 @@ fn compute_enrichment_hash_with_summary(
         .collect();
     callees.sort_unstable();
     for c in &callees {
-        let _ = write!(input, "e:{c}|");
+        hasher.update(b"e:");
+        hasher.update(c.as_bytes());
+        hasher.update(b"|");
     }
 
-    // RB-6: Normalize whitespace before hashing to avoid cache misses
-    // from LLM non-deterministic whitespace (leading/trailing, double spaces, etc.)
     if let Some(s) = summary {
-        let norm: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-        let _ = write!(input, "s:{norm}");
+        hasher.update(b"s:");
+        hasher.update(s.as_bytes());
     }
 
     if let Some(h) = hyde {
-        let norm: String = h.split_whitespace().collect::<Vec<_>>().join(" ");
-        let _ = write!(input, "h:{norm}");
+        hasher.update(b"h:");
+        hasher.update(h.as_bytes());
     }
 
-    let hash = blake3::hash(input.as_bytes());
+    let hash = hasher.finalize();
     hash.to_hex()[..32].to_string()
 }
 
@@ -413,5 +468,111 @@ mod tests {
         let h_none = compute_enrichment_hash_with_summary(&ctx, &freq, None, None);
         let h_hyde = compute_enrichment_hash_with_summary(&ctx, &freq, None, Some("how to search"));
         assert_ne!(h_none, h_hyde, "Adding hyde must change the hash");
+    }
+
+    // ---------- #966: byte-identical snapshot test ----------
+
+    /// Reference implementation matching the PRE-#966 `write!`-into-String
+    /// accumulator. Kept only in tests so we can prove the streaming
+    /// `blake3::Hasher` version produces the exact same bytes for the same
+    /// inputs. If this ever diverges from `compute_enrichment_hash_with_summary`,
+    /// every cached `enrichment_hash` in production stores is invalidated
+    /// and the next reindex re-embeds every chunk. Don't change this.
+    fn reference_hash_pre_966(
+        ctx: &cqs::CallContext,
+        callee_doc_freq: &HashMap<String, f32>,
+        summary: Option<&str>,
+        hyde: Option<&str>,
+    ) -> String {
+        use std::fmt::Write;
+        let mut input = String::new();
+
+        let mut callers: Vec<&str> = ctx.callers.iter().map(|s| s.as_str()).collect();
+        callers.sort_unstable();
+        for c in &callers {
+            let _ = write!(input, "c:{c}|");
+        }
+
+        let mut callees: Vec<&str> = ctx
+            .callees
+            .iter()
+            .filter(|name| {
+                (callee_doc_freq.get(name.as_str()).copied().unwrap_or(0.0) as f64) < 0.1_f64
+            })
+            .map(|s| s.as_str())
+            .collect();
+        callees.sort_unstable();
+        for c in &callees {
+            let _ = write!(input, "e:{c}|");
+        }
+
+        if let Some(s) = summary {
+            let norm: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+            let _ = write!(input, "s:{norm}");
+        }
+
+        if let Some(h) = hyde {
+            let norm: String = h.split_whitespace().collect::<Vec<_>>().join(" ");
+            let _ = write!(input, "h:{norm}");
+        }
+
+        let hash = blake3::hash(input.as_bytes());
+        hash.to_hex()[..32].to_string()
+    }
+
+    #[test]
+    fn enrichment_hash_byte_identical_streaming() {
+        // Fixture covers all four input categories: sorted callers,
+        // filtered + sorted callees (one suppressed by IDF), and both
+        // summary + hyde with non-trivial whitespace that exercises
+        // the normalization path.
+        let ctx = make_ctx(&["beta", "alpha"], &["rare_fn", "log"]);
+        let mut freq: HashMap<String, f32> = HashMap::new();
+        freq.insert("log".to_string(), 0.15); // filtered (>=10%)
+        freq.insert("rare_fn".to_string(), 0.02); // kept
+        let summary_raw = "  hello\tworld ";
+        let hyde_raw = " how\n to search ";
+
+        // Production pre-normalizes before calling; mirror that here.
+        let summary_norm = normalize_ws(summary_raw);
+        let hyde_norm = normalize_ws(hyde_raw);
+
+        let streaming = compute_enrichment_hash_with_summary(
+            &ctx,
+            &freq,
+            Some(&summary_norm),
+            Some(&hyde_norm),
+        );
+
+        // The reference function re-normalizes internally (matching the
+        // pre-#966 behavior), so it takes the raw strings. Feeding it
+        // the already-normalized strings would be equivalent because
+        // normalize_ws is idempotent on its own output.
+        let reference = reference_hash_pre_966(&ctx, &freq, Some(summary_raw), Some(hyde_raw));
+
+        assert_eq!(
+            streaming, reference,
+            "streaming blake3::Hasher must produce byte-identical output to the pre-#966 accumulator"
+        );
+
+        // Hardcoded snapshot so a future refactor that silently drifts
+        // the byte layout (e.g. drops a `|` separator) fails loudly
+        // even if someone also breaks the reference function.
+        const EXPECTED: &str = "7d6ef6b83f8700e398ac9c3823e61dfd";
+        assert_eq!(
+            streaming, EXPECTED,
+            "enrichment hash byte layout drifted — cached hashes in production stores are now invalid"
+        );
+    }
+
+    #[test]
+    fn enrichment_hash_normalize_ws_idempotent() {
+        // normalize_ws must be idempotent so pre-normalizing at the call
+        // site produces the same hash as normalizing per-chunk.
+        let raw = "  foo\tbar\n\n baz  ";
+        let once = normalize_ws(raw);
+        let twice = normalize_ws(&once);
+        assert_eq!(once, twice, "normalize_ws must be idempotent");
+        assert_eq!(once, "foo bar baz");
     }
 }
