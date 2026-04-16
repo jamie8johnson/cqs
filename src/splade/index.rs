@@ -16,7 +16,7 @@
 //! and fall back to rebuild-from-SQLite.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use crate::index::IndexResult;
@@ -37,6 +37,16 @@ pub const SPLADE_INDEX_FILENAME: &str = "splade.index.bin";
 /// Fixed header size in bytes: magic(4) + version(4) + generation(8)
 /// + chunk_count(8) + token_count(8) + body_checksum(32) = 64 bytes.
 const SPLADE_INDEX_HEADER_LEN: usize = 64;
+
+/// Header prefix length in bytes: everything in the header EXCEPT the
+/// blake3 checksum. The hash covers `header[0..HEADER_PREFIX_LEN] || body`
+/// so a bit flip in the prefix (chunk_count, token_count, etc.) is
+/// detected at load time; the checksum slot itself cannot hash itself.
+const HEADER_PREFIX_LEN: usize = 32;
+
+/// blake3-256 digest length in bytes, occupying bytes
+/// `[HEADER_PREFIX_LEN..SPLADE_INDEX_HEADER_LEN]` of the on-disk header.
+const CHECKSUM_LEN: usize = 32;
 
 /// Default cap on `splade.index.bin` file size read at load time.
 /// Audit RB-2: without an upper bound `read_to_end` could unbounded-alloc
@@ -112,6 +122,36 @@ pub enum SpladeIndexPersistError {
          Set CQS_SPLADE_MAX_INDEX_BYTES to override."
     )]
     FileTooLarge { path: String, size: u64, limit: u64 },
+}
+
+/// Tee-style wrapper that forwards writes to an inner writer while feeding
+/// every byte through a blake3 hasher. Used by [`SpladeIndex::save`] so the
+/// body can be streamed to disk and hashed in a single pass instead of being
+/// materialized into a `Vec<u8>` (#917 — eliminates ~60-100MB peak-memory
+/// duplication on SPLADE-Code 0.6B).
+///
+/// The hasher is pre-seeded with `header[0..32]` by the caller before any
+/// body bytes are written, so the final hash matches the documented
+/// invariant `blake3(header[0..32] || body)` — identical to the pre-#917
+/// on-disk format.
+struct HashingWriter<'a, W: Write> {
+    inner: &'a mut W,
+    hasher: &'a mut blake3::Hasher,
+}
+
+impl<'a, W: Write> Write for HashingWriter<'a, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        // Only hash the bytes that were actually written. `write` is allowed
+        // to perform a short write, and the invariant is that the hash
+        // covers exactly the bytes that reach the underlying sink.
+        self.hasher.update(&buf[..n]);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// In-memory inverted index for sparse vector search.
@@ -257,10 +297,22 @@ impl SpladeIndex {
     ///         f32 LE  weight
     /// ```
     ///
-    /// The body is built in memory (~60-100MB for SPLADE-Code 0.6B on a
-    /// cqs-sized project) so we can hash and write in one pass. That's the
-    /// same memory footprint we already hold for the in-memory index itself,
-    /// so no new budget is introduced.
+    /// Body bytes are streamed to the temp file as they are produced and
+    /// hashed in-flight via [`HashingWriter`]. Previously the entire body
+    /// was materialized into a `Vec<u8>` so it could be hashed in one pass
+    /// and written in one call; for SPLADE-Code 0.6B on a cqs-sized project
+    /// that vec held ~60-100MB while the in-memory index itself (still
+    /// live in the caller) held the same data, doubling peak RSS during
+    /// save (#917). The streaming path keeps peak bounded by the
+    /// `BufWriter` capacity (~8 KiB).
+    ///
+    /// The wire format is unchanged from pre-#917 — `save()` first writes
+    /// a placeholder header with a zero'd checksum field, streams the
+    /// body, finalizes the hash of `header[0..32] || body`, then seeks
+    /// back to offset 32 to stamp the real checksum into place. The hash
+    /// invariant `blake3(header[0..32] || body)` is preserved byte-for-
+    /// byte, so files produced by the old in-memory path and the new
+    /// streaming path are indistinguishable on disk.
     pub fn save(&self, path: &Path, generation: u64) -> Result<(), SpladeIndexPersistError> {
         let _span = tracing::info_span!(
             "splade_index_save",
@@ -271,69 +323,20 @@ impl SpladeIndex {
         )
         .entered();
 
-        // Build the body into a Vec<u8> so we can hash it in one pass and
-        // write it without an extra seek-back step on the real file.
-        let mut body: Vec<u8> = Vec::with_capacity(Self::estimate_body_size(
-            self.id_map.len(),
-            self.postings.values().map(|v| v.len()).sum::<usize>(),
-        ));
-
-        // id_map
-        for id in &self.id_map {
-            let len_u32: u32 = id.len().try_into().map_err(|_| {
-                // Audit EH-4: these are structural invariants, not I/O errors.
-                SpladeIndexPersistError::CorruptData(format!(
-                    "chunk id exceeds u32::MAX bytes: {}",
-                    id.len()
-                ))
-            })?;
-            body.extend_from_slice(&len_u32.to_le_bytes());
-            body.extend_from_slice(id.as_bytes());
-        }
-
-        // postings
-        for (&token_id, posting_list) in &self.postings {
-            body.extend_from_slice(&token_id.to_le_bytes());
-            let count_u32: u32 = posting_list.len().try_into().map_err(|_| {
-                SpladeIndexPersistError::CorruptData(format!(
-                    "posting list for token {} exceeds u32::MAX entries: {}",
-                    token_id,
-                    posting_list.len()
-                ))
-            })?;
-            body.extend_from_slice(&count_u32.to_le_bytes());
-            for &(chunk_idx, weight) in posting_list {
-                let idx_u32: u32 = chunk_idx.try_into().map_err(|_| {
-                    SpladeIndexPersistError::CorruptData(format!(
-                        "chunk_idx exceeds u32::MAX: {}",
-                        chunk_idx
-                    ))
-                })?;
-                body.extend_from_slice(&idx_u32.to_le_bytes());
-                body.extend_from_slice(&weight.to_le_bytes());
-            }
-        }
-
-        // Build the header FIRST (without the checksum), so we can include it
-        // in the hash — audit RB-1: previously only the body was hashed, which
-        // meant a single bit flip in the unhashed header `chunk_count` could
-        // pass integrity checks and cause `Vec::with_capacity(usize::MAX)` to
-        // panic inside `load()`. Now the hash covers bytes [0..32] of the
-        // header AND the body, so any header corruption is detected at load
-        // time. The hash field itself (bytes [32..64]) can't cover itself.
-        let mut header = [0u8; SPLADE_INDEX_HEADER_LEN];
-        header[0..4].copy_from_slice(SPLADE_INDEX_MAGIC);
-        header[4..8].copy_from_slice(&SPLADE_INDEX_VERSION.to_le_bytes());
-        header[8..16].copy_from_slice(&generation.to_le_bytes());
-        header[16..24].copy_from_slice(&(self.id_map.len() as u64).to_le_bytes());
-        header[24..32].copy_from_slice(&(self.postings.len() as u64).to_le_bytes());
-
-        // Hash header[0..32] || body in one go.
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&header[0..32]);
-        hasher.update(&body);
-        let combined_hash = hasher.finalize();
-        header[32..64].copy_from_slice(combined_hash.as_bytes());
+        // Build the fixed-prefix header (bytes [0..32]). The checksum at
+        // [32..64] is stamped AFTER the body is streamed and hashed; we
+        // seek back to the checksum offset at the very end.
+        //
+        // Audit RB-1: the hash covers bytes [0..32] of the header AND the
+        // body, so any header corruption is detected at load time. The
+        // hash field itself (bytes [32..64]) can't cover itself. This is
+        // preserved here.
+        let mut header_prefix = [0u8; HEADER_PREFIX_LEN];
+        header_prefix[0..4].copy_from_slice(SPLADE_INDEX_MAGIC);
+        header_prefix[4..8].copy_from_slice(&SPLADE_INDEX_VERSION.to_le_bytes());
+        header_prefix[8..16].copy_from_slice(&generation.to_le_bytes());
+        header_prefix[16..24].copy_from_slice(&(self.id_map.len() as u64).to_le_bytes());
+        header_prefix[24..32].copy_from_slice(&(self.postings.len() as u64).to_le_bytes());
 
         // Atomic write: write to a same-directory temp file, fsync, rename.
         let parent = path.parent().ok_or_else(|| {
@@ -357,8 +360,12 @@ impl SpladeIndex {
         let suffix = crate::temp_suffix();
         let tmp_path = parent.join(format!(".{}.{:016x}.tmp", file_name, suffix));
 
+        // Total bytes written (header + body) for the info log below. Needed
+        // because we no longer hold `body.len()` after streaming.
+        let total_bytes: u64;
+
         {
-            let file = {
+            let mut file = {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::OpenOptionsExt;
@@ -374,11 +381,49 @@ impl SpladeIndex {
                     std::fs::File::create(&tmp_path)?
                 }
             };
-            let mut writer = std::io::BufWriter::new(file);
-            writer.write_all(&header)?;
-            writer.write_all(&body)?;
+
+            // Phase 1: write the header prefix (bytes [0..32]) and a zero
+            // placeholder for the checksum (bytes [32..64]) directly to the
+            // raw file via a BufWriter. These bytes do NOT go through the
+            // HashingWriter — the hasher is seeded with header_prefix
+            // separately (below) and the checksum slot cannot hash itself.
+            let mut writer = std::io::BufWriter::new(&mut file);
+            writer.write_all(&header_prefix)?;
+            writer.write_all(&[0u8; CHECKSUM_LEN])?;
+
+            // Seed the hasher with the header prefix so the final digest
+            // covers `header[0..32] || body`, matching the pre-#917 format.
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&header_prefix);
+
+            // Phase 2: stream the body through a HashingWriter that wraps
+            // the BufWriter. Every subsequent `write_all` updates the
+            // hasher with the exact bytes that land on disk. Nested scope
+            // ensures the HashingWriter is dropped before we reach for the
+            // underlying BufWriter again.
+            let body_bytes = {
+                let mut body_writer = HashingWriter {
+                    inner: &mut writer,
+                    hasher: &mut hasher,
+                };
+                Self::write_body(&mut body_writer, &self.id_map, &self.postings)?
+            };
+
+            // Flush the BufWriter and release it so `file.seek` below sees
+            // every body byte before the checksum overwrite happens.
             writer.flush()?;
-            writer.get_ref().sync_all()?;
+            drop(writer);
+
+            // Phase 3: finalize the hash and stamp it into the checksum
+            // slot at offset 32. seek() on the raw File is safe now that
+            // the BufWriter is gone — no buffered bytes left behind.
+            let combined_hash = hasher.finalize();
+            file.seek(SeekFrom::Start(HEADER_PREFIX_LEN as u64))?;
+            file.write_all(combined_hash.as_bytes())?;
+            file.flush()?;
+            file.sync_all()?;
+
+            total_bytes = (SPLADE_INDEX_HEADER_LEN as u64).saturating_add(body_bytes);
         }
 
         // Audit PB-NEW-3 / PB-NEW-4 / PB-NEW-5: atomic rename with
@@ -402,10 +447,72 @@ impl SpladeIndex {
 
         tracing::info!(
             path = %path.display(),
-            bytes = SPLADE_INDEX_HEADER_LEN + body.len(),
+            bytes = total_bytes,
             "SPLADE index persisted"
         );
         Ok(())
+    }
+
+    /// Stream the body (id_map + postings) through `writer`. Returns the
+    /// number of body bytes written so the caller can log it for parity
+    /// with the pre-#917 in-memory path.
+    ///
+    /// Splitting this out of [`SpladeIndex::save`] keeps the I/O logic
+    /// (open file, write header, seek back to stamp checksum) focused on
+    /// the layout and lets the serialization logic stay pure — no
+    /// knowledge of the underlying file or hasher leaks in here. The
+    /// `u64` byte counter uses `saturating_add` defensively, but the
+    /// body size fits in `u64` for any realistic SPLADE index.
+    fn write_body<W: Write>(
+        writer: &mut W,
+        id_map: &[String],
+        postings: &HashMap<u32, Vec<(usize, f32)>>,
+    ) -> Result<u64, SpladeIndexPersistError> {
+        let mut bytes_written: u64 = 0;
+
+        // id_map
+        for id in id_map {
+            let len_u32: u32 = id.len().try_into().map_err(|_| {
+                // Audit EH-4: these are structural invariants, not I/O errors.
+                SpladeIndexPersistError::CorruptData(format!(
+                    "chunk id exceeds u32::MAX bytes: {}",
+                    id.len()
+                ))
+            })?;
+            writer.write_all(&len_u32.to_le_bytes())?;
+            writer.write_all(id.as_bytes())?;
+            bytes_written = bytes_written.saturating_add(4 + id.len() as u64);
+        }
+
+        // postings — HashMap iteration order is non-deterministic across
+        // builds, but the in-flight hasher digests exactly the bytes that
+        // reach the disk, so the checksum still matches the body we
+        // actually wrote. Load-time parsing doesn't care about order.
+        for (&token_id, posting_list) in postings {
+            writer.write_all(&token_id.to_le_bytes())?;
+            let count_u32: u32 = posting_list.len().try_into().map_err(|_| {
+                SpladeIndexPersistError::CorruptData(format!(
+                    "posting list for token {} exceeds u32::MAX entries: {}",
+                    token_id,
+                    posting_list.len()
+                ))
+            })?;
+            writer.write_all(&count_u32.to_le_bytes())?;
+            bytes_written = bytes_written.saturating_add(8);
+            for &(chunk_idx, weight) in posting_list {
+                let idx_u32: u32 = chunk_idx.try_into().map_err(|_| {
+                    SpladeIndexPersistError::CorruptData(format!(
+                        "chunk_idx exceeds u32::MAX: {}",
+                        chunk_idx
+                    ))
+                })?;
+                writer.write_all(&idx_u32.to_le_bytes())?;
+                writer.write_all(&weight.to_le_bytes())?;
+                bytes_written = bytes_written.saturating_add(8);
+            }
+        }
+
+        Ok(bytes_written)
     }
 
     /// Attempt to load a persisted index from `path`.
@@ -728,15 +835,6 @@ impl SpladeIndex {
         }
         (idx, true)
     }
-
-    /// Rough upper bound on the serialized body size so `save()` can allocate
-    /// once. 4 bytes per chunk header + average id length (~60) +
-    /// 8 bytes per posting + 8 bytes per token header.
-    fn estimate_body_size(n_chunks: usize, n_postings: usize) -> usize {
-        let id_estimate = n_chunks * (4 + 64);
-        let postings_estimate = n_postings * 8 + n_chunks * 8;
-        id_estimate + postings_estimate
-    }
 }
 
 #[cfg(test)]
@@ -945,5 +1043,109 @@ mod tests {
         });
         assert!(rebuilt3);
         assert!(rebuilt_called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// #917: streaming `save()` must produce a file the existing `load()`
+    /// can round-trip, proving the streamed-body-then-seek-back-checksum
+    /// path matches the pre-#917 in-memory-body path structurally. Uses
+    /// the multi-token `make_test_index()` fixture so HashMap iteration
+    /// order is exercised (only the total bytes + checksum matter — the
+    /// order of postings on disk is allowed to vary across runs).
+    #[test]
+    fn test_streaming_save_roundtrips_through_load() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("splade.index.bin");
+        let original = make_test_index();
+
+        original.save(&path, 99).unwrap();
+        let loaded = SpladeIndex::load(&path, 99).unwrap().unwrap();
+
+        // Same chunks in the same order: id_map is deterministic across save.
+        assert_eq!(loaded.id_map, original.id_map);
+        // Same tokens, same postings (content, not map iteration order).
+        assert_eq!(loaded.postings.len(), original.postings.len());
+        for (tok, postings) in &original.postings {
+            let round_trip = loaded
+                .postings
+                .get(tok)
+                .unwrap_or_else(|| panic!("lost token {} on round-trip", tok));
+            assert_eq!(round_trip.len(), postings.len());
+            for (a, b) in round_trip.iter().zip(postings.iter()) {
+                assert_eq!(a.0, b.0);
+                assert!((a.1 - b.1).abs() < f32::EPSILON);
+            }
+        }
+    }
+
+    /// #917: the on-disk format must stay byte-identical to the pre-#917
+    /// in-memory-body path. This test pins the exact blake3 hex for a
+    /// fully-deterministic 1-chunk / 1-token / 1-posting fixture. If the
+    /// header layout or write ordering changes, this test fails and we
+    /// know the streaming path drifted from the original format.
+    ///
+    /// The expected hex was computed out-of-band against the documented
+    /// hash invariant `blake3(header[0..32] || body)` with:
+    ///   header[0..4]   = b"SPDX"
+    ///   header[4..8]   = version 1 LE
+    ///   header[8..16]  = generation 42 LE
+    ///   header[16..24] = chunk_count 1 LE
+    ///   header[24..32] = token_count 1 LE
+    ///   body           = u32 7, b"chunk_a", u32 42, u32 1, u32 0, f32 0.5
+    ///
+    /// A single chunk and a single token removes HashMap iteration order
+    /// from the equation — the serialized bytes are fully deterministic.
+    #[test]
+    fn test_streaming_save_on_disk_format_byte_identical() {
+        // Must match the fixture documented above exactly — otherwise the
+        // hardcoded hex is meaningless.
+        let original = SpladeIndex::build(vec![("chunk_a".to_string(), vec![(42u32, 0.5f32)])]);
+        assert_eq!(original.id_map.len(), 1);
+        assert_eq!(original.postings.len(), 1);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("splade.index.bin");
+        original.save(&path, 42).unwrap();
+
+        // Read the full file back and pick off the checksum slot.
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            bytes.len(),
+            // header(64) + u32 id len(4) + "chunk_a"(7)
+            //            + u32 token(4) + u32 count(4) + u32 idx(4) + f32 wt(4)
+            64 + 4 + 7 + 4 + 4 + 4 + 4,
+            "fixture file size does not match expected layout"
+        );
+
+        // Header magic + version + generation + counts must be pinned too;
+        // otherwise the hex would only prove that SOMETHING was hashed, not
+        // that the expected bytes were hashed.
+        assert_eq!(&bytes[0..4], b"SPDX");
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
+        assert_eq!(u64::from_le_bytes(bytes[8..16].try_into().unwrap()), 42);
+        assert_eq!(u64::from_le_bytes(bytes[16..24].try_into().unwrap()), 1);
+        assert_eq!(u64::from_le_bytes(bytes[24..32].try_into().unwrap()), 1);
+
+        let checksum = &bytes[32..64];
+        let actual_hex = blake3::Hash::from_bytes(checksum.try_into().unwrap())
+            .to_hex()
+            .to_string();
+
+        // Hardcoded hex proving the on-disk format (and the
+        // `blake3(header[0..32] || body)` invariant) is byte-identical
+        // between the in-memory and streaming implementations.
+        let expected_hex = "8cdea25d4b34ce371cf1a8189fc0af7fd99f963f4de2da2c7ea3aff935db3a53";
+        assert_eq!(
+            actual_hex, expected_hex,
+            "#917 streaming save produced unexpected on-disk checksum — \
+             format drift? header layout or write ordering may have changed"
+        );
+
+        // And cross-check: feeding the documented prefix + body back
+        // through blake3 yields the same hex. Catches bugs where the
+        // checksum LUCKILY lines up but the body on disk is different.
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&bytes[0..32]);
+        hasher.update(&bytes[64..]);
+        assert_eq!(hasher.finalize().to_hex().to_string(), expected_hex);
     }
 }
