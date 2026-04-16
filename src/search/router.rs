@@ -9,60 +9,117 @@ use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use std::collections::HashMap;
 use std::sync::{LazyLock, OnceLock};
 
-/// Query categories for adaptive routing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum QueryCategory {
+// ---------------------------------------------------------------------------
+// Macro: define_query_categories!
+//
+// Generates from a single declaration table:
+//   - `QueryCategory` enum with Debug, Clone, Copy, PartialEq, Eq, Hash
+//   - `Display` impl (variant → snake_case name)
+//   - `QueryCategory::from_snake_case` (snake_case name + optional aliases → variant)
+//   - `QueryCategory::all_variants() -> &'static [QueryCategory]`
+//   - `QueryCategory::default_alpha(&self) -> f32` — exhaustive, no catch-all
+//
+// Adding a category = one new line here. The match in `resolve_splade_alpha`
+// no longer contains a `_ => 1.0` catch-all: a missing `default_alpha = ...`
+// is a compile error, surfacing the SPLADE-tuning gap that previously could
+// ship invisibly.
+// ---------------------------------------------------------------------------
+/// Generates a `QueryCategory` enum with associated trait implementations and SPLADE alpha defaults.
+///
+/// # Arguments
+///
+/// - `$variant`: Identifier for each enum variant
+/// - `$doc`: Optional documentation comments for each variant
+/// - `$name`: snake_case string literal (used by `Display` and `from_snake_case`)
+/// - `$alpha`: f32 default SPLADE alpha for the variant (required, no catch-all)
+/// - `$alias`: Optional snake_case aliases that also parse to the variant
+///
+/// # Returns
+///
+/// Expands to:
+/// - A `QueryCategory` enum with all specified variants
+/// - `Display` impl that maps variants to their snake_case names
+/// - `from_snake_case` method that parses primary names and aliases into variants
+/// - `all_variants()` method returning a slice of every category
+/// - `default_alpha()` method returning the per-variant SPLADE alpha (exhaustive)
+macro_rules! define_query_categories {
+    (
+        $(
+            $(#[doc = $doc:expr])*
+            $variant:ident => $name:literal, default_alpha = $alpha:expr
+                $(, aliases = [ $($alias:literal),* $(,)? ])?
+                ;
+        )+
+    ) => {
+        /// Query categories for adaptive routing.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum QueryCategory {
+            $(
+                $(#[doc = $doc])*
+                $variant,
+            )+
+        }
+
+        impl std::fmt::Display for QueryCategory {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $( Self::$variant => write!(f, $name), )+
+                }
+            }
+        }
+
+        impl QueryCategory {
+            /// Parse a snake_case category name (or one of its aliases) into a
+            /// variant. Returns `None` for unknown strings.
+            pub fn from_snake_case(s: &str) -> Option<Self> {
+                match s {
+                    $(
+                        $name => Some(Self::$variant),
+                        $( $( $alias => Some(Self::$variant), )* )?
+                    )+
+                    _ => None,
+                }
+            }
+
+            /// Every declared variant, in declaration order.
+            pub fn all_variants() -> &'static [QueryCategory] {
+                &[ $( Self::$variant ),+ ]
+            }
+
+            /// Default SPLADE fusion alpha for this category.
+            ///
+            /// Sourced from per-category sweeps (see `resolve_splade_alpha`
+            /// for the methodology and history). Exhaustive — adding a new
+            /// variant without `default_alpha = ...` is a compile error.
+            pub fn default_alpha(&self) -> f32 {
+                match self {
+                    $( Self::$variant => $alpha, )+
+                }
+            }
+        }
+    };
+}
+
+define_query_categories! {
     /// Looking for a specific function/type by name ("search_filtered", "HashMap::new")
-    IdentifierLookup,
+    IdentifierLookup => "identifier_lookup", default_alpha = 1.00;
     /// Searching for code by structure ("functions that return Result", "structs with Display")
-    Structural,
+    Structural => "structural", default_alpha = 0.90, aliases = ["structural_search"];
     /// Searching for code by behavior ("validates user input", "retries with backoff")
-    Behavioral,
+    Behavioral => "behavioral", default_alpha = 0.00, aliases = ["behavioral_search"];
     /// Searching for abstract concepts ("dependency injection", "observer pattern")
-    Conceptual,
+    Conceptual => "conceptual", default_alpha = 0.70, aliases = ["conceptual_search"];
     /// Queries requiring multiple signals ("find where errors are logged and retried")
-    MultiStep,
+    MultiStep => "multi_step", default_alpha = 1.00;
     /// Queries with negation ("sort without allocating", "parse but not validate")
-    Negation,
+    Negation => "negation", default_alpha = 0.80;
     /// Queries constrained by chunk type ("all test functions", "every enum")
-    TypeFiltered,
-    /// Queries mentioning multiple languages ("Python equivalent of map in Rust")
-    CrossLanguage,
+    TypeFiltered => "type_filtered", default_alpha = 1.00;
+    /// Queries mentioning multiple languages ("Python equivalent of map in Rust").
+    /// Ships 2026-04-16: 1.00 → 0.10 based on v3 sweep.
+    CrossLanguage => "cross_language", default_alpha = 0.10;
     /// No clear category — use default strategy
-    Unknown,
-}
-
-impl QueryCategory {
-    pub fn from_snake_case(s: &str) -> Option<Self> {
-        match s {
-            "identifier_lookup" => Some(Self::IdentifierLookup),
-            "structural" | "structural_search" => Some(Self::Structural),
-            "behavioral" | "behavioral_search" => Some(Self::Behavioral),
-            "conceptual" | "conceptual_search" => Some(Self::Conceptual),
-            "multi_step" => Some(Self::MultiStep),
-            "negation" => Some(Self::Negation),
-            "type_filtered" => Some(Self::TypeFiltered),
-            "cross_language" => Some(Self::CrossLanguage),
-            "unknown" => Some(Self::Unknown),
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Display for QueryCategory {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::IdentifierLookup => write!(f, "identifier_lookup"),
-            Self::Structural => write!(f, "structural"),
-            Self::Behavioral => write!(f, "behavioral"),
-            Self::Conceptual => write!(f, "conceptual"),
-            Self::MultiStep => write!(f, "multi_step"),
-            Self::Negation => write!(f, "negation"),
-            Self::TypeFiltered => write!(f, "type_filtered"),
-            Self::CrossLanguage => write!(f, "cross_language"),
-            Self::Unknown => write!(f, "unknown"),
-        }
-    }
+    Unknown => "unknown", default_alpha = 1.00;
 }
 
 /// Classifier confidence level.
@@ -430,17 +487,13 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
     // ~/training-data/research/models.md.
     //
     // Run artifacts: /mnt/c/Projects/cqs/evals/queries/v3_alpha_sweep.json
-    let alpha = match category {
-        QueryCategory::IdentifierLookup => 1.00,
-        QueryCategory::Structural => 0.90,
-        QueryCategory::Conceptual => 0.70,
-        QueryCategory::Behavioral => 0.00,
-        QueryCategory::Negation => 0.80,
-        // Ships 2026-04-16: v1.00 → 0.10 based on v3 sweep.
-        QueryCategory::CrossLanguage => 0.10,
-        // type_filtered, multi_step, unknown: α=1.0 default.
-        _ => 1.0,
-    };
+    //
+    // Sourced from `QueryCategory::default_alpha`, which is generated by
+    // `define_query_categories!` (see top of this file). The match in that
+    // generator is exhaustive — adding a new variant without
+    // `default_alpha = ...` is a compile error, so a SPLADE-tuning gap can
+    // no longer slip through under a `_ => 1.0` catch-all.
+    let alpha = category.default_alpha();
 
     tracing::info!(
         category = %category,
@@ -769,85 +822,25 @@ fn is_conceptual_query(query: &str, words: &[&str]) -> bool {
         && !is_structural_query(query)
 }
 
-/// Patterns for [`extract_type_hints`] — the pattern string and the
-/// [`ChunkType`] it maps to. Order matters: output hints preserve this
-/// declaration order so tests that assert on hint ordering keep passing.
-const TYPE_HINT_PATTERNS: &[(&str, ChunkType)] = &[
-    // Test
-    ("test function", ChunkType::Test),
-    ("test method", ChunkType::Test),
-    ("all tests", ChunkType::Test),
-    ("every test", ChunkType::Test),
-    // Function / Method
-    ("all functions", ChunkType::Function),
-    ("every function", ChunkType::Function),
-    ("all methods", ChunkType::Method),
-    ("every method", ChunkType::Method),
-    // Type definitions
-    ("all structs", ChunkType::Struct),
-    ("every struct", ChunkType::Struct),
-    ("all enums", ChunkType::Enum),
-    ("every enum", ChunkType::Enum),
-    ("all traits", ChunkType::Trait),
-    ("every trait", ChunkType::Trait),
-    ("all interfaces", ChunkType::Interface),
-    ("every interface", ChunkType::Interface),
-    ("all classes", ChunkType::Class),
-    ("every class", ChunkType::Class),
-    ("type alias", ChunkType::TypeAlias),
-    ("all type aliases", ChunkType::TypeAlias),
-    // OOP / module constructs
-    ("all modules", ChunkType::Module),
-    ("every module", ChunkType::Module),
-    ("all objects", ChunkType::Object),
-    ("every object", ChunkType::Object),
-    ("all namespaces", ChunkType::Namespace),
-    ("every namespace", ChunkType::Namespace),
-    ("all impl blocks", ChunkType::Impl),
-    ("implementation block", ChunkType::Impl),
-    ("extension method", ChunkType::Extension),
-    ("all extensions", ChunkType::Extension),
-    // Members
-    ("all constants", ChunkType::Constant),
-    ("every constant", ChunkType::Constant),
-    ("all variables", ChunkType::Variable),
-    ("every variable", ChunkType::Variable),
-    ("all properties", ChunkType::Property),
-    ("every property", ChunkType::Property),
-    ("constructor", ChunkType::Constructor),
-    ("all constructors", ChunkType::Constructor),
-    // C# specific
-    ("all delegates", ChunkType::Delegate),
-    ("every delegate", ChunkType::Delegate),
-    ("all events", ChunkType::Event),
-    ("every event", ChunkType::Event),
-    // Macros
-    ("all macros", ChunkType::Macro),
-    ("every macro", ChunkType::Macro),
-    ("macro_rules", ChunkType::Macro),
-    // Web / API
-    ("endpoint", ChunkType::Endpoint),
-    ("all endpoints", ChunkType::Endpoint),
-    ("all services", ChunkType::Service),
-    ("every service", ChunkType::Service),
-    ("middleware", ChunkType::Middleware),
-    ("all middleware", ChunkType::Middleware),
-    // Database / FFI / config
-    ("stored procedure", ChunkType::StoredProc),
-    ("all stored procedures", ChunkType::StoredProc),
-    ("extern function", ChunkType::Extern),
-    ("all externs", ChunkType::Extern),
-    ("ffi declaration", ChunkType::Extern),
-    ("config key", ChunkType::ConfigKey),
-    ("all config keys", ChunkType::ConfigKey),
-    // Docs / Solidity
-    ("all sections", ChunkType::Section),
-    ("every section", ChunkType::Section),
-    ("all modifiers", ChunkType::Modifier),
-    ("every modifier", ChunkType::Modifier),
-];
+/// Pre-computed `(phrase, chunk_type)` table assembled from
+/// `ChunkType::ALL.iter().flat_map(|ct| ct.hint_phrases().iter().map(|p| (*p, *ct)))`.
+///
+/// Order is determined by `ChunkType::ALL` (declaration order in
+/// `define_chunk_types!`) and within a variant by the order of phrases in its
+/// `hints = [...]` list. `extract_type_hints` walks the table in this order to
+/// preserve hint sequencing in the output `Vec`.
+///
+/// Materialized once at first use. Adding a new `ChunkType` variant with
+/// `hints = [...]` automatically appears here — there is no second registration
+/// step in `router.rs`.
+static TYPE_HINT_TABLE: LazyLock<Vec<(&'static str, ChunkType)>> = LazyLock::new(|| {
+    ChunkType::ALL
+        .iter()
+        .flat_map(|ct| ct.hint_phrases().iter().map(move |p| (*p, *ct)))
+        .collect()
+});
 
-/// Aho-Corasick automaton over [`TYPE_HINT_PATTERNS`] — one pass over
+/// Aho-Corasick automaton over [`TYPE_HINT_TABLE`] — one pass over
 /// `query` finds every matching pattern id.
 ///
 /// Uses [`MatchKind::Standard`] because [`AhoCorasick::find_overlapping_iter`]
@@ -858,8 +851,8 @@ const TYPE_HINT_PATTERNS: &[(&str, ChunkType)] = &[
 static TYPE_HINT_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
     AhoCorasickBuilder::new()
         .match_kind(MatchKind::Standard)
-        .build(TYPE_HINT_PATTERNS.iter().map(|(p, _)| *p))
-        .expect("TYPE_HINT_PATTERNS is a valid pattern set (static input)")
+        .build(TYPE_HINT_TABLE.iter().map(|(p, _)| *p))
+        .expect("TYPE_HINT_TABLE is a valid pattern set (static input)")
 });
 
 /// Extract chunk type hints from the query text.
@@ -868,21 +861,24 @@ static TYPE_HINT_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
 /// Only extracts when confidence is reasonable — avoids false positives.
 ///
 /// Previously this scanned ~72 patterns with individual `query.contains(p)`
-/// probes. Now uses a single Aho-Corasick pass via [`TYPE_HINT_AC`].
+/// probes. Now uses a single Aho-Corasick pass via [`TYPE_HINT_AC`], with the
+/// `(phrase, ChunkType)` table built from `ChunkType::hint_phrases()` declared
+/// in `define_chunk_types!` — a single source of truth for hint registration.
 ///
 /// Output order is preserved: a hint is pushed the first time its pattern
 /// id appears in declaration order, and duplicate `ChunkType`s across
 /// different matched patterns are kept (e.g. two Test-mapped patterns both
 /// matching still yields `[Test, Test]`, matching the previous loop).
 pub fn extract_type_hints(query: &str) -> Option<Vec<ChunkType>> {
+    let table = &*TYPE_HINT_TABLE;
     // Collect the set of pattern ids that match at least once.
-    let mut matched = [false; TYPE_HINT_PATTERNS.len()];
+    let mut matched = vec![false; table.len()];
     for m in TYPE_HINT_AC.find_overlapping_iter(query) {
         matched[m.pattern().as_usize()] = true;
     }
 
     let mut types = Vec::new();
-    for (idx, (_, chunk_type)) in TYPE_HINT_PATTERNS.iter().enumerate() {
+    for (idx, (_, chunk_type)) in table.iter().enumerate() {
         if matched[idx] {
             types.push(*chunk_type);
         }

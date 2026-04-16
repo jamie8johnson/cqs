@@ -44,6 +44,10 @@ const DEFAULTS: LanguageDef = LanguageDef {
     test_markers: &[],
     test_path_patterns: &[],
     structural_matchers: None,
+    error_swallow_patterns: &[],
+    async_markers: &[],
+    mutex_markers: &[],
+    unsafe_markers: &[],
     entry_point_names: &[],
     trait_method_names: &[],
     injections: &[],
@@ -173,6 +177,9 @@ static LANG_C: LanguageDef = LanguageDef {
         strip_prefixes: "static const volatile extern unsigned signed",
     },
     skip_line_prefixes: &["struct ", "union ", "enum ", "typedef "],
+    // Structural pattern markers — see `structural.rs`. C is inherently
+    // unsafe: flag the classic memory-corruption-prone stdlib calls.
+    unsafe_markers: &["memcpy", "strcpy", "sprintf", "gets("],
     ..DEFAULTS
 };
 
@@ -2161,6 +2168,13 @@ static LANG_GO: LanguageDef = LanguageDef {
         strip_prefixes: "",
     },
     skip_line_prefixes: &["type ", "func "],
+    // Structural pattern markers — see `structural.rs`. Go async means
+    // goroutines / channel ops; mutex via stdlib sync.* types; unsafe via
+    // unsafe.Pointer.
+    error_swallow_patterns: &["_ = err", "_ = "],
+    async_markers: &["go func", "go ", "<-"],
+    mutex_markers: &["sync.Mutex", "sync.RWMutex"],
+    unsafe_markers: &["unsafe.Pointer"],
     ..DEFAULTS
 };
 
@@ -3274,6 +3288,10 @@ static LANG_JAVASCRIPT: LanguageDef = LanguageDef {
         strip_prefixes: "public private protected readonly static",
     },
     skip_line_prefixes: &["class ", "export "],
+    // Structural pattern markers — see `structural.rs`. Mirrors TypeScript:
+    // both use the same surface syntax for async / catch / await.
+    error_swallow_patterns: &["catch (e) {}", "catch {}", "// ignore"],
+    async_markers: &["async ", "await "],
     ..DEFAULTS
 };
 
@@ -5309,6 +5327,14 @@ static LANG_PYTHON: LanguageDef = LanguageDef {
         strip_prefixes: "",
     },
     skip_line_prefixes: &["class ", "@property", "def "],
+    // Structural pattern markers — see `structural.rs`. The Python error_swallow
+    // entry markers ("except:", "except Exception:") distinguish bare-except
+    // patterns from typed-except like "except ValueError as e:". Both positive
+    // test cases match one of these; the typed-except negative case matches
+    // neither.
+    error_swallow_patterns: &["except:", "except Exception:"],
+    async_markers: &["async def", "await "],
+    mutex_markers: &["Lock()", "threading.Lock"],
     ..DEFAULTS
 };
 
@@ -6244,6 +6270,18 @@ static LANG_RUST: LanguageDef = LanguageDef {
         "enum",
         "union",
     ],
+    // Structural pattern markers — see `structural.rs` for usage. Patterns
+    // are substring scans; any single hit triggers the pattern.
+    error_swallow_patterns: &[
+        "unwrap_or_default()",
+        "unwrap_or(())",
+        ".ok();",
+        "_ => {}",
+        "_ => ()",
+    ],
+    async_markers: &["async fn", ".await"],
+    mutex_markers: &["Mutex", "RwLock", ".lock()"],
+    unsafe_markers: &["unsafe "],
     ..DEFAULTS
 };
 
@@ -7393,6 +7431,13 @@ static LANG_TYPESCRIPT: LanguageDef = LanguageDef {
         strip_prefixes: "public private protected readonly static",
     },
     skip_line_prefixes: &["class ", "interface ", "type ", "export "],
+    // Structural pattern markers — see `structural.rs`. The TS error_swallow
+    // markers identify empty-catch / explicitly-ignored exceptions. Substring
+    // matching with `(e) {}` / `(e) {` prefixes makes the negative case
+    // ("catch (e) { console.log(e); }") miss because it has neither the
+    // empty-body marker nor an `// ignore` comment.
+    error_swallow_patterns: &["catch (e) {}", "catch {}", "// ignore"],
+    async_markers: &["async ", "await "],
     ..DEFAULTS
 };
 
