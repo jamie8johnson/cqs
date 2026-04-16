@@ -59,7 +59,8 @@ const V1_26_0_DEFAULTS: &[(QueryCategory, f32)] = &[
     (QueryCategory::Negation, 0.80),
     (QueryCategory::TypeFiltered, 1.00),
     (QueryCategory::MultiStep, 1.00),
-    (QueryCategory::CrossLanguage, 1.00),
+    // v3 sweep change (2026-04-16): 1.00 → 0.10. See router.rs for rationale.
+    (QueryCategory::CrossLanguage, 0.10),
     (QueryCategory::Unknown, 1.00),
 ];
 
@@ -290,6 +291,20 @@ mod splade_routing {
         clear_all_alpha_env();
     }
 
+    /// CrossLanguage → α=0.10 (v3 sweep change, dense-heavy for cross-lang bridging).
+    #[test]
+    #[serial]
+    fn test_routing_cross_language_lands_on_alpha_0_10() {
+        clear_all_alpha_env();
+        let (cat, alpha) = route("Python equivalent of map in Rust");
+        assert_eq!(cat, QueryCategory::CrossLanguage);
+        assert!(
+            (alpha - 0.10).abs() < f32::EPSILON,
+            "CrossLanguage should route to α=0.10, got {alpha}"
+        );
+        clear_all_alpha_env();
+    }
+
     /// Negation → α=0.80 (explicit arm in v1.26.0, was catch-all in v1.25.0).
     #[test]
     #[serial]
@@ -310,14 +325,6 @@ mod splade_routing {
     #[serial]
     fn test_routing_catch_all_lands_on_alpha_1_00() {
         clear_all_alpha_env();
-
-        // CrossLanguage — "Python equivalent of map in Rust"
-        let (cat, alpha) = route("Python equivalent of map in Rust");
-        assert_eq!(cat, QueryCategory::CrossLanguage);
-        assert!(
-            (alpha - 1.00).abs() < f32::EPSILON,
-            "CrossLanguage should route to α=1.0, got {alpha}"
-        );
 
         // TypeFiltered — "all test functions"
         let (cat, alpha) = route("all test functions");

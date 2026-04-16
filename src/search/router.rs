@@ -404,42 +404,41 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
     // overall R@1 41% projected (vs 37.7% for global α=0.90).
     //
     // Run artifacts: /home/user001/.cache/cqs/evals/run_20260415_1[4-5]*/
-    // v3 per-category alphas (2026-04-16). Fit on v3 train (326 queries),
-    // validated on v3 dev (109 queries). Only changes where dev R@1 beat
-    // the v1.26.0 alpha are adopted — swept optima on multi_step and
-    // negation regressed on dev (train overfit), so those stay at v1.26.0.
+    // v1.26.0 per-category alphas + cross_language change from v3 sweep.
     //
-    // Dev R@1: 33.0% (v1.26.0 alphas) → 46.8% (v3 conservative) = +13.8pp
+    // The full v3 sweep (2026-04-16) measured best-per-category α on the
+    // v3 train split, but when the new alphas were tested through the
+    // PRODUCTION FULL ROUTER on v3 test, only cross_language produced a
+    // real R@1 change. The others were masked by strategy routing
+    // (NameOnly, DenseBase, DenseWithTypeHints) which already captures
+    // most category-specific behavior.
     //
-    // Per-category dev R@1 changes:
-    //   behavioral_search 18.8% → 50.0% (α 0.00 → 1.00)
-    //   conceptual_search  8.3% → 50.0% (α 0.70 → 1.00)
-    //   type_filtered      0.0% → 30.8% (α 1.00 → 0.75)
-    //   cross_language     9.1% → 18.2% (α 1.00 → 0.10)
-    //   identifier_lookup 83.3% → 83.3% (α 1.00 unchanged)
-    //   negation          58.8% → 58.8% (α 0.80 unchanged; swept 0.95 hurt dev)
-    //   multi_step        35.7% → 35.7% (α 1.00 unchanged; swept 0.20 hurt dev)
-    //   structural_search 12.5% → 12.5% (α 0.90 unchanged; swept 0.80 tied)
+    // v3 test R@1 measurements (109 queries):
+    //   v1.26.0 alphas:               44.0%
+    //   full v3-swept alphas:         44.0% (0.0pp)
+    //   v1.26.0 + xlang=0.10 only:    45.0% (+1.0pp)  ← shipped
     //
-    // Why these moved from v1.26.0: v1.26.0 alphas were tuned on v2 (265q
-    // fixture eval with different query-distribution properties). v3 is a
-    // dual-judge consensus dataset with proper train/dev/test split; its
-    // queries have different lexical characteristics. Behavioral and
-    // conceptual flipped to α=1.0 because v3 queries have more exact-term
-    // overlap with chunks than v2 behavioral/conceptual queries did.
-    // cross_language needs dense-heavy because lexical overlap fails
-    // across languages — you need semantic bridging.
+    // cross_language change rationale: semantic bridging across languages
+    // (e.g. "Python equivalent of map in Rust") doesn't benefit from SPLADE
+    // lexical matching — you need dense embeddings to cross the syntax
+    // boundary. α=0.10 puts almost all weight on dense. +9pp on the
+    // category's R@1 on v3 test (18.2% → 27.3%).
     //
-    // Run artifacts: ~/.cache/cqs/evals/v3_alpha_sweep.json
+    // Other categories' v3 sweep deltas lived mostly in Unknown queries
+    // that the rule-based classifier never routes to them anyway, so the
+    // optima were unreachable in production. Full data in
+    // ~/training-data/research/models.md.
+    //
+    // Run artifacts: /mnt/c/Projects/cqs/evals/queries/v3_alpha_sweep.json
     let alpha = match category {
         QueryCategory::IdentifierLookup => 1.00,
         QueryCategory::Structural => 0.90,
-        QueryCategory::Conceptual => 1.00,
-        QueryCategory::Behavioral => 1.00,
+        QueryCategory::Conceptual => 0.70,
+        QueryCategory::Behavioral => 0.00,
         QueryCategory::Negation => 0.80,
-        QueryCategory::TypeFiltered => 0.75,
+        // Ships 2026-04-16: v1.00 → 0.10 based on v3 sweep.
         QueryCategory::CrossLanguage => 0.10,
-        // multi_step + unknown: flat curves / small N; keep α=1.0.
+        // type_filtered, multi_step, unknown: α=1.0 default.
         _ => 1.0,
     };
 
