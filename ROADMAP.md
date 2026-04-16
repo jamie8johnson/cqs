@@ -1,25 +1,17 @@
 # Roadmap
 
-## Current: v1.26.0 + PR #1010
+## Current: v1.27.0 (audit-wave release)
 
-54 languages. 29 chunk types. v3 eval canonical (544 dual-judge queries, train/dev/test 326/109/109). Daemon mode (`cqs watch --serve`, 3-19ms queries). Per-category SPLADE alpha routing. GPU-native CAGRA bitset filtering (patched cuvs 26.4).
+54 languages. 29 chunk types. v3 eval canonical (544 dual-judge queries, train/dev/test 326/109/109). Daemon mode (`cqs watch --serve`, 99ms graph p50 / 200ms search-warm p50). Per-category SPLADE alpha routing via compile-enforced `define_query_categories!` macro. GPU-native CAGRA bitset filtering (patched cuvs 26.4). MSRV 1.95 (bumped from 1.93).
 
-**v1.26.0** shipped 2026-04-15: watch-mode hardening + alpha re-fit + `--splade` CLI fix. 162/236 audit findings closed across v1.25.0 + v1.26.0.
-
-**PR #1010** (2026-04-16, will land as v1.26.1 or v1.27.0):
-- cqs batch RefCell panic in `invalidate_mutable_caches` (try_borrow_mut + deferred retry).
-- Reranker `token_type_ids` bug: zeroed segment IDs silently broke fine-tuned BERT-family rerankers.
-- `CQS_RERANKER_MODEL` accepts absolute local directory paths alongside HF repo ids.
-- Cross_language α 1.00 → 0.10 (v3 sweep finding; +1.8pp R@1 on v3 test).
-- Centroid classifier infrastructure (disabled by default; `CQS_CENTROID_CLASSIFIER=1`).
-- `tests/classifier_audit.rs` integration test: confusion matrix vs v3 consensus labels.
+**v1.27.0** shipped 2026-04-16: closes 13 of 18 open issues from the post-v1.26.1 audit. Major perf wins (#917 streaming SPLADE, #966 stream-hash enrichment, #969 recency-based watch prune) + the `AuxModelConfig` preset registry (#957) that makes SPLADE-Code 0.6B a one-line config switch. See [`docs/audit-open-issues-2026-04-16.md`](docs/audit-open-issues-2026-04-16.md) for the audit ledger.
 
 ### Eval baselines on v3 test (production router, 3-trial stable)
 
 | Config | R@1 | R@5 | R@20 |
 |---|---|---|---|
 | v1.26.0 alphas | 40.4% | 64.2% | 80.7% |
-| **v1.26.0 + xlang=0.10 (shipping)** | **42.2%** | 64.2% | 78.9% |
+| **v1.27.0 shipping (xlang=0.10)** | **42.2%** | 64.2% | 78.9% |
 | Full v3-swept per-category α | 41.3% | 63.3% | 78.9% |
 
 Single-trial v3 test readings drift ±1pp; always confirm over 3 trials. Forced-α (no strategy router) tops out around 48% — the ceiling if the rule-based classifier perfectly routed every query. Breakeven simulation shows per-category α routing on Unknown queries (~48% of traffic) is net-negative at *any* classifier accuracy. Real reachable tuning ceiling is ~1-3pp above 42.2%. Further R@1 requires representation changes (HyDE, reranker V2 at scale, embedder switch).
@@ -67,6 +59,11 @@ Single-trial v3 test readings drift ±1pp; always confirm over 3 trials. Forced-
 
 **Testing infrastructure:**
 - [ ] **Rewrite slow CLI test binaries to in-process fixtures** ([#980](https://github.com/jamie8johnson/cqs/issues/980)). `cli_batch_test`, `cli_graph_test`, `cli_commands_test`, `cli_test`, `cli_health_test` gated behind `slow-tests` feature (PR #988) because each shells out to `cqs` and cold-loads the ONNX/HNSW/SPLADE stack per test case (~118 min combined on PR CI). Follow the `cli_notes_test` + `router_test` pattern: one `Store` + `CommandContext` per binary, call `cmd_*` handlers directly. Un-gates the feature and retires the nightly `slow-tests.yml` workflow.
+
+**Embedder swap workflow (repeatable model A/B):**
+- [ ] **Content-keyed embeddings cache.** New SQLite table `embeddings_cache(chunk_hash BLOB, model_id TEXT, embedding BLOB, PRIMARY KEY (chunk_hash, model_id))`. Index time: check cache before invoking the embedder. Re-embedding the same corpus with a different model only pays for cache misses. Disk cost: ~4KB × #chunks × #cached_models (~150MB for 2 models on cqs-sized projects). Turns "swap embedder + re-eval" from 20 min into ~30s on second/subsequent swaps.
+- [ ] **Index-aware embedder resolution.** Trust `index.db`'s recorded model at query time instead of re-checking `CQS_EMBEDDING_MODEL`. The env var would only matter at `cqs index` time. Eliminates a class of "I changed the env, now everything's broken" foot-guns. ~1 day, almost zero new surface.
+- [ ] **Named index slots** — `cqs index --slot v9-200k --model v9-200k` builds at `.cqs/slots/v9-200k/`. `cqs --slot v9-200k "query"` queries that slot. `cqs slot promote v9-200k` swaps the active pointer. Build only after the cache lands — without it, slot-switching still pays the reindex cost.
 
 **Daemon:**
 - [ ] **Daemon: full CLI parity** — subsumed by [#947](https://github.com/jamie8johnson/cqs/issues/947) Commands/BatchCmd unification.

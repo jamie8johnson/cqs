@@ -2,9 +2,14 @@
 
 ## Right Now
 
-**v1.26.1 released 2026-04-16.** Tag pushed, crates.io live, GitHub Release workflow building binaries. Session work consolidated: one shipped R@1 improvement (xlang α 1.00→0.10, +1.8pp on v3 test), two cqs bug fixes (RefCell panic, reranker `token_type_ids`), ROADMAP + README + CHANGELOG updated, GitHub About + crates description refreshed with honest v3 numbers.
+**v1.27.0 released 2026-04-16** (audit-wave release, PR #1023). Tag pushed, GitHub Release workflow built binaries successfully. **crates.io publish is currently 503-ing**; auto-retry monitor (bxv9f30kj) running. Closes 13 of 18 audit issues + MSRV bump 1.93→1.95.
 
-**Next lever:** HyDE on v3 dev (most promising untested representation change). All prereqs built — Gemma 4 31B via vLLM for synthesis, BGE embedder, v3 harness. Design requirement: hold production router fixed and vary only query embedding source.
+**v9-200k embedder eval IN PROGRESS** (Task #5). Backed up `.cqs/` to `.cqs.bge-large.bak/` (2.6 GB). Reindex with v9-200k running in background (PID 788797, log at `/tmp/v9-200k-reindex.log`). On completion: run `evals/run_ablation.py` against v3 test, capture R@1/5/20, compare vs BGE-large baseline (42.2/64.2/78.9 with xlang=0.10).
+
+**Next levers (after v9-200k decision):**
+- R@5 failure-mode audit on the better-performing index (Task #3) — diagnose which queries put gold in ranks 6-20
+- Strategy session synthesizing R@5 levers + HyDE + Reranker V2 (Task #4)
+- HyDE on v3 dev — all prereqs built (Gemma 4 31B via vLLM, BGE/v9-200k embedder, v3 harness)
 
 ### Final measurements on v3 test (109 queries, stable across 3 trials)
 
@@ -69,13 +74,14 @@ Plus 2 cqs bugs found and fixed as byproducts (RefCell panic, token_type_ids).
 
 ## Architecture state
 
-- **Version:** v1.26.1 (tag pushed, crates.io published, GitHub Release in progress)
-- **Local binary:** built from main at 396ef73; reinstall with `cargo build --release --features gpu-index && systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch`
-- **Index:** 14,917 chunks, 100% SPLADE coverage
+- **Version:** v1.27.0 (tag pushed; GitHub Release built binaries; crates.io publish pending — auto-retry on 503)
+- **Local binary:** built from main at f195568. Reinstall with `cargo build --release --features gpu-index && systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch`
+- **MSRV:** 1.95 (bumped from 1.93 in v1.27.0 / Phase 5d)
+- **Index:** 15,517 chunks (BGE-large baseline, currently being re-embedded with v9-200k for the eval)
 - **Production R@1 baseline on v3 test:** 42.2% / R@5 64.2% / R@20 78.9%
-- **Open PRs:** none
-- **Open issues:** 17 (#855 closed by v1.26.1 env-var drift guard)
-- **cqs-watch daemon:** running — may be on pre-v1.26.1 binary until next rebuild/install
+- **Open PRs:** post-v1.27.0 tears branch in flight
+- **Open issues:** 16 — all tier-3 deferred or external-blocked (#106 ort upstream, #717 hnswlib-rs migration, #916 depriorotized, #956 needs non-Linux CI, #255 design)
+- **cqs-watch daemon:** stopped during reindex; will restart for the v9-200k eval
 
 ## Operational pitfalls added this session
 
