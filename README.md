@@ -791,28 +791,30 @@ Token budgeting works across all context commands: `--tokens N` packs results by
 
 ## Performance
 
-Benchmarked on a 4,110-chunk Rust project (202 files, 12 languages) with CUDA GPU (RTX A6000):
+Measured 2026-04-16 on the cqs codebase itself (562 files, 15,516 chunks) with CUDA GPU (NVIDIA RTX A6000, 48 GB) on WSL2 Ubuntu. Embedder: BGE-large (1024-dim). SPLADE: ensembledistil (110M, off-the-shelf). Raw measurements: [`evals/performance-v1.27.0.json`](evals/performance-v1.27.0.json).
 
 | Metric | Value |
 |--------|-------|
-| **Daemon query (graph ops)** | 3–19ms |
-| **Daemon query (search, warm)** | ~500ms |
-| **CLI search (hot, p50)** | 45ms |
-| **CLI search (cold, p50)** | 1,767ms |
-| **Throughput (batch mode)** | 22 queries/sec |
-| **Index build (203 files)** | 36 sec |
-| **Index size** | ~8 KB/chunk (31 MB for 4,110 chunks) |
+| **Daemon query (graph ops, p50)** | 99 ms |
+| **Daemon query (search, warm p50)** | 200 ms |
+| **Daemon query (impact, p50)** | 199 ms |
+| **Daemon query (search, first call after idle)** | 1.7–12 s (lazy ONNX init) |
+| **CLI cold (no daemon, p50)** | 10.5 s |
+| **Batch throughput (50 mixed ops)** | 2 ops/sec |
+| **Index size** | 2.4 GB DB (~157 KB/chunk, dominated by LLM enrichments) + 73 MB HNSW (~4.7 KB/chunk) |
 
-**Daemon mode** (`cqs watch --serve`) keeps the store, HNSW index, and embedder loaded. Graph queries (`callers`, `callees`, `impact`) run in 3–19ms. Embedding queries (`search`) pay ONNX inference on first run (~500ms), then hit the persistent query cache on repeats.
+**Daemon mode** (`cqs watch --serve`) keeps the store, HNSW index, embedder, SPLADE, and reranker loaded across queries — agents pay startup once and amortize over thousands of calls. Graph operations (`callers`, `callees`, `impact`) hit the in-memory call graph; search adds ONNX dense + SPLADE sparse retrieval and RRF fusion.
 
-CLI cold latency includes process startup, model init, and DB open. Batch mode (`cqs batch`) amortizes startup across queries.
+CLI cold latency includes process spawn, ONNX model load, DB open, and HNSW load. The 10× gap vs daemon is the cost of doing all of that per query — `cqs batch` amortizes startup across queries when the daemon isn't running.
+
+Mixed-batch throughput (~2 ops/sec) is dominated by search operations (~200 ms each via daemon). Pure call-graph throughput is much higher — `callers` alone runs at ~10 ops/sec via daemon.
 
 **Embedding latency (GPU vs CPU):**
 
 | Mode | Single Query | Batch (50 docs) |
 |------|--------------|-----------------|
-| CPU  | ~20ms        | ~15ms/doc       |
-| CUDA | ~3ms         | ~0.3ms/doc      |
+| CPU  | ~20 ms       | ~15 ms/doc      |
+| CUDA | ~3 ms        | ~0.3 ms/doc     |
 
 <details>
 <summary><h2>GPU Acceleration (Optional)</h2></summary>
