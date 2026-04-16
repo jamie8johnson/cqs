@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-04-16
+
+The "audit-wave" release — closes 13 of the 18 open issues surfaced in the post-v1.26.1 audit (`docs/audit-open-issues-2026-04-16.md`). One MSRV bump (1.93 → 1.95) bundled in.
+
+### Added
+
+- **Centroid query classifier infrastructure** — disabled by default (`CQS_CENTROID_CLASSIFIER=1` to enable). Centroid file at `~/.local/share/cqs/classifier_centroids.v1.json`. (Shipped in v1.26.1 PR #1010; carried forward.)
+- **`AuxModelConfig` shared preset registry** for SPLADE + reranker (#957, PR #1019). New `[splade]` / `[reranker]` TOML sections, presets `ensembledistil` / `splade-code-0.6b` / `ms-marco-minilm`, deterministic precedence (CLI > env > config-path > config-preset > hardcoded default). Switching to SPLADE-Code 0.6B is now a one-line `[splade] preset = "splade-code-0.6b"` instead of an env-flip dance.
+- **Compile-enforced ChunkType type-hint patterns** (#955, PR #1020). `define_chunk_types!` macro extended with `hints = ["..."]` per variant; generates `ChunkType::hint_phrases()`. Adding a ChunkType variant without `hints = [...]` is now a deliberate omission, not an oversight that silently breaks router type-filter dispatch. Added "every X" coverage for Constructor, Middleware, Endpoint, Extern.
+- **`define_query_categories!` macro** (#958, PR #1020). Generates `QueryCategory` enum + `Display` + `from_snake_case` + `all_variants()` + exhaustive `default_alpha(&self) -> f32`. The `_ => 1.0` catch-all in `resolve_splade_alpha` is gone — adding a new variant without `default_alpha = ...` is now a compile error. Closes the silent-tuning-gap class.
+- **Per-LanguageDef structural pattern data** (#960, PR #1020). 4 new `&'static [&'static str]` fields on `LanguageDef`: `error_swallow_patterns`, `async_markers`, `mutex_markers`, `unsafe_markers`. Populated for Rust, Python, TypeScript, JavaScript, Go, C. Adding a language no longer inherits the generic catch-all silently.
+- **Grammar-less parser dispatch via `LanguageDef` fn-pointers** (#954, PR #1017). Three `Option<fn>` fields (`custom_chunk_parser`, `custom_all_parser`, `custom_call_parser`); ASPX populated via these fields instead of three hand-edited `match Language::Aspx => ...` dispatch sites. Future grammar-less languages (e.g. ArchestrA QuickScript) won't silently route to markdown.
+- **Retrieval safety-net test coverage** (#971, #974, #975, PR #1014).
+  - `test_build_base_vector_index_clears_dirty_after_successful_rebuild` and 3 mirrors — pin the HNSW self-heal dirty-flag invariant.
+  - `tests/onboard_test.rs` + `tests/where_test.rs` content-asserting tests (entry_point names, call_chain contents, language-filter surrogate, empty-store, dissimilar-query, limit honoring).
+  - `test_search_pipeline_mock_embedder` — always-on recall test using seeded sine-wave embedding directions.
+  - `test_list_stale_files_mtime_equal_is_fresh` + `_stored_newer_is_fresh` — pin current `current > stored` semantics so a refactor to `current != stored` breaks loudly (backup-restore scenario).
+- **`docs/audit-open-issues-2026-04-16.md`** — cross-cutting ledger from the post-v1.26.1 audit (#1013).
+
+### Changed
+
+- **Streaming SPLADE serialize via `HashingWriter`** (#917, PR #1018). Eliminates the 2× peak memory duplication during `SpladeIndex::save()`. Body bytes stream directly to `BufWriter<File>` while a tee-style hasher updates blake3 inline. Hash invariant `blake3(header[0..32] || body)` matches the old format byte-for-byte (`test_streaming_save_on_disk_format_byte_identical` pins the checksum hex). Saves ~5-10 MB peak on default ensembledistil, ~60-100 MB on SPLADE-Code 0.6B.
+- **Pre-normalize summary/HyDE + blake3 streaming hasher in enrichment** (#966, PR #1016). Drops ~100 MB allocator pressure on a 100k-chunk reindex by lifting per-chunk `split_whitespace().collect().join()` normalization out of the hash hot path and switching the hash from `String` accumulator to streaming `blake3::Hasher::update`. Byte-identical output proven by snapshot test.
+- **Recency-based `last_indexed_mtime` prune** (#969, PR #1015). Replaces the O(n) `stat()`-per-entry filter in `cqs watch` with an in-memory `SystemTime` comparison. WSL 9P mounts no longer stall the watch thread on prune.
+- **Collapsed `cmd_notes` + `cmd_notes_mutate` into one handler** (#959, PR #1015). Removes the crossed-dispatch class that PR #945 had to fix once already. Mutations open the write store lazily inside the arm; `List` requires the readonly ctx; pre-index notes capture preserved.
+- **`if let` guards in `resolve_splade_alpha`** (PR #1022). Replaces nested `if let Ok(val) = env::var() { if let Ok(alpha) = val.parse() { ... } }` with `match` arms guarded by `if let Ok(alpha) = val.parse::<f32>()`. Cleaner control flow, single-parse semantics preserved. Demonstrates the Rust 1.95 feature that justifies the MSRV bump below.
+- **`core::hint::cold_path()` on warn-fallback paths in hot loops** (PR #1022). Three sites in `src/search/query.rs` (`search_filtered`, `search_filtered_with_notes`, `search_hybrid`) — branch-prediction hints on per-query error paths.
+- **MSRV bumped 1.93 → 1.95** (PR #1022). 1.94 (2026-03-05) and 1.95 (2026-04-16) shipped while the floor stayed put. Bump touches `Cargo.toml`, `.github/workflows/ci.yml`, `README.md`, and `CONTRIBUTING.md`. Edition stays on 2021 (let-chains require 2024 — out of scope).
+- **README Performance table refreshed** (#951, PR #1021) with measurements taken 2026-04-16 on the cqs codebase itself (562 files, 15,516 chunks). Old table cited a 4,110-chunk Rust project from the v1.22.x era. Daemon graph p50 99 ms, daemon search-warm p50 200 ms, CLI cold 10.5 s. Raw measurements pinned to `evals/performance-v1.27.0.json`.
+- **README TL;DR refreshed** (PR #1022) — replaced v1.25.0/v2 R@1 numbers (37.4% / 55.8% / 77.4%) with the shipped v3 eval (42.2% / 64.2% / 78.9% on 544 dual-judge queries). Added the architectural-ceiling note (forced-α ~48% R@1).
+- **Cross-language SPLADE α: 1.00 → 0.10** (carried from v1.26.1; +1.8 pp R@1 on v3 test).
+
+### Documentation
+
+- **README env-var table: 7 missing vars added** (carried from v1.26.1 + new entries from #957 preset registry).
+- **Per-category SPLADE α table refreshed** to the shipping defaults.
+- **ROADMAP consolidated** + post-v1.26.1 audit ledger added at `docs/audit-open-issues-2026-04-16.md`.
+
+### Closed (not addressed)
+
+- **#63** (paste unmaintained) closed during audit — `.cargo/audit.toml` ignore is the right monitoring posture; upstream tokenizers still depends on `paste`.
+- **#921** (SPLADE save blocks watch on WSL 9P) closed during audit — claim doesn't match current code (`cqs watch` never calls `idx.save`); streaming-write tracked canonically in #917.
+
+### Tier-3 deferred (still open)
+
+- **#106** ort 2.0-rc.12 stable release — blocked on upstream pykeio.
+- **#717** HNSW mmap — needs `hnswlib-rs` migration.
+- **#916** mmap SPLADE body — depriorotized behind #917 (smaller win than originally claimed).
+- **#956** ExecutionProvider CoreML/ROCm — needs non-Linux CI.
+- **#255** pre-built reference packages — open design question (signing, registry).
+
 ## [1.26.1] - 2026-04-16
 
 ### Added
