@@ -98,18 +98,25 @@ pub(in crate::cli::batch) fn dispatch_search(
 
     // Classify query for per-category routing (SPLADE alpha + base/enriched index).
     let classification = cqs::search::router::classify_query(&args.query);
+    let pre_centroid_cat = classification.category;
+    let classification =
+        cqs::search::router::reclassify_with_centroid(classification, query_embedding.as_slice());
+    let centroid_applied = classification.category != pre_centroid_cat;
 
     // SPLADE alpha resolution (matches cmd_query semantics):
     //   --splade-alpha X : explicit constant α (sweeps, debug)
     //   otherwise        : per-category router
     //   --splade         : force on even for Unknown category
-    let (use_splade, splade_alpha) = match args.splade_alpha {
+    let (use_splade, mut splade_alpha) = match args.splade_alpha {
         Some(alpha) => (true, alpha),
         None => (
             true,
             cqs::search::router::resolve_splade_alpha(&classification.category),
         ),
     };
+    if centroid_applied {
+        splade_alpha = splade_alpha.max(0.7);
+    }
     // `args.splade` is retained for CLI parity but the per-category
     // router always runs on batch queries — classify_query always
     // returns a category (possibly Unknown), so router is always live.

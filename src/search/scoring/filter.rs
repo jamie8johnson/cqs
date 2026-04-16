@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn test_lang_filter_set_membership() {
         use crate::language::Language;
-        let langs = vec![Language::Rust, Language::Python];
+        let langs = [Language::Rust, Language::Python];
         let lang_set: HashSet<String> =
             langs.iter().map(|l| l.to_string().to_lowercase()).collect();
         assert!(lang_set.contains("rust"));
@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn test_chunk_type_filter_set_membership() {
         use crate::language::ChunkType;
-        let types = vec![ChunkType::Function, ChunkType::Method];
+        let types = [ChunkType::Function, ChunkType::Method];
         let type_set: HashSet<String> =
             types.iter().map(|t| t.to_string().to_lowercase()).collect();
         assert!(type_set.contains("function"));
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn test_lang_filter_case_insensitive() {
         use crate::language::Language;
-        let langs = vec![Language::Rust];
+        let langs = [Language::Rust];
         let lang_set: HashSet<String> =
             langs.iter().map(|l| l.to_string().to_lowercase()).collect();
         // eq_ignore_ascii_case avoids per-candidate allocation (PERF-17)
@@ -376,9 +376,9 @@ mod tests {
         // When filter.languages is None, lang_set is None and all candidates pass
         let lang_set: Option<HashSet<String>> = None;
         let candidate_lang = "rust";
-        let passes = lang_set.as_ref().map_or(true, |s| {
-            s.iter().any(|l| candidate_lang.eq_ignore_ascii_case(l))
-        });
+        let passes = lang_set
+            .as_ref()
+            .is_none_or(|s| s.iter().any(|l| candidate_lang.eq_ignore_ascii_case(l)));
         assert!(passes);
     }
 
@@ -387,9 +387,9 @@ mod tests {
         // When filter.include_types is None, type_set is None and all candidates pass
         let type_set: Option<HashSet<String>> = None;
         let candidate_type = "struct";
-        let passes = type_set.as_ref().map_or(true, |s| {
-            s.iter().any(|t| candidate_type.eq_ignore_ascii_case(t))
-        });
+        let passes = type_set
+            .as_ref()
+            .is_none_or(|s| s.iter().any(|t| candidate_type.eq_ignore_ascii_case(t)));
         assert!(passes);
     }
 
@@ -399,7 +399,7 @@ mod tests {
         let lang_set: Option<HashSet<String>> = Some(HashSet::new());
         let passes = lang_set
             .as_ref()
-            .map_or(true, |s| s.iter().any(|l| "rust".eq_ignore_ascii_case(l)));
+            .is_none_or(|s| s.iter().any(|l| "rust".eq_ignore_ascii_case(l)));
         assert!(!passes);
     }
 

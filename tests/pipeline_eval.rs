@@ -54,7 +54,7 @@ fn enrich_with_call_context(store: &Store, embedder: &Embedder) -> usize {
         for cs in &chunks {
             let callers = callers_map.get(&cs.name);
             let callees = callees_map.get(&cs.name);
-            if !callers.is_some_and(|v| !v.is_empty()) && !callees.is_some_and(|v| !v.is_empty()) {
+            if callers.is_none_or(|v| v.is_empty()) && callees.is_none_or(|v| v.is_empty()) {
                 continue;
             }
 
@@ -67,7 +67,7 @@ fn enrich_with_call_context(store: &Store, embedder: &Embedder) -> usize {
                     .unwrap_or_default(),
             };
 
-            let chunk: cqs::parser::Chunk = (&*cs).into();
+            let chunk: cqs::parser::Chunk = cs.into();
             let nl = generate_nl_with_call_context(&chunk, &ctx, &callee_doc_freq, 5, 5);
             batch.push((cs.id.clone(), nl));
 

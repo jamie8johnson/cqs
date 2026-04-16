@@ -675,6 +675,9 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_CAGRA_MAX_BYTES` | (auto) | Max GPU memory for CAGRA index |
 | `CQS_CAGRA_PERSIST` | `1` | Persist the CAGRA graph to `{cqs_dir}/index.cagra` after build and reload it on restart. Set to `0` to disable (daemon rebuilds from scratch every startup). |
 | `CQS_CAGRA_THRESHOLD` | `50000` | Min chunks to trigger CAGRA over HNSW |
+| `CQS_CENTROID_ALPHA_FLOOR` | `0.7` | Minimum α when the centroid classifier overrides the rule-based classifier. Caps downside of wrong-category alpha routing. Only active when `CQS_CENTROID_CLASSIFIER=1`. |
+| `CQS_CENTROID_CLASSIFIER` | `0` | Set to `1` to enable the embedding-centroid query classifier (experimental; disabled because 76% accuracy still hurts R@1 by −4.6pp on v3 dev). Set to `0` to explicitly disable when a centroid file is present. |
+| `CQS_CENTROID_THRESHOLD` | `0.01` | Minimum cosine margin (top1 − top2) for the centroid classifier to commit to a category. Below this, falls back to the rule-based classifier. |
 | `CQS_DAEMON_TIMEOUT_MS` | `2000` | Daemon client connect/read timeout in milliseconds (CLI → daemon) |
 | `CQS_DEFERRED_FLUSH_INTERVAL` | `50` | Chunks between deferred flushes during indexing |
 | `CQS_DISABLE_BASE_INDEX` | (none) | Set to `1` to skip the base (non-enriched) HNSW at query time (eval A/B) |
@@ -699,6 +702,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_INTEGRITY_CHECK` | `0` | Set to `1` to enable PRAGMA quick_check on write-mode store opens |
 | `CQS_IMPACT_MAX_CHANGED_FUNCTIONS` | `500` | Cap on changed functions processed by `impact --diff` / `review --diff`. Excess is dropped and surfaced as `summary.truncated_functions` in JSON. |
 | `CQS_IMPACT_MAX_NODES` | `10000` | Max BFS nodes in impact analysis |
+| `CQS_LLM_ALLOW_INSECURE` | `0` | Set to `1` to permit `CQS_LLM_API_BASE` to use cleartext `http://`. Without it, any `http://` base is rejected so the API key isn't sent in the clear. Localhost-testing escape hatch only. |
 | `CQS_LLM_API_BASE` | `https://api.anthropic.com/v1` | LLM API base URL |
 | `CQS_LLM_MAX_CONTENT_CHARS` | `8000` | Max content chars in LLM prompts |
 | `CQS_LLM_MAX_TOKENS` | `100` | Max tokens for LLM summary generation |
@@ -711,6 +715,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_MAX_SEQ_LENGTH` | (auto) | Override max sequence length for custom ONNX models |
 | `CQS_MD_MAX_SECTION_LINES` | `150` | Max markdown section lines before overflow split |
 | `CQS_MD_MIN_SECTION_LINES` | `30` | Min markdown section lines (smaller sections merge) |
+| `CQS_MIGRATE_REQUIRE_BACKUP` | `0` | Set to `1` to turn a failed migration-time DB backup into a hard error. Default `0` logs a `warn!` and proceeds without a recovery snapshot. |
 | `CQS_MMAP_SIZE` | `268435456` (256 MB) | SQLite memory-mapped I/O size |
 | `CQS_NO_DAEMON` | (none) | Set to `1` to force CLI mode (skip daemon connection attempt) |
 | `CQS_ONNX_DIR` | (auto) | Custom ONNX model directory (must contain `model.onnx` + `tokenizer.json`) |
@@ -740,25 +745,27 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
 | `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
 | `CQS_WATCH_DEBOUNCE_MS` | `500` (inotify) / `1500` (WSL/poll auto) | Watch debounce window (milliseconds). Takes precedence over `--debounce`. |
+| `CQS_WATCH_INCREMENTAL_SPLADE` | `1` | Set to `0` to disable inline SPLADE encoding in `cqs watch`. Daemon then runs dense-only and sparse coverage drifts until a manual `cqs index`. |
 | `CQS_WATCH_MAX_PENDING` | `10000` | Max pending file changes before watch forces flush |
 | `CQS_WATCH_REBUILD_THRESHOLD` | `100` | Files changed before watch triggers full HNSW rebuild |
+| `CQS_WATCH_RESPECT_GITIGNORE` | `1` | Set to `0` to stop `cqs watch` from honoring `.gitignore`. Defaults on — prevents ignored paths (e.g. `.claude/worktrees/*`) from polluting the index. |
 
 ## Per-category SPLADE alpha
 
 Hybrid retrieval fuses a dense (BGE-large) and sparse (SPLADE) candidate pool. The fusion weight `alpha` controls how much each side contributes to the final score: `alpha = 1.0` means pure dense, `alpha = 0.0` means pure sparse, and values in between interpolate ranks via RRF.
 
-SPLADE is always generating candidates; `alpha` only weights the scoring. v1.25.0 ships per-category defaults tuned on a 21-point alpha sweep (265 queries × 8 categories, oracle R@1 49.4% vs 44.9% for the best uniform `alpha=0.95`).
+SPLADE is always generating candidates; `alpha` only weights the scoring. Values below are the current shipping defaults. Identifier/structural/conceptual/behavioral/negation were set by the v1.26.0 re-fit on the clean 14,882-chunk index; cross_language was dropped from `1.00` → `0.10` by the 2026-04-16 v3 sweep (+1.8pp R@1 on v3 test). Type_filtered, multi_step, and unknown retain the pure-dense default. Full provenance in `~/training-data/research/models.md`.
 
 | Category | Default alpha | Rationale |
 |----------|---------------|-----------|
-| `identifier` | `0.90` | Dense-side plateau edge; identifiers hit both dense and sparse signals |
-| `structural` | `0.60` | Mid-plateau `0.40–0.85`; sparse matches structural keywords (`async`, `trait`, `impl`) |
-| `conceptual` | `0.85` | Dense-heavy — semantic understanding dominates; sparse is a small nudge |
-| `behavioral` | `0.05` | Heavy sparse — action verbs match lexically better than semantically |
+| `identifier` | `1.00` | Pure dense; identifier semantics are what dense captures best |
+| `structural` | `0.90` | Dense-heavy; structural language keywords (`async`, `trait`, `impl`) get a small sparse nudge |
+| `conceptual` | `0.70` | Dense-dominant with sparse contribution for keyword-carrying concepts |
+| `behavioral` | `0.00` | Pure sparse — action verbs match lexically better than semantically |
 | `type_filtered` | `1.00` | Pure dense; the type filter already narrows candidates |
 | `multi_step` | `1.00` | Pure dense; semantic chaining matters more than exact tokens |
-| `negation` | `1.00` | Pure dense; SPLADE can't model "not X" cleanly |
-| `cross_language` | `1.00` | Pure dense; translations don't share tokens across languages |
+| `negation` | `0.80` | Dense-heavy with a small sparse contribution for negation tokens (`not`, `null`, `avoid`) |
+| `cross_language` | `0.10` | Heavy sparse; code tokens (function names, keywords like `async`/`await`) share across languages more reliably than translated semantics |
 | `unknown` | `1.00` | Pure dense; safest default when the router can't classify |
 
 **Override precedence** (highest to lowest):

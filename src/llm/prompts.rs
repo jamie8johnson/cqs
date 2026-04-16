@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn build_prompt_multibyte_no_panic() {
         // SEC-V1.25-6: bound bumped to accommodate <UNTRUSTED_CONTENT> framing.
-        let content: String = std::iter::repeat('あ').take(2667).collect();
+        let content: String = std::iter::repeat_n('あ', 2667).collect();
         let prompt = LlmClient::build_prompt(&content, "function", "rust");
         assert!(prompt.len() <= 8700);
     }

@@ -1256,3 +1256,53 @@ mentions = [
     "agents",
     "worktree",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "cqs batch mode is essential for scripted multi-query workloads. Each CLI cold-start eats ~5GB (ONNX+HNSW+SPLADE+tree-sitter). 24 concurrent = 120GB = WSL OOM. Batch = one process at 5GB."
+mentions = [
+    "batch",
+    "cli",
+]
+
+[[note]]
+sentiment = 0.5
+text = "dual-judge consensus (Claude Haiku + Gemma 4 31B local) gives 85% gold agreement. 15% disagreement is inherent taxonomy ambiguity, not model failure. /bin/bash.50 total for Claude side."
+mentions = [
+    "eval",
+    "consensus",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Python subprocess.Popen(stderr=PIPE) deadlocks if stderr >64KB and parent never drains. cqs batch emits ~90 WARNs per query (content_hash missing). Fix: stderr to file."
+mentions = [
+    "subprocess",
+    "batch",
+]
+
+[[note]]
+sentiment = -1.0
+text = "RefCell panic in batch/mod.rs:380 — invalidate_mutable_caches calls borrow_mut while search handler holds Ref across ctx.store() call. Fixed with try_borrow_mut + deferred retry."
+mentions = [
+    "batch",
+    "refcell",
+]
+
+[[note]]
+sentiment = -0.5
+text = "centroid classifier at 76% accuracy hurts R@1 by -4.6pp due to asymmetric alpha error cost. Behavioral alpha=0.0 on misclassified queries is catastrophic. Alpha floor at 0.7 fixes R@20 but not R@1. Need 90%+ accuracy (logistic regression) before enabling."
+mentions = [
+    "router",
+    "centroid",
+    "classifier",
+]
+
+[[note]]
+sentiment = -1.0
+text = "per-category alpha routing on Unknown queries is net-negative at ANY accuracy including 100%. Unknown queries want alpha=1.0 (pure SPLADE weight). The classifier-for-alpha architecture is a dead end for this population. Real levers: embedding quality, reranking, HyDE."
+mentions = [
+    "router",
+    "classifier",
+    "alpha",
+]

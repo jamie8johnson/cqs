@@ -124,6 +124,11 @@ fn validate_script_safety(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Find a working Python interpreter (delegates to shared `convert::find_python`).
+fn find_python() -> Result<String> {
+    super::find_python()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,9 +368,4 @@ mod tests {
         let result = find_pdf_script();
         assert!(result.is_err(), "group-writable script must be rejected");
     }
-}
-
-/// Find a working Python interpreter (delegates to shared `convert::find_python`).
-fn find_python() -> Result<String> {
-    super::find_python()
 }

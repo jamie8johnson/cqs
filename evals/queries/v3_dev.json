@@ -1,0 +1,6526 @@
+{
+  "schema_version": "v3-consensus",
+  "split": "dev",
+  "created_at": 1776303694,
+  "n": 109,
+  "category_counts": {
+    "behavioral_search": 16,
+    "structural_search": 8,
+    "cross_language": 11,
+    "multi_step": 14,
+    "type_filtered": 13,
+    "negation": 17,
+    "conceptual_search": 12,
+    "identifier_lookup": 18
+  },
+  "tier_counts": {
+    "high_confidence": 109
+  },
+  "queries": [
+    {
+      "query": "function that embeds a batch of text documents using ONNX",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031055,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "embed_batch",
+            "origin": "src/embedder/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 751,
+            "line_end": 893
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "embed_batch",
+            "origin": "src/embedder/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 751,
+            "line_end": 893
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 23,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "embed_batch",
+        "origin": "src/embedder/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 751,
+        "line_end": 893
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "tables with a not null text column",
+      "category": "structural_search",
+      "source": "generated",
+      "metadata": {
+        "target_category": "structural_search",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:17:88ae0c75",
+            "name": "metadata",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 17,
+            "line_end": 20
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "dense": 1,
+            "sparse": 8
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 1"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:17:88ae0c75",
+            "name": "metadata",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 17,
+            "line_end": 20
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "dense": 1,
+            "sparse": 8
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 1"
+        }
+      },
+      "pool_size": 36,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/schema.sql:17:88ae0c75",
+        "name": "metadata",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 17,
+        "line_end": 20
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "Rust implementation of VectorIndex for CagraIndex compared to Java",
+      "category": "cross_language",
+      "source": "generated",
+      "metadata": {
+        "target_category": "cross_language",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cagra.rs:471:7412f1b2:w0",
+            "name": "CagraIndex",
+            "origin": "src/cagra.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 471,
+            "line_end": 580
+          },
+          "gold_rank": 6,
+          "gold_appearances": {
+            "dense": 6
+          },
+          "note": "seed in pool from ['dense'] at min rank 6"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cagra.rs:471:7412f1b2:w0",
+            "name": "CagraIndex",
+            "origin": "src/cagra.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 471,
+            "line_end": 580
+          },
+          "gold_rank": 6,
+          "gold_appearances": {
+            "dense": 6
+          },
+          "note": "seed in pool from ['dense'] at min rank 6"
+        }
+      },
+      "pool_size": 22,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/cagra.rs:471:7412f1b2:w0",
+        "name": "CagraIndex",
+        "origin": "src/cagra.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 471,
+        "line_end": 580
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "methods on EmbeddingCache that take a slice of tuples",
+      "category": "structural_search",
+      "source": "generated",
+      "metadata": {
+        "target_category": "structural_search",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cache.rs:49:60be9eb0:w5",
+            "name": "EmbeddingCache",
+            "origin": "src/cache.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 49,
+            "line_end": 475
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 2,
+            "dense": 2,
+            "sparse": 3
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 2"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cache.rs:49:60be9eb0:w5",
+            "name": "EmbeddingCache",
+            "origin": "src/cache.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 49,
+            "line_end": 475
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 2,
+            "dense": 2,
+            "sparse": 3
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 2"
+        }
+      },
+      "pool_size": 7,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/cache.rs:49:60be9eb0:w5",
+        "name": "EmbeddingCache",
+        "origin": "src/cache.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 49,
+        "line_end": 475
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "functions that use argparse AND define a --config argument",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/run_ablation.py:33:75efbfad",
+            "name": "parse_args",
+            "origin": "evals/run_ablation.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 33,
+            "line_end": 64
+          },
+          "gold_rank": 10,
+          "gold_appearances": {
+            "router": 10
+          },
+          "note": "seed in pool from ['router'] at min rank 10"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/run_ablation.py:33:75efbfad",
+            "name": "parse_args",
+            "origin": "evals/run_ablation.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 33,
+            "line_end": 64
+          },
+          "gold_rank": 10,
+          "gold_appearances": {
+            "router": 10
+          },
+          "note": "seed in pool from ['router'] at min rank 10"
+        }
+      },
+      "pool_size": 31,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/run_ablation.py:33:75efbfad",
+        "name": "parse_args",
+        "origin": "evals/run_ablation.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 33,
+        "line_end": 64
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "struct definitions in src/impact",
+      "category": "type_filtered",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031233,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "ImpactDiffArgs",
+            "origin": "src/cli/args.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 462,
+            "line_end": 469
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 6,
+            "sparse": 16
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "ImpactDiffArgs",
+            "origin": "src/cli/args.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 462,
+            "line_end": 469
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 6,
+            "sparse": 16
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 41,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "ImpactDiffArgs",
+        "origin": "src/cli/args.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 462,
+        "line_end": 469
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "create llm_summaries table that is not using an auto-incrementing id",
+      "category": "negation",
+      "source": "generated",
+      "metadata": {
+        "target_category": "negation",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:167:51399f69",
+            "name": "llm_summaries",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 167,
+            "line_end": 174
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 3
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:167:51399f69",
+            "name": "llm_summaries",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 167,
+            "line_end": 174
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 3
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 26,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/schema.sql:167:51399f69",
+        "name": "llm_summaries",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 167,
+        "line_end": 174
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "how to implement a search result validation function in Python vs Bash",
+      "category": "cross_language",
+      "source": "generated",
+      "metadata": {
+        "target_category": "cross_language",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/generate_queries.py:70:71d9718a",
+            "name": "validate_query",
+            "origin": "evals/generate_queries.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 70,
+            "line_end": 86
+          },
+          "gold_rank": 5,
+          "gold_appearances": {
+            "router": 5,
+            "sparse": 5
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 5"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/generate_queries.py:70:71d9718a",
+            "name": "validate_query",
+            "origin": "evals/generate_queries.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 70,
+            "line_end": 86
+          },
+          "gold_rank": 5,
+          "gold_appearances": {
+            "router": 5,
+            "sparse": 5
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 5"
+        }
+      },
+      "pool_size": 31,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:70:71d9718a",
+        "name": "validate_query",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 70,
+        "line_end": 86
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "GPU accelerated approximate nearest neighbor index",
+      "category": "conceptual_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031081,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "build_vector_index_with_config",
+            "origin": "src/cli/store.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 247,
+            "line_end": 402
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "dense": 3
+          },
+          "note": "telemetry: LLM-validated pool member from ['dense'] at min rank 3"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "build_vector_index_with_config",
+            "origin": "src/cli/store.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 247,
+            "line_end": 402
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "dense": 3
+          },
+          "note": "telemetry: LLM-validated pool member from ['dense'] at min rank 3"
+        }
+      },
+      "pool_size": 33,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "build_vector_index_with_config",
+        "origin": "src/cli/store.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 247,
+        "line_end": 402
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "how does multi-index search merge results from project and reference indexes",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031501,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "merge_results",
+            "origin": "src/reference.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 291,
+            "line_end": 345
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 1,
+            "dense": 0,
+            "sparse": 1
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "merge_results",
+            "origin": "src/reference.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 291,
+            "line_end": 345
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 1,
+            "dense": 0,
+            "sparse": 1
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 33,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "merge_results",
+        "origin": "src/reference.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 291,
+        "line_end": 345
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "LLMClient implementation without specific identifier",
+      "category": "negation",
+      "source": "generated",
+      "metadata": {
+        "target_category": "negation",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:111:b21042fa:w2",
+            "name": "LLMClient",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "class",
+            "line_start": 111,
+            "line_end": 286
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 2,
+            "dense": 3,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:111:b21042fa:w2",
+            "name": "LLMClient",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "class",
+            "line_start": 111,
+            "line_end": 286
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 2,
+            "dense": 3,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 14,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/llm_client.py:111:b21042fa:w2",
+        "name": "LLMClient",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "class",
+        "line_start": 111,
+        "line_end": 286
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "functions that write TSV headers AND check if path exists",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/run_sweep.py:189:ee87a6e2",
+            "name": "write_tsv_header_if_needed",
+            "origin": "evals/run_sweep.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 189,
+            "line_end": 195
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 4,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/run_sweep.py:189:ee87a6e2",
+            "name": "write_tsv_header_if_needed",
+            "origin": "evals/run_sweep.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 189,
+            "line_end": 195
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 4,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 39,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/run_sweep.py:189:ee87a6e2",
+        "name": "write_tsv_header_if_needed",
+        "origin": "evals/run_sweep.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 189,
+        "line_end": 195
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "EmbedStageContext",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031304,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "EmbedStageContext",
+            "origin": "src/cli/pipeline/types.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 67,
+            "line_end": 72
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "EmbedStageContext",
+            "origin": "src/cli/pipeline/types.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 67,
+            "line_end": 72
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 17,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "EmbedStageContext",
+        "origin": "src/cli/pipeline/types.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 67,
+        "line_end": 72
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "check if a file needs reindexing based on modification time",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031381,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "needs_reindex",
+            "origin": "src/store/chunks/crud.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 399,
+            "line_end": 420
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 2,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "needs_reindex",
+            "origin": "src/store/chunks/crud.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 399,
+            "line_end": 420
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 2,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 23,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "needs_reindex",
+        "origin": "src/store/chunks/crud.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 399,
+        "line_end": 420
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "ChunkSummary",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031298,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "ChunkSummary",
+            "origin": "src/store/helpers/types.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 15,
+            "line_end": 49
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "ChunkSummary",
+            "origin": "src/store/helpers/types.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 15,
+            "line_end": 49
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 34,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "ChunkSummary",
+        "origin": "src/store/helpers/types.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 15,
+        "line_end": 49
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "SearchFilter struct",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031813,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "SearchFilter",
+            "origin": "src/store/helpers/search_filter.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 16,
+            "line_end": 59
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "SearchFilter",
+            "origin": "src/store/helpers/search_filter.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 16,
+            "line_end": 59
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 33,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "SearchFilter",
+        "origin": "src/store/helpers/search_filter.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 16,
+        "line_end": 59
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "how does the explain command assemble a function card with callers callees and similar",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031660,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "generate_nl_with_call_context_and_summary",
+            "origin": "src/nl/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 65,
+            "line_end": 154
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 2,
+            "sparse": 2
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 2"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "generate_nl_with_call_context_and_summary",
+            "origin": "src/nl/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 65,
+            "line_end": 154
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 2,
+            "sparse": 2
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 2"
+        }
+      },
+      "pool_size": 33,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "generate_nl_with_call_context_and_summary",
+        "origin": "src/nl/mod.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 65,
+        "line_end": 154
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "function type definitions and type aliases in the codebase",
+      "category": "type_filtered",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031697,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "Value",
+            "origin": "src/hnsw/persist.rs",
+            "language": "rust",
+            "chunk_type": "typealias",
+            "line_start": 753,
+            "line_end": 753
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "dense": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['dense'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "Value",
+            "origin": "src/hnsw/persist.rs",
+            "language": "rust",
+            "chunk_type": "typealias",
+            "line_start": 753,
+            "line_end": 753
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "dense": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['dense'] at min rank 0"
+        }
+      },
+      "pool_size": 36,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "Value",
+        "origin": "src/hnsw/persist.rs",
+        "language": "rust",
+        "chunk_type": "typealias",
+        "line_start": 753,
+        "line_end": 753
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "fn cmd_audit_mode",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776194996,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "cmd_audit_mode",
+            "origin": "src/cli/commands/infra/audit_mode.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 36,
+            "line_end": 130
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "cmd_audit_mode",
+            "origin": "src/cli/commands/infra/audit_mode.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 36,
+            "line_end": 130
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 30,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "cmd_audit_mode",
+        "origin": "src/cli/commands/infra/audit_mode.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 36,
+        "line_end": 130
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "Rust implementation of OCaml type signature return value extraction",
+      "category": "cross_language",
+      "source": "generated",
+      "metadata": {
+        "target_category": "cross_language",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/language/languages.rs:4529:01fb898b",
+            "name": "extract_return_ocaml",
+            "origin": "src/language/languages.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 4529,
+            "line_end": 4548
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 1"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/language/languages.rs:4529:01fb898b",
+            "name": "extract_return_ocaml",
+            "origin": "src/language/languages.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 4529,
+            "line_end": 4548
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 1"
+        }
+      },
+      "pool_size": 38,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/language/languages.rs:4529:01fb898b",
+        "name": "extract_return_ocaml",
+        "origin": "src/language/languages.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 4529,
+        "line_end": 4548
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "print pass rate without using a loop",
+      "category": "negation",
+      "source": "generated",
+      "metadata": {
+        "target_category": "negation",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/generate_from_chunks.py:210:91938f19:w1",
+            "name": "main",
+            "origin": "evals/generate_from_chunks.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 210,
+            "line_end": 274
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 8
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/generate_from_chunks.py:210:91938f19:w1",
+            "name": "main",
+            "origin": "evals/generate_from_chunks.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 210,
+            "line_end": 274
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 8
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 34,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/generate_from_chunks.py:210:91938f19:w1",
+        "name": "main",
+        "origin": "evals/generate_from_chunks.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 210,
+        "line_end": 274
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "Python equivalent of an async generate function that takes signature and preview strings",
+      "category": "cross_language",
+      "source": "generated",
+      "metadata": {
+        "target_category": "cross_language",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:222:5e46e161:w0",
+            "name": "generate",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "method",
+            "line_start": 222,
+            "line_end": 276
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 17,
+            "dense": 1,
+            "sparse": 17
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 1"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:222:5e46e161:w0",
+            "name": "generate",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "method",
+            "line_start": 222,
+            "line_end": 276
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 17,
+            "dense": 1,
+            "sparse": 17
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 1"
+        }
+      },
+      "pool_size": 33,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/llm_client.py:222:5e46e161:w0",
+        "name": "generate",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "method",
+        "line_start": 222,
+        "line_end": 276
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "sparse vector search not dense embedding search",
+      "category": "negation",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031653,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "SpladeIndex",
+            "origin": "src/splade/index.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 121,
+            "line_end": 126
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 11
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "SpladeIndex",
+            "origin": "src/splade/index.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 121,
+            "line_end": 126
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 11
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 27,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "SpladeIndex",
+        "origin": "src/splade/index.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 121,
+        "line_end": 126
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "structs named CrossProjectCaller AND containing a project field",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": ".claude/worktrees/agent-a7cedd3c/src/store/calls/cross_project.rs:36:04384a2b",
+            "name": "CrossProjectCaller",
+            "origin": ".claude/worktrees/agent-a7cedd3c/src/store/calls/cross_project.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 36,
+            "line_end": 41
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 2,
+            "dense": 0,
+            "sparse": 2
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": ".claude/worktrees/agent-a7cedd3c/src/store/calls/cross_project.rs:36:04384a2b",
+            "name": "CrossProjectCaller",
+            "origin": ".claude/worktrees/agent-a7cedd3c/src/store/calls/cross_project.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 36,
+            "line_end": 41
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 2,
+            "dense": 0,
+            "sparse": 2
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 23,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": ".claude/worktrees/agent-a7cedd3c/src/store/calls/cross_project.rs:36:04384a2b",
+        "name": "CrossProjectCaller",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/store/calls/cross_project.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 36,
+        "line_end": 41
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "application data storage path",
+      "category": "conceptual_search",
+      "source": "generated",
+      "metadata": {
+        "target_category": "conceptual_search",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": ".claude/worktrees/agent-a7cedd3c/src/cache.rs:51:361b8d85",
+            "name": "default_path",
+            "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 51,
+            "line_end": 55
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 16,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": ".claude/worktrees/agent-a7cedd3c/src/cache.rs:51:361b8d85",
+            "name": "default_path",
+            "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 51,
+            "line_end": 55
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 16,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 31,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": ".claude/worktrees/agent-a7cedd3c/src/cache.rs:51:361b8d85",
+        "name": "default_path",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 51,
+        "line_end": 55
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "sqlite virtual table for text indexing",
+      "category": "conceptual_search",
+      "source": "generated",
+      "metadata": {
+        "target_category": "conceptual_search",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:123:6ce763e1",
+            "name": "notes_fts",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 123,
+            "line_end": 127
+          },
+          "gold_rank": 6,
+          "gold_appearances": {
+            "dense": 6
+          },
+          "note": "seed in pool from ['dense'] at min rank 6"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:123:6ce763e1",
+            "name": "notes_fts",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 123,
+            "line_end": 127
+          },
+          "gold_rank": 6,
+          "gold_appearances": {
+            "dense": 6
+          },
+          "note": "seed in pool from ['dense'] at min rank 6"
+        }
+      },
+      "pool_size": 38,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/schema.sql:123:6ce763e1",
+        "name": "notes_fts",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 123,
+        "line_end": 127
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "EmbeddingCache",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776195055,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "EmbeddingCache",
+            "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 40,
+            "line_end": 47
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "EmbeddingCache",
+            "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 40,
+            "line_end": 47
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 4,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "EmbeddingCache",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 40,
+        "line_end": 47
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "table named chunks_fts AND tokenize='unicode61'",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:56:c785a21e",
+            "name": "chunks_fts",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 56,
+            "line_end": 63
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:56:c785a21e",
+            "name": "chunks_fts",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 56,
+            "line_end": 63
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 36,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/schema.sql:56:c785a21e",
+        "name": "chunks_fts",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 56,
+        "line_end": 63
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "DiffOutput",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031306,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "DiffOutput",
+            "origin": "src/cli/commands/io/diff.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 37,
+            "line_end": 44
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "DiffOutput",
+            "origin": "src/cli/commands/io/diff.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 37,
+            "line_end": 44
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 31,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "DiffOutput",
+        "origin": "src/cli/commands/io/diff.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 37,
+        "line_end": 44
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "search by file path glob not by function name",
+      "category": "negation",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031456,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "path_matches_mention",
+            "origin": "src/note.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 376,
+            "line_end": 393
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 2,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "path_matches_mention",
+            "origin": "src/note.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 376,
+            "line_end": 393
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 2,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 38,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "path_matches_mention",
+        "origin": "src/note.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 376,
+        "line_end": 393
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "methods for formatting",
+      "category": "type_filtered",
+      "source": "generated",
+      "metadata": {
+        "target_category": "type_filtered",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/store/calls/mod.rs:60:d50e35f2",
+            "name": "fmt",
+            "origin": "src/store/calls/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 60,
+            "line_end": 62
+          },
+          "gold_rank": 5,
+          "gold_appearances": {
+            "router": 14,
+            "sparse": 5
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 5"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/store/calls/mod.rs:60:d50e35f2",
+            "name": "fmt",
+            "origin": "src/store/calls/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 60,
+            "line_end": 62
+          },
+          "gold_rank": 5,
+          "gold_appearances": {
+            "router": 14,
+            "sparse": 5
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 5"
+        }
+      },
+      "pool_size": 36,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/store/calls/mod.rs:60:d50e35f2",
+        "name": "fmt",
+        "origin": "src/store/calls/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 60,
+        "line_end": 62
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "shared context struct that holds store embedder and paths for commands",
+      "category": "structural_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031155,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "CommandContext",
+            "origin": "src/cli/store.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 63,
+            "line_end": 72
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 6
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "CommandContext",
+            "origin": "src/cli/store.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 63,
+            "line_end": 72
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 6
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 33,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "CommandContext",
+        "origin": "src/cli/store.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 63,
+        "line_end": 72
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "how does the enrichment pass add call graph context to embeddings",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031492,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "enrichment_nl_includes_callers_and_callees",
+            "origin": "src/nl/mod.rs",
+            "language": "rust",
+            "chunk_type": "test",
+            "line_start": 983,
+            "line_end": 1020
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "enrichment_nl_includes_callers_and_callees",
+            "origin": "src/nl/mod.rs",
+            "language": "rust",
+            "chunk_type": "test",
+            "line_start": 983,
+            "line_end": 1020
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 26,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "enrichment_nl_includes_callers_and_callees",
+        "origin": "src/nl/mod.rs",
+        "language": "rust",
+        "chunk_type": "test",
+        "line_start": 983,
+        "line_end": 1020
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "function named reindex AND takes optional model argument",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/run_ablation.py:155:9ff05e71",
+            "name": "reindex",
+            "origin": "evals/run_ablation.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 155,
+            "line_end": 183
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "dense": 2
+          },
+          "note": "seed in pool from ['dense'] at min rank 2"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/run_ablation.py:155:9ff05e71",
+            "name": "reindex",
+            "origin": "evals/run_ablation.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 155,
+            "line_end": 183
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "dense": 2
+          },
+          "note": "seed in pool from ['dense'] at min rank 2"
+        }
+      },
+      "pool_size": 35,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/run_ablation.py:155:9ff05e71",
+        "name": "reindex",
+        "origin": "evals/run_ablation.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 155,
+        "line_end": 183
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "functions that run cqs search AND use subprocess.run",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/run_real_eval.py:12:36ecdda1",
+            "name": "run_search",
+            "origin": "scripts/run_real_eval.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 12,
+            "line_end": 27
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "router": 5,
+            "sparse": 3
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 3"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/run_real_eval.py:12:36ecdda1",
+            "name": "run_search",
+            "origin": "scripts/run_real_eval.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 12,
+            "line_end": 27
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "router": 5,
+            "sparse": 3
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 3"
+        }
+      },
+      "pool_size": 28,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "scripts/run_real_eval.py:12:36ecdda1",
+        "name": "run_search",
+        "origin": "scripts/run_real_eval.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 12,
+        "line_end": 27
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "async functions for classify",
+      "category": "type_filtered",
+      "source": "generated",
+      "metadata": {
+        "target_category": "type_filtered",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:157:b4f1c4e0:w1",
+            "name": "classify",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "method",
+            "line_start": 157,
+            "line_end": 220
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 13,
+            "dense": 0,
+            "sparse": 13
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:157:b4f1c4e0:w1",
+            "name": "classify",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "method",
+            "line_start": 157,
+            "line_end": 220
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 13,
+            "dense": 0,
+            "sparse": 13
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 20,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/llm_client.py:157:b4f1c4e0:w1",
+        "name": "classify",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "method",
+        "line_start": 157,
+        "line_end": 220
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "how does the embedding pipeline handle GPU failures by requeueing to CPU",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031680,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "cpu_embed_stage",
+            "origin": "src/cli/pipeline/embedding.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 336,
+            "line_end": 436
+          },
+          "gold_rank": 4,
+          "gold_appearances": {
+            "router": 4,
+            "sparse": 4
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 4"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "cpu_embed_stage",
+            "origin": "src/cli/pipeline/embedding.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 336,
+            "line_end": 436
+          },
+          "gold_rank": 4,
+          "gold_appearances": {
+            "router": 4,
+            "sparse": 4
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 4"
+        }
+      },
+      "pool_size": 28,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "cpu_embed_stage",
+        "origin": "src/cli/pipeline/embedding.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 336,
+        "line_end": 436
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "embed a single query string not a batch of documents",
+      "category": "negation",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031171,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "embed_query",
+            "origin": "src/embedder/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 615,
+            "line_end": 687
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 3,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "embed_query",
+            "origin": "src/embedder/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 615,
+            "line_end": 687
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 3,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 31,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "embed_query",
+        "origin": "src/embedder/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 615,
+        "line_end": 687
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "crossbeam channel usage for pipeline message passing",
+      "category": "conceptual_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031760,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "run_index_pipeline",
+            "origin": "src/cli/pipeline/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 43,
+            "line_end": 198
+          },
+          "gold_rank": 5,
+          "gold_appearances": {
+            "router": 5,
+            "sparse": 5
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 5"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "run_index_pipeline",
+            "origin": "src/cli/pipeline/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 43,
+            "line_end": 198
+          },
+          "gold_rank": 5,
+          "gold_appearances": {
+            "router": 5,
+            "sparse": 5
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 5"
+        }
+      },
+      "pool_size": 38,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "run_index_pipeline",
+        "origin": "src/cli/pipeline/mod.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 43,
+        "line_end": 198
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "functions named main AND print dense x sparse ablation",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/run_ablation.py:210:5a02fddd:w3",
+            "name": "main",
+            "origin": "evals/run_ablation.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 210,
+            "line_end": 350
+          },
+          "gold_rank": 7,
+          "gold_appearances": {
+            "router": 7,
+            "sparse": 7
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 7"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/run_ablation.py:210:5a02fddd:w3",
+            "name": "main",
+            "origin": "evals/run_ablation.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 210,
+            "line_end": 350
+          },
+          "gold_rank": 7,
+          "gold_appearances": {
+            "router": 7,
+            "sparse": 7
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 7"
+        }
+      },
+      "pool_size": 27,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/run_ablation.py:210:5a02fddd:w3",
+        "name": "main",
+        "origin": "evals/run_ablation.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 210,
+        "line_end": 350
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "NlTemplate enum",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031808,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "NlTemplate",
+            "origin": "src/nl/mod.rs",
+            "language": "rust",
+            "chunk_type": "enum",
+            "line_start": 21,
+            "line_end": 26
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "NlTemplate",
+            "origin": "src/nl/mod.rs",
+            "language": "rust",
+            "chunk_type": "enum",
+            "line_start": 21,
+            "line_end": 26
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 23,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "NlTemplate",
+        "origin": "src/nl/mod.rs",
+        "language": "rust",
+        "chunk_type": "enum",
+        "line_start": 21,
+        "line_end": 26
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "methods on HnswIndex",
+      "category": "type_filtered",
+      "source": "generated",
+      "metadata": {
+        "target_category": "type_filtered",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/hnsw/persist.rs:172:39cd287a:w15",
+            "name": "HnswIndex",
+            "origin": "src/hnsw/persist.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 172,
+            "line_end": 860
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "router": 4,
+            "dense": 3,
+            "sparse": 4
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 3"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/hnsw/persist.rs:172:39cd287a:w15",
+            "name": "HnswIndex",
+            "origin": "src/hnsw/persist.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 172,
+            "line_end": 860
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "router": 4,
+            "dense": 3,
+            "sparse": 4
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 3"
+        }
+      },
+      "pool_size": 5,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/hnsw/persist.rs:172:39cd287a:w15",
+        "name": "HnswIndex",
+        "origin": "src/hnsw/persist.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 172,
+        "line_end": 860
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "how to implement an async LLM client with caching in Python vs Go",
+      "category": "cross_language",
+      "source": "generated",
+      "metadata": {
+        "target_category": "cross_language",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:111:b21042fa:w1",
+            "name": "LLMClient",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "class",
+            "line_start": 111,
+            "line_end": 286
+          },
+          "gold_rank": 9,
+          "gold_appearances": {
+            "router": 12,
+            "dense": 9,
+            "sparse": 12
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 9"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:111:b21042fa:w1",
+            "name": "LLMClient",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "class",
+            "line_start": 111,
+            "line_end": 286
+          },
+          "gold_rank": 9,
+          "gold_appearances": {
+            "router": 12,
+            "dense": 9,
+            "sparse": 12
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 9"
+        }
+      },
+      "pool_size": 31,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/llm_client.py:111:b21042fa:w1",
+        "name": "LLMClient",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "class",
+        "line_start": 111,
+        "line_end": 286
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "llm based query classification",
+      "category": "conceptual_search",
+      "source": "generated",
+      "metadata": {
+        "target_category": "conceptual_search",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:157:b4f1c4e0:w0",
+            "name": "classify",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "method",
+            "line_start": 157,
+            "line_end": 220
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "dense": 3,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 1"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:157:b4f1c4e0:w0",
+            "name": "classify",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "method",
+            "line_start": 157,
+            "line_end": 220
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "dense": 3,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 1"
+        }
+      },
+      "pool_size": 17,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/llm_client.py:157:b4f1c4e0:w0",
+        "name": "classify",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "method",
+        "line_start": 157,
+        "line_end": 220
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "eval_callgraph function that is not using a hardcoded query list",
+      "category": "negation",
+      "source": "generated",
+      "metadata": {
+        "target_category": "negation",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/run_real_eval.py:53:50d5b12c",
+            "name": "eval_callgraph",
+            "origin": "scripts/run_real_eval.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 53,
+            "line_end": 75
+          },
+          "gold_rank": 19,
+          "gold_appearances": {
+            "sparse": 19
+          },
+          "note": "seed in pool from ['sparse'] at min rank 19"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/run_real_eval.py:53:50d5b12c",
+            "name": "eval_callgraph",
+            "origin": "scripts/run_real_eval.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 53,
+            "line_end": 75
+          },
+          "gold_rank": 19,
+          "gold_appearances": {
+            "sparse": 19
+          },
+          "note": "seed in pool from ['sparse'] at min rank 19"
+        }
+      },
+      "pool_size": 41,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "scripts/run_real_eval.py:53:50d5b12c",
+        "name": "eval_callgraph",
+        "origin": "scripts/run_real_eval.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 53,
+        "line_end": 75
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "functions taking a tree_sitter::Node as an argument",
+      "category": "structural_search",
+      "source": "generated",
+      "metadata": {
+        "target_category": "structural_search",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/language/languages.rs:3979:91287153",
+            "name": "has_function_value_lua",
+            "origin": "src/language/languages.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 3979,
+            "line_end": 4000
+          },
+          "gold_rank": 12,
+          "gold_appearances": {
+            "router": 12,
+            "sparse": 12
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 12"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/language/languages.rs:3979:91287153",
+            "name": "has_function_value_lua",
+            "origin": "src/language/languages.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 3979,
+            "line_end": 4000
+          },
+          "gold_rank": 12,
+          "gold_appearances": {
+            "router": 12,
+            "sparse": 12
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 12"
+        }
+      },
+      "pool_size": 37,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/language/languages.rs:3979:91287153",
+        "name": "has_function_value_lua",
+        "origin": "src/language/languages.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 3979,
+        "line_end": 4000
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "SpladeEncoder struct",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031793,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "SpladeEncoder",
+            "origin": "docs/superpowers/plans/2026-04-06-splade-sparse-dense-hybrid.md",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 138,
+            "line_end": 142
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "SpladeEncoder",
+            "origin": "docs/superpowers/plans/2026-04-06-splade-sparse-dense-hybrid.md",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 138,
+            "line_end": 142
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 10,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "SpladeEncoder",
+        "origin": "docs/superpowers/plans/2026-04-06-splade-sparse-dense-hybrid.md",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 138,
+        "line_end": 142
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "how to translate a GPU evaluation loop from Python to bash",
+      "category": "cross_language",
+      "source": "generated",
+      "metadata": {
+        "target_category": "cross_language",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/full_model_matrix_eval.sh:28:2cd03818",
+            "name": "run_hard_eval",
+            "origin": "scripts/full_model_matrix_eval.sh",
+            "language": "bash",
+            "chunk_type": "function",
+            "line_start": 28,
+            "line_end": 41
+          },
+          "gold_rank": 7,
+          "gold_appearances": {
+            "router": 7,
+            "sparse": 7
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 7"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/full_model_matrix_eval.sh:28:2cd03818",
+            "name": "run_hard_eval",
+            "origin": "scripts/full_model_matrix_eval.sh",
+            "language": "bash",
+            "chunk_type": "function",
+            "line_start": 28,
+            "line_end": 41
+          },
+          "gold_rank": 7,
+          "gold_appearances": {
+            "router": 7,
+            "sparse": 7
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 7"
+        }
+      },
+      "pool_size": 37,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "scripts/full_model_matrix_eval.sh:28:2cd03818",
+        "name": "run_hard_eval",
+        "origin": "scripts/full_model_matrix_eval.sh",
+        "language": "bash",
+        "chunk_type": "function",
+        "line_start": 28,
+        "line_end": 41
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "how to implement a full text search table in SQLite vs PostgreSQL",
+      "category": "cross_language",
+      "source": "generated",
+      "metadata": {
+        "target_category": "cross_language",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:56:c785a21e",
+            "name": "chunks_fts",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 56,
+            "line_end": 63
+          },
+          "gold_rank": 4,
+          "gold_appearances": {
+            "router": 11,
+            "dense": 4,
+            "sparse": 11
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 4"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:56:c785a21e",
+            "name": "chunks_fts",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 56,
+            "line_end": 63
+          },
+          "gold_rank": 4,
+          "gold_appearances": {
+            "router": 11,
+            "dense": 4,
+            "sparse": 11
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 4"
+        }
+      },
+      "pool_size": 36,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/schema.sql:56:c785a21e",
+        "name": "chunks_fts",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 56,
+        "line_end": 63
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "structs representing call graph relationships",
+      "category": "structural_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031780,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "CallContext",
+            "origin": "src/nl/mod.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 32,
+            "line_end": 37
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "CallContext",
+            "origin": "src/nl/mod.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 32,
+            "line_end": 37
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 36,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "CallContext",
+        "origin": "src/nl/mod.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 32,
+        "line_end": 37
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "how does the notes system boost or demote search results based on sentiment",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031742,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "Note",
+            "origin": "src/note.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 72,
+            "line_end": 118
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "sparse": 1
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 1"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "Note",
+            "origin": "src/note.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 72,
+            "line_end": 118
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "sparse": 1
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 1"
+        }
+      },
+      "pool_size": 31,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "Note",
+        "origin": "src/note.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 72,
+        "line_end": 118
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "collect events without adding to pending files if max is reached",
+      "category": "negation",
+      "source": "generated",
+      "metadata": {
+        "target_category": "negation",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cli/watch.rs:1505:61e6fb69:w2",
+            "name": "collect_events",
+            "origin": "src/cli/watch.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 1505,
+            "line_end": 1595
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "router": 4,
+            "dense": 3,
+            "sparse": 10
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 3"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cli/watch.rs:1505:61e6fb69:w2",
+            "name": "collect_events",
+            "origin": "src/cli/watch.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 1505,
+            "line_end": 1595
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "router": 4,
+            "dense": 3,
+            "sparse": 10
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 3"
+        }
+      },
+      "pool_size": 30,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/cli/watch.rs:1505:61e6fb69:w2",
+        "name": "collect_events",
+        "origin": "src/cli/watch.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 1505,
+        "line_end": 1595
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "tables with an unindexed column",
+      "category": "structural_search",
+      "source": "generated",
+      "metadata": {
+        "target_category": "structural_search",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:56:c785a21e",
+            "name": "chunks_fts",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 56,
+            "line_end": 63
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 12,
+            "dense": 2,
+            "sparse": 12
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 2"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:56:c785a21e",
+            "name": "chunks_fts",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 56,
+            "line_end": 63
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 12,
+            "dense": 2,
+            "sparse": 12
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 2"
+        }
+      },
+      "pool_size": 33,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/schema.sql:56:c785a21e",
+        "name": "chunks_fts",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 56,
+        "line_end": 63
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "Default implementation for PlacementOptions struct",
+      "category": "type_filtered",
+      "source": "generated",
+      "metadata": {
+        "target_category": "type_filtered",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/where_to_add.rs:79:72738fb7",
+            "name": "PlacementOptions",
+            "origin": "src/where_to_add.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 79,
+            "line_end": 91
+          },
+          "gold_rank": 4,
+          "gold_appearances": {
+            "router": 4,
+            "sparse": 4
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 4"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/where_to_add.rs:79:72738fb7",
+            "name": "PlacementOptions",
+            "origin": "src/where_to_add.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 79,
+            "line_end": 91
+          },
+          "gold_rank": 4,
+          "gold_appearances": {
+            "router": 4,
+            "sparse": 4
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 4"
+        }
+      },
+      "pool_size": 29,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/where_to_add.rs:79:72738fb7",
+        "name": "PlacementOptions",
+        "origin": "src/where_to_add.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 79,
+        "line_end": 91
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "SQLite FTS5 virtual table definition",
+      "category": "conceptual_search",
+      "source": "generated",
+      "metadata": {
+        "target_category": "conceptual_search",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:56:c785a21e",
+            "name": "chunks_fts",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 56,
+            "line_end": 63
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 2,
+            "dense": 1,
+            "sparse": 2
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 1"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:56:c785a21e",
+            "name": "chunks_fts",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 56,
+            "line_end": 63
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 2,
+            "dense": 1,
+            "sparse": 2
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 1"
+        }
+      },
+      "pool_size": 30,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/schema.sql:56:c785a21e",
+        "name": "chunks_fts",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 56,
+        "line_end": 63
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "compute the blake3 hash of file contents for change detection",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031393,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "verify_checksum",
+            "origin": "src/embedder/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 970,
+            "line_end": 986
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 3,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "verify_checksum",
+            "origin": "src/embedder/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 970,
+            "line_end": 986
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 3,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 34,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "verify_checksum",
+        "origin": "src/embedder/mod.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 970,
+        "line_end": 986
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "parse a source code file and extract all chunks from it",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031058,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "parse_source",
+            "origin": "src/parser/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 224,
+            "line_end": 349
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "parse_source",
+            "origin": "src/parser/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 224,
+            "line_end": 349
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 33,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "parse_source",
+        "origin": "src/parser/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 224,
+        "line_end": 349
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "classify_query",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776194853,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "classify_query",
+            "origin": "src/search/router.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 431,
+            "line_end": 573
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "classify_query",
+            "origin": "src/search/router.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 431,
+            "line_end": 573
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 21,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "classify_query",
+        "origin": "src/search/router.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 431,
+        "line_end": 573
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "function load_all_sparse_vectors in Store implementation",
+      "category": "type_filtered",
+      "source": "generated",
+      "metadata": {
+        "target_category": "type_filtered",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/store/sparse.rs:230:c9d4358d:w2",
+            "name": "load_all_sparse_vectors",
+            "origin": "src/store/sparse.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 230,
+            "line_end": 317
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "dense": 1,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 1"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/store/sparse.rs:230:c9d4358d:w2",
+            "name": "load_all_sparse_vectors",
+            "origin": "src/store/sparse.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 230,
+            "line_end": 317
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "dense": 1,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 1"
+        }
+      },
+      "pool_size": 18,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/store/sparse.rs:230:c9d4358d:w2",
+        "name": "load_all_sparse_vectors",
+        "origin": "src/store/sparse.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 230,
+        "line_end": 317
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "def main function",
+      "category": "type_filtered",
+      "source": "generated",
+      "metadata": {
+        "target_category": "type_filtered",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/generate_queries.py:319:f2025150:w1",
+            "name": "main",
+            "origin": "evals/generate_queries.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 319,
+            "line_end": 368
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "sparse": 3
+          },
+          "note": "seed in pool from ['sparse'] at min rank 3"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/generate_queries.py:319:f2025150:w1",
+            "name": "main",
+            "origin": "evals/generate_queries.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 319,
+            "line_end": 368
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "sparse": 3
+          },
+          "note": "seed in pool from ['sparse'] at min rank 3"
+        }
+      },
+      "pool_size": 20,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:319:f2025150:w1",
+        "name": "main",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 319,
+        "line_end": 368
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "Python equivalent of removing markdown chapter headings using regex",
+      "category": "cross_language",
+      "source": "generated",
+      "metadata": {
+        "target_category": "cross_language",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/clean_md.py:173:100f5458",
+            "name": "remove_chapter_headings",
+            "origin": "scripts/clean_md.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 173,
+            "line_end": 189
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/clean_md.py:173:100f5458",
+            "name": "remove_chapter_headings",
+            "origin": "scripts/clean_md.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 173,
+            "line_end": 189
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 38,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:173:100f5458",
+        "name": "remove_chapter_headings",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 173,
+        "line_end": 189
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "how does the doctor command check model index and hardware",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031183,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "cmd_doctor",
+            "origin": "src/cli/commands/infra/doctor.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 88,
+            "line_end": 294
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 1,
+            "dense": 1,
+            "sparse": 1
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "cmd_doctor",
+            "origin": "src/cli/commands/infra/doctor.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 88,
+            "line_end": 294
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 1,
+            "dense": 1,
+            "sparse": 1
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 18,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "cmd_doctor",
+        "origin": "src/cli/commands/infra/doctor.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 88,
+        "line_end": 294
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "parse L5X PLC export files into structured text chunks",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031416,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "parse_l5x_chunks",
+            "origin": "src/parser/l5x.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 272,
+            "line_end": 289
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 2,
+            "sparse": 2
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 2"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "parse_l5x_chunks",
+            "origin": "src/parser/l5x.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 272,
+            "line_end": 289
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 2,
+            "sparse": 2
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 2"
+        }
+      },
+      "pool_size": 39,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "parse_l5x_chunks",
+        "origin": "src/parser/l5x.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 272,
+        "line_end": 289
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "Display trait implementation for human-readable output",
+      "category": "type_filtered",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031715,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "fmt",
+            "origin": "src/embedder/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 87,
+            "line_end": 93
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 1
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "fmt",
+            "origin": "src/embedder/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 87,
+            "line_end": 93
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 1
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 32,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "fmt",
+        "origin": "src/embedder/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 87,
+        "line_end": 93
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "table for type edges without a target_type_id foreign key",
+      "category": "negation",
+      "source": "generated",
+      "metadata": {
+        "target_category": "negation",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:95:e074eb40",
+            "name": "type_edges",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 95,
+            "line_end": 102
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:95:e074eb40",
+            "name": "type_edges",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 95,
+            "line_end": 102
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 33,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/schema.sql:95:e074eb40",
+        "name": "type_edges",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 95,
+        "line_end": 102
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "database schema migration system for version upgrades",
+      "category": "conceptual_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031133,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "migrate_v12_to_v13",
+            "origin": "src/store/migrations.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 281,
+            "line_end": 295
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 16,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "migrate_v12_to_v13",
+            "origin": "src/store/migrations.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 281,
+            "line_end": 295
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 16,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 22,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "migrate_v12_to_v13",
+        "origin": "src/store/migrations.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 281,
+        "line_end": 295
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "methods for finding neighbors in Store",
+      "category": "type_filtered",
+      "source": "generated",
+      "metadata": {
+        "target_category": "type_filtered",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cli/commands/search/neighbors.rs:73:a4288d79:w1",
+            "name": "find_neighbors",
+            "origin": "src/cli/commands/search/neighbors.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 73,
+            "line_end": 127
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 3,
+            "dense": 1,
+            "sparse": 3
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cli/commands/search/neighbors.rs:73:a4288d79:w1",
+            "name": "find_neighbors",
+            "origin": "src/cli/commands/search/neighbors.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 73,
+            "line_end": 127
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 3,
+            "dense": 1,
+            "sparse": 3
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 12,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/cli/commands/search/neighbors.rs:73:a4288d79:w1",
+        "name": "find_neighbors",
+        "origin": "src/cli/commands/search/neighbors.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 73,
+        "line_end": 127
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "create virtual table for notes without indexing the id column",
+      "category": "negation",
+      "source": "generated",
+      "metadata": {
+        "target_category": "negation",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:123:6ce763e1",
+            "name": "notes_fts",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 123,
+            "line_end": 127
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:123:6ce763e1",
+            "name": "notes_fts",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 123,
+            "line_end": 127
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 38,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/schema.sql:123:6ce763e1",
+        "name": "notes_fts",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 123,
+        "line_end": 127
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "impl blocks for CagraIndex",
+      "category": "type_filtered",
+      "source": "generated",
+      "metadata": {
+        "target_category": "type_filtered",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cagra.rs:748:a62df795:w4",
+            "name": "CagraIndex",
+            "origin": "src/cagra.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 748,
+            "line_end": 1105
+          },
+          "gold_rank": 9,
+          "gold_appearances": {
+            "router": 9
+          },
+          "note": "seed in pool from ['router'] at min rank 9"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cagra.rs:748:a62df795:w4",
+            "name": "CagraIndex",
+            "origin": "src/cagra.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 748,
+            "line_end": 1105
+          },
+          "gold_rank": 9,
+          "gold_appearances": {
+            "router": 9
+          },
+          "note": "seed in pool from ['router'] at min rank 9"
+        }
+      },
+      "pool_size": 26,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/cagra.rs:748:a62df795:w4",
+        "name": "CagraIndex",
+        "origin": "src/cagra.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 748,
+        "line_end": 1105
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "post-processing chunks after tree-sitter extraction",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031580,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "post_process_yaml_yaml",
+            "origin": "src/language/languages.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 7998,
+            "line_end": 8018
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "post_process_yaml_yaml",
+            "origin": "src/language/languages.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 7998,
+            "line_end": 8018
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 37,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "post_process_yaml_yaml",
+        "origin": "src/language/languages.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 7998,
+        "line_end": 8018
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "LLMClient that is not dependency injection based",
+      "category": "negation",
+      "source": "generated",
+      "metadata": {
+        "target_category": "negation",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:111:b21042fa:w2",
+            "name": "LLMClient",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "class",
+            "line_start": 111,
+            "line_end": 286
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 2,
+            "dense": 3,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 1"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:111:b21042fa:w2",
+            "name": "LLMClient",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "class",
+            "line_start": 111,
+            "line_end": 286
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 2,
+            "dense": 3,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 1"
+        }
+      },
+      "pool_size": 19,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/llm_client.py:111:b21042fa:w2",
+        "name": "LLMClient",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "class",
+        "line_start": 111,
+        "line_end": 286
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "entry point for markdown cleaning AND executes PDF workflow",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/clean_md.py:349:9e87241d",
+            "name": "main",
+            "origin": "scripts/clean_md.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 349,
+            "line_end": 393
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/clean_md.py:349:9e87241d",
+            "name": "main",
+            "origin": "scripts/clean_md.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 349,
+            "line_end": 393
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 37,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:349:9e87241d",
+        "name": "main",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 349,
+        "line_end": 393
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "extract references from text without using a full parser",
+      "category": "negation",
+      "source": "generated",
+      "metadata": {
+        "target_category": "negation",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/parser/markdown/mod.rs:584:5874fd8e:w1",
+            "name": "extract_references_from_text",
+            "origin": "src/parser/markdown/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 584,
+            "line_end": 650
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 3,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/parser/markdown/mod.rs:584:5874fd8e:w1",
+            "name": "extract_references_from_text",
+            "origin": "src/parser/markdown/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 584,
+            "line_end": 650
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 3,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 39,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/parser/markdown/mod.rs:584:5874fd8e:w1",
+        "name": "extract_references_from_text",
+        "origin": "src/parser/markdown/mod.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 584,
+        "line_end": 650
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "markdown cleaner that is not recursive",
+      "category": "negation",
+      "source": "generated",
+      "metadata": {
+        "target_category": "negation",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/clean_md.py:257:ea66c9d4:w0",
+            "name": "clean_markdown_file",
+            "origin": "scripts/clean_md.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 257,
+            "line_end": 319
+          },
+          "gold_rank": 5,
+          "gold_appearances": {
+            "router": 5,
+            "sparse": 5
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 5"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/clean_md.py:257:ea66c9d4:w0",
+            "name": "clean_markdown_file",
+            "origin": "scripts/clean_md.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 257,
+            "line_end": 319
+          },
+          "gold_rank": 5,
+          "gold_appearances": {
+            "router": 5,
+            "sparse": 5
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 5"
+        }
+      },
+      "pool_size": 37,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:257:ea66c9d4:w0",
+        "name": "clean_markdown_file",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 257,
+        "line_end": 319
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "CacheStats struct",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031806,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "CacheStats",
+            "origin": "src/cache.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 28,
+            "line_end": 34
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 1,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "CacheStats",
+            "origin": "src/cache.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 28,
+            "line_end": 34
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 1,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 26,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "CacheStats",
+        "origin": "src/cache.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 28,
+        "line_end": 34
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "focused read showing only a function and its type dependencies",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031725,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "find_type_impacted",
+            "origin": "src/impact/analysis.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 419,
+            "line_end": 496
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 1,
+            "sparse": 1
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "find_type_impacted",
+            "origin": "src/impact/analysis.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 419,
+            "line_end": 496
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 1,
+            "sparse": 1
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 32,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "find_type_impacted",
+        "origin": "src/impact/analysis.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 419,
+        "line_end": 496
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "methods that return a list of queries AND filter by type",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/generate_queries.py:140:3a9657c4:w2",
+            "name": "generate_type_filtered_queries",
+            "origin": "evals/generate_queries.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 140,
+            "line_end": 215
+          },
+          "gold_rank": 6,
+          "gold_appearances": {
+            "router": 8,
+            "sparse": 6
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 6"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/generate_queries.py:140:3a9657c4:w2",
+            "name": "generate_type_filtered_queries",
+            "origin": "evals/generate_queries.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 140,
+            "line_end": 215
+          },
+          "gold_rank": 6,
+          "gold_appearances": {
+            "router": 8,
+            "sparse": 6
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 6"
+        }
+      },
+      "pool_size": 35,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:140:3a9657c4:w2",
+        "name": "generate_type_filtered_queries",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 140,
+        "line_end": 215
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "default method for the struct",
+      "category": "type_filtered",
+      "source": "generated",
+      "metadata": {
+        "target_category": "type_filtered",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/impact/analysis.rs:33:7873ebdb",
+            "name": "default",
+            "origin": "src/impact/analysis.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 33,
+            "line_end": 38
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 1"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/impact/analysis.rs:33:7873ebdb",
+            "name": "default",
+            "origin": "src/impact/analysis.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 33,
+            "line_end": 38
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 1"
+        }
+      },
+      "pool_size": 33,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/impact/analysis.rs:33:7873ebdb",
+        "name": "default",
+        "origin": "src/impact/analysis.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 33,
+        "line_end": 38
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "tables with a TEXT primary key and BLOB columns",
+      "category": "structural_search",
+      "source": "generated",
+      "metadata": {
+        "target_category": "structural_search",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:22:ea43482c",
+            "name": "chunks",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 22,
+            "line_end": 45
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "dense": 2
+          },
+          "note": "seed in pool from ['dense'] at min rank 2"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:22:ea43482c",
+            "name": "chunks",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 22,
+            "line_end": 45
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "dense": 2
+          },
+          "note": "seed in pool from ['dense'] at min rank 2"
+        }
+      },
+      "pool_size": 36,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/schema.sql:22:ea43482c",
+        "name": "chunks",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 22,
+        "line_end": 45
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "how does the plan command classify tasks and generate checklists",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031520,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "plan",
+            "origin": "src/plan.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 378,
+            "line_end": 398
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 6,
+            "dense": 0,
+            "sparse": 6
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "plan",
+            "origin": "src/plan.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 378,
+            "line_end": 398
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 6,
+            "dense": 0,
+            "sparse": 6
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 28,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "plan",
+        "origin": "src/plan.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 378,
+        "line_end": 398
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "methods that call chunk_splade_texts_query AND return a Vec of String pairs",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/store/sparse.rs:319:6f0e6826",
+            "name": "chunk_splade_texts",
+            "origin": "src/store/sparse.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 319,
+            "line_end": 321
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 3,
+            "dense": 2,
+            "sparse": 9
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 2"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/store/sparse.rs:319:6f0e6826",
+            "name": "chunk_splade_texts",
+            "origin": "src/store/sparse.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 319,
+            "line_end": 321
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 3,
+            "dense": 2,
+            "sparse": 9
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 2"
+        }
+      },
+      "pool_size": 31,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/store/sparse.rs:319:6f0e6826",
+        "name": "chunk_splade_texts",
+        "origin": "src/store/sparse.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 319,
+        "line_end": 321
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "find functions similar to a given function by embedding distance",
+      "category": "conceptual_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031398,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "find_contrastive_neighbors",
+            "origin": "docs/superpowers/plans/2026-03-24-contrastive-summaries.md",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 92,
+            "line_end": 179
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "find_contrastive_neighbors",
+            "origin": "docs/superpowers/plans/2026-03-24-contrastive-summaries.md",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 92,
+            "line_end": 179
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 16,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "find_contrastive_neighbors",
+        "origin": "docs/superpowers/plans/2026-03-24-contrastive-summaries.md",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 92,
+        "line_end": 179
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "functions named find_reference AND defined as pub(crate)",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cli/commands/resolve.rs:27:924949b4",
+            "name": "find_reference",
+            "origin": "src/cli/commands/resolve.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 27,
+            "line_end": 40
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cli/commands/resolve.rs:27:924949b4",
+            "name": "find_reference",
+            "origin": "src/cli/commands/resolve.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 27,
+            "line_end": 40
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 31,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/cli/commands/resolve.rs:27:924949b4",
+        "name": "find_reference",
+        "origin": "src/cli/commands/resolve.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 27,
+        "line_end": 40
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "sqlite schema for function call graph",
+      "category": "conceptual_search",
+      "source": "generated",
+      "metadata": {
+        "target_category": "conceptual_search",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:66:d6b770de",
+            "name": "calls",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 66,
+            "line_end": 72
+          },
+          "gold_rank": 4,
+          "gold_appearances": {
+            "router": 4,
+            "sparse": 4
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 4"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:66:d6b770de",
+            "name": "calls",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 66,
+            "line_end": 72
+          },
+          "gold_rank": 4,
+          "gold_appearances": {
+            "router": 4,
+            "sparse": 4
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 4"
+        }
+      },
+      "pool_size": 39,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/schema.sql:66:d6b770de",
+        "name": "calls",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 66,
+        "line_end": 72
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "functions that return a static slice of static strings",
+      "category": "structural_search",
+      "source": "generated",
+      "metadata": {
+        "target_category": "structural_search",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/search/router.rs:267:0cbbe089",
+            "name": "language_names",
+            "origin": "src/search/router.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 267,
+            "line_end": 269
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 2,
+            "dense": 2
+          },
+          "note": "seed in pool from ['router', 'dense'] at min rank 2"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/search/router.rs:267:0cbbe089",
+            "name": "language_names",
+            "origin": "src/search/router.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 267,
+            "line_end": 269
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 2,
+            "dense": 2
+          },
+          "note": "seed in pool from ['router', 'dense'] at min rank 2"
+        }
+      },
+      "pool_size": 35,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/search/router.rs:267:0cbbe089",
+        "name": "language_names",
+        "origin": "src/search/router.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 267,
+        "line_end": 269
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "implementation of DriftEntryOutput",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031215,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "DriftEntryOutput",
+            "origin": "src/cli/commands/io/drift.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 16,
+            "line_end": 22
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "DriftEntryOutput",
+            "origin": "src/cli/commands/io/drift.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 16,
+            "line_end": 22
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 38,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "DriftEntryOutput",
+        "origin": "src/cli/commands/io/drift.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 16,
+        "line_end": 22
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "Section",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031258,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "make_section_chunk",
+            "origin": "src/nl/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 652,
+            "line_end": 669
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "make_section_chunk",
+            "origin": "src/nl/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 652,
+            "line_end": 669
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 38,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "make_section_chunk",
+        "origin": "src/nl/mod.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 652,
+        "line_end": 669
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "implementations of VectorIndex AND CagraIndex",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cagra.rs:471:7412f1b2:w1",
+            "name": "CagraIndex",
+            "origin": "src/cagra.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 471,
+            "line_end": 580
+          },
+          "gold_rank": 4,
+          "gold_appearances": {
+            "router": 7,
+            "dense": 4,
+            "sparse": 7
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 4"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cagra.rs:471:7412f1b2:w1",
+            "name": "CagraIndex",
+            "origin": "src/cagra.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 471,
+            "line_end": 580
+          },
+          "gold_rank": 4,
+          "gold_appearances": {
+            "router": 7,
+            "dense": 4,
+            "sparse": 7
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 4"
+        }
+      },
+      "pool_size": 18,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/cagra.rs:471:7412f1b2:w1",
+        "name": "CagraIndex",
+        "origin": "src/cagra.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 471,
+        "line_end": 580
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "run_index_pipeline",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031026,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "run_index_pipeline",
+            "origin": "src/cli/pipeline/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 43,
+            "line_end": 198
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "run_index_pipeline",
+            "origin": "src/cli/pipeline/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 43,
+            "line_end": 198
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 31,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "run_index_pipeline",
+        "origin": "src/cli/pipeline/mod.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 43,
+        "line_end": 198
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "how to implement a file watch command in Rust vs Go",
+      "category": "cross_language",
+      "source": "generated",
+      "metadata": {
+        "target_category": "cross_language",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": ".claude/worktrees/agent-a7cedd3c/src/cli/watch.rs:573:56bab833:w19",
+            "name": "cmd_watch",
+            "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/watch.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 573,
+            "line_end": 1247
+          },
+          "gold_rank": 6,
+          "gold_appearances": {
+            "dense": 6
+          },
+          "note": "seed in pool from ['dense'] at min rank 6"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": ".claude/worktrees/agent-a7cedd3c/src/cli/watch.rs:573:56bab833:w19",
+            "name": "cmd_watch",
+            "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/watch.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 573,
+            "line_end": 1247
+          },
+          "gold_rank": 6,
+          "gold_appearances": {
+            "dense": 6
+          },
+          "note": "seed in pool from ['dense'] at min rank 6"
+        }
+      },
+      "pool_size": 17,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": ".claude/worktrees/agent-a7cedd3c/src/cli/watch.rs:573:56bab833:w19",
+        "name": "cmd_watch",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/watch.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 573,
+        "line_end": 1247
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "LLM client wrapper class",
+      "category": "conceptual_search",
+      "source": "generated",
+      "metadata": {
+        "target_category": "conceptual_search",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:111:b21042fa:w4",
+            "name": "LLMClient",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "class",
+            "line_start": 111,
+            "line_end": 286
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/llm_client.py:111:b21042fa:w4",
+            "name": "LLMClient",
+            "origin": "evals/llm_client.py",
+            "language": "python",
+            "chunk_type": "class",
+            "line_start": 111,
+            "line_end": 286
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 27,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/llm_client.py:111:b21042fa:w4",
+        "name": "LLMClient",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "class",
+        "line_start": 111,
+        "line_end": 286
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "How to implement a file change watcher with index persistence in Rust vs Go",
+      "category": "cross_language",
+      "source": "generated",
+      "metadata": {
+        "target_category": "cross_language",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cli/watch.rs:1601:4a56e1e6:w6",
+            "name": "process_file_changes",
+            "origin": "src/cli/watch.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 1601,
+            "line_end": 1837
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "router": 15,
+            "dense": 3,
+            "sparse": 15
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 3"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cli/watch.rs:1601:4a56e1e6:w6",
+            "name": "process_file_changes",
+            "origin": "src/cli/watch.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 1601,
+            "line_end": 1837
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "router": 15,
+            "dense": 3,
+            "sparse": 15
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 3"
+        }
+      },
+      "pool_size": 24,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/cli/watch.rs:1601:4a56e1e6:w6",
+        "name": "process_file_changes",
+        "origin": "src/cli/watch.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 1601,
+        "line_end": 1837
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "find_dead_code",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031803,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "dispatch_dead",
+            "origin": "src/cli/batch/handlers/analysis.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 23,
+            "line_end": 43
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 2,
+            "sparse": 2
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 2"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "dispatch_dead",
+            "origin": "src/cli/batch/handlers/analysis.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 23,
+            "line_end": 43
+          },
+          "gold_rank": 2,
+          "gold_appearances": {
+            "router": 2,
+            "sparse": 2
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 2"
+        }
+      },
+      "pool_size": 34,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "dispatch_dead",
+        "origin": "src/cli/batch/handlers/analysis.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 23,
+        "line_end": 43
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "content based fingerprinting",
+      "category": "conceptual_search",
+      "source": "generated",
+      "metadata": {
+        "target_category": "conceptual_search",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/embedder/mod.rs:349:3a5cb4fc:w1",
+            "name": "model_fingerprint",
+            "origin": "src/embedder/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 349,
+            "line_end": 423
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/embedder/mod.rs:349:3a5cb4fc:w1",
+            "name": "model_fingerprint",
+            "origin": "src/embedder/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 349,
+            "line_end": 423
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 23,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/embedder/mod.rs:349:3a5cb4fc:w1",
+        "name": "model_fingerprint",
+        "origin": "src/embedder/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 349,
+        "line_end": 423
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "onnx session",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776279219,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "session",
+            "origin": "src/embedder/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 432,
+            "line_end": 441
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "session",
+            "origin": "src/embedder/mod.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 432,
+            "line_end": 441
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 22,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "session",
+        "origin": "src/embedder/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 432,
+        "line_end": 441
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "methods in NameMatcher impl",
+      "category": "type_filtered",
+      "source": "generated",
+      "metadata": {
+        "target_category": "type_filtered",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/search/scoring/name_match.rs:98:565af07e:w1",
+            "name": "NameMatcher",
+            "origin": "src/search/scoring/name_match.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 98,
+            "line_end": 225
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 1,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/search/scoring/name_match.rs:98:565af07e:w1",
+            "name": "NameMatcher",
+            "origin": "src/search/scoring/name_match.rs",
+            "language": "rust",
+            "chunk_type": "impl",
+            "line_start": 98,
+            "line_end": 225
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 1,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 18,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/search/scoring/name_match.rs:98:565af07e:w1",
+        "name": "NameMatcher",
+        "origin": "src/search/scoring/name_match.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 98,
+        "line_end": 225
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "IndexStats",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031283,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "IndexStats",
+            "origin": "src/store/helpers/types.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 385,
+            "line_end": 404
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "IndexStats",
+            "origin": "src/store/helpers/types.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 385,
+            "line_end": 404
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 27,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "IndexStats",
+        "origin": "src/store/helpers/types.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 385,
+        "line_end": 404
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "create sparse_vectors table without a single primary key column",
+      "category": "negation",
+      "source": "generated",
+      "metadata": {
+        "target_category": "negation",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:134:4c8a74a1",
+            "name": "sparse_vectors",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 134,
+            "line_end": 140
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:134:4c8a74a1",
+            "name": "sparse_vectors",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 134,
+            "line_end": 140
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 0,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 27,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/schema.sql:134:4c8a74a1",
+        "name": "sparse_vectors",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 134,
+        "line_end": 140
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "markdown section chunks not code function chunks",
+      "category": "negation",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031469,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "make_section_chunk",
+            "origin": "src/nl/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 652,
+            "line_end": 669
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "make_section_chunk",
+            "origin": "src/nl/mod.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 652,
+            "line_end": 669
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 41,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "make_section_chunk",
+        "origin": "src/nl/mod.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 652,
+        "line_end": 669
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "functions that remove TOC section AND take a list of strings",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/clean_md.py:142:ba7ffa82",
+            "name": "remove_toc_section",
+            "origin": "scripts/clean_md.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 142,
+            "line_end": 170
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 1"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "scripts/clean_md.py:142:ba7ffa82",
+            "name": "remove_toc_section",
+            "origin": "scripts/clean_md.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 142,
+            "line_end": 170
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "sparse": 1
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 1"
+        }
+      },
+      "pool_size": 36,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:142:ba7ffa82",
+        "name": "remove_toc_section",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 142,
+        "line_end": 170
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "ReviewResult",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031316,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "ReviewResult",
+            "origin": "src/review.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 21,
+            "line_end": 37
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "ReviewResult",
+            "origin": "src/review.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 21,
+            "line_end": 37
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 28,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "ReviewResult",
+        "origin": "src/review.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 21,
+        "line_end": 37
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "statistics about the embedding cache entries and size",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031099,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "stats",
+            "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 373,
+            "line_end": 430
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "router": 3,
+            "dense": 12,
+            "sparse": 3
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 3"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "stats",
+            "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+            "language": "rust",
+            "chunk_type": "method",
+            "line_start": 373,
+            "line_end": 430
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "router": 3,
+            "dense": 12,
+            "sparse": 3
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 3"
+        }
+      },
+      "pool_size": 27,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "stats",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 373,
+        "line_end": 430
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "lazy model loading to avoid startup overhead for simple commands",
+      "category": "conceptual_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031616,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "BatchContext",
+            "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/batch/mod.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 170,
+            "line_end": 231
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 4,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "BatchContext",
+            "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/batch/mod.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 170,
+            "line_end": 231
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 4,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 43,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "BatchContext",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/batch/mod.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 170,
+        "line_end": 231
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "implementation of DiffTestInfo",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031241,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "DiffTestInfo",
+            "origin": "src/impact/types.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 120,
+            "line_end": 128
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "sparse": 1
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 1"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "DiffTestInfo",
+            "origin": "src/impact/types.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 120,
+            "line_end": 128
+          },
+          "gold_rank": 1,
+          "gold_appearances": {
+            "router": 1,
+            "sparse": 1
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 1"
+        }
+      },
+      "pool_size": 34,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "DiffTestInfo",
+        "origin": "src/impact/types.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 120,
+        "line_end": 128
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "verify if tokens contain pipe not using a for loop",
+      "category": "negation",
+      "source": "generated",
+      "metadata": {
+        "target_category": "negation",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cli/batch/pipeline.rs:350:7693d39d",
+            "name": "has_pipe_token",
+            "origin": "src/cli/batch/pipeline.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 350,
+            "line_end": 352
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 4,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/cli/batch/pipeline.rs:350:7693d39d",
+            "name": "has_pipe_token",
+            "origin": "src/cli/batch/pipeline.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 350,
+            "line_end": 352
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 4,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 36,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/cli/batch/pipeline.rs:350:7693d39d",
+        "name": "has_pipe_token",
+        "origin": "src/cli/batch/pipeline.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 350,
+        "line_end": 352
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "how to define a function call schema in SQLite vs PostgreSQL",
+      "category": "cross_language",
+      "source": "generated",
+      "metadata": {
+        "target_category": "cross_language",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:78:af948656",
+            "name": "function_calls",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 78,
+            "line_end": 85
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "router": 11,
+            "dense": 3,
+            "sparse": 11
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 3"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/schema.sql:78:af948656",
+            "name": "function_calls",
+            "origin": "src/schema.sql",
+            "language": "sql",
+            "chunk_type": "struct",
+            "line_start": 78,
+            "line_end": 85
+          },
+          "gold_rank": 3,
+          "gold_appearances": {
+            "router": 11,
+            "dense": 3,
+            "sparse": 11
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 3"
+        }
+      },
+      "pool_size": 38,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/schema.sql:78:af948656",
+        "name": "function_calls",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 78,
+        "line_end": 85
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "format search results as JSON for CLI output",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "metadata": {
+        "first_seen_ts": 1776031379,
+        "source_cmd": "search"
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "display_similar_results_json",
+            "origin": "src/cli/display.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 390,
+            "line_end": 406
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": null,
+            "name": "display_similar_results_json",
+            "origin": "src/cli/display.rs",
+            "language": "rust",
+            "chunk_type": "function",
+            "line_start": 390,
+            "line_end": 406
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 22,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": null,
+        "name": "display_similar_results_json",
+        "origin": "src/cli/display.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 390,
+        "line_end": 406
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "assign_splits function AND takes held_out_ratio as argument",
+      "category": "multi_step",
+      "source": "generated",
+      "metadata": {
+        "target_category": "multi_step",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/generate_queries.py:261:470e1b48",
+            "name": "assign_splits",
+            "origin": "evals/generate_queries.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 261,
+            "line_end": 267
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "evals/generate_queries.py:261:470e1b48",
+            "name": "assign_splits",
+            "origin": "evals/generate_queries.py",
+            "language": "python",
+            "chunk_type": "function",
+            "line_start": 261,
+            "line_end": 267
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "sparse": 0
+          },
+          "note": "seed in pool from ['router', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 35,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:261:470e1b48",
+        "name": "assign_splits",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 261,
+        "line_end": 267
+      },
+      "gold_chunk_source": "consensus"
+    },
+    {
+      "query": "CrossProjectCaller struct without a custom serializer",
+      "category": "negation",
+      "source": "generated",
+      "metadata": {
+        "target_category": "negation",
+        "matched": true
+      },
+      "judges": {
+        "claude": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/store/calls/cross_project.rs:36:04384a2b",
+            "name": "CrossProjectCaller",
+            "origin": "src/store/calls/cross_project.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 36,
+            "line_end": 41
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 1,
+            "sparse": 2
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        },
+        "gemma": {
+          "verified": true,
+          "gold_chunk": {
+            "id": "src/store/calls/cross_project.rs:36:04384a2b",
+            "name": "CrossProjectCaller",
+            "origin": "src/store/calls/cross_project.rs",
+            "language": "rust",
+            "chunk_type": "struct",
+            "line_start": 36,
+            "line_end": 41
+          },
+          "gold_rank": 0,
+          "gold_appearances": {
+            "router": 0,
+            "dense": 1,
+            "sparse": 2
+          },
+          "note": "seed in pool from ['router', 'dense', 'sparse'] at min rank 0"
+        }
+      },
+      "pool_size": 25,
+      "tier": "high_confidence",
+      "gold_chunk": {
+        "id": "src/store/calls/cross_project.rs:36:04384a2b",
+        "name": "CrossProjectCaller",
+        "origin": "src/store/calls/cross_project.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 36,
+        "line_end": 41
+      },
+      "gold_chunk_source": "consensus"
+    }
+  ]
+}

@@ -303,7 +303,7 @@ pub fn extract_body_keywords(content: &str, language: Language) -> Vec<String> {
 
     // Sort by frequency descending, take top 10
     let mut keywords: Vec<(String, usize)> = freq.into_iter().collect();
-    keywords.sort_by(|a, b| b.1.cmp(&a.1));
+    keywords.sort_by_key(|k| std::cmp::Reverse(k.1));
     keywords.into_iter().take(10).map(|(w, _)| w).collect()
 }
 

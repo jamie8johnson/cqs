@@ -176,7 +176,7 @@ function deploy() {
     let chunks = parser.parse_file(file.path()).unwrap();
     let func = chunks.iter().find(|c| c.name == "deploy").unwrap();
     assert!(
-        func.doc.as_ref().map_or(false, |d| d.contains("Deploy")),
+        func.doc.as_ref().is_some_and(|d| d.contains("Deploy")),
         "Expected doc comment, got: {:?}",
         func.doc
     );
@@ -3169,8 +3169,8 @@ end
     let parser = Parser::new().unwrap();
     let chunks = parser.parse_file(file.path()).unwrap();
     // Constants inside function bodies should be skipped
-    assert!(chunks.iter().find(|c| c.name == "MAX_LOCAL").is_none());
-    assert!(chunks.iter().find(|c| c.name == "GLOBAL_IN_FUNC").is_none());
+    assert!(!chunks.iter().any(|c| c.name == "MAX_LOCAL"));
+    assert!(!chunks.iter().any(|c| c.name == "GLOBAL_IN_FUNC"));
     // But the function itself should be captured
     let func = chunks.iter().find(|c| c.name == "init").unwrap();
     assert_eq!(func.chunk_type, ChunkType::Function);
@@ -3187,10 +3187,9 @@ end
     let parser = Parser::new().unwrap();
     let chunks = parser.parse_file(file.path()).unwrap();
     // Function-valued assignments should not become constants
-    assert!(chunks
+    assert!(!chunks
         .iter()
-        .find(|c| c.name == "MY_HANDLER" && c.chunk_type == ChunkType::Constant)
-        .is_none());
+        .any(|c| c.name == "MY_HANDLER" && c.chunk_type == ChunkType::Constant));
 }
 
 #[test]
@@ -7585,7 +7584,7 @@ Map<String, dynamic> parseConfig(String path) {
     let chunks = parser.parse_file(file.path()).unwrap();
     let func = chunks.iter().find(|c| c.name == "parseConfig").unwrap();
     assert!(
-        func.doc.as_ref().map_or(false, |d| d.contains("Parse")),
+        func.doc.as_ref().is_some_and(|d| d.contains("Parse")),
         "Expected doc comment, got: {:?}",
         func.doc
     );

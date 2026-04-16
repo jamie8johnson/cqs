@@ -76,7 +76,7 @@ impl EvalConfig {
             id: format!("{}_{}_{}", dense.label(), sparse.label(), reranker.label()),
             dense_model: dense,
             sparse_mode: sparse,
-            reranker: reranker,
+            reranker,
         }
     }
 }
@@ -98,10 +98,8 @@ fn find_rank(results: &[cqs::store::SearchResult], query: &EvalQuery) -> (Option
     for (i, r) in results.iter().enumerate() {
         let rank = (i + 1) as u32;
 
-        if r.chunk.name == *primary {
-            if rank_of_correct.is_none() {
-                rank_of_correct = Some(rank);
-            }
+        if r.chunk.name == *primary && rank_of_correct.is_none() {
+            rank_of_correct = Some(rank);
         }
 
         if rank <= 5 && (r.chunk.name == *primary || acceptable.contains(&r.chunk.name.as_str())) {

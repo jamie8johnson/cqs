@@ -28,6 +28,11 @@ proptest-regressions/
 .env.local
 .env.*.local
 credentials.toml
+
+# ML training artifacts (checkpoints are large and user-specific)
+evals/reranker_v2_checkpoint/
+checkpoints/
+evals/__pycache__/
 *.toml.lock
 .cqs/
 .cq/

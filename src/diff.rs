@@ -273,7 +273,7 @@ mod tests {
     fn test_diff_sort_none_similarity_at_end() {
         // Entries with None similarity should sort after entries with known similarity,
         // not be conflated with similarity=0.0 (maximally changed).
-        let mut entries = vec![
+        let mut entries = [
             DiffEntry {
                 name: "known_low".into(),
                 file: "a.rs".into(),

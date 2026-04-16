@@ -772,7 +772,7 @@ mod tests {
         let c1 = chunk_at(dir.path(), "src/a.rs", "a");
         let c2 = chunk_at(dir.path(), "src/b.rs", "b");
         let c3 = chunk_at(dir.path(), "src/c.rs", "c");
-        let files_on_disk = vec![c1.file.clone(), c2.file.clone(), c3.file.clone()];
+        let files_on_disk = [c1.file.clone(), c2.file.clone(), c3.file.clone()];
         store
             .upsert_chunks_batch(
                 &[

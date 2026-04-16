@@ -479,7 +479,7 @@ fn find_type_impacted<Mode>(
         .into_iter()
         .map(|(name, set)| (name, set.into_iter().collect()))
         .collect();
-    sorted.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    sorted.sort_by_key(|e| std::cmp::Reverse(e.1.len()));
 
     Ok(sorted
         .into_iter()

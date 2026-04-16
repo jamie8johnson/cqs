@@ -510,6 +510,70 @@ fn print_summary_terminal(data: &FullData, path: &str) {
     }
 }
 
+fn print_full_terminal(
+    data: &FullData,
+    path: &str,
+    content_set: Option<&HashSet<String>>,
+    token_info: Option<(usize, usize)>,
+) {
+    use colored::Colorize;
+
+    let token_label = match token_info {
+        Some((used, budget)) => format!(" ({} of {} tokens)", used, budget),
+        None => String::new(),
+    };
+    println!("{} {}{}", "Context for:".cyan(), path.bold(), token_label);
+    println!();
+
+    println!("{}", "Chunks:".cyan());
+    for c in &data.chunks {
+        println!(
+            "  {} {} (:{}-{})",
+            c.chunk_type,
+            c.name.bold(),
+            c.line_start,
+            c.line_end
+        );
+        if !c.signature.is_empty() {
+            println!("    {}", c.signature.dimmed());
+        }
+        // Print content if within token budget
+        if let Some(included) = content_set {
+            if included.contains(&c.name) {
+                println!("{}", "\u{2500}".repeat(50));
+                println!("{}", c.content);
+                println!();
+            }
+        }
+    }
+
+    if !data.external_callers.is_empty() {
+        println!();
+        println!("{}", "External callers:".cyan());
+        for (name, file, calls, line) in &data.external_callers {
+            println!("  {} ({}:{}) -> {}", name, file, line, calls);
+        }
+    }
+
+    if !data.external_callees.is_empty() {
+        println!();
+        println!("{}", "External callees:".cyan());
+        for (name, from) in &data.external_callees {
+            println!("  {} <- {}", name, from);
+        }
+    }
+
+    if !data.dependent_files.is_empty() {
+        println!();
+        println!("{}", "Dependent files:".cyan());
+        let mut files: Vec<&String> = data.dependent_files.iter().collect();
+        files.sort();
+        for f in files {
+            println!("  {}", f);
+        }
+    }
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -782,69 +846,5 @@ mod tests {
             count_field, arr_len as u64,
             "chunk_count field must equal chunks array length"
         );
-    }
-}
-
-fn print_full_terminal(
-    data: &FullData,
-    path: &str,
-    content_set: Option<&HashSet<String>>,
-    token_info: Option<(usize, usize)>,
-) {
-    use colored::Colorize;
-
-    let token_label = match token_info {
-        Some((used, budget)) => format!(" ({} of {} tokens)", used, budget),
-        None => String::new(),
-    };
-    println!("{} {}{}", "Context for:".cyan(), path.bold(), token_label);
-    println!();
-
-    println!("{}", "Chunks:".cyan());
-    for c in &data.chunks {
-        println!(
-            "  {} {} (:{}-{})",
-            c.chunk_type,
-            c.name.bold(),
-            c.line_start,
-            c.line_end
-        );
-        if !c.signature.is_empty() {
-            println!("    {}", c.signature.dimmed());
-        }
-        // Print content if within token budget
-        if let Some(included) = content_set {
-            if included.contains(&c.name) {
-                println!("{}", "\u{2500}".repeat(50));
-                println!("{}", c.content);
-                println!();
-            }
-        }
-    }
-
-    if !data.external_callers.is_empty() {
-        println!();
-        println!("{}", "External callers:".cyan());
-        for (name, file, calls, line) in &data.external_callers {
-            println!("  {} ({}:{}) -> {}", name, file, line, calls);
-        }
-    }
-
-    if !data.external_callees.is_empty() {
-        println!();
-        println!("{}", "External callees:".cyan());
-        for (name, from) in &data.external_callees {
-            println!("  {} <- {}", name, from);
-        }
-    }
-
-    if !data.dependent_files.is_empty() {
-        println!();
-        println!("{}", "Dependent files:".cyan());
-        let mut files: Vec<&String> = data.dependent_files.iter().collect();
-        files.sort();
-        for f in files {
-            println!("  {}", f);
-        }
     }
 }

@@ -665,7 +665,7 @@ mod tests {
     /// construction logic and verify field completeness.
     #[test]
     fn test_display_similar_results_json_structure() {
-        let results = vec![
+        let results = [
             make_search_result("alpha", 0.95, None),
             make_search_result("beta", 0.80, Some("parent-1")),
         ];

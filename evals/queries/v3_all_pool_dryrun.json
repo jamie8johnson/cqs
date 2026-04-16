@@ -1,0 +1,395 @@
+{
+  "schema_version": "v3-validated",
+  "created_at": 1776299626,
+  "n": 20,
+  "top_k": 20,
+  "concurrency": 8,
+  "dry_run": true,
+  "verified": 0,
+  "retriever_variants": [
+    "router",
+    "dense",
+    "sparse"
+  ],
+  "uncaught_error_count": 0,
+  "queries": [
+    {
+      "query": "ApiError",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031208,
+        "source_cmd": "search"
+      },
+      "pool_size": 2,
+      "pool_appearances_count": {
+        "router": 2,
+        "dense": 2,
+        "sparse": 2
+      },
+      "gold_verified": false,
+      "gold_validation_note": "dry-run: pool=2"
+    },
+    {
+      "query": "BatchInput",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031326,
+        "source_cmd": "search"
+      },
+      "pool_size": 1,
+      "pool_appearances_count": {
+        "router": 1,
+        "dense": 1,
+        "sparse": 1
+      },
+      "gold_verified": false,
+      "gold_validation_note": "dry-run: pool=1"
+    },
+    {
+      "query": "BlameEntry",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031221,
+        "source_cmd": "search"
+      },
+      "pool_size": 1,
+      "pool_appearances_count": {
+        "router": 1,
+        "dense": 1,
+        "sparse": 1
+      },
+      "gold_verified": false,
+      "gold_validation_note": "dry-run: pool=1"
+    },
+    {
+      "query": "BudgetedNoteEntry",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031341,
+        "source_cmd": "search"
+      },
+      "pool_size": 2,
+      "pool_appearances_count": {
+        "router": 2,
+        "dense": 2,
+        "sparse": 2
+      },
+      "gold_verified": false,
+      "gold_validation_note": "dry-run: pool=2"
+    },
+    {
+      "query": "ChunkIdentity",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031211,
+        "source_cmd": "search"
+      },
+      "pool_size": 1,
+      "pool_appearances_count": {
+        "router": 1,
+        "dense": 1,
+        "sparse": 1
+      },
+      "gold_verified": false,
+      "gold_validation_note": "dry-run: pool=1"
+    },
+    {
+      "query": "BoundedScoreHeap",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776195043,
+        "source_cmd": "search"
+      },
+      "pool_size": 2,
+      "pool_appearances_count": {
+        "router": 2,
+        "dense": 2,
+        "sparse": 2
+      },
+      "gold_verified": false,
+      "gold_validation_note": "dry-run: pool=2"
+    },
+    {
+      "query": "CallContext",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031301,
+        "source_cmd": "search"
+      },
+      "pool_size": 16,
+      "pool_appearances_count": {
+        "router": 16,
+        "dense": 16,
+        "sparse": 16
+      },
+      "gold_verified": false,
+      "gold_validation_note": "dry-run: pool=16"
+    },
+    {
+      "query": "ChunkSummary",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031298,
+        "source_cmd": "search"
+      },
+      "pool_size": 5,
+      "pool_appearances_count": {
+        "router": 5,
+        "dense": 5,
+        "sparse": 5
+      },
+      "gold_verified": false,
+      "gold_validation_note": "dry-run: pool=5"
+    },
+    {
+      "query": "BatchContext",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031796,
+        "source_cmd": "search"
+      },
+      "pool_size": 4,
+      "pool_appearances_count": {
+        "router": 4,
+        "dense": 4,
+        "sparse": 4
+      },
+      "gold_verified": false,
+      "gold_validation_note": "dry-run: pool=4"
+    },
+    {
+      "query": "CagraIndex",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031352,
+        "source_cmd": "search"
+      },
+      "pool_size": 16,
+      "pool_appearances_count": {
+        "router": 16,
+        "dense": 16,
+        "sparse": 16
+      },
+      "gold_verified": false,
+      "gold_validation_note": "dry-run: pool=16"
+    },
+    {
+      "query": "AuditModeFile",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031324,
+        "source_cmd": "search"
+      },
+      "pool_size": 1,
+      "pool_appearances_count": {
+        "router": 1,
+        "dense": 1,
+        "sparse": 1
+      },
+      "gold_verified": false,
+      "gold_validation_note": "dry-run: pool=1"
+    },
+    {
+      "query": "CAGRA index build",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776279218,
+        "source_cmd": "search"
+      },
+      "pool_size": 0,
+      "pool_appearances_count": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "gold_verified": false,
+      "gold_rank": null,
+      "gold_appearances": {},
+      "gold_validation_note": "empty pool \u2014 all retrievers returned 0 results"
+    },
+    {
+      "query": "CAGRA GPU vector index search phantom results distance buffer",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776197351,
+        "source_cmd": "scout"
+      },
+      "pool_size": 0,
+      "pool_appearances_count": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "gold_verified": false,
+      "gold_rank": null,
+      "gold_appearances": {},
+      "gold_validation_note": "empty pool \u2014 all retrievers returned 0 results"
+    },
+    {
+      "query": "ASP.NET web forms custom parser for server script blocks",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031203,
+        "source_cmd": "search"
+      },
+      "pool_size": 0,
+      "pool_appearances_count": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "gold_verified": false,
+      "gold_rank": null,
+      "gold_appearances": {},
+      "gold_validation_note": "empty pool \u2014 all retrievers returned 0 results"
+    },
+    {
+      "query": "CAGRA save load serialize persistence index",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776245242,
+        "source_cmd": "scout"
+      },
+      "pool_size": 0,
+      "pool_appearances_count": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "gold_verified": false,
+      "gold_rank": null,
+      "gold_appearances": {},
+      "gold_validation_note": "empty pool \u2014 all retrievers returned 0 results"
+    },
+    {
+      "query": "CacheStats struct",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031806,
+        "source_cmd": "search"
+      },
+      "pool_size": 0,
+      "pool_appearances_count": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "gold_verified": false,
+      "gold_rank": null,
+      "gold_appearances": {},
+      "gold_validation_note": "empty pool \u2014 all retrievers returned 0 results"
+    },
+    {
+      "query": "CLI argument definitions and command enum",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031096,
+        "source_cmd": "search"
+      },
+      "pool_size": 0,
+      "pool_appearances_count": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "gold_verified": false,
+      "gold_rank": null,
+      "gold_appearances": {},
+      "gold_validation_note": "empty pool \u2014 all retrievers returned 0 results"
+    },
+    {
+      "query": "BatchProvider trait definition",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031252,
+        "source_cmd": "search"
+      },
+      "pool_size": 0,
+      "pool_appearances_count": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "gold_verified": false,
+      "gold_rank": null,
+      "gold_appearances": {},
+      "gold_validation_note": "empty pool \u2014 all retrievers returned 0 results"
+    },
+    {
+      "query": "CAGRA sentinel initialization length probe phantom results",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776274060,
+        "source_cmd": "scout"
+      },
+      "pool_size": 0,
+      "pool_appearances_count": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "gold_verified": false,
+      "gold_rank": null,
+      "gold_appearances": {},
+      "gold_validation_note": "empty pool \u2014 all retrievers returned 0 results"
+    },
+    {
+      "query": "BFS expansion through call graph for context assembly",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031629,
+        "source_cmd": "search"
+      },
+      "pool_size": 0,
+      "pool_appearances_count": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "gold_verified": false,
+      "gold_rank": null,
+      "gold_appearances": {},
+      "gold_validation_note": "empty pool \u2014 all retrievers returned 0 results"
+    }
+  ]
+}

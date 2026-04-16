@@ -422,13 +422,13 @@ mod tests {
 
         let window_zero = make_test_chunk_summary("fn_w0", ChunkType::Function, 100, Some(0), "h5");
         assert!(
-            !window_zero.window_idx.is_some_and(|idx| idx > 0),
+            window_zero.window_idx.is_none_or(|idx| idx <= 0),
             "window_idx=0 should NOT be filtered out"
         );
 
         let no_window = make_test_chunk_summary("fn_no_w", ChunkType::Function, 100, None, "h6");
         assert!(
-            !no_window.window_idx.is_some_and(|idx| idx > 0),
+            no_window.window_idx.is_none_or(|idx| idx <= 0),
             "window_idx=None should NOT be filtered out"
         );
     }

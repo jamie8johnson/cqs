@@ -14,7 +14,7 @@ fn setup_task_store() -> TestStore {
     let store = TestStore::new();
 
     // Insert chunks: search_filtered calls validate_query and normalize_for_fts
-    let chunks = vec![
+    let chunks = [
         test_chunk(
             "search_filtered",
             "fn search_filtered(query: &str) { validate_query(query); normalize_for_fts(query); }",

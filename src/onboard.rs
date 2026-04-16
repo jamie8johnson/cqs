@@ -285,7 +285,7 @@ where
         return scores;
     }
     let mut entries: Vec<_> = scores.into_iter().collect();
-    entries.sort_by(|a, b| key_fn(&a.1).cmp(&key_fn(&b.1)));
+    entries.sort_by_key(|a| key_fn(&a.1));
     entries.truncate(max);
     entries.into_iter().collect()
 }
@@ -482,7 +482,7 @@ mod tests {
         use crate::parser::Language;
 
         // Verify that sort order is depth asc → file → line
-        let mut chunks = vec![
+        let mut chunks = [
             GatheredChunk {
                 name: "deep".into(),
                 file: PathBuf::from("a.rs"),

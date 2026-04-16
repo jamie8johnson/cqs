@@ -266,7 +266,7 @@ pub fn find_hotspots(graph: &CallGraph, top_n: usize) -> Vec<crate::health::Hots
             caller_count: callers.len(),
         })
         .collect();
-    hotspots.sort_by(|a, b| b.caller_count.cmp(&a.caller_count));
+    hotspots.sort_by_key(|h| std::cmp::Reverse(h.caller_count));
     hotspots.truncate(top_n);
     hotspots
 }

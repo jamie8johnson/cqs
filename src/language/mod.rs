@@ -964,7 +964,7 @@ mod tests {
     fn test_all_chunk_types_classified() {
         // Exhaustive match — adding a variant without a branch is a compile error.
         for &ct in ChunkType::ALL {
-            let _ = match ct {
+            match ct {
                 // Callable (in call graph + search)
                 ChunkType::Function
                 | ChunkType::Method
