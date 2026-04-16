@@ -5,12 +5,13 @@
 
 mod eval_common;
 
-use cqs::embedder::{Embedder, ModelConfig};
+use cqs::embedder::{Embedder, Embedding, ModelConfig};
 use cqs::generate_nl_description;
-use cqs::parser::Language;
+use cqs::parser::{Chunk, ChunkType, Language};
 use cqs::store::{ModelInfo, SearchFilter, Store};
 use eval_common::{fixture_path, EVAL_CASES};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 #[test]
@@ -151,4 +152,127 @@ fn test_fixtures_exist() {
         let path = fixture_path(lang);
         assert!(path.exists(), "Fixture missing: {:?}", path);
     }
+}
+
+// ============ Always-on recall test (issue #975) ============
+//
+// Pins the CI recall ceiling without requiring a downloaded model.
+// Unlike `test_recall_at_5` (which is `#[ignore]` and needs BGE-large),
+// this test runs on every build. It seeds a fresh store with chunks
+// whose embeddings are crafted so one chunk is strictly closest to a
+// known query vector, then exercises the full `search_filtered` path
+// (cosine scoring, threshold, top-K truncation, RRF-off ordering).
+//
+// Failure modes this guards against:
+//   - RRF ordering breaks
+//   - Top-K truncation bug
+//   - `SearchFilter::default()` regression (e.g., accidental demotion
+//     of non-test chunks, incorrect `enable_rrf` default)
+//   - Embedding storage/retrieval corruption (dim mismatch, byte
+//     conversion round-trip error)
+
+/// Build a deterministic 1024-dim unit vector from an integer seed.
+///
+/// Uses `sin((seed * 0.1) + (i * 0.001))` per position — each seed
+/// produces a distinct direction, unlike the repeat-scalar
+/// `mock_embedding` in `tests/common/mod.rs` which collapses any
+/// positive scalar to the same unit vector after L2 normalization.
+fn seeded_embedding(seed: u32) -> Embedding {
+    let mut v = vec![0.0f32; cqs::EMBEDDING_DIM];
+    for (i, val) in v.iter_mut().enumerate() {
+        *val = ((seed as f32 * 0.1) + (i as f32 * 0.001)).sin();
+    }
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for val in &mut v {
+            *val /= norm;
+        }
+    }
+    Embedding::new(v)
+}
+
+/// Build a minimal function chunk with the given name, file, and hash suffix.
+/// Uses `ChunkType::Function` so the default `enable_demotion` does not apply
+/// (demotion targets `ChunkType::Test`).
+fn seed_chunk(name: &str, file: &str, hash: &str) -> Chunk {
+    Chunk {
+        id: format!("{}:1:{}", file, hash),
+        file: PathBuf::from(file),
+        language: Language::Rust,
+        chunk_type: ChunkType::Function,
+        name: name.to_string(),
+        signature: format!("fn {}()", name),
+        content: format!("fn {}() {{ /* body */ }}", name),
+        doc: None,
+        line_start: 1,
+        line_end: 5,
+        content_hash: hash.to_string(),
+        parent_id: None,
+        window_idx: None,
+        parent_type_name: None,
+    }
+}
+
+#[test]
+fn test_search_pipeline_mock_embedder() {
+    // Five chunks covering different concepts. Each seed produces a
+    // unique direction via `seeded_embedding`; the query embedding
+    // below matches seed 1 (error handling) exactly, so that chunk
+    // must appear in the top-3 under any sane scoring regime.
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
+    let store = Store::open(&db_path).unwrap();
+    store.init(&ModelInfo::default()).unwrap();
+
+    let seeds: [(&str, &str, u32); 5] = [
+        ("handle_error", "src/errors.rs", 1),
+        ("spawn_task", "src/runtime.rs", 2),
+        ("score_splade", "src/splade.rs", 3),
+        ("hnsw_search", "src/hnsw.rs", 4),
+        ("parse_token", "src/parser.rs", 5),
+    ];
+
+    let pairs: Vec<_> = seeds
+        .iter()
+        .map(|(name, file, seed)| {
+            let hash = format!("{:08x}", seed);
+            (seed_chunk(name, file, &hash), seeded_embedding(*seed))
+        })
+        .collect();
+
+    store
+        .upsert_chunks_batch(&pairs, Some(1_700_000_000_000))
+        .expect("Failed to upsert seeded chunks");
+
+    // Query vector == error-handling chunk's embedding → cosine 1.0
+    // for that chunk, strictly less than 1.0 for the other four.
+    let query = seeded_embedding(1);
+    let filter = SearchFilter::default();
+    let results = store
+        .search_filtered(&query, &filter, 3, 0.0)
+        .expect("Failed to search");
+
+    assert!(
+        !results.is_empty(),
+        "search_filtered returned no results for a populated store"
+    );
+    assert!(
+        results.len() <= 3,
+        "Top-K truncation broken: requested 3, got {}",
+        results.len()
+    );
+
+    let top_names: Vec<&str> = results.iter().map(|r| r.chunk.name.as_str()).collect();
+    assert!(
+        top_names.contains(&"handle_error"),
+        "Expected 'handle_error' in top-3, got {:?}",
+        top_names
+    );
+
+    // The exact match (cosine ~1.0) should outrank any other chunk.
+    assert_eq!(
+        results[0].chunk.name, "handle_error",
+        "Exact embedding match should rank #1, got top-3 {:?}",
+        top_names
+    );
 }
