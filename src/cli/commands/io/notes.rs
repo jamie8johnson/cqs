@@ -102,9 +102,21 @@ pub(crate) enum NotesCommand {
     },
 }
 
-/// Handle `notes list` — requires a readonly CommandContext for staleness checks.
+/// Handle all `notes` subcommands.
+///
+/// Runs in the normal Group-B dispatch path. `ctx` is optional because
+/// `notes add|update|remove` must work before any index exists (a fresh
+/// clone lets a user capture notes without first running `cqs init && cqs
+/// index`). Mutation arms use `ctx` when available — reusing the already-open
+/// project root — and fall back to `find_project_root()` otherwise. `List`
+/// needs the readonly store for staleness, so it requires `ctx`.
+///
+/// Mutation arms open a separate read-write `Store` lazily, only when the
+/// mutation actually runs, to keep list-only workloads from paying for a
+/// second connection (RM-8: avoid double-connecting during pure reads).
 pub(crate) fn cmd_notes(
-    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
+    cli: &Cli,
+    ctx: Option<&crate::cli::CommandContext<'_, cqs::store::ReadOnly>>,
     subcmd: &NotesCommand,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_notes").entered();
@@ -114,23 +126,18 @@ pub(crate) fn cmd_notes(
             patterns,
             json,
             check,
-        } => cmd_notes_list(ctx, *warnings, *patterns, *json, *check),
-        // Mutations delegated to cmd_notes_mutate (Group A, no CommandContext)
-        _ => anyhow::bail!("internal: notes dispatch routing bug — please file an issue"),
-    }
-}
-
-/// Handle `notes add|update|remove` — opens one read-write store for reindex,
-/// avoiding the extra readonly connection that CommandContext would create.
-pub(crate) fn cmd_notes_mutate(cli: &Cli, subcmd: &NotesCommand) -> Result<()> {
-    let _span = tracing::info_span!("cmd_notes_mutate").entered();
-    match subcmd {
+        } => {
+            let ctx = ctx.ok_or_else(|| {
+                anyhow::anyhow!("Index not found. Run 'cqs init && cqs index' first to list notes.")
+            })?;
+            cmd_notes_list(ctx, *warnings, *patterns, *json, *check)
+        }
         NotesCommand::Add {
             text,
             sentiment,
             mentions,
             no_reindex,
-        } => cmd_notes_add(cli, text, *sentiment, mentions.as_deref(), *no_reindex),
+        } => cmd_notes_add(cli, ctx, text, *sentiment, mentions.as_deref(), *no_reindex),
         NotesCommand::Update {
             text,
             new_text,
@@ -139,17 +146,25 @@ pub(crate) fn cmd_notes_mutate(cli: &Cli, subcmd: &NotesCommand) -> Result<()> {
             no_reindex,
         } => cmd_notes_update(
             cli,
+            ctx,
             text,
             new_text.as_deref(),
             *new_sentiment,
             new_mentions.as_deref(),
             *no_reindex,
         ),
-        NotesCommand::Remove { text, no_reindex } => cmd_notes_remove(cli, text, *no_reindex),
-        NotesCommand::List { .. } => {
-            anyhow::bail!("internal: notes dispatch routing bug — please file an issue")
-        }
+        NotesCommand::Remove { text, no_reindex } => cmd_notes_remove(cli, ctx, text, *no_reindex),
     }
+}
+
+/// Resolve the project root: reuse the readonly ctx's root when available,
+/// otherwise walk up from CWD. Centralizes the `ctx.root` vs `find_project_root()`
+/// fallback so the three mutation helpers stay identical.
+fn resolve_root(
+    ctx: Option<&crate::cli::CommandContext<'_, cqs::store::ReadOnly>>,
+) -> std::path::PathBuf {
+    ctx.map(|c| c.root.clone())
+        .unwrap_or_else(find_project_root)
 }
 
 /// Re-parse and re-index notes after a file mutation, reusing an existing store.
@@ -202,6 +217,7 @@ fn ensure_notes_file(root: &std::path::Path) -> Result<PathBuf> {
 /// Add a note: validate text/sentiment, append to notes.toml, optionally reindex.
 fn cmd_notes_add(
     cli: &Cli,
+    ctx: Option<&crate::cli::CommandContext<'_, cqs::store::ReadOnly>>,
     text: &str,
     sentiment: f32,
     mentions: Option<&[String]>,
@@ -228,7 +244,7 @@ fn cmd_notes_add(
         mentions,
     };
 
-    let root = find_project_root();
+    let root = resolve_root(ctx);
     let notes_path = ensure_notes_file(&root)?;
 
     rewrite_notes_file(&notes_path, |entries| {
@@ -240,6 +256,9 @@ fn cmd_notes_add(
     let (indexed, index_error) = if no_reindex {
         (0, None)
     } else {
+        // Open read-write store lazily *only* when a mutation actually runs,
+        // so list-only invocations never pay the cost of a second connection
+        // (RM-8: avoid double-connecting during pure reads).
         match open_rw_store(&root) {
             Ok(store) => reindex_notes(root.as_path(), &store),
             Err(e) => (0, Some(format!("{e}"))),
@@ -287,6 +306,7 @@ fn cmd_notes_add(
 /// Update a note: match by text, apply new text/sentiment/mentions, optionally reindex.
 fn cmd_notes_update(
     cli: &Cli,
+    ctx: Option<&crate::cli::CommandContext<'_, cqs::store::ReadOnly>>,
     text: &str,
     new_text: Option<&str>,
     new_sentiment: Option<f32>,
@@ -308,7 +328,7 @@ fn cmd_notes_update(
         }
     }
 
-    let root = find_project_root();
+    let root = resolve_root(ctx);
     let notes_path = root.join("docs/notes.toml");
     if !notes_path.exists() {
         bail!("No notes.toml found. Use 'cqs notes add' to create notes first.");
@@ -351,6 +371,7 @@ fn cmd_notes_update(
     let (indexed, index_error) = if no_reindex {
         (0, None)
     } else {
+        // Open read-write store lazily *only* when a mutation actually runs.
         match open_rw_store(&root) {
             Ok(store) => reindex_notes(root.as_path(), &store),
             Err(e) => (0, Some(format!("{e}"))),
@@ -384,12 +405,17 @@ fn cmd_notes_update(
 }
 
 /// Remove a note by matching its text content, optionally reindex after.
-fn cmd_notes_remove(cli: &Cli, text: &str, no_reindex: bool) -> Result<()> {
+fn cmd_notes_remove(
+    cli: &Cli,
+    ctx: Option<&crate::cli::CommandContext<'_, cqs::store::ReadOnly>>,
+    text: &str,
+    no_reindex: bool,
+) -> Result<()> {
     if text.is_empty() {
         bail!("Note text cannot be empty");
     }
 
-    let root = find_project_root();
+    let root = resolve_root(ctx);
     let notes_path = root.join("docs/notes.toml");
     if !notes_path.exists() {
         bail!("No notes.toml found");
@@ -418,6 +444,7 @@ fn cmd_notes_remove(cli: &Cli, text: &str, no_reindex: bool) -> Result<()> {
     let (indexed, index_error) = if no_reindex {
         (0, None)
     } else {
+        // Open read-write store lazily *only* when a mutation actually runs.
         match open_rw_store(&root) {
             Ok(store) => reindex_notes(root.as_path(), &store),
             Err(e) => (0, Some(format!("{e}"))),
