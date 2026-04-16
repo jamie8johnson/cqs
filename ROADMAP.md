@@ -1,27 +1,34 @@
 # Roadmap
 
-## Current: v1.26.0 (2026-04-15)
+## Current: v1.26.0 + PR #1010 post-release fixes
 
-54 languages. 29 chunk types. **v3 eval dataset** (544 high-confidence dual-judge queries, train/dev/test 326/109/109). **Daemon mode** (`cqs watch --serve`, 3-19ms queries). Per-category SPLADE alpha routing, genuinely active. GPU-native CAGRA bitset filtering (patched cuvs 26.4).
+54 languages. 29 chunk types. **v3 eval dataset** canonical (544 high-confidence dual-judge queries, train/dev/test 326/109/109). **Daemon mode** (`cqs watch --serve`, 3-19ms queries). Per-category SPLADE alpha routing. GPU-native CAGRA bitset filtering (patched cuvs 26.4).
 
 **v1.26.0 shipped 2026-04-15:** watch-mode hardening + alpha re-fit on clean index + `--splade` CLI bug fix. 162 of 236 audit findings now closed across v1.25.0 + v1.26.0.
 
-**Post-release fixes in PR #1010 (2026-04-16):** cqs batch RefCell panic (invalidate_mutable_caches borrows); reranker token_type_ids bug (zeroed segment IDs silently broke fine-tuned BERT-family rerankers); local-path support in CQS_RERANKER_MODEL. These land in v1.26.1 or v1.27.0.
+**Post-release fixes in PR #1010 (2026-04-16, will land as v1.26.1 or v1.27.0):**
+- cqs batch RefCell panic in `invalidate_mutable_caches` (try_borrow_mut + deferred retry).
+- Reranker `token_type_ids` bug: zeroed segment IDs silently broke fine-tuned BERT-family rerankers. Fixed to populate from tokenizer encoding.
+- `CQS_RERANKER_MODEL` accepts absolute local directory paths alongside HF repo ids.
+- Cross_language α 1.00 → 0.10 (v3 sweep finding; +1.8pp R@1 on v3 test).
+- Centroid classifier infrastructure (disabled by default; `CQS_CENTROID_CLASSIFIER=1` to experiment, alpha floor wired).
+- `tests/classifier_audit.rs` integration test: reports confusion matrix vs v3 consensus labels on every invocation.
 
-**R@1 baseline on v3 dev (109 queries, no classifier, no reranker): 44.0%.** This is the new honest number. v2's 39.2% was on a different population and should not be cited for apples-to-apples comparisons.
+### Eval baselines on v3 test (2026-04-16, production router, 3-trial stable)
 
-### Eval Baselines (v1.26.0, clean 14,882-chunk index, 100% SPLADE coverage)
+| Config | R@1 | R@5 | R@20 |
+|---|---|---|---|
+| v1.26.0 alphas | 40.4% | 64.2% | 80.7% |
+| **v1.26.0 + xlang=0.10 (shipping)** | **42.2%** | 64.2% | 78.9% |
+| Full v3-swept per-category α | 41.3% | 63.3% | 78.9% |
 
-| Eval | Config | R@1 | R@5 | R@20 | Notes |
-|------|--------|-----|-----|------|-------|
-| V2 (265q) | **BGE-large + SPLADE router (v1.26.0 α's)** | **39.2%** | 58.8% | 78.6% | ident 1.00, struct 0.90, concept 0.70, behav 0.00, neg 0.80, rest 1.00 |
-| V2 (265q) | BGE-large dense only | 35.8% | 54.7% | 74.7% | router path, no SPLADE |
-| V2 (265q) | v1.25.0 α's on clean index | 26.8% | 45.7% | 75.5% | old α's tuned on dirty 96k index — wrong for clean 14.8k |
-| V2 (265q) | Oracle per-category α | ~45% | — | — | Theoretical ceiling — gated on classifier accuracy (~22% non-identifier today) |
-| Fixture (296q) | BGE-large FT | 91.9% | — | — | Synthetic fixtures, model-agnostic |
-| Fixture (296q) | BGE-large baseline | 91.2% | — | — | Production model |
+**Measurement caveat.** Single-trial eval runs fluctuate ±1 query (~1pp) on v3 test. Always confirm over 3 trials before citing a delta. Single-trial readings earlier in this roadmap (e.g. "44.0% dev baseline", "45.0% test R@1") were noise; the stable numbers are above.
 
-**Net session lift:** +3.4pp over dense-only, +1.8pp over the corrected v1.25.0 baseline. Investigation details in `~/training-data/research/models.md`.
+**Upper-bound analysis.** Forced-α sweep (bypassing strategy routing) tops out around 48% R@1 on v3 — the ceiling if the rule-based classifier perfectly routed every query. But the breakeven simulation on v3 showed per-category α routing on Unknown queries (~48% of traffic) is net-negative at *any* classifier accuracy. The real reachable ceiling from alpha + classifier tuning is ~1–3pp above the current 42.2%. Further R@1 progress requires representation changes (HyDE, reranker V2 at scale, embedder switch), not tuning.
+
+### Historical reference numbers (pre-v3, not comparable to above)
+
+v2 (265q) under v1.26.0 alphas: 39.2% R@1 / 58.8% R@5 / 78.6% R@20. v2 and v3 differ in query distribution and gold-chunk provenance, so v2 → v3 deltas shouldn't be read as improvements. BGE-large FT fixture eval (296q synthetic): 91.9% R@1 — different task entirely (chunk-to-description retrieval, not code-search).
 
 ---
 
@@ -68,7 +75,7 @@ Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue lis
 
 ### GPU Lane
 
-- [ ] **Reranker V2** — code-trained cross-encoder. Pilot experiment 2026-04-16 on v3 dev showed the small-data approach is net-negative: fine-tuning `ms-marco-MiniLM-L-6-v2` on 2270 v3 pool triples gave R@1=38.5% vs baseline 44.0% (−5.5pp). Default ms-marco without fine-tuning: 28.4% (−15.6pp). Full pipeline now verified end-to-end (training, ONNX export, cqs local-path loading, `--rerank` flag integration).
+- [ ] **Reranker V2** — code-trained cross-encoder. Pilot experiment 2026-04-16 on v3 dev showed the small-data approach is net-negative: fine-tuning `ms-marco-MiniLM-L-6-v2` on 2270 v3 pool triples gave R@1=38.5% vs single-trial baseline of 44.0% (pre-stabilization reading — the stable baseline is ~41-42%). Default ms-marco without fine-tuning: 28.4%. Either way, net-negative. Full pipeline now verified end-to-end (training, ONNX export, cqs local-path loading, `--rerank` flag integration).
 
   **Why the pilot failed and what it teaches:**
   1. Hybrid dense+SPLADE retrieval is already well-calibrated — a cross-encoder scoring on (query, chunk_text) alone has strictly less signal than the hybrid scorer.
@@ -84,8 +91,6 @@ Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue lis
   **Why not the bi-encoder instead:** research/models.md "basin" result — v9-200k, v9-200k-hn, v9-200k-testq, v9-175k, v9-500k, v9-mini, v8, contrastive-B all land 81-82% R@1 on 296q regardless of training variation. That's the architectural ceiling for E5-base, not a training gap. Further preference data on the bi-encoder won't move the basin.
 
   **Bug fix prerequisite (DONE):** `src/reranker.rs` was zeroing `token_type_ids` before ORT inference. BERT-family rerankers use segment IDs to distinguish query (0) from passage (1). Default ms-marco was robust to all-zeros; fine-tuned models break catastrophically. Fixed 2026-04-16 (in PR #1010). Any future reranker upgrade needs this fix.
-
-  **Why not the bi-encoder instead:** research/models.md "basin" result — v9-200k, v9-200k-hn, v9-200k-testq, v9-175k, v9-500k, v9-mini, v8, contrastive-B all land 81-82% R@1 on 296q regardless of training variation. That's the architectural ceiling for E5-base, not a training gap. Further preference data on the bi-encoder won't move the basin.
 
   **Data pipeline is the long pole:**
   1. **Local-LLM-judged pairwise preferences (primary)** — `Gemma 4 31B Dense` at Q4_K_M via vLLM on the A6000 scores `(query, chunk_A, chunk_B)` across augmented_200k_keydac or combined_9lang_hard_negs. Apache 2.0, ~20GB VRAM at Q4, ~28GB headroom left for KV cache + context. Gemma 4 release (2026-04-02) leads open-weights coding benches — 80.0% LiveCodeBench v6, 2150 Codeforces ELO. Cost: $0 per pass. Throughput estimate: ~500-1000 tok/s batched → 200k labels in ~5h. Cached by content hash (same pattern as contrastive summaries SQ-10b). Fallback tier: `Gemma 4 26B MoE` (3.8B active/token, ~2-3× throughput, ~2 point lower LiveCodeBench) for bulk clear-cut pairs.
@@ -103,21 +108,36 @@ Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue lis
 **Eval & retrieval quality:**
 - [~] **Classifier accuracy investigation — SCOPE REDUCED 2026-04-16.** The "4.5pp oracle gap" was an illusion. A breakeven simulation on v3 dev showed that per-category alpha routing on Unknown queries is net-negative at ANY classifier accuracy, including p=1.00 (−9.1pp R@1 at perfect accuracy). Root cause: the per-category alphas were tuned on queries the rule-based classifier was already confident about — a population with different retrieval characteristics than Unknown queries. Unknown queries want α=1.0 (pure SPLADE scoring weight) because dense embeddings don't capture their semantics well.
 
+  **Audit data (v3 dev, 109 queries; `cargo test --test classifier_audit`):**
+
+  | v3 label | N | Fire rate | Correct | Precision when fires |
+  |---|---|---|---|---|
+  | negation | 17 | 100% | 100% | 100% ✓ |
+  | cross_language | 11 | 82% | 82% | 100% ✓ |
+  | identifier_lookup | 18 | 61% | 61% | 100% — recall gap, α=1.0 already optimal |
+  | structural | 8 | 50% | 38% | 75% |
+  | type_filtered | 13 | 46% | 8% | 17% — misfires into structural/conceptual |
+  | multi_step | 14 | 43% | 0% | 0% — "AND" conjunctions get caught by structural first |
+  | behavioral | 16 | 19% | 6% | 33% |
+  | conceptual | 12 | 0% | 0% | 0% — abstract-noun patterns don't match v3 phrasings |
+
+  Overall: 38.5% accurate, 49.5% fall to Unknown, 13.8% fire wrong.
+
   **What's dead:**
   - Option 2 (centroid matching): measured at 76% accuracy → −4.6pp R@1 on v3 dev. Disabled but infra preserved (`CQS_CENTROID_CLASSIFIER=1` to experiment).
-  - Option 3 (logistic regression): would fail the same way — simulation proved that accuracy gains can't overcome the per-category alpha mismatch.
+  - Option 3 (logistic regression): would fail the same way — simulation proved accuracy gains can't overcome the per-category alpha mismatch.
   - Option 4 (fine-tuned MiniLM) and 5 (LLM classify): same.
+  - Option 1 rule-fix pilot (negation idiom guards: `not null`, `avoid`, etc.) measured 2026-04-16: eliminated 2 misfires, no R@1 change within noise. Reverted. Cheap classifier precision improvements don't move R@1 because queries that fall to Unknown get α=1.0, which is close to optimal for most of them.
 
-  **What's still worth doing:**
-  - Option 1 (rule expansion) — improves rule-based PRECISION on queries it already handles. Doesn't touch Unknown population. Cheap, no risk.
-  - A single Unknown-specific alpha sweep — fit one α for the whole Unknown bucket rather than per-category. Likely lands near current 1.0 but worth confirming on v3 dev.
+  **What's still worth doing (low-value but low-risk):**
+  - Rule expansion for multi_step (catch "X AND Y" patterns) and conceptual (better abstract-noun coverage) — only worth doing when we have a larger eval set where 1pp is above noise.
 
   Details and breakeven simulation in `~/training-data/research/models.md`.
 
 - [x] **Re-fit per-category alphas on clean index** — **Done 2026-04-15 (v1.26.0, PR #1005).** ident 0.90→1.00, struct 0.60→0.90, concept 0.85→0.70, behav 0.05→0.00 (dense-only), neg 1.00→0.80 (explicit arm). Fully-routed R@1 lands at 39.2% (+1.8pp over v1.25.0 corrected baseline; +3.4pp over dense-only).
 - [x] **Eval expansion: v3 consensus dataset** — **Done 2026-04-15.** 544 high-confidence dual-judge queries (Claude Haiku + Gemma 4 31B consensus). Train/dev/test 326/109/109, stratified. Every category N≥23 (was N=1 for multi_step in v2). Pipeline: telemetry mining (328 real) + chunk-seeded generation (522) + pooled retrieval (3 cqs variants) + dual LLM judge. Non-tautological gold: generated seeds fixed before retrieval; telemetry gold from pooled candidates + independent LLM validation. Details in `~/training-data/research/models.md`.
 - [ ] **Investigate CAGRA filtering regression on enriched index** — fully-routed v1.24.0 showed conceptual −5.5pp, structural −3.8pp, identifier −2pp vs pre-release baseline. Hypothesis: CAGRA graph walk strands in filtered-out regions. Concrete proposal in [#962](https://github.com/jamie8johnson/cqs/issues/962) (Quick-wins Lane).
-- [ ] **Query-time HyDE for structural queries — NOW THE HIGHEST-LEVERAGE QUICK WIN.** Old data: HyDE +14pp structural / +12pp type_filtered / −22pp conceptual / −15pp behavioral. Router classifies structural → LLM generates synthetic code → embed → search. Per-category by design. Attacks the representation problem directly (which the centroid + reranker experiments proved is the real bottleneck, not classification). Needs fresh eval on v3 dev. Prerequisites: HyDE generation via local Gemma (pipeline already built 2026-04-15) → embed with BGE → compare vs raw-query baseline per category.
+- [ ] **Query-time HyDE for structural queries — most promising untested lever.** Old v2-era data: HyDE +14pp structural / +12pp type_filtered / −22pp conceptual / −15pp behavioral. Router classifies structural → LLM generates synthetic code → embed → search. Per-category by design, attacks representation directly. Treat the v2 numbers as motivation, not promise — this session's experience with wins-that-vanish-through-the-router (centroid, reranker v2, full alpha sweep) argues for measuring on v3 dev before declaring it a win. Prerequisites already built: Gemma 4 31B via vLLM for generation, BGE embedder, v3 eval harness. Design the experiment to hold the full-router path fixed and vary only the query embedding source.
 - [ ] **Switch production default BGE → E5 v9-200k** — clean-index eval shows ties on R@1 + slight edge on R@5/R@20 + 1/3 the embedding dimension (768 vs 1024). Gated on Embedder model abstraction ([#949](https://github.com/jamie8johnson/cqs/issues/949)) and a confirmation re-run to rule out 1-query noise.
 
 **Daemon & data:**
@@ -142,9 +162,11 @@ Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue lis
 **Languages:**
 - [ ] **Move language** — blocked: no tree-sitter grammar on crates.io.
 
-### Agent Adoption — Telemetry Data (2026-04-09)
+### Agent Adoption — Telemetry Data
 
-16,731 cqs invocations across all sessions. Two distinct profiles:
+**49,242 cqs invocations** logged at `~/.cache/cqs/query_log.jsonl` since 2026-04-06 (snapshot 2026-04-16). Only 328 unique real queries (99% duplicate rate); 99.9% are `search`. The distribution below is from the 2026-04-09 analysis which split main-conversation vs subagent invocations and still reflects the relative command mix.
+
+Historical profile (2026-04-09, 16,731 invocations), two distinct profiles:
 
 **Main conversation (3,889 invocations):**
 | Command | % | Count |
