@@ -251,20 +251,24 @@ impl Parser {
         let language = Language::from_extension(&ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
 
-        // Grammar-less languages use custom reference extraction
+        // Grammar-less languages use custom reference extraction (issue #954):
+        // prefer `custom_call_parser` (relationships only), fall back to
+        // `custom_all_parser` (drops chunks), then to the markdown default.
+        // The layered fallback means a language that only defines the
+        // combined parser (like ASPX) still gets correct call/type
+        // extraction here without a dedicated calls-only function.
         if language.def().grammar.is_none() {
-            return match language {
-                Language::Aspx => {
-                    let (_chunks, calls, chunk_types) =
-                        crate::parser::aspx::parse_aspx_all(&source, path, self)?;
-                    Ok((calls, chunk_types))
-                }
-                _ => {
-                    let md_calls =
-                        crate::parser::markdown::parse_markdown_references(&source, path)?;
-                    Ok((md_calls, vec![]))
-                }
-            };
+            if let Some(f) = language.def().custom_call_parser {
+                return f(&source, path, self);
+            }
+            if let Some(f) = language.def().custom_all_parser {
+                let (_chunks, calls, chunk_types) = f(&source, path, self)?;
+                return Ok((calls, chunk_types));
+            }
+            // Markdown (and any future grammar-less language
+            // that opts into the default line-based parser)
+            let md_calls = crate::parser::markdown::parse_markdown_references(&source, path)?;
+            return Ok((md_calls, vec![]));
         }
 
         let grammar = language.try_grammar().ok_or_else(|| {
