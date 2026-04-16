@@ -101,18 +101,44 @@ Historical split (2026-04-09, 16,731 invocations): **main conversation** uses `s
 
 ---
 
-## Open Issues (pre-audit)
+## Open Issues
 
-| # | Finding | Difficulty |
-|---|---------|-----------|
-| #853 | DS-5: DEFERRED transactions → SQLITE_BUSY | medium |
-| #854 | SEC-4: Reference path containment | medium |
-| #855 | SHL-25: 25 env vars undocumented in README | easy |
-| #856 | PB-5: atexit Mutex UB | hard |
-| #848 | RM-1: Reduce tokio threads | easy |
-| #847 | EXT-2: CLI/batch parity test | easy (subsumed by [#947](https://github.com/jamie8johnson/cqs/issues/947)) |
+Audited 2026-04-16 post-v1.26.1 — see [`docs/audit-open-issues-2026-04-16.md`](docs/audit-open-issues-2026-04-16.md) for full findings + fix prompts amended onto each issue body.
 
-Audit-era issues under the `audit-v1.25.0` label: `gh issue list --label audit-v1.25.0`. Wave G backlog: #955, #958, #959, #960, #966, #969, #971, #974, #975.
+**Tier 1 (ship next, HIGH or MEDIUM/EASY):**
+
+| # | Finding | Impact | Difficulty |
+|---|---------|--------|-----------|
+| [#917](https://github.com/jamie8johnson/cqs/issues/917) | Streaming SPLADE serialize (~60-100MB peak drop) | HIGH | MEDIUM |
+| [#974](https://github.com/jamie8johnson/cqs/issues/974) | onboard + where: assert retrieval content | HIGH | MEDIUM |
+| [#975](https://github.com/jamie8johnson/cqs/issues/975) | Always-on recall + staleness mtime semantics | HIGH | MEDIUM |
+| [#954](https://github.com/jamie8johnson/cqs/issues/954) | Grammar-less parser dispatch via LanguageDef | MEDIUM | EASY |
+| [#959](https://github.com/jamie8johnson/cqs/issues/959) | Collapse notes dispatch into single handler | MEDIUM | EASY |
+| [#966](https://github.com/jamie8johnson/cqs/issues/966) | Stream-hash enrichment (blake3) | MEDIUM | EASY |
+| [#969](https://github.com/jamie8johnson/cqs/issues/969) | Recency-based `last_indexed_mtime` prune | MEDIUM | EASY |
+| [#971](https://github.com/jamie8johnson/cqs/issues/971) | HNSW self-heal dirty-flag integration test | MEDIUM | EASY |
+| [#951](https://github.com/jamie8johnson/cqs/issues/951) | Re-benchmark README Performance table | MEDIUM | EASY |
+
+**Tier 2 (bundle into audit-v1.26.0 wave, MEDIUM/MEDIUM):**
+
+| # | Finding |
+|---|---------|
+| [#955](https://github.com/jamie8johnson/cqs/issues/955) | Compile-enforced ChunkType type-hint patterns |
+| [#958](https://github.com/jamie8johnson/cqs/issues/958) | `define_query_categories!` macro — single source of truth |
+| [#960](https://github.com/jamie8johnson/cqs/issues/960) | Per-LanguageDef structural pattern matchers |
+| [#957](https://github.com/jamie8johnson/cqs/issues/957) | SPLADE/reranker preset registry |
+
+**Tier 3 (deferred / blocked):**
+
+| # | Finding | Blocker |
+|---|---------|---------|
+| [#956](https://github.com/jamie8johnson/cqs/issues/956) | ExecutionProvider: CoreML/ROCm decouple | needs non-Linux CI |
+| [#255](https://github.com/jamie8johnson/cqs/issues/255) | Pre-built reference packages | signing/registry design |
+| [#717](https://github.com/jamie8johnson/cqs/issues/717) | HNSW mmap | needs lib swap |
+| [#916](https://github.com/jamie8johnson/cqs/issues/916) | mmap SPLADE body | smaller win than claimed; depriorotized behind #917 |
+| [#106](https://github.com/jamie8johnson/cqs/issues/106) | ort 2.0-rc.12 stable release | upstream (pykeio) |
+
+**Closed during this audit:** #63 (audit.toml ignore already in place), #921 (watch-loop claim invalid; subsumed by #917).
 
 ---
 
