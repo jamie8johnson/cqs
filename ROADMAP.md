@@ -2,9 +2,13 @@
 
 ## Current: v1.26.0 (2026-04-15)
 
-54 languages. 29 chunk types. 265-query v2 eval. **Daemon mode** (`cqs watch --serve`, 3-19ms queries). Per-category SPLADE alpha routing, genuinely active. GPU-native CAGRA bitset filtering (patched cuvs 26.4).
+54 languages. 29 chunk types. **v3 eval dataset** (544 high-confidence dual-judge queries, train/dev/test 326/109/109). **Daemon mode** (`cqs watch --serve`, 3-19ms queries). Per-category SPLADE alpha routing, genuinely active. GPU-native CAGRA bitset filtering (patched cuvs 26.4).
 
 **v1.26.0 shipped 2026-04-15:** watch-mode hardening + alpha re-fit on clean index + `--splade` CLI bug fix. 162 of 236 audit findings now closed across v1.25.0 + v1.26.0.
+
+**Post-release fixes in PR #1010 (2026-04-16):** cqs batch RefCell panic (invalidate_mutable_caches borrows); reranker token_type_ids bug (zeroed segment IDs silently broke fine-tuned BERT-family rerankers); local-path support in CQS_RERANKER_MODEL. These land in v1.26.1 or v1.27.0.
+
+**R@1 baseline on v3 dev (109 queries, no classifier, no reranker): 44.0%.** This is the new honest number. v2's 39.2% was on a different population and should not be cited for apples-to-apples comparisons.
 
 ### Eval Baselines (v1.26.0, clean 14,882-chunk index, 100% SPLADE coverage)
 
@@ -64,7 +68,22 @@ Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue lis
 
 ### GPU Lane
 
-- [ ] **Reranker V2** — code-trained cross-encoder (ms-marco was catastrophic). Pairwise ranking loss (DPO-family — cross-entropy / margin-MSE / RankNet / optionally a KL anchor against a reference scorer) is the right paradigm, not contrastive: rerankers score `(query, doc)` pairs, not embed into a shared space, so relative-order supervision fits directly.
+- [ ] **Reranker V2** — code-trained cross-encoder. Pilot experiment 2026-04-16 on v3 dev showed the small-data approach is net-negative: fine-tuning `ms-marco-MiniLM-L-6-v2` on 2270 v3 pool triples gave R@1=38.5% vs baseline 44.0% (−5.5pp). Default ms-marco without fine-tuning: 28.4% (−15.6pp). Full pipeline now verified end-to-end (training, ONNX export, cqs local-path loading, `--rerank` flag integration).
+
+  **Why the pilot failed and what it teaches:**
+  1. Hybrid dense+SPLADE retrieval is already well-calibrated — a cross-encoder scoring on (query, chunk_text) alone has strictly less signal than the hybrid scorer.
+  2. Over-retrieval (4× when `--rerank` is set) pushes gold chunks beyond rank 20 even when the model is right most of the time. R@20 drops too, not just R@1.
+  3. 2270 examples + MS-MARCO base model is insufficient for code queries.
+
+  **Prerequisites to make V2 net-positive (must address all three):**
+  1. **Scale: 200k+ Gemma-labeled pairs.** Pipeline built 2026-04-15 (vLLM Gemma 4 31B serving, claude_client.py fallback, blake3-cached prompts). Pairwise preferences across `augmented_200k_keydac` or generated-from-chunks corpus.
+  2. **Base: code-pretrained encoder.** CodeBERT, CodeT5+-110M-embedding, or UniXcoder. MS-MARCO on web passages doesn't transfer.
+  3. **Fusion: RRF instead of replace.** Combine reranker logit with original hybrid score via reciprocal rank fusion rather than using the reranker alone. Preserves SPLADE signal.
+  4. **Don't over-retrieve.** Keep reranker input = top-K, not 4×K. Prevents the R@20 drop.
+
+  **Why not the bi-encoder instead:** research/models.md "basin" result — v9-200k, v9-200k-hn, v9-200k-testq, v9-175k, v9-500k, v9-mini, v8, contrastive-B all land 81-82% R@1 on 296q regardless of training variation. That's the architectural ceiling for E5-base, not a training gap. Further preference data on the bi-encoder won't move the basin.
+
+  **Bug fix prerequisite (DONE):** `src/reranker.rs` was zeroing `token_type_ids` before ORT inference. BERT-family rerankers use segment IDs to distinguish query (0) from passage (1). Default ms-marco was robust to all-zeros; fine-tuned models break catastrophically. Fixed 2026-04-16 (in PR #1010). Any future reranker upgrade needs this fix.
 
   **Why not the bi-encoder instead:** research/models.md "basin" result — v9-200k, v9-200k-hn, v9-200k-testq, v9-175k, v9-500k, v9-mini, v8, contrastive-B all land 81-82% R@1 on 296q regardless of training variation. That's the architectural ceiling for E5-base, not a training gap. Further preference data on the bi-encoder won't move the basin.
 
@@ -82,21 +101,23 @@ Full list: 25 issues #951–#975, all labeled `audit-v1.25.0`. See `gh issue lis
 ### CPU Lane
 
 **Eval & retrieval quality:**
-- [ ] **Classifier accuracy investigation** — the 4.5pp gap between deployed per-category routing (44.9%) and oracle (49.4%) is *entirely* in `classify_query()` accuracy, not alpha picks. Today: negation 100%, identifier 84%, structural 19%, type_filtered 4%, behavioral 5%, conceptual 3%, cross_language 0%. Most queries fall to `Unknown` → α=1.0.
+- [~] **Classifier accuracy investigation — SCOPE REDUCED 2026-04-16.** The "4.5pp oracle gap" was an illusion. A breakeven simulation on v3 dev showed that per-category alpha routing on Unknown queries is net-negative at ANY classifier accuracy, including p=1.00 (−9.1pp R@1 at perfect accuracy). Root cause: the per-category alphas were tuned on queries the rule-based classifier was already confident about — a population with different retrieval characteristics than Unknown queries. Unknown queries want α=1.0 (pure SPLADE scoring weight) because dense embeddings don't capture their semantics well.
 
-  **Options (local-first first):**
-  1. **Rule expansion** — mine eval queries for missed phrasings ("how is X built", "X that uses Y"). Cheap, brittle, +5-10pp.
-  2. **Centroid matching on BGE embeddings (zero-train)** — mean labeled embeddings per category → 8 centroids (~32 KB). Query embedding already computed for retrieval. Sub-µs inference. Likely 60-80% on non-identifier/negation. **Recommended starting point.**
-  3. **Logistic regression on BGE embeddings (trivial train)** — same input, proper linear head, ~40 KB weights. Approaches 85-90%.
-  4. **Fine-tuned MiniLM (training effort)** — 23 MB ONNX, ~1 ms inference. Highest local accuracy.
-  5. **LLM classify + cache (non-local)** — Haiku, query-hash cached. Highest accuracy, violates local-first.
+  **What's dead:**
+  - Option 2 (centroid matching): measured at 76% accuracy → −4.6pp R@1 on v3 dev. Disabled but infra preserved (`CQS_CENTROID_CLASSIFIER=1` to experiment).
+  - Option 3 (logistic regression): would fail the same way — simulation proved that accuracy gains can't overcome the per-category alpha mismatch.
+  - Option 4 (fine-tuned MiniLM) and 5 (LLM classify): same.
 
-  **Data caveat (resolved):** v3 dataset (544q, train/dev/test split) replaces the 265-query v2 set and eliminates the train/eval leakage concern. Centroid training uses train split only; alpha sweeps use dev; final numbers on frozen test.
+  **What's still worth doing:**
+  - Option 1 (rule expansion) — improves rule-based PRECISION on queries it already handles. Doesn't touch Unknown population. Cheap, no risk.
+  - A single Unknown-specific alpha sweep — fit one α for the whole Unknown bucket rather than per-category. Likely lands near current 1.0 but worth confirming on v3 dev.
+
+  Details and breakeven simulation in `~/training-data/research/models.md`.
 
 - [x] **Re-fit per-category alphas on clean index** — **Done 2026-04-15 (v1.26.0, PR #1005).** ident 0.90→1.00, struct 0.60→0.90, concept 0.85→0.70, behav 0.05→0.00 (dense-only), neg 1.00→0.80 (explicit arm). Fully-routed R@1 lands at 39.2% (+1.8pp over v1.25.0 corrected baseline; +3.4pp over dense-only).
 - [x] **Eval expansion: v3 consensus dataset** — **Done 2026-04-15.** 544 high-confidence dual-judge queries (Claude Haiku + Gemma 4 31B consensus). Train/dev/test 326/109/109, stratified. Every category N≥23 (was N=1 for multi_step in v2). Pipeline: telemetry mining (328 real) + chunk-seeded generation (522) + pooled retrieval (3 cqs variants) + dual LLM judge. Non-tautological gold: generated seeds fixed before retrieval; telemetry gold from pooled candidates + independent LLM validation. Details in `~/training-data/research/models.md`.
 - [ ] **Investigate CAGRA filtering regression on enriched index** — fully-routed v1.24.0 showed conceptual −5.5pp, structural −3.8pp, identifier −2pp vs pre-release baseline. Hypothesis: CAGRA graph walk strands in filtered-out regions. Concrete proposal in [#962](https://github.com/jamie8johnson/cqs/issues/962) (Quick-wins Lane).
-- [ ] **Query-time HyDE for structural queries** — old data: HyDE +14pp structural / +12pp type_filtered / −22pp conceptual / −15pp behavioral. Router classifies structural → LLM generates synthetic code → embed → search. Per-category by design. Need fresh eval with SPLADE active (old data is pre-SPLADE, pre-AC-1).
+- [ ] **Query-time HyDE for structural queries — NOW THE HIGHEST-LEVERAGE QUICK WIN.** Old data: HyDE +14pp structural / +12pp type_filtered / −22pp conceptual / −15pp behavioral. Router classifies structural → LLM generates synthetic code → embed → search. Per-category by design. Attacks the representation problem directly (which the centroid + reranker experiments proved is the real bottleneck, not classification). Needs fresh eval on v3 dev. Prerequisites: HyDE generation via local Gemma (pipeline already built 2026-04-15) → embed with BGE → compare vs raw-query baseline per category.
 - [ ] **Switch production default BGE → E5 v9-200k** — clean-index eval shows ties on R@1 + slight edge on R@5/R@20 + 1/3 the embedding dimension (768 vs 1024). Gated on Embedder model abstraction ([#949](https://github.com/jamie8johnson/cqs/issues/949)) and a confirmation re-run to rule out 1-query noise.
 
 **Daemon & data:**
