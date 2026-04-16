@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 91.2% Recall@1 on fixtures; on a real 11k-chunk codebase (v1.25.0 clean post-GC index, 265-query V2 live eval) the router scores 37.4% R@1 / 55.8% R@5 / 77.4% R@20 (oracle ceiling 49.4% R@1). Identifier lookup is 50% R@1 / 73% R@5 on a 100-query slice — the agent-relevant metric. 54 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **91% R@1 on 296-query fixtures, 42% R@1 / 64% R@5 / 79% R@20 on the v3 dual-judge eval (544 real-code queries, 14.9k-chunk codebase, BGE-large + per-category SPLADE α routing).** Forced-α ceiling on v3 is ~48% R@1 — further headroom needs representation changes (HyDE, code-trained reranker), not tuning. 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -24,7 +24,7 @@ Code intelligence and RAG for AI agents. Semantic search, call graph analysis, i
 
 ## Install
 
-**Requires Rust 1.93+**
+**Requires Rust 1.95+**
 
 ```bash
 cargo install cqs
