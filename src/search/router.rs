@@ -6,10 +6,11 @@
 
 use crate::language::{ChunkType, REGISTRY};
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, OnceLock};
 
 /// Query categories for adaptive routing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryCategory {
     /// Looking for a specific function/type by name ("search_filtered", "HashMap::new")
     IdentifierLookup,
@@ -29,6 +30,23 @@ pub enum QueryCategory {
     CrossLanguage,
     /// No clear category — use default strategy
     Unknown,
+}
+
+impl QueryCategory {
+    pub fn from_snake_case(s: &str) -> Option<Self> {
+        match s {
+            "identifier_lookup" => Some(Self::IdentifierLookup),
+            "structural" | "structural_search" => Some(Self::Structural),
+            "behavioral" | "behavioral_search" => Some(Self::Behavioral),
+            "conceptual" | "conceptual_search" => Some(Self::Conceptual),
+            "multi_step" => Some(Self::MultiStep),
+            "negation" => Some(Self::Negation),
+            "type_filtered" => Some(Self::TypeFiltered),
+            "cross_language" => Some(Self::CrossLanguage),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for QueryCategory {
@@ -867,6 +885,181 @@ pub fn extract_type_hints(query: &str) -> Option<Vec<ChunkType>> {
     } else {
         Some(types)
     }
+}
+
+// ── Centroid classifier ─────────────────────────────────────────────
+//
+// Embedding-space centroid matching: 8 pre-computed category centroids
+// from the v3 eval train split (326 queries, BGE-large 1024-dim).
+// At query time, cosine-sim to each centroid; if top-1 margin over
+// top-2 exceeds θ, override the rule-based category. θ=0.01 gives
+// 87.7% accuracy at 67% coverage on the dev split; below θ the
+// rule-based classifier handles it.
+//
+// Centroid file: ~/.local/share/cqs/classifier_centroids.v1.json
+// Override: CQS_CENTROID_THRESHOLD (default 0.01)
+// Disable:  CQS_CENTROID_CLASSIFIER=0
+
+static CENTROID_CLASSIFIER: OnceLock<Option<CentroidClassifier>> = OnceLock::new();
+
+struct CentroidClassifier {
+    centroids: HashMap<QueryCategory, Vec<f32>>,
+    dim: usize,
+    threshold: f32,
+}
+
+impl CentroidClassifier {
+    fn load() -> Option<Self> {
+        if std::env::var("CQS_CENTROID_CLASSIFIER")
+            .map(|v| v == "0")
+            .unwrap_or(false)
+        {
+            tracing::info!("centroid classifier disabled via CQS_CENTROID_CLASSIFIER=0");
+            return None;
+        }
+
+        let path = dirs::data_dir()?.join("cqs/classifier_centroids.v1.json");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::debug!(path = %path.display(), error = %e, "centroid file not found — rule-only mode");
+                return None;
+            }
+        };
+        let data: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(error = %e, "centroid file parse failed");
+                return None;
+            }
+        };
+
+        let dim = data["dim"].as_u64()? as usize;
+        let categories = data["categories"].as_object()?;
+        let mut centroids = HashMap::new();
+        for (name, obj) in categories {
+            let cat = QueryCategory::from_snake_case(name)?;
+            let arr = obj["centroid"].as_array()?;
+            let vec: Vec<f32> = arr
+                .iter()
+                .filter_map(|v| v.as_f64().map(|f| f as f32))
+                .collect();
+            if vec.len() != dim {
+                tracing::warn!(
+                    category = name,
+                    expected = dim,
+                    got = vec.len(),
+                    "centroid dim mismatch"
+                );
+                continue;
+            }
+            centroids.insert(cat, vec);
+        }
+
+        if centroids.is_empty() {
+            tracing::warn!("centroid file contained 0 valid centroids");
+            return None;
+        }
+
+        let threshold = std::env::var("CQS_CENTROID_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.01);
+
+        tracing::info!(
+            n_centroids = centroids.len(),
+            dim,
+            threshold,
+            "centroid classifier loaded"
+        );
+        Some(CentroidClassifier {
+            centroids,
+            dim,
+            threshold,
+        })
+    }
+
+    fn classify(&self, embedding: &[f32]) -> Option<(QueryCategory, f32)> {
+        if embedding.len() != self.dim {
+            return None;
+        }
+        let mut best_cat = QueryCategory::Unknown;
+        let mut best_score = f32::NEG_INFINITY;
+        let mut second_score = f32::NEG_INFINITY;
+
+        for (&cat, centroid) in &self.centroids {
+            let score: f32 = embedding
+                .iter()
+                .zip(centroid.iter())
+                .map(|(a, b)| a * b)
+                .sum();
+            if score > best_score {
+                second_score = best_score;
+                best_score = score;
+                best_cat = cat;
+            } else if score > second_score {
+                second_score = score;
+            }
+        }
+
+        let margin = best_score - second_score;
+        if margin >= self.threshold {
+            Some((best_cat, margin))
+        } else {
+            None
+        }
+    }
+}
+
+/// Upgrade a rule-based classification using embedding-space centroids.
+///
+/// Currently disabled by default — v3 eval showed −4.6pp R@1 due to
+/// catastrophic alpha misassignment (Behavioral α=0.0 on wrong predictions).
+/// Enable via `CQS_CENTROID_CLASSIFIER=1` for experimentation.
+///
+/// Next steps (saved for later):
+///   - Alpha floor clipping (centroid-assigned α ≥ 0.7) to cap downside
+///   - Logistic regression (85-90% accuracy vs centroid's 76%)
+///   - Re-sweep per-category alphas with centroid active
+///
+/// Call AFTER the query embedding is available.
+pub fn reclassify_with_centroid(
+    mut classification: Classification,
+    embedding: &[f32],
+) -> Classification {
+    // Centroid classifier: fills Unknown gaps with embedding-space classification.
+    // Alpha-clipped: centroid-assigned α is clamped to ≥ CENTROID_ALPHA_FLOOR
+    // so misclassifications can't catastrophically zero out SPLADE (the −4.6pp
+    // regression from v3 eval was entirely from Behavioral α=0.0 assignments).
+    //
+    // Env: CQS_CENTROID_CLASSIFIER=0 to disable entirely.
+    //      CQS_CENTROID_ALPHA_FLOOR (default 0.7) — minimum α for centroid-assigned categories.
+    // Disabled by default: centroid at 76% accuracy still hurts R@1 by −4.6pp
+    // even with alpha floor at 0.7 (v3 dev eval 2026-04-15). Needs ~90%+
+    // accuracy (logistic regression) to overcome alpha-misassignment cost.
+    // Enable for experimentation: CQS_CENTROID_CLASSIFIER=1
+    if !std::env::var("CQS_CENTROID_CLASSIFIER")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        return classification;
+    }
+    if classification.category != QueryCategory::Unknown {
+        return classification;
+    }
+    let classifier = CENTROID_CLASSIFIER.get_or_init(CentroidClassifier::load);
+    if let Some(cls) = classifier {
+        if let Some((cat, margin)) = cls.classify(embedding) {
+            tracing::info!(
+                centroid_category = %cat,
+                margin = format!("{margin:.4}"),
+                "centroid filled Unknown gap"
+            );
+            classification.category = cat;
+            classification.confidence = Confidence::Medium;
+        }
+    }
+    classification
 }
 
 #[cfg(test)]

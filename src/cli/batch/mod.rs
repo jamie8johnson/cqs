@@ -371,15 +371,48 @@ impl BatchContext {
     /// `ensure_splade_index` see `None` on the next call and rebuild from
     /// the freshly persisted `splade.index.bin` (or SQLite fallback).
     fn invalidate_mutable_caches(&self) {
-        *self.hnsw.borrow_mut() = None;
-        *self.base_hnsw.borrow_mut() = None;
-        *self.call_graph.borrow_mut() = None;
-        *self.test_chunks.borrow_mut() = None;
-        *self.file_set.borrow_mut() = None;
-        *self.notes_cache.borrow_mut() = None;
-        *self.splade_index.borrow_mut() = None;
-        // Also clear LRU refs — reference indexes may also be stale
-        self.refs.borrow_mut().clear();
+        // Use try_borrow_mut: a search handler may still hold a Ref<...>
+        // to splade_index or hnsw across an accessor call that triggers
+        // staleness re-check (for example handlers/search.rs does
+        // `let splade_index_ref = ctx.borrow_splade_index()` then later
+        // calls `ctx.store().search_hybrid(...)`). Panicking on
+        // borrow_mut() would crash the whole batch session for what is
+        // just a deferral case. Slots that are busy stay populated; we
+        // reset the rate-limit so the next accessor retries the
+        // invalidation as soon as the in-flight handler releases its Ref.
+        let mut all_clear = true;
+        macro_rules! try_clear_to_none {
+            ($field:expr, $name:literal) => {
+                match $field.try_borrow_mut() {
+                    Ok(mut g) => *g = None,
+                    Err(_) => {
+                        all_clear = false;
+                        tracing::debug!(slot = $name, "borrow held; deferring invalidation");
+                    }
+                }
+            };
+        }
+        try_clear_to_none!(self.hnsw, "hnsw");
+        try_clear_to_none!(self.base_hnsw, "base_hnsw");
+        try_clear_to_none!(self.call_graph, "call_graph");
+        try_clear_to_none!(self.test_chunks, "test_chunks");
+        try_clear_to_none!(self.file_set, "file_set");
+        try_clear_to_none!(self.notes_cache, "notes_cache");
+        try_clear_to_none!(self.splade_index, "splade_index");
+        match self.refs.try_borrow_mut() {
+            Ok(mut g) => g.clear(),
+            Err(_) => {
+                all_clear = false;
+                tracing::debug!(slot = "refs", "borrow held; deferring invalidation");
+            }
+        }
+
+        if !all_clear {
+            // Reset rate-limit so the next accessor reattempts immediately
+            // (rather than waiting STALENESS_CHECK_INTERVAL with stale caches).
+            self.last_staleness_check.set(None);
+            tracing::debug!("partial cache invalidation; will retry on next accessor");
+        }
     }
 
     /// Manually invalidate all mutable caches and re-open the Store.

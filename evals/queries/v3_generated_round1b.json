@@ -1,0 +1,1194 @@
+{
+  "generated_at": 1776298465,
+  "model": "gemma-4-31b",
+  "n_kept": 60,
+  "n_rejected": 18,
+  "targets": [
+    {
+      "category": "cross_language",
+      "target_n": 20
+    },
+    {
+      "category": "multi_step",
+      "target_n": 20
+    },
+    {
+      "category": "structural_search",
+      "target_n": 20
+    }
+  ],
+  "queries": [
+    {
+      "query": "Rust equivalent of Python's defaultdict(list).push() for storing chunks",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/store/chunks/query.rs:17:382034d7:w6",
+        "name": "Store",
+        "origin": "src/store/chunks/query.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 17,
+        "line_end": 613
+      }
+    },
+    {
+      "query": "how to implement a batch signature search store in Rust vs Go",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/store/chunks/query.rs:17:382034d7:w6",
+        "name": "Store",
+        "origin": "src/store/chunks/query.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 17,
+        "line_end": 613
+      }
+    },
+    {
+      "query": "How to implement structural query generation in Python compared to Java",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:218:a07e051e:w1",
+        "name": "generate_structural_queries",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 218,
+        "line_end": 258
+      }
+    },
+    {
+      "query": "Python equivalent of generating structural search queries for code datasets",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:218:a07e051e:w1",
+        "name": "generate_structural_queries",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 218,
+        "line_end": 258
+      }
+    },
+    {
+      "query": "SQL equivalent of a Python dictionary stored in a database",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:17:88ae0c75",
+        "name": "metadata",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 17,
+        "line_end": 20
+      }
+    },
+    {
+      "query": "how to implement a simple key-value store in SQL vs Redis",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:17:88ae0c75",
+        "name": "metadata",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 17,
+        "line_end": 20
+      }
+    },
+    {
+      "query": "bash equivalent of a Python script to run cargo tests on a specific GPU",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "scripts/full_model_matrix_eval.sh:28:2cd03818",
+        "name": "run_hard_eval",
+        "origin": "scripts/full_model_matrix_eval.sh",
+        "language": "bash",
+        "chunk_type": "function",
+        "line_start": 28,
+        "line_end": 41
+      }
+    },
+    {
+      "query": "how to translate a GPU evaluation loop from Python to bash",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "scripts/full_model_matrix_eval.sh:28:2cd03818",
+        "name": "run_hard_eval",
+        "origin": "scripts/full_model_matrix_eval.sh",
+        "language": "bash",
+        "chunk_type": "function",
+        "line_start": 28,
+        "line_end": 41
+      }
+    },
+    {
+      "query": "How to implement a batch fetch of caller counts in Rust compared to Java",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/scout.rs:186:0b24e19f:w1",
+        "name": "scout_core",
+        "origin": "src/scout.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 186,
+        "line_end": 364
+      }
+    },
+    {
+      "query": "Rust equivalent of Python's list comprehension for collecting names from a result set",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/scout.rs:186:0b24e19f:w1",
+        "name": "scout_core",
+        "origin": "src/scout.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 186,
+        "line_end": 364
+      }
+    },
+    {
+      "query": "Python equivalent of a shell script to validate search results using cqs",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:70:71d9718a",
+        "name": "validate_query",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 70,
+        "line_end": 86
+      }
+    },
+    {
+      "query": "how to implement a search result validation function in Python vs Bash",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:70:71d9718a",
+        "name": "validate_query",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 70,
+        "line_end": 86
+      }
+    },
+    {
+      "query": "SQL equivalent of a composite primary key with a foreign key cascade in SQLAlchemy",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:134:4c8a74a1",
+        "name": "sparse_vectors",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 134,
+        "line_end": 140
+      }
+    },
+    {
+      "query": "how to define a table with a composite primary key in SQL vs MongoDB",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:134:4c8a74a1",
+        "name": "sparse_vectors",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 134,
+        "line_end": 140
+      }
+    },
+    {
+      "query": "Rust equivalent of a Python singleton for environment variable configuration",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/cli/pipeline/types.rs:115:052376ee",
+        "name": "embed_channel_depth",
+        "origin": "src/cli/pipeline/types.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 115,
+        "line_end": 130
+      }
+    },
+    {
+      "query": "how to implement a lazy-initialized environment variable in Rust vs Go",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/cli/pipeline/types.rs:115:052376ee",
+        "name": "embed_channel_depth",
+        "origin": "src/cli/pipeline/types.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 115,
+        "line_end": 130
+      }
+    },
+    {
+      "query": "Python equivalent of a blake2b hash function with null separators",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "evals/llm_client.py:103:57e369c1",
+        "name": "_hash",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 103,
+        "line_end": 108
+      }
+    },
+    {
+      "query": "how to implement a multi-part string hash in Python vs Go",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "evals/llm_client.py:103:57e369c1",
+        "name": "_hash",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 103,
+        "line_end": 108
+      }
+    },
+    {
+      "query": "SQL equivalent of a SQLAlchemy model for a type_edges table",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:95:e074eb40",
+        "name": "type_edges",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 95,
+        "line_end": 102
+      }
+    },
+    {
+      "query": "how to define a table with foreign key constraints in SQLite vs PostgreSQL",
+      "category": "cross_language",
+      "target_category": "cross_language",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:95:e074eb40",
+        "name": "type_edges",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 95,
+        "line_end": 102
+      }
+    },
+    {
+      "query": "functions that return Result<FunctionCallStats, StoreError> AND use sqlx::query_as",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/store/calls/related.rs:145:3ec34fac",
+        "name": "function_call_stats",
+        "origin": "src/store/calls/related.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 145,
+        "line_end": 160
+      }
+    },
+    {
+      "query": "methods named function_call_stats AND returning a Result",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/store/calls/related.rs:145:3ec34fac",
+        "name": "function_call_stats",
+        "origin": "src/store/calls/related.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 145,
+        "line_end": 160
+      }
+    },
+    {
+      "query": "table named chunks AND columns with NOT NULL constraints",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:22:ea43482c",
+        "name": "chunks",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 22,
+        "line_end": 45
+      }
+    },
+    {
+      "query": "CREATE TABLE statement for chunks AND columns using TEXT or INTEGER types",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:22:ea43482c",
+        "name": "chunks",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 22,
+        "line_end": 45
+      }
+    },
+    {
+      "query": "functions that use argparse AND define a --config argument",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "evals/run_ablation.py:33:75efbfad",
+        "name": "parse_args",
+        "origin": "evals/run_ablation.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 33,
+        "line_end": 64
+      }
+    },
+    {
+      "query": "parse_args function AND arguments for split or config",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "evals/run_ablation.py:33:75efbfad",
+        "name": "parse_args",
+        "origin": "evals/run_ablation.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 33,
+        "line_end": 64
+      }
+    },
+    {
+      "query": "functions that run hard eval AND use cargo test",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "scripts/full_model_matrix_eval.sh:28:2cd03818",
+        "name": "run_hard_eval",
+        "origin": "scripts/full_model_matrix_eval.sh",
+        "language": "bash",
+        "chunk_type": "function",
+        "line_start": 28,
+        "line_end": 41
+      }
+    },
+    {
+      "query": "bash functions that take gpu_id as an argument AND write to OUTFILE",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "scripts/full_model_matrix_eval.sh:28:2cd03818",
+        "name": "run_hard_eval",
+        "origin": "scripts/full_model_matrix_eval.sh",
+        "language": "bash",
+        "chunk_type": "function",
+        "line_start": 28,
+        "line_end": 41
+      }
+    },
+    {
+      "query": "functions that implement next AND use tracing::warn",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/store/chunks/async_helpers.rs:424:b1817aeb:w1",
+        "name": "next",
+        "origin": "src/store/chunks/async_helpers.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 424,
+        "line_end": 499
+      }
+    },
+    {
+      "query": "methods returning Option<Self::Item> AND calling embedding::new",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/store/chunks/async_helpers.rs:424:b1817aeb:w1",
+        "name": "next",
+        "origin": "src/store/chunks/async_helpers.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 424,
+        "line_end": 499
+      }
+    },
+    {
+      "query": "table named llm_summaries AND primary key on content_hash and purpose",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:167:51399f69",
+        "name": "llm_summaries",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 167,
+        "line_end": 174
+      }
+    },
+    {
+      "query": "table with column model AND column created_at AND default value for purpose",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:167:51399f69",
+        "name": "llm_summaries",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 167,
+        "line_end": 174
+      }
+    },
+    {
+      "query": "write query_set to json file AND print summary by category",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:319:f2025150:w1",
+        "name": "main",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 319,
+        "line_end": 368
+      }
+    },
+    {
+      "query": "save output to json AND calculate counts for train and held_out splits",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:319:f2025150:w1",
+        "name": "main",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 319,
+        "line_end": 368
+      }
+    },
+    {
+      "query": "functions that take ChunkSummary AND return a HashSet of strings",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/cli/commands/io/context.rs:292:6eb2a511",
+        "name": "pack_by_relevance",
+        "origin": "src/cli/commands/io/context.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 292,
+        "line_end": 321
+      }
+    },
+    {
+      "query": "functions that take an Embedder AND take a budget of type usize",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/cli/commands/io/context.rs:292:6eb2a511",
+        "name": "pack_by_relevance",
+        "origin": "src/cli/commands/io/context.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 292,
+        "line_end": 321
+      }
+    },
+    {
+      "query": "table named function_calls AND columns for caller_name and callee_name",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:78:af948656",
+        "name": "function_calls",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 78,
+        "line_end": 85
+      }
+    },
+    {
+      "query": "CREATE TABLE statement for function_calls AND PRIMARY KEY AUTOINCREMENT id",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:78:af948656",
+        "name": "function_calls",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 78,
+        "line_end": 85
+      }
+    },
+    {
+      "query": "functions that remove chapter headings AND return a tuple of list and int",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:173:100f5458",
+        "name": "remove_chapter_headings",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 173,
+        "line_end": 189
+      }
+    },
+    {
+      "query": "functions that use a regex for chapter patterns AND take a list of strings as input",
+      "category": "multi_step",
+      "target_category": "multi_step",
+      "matched": true,
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:173:100f5458",
+        "name": "remove_chapter_headings",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 173,
+        "line_end": 189
+      }
+    },
+    {
+      "query": "functions that take two positional arguments",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "scripts/full_model_matrix_eval.sh:28:2cd03818",
+        "name": "run_hard_eval",
+        "origin": "scripts/full_model_matrix_eval.sh",
+        "language": "bash",
+        "chunk_type": "function",
+        "line_start": 28,
+        "line_end": 41
+      }
+    },
+    {
+      "query": "functions containing a for loop",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "scripts/full_model_matrix_eval.sh:28:2cd03818",
+        "name": "run_hard_eval",
+        "origin": "scripts/full_model_matrix_eval.sh",
+        "language": "bash",
+        "chunk_type": "function",
+        "line_start": 28,
+        "line_end": 41
+      }
+    },
+    {
+      "query": "functions that return bool",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "evals/label_telemetry_queries.py:37:9b9036a3",
+        "name": "looks_real",
+        "origin": "evals/label_telemetry_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 37,
+        "line_end": 44
+      }
+    },
+    {
+      "query": "functions taking a str and returning a bool",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "evals/label_telemetry_queries.py:37:9b9036a3",
+        "name": "looks_real",
+        "origin": "evals/label_telemetry_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 37,
+        "line_end": 44
+      }
+    },
+    {
+      "query": "functions that return Result<Vec<CrossProjectResult>, ProjectError>",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/project.rs:188:3cb2a451:w0",
+        "name": "search_across_projects",
+        "origin": "src/project.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 188,
+        "line_end": 293
+      }
+    },
+    {
+      "query": "public functions taking a float threshold and returning a Result",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/project.rs:188:3cb2a451:w0",
+        "name": "search_across_projects",
+        "origin": "src/project.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 188,
+        "line_end": 293
+      }
+    },
+    {
+      "query": "functions that take a list of strings and return a tuple of a list of strings and an integer",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:208:0f5226c7",
+        "name": "remove_strikethrough",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 208,
+        "line_end": 223
+      }
+    },
+    {
+      "query": "functions returning a Tuple[List[str], int]",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:208:0f5226c7",
+        "name": "remove_strikethrough",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 208,
+        "line_end": 223
+      }
+    },
+    {
+      "query": "functions that return Result<Self, StoreError>",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": ".claude/worktrees/agent-a7cedd3c/src/store/mod.rs:677:6fd2bb72",
+        "name": "open",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/store/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 677,
+        "line_end": 679
+      }
+    },
+    {
+      "query": "functions taking a &Path and returning a Result",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": ".claude/worktrees/agent-a7cedd3c/src/store/mod.rs:677:6fd2bb72",
+        "name": "open",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/store/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 677,
+        "line_end": 679
+      }
+    },
+    {
+      "query": "tables with a composite primary key and a foreign key with cascade delete",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:134:4c8a74a1",
+        "name": "sparse_vectors",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 134,
+        "line_end": 140
+      }
+    },
+    {
+      "query": "tables with columns of type TEXT, INTEGER, and REAL",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:134:4c8a74a1",
+        "name": "sparse_vectors",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 134,
+        "line_end": 140
+      }
+    },
+    {
+      "query": "async functions that take self as the first argument",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "evals/llm_client.py:217:7d1c31f2:w1",
+        "name": "generate",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "method",
+        "line_start": 217,
+        "line_end": 264
+      }
+    },
+    {
+      "query": "functions that return a static slice of static strings",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/search/router.rs:267:0cbbe089",
+        "name": "language_names",
+        "origin": "src/search/router.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 267,
+        "line_end": 269
+      }
+    },
+    {
+      "query": "functions returning &'static [&'static str]",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/search/router.rs:267:0cbbe089",
+        "name": "language_names",
+        "origin": "src/search/router.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 267,
+        "line_end": 269
+      }
+    },
+    {
+      "query": "tables with a text primary key",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:17:88ae0c75",
+        "name": "metadata",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 17,
+        "line_end": 20
+      }
+    },
+    {
+      "query": "tables with a not null text column",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/schema.sql:17:88ae0c75",
+        "name": "metadata",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 17,
+        "line_end": 20
+      }
+    },
+    {
+      "query": "functions that return a tuple of a list of strings and an integer",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:192:a96baf06",
+        "name": "replace_bold_bullets",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 192,
+        "line_end": 205
+      }
+    },
+    {
+      "query": "functions that take a list of strings and return a tuple",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:192:a96baf06",
+        "name": "replace_bold_bullets",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 192,
+        "line_end": 205
+      }
+    },
+    {
+      "query": "functions that take a Vec of NamedStore",
+      "category": "structural_search",
+      "target_category": "structural_search",
+      "matched": true,
+      "gold_chunk": {
+        "id": "src/store/calls/cross_project.rs:72:19f49073",
+        "name": "new",
+        "origin": "src/store/calls/cross_project.rs",
+        "language": "rust",
+        "chunk_type": "constructor",
+        "line_start": 72,
+        "line_end": 77
+      }
+    }
+  ],
+  "rejected": [
+    {
+      "query": "CREATE VIRTUAL TABLE AND USING fts5",
+      "category": "structural_search",
+      "target_category": "multi_step",
+      "matched": false,
+      "gold_chunk": {
+        "id": "src/schema.sql:56:c785a21e",
+        "name": "chunks_fts",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 56,
+        "line_end": 63
+      }
+    },
+    {
+      "query": "table with key TEXT PRIMARY KEY OR value TEXT NOT NULL",
+      "category": "structural_search",
+      "target_category": "multi_step",
+      "matched": false,
+      "gold_chunk": {
+        "id": "src/schema.sql:17:88ae0c75",
+        "name": "metadata",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 17,
+        "line_end": 20
+      }
+    },
+    {
+      "query": "table with PRIMARY KEY id AND column for sentiment REAL",
+      "category": "structural_search",
+      "target_category": "multi_step",
+      "matched": false,
+      "gold_chunk": {
+        "id": "src/schema.sql:108:744fc0db",
+        "name": "notes",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 108,
+        "line_end": 118
+      }
+    },
+    {
+      "query": "virtual tables using fts5",
+      "category": "conceptual_search",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": "src/schema.sql:123:6ce763e1",
+        "name": "notes_fts",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 123,
+        "line_end": 127
+      }
+    },
+    {
+      "query": "tables with an unindexed column and a custom tokenizer",
+      "category": "multi_step",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": "src/schema.sql:123:6ce763e1",
+        "name": "notes_fts",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 123,
+        "line_end": 127
+      }
+    },
+    {
+      "query": "async methods in a class",
+      "category": "type_filtered",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": "evals/llm_client.py:217:7d1c31f2:w1",
+        "name": "generate",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "method",
+        "line_start": 217,
+        "line_end": 264
+      }
+    },
+    {
+      "query": "classes that define an LLMClient",
+      "category": "type_filtered",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": "evals/llm_client.py:111:607ad41e:w4",
+        "name": "LLMClient",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "class",
+        "line_start": 111,
+        "line_end": 274
+      }
+    },
+    {
+      "query": "classes used as clients for LLMs",
+      "category": "type_filtered",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": "evals/llm_client.py:111:607ad41e:w4",
+        "name": "LLMClient",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "class",
+        "line_start": 111,
+        "line_end": 274
+      }
+    },
+    {
+      "query": "impl blocks for QueryCache",
+      "category": "type_filtered",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": ".claude/worktrees/agent-a7cedd3c/src/cache.rs:901:a5cbeab0:w2",
+        "name": "QueryCache",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 901,
+        "line_end": 1099
+      }
+    },
+    {
+      "query": "methods implemented for QueryCache",
+      "category": "type_filtered",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": ".claude/worktrees/agent-a7cedd3c/src/cache.rs:901:a5cbeab0:w2",
+        "name": "QueryCache",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 901,
+        "line_end": 1099
+      }
+    },
+    {
+      "query": "virtual tables using fts5",
+      "category": "conceptual_search",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": "src/schema.sql:56:c785a21e",
+        "name": "chunks_fts",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 56,
+        "line_end": 63
+      }
+    },
+    {
+      "query": "async methods on EmbeddingCache",
+      "category": "type_filtered",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": "src/cache.rs:49:60be9eb0:w4",
+        "name": "EmbeddingCache",
+        "origin": "src/cache.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 49,
+        "line_end": 475
+      }
+    },
+    {
+      "query": "functions with no return type annotation",
+      "category": "negation",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": "evals/run_ablation.py:212:5a02fddd:w0",
+        "name": "main",
+        "origin": "evals/run_ablation.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 212,
+        "line_end": 352
+      }
+    },
+    {
+      "query": "functions with no arguments",
+      "category": "negation",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:319:f2025150:w1",
+        "name": "main",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 319,
+        "line_end": 368
+      }
+    },
+    {
+      "query": "functions with no arguments",
+      "category": "negation",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:349:9e87241d",
+        "name": "main",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 349,
+        "line_end": 393
+      }
+    },
+    {
+      "query": "impl blocks for CagraIndex",
+      "category": "type_filtered",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": "src/cagra.rs:748:a62df795:w0",
+        "name": "CagraIndex",
+        "origin": "src/cagra.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 748,
+        "line_end": 1105
+      }
+    },
+    {
+      "query": "methods implemented on CagraIndex",
+      "category": "type_filtered",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": "src/cagra.rs:748:a62df795:w0",
+        "name": "CagraIndex",
+        "origin": "src/cagra.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 748,
+        "line_end": 1105
+      }
+    },
+    {
+      "query": "functions with no return type annotation",
+      "category": "negation",
+      "target_category": "structural_search",
+      "matched": false,
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:53:04edeecd",
+        "name": "get_test_chunks",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 53,
+        "line_end": 67
+      }
+    }
+  ]
+}

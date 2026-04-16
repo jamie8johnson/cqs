@@ -1,0 +1,1987 @@
+{
+  "source": "/home/user001/.cache/cqs/query_log.jsonl",
+  "n_queries": 328,
+  "classified_at": 1776297857,
+  "model": "gemma-4-31b",
+  "category_counts": {
+    "behavioral_search": 110,
+    "identifier_lookup": 111,
+    "type_filtered": 19,
+    "conceptual_search": 40,
+    "negation": 30,
+    "structural_search": 7,
+    "multi_step": 2,
+    "cross_language": 6,
+    "unknown": 3
+  },
+  "queries": [
+    {
+      "query": "ASP.NET web forms custom parser for server script blocks",
+      "first_seen_ts": 1776031203,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "ApiError",
+      "first_seen_ts": 1776031208,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "AuditModeFile",
+      "first_seen_ts": 1776031324,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "BFS expansion through call graph for context assembly",
+      "first_seen_ts": 1776031629,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "BatchContext",
+      "first_seen_ts": 1776031796,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "BatchInput",
+      "first_seen_ts": 1776031326,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "BatchProvider trait definition",
+      "first_seen_ts": 1776031252,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "BlameEntry",
+      "first_seen_ts": 1776031221,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "BoundedScoreHeap",
+      "first_seen_ts": 1776195043,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "BudgetedNoteEntry",
+      "first_seen_ts": 1776031341,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "CAGRA GPU vector index search phantom results distance buffer",
+      "first_seen_ts": 1776197351,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "CAGRA index build",
+      "first_seen_ts": 1776279218,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "CAGRA save load serialize persistence index",
+      "first_seen_ts": 1776245242,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "CAGRA sentinel initialization length probe phantom results",
+      "first_seen_ts": 1776274060,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "CLI argument definitions and command enum",
+      "first_seen_ts": 1776031096,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "CacheStats struct",
+      "first_seen_ts": 1776031806,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "CagraIndex",
+      "first_seen_ts": 1776031352,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "CallContext",
+      "first_seen_ts": 1776031301,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "ChunkIdentity",
+      "first_seen_ts": 1776031211,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "ChunkSummary",
+      "first_seen_ts": 1776031298,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "CommandContext",
+      "first_seen_ts": 1776031273,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "Commands enum BatchCmd dispatcher batch handler unify parity",
+      "first_seen_ts": 1776235418,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "CommitInfo",
+      "first_seen_ts": 1776031268,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "DiffEntryOutput",
+      "first_seen_ts": 1776031224,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "DiffOutput",
+      "first_seen_ts": 1776031306,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "Display trait implementation for human-readable output",
+      "first_seen_ts": 1776031715,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "EligibleChunk",
+      "first_seen_ts": 1776031359,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "EmbedStageContext",
+      "first_seen_ts": 1776031304,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "Embedder",
+      "first_seen_ts": 1776031349,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "EmbeddingCache",
+      "first_seen_ts": 1776195055,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "EmbeddingCache\\|QueryCache",
+      "first_seen_ts": 1776195050,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "FileGroup",
+      "first_seen_ts": 1776031314,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "GPU accelerated approximate nearest neighbor index",
+      "first_seen_ts": 1776031081,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "GPU fallback mechanism when CUDA is unavailable",
+      "first_seen_ts": 1776031634,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "HNSW index build not CAGRA GPU index",
+      "first_seen_ts": 1776031168,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "HNSW persist atomic rename tmp file",
+      "first_seen_ts": 1776197351,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "HNSW save load",
+      "first_seen_ts": 1776279218,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "HnswIndex struct",
+      "first_seen_ts": 1776031820,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "HnswIoCell",
+      "first_seen_ts": 1776031291,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "IndexStats",
+      "first_seen_ts": 1776031283,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "LlmConfig",
+      "first_seen_ts": 1776031296,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "NlTemplate enum",
+      "first_seen_ts": 1776031808,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "NoteBoostIndex cache generation counter",
+      "first_seen_ts": 1776204436,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "PipelineStats",
+      "first_seen_ts": 1776031811,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "ProjectSearchResult",
+      "first_seen_ts": 1776031279,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "QueryCache",
+      "first_seen_ts": 1776195055,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "RelatedResult",
+      "first_seen_ts": 1776031336,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "ReviewResult",
+      "first_seen_ts": 1776031316,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "SPLADE data length validation batch",
+      "first_seen_ts": 1776193779,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "SPLADE encoder encode_batch tensor shape validation",
+      "first_seen_ts": 1776197349,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "SPLADE sparse hybrid",
+      "first_seen_ts": 1776279218,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "SQLite mmap_size WSL filesystem detection",
+      "first_seen_ts": 1776217608,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "ScoringContext",
+      "first_seen_ts": 1776031213,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "SearchFilter struct",
+      "first_seen_ts": 1776031813,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "Section",
+      "first_seen_ts": 1776031258,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "Send and Sync implementation for thread-safe index sharing",
+      "first_seen_ts": 1776031712,
+      "source_cmd": "search",
+      "category": "structural_search"
+    },
+    {
+      "query": "SimilarEntry",
+      "first_seen_ts": 1776031262,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "SpladeEncoder struct",
+      "first_seen_ts": 1776031793,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "SpladeIndex",
+      "first_seen_ts": 1776195056,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "Store",
+      "first_seen_ts": 1776031344,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "Store readonly readwrite typestate phantom",
+      "first_seen_ts": 1776245137,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "Store::open_readonly_small reference index mmap size",
+      "first_seen_ts": 1776273951,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "StoreOpenConfig",
+      "first_seen_ts": 1776031226,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "SuggestedNote",
+      "first_seen_ts": 1776031237,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "SummaryEntry",
+      "first_seen_ts": 1776031266,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "TaskTemplate",
+      "first_seen_ts": 1776031245,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "TraceArgs",
+      "first_seen_ts": 1776031218,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "TraceHop",
+      "first_seen_ts": 1776031309,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "TypeInfo",
+      "first_seen_ts": 1776031286,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "VectorIndex trait definition",
+      "first_seen_ts": 1776031281,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "WatchState",
+      "first_seen_ts": 1776031256,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "add a developer note not remove one",
+      "first_seen_ts": 1776031645,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "all chunk types not just callable ones",
+      "first_seen_ts": 1776031750,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "apply config file defaults before CLI argument parsing",
+      "first_seen_ts": 1776031791,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "async runtime block_on wrapper for sync API",
+      "first_seen_ts": 1776031710,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "atexit Mutex UB ORT provider symlinks cleanup",
+      "first_seen_ts": 1776211604,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "atomic_replace shared helper for durable file persistence",
+      "first_seen_ts": 1776245281,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "audit mode that forces direct code examination without cached notes",
+      "first_seen_ts": 1776031453,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "audit_mode",
+      "first_seen_ts": 1776195003,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "audit_mode_on\\|audit_mode_off\\|check_note_staleness\\|fn suggest_",
+      "first_seen_ts": 1776194992,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "auto-suggest notes from codebase patterns like dead code and hotspots",
+      "first_seen_ts": 1776031414,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "batch mode persistent session not one-shot CLI",
+      "first_seen_ts": 1776031655,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "brute force search without HNSW index",
+      "first_seen_ts": 1776031467,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "build the HNSW index from stored embeddings in batches",
+      "first_seen_ts": 1776031369,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "call graph traversal for finding transitive dependencies",
+      "first_seen_ts": 1776031421,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "call site extraction for building the call graph",
+      "first_seen_ts": 1776031585,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "callees of a function not callers",
+      "first_seen_ts": 1776031461,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "check hardware capabilities and model availability",
+      "first_seen_ts": 1776031607,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "check if a file needs reindexing based on modification time",
+      "first_seen_ts": 1776031381,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "checkpoint verification and data integrity for index files",
+      "first_seen_ts": 1776031448,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "chunk embedding batch",
+      "first_seen_ts": 1776279219,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "clap derive macro usage for command line argument parsing",
+      "first_seen_ts": 1776031717,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "classify_query",
+      "first_seen_ts": 1776194853,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "classify_query router extract_type_hints",
+      "first_seen_ts": 1776272271,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "clear embedding cache entries not evict by size limit",
+      "first_seen_ts": 1776031175,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "clear the entire embedding cache not just prune old entries",
+      "first_seen_ts": 1776031638,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "cmd_doctor function",
+      "first_seen_ts": 1776031048,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "cmd_gc",
+      "first_seen_ts": 1776195154,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "cmd_notes_mutate",
+      "first_seen_ts": 1776194854,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "codebase health scoring across multiple dimensions",
+      "first_seen_ts": 1776031720,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "command dispatch",
+      "first_seen_ts": 1776279219,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "compute impact analysis showing callers and affected tests for a function",
+      "first_seen_ts": 1776031373,
+      "source_cmd": "search",
+      "category": "multi_step"
+    },
+    {
+      "query": "compute the blake3 hash of file contents for change detection",
+      "first_seen_ts": 1776031393,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "configuration for embedding model selection and presets",
+      "first_seen_ts": 1776031091,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "constant value not mutable variable",
+      "first_seen_ts": 1776031476,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "constants defined in src/cagra.rs",
+      "first_seen_ts": 1776031231,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "constructor detection across language conventions",
+      "first_seen_ts": 1776031568,
+      "source_cmd": "search",
+      "category": "cross_language"
+    },
+    {
+      "query": "content hash deduplication for avoiding redundant embedding",
+      "first_seen_ts": 1776031631,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "convert a document file to markdown format",
+      "first_seen_ts": 1776031391,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "count total chunks files and languages in the index",
+      "first_seen_ts": 1776031590,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "crossbeam channel usage for pipeline message passing",
+      "first_seen_ts": 1776031760,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "database migration functions for schema upgrades",
+      "first_seen_ts": 1776031774,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "database schema migration system for version upgrades",
+      "first_seen_ts": 1776031133,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "dead code detection and unused function analysis",
+      "first_seen_ts": 1776031071,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "delegate and event handler type definitions",
+      "first_seen_ts": 1776031685,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "delete notes from the project not add them",
+      "first_seen_ts": 1776031463,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "dependency injection",
+      "first_seen_ts": 1776046008,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "dependency injection pattern",
+      "first_seen_ts": 1776038570,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "detect semantic drift between a reference snapshot and current code",
+      "first_seen_ts": 1776031364,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "determine which programming language a file uses by extension",
+      "first_seen_ts": 1776031198,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "diff-aware impact analysis from uncommitted changes",
+      "first_seen_ts": 1776031722,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "disable search demotion not enable it",
+      "first_seen_ts": 1776031485,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "dispatch_search",
+      "first_seen_ts": 1776194860,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "dispatch_search batch handler",
+      "first_seen_ts": 1776273066,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "display a one-line summary for each function in a file",
+      "first_seen_ts": 1776031396,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "document frequency weighting for search result scoring",
+      "first_seen_ts": 1776031431,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "duplicate SQL query",
+      "first_seen_ts": 1776193547,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "embed a single query string not a batch of documents",
+      "first_seen_ts": 1776031171,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "embedder initialization that forces CPU not GPU",
+      "first_seen_ts": 1776031163,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "embedding dimension and model configuration management",
+      "first_seen_ts": 1776031433,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "embedding normalization for cosine similarity computation",
+      "first_seen_ts": 1776031621,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "enrichment_pass",
+      "first_seen_ts": 1776031800,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "enum definitions for error handling",
+      "first_seen_ts": 1776031692,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "enum variants for different kinds of code chunks",
+      "first_seen_ts": 1776031094,
+      "source_cmd": "search",
+      "category": "structural_search"
+    },
+    {
+      "query": "error enum with thiserror derive for automatic display",
+      "first_seen_ts": 1776031704,
+      "source_cmd": "search",
+      "category": "structural_search"
+    },
+    {
+      "query": "error handling",
+      "first_seen_ts": 1776104734,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "error types and error handling in the store module",
+      "first_seen_ts": 1776031087,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "error types in src",
+      "first_seen_ts": 1776031271,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "error variants for embedding model failures",
+      "first_seen_ts": 1776031777,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "evict old entries from the global embedding cache by size limit",
+      "first_seen_ts": 1776031409,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "export a huggingface model to ONNX format",
+      "first_seen_ts": 1776031609,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "export training data pairs from git history",
+      "first_seen_ts": 1776031594,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "extract call sites and function calls from source code",
+      "first_seen_ts": 1776031193,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "extract doc comments from source code across languages",
+      "first_seen_ts": 1776031544,
+      "source_cmd": "search",
+      "category": "cross_language"
+    },
+    {
+      "query": "extract field names and keywords from a code body",
+      "first_seen_ts": 1776031386,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "extract function signature from a tree-sitter node",
+      "first_seen_ts": 1776031366,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "extract_calls function",
+      "first_seen_ts": 1776031798,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "file extension detection not content-based language detection",
+      "first_seen_ts": 1776031489,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "file extension to programming language mapping",
+      "first_seen_ts": 1776031573,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "filter configuration for search queries with language and path constraints",
+      "first_seen_ts": 1776031160,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "find functions related by shared callers or shared types",
+      "first_seen_ts": 1776031602,
+      "source_cmd": "search",
+      "category": "multi_step"
+    },
+    {
+      "query": "find functions similar to a given function by embedding distance",
+      "first_seen_ts": 1776031398,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "find_dead_code",
+      "first_seen_ts": 1776031803,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "fn cmd_audit_mode",
+      "first_seen_ts": 1776194996,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "focused read showing only a function and its type dependencies",
+      "first_seen_ts": 1776031725,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "foo | bar",
+      "first_seen_ts": 1775670918,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "format search results as JSON for CLI output",
+      "first_seen_ts": 1776031379,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "full file parse not focused function extraction",
+      "first_seen_ts": 1776031752,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "function declaration patterns across different syntax families",
+      "first_seen_ts": 1776031687,
+      "source_cmd": "search",
+      "category": "cross_language"
+    },
+    {
+      "query": "function that embeds a batch of text documents using ONNX",
+      "first_seen_ts": 1776031055,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "function that watches filesystem for changes and triggers reindex",
+      "first_seen_ts": 1776031361,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "function type definitions and type aliases in the codebase",
+      "first_seen_ts": 1776031697,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "garbage collection removing orphaned chunks from the index",
+      "first_seen_ts": 1776031450,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "generate natural language description of a code chunk",
+      "first_seen_ts": 1776031066,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "generate shell completions for bash zsh fish powershell",
+      "first_seen_ts": 1776031406,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "get_splade_generation\\|BoundedScoreHeap",
+      "first_seen_ts": 1776195039,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "hello",
+      "first_seen_ts": 1776277047,
+      "source_cmd": "search",
+      "category": "unknown"
+    },
+    {
+      "query": "how different languages handle module and namespace scoping",
+      "first_seen_ts": 1776031757,
+      "source_cmd": "search",
+      "category": "cross_language"
+    },
+    {
+      "query": "how does SPLADE encoding compute sparse token importance scores",
+      "first_seen_ts": 1776031523,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does batch mode maintain state between commands in a session",
+      "first_seen_ts": 1776031188,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does blame combine git history with semantic chunk identification",
+      "first_seen_ts": 1776031668,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does context assembly decide which related chunks to include for a file",
+      "first_seen_ts": 1776031513,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does dead code detection use call graph to find zero-caller functions",
+      "first_seen_ts": 1776031662,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does garbage collection clean up orphaned call graph entries after chunk pruning",
+      "first_seen_ts": 1776031745,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does gather assemble context by expanding the call graph",
+      "first_seen_ts": 1776031185,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does health check compute dead code and test coverage metrics",
+      "first_seen_ts": 1776031507,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does impact analysis trace callers to find affected tests",
+      "first_seen_ts": 1776031180,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does multi-index search merge results from project and reference indexes",
+      "first_seen_ts": 1776031501,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does multi-index search weight and merge results from different reference projects",
+      "first_seen_ts": 1776031673,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does name search combine FTS5 with embedding similarity",
+      "first_seen_ts": 1776031518,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does stale detection compare file modification times against index",
+      "first_seen_ts": 1776031495,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the CI gate decide whether to pass or fail based on risk",
+      "first_seen_ts": 1776031515,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the affected command trace from git diff to impacted functions and tests",
+      "first_seen_ts": 1776031658,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the completions command generate autocomplete scripts for different shells",
+      "first_seen_ts": 1776031737,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the diff command compare two indexed snapshots semantically",
+      "first_seen_ts": 1776031665,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the doctor command check model index and hardware",
+      "first_seen_ts": 1776031183,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the embedding cache prevent re-computation across reindexes",
+      "first_seen_ts": 1776031747,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the embedding pipeline handle GPU failures by requeueing to CPU",
+      "first_seen_ts": 1776031680,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the enrichment pass add call graph context to embeddings",
+      "first_seen_ts": 1776031492,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the explain command assemble a function card with callers callees and similar",
+      "first_seen_ts": 1776031660,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the init command download the model and set up the index directory",
+      "first_seen_ts": 1776031735,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the notes system boost or demote search results based on sentiment",
+      "first_seen_ts": 1776031742,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the onboard command build a guided tour of a codebase concept",
+      "first_seen_ts": 1776031510,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the plan command classify tasks and generate checklists",
+      "first_seen_ts": 1776031520,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the review command combine diff analysis with risk scoring",
+      "first_seen_ts": 1776031504,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the scout command search then check staleness and test coverage",
+      "first_seen_ts": 1776031190,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the suggest command detect patterns and propose notes",
+      "first_seen_ts": 1776031670,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the task command combine scout gather and impact into an implementation brief",
+      "first_seen_ts": 1776031675,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the test map trace from a function through callers to find tests",
+      "first_seen_ts": 1776031498,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the three-stage indexing pipeline process files from parse to store",
+      "first_seen_ts": 1776031178,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does the where command suggest file placement for new code",
+      "first_seen_ts": 1776031678,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "how does train_pairs extract NL description and code pairs for embedding fine-tuning",
+      "first_seen_ts": 1776031740,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "hybrid scoring combining embedding similarity with keyword matching",
+      "first_seen_ts": 1776031612,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "implementation of BlameEntry",
+      "first_seen_ts": 1776031338,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "implementation of Bm25Index",
+      "first_seen_ts": 1776031311,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "implementation of DiffImpactSummary",
+      "first_seen_ts": 1776031329,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "implementation of DiffTestInfo",
+      "first_seen_ts": 1776031241,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "implementation of DocCommentResult",
+      "first_seen_ts": 1776031319,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "implementation of DriftEntryOutput",
+      "first_seen_ts": 1776031215,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "implementation of GatherResult",
+      "first_seen_ts": 1776031357,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "implementation of MessagesResponse",
+      "first_seen_ts": 1776031347,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "implementation of PreparedEmbedding",
+      "first_seen_ts": 1776031331,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "implementation of TextJsonArgs",
+      "first_seen_ts": 1776031293,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "implementation of metadata",
+      "first_seen_ts": 1776031334,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "implementation of sparse_vectors",
+      "first_seen_ts": 1776031249,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "incremental indexing avoiding re-parsing unchanged files",
+      "first_seen_ts": 1776031440,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "infer chunk type from tree-sitter node kind when capture misses",
+      "first_seen_ts": 1776031788,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "injection rules for embedded languages inside HTML templates",
+      "first_seen_ts": 1776031200,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "inverted index for sparse token retrieval",
+      "first_seen_ts": 1776031435,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "is_mutation_command",
+      "first_seen_ts": 1776195039,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "language definition macro that registers parser grammars",
+      "first_seen_ts": 1776031104,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "lazy model loading to avoid startup overhead for simple commands",
+      "first_seen_ts": 1776031616,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "list and manage reference indexes for multi-project search",
+      "first_seen_ts": 1776031786,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "load HNSW index from disk not build from scratch",
+      "first_seen_ts": 1776031458,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "markdown heading based chunking and code block extraction",
+      "first_seen_ts": 1776031205,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "markdown section chunks not code function chunks",
+      "first_seen_ts": 1776031469,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "method detection inside class or struct bodies",
+      "first_seen_ts": 1776031565,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "method implementations on the Store struct",
+      "first_seen_ts": 1776031690,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "methods on the Reranker struct",
+      "first_seen_ts": 1776031699,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "migrate database schema backup",
+      "first_seen_ts": 1776273027,
+      "source_cmd": "scout",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "model_fingerprint",
+      "first_seen_ts": 1776031050,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "module re-exports that form the public API",
+      "first_seen_ts": 1776031707,
+      "source_cmd": "search",
+      "category": "structural_search"
+    },
+    {
+      "query": "multi-grammar parsing for embedded code in templates",
+      "first_seen_ts": 1776031445,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "name matching and fuzzy search for function lookup",
+      "first_seen_ts": 1776031428,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "normalize text for full-text search indexing",
+      "first_seen_ts": 1776031376,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "note sentiment scoring and boost for search results",
+      "first_seen_ts": 1776031443,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "onnx session",
+      "first_seen_ts": 1776279219,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "open store for writing not read-only",
+      "first_seen_ts": 1776031650,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "open_readonly_after_init Store typestate",
+      "first_seen_ts": 1776274013,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "parse ASP.NET web forms with embedded server code",
+      "first_seen_ts": 1776031597,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "parse L5X PLC export files into structured text chunks",
+      "first_seen_ts": 1776031416,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "parse Nix package definitions and function declarations",
+      "first_seen_ts": 1776031783,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "parse a source code file and extract all chunks from it",
+      "first_seen_ts": 1776031058,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "parse configuration",
+      "first_seen_ts": 1776047648,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "parse function signatures",
+      "first_seen_ts": 1776132099,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "parse only the calls not the full chunks",
+      "first_seen_ts": 1776031648,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "pipeline stage types for parsing embedding and writing",
+      "first_seen_ts": 1776031158,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "pipelined concurrent indexing with parse embed and write stages",
+      "first_seen_ts": 1776031619,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "post-processing chunks after tree-sitter extraction",
+      "first_seen_ts": 1776031580,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "prepare_for_embedding",
+      "first_seen_ts": 1776030988,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "process input",
+      "first_seen_ts": 1775670995,
+      "source_cmd": "gather",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "progress bar integration for long-running CLI operations",
+      "first_seen_ts": 1776031762,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "prune stale chunks not add new ones",
+      "first_seen_ts": 1776031483,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "prune_all",
+      "first_seen_ts": 1776194872,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "prune_missing function",
+      "first_seen_ts": 1776031053,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "prune_missing prune_all staleness GC",
+      "first_seen_ts": 1776197274,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "prune_orphan_sparse_vectors",
+      "first_seen_ts": 1776195032,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "query logging for collecting real workflow search patterns",
+      "first_seen_ts": 1776031733,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "read a file and inject developer notes as inline comments",
+      "first_seen_ts": 1776031599,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "reciprocal rank fusion for combining search results",
+      "first_seen_ts": 1776031074,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "reconstruct source file content from indexed chunks",
+      "first_seen_ts": 1776031403,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "reference project registry for cross-project search",
+      "first_seen_ts": 1776031624,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "reference weighting",
+      "first_seen_ts": 1776279219,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "remove stale chunks for files that no longer exist on disk",
+      "first_seen_ts": 1776031068,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "reorder search results using cross-encoder scoring",
+      "first_seen_ts": 1776031063,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "resolve_splade_alpha",
+      "first_seen_ts": 1776105094,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "retry with backoff",
+      "first_seen_ts": 1776047645,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "retry with exponential backoff",
+      "first_seen_ts": 1776046200,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "return type extraction from function signatures",
+      "first_seen_ts": 1776031570,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "reverse type dependencies showing types used by a function not type users",
+      "first_seen_ts": 1776031636,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "router.rs",
+      "first_seen_ts": 1776193356,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "rrf_fuse sort determinism tie-breaker",
+      "first_seen_ts": 1776197383,
+      "source_cmd": "scout",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "run database schema migration from old version to current",
+      "first_seen_ts": 1776031604,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "run_index_pipeline",
+      "first_seen_ts": 1776031026,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "save HNSW index to disk with checksum verification",
+      "first_seen_ts": 1776031060,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "schema migration system for database version upgrades",
+      "first_seen_ts": 1776031426,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "scoring pipeline",
+      "first_seen_ts": 1776025917,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "search by file path glob not by function name",
+      "first_seen_ts": 1776031456,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "search by function name only not semantic embedding",
+      "first_seen_ts": 1776031173,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "search path resolution",
+      "first_seen_ts": 1776279136,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "search_filtered",
+      "first_seen_ts": 1776195007,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "select the best ONNX execution provider for GPU or CPU",
+      "first_seen_ts": 1776031418,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "semantic search not name-only lookup",
+      "first_seen_ts": 1776031641,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "serializable output structs for JSON responses",
+      "first_seen_ts": 1776031702,
+      "source_cmd": "search",
+      "category": "structural_search"
+    },
+    {
+      "query": "shared context struct that holds store embedder and paths for commands",
+      "first_seen_ts": 1776031155,
+      "source_cmd": "search",
+      "category": "structural_search"
+    },
+    {
+      "query": "sparse lexical retrieval with learned token expansion",
+      "first_seen_ts": 1776031084,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "sparse vector search not dense embedding search",
+      "first_seen_ts": 1776031653,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "split long code chunks into overlapping windows for embedding",
+      "first_seen_ts": 1776031384,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "staleness detection for outdated index entries",
+      "first_seen_ts": 1776031423,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "statistics about the embedding cache entries and size",
+      "first_seen_ts": 1776031099,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "stopword filtering for search across different languages",
+      "first_seen_ts": 1776031578,
+      "source_cmd": "search",
+      "category": "cross_language"
+    },
+    {
+      "query": "store migrate",
+      "first_seen_ts": 1776279218,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "store open that is read-only not writable",
+      "first_seen_ts": 1776031165,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "struct definitions for pipeline message passing",
+      "first_seen_ts": 1776031694,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "struct definitions for search results and chunk metadata",
+      "first_seen_ts": 1776031089,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "struct definitions in src/cli/commands/infra",
+      "first_seen_ts": 1776031354,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "struct definitions in src/cli/commands/train",
+      "first_seen_ts": 1776031321,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "struct definitions in src/impact",
+      "first_seen_ts": 1776031233,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "struct definitions in src/llm",
+      "first_seen_ts": 1776031276,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "struct definitions in src/store/helpers",
+      "first_seen_ts": 1776031288,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "structs representing call graph relationships",
+      "first_seen_ts": 1776031780,
+      "source_cmd": "search",
+      "category": "structural_search"
+    },
+    {
+      "query": "structural code pattern detection like builder or error swallowing",
+      "first_seen_ts": 1776031728,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "structural pattern matching for code patterns like builder or async",
+      "first_seen_ts": 1776031582,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "suggest where in the codebase to add new code",
+      "first_seen_ts": 1776031389,
+      "source_cmd": "search",
+      "category": "unknown"
+    },
+    {
+      "query": "telemetry and usage tracking for command frequency analysis",
+      "first_seen_ts": 1776031626,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "test coverage analysis for code functions",
+      "first_seen_ts": 1776031438,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "test file suggestion based on language conventions",
+      "first_seen_ts": 1776031683,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "test query",
+      "first_seen_ts": 1775526206,
+      "source_cmd": "search",
+      "category": "unknown"
+    },
+    {
+      "query": "text output formatting not JSON serialization",
+      "first_seen_ts": 1776031479,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "token budget packing for fitting results into context windows",
+      "first_seen_ts": 1776031079,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "tokenize an identifier into separate words for search matching",
+      "first_seen_ts": 1776031411,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "tokio runtime",
+      "first_seen_ts": 1776279218,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "trace the call chain between two functions",
+      "first_seen_ts": 1776031592,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "tracing span instrumentation for performance monitoring",
+      "first_seen_ts": 1776031764,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "training data extraction from git commit history",
+      "first_seen_ts": 1776031730,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "trait and protocol and interface concepts across languages",
+      "first_seen_ts": 1776031755,
+      "source_cmd": "search",
+      "category": "cross_language"
+    },
+    {
+      "query": "trait definition for pluggable vector search index",
+      "first_seen_ts": 1776031101,
+      "source_cmd": "search",
+      "category": "type_filtered"
+    },
+    {
+      "query": "tree-sitter grammar initialization for code parsing",
+      "first_seen_ts": 1776031575,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "tree-sitter query patterns for language grammars",
+      "first_seen_ts": 1776031195,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "try_daemon_query",
+      "first_seen_ts": 1776195038,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "try_daemon_query\\|is_mutation_command",
+      "first_seen_ts": 1776195033,
+      "source_cmd": "search",
+      "category": "identifier_lookup"
+    },
+    {
+      "query": "type dependency edges not call graph edges",
+      "first_seen_ts": 1776031473,
+      "source_cmd": "search",
+      "category": "negation"
+    },
+    {
+      "query": "upsert chunks into the SQLite store with embedding data",
+      "first_seen_ts": 1776031587,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "validate that search filter parameters are consistent",
+      "first_seen_ts": 1776031371,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "vector dot product for measuring embedding similarity",
+      "first_seen_ts": 1776031076,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "windowed chunking for long code that exceeds token limits",
+      "first_seen_ts": 1776031614,
+      "source_cmd": "search",
+      "category": "conceptual_search"
+    },
+    {
+      "query": "write HNSW index data to disk with checksum verification",
+      "first_seen_ts": 1776031401,
+      "source_cmd": "search",
+      "category": "behavioral_search"
+    },
+    {
+      "query": "write index to disk not read from disk",
+      "first_seen_ts": 1776031643,
+      "source_cmd": "search",
+      "category": "negation"
+    }
+  ]
+}

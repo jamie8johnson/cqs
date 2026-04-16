@@ -1,0 +1,3218 @@
+{
+  "schema_version": "v3-validated",
+  "created_at": 1776302945,
+  "n": 100,
+  "concurrency": 8,
+  "llm_backend": "vllm",
+  "verified": 97,
+  "uncaught_error_count": 0,
+  "queries": [
+    {
+      "query": "AuditModeFile",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "AuditModeFile",
+        "origin": "src/audit.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 62,
+        "line_end": 66
+      },
+      "metadata": {
+        "first_seen_ts": 1776031324,
+        "source_cmd": "search"
+      },
+      "pool_size": 34,
+      "appearances_count": {
+        "router": 18,
+        "dense": 19,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "BatchInput",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "BatchInput",
+        "origin": "src/cli/batch/commands.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 25,
+        "line_end": 28
+      },
+      "metadata": {
+        "first_seen_ts": 1776031326,
+        "source_cmd": "search"
+      },
+      "pool_size": 7,
+      "appearances_count": {
+        "router": 7,
+        "dense": 2,
+        "sparse": 7
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "ApiError",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "ApiError",
+        "origin": "src/llm/mod.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 478,
+        "line_end": 480
+      },
+      "metadata": {
+        "first_seen_ts": 1776031208,
+        "source_cmd": "search"
+      },
+      "pool_size": 33,
+      "appearances_count": {
+        "router": 20,
+        "dense": 20,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "BlameEntry",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "BlameEntry",
+        "origin": "src/cli/commands/io/blame.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 17,
+        "line_end": 22
+      },
+      "metadata": {
+        "first_seen_ts": 1776031221,
+        "source_cmd": "search"
+      },
+      "pool_size": 28,
+      "appearances_count": {
+        "router": 18,
+        "dense": 19,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "BatchContext",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "BatchContext",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/batch/mod.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 233,
+        "line_end": 867
+      },
+      "metadata": {
+        "first_seen_ts": 1776031796,
+        "source_cmd": "search"
+      },
+      "pool_size": 2,
+      "appearances_count": {
+        "router": 2,
+        "dense": 2,
+        "sparse": 2
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "BatchProvider trait definition",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "BatchProvider",
+        "origin": "src/llm/provider.rs",
+        "language": "rust",
+        "chunk_type": "trait",
+        "line_start": 24,
+        "line_end": 77
+      },
+      "metadata": {
+        "first_seen_ts": 1776031252,
+        "source_cmd": "search"
+      },
+      "pool_size": 14,
+      "appearances_count": {
+        "router": 4,
+        "dense": 2,
+        "sparse": 14
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "BoundedScoreHeap",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "BoundedScoreHeap",
+        "origin": "src/search/scoring/candidate.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 167,
+        "line_end": 234
+      },
+      "metadata": {
+        "first_seen_ts": 1776195043,
+        "source_cmd": "search"
+      },
+      "pool_size": 36,
+      "appearances_count": {
+        "router": 19,
+        "dense": 19,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "BudgetedNoteEntry",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "BudgetedNoteEntry",
+        "origin": "src/cli/commands/train/task.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 78,
+        "line_end": 82
+      },
+      "metadata": {
+        "first_seen_ts": 1776031341,
+        "source_cmd": "search"
+      },
+      "pool_size": 26,
+      "appearances_count": {
+        "router": 17,
+        "dense": 15,
+        "sparse": 17
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "CLI argument definitions and command enum",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "Cli",
+        "origin": "src/cli/definitions.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 136,
+        "line_end": 267
+      },
+      "metadata": {
+        "first_seen_ts": 1776031096,
+        "source_cmd": "search"
+      },
+      "pool_size": 16,
+      "appearances_count": {
+        "router": 8,
+        "dense": 10,
+        "sparse": 8
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 3,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "CacheStats struct",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "CacheStats",
+        "origin": "src/cache.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 28,
+        "line_end": 34
+      },
+      "metadata": {
+        "first_seen_ts": 1776031806,
+        "source_cmd": "search"
+      },
+      "pool_size": 26,
+      "appearances_count": {
+        "router": 17,
+        "dense": 20,
+        "sparse": 17
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 1,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "CagraIndex",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "CagraIndex",
+        "origin": "src/cagra.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 529,
+        "line_end": 529
+      },
+      "metadata": {
+        "first_seen_ts": 1776031352,
+        "source_cmd": "search"
+      },
+      "pool_size": 11,
+      "appearances_count": {
+        "router": 10,
+        "dense": 5,
+        "sparse": 10
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "CallContext",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "CallContext",
+        "origin": "src/nl/mod.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 32,
+        "line_end": 37
+      },
+      "metadata": {
+        "first_seen_ts": 1776031301,
+        "source_cmd": "search"
+      },
+      "pool_size": 19,
+      "appearances_count": {
+        "router": 19,
+        "dense": 2,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "ChunkSummary",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "ChunkSummary",
+        "origin": "src/store/helpers/types.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 15,
+        "line_end": 49
+      },
+      "metadata": {
+        "first_seen_ts": 1776031298,
+        "source_cmd": "search"
+      },
+      "pool_size": 34,
+      "appearances_count": {
+        "router": 20,
+        "dense": 18,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "Commands enum BatchCmd dispatcher batch handler unify parity",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "dispatch",
+        "origin": "src/cli/batch/commands.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 281,
+        "line_end": 384
+      },
+      "metadata": {
+        "first_seen_ts": 1776235418,
+        "source_cmd": "scout"
+      },
+      "pool_size": 19,
+      "appearances_count": {
+        "router": 9,
+        "dense": 14,
+        "sparse": 7
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 1
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "ChunkIdentity",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "ChunkIdentity",
+        "origin": "src/store/helpers/types.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 240,
+        "line_end": 258
+      },
+      "metadata": {
+        "first_seen_ts": 1776031211,
+        "source_cmd": "search"
+      },
+      "pool_size": 39,
+      "appearances_count": {
+        "router": 20,
+        "dense": 20,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "CommitInfo",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "CommitInfo",
+        "origin": "docs/superpowers/plans/2026-03-19-train-data.md",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 409,
+        "line_end": 413
+      },
+      "metadata": {
+        "first_seen_ts": 1776031268,
+        "source_cmd": "search"
+      },
+      "pool_size": 32,
+      "appearances_count": {
+        "router": 17,
+        "dense": 17,
+        "sparse": 17
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "CommandContext",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "CommandContext",
+        "origin": "src/cli/store.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 47,
+        "line_end": 56
+      },
+      "metadata": {
+        "first_seen_ts": 1776031273,
+        "source_cmd": "search"
+      },
+      "pool_size": 8,
+      "appearances_count": {
+        "router": 8,
+        "dense": 2,
+        "sparse": 8
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "DiffEntryOutput",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "DiffEntryOutput",
+        "origin": "src/cli/commands/io/diff.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 17,
+        "line_end": 24
+      },
+      "metadata": {
+        "first_seen_ts": 1776031224,
+        "source_cmd": "search"
+      },
+      "pool_size": 37,
+      "appearances_count": {
+        "router": 19,
+        "dense": 19,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "DiffOutput",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "DiffOutput",
+        "origin": "src/cli/commands/io/diff.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 37,
+        "line_end": 44
+      },
+      "metadata": {
+        "first_seen_ts": 1776031306,
+        "source_cmd": "search"
+      },
+      "pool_size": 31,
+      "appearances_count": {
+        "router": 17,
+        "dense": 16,
+        "sparse": 17
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "Display trait implementation for human-readable output",
+      "category": "type_filtered",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "fmt",
+        "origin": "src/embedder/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 87,
+        "line_end": 93
+      },
+      "metadata": {
+        "first_seen_ts": 1776031715,
+        "source_cmd": "search"
+      },
+      "pool_size": 32,
+      "appearances_count": {
+        "router": 20,
+        "dense": 19,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 1
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "EmbedStageContext",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "EmbedStageContext",
+        "origin": "src/cli/pipeline/types.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 67,
+        "line_end": 72
+      },
+      "metadata": {
+        "first_seen_ts": 1776031304,
+        "source_cmd": "search"
+      },
+      "pool_size": 17,
+      "appearances_count": {
+        "router": 15,
+        "dense": 3,
+        "sparse": 15
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "EmbeddingCache",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "EmbeddingCache",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 40,
+        "line_end": 47
+      },
+      "metadata": {
+        "first_seen_ts": 1776195055,
+        "source_cmd": "search"
+      },
+      "pool_size": 4,
+      "appearances_count": {
+        "router": 4,
+        "dense": 2,
+        "sparse": 4
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "EligibleChunk",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "EligibleChunk",
+        "origin": "src/llm/mod.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 39,
+        "line_end": 46
+      },
+      "metadata": {
+        "first_seen_ts": 1776031359,
+        "source_cmd": "search"
+      },
+      "pool_size": 36,
+      "appearances_count": {
+        "router": 19,
+        "dense": 19,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 8,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "EmbeddingCache\\|QueryCache",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "QueryCache",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 901,
+        "line_end": 1099
+      },
+      "metadata": {
+        "first_seen_ts": 1776195050,
+        "source_cmd": "search"
+      },
+      "pool_size": 10,
+      "appearances_count": {
+        "router": 10,
+        "dense": 2,
+        "sparse": 10
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "Embedder",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "Embedder",
+        "origin": "src/embedder/mod.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 257,
+        "line_end": 894
+      },
+      "metadata": {
+        "first_seen_ts": 1776031349,
+        "source_cmd": "search"
+      },
+      "pool_size": 4,
+      "appearances_count": {
+        "router": 4,
+        "dense": 2,
+        "sparse": 4
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "FileGroup",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "FileGroup",
+        "origin": "src/scout.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 59,
+        "line_end": 69
+      },
+      "metadata": {
+        "first_seen_ts": 1776031314,
+        "source_cmd": "search"
+      },
+      "pool_size": 32,
+      "appearances_count": {
+        "router": 18,
+        "dense": 18,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "HnswIndex struct",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "HnswIndex",
+        "origin": "src/hnsw/mod.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 175,
+        "line_end": 188
+      },
+      "metadata": {
+        "first_seen_ts": 1776031820,
+        "source_cmd": "search"
+      },
+      "pool_size": 5,
+      "appearances_count": {
+        "router": 5,
+        "dense": 3,
+        "sparse": 5
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "HnswIoCell",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "HnswIoCell",
+        "origin": "src/hnsw/mod.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 146,
+        "line_end": 146
+      },
+      "metadata": {
+        "first_seen_ts": 1776031291,
+        "source_cmd": "search"
+      },
+      "pool_size": 14,
+      "appearances_count": {
+        "router": 13,
+        "dense": 3,
+        "sparse": 13
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "IndexStats",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "IndexStats",
+        "origin": "src/store/helpers/types.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 385,
+        "line_end": 404
+      },
+      "metadata": {
+        "first_seen_ts": 1776031283,
+        "source_cmd": "search"
+      },
+      "pool_size": 27,
+      "appearances_count": {
+        "router": 11,
+        "dense": 20,
+        "sparse": 11
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "LlmConfig",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "LlmConfig",
+        "origin": "src/llm/mod.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 206,
+        "line_end": 213
+      },
+      "metadata": {
+        "first_seen_ts": 1776031296,
+        "source_cmd": "search"
+      },
+      "pool_size": 14,
+      "appearances_count": {
+        "router": 12,
+        "dense": 7,
+        "sparse": 12
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 1,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "NlTemplate enum",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "NlTemplate",
+        "origin": "src/nl/mod.rs",
+        "language": "rust",
+        "chunk_type": "enum",
+        "line_start": 21,
+        "line_end": 26
+      },
+      "metadata": {
+        "first_seen_ts": 1776031808,
+        "source_cmd": "search"
+      },
+      "pool_size": 23,
+      "appearances_count": {
+        "router": 11,
+        "dense": 13,
+        "sparse": 11
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "PipelineStats",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "PipelineStats",
+        "origin": "src/cli/pipeline/types.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 38,
+        "line_end": 45
+      },
+      "metadata": {
+        "first_seen_ts": 1776031811,
+        "source_cmd": "search"
+      },
+      "pool_size": 30,
+      "appearances_count": {
+        "router": 15,
+        "dense": 20,
+        "sparse": 15
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "QueryCache",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "QueryCache",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 901,
+        "line_end": 1099
+      },
+      "metadata": {
+        "first_seen_ts": 1776195055,
+        "source_cmd": "search"
+      },
+      "pool_size": 10,
+      "appearances_count": {
+        "router": 9,
+        "dense": 6,
+        "sparse": 9
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "RelatedResult",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "RelatedResult",
+        "origin": "src/related.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 22,
+        "line_end": 27
+      },
+      "metadata": {
+        "first_seen_ts": 1776031336,
+        "source_cmd": "search"
+      },
+      "pool_size": 32,
+      "appearances_count": {
+        "router": 18,
+        "dense": 16,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "ProjectSearchResult",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "ProjectSearchResult",
+        "origin": "src/cli/commands/infra/project.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 20,
+        "line_end": 28
+      },
+      "metadata": {
+        "first_seen_ts": 1776031279,
+        "source_cmd": "search"
+      },
+      "pool_size": 30,
+      "appearances_count": {
+        "router": 19,
+        "dense": 17,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "ReviewResult",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "ReviewResult",
+        "origin": "src/review.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 21,
+        "line_end": 37
+      },
+      "metadata": {
+        "first_seen_ts": 1776031316,
+        "source_cmd": "search"
+      },
+      "pool_size": 28,
+      "appearances_count": {
+        "router": 15,
+        "dense": 16,
+        "sparse": 15
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "SearchFilter struct",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "SearchFilter",
+        "origin": "src/store/helpers/search_filter.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 16,
+        "line_end": 59
+      },
+      "metadata": {
+        "first_seen_ts": 1776031813,
+        "source_cmd": "search"
+      },
+      "pool_size": 33,
+      "appearances_count": {
+        "router": 18,
+        "dense": 15,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "Section",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "make_section_chunk",
+        "origin": "src/nl/mod.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 652,
+        "line_end": 669
+      },
+      "metadata": {
+        "first_seen_ts": 1776031258,
+        "source_cmd": "search"
+      },
+      "pool_size": 38,
+      "appearances_count": {
+        "router": 19,
+        "dense": 19,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "ScoringContext",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "ScoringContext",
+        "origin": "src/search/scoring/candidate.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 240,
+        "line_end": 250
+      },
+      "metadata": {
+        "first_seen_ts": 1776031213,
+        "source_cmd": "search"
+      },
+      "pool_size": 18,
+      "appearances_count": {
+        "router": 18,
+        "dense": 2,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "Send and Sync implementation for thread-safe index sharing",
+      "category": "structural_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "LoadedHnsw",
+        "origin": "src/hnsw/mod.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 165,
+        "line_end": 165
+      },
+      "metadata": {
+        "first_seen_ts": 1776031712,
+        "source_cmd": "search"
+      },
+      "pool_size": 28,
+      "appearances_count": {
+        "router": 14,
+        "dense": 19,
+        "sparse": 14
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "SimilarEntry",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "SimilarEntry",
+        "origin": "docs/superpowers/plans/2026-04-04-json-schema-graph-group.md",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 275,
+        "line_end": 279
+      },
+      "metadata": {
+        "first_seen_ts": 1776031262,
+        "source_cmd": "search"
+      },
+      "pool_size": 30,
+      "appearances_count": {
+        "router": 20,
+        "dense": 13,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "SpladeEncoder struct",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "SpladeEncoder",
+        "origin": "docs/superpowers/plans/2026-04-06-splade-sparse-dense-hybrid.md",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 138,
+        "line_end": 142
+      },
+      "metadata": {
+        "first_seen_ts": 1776031793,
+        "source_cmd": "search"
+      },
+      "pool_size": 10,
+      "appearances_count": {
+        "router": 10,
+        "dense": 1,
+        "sparse": 10
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "SpladeIndex",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "SpladeIndex",
+        "origin": "src/splade/index.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 128,
+        "line_end": 740
+      },
+      "metadata": {
+        "first_seen_ts": 1776195056,
+        "source_cmd": "search"
+      },
+      "pool_size": 4,
+      "appearances_count": {
+        "router": 3,
+        "dense": 3,
+        "sparse": 3
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "StoreOpenConfig",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "StoreOpenConfig",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/store/mod.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 291,
+        "line_end": 302
+      },
+      "metadata": {
+        "first_seen_ts": 1776031226,
+        "source_cmd": "search"
+      },
+      "pool_size": 24,
+      "appearances_count": {
+        "router": 18,
+        "dense": 8,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "Store readonly readwrite typestate phantom",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "store",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/batch/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 453,
+        "line_end": 456
+      },
+      "metadata": {
+        "first_seen_ts": 1776245137,
+        "source_cmd": "scout"
+      },
+      "pool_size": 32,
+      "appearances_count": {
+        "router": 20,
+        "dense": 14,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "SuggestedNote",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "SuggestedNote",
+        "origin": "src/suggest.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 25,
+        "line_end": 31
+      },
+      "metadata": {
+        "first_seen_ts": 1776031237,
+        "source_cmd": "search"
+      },
+      "pool_size": 28,
+      "appearances_count": {
+        "router": 19,
+        "dense": 17,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "SummaryEntry",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "SummaryEntry",
+        "origin": "src/llm/mod.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 488,
+        "line_end": 492
+      },
+      "metadata": {
+        "first_seen_ts": 1776031266,
+        "source_cmd": "search"
+      },
+      "pool_size": 32,
+      "appearances_count": {
+        "router": 18,
+        "dense": 18,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "TaskTemplate",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "TaskTemplate",
+        "origin": "src/plan.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 15,
+        "line_end": 20
+      },
+      "metadata": {
+        "first_seen_ts": 1776031245,
+        "source_cmd": "search"
+      },
+      "pool_size": 27,
+      "appearances_count": {
+        "router": 13,
+        "dense": 16,
+        "sparse": 13
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "TraceHop",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "TraceHop",
+        "origin": "src/cli/commands/graph/trace.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 16,
+        "line_end": 23
+      },
+      "metadata": {
+        "first_seen_ts": 1776031309,
+        "source_cmd": "search"
+      },
+      "pool_size": 23,
+      "appearances_count": {
+        "router": 17,
+        "dense": 11,
+        "sparse": 17
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "VectorIndex trait definition",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "VectorIndex",
+        "origin": "src/index.rs",
+        "language": "rust",
+        "chunk_type": "trait",
+        "line_start": 20,
+        "line_end": 86
+      },
+      "metadata": {
+        "first_seen_ts": 1776031281,
+        "source_cmd": "search"
+      },
+      "pool_size": 24,
+      "appearances_count": {
+        "router": 15,
+        "dense": 14,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "TraceArgs",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "TraceArgs",
+        "origin": "src/cli/args.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 238,
+        "line_end": 249
+      },
+      "metadata": {
+        "first_seen_ts": 1776031218,
+        "source_cmd": "search"
+      },
+      "pool_size": 27,
+      "appearances_count": {
+        "router": 11,
+        "dense": 18,
+        "sparse": 11
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "WatchState",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "WatchState",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/watch.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 423,
+        "line_end": 435
+      },
+      "metadata": {
+        "first_seen_ts": 1776031256,
+        "source_cmd": "search"
+      },
+      "pool_size": 24,
+      "appearances_count": {
+        "router": 18,
+        "dense": 11,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "TypeInfo",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "TypeInfo",
+        "origin": "src/onboard.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 66,
+        "line_end": 69
+      },
+      "metadata": {
+        "first_seen_ts": 1776031286,
+        "source_cmd": "search"
+      },
+      "pool_size": 36,
+      "appearances_count": {
+        "router": 20,
+        "dense": 19,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "audit_mode",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "cmd_audit_mode",
+        "origin": "src/cli/commands/infra/audit_mode.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 36,
+        "line_end": 130
+      },
+      "metadata": {
+        "first_seen_ts": 1776195003,
+        "source_cmd": "search"
+      },
+      "pool_size": 29,
+      "appearances_count": {
+        "router": 18,
+        "dense": 15,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "atomic_replace shared helper for durable file persistence",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "atomic_replace",
+        "origin": "src/fs.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 41,
+        "line_end": 112
+      },
+      "metadata": {
+        "first_seen_ts": 1776245281,
+        "source_cmd": "scout"
+      },
+      "pool_size": 29,
+      "appearances_count": {
+        "router": 19,
+        "dense": 19,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "audit_mode_on\\|audit_mode_off\\|check_note_staleness\\|fn suggest_",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "check_note_staleness",
+        "origin": "src/suggest.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 270,
+        "line_end": 278
+      },
+      "metadata": {
+        "first_seen_ts": 1776194992,
+        "source_cmd": "search"
+      },
+      "pool_size": 34,
+      "appearances_count": {
+        "router": 19,
+        "dense": 20,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 9,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "batch mode persistent session not one-shot CLI",
+      "category": "negation",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "BatchContext",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/batch/mod.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 170,
+        "line_end": 231
+      },
+      "metadata": {
+        "first_seen_ts": 1776031655,
+        "source_cmd": "search"
+      },
+      "pool_size": 38,
+      "appearances_count": {
+        "router": 20,
+        "dense": 20,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "callees of a function not callers",
+      "category": "negation",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "get_callees",
+        "origin": "src/store/calls/crud.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 138,
+        "line_end": 150
+      },
+      "metadata": {
+        "first_seen_ts": 1776031461,
+        "source_cmd": "search"
+      },
+      "pool_size": 33,
+      "appearances_count": {
+        "router": 17,
+        "dense": 19,
+        "sparse": 17
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 2,
+        "sparse": 5
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "call graph traversal for finding transitive dependencies",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "find_transitive_callers",
+        "origin": "src/impact/analysis.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 221,
+        "line_end": 265
+      },
+      "metadata": {
+        "first_seen_ts": 1776031421,
+        "source_cmd": "search"
+      },
+      "pool_size": 35,
+      "appearances_count": {
+        "router": 19,
+        "dense": 19,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 1,
+        "dense": 0,
+        "sparse": 1
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "check if a file needs reindexing based on modification time",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "needs_reindex",
+        "origin": "src/store/chunks/crud.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 399,
+        "line_end": 420
+      },
+      "metadata": {
+        "first_seen_ts": 1776031381,
+        "source_cmd": "search"
+      },
+      "pool_size": 23,
+      "appearances_count": {
+        "router": 20,
+        "dense": 10,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 2,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "checkpoint verification and data integrity for index files",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "verify_checksum",
+        "origin": "src/embedder/mod.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 970,
+        "line_end": 986
+      },
+      "metadata": {
+        "first_seen_ts": 1776031448,
+        "source_cmd": "search"
+      },
+      "pool_size": 36,
+      "appearances_count": {
+        "router": 20,
+        "dense": 20,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 11,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "chunk embedding batch",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "embed_batch",
+        "origin": "src/embedder/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 751,
+        "line_end": 893
+      },
+      "metadata": {
+        "first_seen_ts": 1776279219,
+        "source_cmd": "search"
+      },
+      "pool_size": 19,
+      "appearances_count": {
+        "router": 16,
+        "dense": 4,
+        "sparse": 16
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "clear embedding cache entries not evict by size limit",
+      "category": "negation",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "evict",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 321,
+        "line_end": 370
+      },
+      "metadata": {
+        "first_seen_ts": 1776031175,
+        "source_cmd": "search"
+      },
+      "pool_size": 28,
+      "appearances_count": {
+        "router": 18,
+        "dense": 19,
+        "sparse": 17
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 6,
+        "sparse": 2
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "classify_query",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "classify_query",
+        "origin": "src/search/router.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 431,
+        "line_end": 573
+      },
+      "metadata": {
+        "first_seen_ts": 1776194853,
+        "source_cmd": "search"
+      },
+      "pool_size": 21,
+      "appearances_count": {
+        "router": 14,
+        "dense": 12,
+        "sparse": 14
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "classify_query router extract_type_hints",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "extract_type_hints",
+        "origin": "src/search/router.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 851,
+        "line_end": 870
+      },
+      "metadata": {
+        "first_seen_ts": 1776272271,
+        "source_cmd": "scout"
+      },
+      "pool_size": 19,
+      "appearances_count": {
+        "router": 14,
+        "dense": 13,
+        "sparse": 14
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "cmd_gc",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "cmd_gc",
+        "origin": "src/cli/commands/index/gc.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 40,
+        "line_end": 202
+      },
+      "metadata": {
+        "first_seen_ts": 1776195154,
+        "source_cmd": "search"
+      },
+      "pool_size": 15,
+      "appearances_count": {
+        "router": 12,
+        "dense": 10,
+        "sparse": 12
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "cmd_notes_mutate",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "cmd_notes_mutate",
+        "origin": "src/cli/commands/io/notes.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 122,
+        "line_end": 150
+      },
+      "metadata": {
+        "first_seen_ts": 1776194854,
+        "source_cmd": "search"
+      },
+      "pool_size": 19,
+      "appearances_count": {
+        "router": 12,
+        "dense": 14,
+        "sparse": 12
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 0,
+        "dense": 0,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "ASP.NET web forms custom parser for server script blocks",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "parse_aspx_vb_script_block",
+        "origin": "src/parser/aspx.rs",
+        "language": "rust",
+        "chunk_type": "test",
+        "line_start": 902,
+        "line_end": 933
+      },
+      "metadata": {
+        "first_seen_ts": 1776031203,
+        "source_cmd": "search"
+      },
+      "pool_size": 30,
+      "appearances_count": {
+        "router": 20,
+        "dense": 18,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 1,
+        "dense": 0,
+        "sparse": 1
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "CAGRA index build",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "build_vector_index",
+        "origin": "src/cli/store.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 230,
+        "line_end": 235
+      },
+      "metadata": {
+        "first_seen_ts": 1776279218,
+        "source_cmd": "search"
+      },
+      "pool_size": 25,
+      "appearances_count": {
+        "router": 16,
+        "dense": 17,
+        "sparse": 16
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 3,
+        "dense": 0,
+        "sparse": 3
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "CAGRA save load serialize persistence index",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "save",
+        "origin": "src/splade/index.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 264,
+        "line_end": 409
+      },
+      "metadata": {
+        "first_seen_ts": 1776245242,
+        "source_cmd": "scout"
+      },
+      "pool_size": 30,
+      "appearances_count": {
+        "router": 12,
+        "dense": 20,
+        "sparse": 12
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "dense": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['dense'] at min rank 0"
+    },
+    {
+      "query": "HNSW index build not CAGRA GPU index",
+      "category": "negation",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "HnswIndex",
+        "origin": "src/hnsw/build.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 11,
+        "line_end": 250
+      },
+      "metadata": {
+        "first_seen_ts": 1776031168,
+        "source_cmd": "search"
+      },
+      "pool_size": 24,
+      "appearances_count": {
+        "router": 15,
+        "dense": 20,
+        "sparse": 12
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 13,
+        "sparse": 0
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "HNSW save load",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "save",
+        "origin": "src/hnsw/persist.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 189,
+        "line_end": 519
+      },
+      "metadata": {
+        "first_seen_ts": 1776279218,
+        "source_cmd": "search"
+      },
+      "pool_size": 12,
+      "appearances_count": {
+        "router": 8,
+        "dense": 6,
+        "sparse": 8
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 2,
+        "dense": 0,
+        "sparse": 2
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "Store",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "Store",
+        "origin": "src/store/types.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 141,
+        "line_end": 547
+      },
+      "metadata": {
+        "first_seen_ts": 1776031344,
+        "source_cmd": "search"
+      },
+      "pool_size": 6,
+      "appearances_count": {
+        "router": 3,
+        "dense": 4,
+        "sparse": 3
+      },
+      "gold_verified": true,
+      "gold_rank": 1,
+      "gold_appearances": {
+        "router": 1,
+        "sparse": 1
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 1"
+    },
+    {
+      "query": "Store::open_readonly_small reference index mmap size",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "load_references",
+        "origin": "src/reference.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 189,
+        "line_end": 224
+      },
+      "metadata": {
+        "first_seen_ts": 1776273951,
+        "source_cmd": "scout"
+      },
+      "pool_size": 31,
+      "appearances_count": {
+        "router": 20,
+        "dense": 20,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 15,
+        "dense": 0,
+        "sparse": 15
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "auto-suggest notes from codebase patterns like dead code and hotspots",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "dispatch_suggest",
+        "origin": "src/cli/batch/handlers/analysis.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 100,
+        "line_end": 143
+      },
+      "metadata": {
+        "first_seen_ts": 1776031414,
+        "source_cmd": "search"
+      },
+      "pool_size": 33,
+      "appearances_count": {
+        "router": 20,
+        "dense": 17,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 4,
+        "dense": 0,
+        "sparse": 4
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "build the HNSW index from stored embeddings in batches",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "build_batched_with_dim",
+        "origin": "src/hnsw/build.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 132,
+        "line_end": 249
+      },
+      "metadata": {
+        "first_seen_ts": 1776031369,
+        "source_cmd": "search"
+      },
+      "pool_size": 18,
+      "appearances_count": {
+        "router": 12,
+        "dense": 12,
+        "sparse": 12
+      },
+      "gold_verified": true,
+      "gold_rank": 0,
+      "gold_appearances": {
+        "router": 1,
+        "dense": 0,
+        "sparse": 1
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 0"
+    },
+    {
+      "query": "HNSW persist atomic rename tmp file",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "HnswIndex",
+        "origin": "src/hnsw/persist.rs",
+        "language": "rust",
+        "chunk_type": "impl",
+        "line_start": 172,
+        "line_end": 860
+      },
+      "metadata": {
+        "first_seen_ts": 1776197351,
+        "source_cmd": "scout"
+      },
+      "pool_size": 25,
+      "appearances_count": {
+        "router": 6,
+        "dense": 19,
+        "sparse": 6
+      },
+      "gold_verified": true,
+      "gold_rank": 1,
+      "gold_appearances": {
+        "router": 1,
+        "sparse": 1
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 1"
+    },
+    {
+      "query": "SPLADE data length validation batch",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "tc31_build_batched_dim_mismatch_rejected",
+        "origin": "src/hnsw/build.rs",
+        "language": "rust",
+        "chunk_type": "test",
+        "line_start": 416,
+        "line_end": 442
+      },
+      "metadata": {
+        "first_seen_ts": 1776193779,
+        "source_cmd": "search"
+      },
+      "pool_size": 32,
+      "appearances_count": {
+        "router": 19,
+        "dense": 18,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 1,
+      "gold_appearances": {
+        "router": 1,
+        "sparse": 1
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 1"
+    },
+    {
+      "query": "all chunk types not just callable ones",
+      "category": "negation",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "make_chunk",
+        "origin": "src/cli/batch/handlers/search.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 397,
+        "line_end": 423
+      },
+      "metadata": {
+        "first_seen_ts": 1776031750,
+        "source_cmd": "search"
+      },
+      "pool_size": 38,
+      "appearances_count": {
+        "router": 18,
+        "dense": 18,
+        "sparse": 17
+      },
+      "gold_verified": true,
+      "gold_rank": 1,
+      "gold_appearances": {
+        "router": 1,
+        "dense": 2
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense'] at min rank 1"
+    },
+    {
+      "query": "apply config file defaults before CLI argument parsing",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "apply_config_defaults",
+        "origin": "src/cli/config.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 132,
+        "line_end": 165
+      },
+      "metadata": {
+        "first_seen_ts": 1776031791,
+        "source_cmd": "search"
+      },
+      "pool_size": 26,
+      "appearances_count": {
+        "router": 16,
+        "dense": 13,
+        "sparse": 16
+      },
+      "gold_verified": true,
+      "gold_rank": 1,
+      "gold_appearances": {
+        "router": 1,
+        "sparse": 1
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 1"
+    },
+    {
+      "query": "clear the entire embedding cache not just prune old entries",
+      "category": "negation",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "clear",
+        "origin": "src/cache.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 433,
+        "line_end": 452
+      },
+      "metadata": {
+        "first_seen_ts": 1776031638,
+        "source_cmd": "search"
+      },
+      "pool_size": 25,
+      "appearances_count": {
+        "router": 16,
+        "dense": 14,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 2,
+      "gold_appearances": {
+        "router": 2,
+        "dense": 3,
+        "sparse": 2
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 2"
+    },
+    {
+      "query": "atexit Mutex UB ORT provider symlinks cleanup",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "cleanup",
+        "origin": "docs/superpowers/plans/2026-03-18-audit-p1-fixes.md",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 561,
+        "line_end": 572
+      },
+      "metadata": {
+        "first_seen_ts": 1776211604,
+        "source_cmd": "scout"
+      },
+      "pool_size": 30,
+      "appearances_count": {
+        "router": 20,
+        "dense": 20,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 2,
+      "gold_appearances": {
+        "router": 2,
+        "sparse": 2
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 2"
+    },
+    {
+      "query": "SPLADE sparse hybrid",
+      "category": "conceptual_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "migrate_v16_to_v17",
+        "origin": "src/store/migrations.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 392,
+        "line_end": 417
+      },
+      "metadata": {
+        "first_seen_ts": 1776279218,
+        "source_cmd": "search"
+      },
+      "pool_size": 22,
+      "appearances_count": {
+        "router": 16,
+        "dense": 9,
+        "sparse": 16
+      },
+      "gold_verified": true,
+      "gold_rank": 1,
+      "gold_appearances": {
+        "dense": 1
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['dense'] at min rank 1"
+    },
+    {
+      "query": "SPLADE encoder encode_batch tensor shape validation",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "encode_batch",
+        "origin": "src/splade/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 580,
+        "line_end": 888
+      },
+      "metadata": {
+        "first_seen_ts": 1776197349,
+        "source_cmd": "scout"
+      },
+      "pool_size": 19,
+      "appearances_count": {
+        "router": 11,
+        "dense": 12,
+        "sparse": 11
+      },
+      "gold_verified": true,
+      "gold_rank": 2,
+      "gold_appearances": {
+        "router": 2,
+        "dense": 2,
+        "sparse": 2
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 2"
+    },
+    {
+      "query": "call site extraction for building the call graph",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "extract_call_snippet_from_cache",
+        "origin": "src/impact/analysis.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 148,
+        "line_end": 185
+      },
+      "metadata": {
+        "first_seen_ts": 1776031585,
+        "source_cmd": "search"
+      },
+      "pool_size": 34,
+      "appearances_count": {
+        "router": 18,
+        "dense": 20,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 2,
+      "gold_appearances": {
+        "router": 2,
+        "sparse": 2
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 2"
+    },
+    {
+      "query": "audit mode that forces direct code examination without cached notes",
+      "category": "negation",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "invalidate_mutable_caches",
+        "origin": "src/cli/batch/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 373,
+        "line_end": 383
+      },
+      "metadata": {
+        "first_seen_ts": 1776031453,
+        "source_cmd": "search"
+      },
+      "pool_size": 36,
+      "appearances_count": {
+        "router": 19,
+        "dense": 20,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 3,
+      "gold_appearances": {
+        "router": 4,
+        "dense": 8,
+        "sparse": 3
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 3"
+    },
+    {
+      "query": "BFS expansion through call graph for context assembly",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "find_transitive_callers",
+        "origin": "src/impact/analysis.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 221,
+        "line_end": 265
+      },
+      "metadata": {
+        "first_seen_ts": 1776031629,
+        "source_cmd": "search"
+      },
+      "pool_size": 32,
+      "appearances_count": {
+        "router": 19,
+        "dense": 20,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 2,
+      "gold_appearances": {
+        "router": 8,
+        "dense": 2,
+        "sparse": 8
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 2"
+    },
+    {
+      "query": "NoteBoostIndex cache generation counter",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "ensure_splade_index",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/batch/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 557,
+        "line_end": 628
+      },
+      "metadata": {
+        "first_seen_ts": 1776204436,
+        "source_cmd": "scout"
+      },
+      "pool_size": 33,
+      "appearances_count": {
+        "router": 19,
+        "dense": 19,
+        "sparse": 19
+      },
+      "gold_verified": true,
+      "gold_rank": 3,
+      "gold_appearances": {
+        "dense": 3
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['dense'] at min rank 3"
+    },
+    {
+      "query": "GPU accelerated approximate nearest neighbor index",
+      "category": "conceptual_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "build_vector_index_with_config",
+        "origin": "src/cli/store.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 247,
+        "line_end": 402
+      },
+      "metadata": {
+        "first_seen_ts": 1776031081,
+        "source_cmd": "search"
+      },
+      "pool_size": 33,
+      "appearances_count": {
+        "router": 16,
+        "dense": 18,
+        "sparse": 16
+      },
+      "gold_verified": true,
+      "gold_rank": 3,
+      "gold_appearances": {
+        "dense": 3
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['dense'] at min rank 3"
+    },
+    {
+      "query": "cmd_doctor function",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031048,
+        "source_cmd": "search"
+      },
+      "pool_size": 7,
+      "appearances_count": {
+        "router": 5,
+        "dense": 5,
+        "sparse": 6
+      },
+      "gold_verified": false,
+      "gold_rank": null,
+      "gold_appearances": {},
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: no LLM-match in 7 pool candidates"
+    },
+    {
+      "query": "SQLite mmap_size WSL filesystem detection",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "SLOW_MMAP_FSTYPES",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/store/mod.rs",
+        "language": "rust",
+        "chunk_type": "constant",
+        "line_start": 315,
+        "line_end": 327
+      },
+      "metadata": {
+        "first_seen_ts": 1776217608,
+        "source_cmd": "scout"
+      },
+      "pool_size": 32,
+      "appearances_count": {
+        "router": 20,
+        "dense": 20,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 5,
+      "gold_appearances": {
+        "router": 5,
+        "dense": 6,
+        "sparse": 5
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 5"
+    },
+    {
+      "query": "add a developer note not remove one",
+      "category": "negation",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "cmd_notes_add",
+        "origin": "src/cli/commands/io/notes.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 203,
+        "line_end": 285
+      },
+      "metadata": {
+        "first_seen_ts": 1776031645,
+        "source_cmd": "search"
+      },
+      "pool_size": 31,
+      "appearances_count": {
+        "router": 16,
+        "dense": 18,
+        "sparse": 15
+      },
+      "gold_verified": true,
+      "gold_rank": 5,
+      "gold_appearances": {
+        "router": 5,
+        "dense": 8,
+        "sparse": 10
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'dense', 'sparse'] at min rank 5"
+    },
+    {
+      "query": "codebase health scoring across multiple dimensions",
+      "category": "conceptual_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "compute_risk_and_tests",
+        "origin": "src/impact/hints.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 169,
+        "line_end": 254
+      },
+      "metadata": {
+        "first_seen_ts": 1776031720,
+        "source_cmd": "search"
+      },
+      "pool_size": 32,
+      "appearances_count": {
+        "router": 16,
+        "dense": 17,
+        "sparse": 16
+      },
+      "gold_verified": true,
+      "gold_rank": 6,
+      "gold_appearances": {
+        "router": 6,
+        "sparse": 6
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 6"
+    },
+    {
+      "query": "clap derive macro usage for command line argument parsing",
+      "category": "conceptual_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "BatchInput",
+        "origin": "src/cli/batch/commands.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 25,
+        "line_end": 28
+      },
+      "metadata": {
+        "first_seen_ts": 1776031717,
+        "source_cmd": "search"
+      },
+      "pool_size": 33,
+      "appearances_count": {
+        "router": 18,
+        "dense": 20,
+        "sparse": 18
+      },
+      "gold_verified": true,
+      "gold_rank": 8,
+      "gold_appearances": {
+        "router": 8,
+        "sparse": 8
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 8"
+    },
+    {
+      "query": "CAGRA sentinel initialization length probe phantom results",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "cagra_itopk_max_default",
+        "origin": "src/cagra.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 114,
+        "line_end": 118
+      },
+      "metadata": {
+        "first_seen_ts": 1776274060,
+        "source_cmd": "scout"
+      },
+      "pool_size": 32,
+      "appearances_count": {
+        "router": 17,
+        "dense": 18,
+        "sparse": 17
+      },
+      "gold_verified": true,
+      "gold_rank": 10,
+      "gold_appearances": {
+        "router": 10,
+        "sparse": 10
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 10"
+    },
+    {
+      "query": "CAGRA GPU vector index search phantom results distance buffer",
+      "category": "identifier_lookup",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776197351,
+        "source_cmd": "scout"
+      },
+      "pool_size": 26,
+      "appearances_count": {
+        "router": 13,
+        "dense": 20,
+        "sparse": 13
+      },
+      "gold_verified": false,
+      "gold_rank": null,
+      "gold_appearances": {},
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: no LLM-match in 26 pool candidates"
+    },
+    {
+      "query": "async runtime block_on wrapper for sync API",
+      "category": "conceptual_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "open_with_runtime",
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 917,
+        "line_end": 1003
+      },
+      "metadata": {
+        "first_seen_ts": 1776031710,
+        "source_cmd": "search"
+      },
+      "pool_size": 31,
+      "appearances_count": {
+        "router": 17,
+        "dense": 18,
+        "sparse": 17
+      },
+      "gold_verified": true,
+      "gold_rank": 15,
+      "gold_appearances": {
+        "router": 15,
+        "sparse": 15
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 15"
+    },
+    {
+      "query": "check hardware capabilities and model availability",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "select_provider",
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 683,
+        "line_end": 696
+      },
+      "metadata": {
+        "first_seen_ts": 1776031607,
+        "source_cmd": "search"
+      },
+      "pool_size": 36,
+      "appearances_count": {
+        "router": 20,
+        "dense": 17,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 14,
+      "gold_appearances": {
+        "router": 14,
+        "sparse": 14
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 14"
+    },
+    {
+      "query": "brute force search without HNSW index",
+      "category": "negation",
+      "source": "telemetry",
+      "gold_chunk": null,
+      "metadata": {
+        "first_seen_ts": 1776031467,
+        "source_cmd": "search"
+      },
+      "pool_size": 31,
+      "appearances_count": {
+        "router": 16,
+        "dense": 20,
+        "sparse": 14
+      },
+      "gold_verified": false,
+      "gold_rank": null,
+      "gold_appearances": {},
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: no LLM-match in 31 pool candidates"
+    },
+    {
+      "query": "GPU fallback mechanism when CUDA is unavailable",
+      "category": "behavioral_search",
+      "source": "telemetry",
+      "gold_chunk": {
+        "id": null,
+        "name": "select_provider",
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 683,
+        "line_end": 696
+      },
+      "metadata": {
+        "first_seen_ts": 1776031634,
+        "source_cmd": "search"
+      },
+      "pool_size": 37,
+      "appearances_count": {
+        "router": 20,
+        "dense": 20,
+        "sparse": 20
+      },
+      "gold_verified": true,
+      "gold_rank": 19,
+      "gold_appearances": {
+        "router": 19,
+        "sparse": 19
+      },
+      "llm_errors": 0,
+      "gold_validation_note": "telemetry: LLM-validated pool member from ['router', 'sparse'] at min rank 19"
+    }
+  ]
+}

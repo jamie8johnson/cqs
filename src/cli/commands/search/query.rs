@@ -132,6 +132,14 @@ pub(crate) fn cmd_query(
     let embedder = ctx.embedder()?;
     let query_embedding = embedder.embed_query(query)?;
 
+    // Centroid reclassification: if embedding-space centroid matching is
+    // confident, upgrade the rule-based category. Track whether category
+    // changed so we can apply the alpha floor downstream.
+    let pre_centroid_cat = classification.as_ref().map(|c| c.category);
+    let classification = classification
+        .map(|c| cqs::search::router::reclassify_with_centroid(c, query_embedding.as_slice()));
+    let centroid_applied = classification.as_ref().map(|c| c.category) != pre_centroid_cat;
+
     let languages = match &cli.lang {
         Some(l) => Some(vec![l.parse().context(format!(
             "Invalid language. Valid: {}",
@@ -193,7 +201,7 @@ pub(crate) fn cmd_query(
     //
     // OB-NEW-1: `resolve_splade_alpha` emits the structured "SPLADE routing"
     // log internally — no call-site log needed here.
-    let (use_splade, splade_alpha) = match (cli.splade_alpha, classification.as_ref()) {
+    let (use_splade, mut splade_alpha) = match (cli.splade_alpha, classification.as_ref()) {
         // Explicit α override wins in all cases.
         (Some(alpha), _) => (true, alpha),
         // Classified query → per-category router.
@@ -203,6 +211,11 @@ pub(crate) fn cmd_query(
         // Unknown category, no flags → SPLADE off (dense-only).
         (None, None) => (false, 1.0),
     };
+    // Centroid alpha floor: when centroid reclassified the query, clamp α
+    // so misclassifications can't catastrophically zero SPLADE (Behavioral α=0.0).
+    if centroid_applied {
+        splade_alpha = splade_alpha.max(0.7);
+    }
 
     #[allow(clippy::needless_update)]
     let filter = SearchFilter {
