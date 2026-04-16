@@ -399,6 +399,49 @@ fn max_pending_files() -> usize {
     })
 }
 
+/// #969: recency threshold for pruning `last_indexed_mtime`.
+///
+/// Entries older than this are dropped when the map grows past
+/// `LAST_INDEXED_PRUNE_SIZE_THRESHOLD`. 1 day is long enough to survive an
+/// overnight idle (the map skips duplicate events on re-indexed files) but
+/// short enough that stale entries from deleted/moved files age out without
+/// a per-entry `stat()` syscall. Previously the prune called `Path::exists()`
+/// on every entry, which stalls the watch thread on WSL 9P mounts (up to 5000
+/// serial syscalls). The map's `SystemTime` values make the recency check a
+/// pure in-memory comparison.
+///
+/// Tunable by editing this constant; intentionally not an env var to avoid
+/// knob proliferation. Re-adding a file on its next watch event is a trivial
+/// insert — this threshold is a cache-size safety valve, not a correctness
+/// invariant.
+const LAST_INDEXED_PRUNE_AGE_SECS: u64 = 86_400;
+
+/// #969: size threshold that triggers the `last_indexed_mtime` prune.
+///
+/// Lowered from 10K to 5K in RM-4 because the map only needs to span one
+/// debounce cycle's worth of dedup signal.
+const LAST_INDEXED_PRUNE_SIZE_THRESHOLD: usize = 5_000;
+
+/// #969: O(n) in-memory prune of `last_indexed_mtime` by recency.
+///
+/// Replaces a per-entry `Path::exists()` loop that issued a `stat()` syscall
+/// for every tracked file. On WSL 9P mounts, that stalled the watch thread for
+/// seconds on bulk reindex cycles. The recency check is a `SystemTime`
+/// comparison — no I/O.
+///
+/// Returns the number of entries removed (useful for tracing and tests).
+fn prune_last_indexed_mtime(map: &mut HashMap<PathBuf, SystemTime>) -> usize {
+    if map.len() <= LAST_INDEXED_PRUNE_SIZE_THRESHOLD {
+        return 0;
+    }
+    let before = map.len();
+    let cutoff = SystemTime::now()
+        .checked_sub(Duration::from_secs(LAST_INDEXED_PRUNE_AGE_SECS))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    map.retain(|_, mtime| *mtime >= cutoff);
+    before - map.len()
+}
+
 /// Immutable references shared across the watch loop.
 ///
 /// Does not include `Store` because it is re-opened each cycle (DS-9).
@@ -1659,14 +1702,18 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
             for (file, mtime) in pre_mtimes {
                 state.last_indexed_mtime.insert(file, mtime);
             }
-            // RM-17: Prune entries for deleted files when mtime map grows large.
-            // RM-4: Lowered from 10K to 5K — the map tracks every file we've ever
-            // indexed in this session, so pruning earlier bounds memory without
-            // affecting correctness (retain only keeps files that still exist).
-            if state.last_indexed_mtime.len() > 5_000 {
-                state
-                    .last_indexed_mtime
-                    .retain(|f, _| cfg.root.join(f).exists());
+            // #969: recency prune for the mtime map. Previously this called
+            // `Path::exists()` per entry, which on WSL 9P mounts issued up to
+            // 5000 serial `stat()` syscalls on the watch thread. The map's
+            // `SystemTime` values let us age out stale entries in-memory.
+            // Re-adding a surviving file on its next event is a trivial insert.
+            let pruned = prune_last_indexed_mtime(&mut state.last_indexed_mtime);
+            if pruned > 0 {
+                tracing::debug!(
+                    pruned,
+                    remaining = state.last_indexed_mtime.len(),
+                    "Pruned stale last_indexed_mtime entries"
+                );
             }
             if !cfg.quiet {
                 println!("Indexed {} chunk(s)", count);
@@ -2664,6 +2711,95 @@ mod tests {
         assert!(
             state.pending_files.is_empty(),
             "Unchanged mtime should be skipped"
+        );
+    }
+
+    // ===== last_indexed_mtime prune tests =====
+
+    /// #969: recency prune drops entries older than `LAST_INDEXED_PRUNE_AGE_SECS`,
+    /// keeps fresh entries, and only triggers once the map exceeds
+    /// `LAST_INDEXED_PRUNE_SIZE_THRESHOLD`. This replaces the old per-entry
+    /// `Path::exists()` loop that stalled the watch thread on WSL 9P mounts.
+    #[test]
+    fn test_last_indexed_mtime_recency_prune() {
+        let now = SystemTime::now();
+        let two_days = Duration::from_secs(2 * LAST_INDEXED_PRUNE_AGE_SECS);
+        let one_minute = Duration::from_secs(60);
+        let old = now.checked_sub(two_days).unwrap();
+        let fresh = now.checked_sub(one_minute).unwrap();
+
+        // (1) Small map — below the size threshold — must not prune at all,
+        // even if every entry is ancient. The threshold is a cache-size
+        // safety valve, not a TTL for the whole session.
+        let mut small: HashMap<PathBuf, SystemTime> = HashMap::new();
+        small.insert(PathBuf::from("a.rs"), old);
+        small.insert(PathBuf::from("b.rs"), fresh);
+        let pruned_small = prune_last_indexed_mtime(&mut small);
+        assert_eq!(
+            pruned_small, 0,
+            "Prune must not run below size threshold (got {} entries removed from 2-entry map)",
+            pruned_small
+        );
+        assert_eq!(
+            small.len(),
+            2,
+            "Small map should be untouched when below threshold"
+        );
+
+        // (2) Large map — above the size threshold — prunes old entries
+        // and keeps fresh ones. Build a map with SIZE_THRESHOLD + 1 old
+        // entries plus a handful of fresh sentinels so we can check both
+        // that old entries are removed and fresh ones survive.
+        let mut large: HashMap<PathBuf, SystemTime> = HashMap::new();
+        for i in 0..=LAST_INDEXED_PRUNE_SIZE_THRESHOLD {
+            large.insert(PathBuf::from(format!("old_{}.rs", i)), old);
+        }
+        large.insert(PathBuf::from("fresh_1.rs"), fresh);
+        large.insert(PathBuf::from("fresh_2.rs"), now);
+        let total_before = large.len();
+        let pruned_large = prune_last_indexed_mtime(&mut large);
+
+        // Every "old" entry (two days stale) should be gone.
+        assert_eq!(
+            pruned_large,
+            LAST_INDEXED_PRUNE_SIZE_THRESHOLD + 1,
+            "Expected all old entries pruned (total_before={}, remaining={})",
+            total_before,
+            large.len()
+        );
+        assert!(
+            large.contains_key(&PathBuf::from("fresh_1.rs")),
+            "Fresh entry from 1 minute ago must survive prune"
+        );
+        assert!(
+            large.contains_key(&PathBuf::from("fresh_2.rs")),
+            "Entry at `now` must survive prune"
+        );
+        assert_eq!(
+            large.len(),
+            2,
+            "Only the 2 fresh entries should remain after prune"
+        );
+
+        // (3) Entry just inside the cutoff window survives. We use a 1-second
+        // margin rather than exactly `now - PRUNE_AGE` because `prune_*` calls
+        // `SystemTime::now()` internally — its clock ticks a few microseconds
+        // past the test's clock, so an entry pinned to the test's computed
+        // cutoff would be classified as older and pruned. 1 second is
+        // comfortably more than the inter-call drift while still well under
+        // the 1-day window.
+        let just_inside = now
+            .checked_sub(Duration::from_secs(LAST_INDEXED_PRUNE_AGE_SECS - 1))
+            .unwrap();
+        let mut boundary: HashMap<PathBuf, SystemTime> = HashMap::new();
+        for i in 0..=LAST_INDEXED_PRUNE_SIZE_THRESHOLD {
+            boundary.insert(PathBuf::from(format!("stale_{}.rs", i)), old);
+        }
+        boundary.insert(PathBuf::from("just_inside.rs"), just_inside);
+        prune_last_indexed_mtime(&mut boundary);
+        assert!(
+            boundary.contains_key(&PathBuf::from("just_inside.rs")),
+            "Entry 1 second inside the cutoff window must survive"
         );
     }
 

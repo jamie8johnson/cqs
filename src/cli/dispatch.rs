@@ -15,10 +15,10 @@ use super::commands::{
     cmd_affected, cmd_audit_mode, cmd_blame, cmd_brief, cmd_cache, cmd_callees, cmd_callers,
     cmd_ci, cmd_context, cmd_dead, cmd_deps, cmd_diff, cmd_doctor, cmd_drift, cmd_explain,
     cmd_export_model, cmd_gather, cmd_gc, cmd_health, cmd_impact, cmd_impact_diff, cmd_index,
-    cmd_init, cmd_neighbors, cmd_notes, cmd_notes_mutate, cmd_onboard, cmd_plan, cmd_project,
-    cmd_query, cmd_read, cmd_reconstruct, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar,
-    cmd_stale, cmd_stats, cmd_suggest, cmd_task, cmd_telemetry, cmd_telemetry_reset, cmd_test_map,
-    cmd_trace, cmd_train_data, cmd_train_pairs, cmd_where, NotesCommand,
+    cmd_init, cmd_neighbors, cmd_notes, cmd_onboard, cmd_plan, cmd_project, cmd_query, cmd_read,
+    cmd_reconstruct, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale,
+    cmd_stats, cmd_suggest, cmd_task, cmd_telemetry, cmd_telemetry_reset, cmd_test_map, cmd_trace,
+    cmd_train_data, cmd_train_pairs, cmd_where,
 };
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -167,17 +167,23 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Ref { ref subcmd }) => return cmd_ref(&cli, subcmd),
         // Special: uses read-write CommandContext::open_readwrite()
         Some(Commands::Gc { ref output }) => return cmd_gc(&cli, output.json),
-        // Notes mutations open one read-write store for reindex (RM-8: avoid
-        // double connection from readonly CommandContext + separate write store)
-        Some(Commands::Notes { ref subcmd }) if !matches!(subcmd, NotesCommand::List { .. }) => {
-            return cmd_notes_mutate(&cli, subcmd);
-        }
         // AuditMode doesn't use a store — uses find_project_root + resolve_index_dir
         Some(Commands::AuditMode {
             ref state,
             ref expires,
             ref output,
         }) => return cmd_audit_mode(state.as_ref(), expires, output.json),
+        // Notes: opening the readonly store is optional — mutations
+        // (`add`/`update`/`remove`) must work on a fresh project before any
+        // `cqs init && cqs index` has run (so a user can capture notes from
+        // the first minute). `cmd_notes` only requires the store for `list`,
+        // which it enforces internally. This replaces the old split between
+        // `cmd_notes` and `cmd_notes_mutate` (issue #959): one handler, with
+        // the store lifecycle decided here instead of via a routing gate.
+        Some(Commands::Notes { ref subcmd }) => {
+            let ctx = crate::cli::CommandContext::open_readonly(&cli).ok();
+            return cmd_notes(&cli, ctx.as_ref(), subcmd);
+        }
         _ => {} // Fall through to Group B
     }
 
@@ -225,7 +231,6 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             limit,
             ref output,
         }) => cmd_neighbors(&ctx, name, limit, output.json),
-        Some(Commands::Notes { ref subcmd }) => cmd_notes(&ctx, subcmd),
         Some(Commands::Explain {
             ref args,
             ref output,
