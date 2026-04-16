@@ -19,6 +19,8 @@ use ort::session::Session;
 use ort::value::Tensor;
 use thiserror::Error;
 
+use crate::aux_model::{self, AuxModelKind};
+use crate::config::AuxModelSection;
 use crate::embedder::{create_session, select_provider};
 
 /// Convert ORT errors to SpladeError
@@ -164,12 +166,14 @@ fn probe_model_vocab(
 
 /// Resolve the SPLADE model directory.
 ///
-/// Resolution order:
-/// 1. `CQS_SPLADE_MODEL` env var (absolute or `~`-prefixed path) — overrides
-///    everything. The directory must contain `model.onnx` AND `tokenizer.json`.
-/// 2. `~/.cache/huggingface/splade-onnx/` (default location)
+/// Delegates to [`resolve_splade_model_dir_with_config`] with no TOML
+/// section — matches the historical env-var-only behavior for callers
+/// that don't have easy access to the loaded [`crate::config::Config`].
+/// New call sites with a Config in hand should call the `_with_config`
+/// variant so `.cqs.toml [splade]` presets take effect.
 ///
-/// Returns `None` when neither location has both required files. Callers
+/// Returns `None` when neither the configured location nor the default
+/// cache directory has both `model.onnx` AND `tokenizer.json`. Callers
 /// fall back to dense-only and emit a warning.
 ///
 /// The env-var override exists so research can A/B between SPLADE models
@@ -183,34 +187,55 @@ fn probe_model_vocab(
 /// happened: a stale BERT tokenizer was used with a SPLADE-Code model,
 /// silently producing garbage embeddings).
 pub fn resolve_splade_model_dir() -> Option<std::path::PathBuf> {
+    resolve_splade_model_dir_with_config(None)
+}
+
+/// Config-aware variant of [`resolve_splade_model_dir`].
+///
+/// Threads a `[splade]` config section through [`crate::aux_model::resolve`]
+/// so preset names and explicit paths configured in `.cqs.toml` take effect.
+/// Env var (`CQS_SPLADE_MODEL`) still beats config. Pass `None` to match
+/// the legacy no-config behavior.
+///
+/// The returned `PathBuf` points at the **directory** containing
+/// `model.onnx` + `tokenizer.json`, matching the pre-#957 contract so all
+/// [`SpladeEncoder::new`] call sites work unchanged.
+pub fn resolve_splade_model_dir_with_config(
+    section: Option<&AuxModelSection>,
+) -> Option<std::path::PathBuf> {
     let _span = tracing::debug_span!("resolve_splade_model_dir").entered();
 
-    let dir = match std::env::var("CQS_SPLADE_MODEL") {
-        Ok(p) if !p.is_empty() => {
-            // Expand a leading "~/" using $HOME so users can write
-            // CQS_SPLADE_MODEL=~/training-data/splade-code-naver/onnx
-            let expanded = if let Some(stripped) = p.strip_prefix("~/") {
-                dirs::home_dir()
-                    .map(|h| h.join(stripped))
-                    .unwrap_or_else(|| p.into())
-            } else {
-                p.into()
-            };
-            tracing::info!(
-                source = "CQS_SPLADE_MODEL",
-                path = %expanded.display(),
-                "SPLADE model dir resolved from env var"
-            );
-            expanded
-        }
-        _ => {
-            let default = dirs::home_dir()
-                .map(|h| h.join(".cache/huggingface/splade-onnx"))
-                .unwrap_or_default();
-            tracing::debug!(path = %default.display(), "Using default SPLADE model dir");
-            default
+    let preset = section.and_then(|s| s.preset.as_deref());
+    let model_path = section.and_then(|s| s.model_path.as_deref());
+    let tokenizer_path = section.and_then(|s| s.tokenizer_path.as_deref());
+
+    let resolved = match aux_model::resolve(
+        AuxModelKind::Splade,
+        None,
+        "CQS_SPLADE_MODEL",
+        preset,
+        model_path,
+        tokenizer_path,
+        aux_model::default_preset_name(AuxModelKind::Splade),
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            // The legacy API signals "no model available" via None and emits
+            // a tracing::warn; mirror that so existing callers keep the same
+            // behavior when resolution fails.
+            tracing::warn!(error = %e, "SPLADE model resolution failed");
+            return None;
         }
     };
+
+    // aux_model returns a "synthetic" bundle (model.onnx + tokenizer.json)
+    // under a directory path; the consumer only needs the directory since
+    // `SpladeEncoder::new` re-joins the filenames internally.
+    let dir = resolved
+        .model_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
 
     let model = dir.join("model.onnx");
     let tokenizer = dir.join("tokenizer.json");
@@ -230,6 +255,11 @@ pub fn resolve_splade_model_dir() -> Option<std::path::PathBuf> {
         return None;
     }
 
+    tracing::info!(
+        path = %dir.display(),
+        preset = ?resolved.preset,
+        "SPLADE model dir resolved"
+    );
     Some(dir)
 }
 

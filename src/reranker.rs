@@ -12,10 +12,15 @@ use std::sync::{Arc, Mutex};
 use once_cell::sync::OnceCell;
 use ort::session::Session;
 
+use crate::aux_model::{self, AuxModelKind};
+use crate::config::AuxModelSection;
 use crate::embedder::{create_session, pad_2d_i64, select_provider, ExecutionProvider};
 use crate::store::SearchResult;
 
-const DEFAULT_MODEL_REPO: &str = "cross-encoder/ms-marco-MiniLM-L-6-v2";
+/// Filename within the HF repo layout — kept local so
+/// [`Reranker::model_paths`] can still construct the expected layout when
+/// the HF Hub fetch succeeds. Matches the convention in
+/// [`crate::aux_model::config_from_dir`] for `AuxModelKind::Reranker`.
 const MODEL_FILE: &str = "onnx/model.onnx";
 const TOKENIZER_FILE: &str = "tokenizer.json";
 
@@ -45,19 +50,30 @@ fn reranker_batch_size() -> usize {
         .unwrap_or(DEFAULT_RERANKER_BATCH)
 }
 
-/// Retrieves the reranker model repository path from the environment or returns the default.
+/// Resolve the reranker model source via the shared auxiliary-model
+/// resolver, threading an optional `[reranker]` config section through the
+/// same preset registry SPLADE uses. Returns a fully-populated
+/// [`aux_model::AuxModelConfig`] — the caller (`model_paths`) dispatches
+/// on `repo.is_some()` to decide between local-dir and HF Hub fetch paths.
 ///
-/// # Returns
-///
-/// A string containing the model repository path. If the `CQS_RERANKER_MODEL` environment variable is set, returns its value; otherwise returns the default model repository.
-fn model_repo() -> String {
-    match std::env::var("CQS_RERANKER_MODEL") {
-        Ok(repo) => {
-            tracing::info!(model = %repo, "Using custom reranker model");
-            repo
-        }
-        Err(_) => DEFAULT_MODEL_REPO.to_string(),
-    }
+/// Precedence: CLI → `CQS_RERANKER_MODEL` → `[reranker] model_path` →
+/// `[reranker] preset` → hardcoded `ms-marco-minilm`.
+fn resolve_reranker(
+    section: Option<&AuxModelSection>,
+) -> Result<aux_model::AuxModelConfig, RerankerError> {
+    let preset = section.and_then(|s| s.preset.as_deref());
+    let model_path = section.and_then(|s| s.model_path.as_deref());
+    let tokenizer_path = section.and_then(|s| s.tokenizer_path.as_deref());
+    aux_model::resolve(
+        AuxModelKind::Reranker,
+        None,
+        "CQS_RERANKER_MODEL",
+        preset,
+        model_path,
+        tokenizer_path,
+        aux_model::default_preset_name(AuxModelKind::Reranker),
+    )
+    .map_err(|e| RerankerError::ModelDownload(e.to_string()))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -364,46 +380,51 @@ impl Reranker {
 
     /// Resolve paths to `model.onnx` and `tokenizer.json`.
     ///
-    /// If `CQS_RERANKER_MODEL` is set and points to an existing local directory,
-    /// the bundle is loaded from `{dir}/onnx/model.onnx` + `{dir}/tokenizer.json`
-    /// (same layout as a HuggingFace cross-encoder checkout). Otherwise the value
-    /// is treated as an HF repo id and fetched via the Hub API.
+    /// Delegates to [`resolve_reranker`] for precedence handling (CLI → env
+    /// → TOML `[reranker] model_path` → TOML `[reranker] preset` → hardcoded
+    /// default). When the resolver returns a local-path config, the files
+    /// are used directly; when it returns an HF repo id, the Hub API fetches
+    /// the bundle.
+    ///
+    /// Local-bundle layout (shared with [`crate::aux_model`]):
+    /// `{dir}/onnx/model.onnx` + `{dir}/tokenizer.json` — matches the
+    /// HuggingFace cross-encoder repo layout so an unpacked HF checkout
+    /// works without surgery.
     fn model_paths(&self) -> Result<&(PathBuf, PathBuf), RerankerError> {
         self.model_paths.get_or_try_init(|| {
             let _span = tracing::info_span!("reranker_model_resolve").entered();
 
-            // Local path short-circuit: absolute directory containing the
-            // expected ONNX + tokenizer layout. Only fires when the value
-            // begins with "/" — repo ids like "org/model" never collide.
-            let raw = model_repo();
-            if raw.starts_with('/') {
-                let candidate = std::path::Path::new(&raw);
-                if !candidate.is_dir() {
-                    return Err(RerankerError::ModelDownload(format!(
-                        "local reranker path {} is not a directory",
-                        candidate.display()
-                    )));
-                }
-                let model_path = candidate.join(MODEL_FILE);
-                let tokenizer_path = candidate.join(TOKENIZER_FILE);
+            let resolved = resolve_reranker(None)?;
+
+            // Local-bundle branch: resolver already verified the directory
+            // existed when the override was path-like. For preset/default
+            // cases, `repo` is set and we go through the Hub API below.
+            if resolved.repo.is_none() {
+                let model_path = resolved.model_path;
+                let tokenizer_path = resolved.tokenizer_path;
                 if !model_path.exists() || !tokenizer_path.exists() {
                     return Err(RerankerError::ModelDownload(format!(
-                        "local reranker dir {} missing {} or {}",
-                        candidate.display(),
+                        "local reranker bundle missing {} or {} (model_path = {})",
                         MODEL_FILE,
-                        TOKENIZER_FILE
+                        TOKENIZER_FILE,
+                        model_path.display()
                     )));
                 }
                 tracing::info!(
-                    path = %candidate.display(),
+                    path = %model_path.display(),
+                    preset = ?resolved.preset,
                     "Using local reranker model (no HF download)"
                 );
                 return Ok((model_path, tokenizer_path));
             }
 
+            let repo_id = resolved
+                .repo
+                .as_deref()
+                .expect("repo.is_some() checked above");
             use hf_hub::api::sync::Api;
             let api = Api::new().map_err(|e| RerankerError::ModelDownload(e.to_string()))?;
-            let repo = api.model(raw);
+            let repo = api.model(repo_id.to_string());
 
             let model_path = repo
                 .get(MODEL_FILE)

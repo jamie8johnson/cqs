@@ -73,6 +73,30 @@ fn default_ref_weight() -> f32 {
     0.8
 }
 
+/// Auxiliary model configuration block (shared shape for SPLADE + reranker).
+///
+/// Parsed from `[splade]` / `[reranker]` sections of `.cqs.toml`. A preset
+/// name resolves through [`crate::aux_model::preset`]; an explicit
+/// `model_path` overrides the preset. `tokenizer_path` is inferred from
+/// `model_path.parent().join("tokenizer.json")` when omitted, matching the
+/// on-disk convention where both files live side-by-side.
+///
+/// Leave all fields unset to keep the hardcoded defaults:
+/// `ensembledistil` for `[splade]`, `ms-marco-minilm` for `[reranker]`.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct AuxModelSection {
+    /// Preset name. Looked up in the shared registry
+    /// ([`crate::aux_model::preset`]) when set. Ignored if `model_path`
+    /// is also set — explicit paths always win.
+    pub preset: Option<String>,
+    /// Explicit path to `model.onnx`. Beats `preset` when both are set.
+    pub model_path: Option<PathBuf>,
+    /// Explicit path to `tokenizer.json`. Inferred from `model_path`'s
+    /// parent when omitted; rejected when set without `model_path`.
+    pub tokenizer_path: Option<PathBuf>,
+}
+
 /// Optional overrides for search scoring parameters.
 /// All fields are optional — unset fields fall through to `ScoringConfig::DEFAULT`.
 /// Loaded from the `[scoring]` section of `.cqs.toml` or `~/.config/cqs/config.toml`.
@@ -144,6 +168,16 @@ pub struct Config {
     /// Scoring parameter overrides (optional `[scoring]` section)
     #[serde(default)]
     pub scoring: Option<ScoringOverrides>,
+    /// SPLADE sparse encoder configuration (optional `[splade]` section).
+    /// Unset → hardcoded `ensembledistil` default.
+    #[serde(default)]
+    pub splade: Option<AuxModelSection>,
+    /// Cross-encoder reranker configuration (optional `[reranker]` section).
+    /// Unset → hardcoded `ms-marco-minilm` default. The legacy top-level
+    /// `reranker_model` / `reranker_max_length` fields remain for backward
+    /// TOML compatibility but are not consumed by the resolver.
+    #[serde(default)]
+    pub reranker: Option<AuxModelSection>,
     /// Reference indexes for multi-index search
     #[serde(default, rename = "reference")]
     pub references: Vec<ReferenceConfig>,
@@ -190,6 +224,8 @@ impl std::fmt::Debug for Config {
             .field("reranker_model", &self.reranker_model)
             .field("reranker_max_length", &self.reranker_max_length)
             .field("scoring", &self.scoring)
+            .field("splade", &self.splade)
+            .field("reranker", &self.reranker)
             .field("references", &self.references)
             .finish()
     }
@@ -471,6 +507,8 @@ impl Config {
             reranker_model: other.reranker_model.or(self.reranker_model),
             reranker_max_length: other.reranker_max_length.or(self.reranker_max_length),
             scoring: other.scoring.or(self.scoring),
+            splade: other.splade.or(self.splade),
+            reranker: other.reranker.or(self.reranker),
             references: refs,
         }
     }
@@ -1285,6 +1323,96 @@ llm_max_tokens = 200
         assert!(
             (s.importance_test.unwrap() - 0.0).abs() < f32::EPSILON,
             "importance_test clamped to 0.0"
+        );
+    }
+
+    // ===== [splade] / [reranker] section parsing =====
+
+    #[test]
+    fn test_splade_section_preset_only() {
+        let toml = r#"
+        [splade]
+        preset = "splade-code-0.6b"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let s = config.splade.as_ref().unwrap();
+        assert_eq!(s.preset.as_deref(), Some("splade-code-0.6b"));
+        assert!(s.model_path.is_none());
+        assert!(s.tokenizer_path.is_none());
+    }
+
+    #[test]
+    fn test_splade_section_explicit_paths() {
+        let toml = r#"
+        [splade]
+        model_path = "/models/splade/model.onnx"
+        tokenizer_path = "/models/splade/tokenizer.json"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let s = config.splade.as_ref().unwrap();
+        assert!(s.preset.is_none());
+        assert_eq!(
+            s.model_path.as_deref(),
+            Some(Path::new("/models/splade/model.onnx"))
+        );
+        assert_eq!(
+            s.tokenizer_path.as_deref(),
+            Some(Path::new("/models/splade/tokenizer.json"))
+        );
+    }
+
+    #[test]
+    fn test_splade_section_model_path_without_tokenizer() {
+        // Omitting tokenizer_path is fine — aux_model::resolve infers it
+        // from model_path's parent.
+        let toml = r#"
+        [splade]
+        model_path = "/models/splade/model.onnx"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let s = config.splade.as_ref().unwrap();
+        assert!(s.tokenizer_path.is_none());
+    }
+
+    #[test]
+    fn test_reranker_section_preset() {
+        let toml = r#"
+        [reranker]
+        preset = "ms-marco-minilm"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let s = config.reranker.as_ref().unwrap();
+        assert_eq!(s.preset.as_deref(), Some("ms-marco-minilm"));
+    }
+
+    #[test]
+    fn test_no_splade_or_reranker_section() {
+        let toml = "limit = 10\n";
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.splade.is_none());
+        assert!(config.reranker.is_none());
+    }
+
+    #[test]
+    fn test_splade_section_merge() {
+        let base = Config {
+            splade: Some(AuxModelSection {
+                preset: Some("ensembledistil".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let over = Config {
+            splade: Some(AuxModelSection {
+                preset: Some("splade-code-0.6b".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let merged = base.override_with(over);
+        assert_eq!(
+            merged.splade.unwrap().preset.as_deref(),
+            Some("splade-code-0.6b")
         );
     }
 
