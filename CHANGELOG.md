@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.1] - 2026-04-16
+
+### Added
+- **Centroid query classifier infrastructure.** Disabled by default. Enable with `CQS_CENTROID_CLASSIFIER=1`. Centroid file at `~/.local/share/cqs/classifier_centroids.v1.json`. Current state: ~76% accurate, still net-negative (−4.6pp R@1 on v3 dev). Infra preserved for future revisit combined with a higher-accuracy classifier (logistic regression target: 90%+). Knobs: `CQS_CENTROID_ALPHA_FLOOR` (default `0.7`), `CQS_CENTROID_THRESHOLD` (default `0.01`).
+- **Classifier audit integration test (`tests/classifier_audit.rs`).** Runs `classify_query` over v3 dev and prints a per-category confusion matrix vs consensus labels. Always passes — read-only audit via `println!`. Invoke with `cargo test --test classifier_audit --release --features gpu-index -- --nocapture`. Current rule-based classifier: 38.5% accurate on v3 dev; `conceptual` and `multi_step` categories fire at 0% correct.
+- **Env-var documentation drift guard (`tests/env_var_docs.rs`).** Walks `src/` + `tests/` for `CQS_*` identifiers and asserts each is documented in the README env-var table. Catches doc drift at PR time. Closes #855.
+- **v3 eval harness and dataset artifacts** committed under `evals/`: 14 Python scripts (telemetry mining, chunk-seeded generation, pool building, dual-judge validation, consensus merge, alpha sweep, reranker training, centroid training, diagnose, heartbeat) and the `v3_train/dev/test.json` / `v3_consensus.json` / `v3_pools.json` / `v3_alpha_sweep.json` artifacts. 544 high-confidence dual-judge queries (train/dev/test 326/109/109, stratified). Pipeline details and breakeven analyses in `~/training-data/research/models.md`.
+
+### Changed
+- **Cross-language SPLADE α: 1.00 → 0.10.** The 2026-04-16 v3 sweep showed that cross-language queries benefit from heavy SPLADE weighting — shared code tokens (function names, keywords like `async`/`await`) carry more signal across languages than translated dense semantics. **+1.8pp R@1 on v3 test** (42.2% vs 40.4% on the v1.26.0 alphas). This is the only α change from the full v3 sweep that survived the production router; the rest was absorbed by strategy routing (NameOnly, DenseBase, DenseDefault). Forced-α measurements (bypassing the strategy router) top out around 48% R@1 on v3 — reachable alpha-tuning ceiling is ~1-3pp above the shipping 42.2% once the breakeven constraint on Unknown queries is respected. Further R@1 requires representation changes (HyDE, reranker V2 at scale, embedder switch).
+- **`CQS_RERANKER_MODEL` accepts absolute local paths.** Previously only HF repo IDs were accepted; a leading `/` now loads a fine-tuned ONNX reranker from disk. Enables A/B testing locally-trained rerankers against the default `ms-marco-MiniLM-L-6-v2` without upload/download.
+- **Rust 1.95 clippy compliance.** `unnecessary_sort_by` replaced with `sort_by_key` + `std::cmp::Reverse`, and `manual_checked_div` replaced with `checked_div().unwrap_or(...)` across ~8 sites in `store/backup.rs`, `impact/{analysis,hints}.rs`, `nl/fields.rs`, `related.rs`, `doc_writer/rewriter.rs`, `cli/commands/infra/telemetry_cmd.rs`, `hnsw/build.rs`, `cagra.rs`. Prerequisite for CI to pass on the new stable toolchain.
+
+### Fixed
+- **Reranker `token_type_ids` zeroed before ORT inference (`src/reranker.rs`).** Segment IDs now populate from the tokenizer encoding. BERT-family cross-encoders use segment IDs to distinguish query (0) from passage (1); the default `ms-marco-MiniLM-L-6-v2` happens to be robust to all-zeros, but fine-tuned BERT rerankers — or any reranker expecting proper segment IDs — broke catastrophically. Surfaced while validating the Reranker V2 pilot.
+- **RefCell panic in `Batch::invalidate_mutable_caches` (`src/cli/batch/mod.rs`).** A concurrent deferred-flush caller could hit `already borrowed` panics when the cache was being written. Switched to `try_borrow_mut` with a deferred retry on contention. Surfaced as intermittent `cqs batch` aborts during high-volume eval pipelines.
+
+### Documentation
+- **README env-var table: 7 missing vars added** (`CQS_CENTROID_ALPHA_FLOOR`, `CQS_CENTROID_CLASSIFIER`, `CQS_CENTROID_THRESHOLD`, `CQS_LLM_ALLOW_INSECURE`, `CQS_MIGRATE_REQUIRE_BACKUP`, `CQS_WATCH_INCREMENTAL_SPLADE`, `CQS_WATCH_RESPECT_GITIGNORE`).
+- **Per-category SPLADE α table refreshed** to the shipping v1.26.0 + v3-sweep defaults. The table still showed v1.25.0 values after the v1.26.0 alpha re-fit.
+- **ROADMAP consolidated** (284 → 157 lines). All `[x]` items from Refactor / Quick-wins / Wave D–F / watch-mode hardening lanes moved under `## Done (v1.26.0)`. Reranker V2 and classifier-accuracy sections condensed to retain prerequisites + audit table while dropping redundant design-doc paragraphs.
+
 ## [1.26.0] - 2026-04-15
 
 ### Added
