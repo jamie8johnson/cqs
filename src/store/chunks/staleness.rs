@@ -1028,4 +1028,133 @@ mod tests {
         let stats = store.stats().unwrap();
         assert_eq!(stats.total_chunks, 2);
     }
+
+    // ===== mtime semantics tests (issue #975) =====
+    //
+    // The staleness predicate in `list_stale_files` is `current > stored`,
+    // strict-greater-than. Two tests pin the boundary behaviour so any
+    // refactor to `current != stored` fails loudly:
+    //   - Equal mtime: fresh (not stale).
+    //   - Stored mtime newer than disk (backup restore): fresh (not stale).
+    // A naive `current != stored` rewrite would report both as stale,
+    // triggering a full re-embed on backup-restore and wasting hours.
+
+    /// Equal mtime must be treated as fresh. Tests the boundary of the
+    /// `current > stored` predicate — a refactor to `>=` or `!=` would
+    /// flip this case and report the file as stale.
+    #[test]
+    fn test_list_stale_files_mtime_equal_is_fresh() {
+        let (store, dir) = setup_store();
+
+        // Create a file and capture its current mtime.
+        let file_path = dir.path().join("src/equal.rs");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(&file_path, "fn equal() {}").unwrap();
+
+        let origin = file_path.to_string_lossy().to_string();
+        let c = Chunk {
+            id: format!("{}:1:abc", origin),
+            file: file_path.clone(),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "equal".to_string(),
+            signature: "fn equal()".to_string(),
+            content: "fn equal() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "abc".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+
+        // Store with the exact mtime currently on disk.
+        let mtime = file_path
+            .metadata()
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        store
+            .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(mtime))
+            .unwrap();
+
+        let mut existing = HashSet::new();
+        existing.insert(file_path);
+        let report = store.list_stale_files(&existing, dir.path()).unwrap();
+        assert!(
+            report.stale.is_empty(),
+            "Equal stored/current mtime must not be reported as stale, got {:?}",
+            report.stale
+        );
+        assert!(report.missing.is_empty());
+        assert_eq!(report.total_indexed, 1);
+    }
+
+    /// Backup-restore case: stored mtime is *newer* than disk. This
+    /// happens when a user restores a backup of the DB while the source
+    /// files are older than when the DB was last written. Must be
+    /// treated as fresh (not stale), because the stored data was
+    /// generated from a version of the file that is no older than the
+    /// one currently on disk. A naive `current != stored` refactor
+    /// would report these as stale and corrupt the index on the next
+    /// re-embed pass.
+    #[test]
+    fn test_list_stale_files_stored_newer_is_fresh() {
+        let (store, dir) = setup_store();
+
+        let file_path = dir.path().join("src/backup.rs");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(&file_path, "fn backup() {}").unwrap();
+
+        let origin = file_path.to_string_lossy().to_string();
+        let c = Chunk {
+            id: format!("{}:1:abc", origin),
+            file: file_path.clone(),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "backup".to_string(),
+            signature: "fn backup()".to_string(),
+            content: "fn backup() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "abc".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+
+        // Store with an mtime 10_000_000 ms (~2.7 hours) in the future
+        // relative to the file on disk. Pins `current > stored` (false)
+        // → fresh.
+        let disk_mtime = file_path
+            .metadata()
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let future_mtime = disk_mtime + 10_000_000;
+
+        store
+            .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(future_mtime))
+            .unwrap();
+
+        let mut existing = HashSet::new();
+        existing.insert(file_path);
+        let report = store.list_stale_files(&existing, dir.path()).unwrap();
+        assert!(
+            report.stale.is_empty(),
+            "Stored mtime newer than disk (backup-restore) must not be reported as stale, got {:?}",
+            report.stale
+        );
+        assert!(report.missing.is_empty());
+        assert_eq!(report.total_indexed, 1);
+    }
 }

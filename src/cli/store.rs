@@ -628,4 +628,192 @@ mod base_index_tests {
         }
         std::env::remove_var("CQS_DISABLE_BASE_INDEX");
     }
+
+    /// Issue #971: after a successful checksum verify, the self-heal path
+    /// must clear `hnsw_dirty` so the next run skips the expensive verify
+    /// step. This pins the invariant documented at
+    /// `build_base_vector_index` lines ~499-515: dirty flag + checksum OK
+    /// → `try_clear_hnsw_dirty` runs and the flag ends up `false`.
+    #[test]
+    fn test_build_base_vector_index_clears_dirty_after_successful_rebuild() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // Belt-and-braces: make sure no prior test left the bypass set —
+        // the module-level ENV_LOCK serializes but doesn't reset state.
+        std::env::remove_var("CQS_DISABLE_BASE_INDEX");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
+        let store = cqs::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        let dim = store.dim();
+        let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..5)
+            .map(|i| (format!("v{i}"), make_embedding(i as f32 + 0.1, dim)))
+            .collect();
+        let index = cqs::HnswIndex::build_with_dim(embeddings, dim).unwrap();
+        index.save(dir.path(), "index_base").unwrap();
+
+        // Simulate the post-crash state: sidecar files on disk + checksums
+        // intact (because we just wrote them) + dirty flag set (as if the
+        // process died between the SQLite commit and `set_hnsw_dirty(false)`).
+        store.set_hnsw_dirty(cqs::HnswKind::Base, true).unwrap();
+        assert!(
+            store.is_hnsw_dirty(cqs::HnswKind::Base).unwrap(),
+            "precondition: flag must be dirty before the call"
+        );
+
+        let loaded = build_base_vector_index(&store, dir.path()).unwrap();
+        assert!(
+            loaded.is_some(),
+            "checksum passes → base index should load rather than fall back to None"
+        );
+
+        assert!(
+            !store.is_hnsw_dirty(cqs::HnswKind::Base).unwrap(),
+            "self-heal must clear the Base dirty flag after successful verify"
+        );
+    }
+
+    /// Issue #971 (negative half): if the sidecar files are corrupted,
+    /// the self-heal must NOT clear the dirty flag and the function must
+    /// return `Ok(None)` so the router falls back to enriched. Truncating
+    /// `index_base.hnsw.graph` to zero bytes gives us a deterministic
+    /// checksum mismatch without needing to hand-craft the blake3 output.
+    #[test]
+    fn test_build_base_vector_index_keeps_dirty_on_checksum_failure() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_DISABLE_BASE_INDEX");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
+        let store = cqs::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        let dim = store.dim();
+        let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..5)
+            .map(|i| (format!("v{i}"), make_embedding(i as f32 + 0.1, dim)))
+            .collect();
+        let index = cqs::HnswIndex::build_with_dim(embeddings, dim).unwrap();
+        index.save(dir.path(), "index_base").unwrap();
+
+        // Corrupt one of the checksummed files — truncating to zero bytes
+        // is enough to flip the blake3 result and flunk verify_hnsw_checksums.
+        let graph_path = dir.path().join("index_base.hnsw.graph");
+        assert!(
+            graph_path.exists(),
+            "fixture invariant: .hnsw.graph must exist after save() so we can corrupt it"
+        );
+        std::fs::File::create(&graph_path)
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+
+        store.set_hnsw_dirty(cqs::HnswKind::Base, true).unwrap();
+
+        let result = build_base_vector_index(&store, dir.path()).unwrap();
+        assert!(
+            result.is_none(),
+            "checksum mismatch → build_base_vector_index must return Ok(None) \
+             (caller falls back to enriched index)"
+        );
+
+        assert!(
+            store.is_hnsw_dirty(cqs::HnswKind::Base).unwrap(),
+            "Base dirty flag must remain set when checksums fail — clearing it \
+             would silently mask a genuine staleness condition on the next run"
+        );
+    }
+
+    /// Issue #971 (enriched mirror): the enriched HNSW path lives in
+    /// `build_vector_index_with_config` — there is no separate
+    /// `build_enriched_vector_index` function. Same self-heal contract
+    /// applies: dirty flag + verify OK → clear flag + return the index.
+    ///
+    /// NOTE: with the `gpu-index` feature the function first checks the
+    /// CAGRA threshold via `store.chunk_count()`. We seed no chunks, so
+    /// `chunk_count = 0 < 5000` and CAGRA is skipped, guaranteeing we
+    /// hit the HNSW self-heal branch we care about.
+    #[test]
+    fn test_build_enriched_vector_index_clears_dirty_after_successful_rebuild() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_DISABLE_BASE_INDEX");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
+        let store = cqs::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        let dim = store.dim();
+        let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..5)
+            .map(|i| (format!("v{i}"), make_embedding(i as f32 + 0.1, dim)))
+            .collect();
+        let index = cqs::HnswIndex::build_with_dim(embeddings, dim).unwrap();
+        // Enriched basename is "index" (see `try_load_with_ef` /
+        // `verify_hnsw_checksums(cqs_dir, "index")`).
+        index.save(dir.path(), "index").unwrap();
+
+        store.set_hnsw_dirty(cqs::HnswKind::Enriched, true).unwrap();
+        assert!(
+            store.is_hnsw_dirty(cqs::HnswKind::Enriched).unwrap(),
+            "precondition: Enriched flag must be dirty before the call"
+        );
+
+        let loaded = build_vector_index_with_config(&store, dir.path(), None).unwrap();
+        assert!(
+            loaded.is_some(),
+            "checksum passes → enriched index should load rather than fall back to None"
+        );
+
+        assert!(
+            !store.is_hnsw_dirty(cqs::HnswKind::Enriched).unwrap(),
+            "self-heal must clear the Enriched dirty flag after successful verify"
+        );
+    }
+
+    /// Issue #971 (enriched mirror, negative half): a corrupted enriched
+    /// sidecar file must NOT clear the dirty flag. The function must
+    /// return `Ok(None)` so the search path falls back to brute-force.
+    #[test]
+    fn test_build_enriched_vector_index_keeps_dirty_on_checksum_failure() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CQS_DISABLE_BASE_INDEX");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
+        let store = cqs::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        let dim = store.dim();
+        let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..5)
+            .map(|i| (format!("v{i}"), make_embedding(i as f32 + 0.1, dim)))
+            .collect();
+        let index = cqs::HnswIndex::build_with_dim(embeddings, dim).unwrap();
+        index.save(dir.path(), "index").unwrap();
+
+        // Truncate the enriched graph file — enriched basename is "index".
+        let graph_path = dir.path().join("index.hnsw.graph");
+        assert!(
+            graph_path.exists(),
+            "fixture invariant: index.hnsw.graph must exist after save() so we can corrupt it"
+        );
+        std::fs::File::create(&graph_path)
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+
+        store.set_hnsw_dirty(cqs::HnswKind::Enriched, true).unwrap();
+
+        let result = build_vector_index_with_config(&store, dir.path(), None).unwrap();
+        assert!(
+            result.is_none(),
+            "checksum mismatch → build_vector_index_with_config must return Ok(None) \
+             (caller falls back to brute-force search)"
+        );
+
+        assert!(
+            store.is_hnsw_dirty(cqs::HnswKind::Enriched).unwrap(),
+            "Enriched dirty flag must remain set when checksums fail — clearing it \
+             would silently mask a genuine staleness condition on the next run"
+        );
+    }
 }
