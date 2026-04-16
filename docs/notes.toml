@@ -1297,3 +1297,12 @@ mentions = [
     "centroid",
     "classifier",
 ]
+
+[[note]]
+sentiment = -1.0
+text = "per-category alpha routing on Unknown queries is net-negative at ANY accuracy including 100%. Unknown queries want alpha=1.0 (pure SPLADE weight). The classifier-for-alpha architecture is a dead end for this population. Real levers: embedding quality, reranking, HyDE."
+mentions = [
+    "router",
+    "classifier",
+    "alpha",
+]

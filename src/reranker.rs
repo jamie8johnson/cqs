@@ -287,9 +287,19 @@ impl Reranker {
             return Ok(vec![sigmoid(0.0); batch_size]);
         }
 
+        // token_type_ids come from the tokenizer — BERT-family rerankers use
+        // them to distinguish query (0) from passage (1). Zeroing them out (the
+        // prior behavior) silently broke fine-tuned models that learned to
+        // use the segment signal (caught during reranker v2 eval: gold chunks
+        // got pushed below negatives because the model saw "query query" when
+        // the tokenizer had emitted "query passage").
+        let token_type_ids: Vec<Vec<i64>> = chunk
+            .iter()
+            .map(|e| e.get_type_ids().iter().map(|&t| t as i64).collect())
+            .collect();
         let ids_arr = pad_2d_i64(&input_ids, max_len, 0);
         let mask_arr = pad_2d_i64(&attention_mask, max_len, 0);
-        let type_arr = Array2::<i64>::zeros((batch_size, max_len));
+        let type_arr = pad_2d_i64(&token_type_ids, max_len, 0);
 
         // Create tensors (ort requires Value, not raw ndarray)
         use ort::value::Tensor;
@@ -353,14 +363,48 @@ impl Reranker {
             .unwrap_or_default())
     }
 
-    /// Download model and tokenizer from HuggingFace Hub
+    /// Resolve paths to `model.onnx` and `tokenizer.json`.
+    ///
+    /// If `CQS_RERANKER_MODEL` is set and points to an existing local directory,
+    /// the bundle is loaded from `{dir}/onnx/model.onnx` + `{dir}/tokenizer.json`
+    /// (same layout as a HuggingFace cross-encoder checkout). Otherwise the value
+    /// is treated as an HF repo id and fetched via the Hub API.
     fn model_paths(&self) -> Result<&(PathBuf, PathBuf), RerankerError> {
         self.model_paths.get_or_try_init(|| {
-            let _span = tracing::info_span!("reranker_model_download").entered();
-            use hf_hub::api::sync::Api;
+            let _span = tracing::info_span!("reranker_model_resolve").entered();
 
+            // Local path short-circuit: absolute directory containing the
+            // expected ONNX + tokenizer layout. Only fires when the value
+            // begins with "/" — repo ids like "org/model" never collide.
+            let raw = model_repo();
+            if raw.starts_with('/') {
+                let candidate = std::path::Path::new(&raw);
+                if !candidate.is_dir() {
+                    return Err(RerankerError::ModelDownload(format!(
+                        "local reranker path {} is not a directory",
+                        candidate.display()
+                    )));
+                }
+                let model_path = candidate.join(MODEL_FILE);
+                let tokenizer_path = candidate.join(TOKENIZER_FILE);
+                if !model_path.exists() || !tokenizer_path.exists() {
+                    return Err(RerankerError::ModelDownload(format!(
+                        "local reranker dir {} missing {} or {}",
+                        candidate.display(),
+                        MODEL_FILE,
+                        TOKENIZER_FILE
+                    )));
+                }
+                tracing::info!(
+                    path = %candidate.display(),
+                    "Using local reranker model (no HF download)"
+                );
+                return Ok((model_path, tokenizer_path));
+            }
+
+            use hf_hub::api::sync::Api;
             let api = Api::new().map_err(|e| RerankerError::ModelDownload(e.to_string()))?;
-            let repo = api.model(model_repo());
+            let repo = api.model(raw);
 
             let model_path = repo
                 .get(MODEL_FILE)
