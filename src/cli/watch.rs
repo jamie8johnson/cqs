@@ -740,7 +740,7 @@ fn encode_splade_for_changed_files(
         let texts: Vec<&str> = sub.iter().map(|(_, t)| t.as_str()).collect();
         match encoder.encode_batch(&texts) {
             Ok(sparse_batch) => {
-                for ((chunk_id, _), sparse) in sub.iter().zip(sparse_batch.into_iter()) {
+                for ((chunk_id, _), sparse) in sub.iter().zip(sparse_batch) {
                     encoded.push((chunk_id.clone(), sparse));
                 }
                 tracing::debug!(batch_size = sub.len(), "SPLADE batch encoded");
@@ -1998,7 +1998,7 @@ fn reindex_files(
     // Group chunks by file and atomically upsert chunks + calls in a single transaction
     let mut mtime_cache: HashMap<PathBuf, Option<i64>> = HashMap::new();
     let mut by_file: HashMap<PathBuf, Vec<(cqs::Chunk, Embedding)>> = HashMap::new();
-    for (chunk, embedding) in chunks.into_iter().zip(embeddings.into_iter()) {
+    for (chunk, embedding) in chunks.into_iter().zip(embeddings) {
         let file_key = chunk.file.clone();
         by_file
             .entry(file_key)

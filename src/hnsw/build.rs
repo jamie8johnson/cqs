@@ -202,11 +202,7 @@ impl HnswIndex {
                 vectors_so_far = total_inserted,
                 "HNSW batch inserted"
             );
-            let progress_pct = if capacity > 0 {
-                (total_inserted * 100) / capacity
-            } else {
-                100
-            };
+            let progress_pct = (total_inserted * 100).checked_div(capacity).unwrap_or(100);
             // PF-V1.25-15: demoted from info! to debug!. A 60k-chunk build
             // emits 50+ batches; at info level they drown out meaningful
             // log messages with no user-actionable signal per batch.

@@ -932,7 +932,7 @@ mod tests {
         // Notes takes the remainder, so the explicit weights must sum to ≤1.0
         let total = WATERFALL_SCOUT + WATERFALL_CODE + WATERFALL_IMPACT + WATERFALL_PLACEMENT;
         assert!(
-            total <= 1.0 && total >= 0.9,
+            (0.9..=1.0).contains(&total),
             "Explicit budget weights must leave a small remainder for notes, got {total}"
         );
     }

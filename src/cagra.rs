@@ -644,11 +644,9 @@ impl CagraIndex {
             }
 
             loaded_chunks += batch_len;
-            let progress_pct = if chunk_count > 0 {
-                (loaded_chunks * 100) / chunk_count
-            } else {
-                100
-            };
+            let progress_pct = (loaded_chunks * 100)
+                .checked_div(chunk_count)
+                .unwrap_or(100);
             tracing::info!(
                 "CAGRA loading progress: {} / {} chunks ({}%)",
                 loaded_chunks,

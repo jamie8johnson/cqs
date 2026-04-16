@@ -408,7 +408,7 @@ pub fn rewrite_file(
 
     // Sort edits by line number descending (bottom-up) so earlier edits
     // don't shift line numbers for later ones.
-    resolved.sort_by(|a, b| b.insert_at.cmp(&a.insert_at));
+    resolved.sort_by_key(|r| std::cmp::Reverse(r.insert_at));
 
     // Apply edits to a mutable line buffer
     let mut lines: Vec<String> = content.lines().map(|l| format!("{l}\n")).collect();

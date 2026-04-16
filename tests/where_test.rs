@@ -41,8 +41,7 @@ fn test_suggest_placement_returns_results_for_similar_code() {
     let embedder = Embedder::new(ModelConfig::resolve(None, None)).unwrap();
 
     // Seed store with chunks from multiple files that have known themes
-    let chunks = vec![
-        placement_chunk(
+    let chunks = [placement_chunk(
             "parse_config",
             "src/config.rs",
             "fn parse_config(path: &Path) -> Result<Config, Error> { let data = std::fs::read_to_string(path)?; toml::from_str(&data) }",
@@ -65,8 +64,7 @@ fn test_suggest_placement_returns_results_for_similar_code() {
             "src/server.rs",
             "fn handle_request(req: Request) -> Response { let body = process(req.body()); Response::ok(body) }",
             1,
-        ),
-    ];
+        )];
 
     // Embed each chunk with the real embedder for realistic similarity.
     let contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
@@ -97,8 +95,7 @@ fn test_suggest_placement_with_options_reuses_embedding() {
     let store = TestStore::new();
     let embedder = Embedder::new(ModelConfig::resolve(None, None)).unwrap();
 
-    let chunks = vec![
-        placement_chunk(
+    let chunks = [placement_chunk(
             "save_data",
             "src/storage.rs",
             "fn save_data(db: &Database, key: &str, value: &[u8]) -> Result<()> { db.put(key, value) }",
@@ -109,8 +106,7 @@ fn test_suggest_placement_with_options_reuses_embedding() {
             "src/storage.rs",
             "fn load_data(db: &Database, key: &str) -> Result<Vec<u8>> { db.get(key).ok_or(NotFound) }",
             10,
-        ),
-    ];
+        )];
 
     let contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
     let embeddings = embedder.embed_documents(&contents).unwrap();

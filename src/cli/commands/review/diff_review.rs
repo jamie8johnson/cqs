@@ -160,121 +160,6 @@ fn empty_review_json() -> serde_json::Value {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use cqs::{CallerDetail, DiffTestInfo, ReviewedFunction, RiskLevel, RiskScore, RiskSummary};
-    use std::path::PathBuf;
-
-    fn make_review(num_callers: usize, num_tests: usize) -> ReviewResult {
-        let callers: Vec<CallerDetail> = (0..num_callers)
-            .map(|i| CallerDetail {
-                name: format!("caller_{}", i),
-                file: PathBuf::from(format!("src/c{}.rs", i)),
-                line: (i as u32) + 1,
-                call_line: (i as u32) + 10,
-                snippet: None,
-            })
-            .collect();
-
-        let tests: Vec<DiffTestInfo> = (0..num_tests)
-            .map(|i| DiffTestInfo {
-                name: format!("test_{}", i),
-                file: PathBuf::from(format!("tests/t{}.rs", i)),
-                line: (i as u32) + 1,
-                via: "direct".into(),
-                call_depth: 1,
-            })
-            .collect();
-
-        ReviewResult {
-            changed_functions: vec![ReviewedFunction {
-                name: "target_fn".into(),
-                file: PathBuf::from("src/lib.rs"),
-                line_start: 42,
-                risk: RiskScore {
-                    caller_count: num_callers,
-                    test_count: num_tests,
-                    test_ratio: if num_callers > 0 {
-                        (num_tests as f32 / num_callers as f32).min(1.0)
-                    } else {
-                        1.0
-                    },
-                    risk_level: RiskLevel::Low,
-                    blast_radius: RiskLevel::Low,
-                    score: 0.0,
-                },
-            }],
-            affected_callers: callers,
-            affected_tests: tests,
-            relevant_notes: vec![],
-            risk_summary: RiskSummary {
-                high: 0,
-                medium: 0,
-                low: 1,
-                overall: RiskLevel::Low,
-            },
-            stale_warning: None,
-            warnings: vec![],
-        }
-    }
-
-    #[test]
-    fn test_apply_token_budget_preserves_when_fits() {
-        let mut review = make_review(3, 3);
-        let used = apply_token_budget(&mut review, 5000, false);
-
-        assert_eq!(
-            review.affected_callers.len(),
-            3,
-            "All callers should be preserved within budget"
-        );
-        assert_eq!(
-            review.affected_tests.len(),
-            3,
-            "All tests should be preserved within budget"
-        );
-        assert!(review.warnings.is_empty(), "No truncation warning expected");
-        assert!(used > 0, "Token count should be positive");
-    }
-
-    #[test]
-    fn test_apply_token_budget_truncates_when_over() {
-        let mut review = make_review(100, 100);
-        // Tiny budget: base overhead (30) + 1 function (12) = 42 tokens, leaving very little
-        let budget = 100;
-        let used = apply_token_budget(&mut review, budget, false);
-
-        assert!(
-            review.affected_callers.len() < 100,
-            "Callers should be truncated, got {}",
-            review.affected_callers.len()
-        );
-        assert!(
-            review.affected_tests.len() < 100,
-            "Tests should be truncated, got {}",
-            review.affected_tests.len()
-        );
-        // At least 1 caller and 1 test guaranteed by the max(1) logic
-        assert!(
-            review.affected_callers.len() >= 1,
-            "At least 1 caller guaranteed"
-        );
-        assert!(
-            review.affected_tests.len() >= 1,
-            "At least 1 test guaranteed"
-        );
-        assert!(
-            !review.warnings.is_empty(),
-            "Should have a truncation warning"
-        );
-        assert!(
-            used <= budget + 50,
-            "Used tokens ({used}) should be near budget ({budget})"
-        );
-    }
-}
-
 fn display_review_text(
     review: &ReviewResult,
     _root: &std::path::Path,
@@ -426,5 +311,120 @@ fn display_review_text(
                 n.matching_files.join(", ")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cqs::{CallerDetail, DiffTestInfo, ReviewedFunction, RiskLevel, RiskScore, RiskSummary};
+    use std::path::PathBuf;
+
+    fn make_review(num_callers: usize, num_tests: usize) -> ReviewResult {
+        let callers: Vec<CallerDetail> = (0..num_callers)
+            .map(|i| CallerDetail {
+                name: format!("caller_{}", i),
+                file: PathBuf::from(format!("src/c{}.rs", i)),
+                line: (i as u32) + 1,
+                call_line: (i as u32) + 10,
+                snippet: None,
+            })
+            .collect();
+
+        let tests: Vec<DiffTestInfo> = (0..num_tests)
+            .map(|i| DiffTestInfo {
+                name: format!("test_{}", i),
+                file: PathBuf::from(format!("tests/t{}.rs", i)),
+                line: (i as u32) + 1,
+                via: "direct".into(),
+                call_depth: 1,
+            })
+            .collect();
+
+        ReviewResult {
+            changed_functions: vec![ReviewedFunction {
+                name: "target_fn".into(),
+                file: PathBuf::from("src/lib.rs"),
+                line_start: 42,
+                risk: RiskScore {
+                    caller_count: num_callers,
+                    test_count: num_tests,
+                    test_ratio: if num_callers > 0 {
+                        (num_tests as f32 / num_callers as f32).min(1.0)
+                    } else {
+                        1.0
+                    },
+                    risk_level: RiskLevel::Low,
+                    blast_radius: RiskLevel::Low,
+                    score: 0.0,
+                },
+            }],
+            affected_callers: callers,
+            affected_tests: tests,
+            relevant_notes: vec![],
+            risk_summary: RiskSummary {
+                high: 0,
+                medium: 0,
+                low: 1,
+                overall: RiskLevel::Low,
+            },
+            stale_warning: None,
+            warnings: vec![],
+        }
+    }
+
+    #[test]
+    fn test_apply_token_budget_preserves_when_fits() {
+        let mut review = make_review(3, 3);
+        let used = apply_token_budget(&mut review, 5000, false);
+
+        assert_eq!(
+            review.affected_callers.len(),
+            3,
+            "All callers should be preserved within budget"
+        );
+        assert_eq!(
+            review.affected_tests.len(),
+            3,
+            "All tests should be preserved within budget"
+        );
+        assert!(review.warnings.is_empty(), "No truncation warning expected");
+        assert!(used > 0, "Token count should be positive");
+    }
+
+    #[test]
+    fn test_apply_token_budget_truncates_when_over() {
+        let mut review = make_review(100, 100);
+        // Tiny budget: base overhead (30) + 1 function (12) = 42 tokens, leaving very little
+        let budget = 100;
+        let used = apply_token_budget(&mut review, budget, false);
+
+        assert!(
+            review.affected_callers.len() < 100,
+            "Callers should be truncated, got {}",
+            review.affected_callers.len()
+        );
+        assert!(
+            review.affected_tests.len() < 100,
+            "Tests should be truncated, got {}",
+            review.affected_tests.len()
+        );
+        // At least 1 caller and 1 test guaranteed by the max(1) logic
+        assert!(
+            !review.affected_callers.is_empty(),
+            "At least 1 caller guaranteed"
+        );
+        assert!(
+            !review.affected_tests.is_empty(),
+            "At least 1 test guaranteed"
+        );
+        assert!(
+            !review.warnings.is_empty(),
+            "Should have a truncation warning"
+        );
+        assert!(
+            used <= budget + 50,
+            "Used tokens ({used}) should be near budget ({budget})"
+        );
     }
 }

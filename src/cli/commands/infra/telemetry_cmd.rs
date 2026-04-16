@@ -331,7 +331,7 @@ impl TelemetryAggregator {
 
         // Top queries (sorted descending, capped at 10)
         let mut query_sorted: Vec<_> = self.query_counts.into_iter().collect();
-        query_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        query_sorted.sort_by_key(|q| std::cmp::Reverse(q.1));
 
         TelemetryOutput {
             events: self.event_count,

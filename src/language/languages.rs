@@ -4363,10 +4363,10 @@ fn post_process_objc_objc(
     _source: &str,
 ) -> bool {
     match node.kind() {
-        "class_interface" | "class_implementation" => {
-            if node.child_by_field_name("category").is_some() {
-                *chunk_type = ChunkType::Extension;
-            }
+        "class_interface" | "class_implementation"
+            if node.child_by_field_name("category").is_some() =>
+        {
+            *chunk_type = ChunkType::Extension;
         }
         _ => {}
     }

@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn test_drift_sort_order() {
-        let mut entries = vec![
+        let mut entries = [
             DriftEntry {
                 name: "a".into(),
                 file: "a.rs".into(),

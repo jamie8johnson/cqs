@@ -9,7 +9,6 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use ndarray::Array2;
 use once_cell::sync::OnceCell;
 use ort::session::Session;
 

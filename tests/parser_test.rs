@@ -2107,7 +2107,7 @@ fn test_razor_function_extraction() {
     // Razor extracts C# from @functions blocks via injection
     let names: Vec<_> = chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect();
     assert!(
-        chunks.len() >= 1,
+        !chunks.is_empty(),
         "Should extract at least 1 chunk from Razor file, got: {:?}",
         names
     );

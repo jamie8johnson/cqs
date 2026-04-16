@@ -212,7 +212,7 @@ pub(crate) fn prune_old_backups(db_path: &Path) -> Result<(), StoreError> {
     }
 
     // Sort newest-first. The newest KEEP_BACKUPS survive; the rest are pruned.
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
     for (path, _) in candidates.into_iter().skip(KEEP_BACKUPS) {
         if let Err(e) = std::fs::remove_file(&path) {
             tracing::warn!(

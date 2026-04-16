@@ -1393,7 +1393,7 @@ fn test_hard_reranker_comparison() {
 
     let indexed: Vec<IndexedChunk> = chunk_descs
         .iter()
-        .zip(all_embeddings.into_iter())
+        .zip(all_embeddings)
         .map(|(desc, emb)| IndexedChunk {
             name: desc.name.clone(),
             language: desc.language,
@@ -1835,7 +1835,7 @@ fn test_hard_with_summaries() {
 
     let indexed: Vec<IndexedChunk> = chunk_descs
         .iter()
-        .zip(all_embeddings.into_iter())
+        .zip(all_embeddings)
         .map(|(desc, emb)| IndexedChunk {
             name: desc.name.clone(),
             language: desc.language,
@@ -2273,7 +2273,7 @@ fn test_type_aware_embeddings() {
     eprintln!("{}", "-".repeat(58));
 
     for (label, nl_fn) in &configs {
-        let texts: Vec<&str> = chunks.iter().map(|c| nl_fn(c)).collect();
+        let texts: Vec<&str> = chunks.iter().map(nl_fn).collect();
         let mut embs: Vec<Vec<f32>> = Vec::new();
         for batch in texts.chunks(16) {
             embs.extend(embedder.embed_documents(batch).expect("Embed failed"));

@@ -404,33 +404,42 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
     // overall R@1 41% projected (vs 37.7% for global α=0.90).
     //
     // Run artifacts: /home/user001/.cache/cqs/evals/run_20260415_1[4-5]*/
+    // v3 per-category alphas (2026-04-16). Fit on v3 train (326 queries),
+    // validated on v3 dev (109 queries). Only changes where dev R@1 beat
+    // the v1.26.0 alpha are adopted — swept optima on multi_step and
+    // negation regressed on dev (train overfit), so those stay at v1.26.0.
+    //
+    // Dev R@1: 33.0% (v1.26.0 alphas) → 46.8% (v3 conservative) = +13.8pp
+    //
+    // Per-category dev R@1 changes:
+    //   behavioral_search 18.8% → 50.0% (α 0.00 → 1.00)
+    //   conceptual_search  8.3% → 50.0% (α 0.70 → 1.00)
+    //   type_filtered      0.0% → 30.8% (α 1.00 → 0.75)
+    //   cross_language     9.1% → 18.2% (α 1.00 → 0.10)
+    //   identifier_lookup 83.3% → 83.3% (α 1.00 unchanged)
+    //   negation          58.8% → 58.8% (α 0.80 unchanged; swept 0.95 hurt dev)
+    //   multi_step        35.7% → 35.7% (α 1.00 unchanged; swept 0.20 hurt dev)
+    //   structural_search 12.5% → 12.5% (α 0.90 unchanged; swept 0.80 tied)
+    //
+    // Why these moved from v1.26.0: v1.26.0 alphas were tuned on v2 (265q
+    // fixture eval with different query-distribution properties). v3 is a
+    // dual-judge consensus dataset with proper train/dev/test split; its
+    // queries have different lexical characteristics. Behavioral and
+    // conceptual flipped to α=1.0 because v3 queries have more exact-term
+    // overlap with chunks than v2 behavioral/conceptual queries did.
+    // cross_language needs dense-heavy because lexical overlap fails
+    // across languages — you need semantic bridging.
+    //
+    // Run artifacts: ~/.cache/cqs/evals/v3_alpha_sweep.json
     let alpha = match category {
-        // Peak at α=1.00 (94%). Previous default 0.90 gave 90% — the extra
-        // 10% SPLADE cost 4pp. Identifier queries are dominated by exact
-        // name matches which the dense embedder resolves unambiguously.
         QueryCategory::IdentifierLookup => 1.00,
-        // Peak at α=0.90 (44.4%). Previous default 0.60 was from the
-        // dirty-index sweep and gave only 29.6% — 14.8pp miscalibration.
-        // Structural queries (e.g. "recursive function", "mutex usage")
-        // match on code idioms the dense embedder learned well.
         QueryCategory::Structural => 0.90,
-        // Peak at α=0.70 (33.3%). Previous default 0.85 gave 30.6%.
-        // Conceptual queries benefit from some SPLADE lexical grounding
-        // (noun-token matches) without over-weighting it.
-        QueryCategory::Conceptual => 0.70,
-        // Peak at α=0.00 (25.0%). Previous default 0.05 gave 22.7% —
-        // the gain is within noise (N=44) but directionally consistent:
-        // behavioral queries match action verbs that SPLADE captures
-        // lexically and the dense embedder does not.
-        QueryCategory::Behavioral => 0.00,
-        // Peak at α=0.80 (20.7%), up from 13.8% at α=1.0 — a real 6.9pp
-        // gain. Previously missed because the arm fell through to the
-        // `_ => 1.0` default. Negation queries need lexical SPLADE to
-        // suppress candidates that match the negated term.
+        QueryCategory::Conceptual => 1.00,
+        QueryCategory::Behavioral => 1.00,
         QueryCategory::Negation => 0.80,
-        // multi_step, cross_language, type_filtered, unknown: flat curves
-        // within noise (N=21-34); pick α=1.0. SPLADE still contributes to
-        // the candidate pool (always-on), α just weights the scoring.
+        QueryCategory::TypeFiltered => 0.75,
+        QueryCategory::CrossLanguage => 0.10,
+        // multi_step + unknown: flat curves / small N; keep α=1.0.
         _ => 1.0,
     };
 
