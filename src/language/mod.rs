@@ -343,6 +343,22 @@ pub struct LanguageDef {
     /// When present, `Pattern::matches` uses these instead of generic heuristics.
     /// `None` = fall through to generic pattern matching in `structural.rs`.
     pub structural_matchers: Option<&'static [(&'static str, StructuralMatcherFn)]>,
+    /// Per-language substring markers used by `Pattern::ErrorSwallow`.
+    /// Any single hit triggers the pattern. Empty = use the generic fallback
+    /// in `structural.rs::GENERIC_ERROR_SWALLOW`.
+    ///
+    /// Examples (Rust): `&["unwrap_or_default()", ".ok();", "_ => {}"]`.
+    /// Examples (Python): `&["except:", "except Exception:"]`.
+    pub error_swallow_patterns: &'static [&'static str],
+    /// Per-language substring markers used by `Pattern::Async`.
+    /// Empty = use the generic fallback `structural.rs::GENERIC_ASYNC_MARKERS`.
+    pub async_markers: &'static [&'static str],
+    /// Per-language substring markers used by `Pattern::Mutex`.
+    /// Empty = use the generic fallback `structural.rs::GENERIC_MUTEX_MARKERS`.
+    pub mutex_markers: &'static [&'static str],
+    /// Per-language substring markers used by `Pattern::Unsafe`.
+    /// Empty = use the generic fallback `structural.rs::GENERIC_UNSAFE_MARKERS`.
+    pub unsafe_markers: &'static [&'static str],
     /// Entry point names excluded from dead code detection.
     /// Functions called by the runtime, framework, or build system rather than
     /// by other indexed code. E.g., Rust: `&["main"]`, Python: `&["__init__"]`,
@@ -437,13 +453,16 @@ pub enum SignatureStyle {
 //   - `FromStr` impl (name string → variant, case-insensitive)
 //   - `ParseChunkTypeError` error type
 //   - `capture_name_to_chunk_type()` — maps tree-sitter capture names to ChunkType
+//   - `ChunkType::hint_phrases(&self)` — query phrases that route to this type
 //
-// Each variant has an optional `capture = "name"` field. When omitted, the
-// display name is used as the capture name. When present, the capture name
-// differs from the display name (e.g., `Constant => "constant", capture = "const"`).
+// Each variant has optional fields:
+//   - `capture = "name"`: tree-sitter capture name when it differs from the
+//     display name (e.g., `Constant => "constant", capture = "const"`).
+//   - `hints = ["phrase", ...]`: natural-language phrases that should route a
+//     query to this chunk type. Used by `extract_type_hints` in `router.rs`.
 //
 // Adding a chunk type = one new line here. Display, FromStr, ALL, capture
-// mapping, and error messages stay in sync automatically.
+// mapping, hint phrases, and error messages stay in sync automatically.
 // ---------------------------------------------------------------------------
 /// Defines a ChunkType enum and associated utilities for parsing and working with code element types.
 ///
@@ -453,6 +472,7 @@ pub enum SignatureStyle {
 /// - `$doc`: Optional doc comment strings for each variant.
 /// - `$name`: The string literal name corresponding to each variant.
 /// - `$capture`: Optional capture group identifier for each chunk type (unused in macro expansion).
+/// - `$hint`: Optional natural-language phrases mapping queries to this type.
 ///
 /// # Returns
 ///
@@ -461,6 +481,7 @@ pub enum SignatureStyle {
 /// - An `impl ChunkType` block providing:
 ///   - `all`: A constant array of all ChunkType variants.
 ///   - `valid_names()`: Returns a static slice of all valid chunk type name strings.
+///   - `hint_phrases()`: Returns a static slice of NL phrases that route to this type.
 /// - A `Display` implementation that formats ChunkType variants as their string names.
 /// - A `ParseChunkTypeError` struct for representing invalid chunk type parse attempts.
 /// - A `Display` implementation for `ParseChunkTypeError` showing the invalid input and listing valid options.
@@ -468,7 +489,10 @@ macro_rules! define_chunk_types {
     (
         $(
             $(#[doc = $doc:expr])*
-            $variant:ident => $name:literal $(, capture = $capture:literal)? ;
+            $variant:ident => $name:literal
+                $(, capture = $capture:literal)?
+                $(, hints = [ $($hint:literal),* $(,)? ])?
+                ;
         )+
     ) => {
         /// Type of code element extracted by the parser
@@ -497,6 +521,23 @@ macro_rules! define_chunk_types {
             pub const CAPTURE_NAMES: &'static [&'static str] = &[
                 $(define_chunk_types!(@capture $name $(, $capture)?),)+
             ];
+
+            /// Natural-language phrases that should route a query to this chunk type.
+            ///
+            /// Declared via the `hints = [...]` attribute on the variant in
+            /// `define_chunk_types!`. Empty slice when no hints are declared.
+            ///
+            /// Used by `extract_type_hints` in `src/search/router.rs` to build
+            /// the Aho-Corasick automaton for type-hint extraction. Adding a new
+            /// `ChunkType` variant with `hints = [...]` automatically registers
+            /// those phrases — no second edit in `router.rs` required.
+            pub fn hint_phrases(&self) -> &'static [&'static str] {
+                match self {
+                    $(
+                        ChunkType::$variant => define_chunk_types!(@hints $(, [ $($hint),* ])?),
+                    )+
+                }
+            }
         }
 
         impl std::fmt::Display for ChunkType {
@@ -563,67 +604,73 @@ macro_rules! define_chunk_types {
     // Internal rule: resolve capture name. If explicit capture given, use it; otherwise use display name.
     (@capture $name:literal, $capture:literal) => { $capture };
     (@capture $name:literal) => { $name };
+
+    // Internal rule: resolve hint phrases. If `hints = [...]` given, use them; otherwise empty slice.
+    (@hints , [ $($hint:literal),* ]) => { &[ $($hint),* ] };
+    (@hints) => { &[] };
 }
 
+// Hint declaration order matters: `extract_type_hints` returns hits in
+// declaration order. Tests asserting on hint sequencing rely on this.
 define_chunk_types! {
     /// Standalone function
-    Function => "function";
+    Function => "function", hints = ["all functions", "every function"];
     /// Method (function inside a class/struct/impl)
-    Method => "method";
+    Method => "method", hints = ["all methods", "every method"];
     /// Class definition (Python, TypeScript, JavaScript)
-    Class => "class";
+    Class => "class", hints = ["all classes", "every class"];
     /// Struct definition (Rust, Go)
-    Struct => "struct";
+    Struct => "struct", hints = ["all structs", "every struct"];
     /// Enum definition
-    Enum => "enum";
+    Enum => "enum", hints = ["all enums", "every enum"];
     /// Trait definition (Rust)
-    Trait => "trait";
+    Trait => "trait", hints = ["all traits", "every trait"];
     /// Interface definition (TypeScript, Go)
-    Interface => "interface";
+    Interface => "interface", hints = ["all interfaces", "every interface"];
     /// Constant or static variable
-    Constant => "constant", capture = "const";
+    Constant => "constant", capture = "const", hints = ["all constants", "every constant"];
     /// Documentation section (Markdown)
-    Section => "section";
+    Section => "section", hints = ["all sections", "every section"];
     /// Property (C# get/set properties)
-    Property => "property";
+    Property => "property", hints = ["all properties", "every property"];
     /// Delegate type declaration (C#)
-    Delegate => "delegate";
+    Delegate => "delegate", hints = ["all delegates", "every delegate"];
     /// Event declaration (C#)
-    Event => "event";
+    Event => "event", hints = ["all events", "every event"];
     /// Module definition (F#, future: Ruby, Elixir)
-    Module => "module";
+    Module => "module", hints = ["all modules", "every module"];
     /// Macro definition (Rust `macro_rules!`, future: Elixir `defmacro`)
-    Macro => "macro";
+    Macro => "macro", hints = ["all macros", "every macro", "macro_rules"];
     /// Object/singleton definition (Scala)
-    Object => "object";
+    Object => "object", hints = ["all objects", "every object"];
     /// Type alias definition (Scala, future: Haskell, Kotlin)
-    TypeAlias => "typealias";
+    TypeAlias => "typealias", hints = ["type alias", "all type aliases"];
     /// Extension (Swift `extension Type { ... }`)
-    Extension => "extension";
+    Extension => "extension", hints = ["extension method", "all extensions"];
     /// Constructor (initializer method — `__init__`, `new`, `init`, etc.)
-    Constructor => "constructor";
+    Constructor => "constructor", hints = ["constructor", "all constructors", "every constructor"];
     /// Implementation block (Haskell `instance`, Rust `impl`)
-    Impl => "impl";
+    Impl => "impl", hints = ["all impl blocks", "implementation block"];
     /// Configuration key (JSON, TOML, YAML, INI — data, not code)
-    ConfigKey => "configkey";
+    ConfigKey => "configkey", hints = ["config key", "all config keys"];
     /// Test function or test suite (Jest describe, pytest test_, #[test], etc.)
-    Test => "test";
+    Test => "test", hints = ["test function", "test method", "all tests", "every test"];
     /// Top-level exported variable (let/var, global declarations — mutable, not constant)
-    Variable => "variable", capture = "var";
+    Variable => "variable", capture = "var", hints = ["all variables", "every variable"];
     /// HTTP route/endpoint handler (Express app.get, Flask @app.route, Spring @GetMapping)
-    Endpoint => "endpoint";
+    Endpoint => "endpoint", hints = ["endpoint", "all endpoints", "every endpoint"];
     /// RPC/service definition (protobuf service, GraphQL Query/Mutation)
-    Service => "service";
+    Service => "service", hints = ["all services", "every service"];
     /// SQL stored procedure, view, or trigger
-    StoredProc => "storedproc";
+    StoredProc => "storedproc", hints = ["stored procedure", "all stored procedures"];
     /// FFI declaration without implementation (Rust extern fn, TS declare, C prototype, Java native)
-    Extern => "extern";
+    Extern => "extern", hints = ["extern function", "all externs", "every extern", "ffi declaration"];
     /// Namespace or package scope (C++ namespace, C# namespace)
-    Namespace => "namespace";
+    Namespace => "namespace", hints = ["all namespaces", "every namespace"];
     /// Middleware handler (Express app.use, Django middleware)
-    Middleware => "middleware";
+    Middleware => "middleware", hints = ["middleware", "all middleware", "every middleware"];
     /// Solidity access control modifier (modifier onlyOwner)
-    Modifier => "modifier";
+    Modifier => "modifier", hints = ["all modifiers", "every modifier"];
 }
 
 impl ChunkType {

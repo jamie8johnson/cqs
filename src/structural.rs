@@ -128,103 +128,100 @@ fn matches_builder(content: &str, _name: &str) -> bool {
         || (content.contains(".set") && content.contains("return"))
 }
 
-/// Error swallowing: catch/except with empty body, unwrap_or_default, _ => {}
+// Generic cross-language fallback marker slices. Used when `language == None`
+// or when the language's per-pattern slice is empty. Substring `any()` scan.
+//
+// Adding a new language with bespoke markers does not need to touch these
+// slices — set the per-language fields on `LanguageDef` instead.
+
+/// Generic error-swallow markers for cross-language fallback.
+const GENERIC_ERROR_SWALLOW: &[&str] =
+    &["catch (e) {}", "catch {}", "except:", "except Exception:"];
+
+/// Generic async markers for cross-language fallback.
+const GENERIC_ASYNC_MARKERS: &[&str] = &["async", "await"];
+
+/// Generic mutex markers for cross-language fallback.
+const GENERIC_MUTEX_MARKERS: &[&str] = &["mutex", "Mutex", "lock()", "Lock()"];
+
+/// Generic unsafe markers for cross-language fallback.
+const GENERIC_UNSAFE_MARKERS: &[&str] = &["unsafe"];
+
+/// Resolve a per-language marker slice with fallback semantics:
+///   - If `language` is `Some(L)` AND `L`'s `markers` are non-empty → use them.
+///   - Otherwise use the supplied `generic` slice.
+///
+/// Each slice is treated disjunctively: any single substring hit triggers the
+/// pattern. Conjunctive markers (e.g. Python "except: AND pass") were folded
+/// into single specific phrases ("except:") that distinguish positive from
+/// negative cases without the AND.
+fn matches_any_marker(
+    content: &str,
+    language: Option<Language>,
+    select: fn(&'static crate::language::LanguageDef) -> &'static [&'static str],
+    generic: &'static [&'static str],
+) -> bool {
+    let markers = match language {
+        Some(lang) => {
+            let per_lang = select(lang.def());
+            if per_lang.is_empty() {
+                generic
+            } else {
+                per_lang
+            }
+        }
+        None => generic,
+    };
+    markers.iter().any(|m| content.contains(m))
+}
+
+/// Error swallowing: catch/except with empty body, unwrap_or_default, `_ => {}`, etc.
+///
+/// Per-language markers live on `LanguageDef::error_swallow_patterns`. None of
+/// the language-specific slices include the conjunctive logic that the old
+/// dispatcher had — they were rewritten as specific disjunctive phrases that
+/// pass the same test cases (e.g. Python `["except:", "except Exception:"]`
+/// distinguishes bare-except from typed-except).
 fn matches_error_swallow(content: &str, language: Option<Language>) -> bool {
-    match language {
-        Some(Language::Rust) => {
-            content.contains("unwrap_or_default()")
-                || content.contains("unwrap_or(())")
-                || content.contains(".ok();")
-                || content.contains("_ => {}")
-                || content.contains("_ => ()")
-        }
-        Some(Language::Python) => {
-            content.contains("except:") && content.contains("pass")
-                || content.contains("except Exception:")
-                    && (content.contains("pass") || content.contains("..."))
-        }
-        Some(Language::TypeScript | Language::JavaScript) => {
-            content.contains("catch") && content.contains("{}")
-                || content.contains("catch (") && content.contains("// ignore")
-        }
-        Some(Language::Go) => {
-            // Go: _ = err pattern
-            content.contains("_ = err") || content.contains("_ = ")
-        }
-        _ => {
-            // Generic heuristics
-            content.contains("catch") && content.contains("{}")
-                || content.contains("except") && content.contains("pass")
-        }
-    }
+    matches_any_marker(
+        content,
+        language,
+        |def| def.error_swallow_patterns,
+        GENERIC_ERROR_SWALLOW,
+    )
 }
 
-/// Determines whether the given content contains asynchronous programming constructs for the specified language.
-///
-/// Checks for language-specific async syntax patterns. For recognized languages (Rust, Python, TypeScript, JavaScript, Go), it searches for language-specific async keywords and operators. For unknown or unspecified languages, it performs a generic search for "async" or "await".
-///
-/// # Arguments
-///
-/// * `content` - The source code string to analyze
-/// * `language` - Optional language identifier to determine which async patterns to search for
-///
-/// # Returns
-///
-/// `true` if the content contains async programming constructs for the given language, `false` otherwise.
+/// Whether the chunk contains language-specific async / concurrency markers.
+/// Per-language markers live on `LanguageDef::async_markers`.
 fn matches_async(content: &str, language: Option<Language>) -> bool {
-    match language {
-        Some(Language::Rust) => content.contains("async fn") || content.contains(".await"),
-        Some(Language::Python) => content.contains("async def") || content.contains("await "),
-        Some(Language::TypeScript | Language::JavaScript) => {
-            content.contains("async ") || content.contains("await ")
-        }
-        Some(Language::Go) => {
-            content.contains("go func") || content.contains("go ") || content.contains("<-")
-        }
-        _ => content.contains("async") || content.contains("await"),
-    }
+    matches_any_marker(
+        content,
+        language,
+        |def| def.async_markers,
+        GENERIC_ASYNC_MARKERS,
+    )
 }
 
-/// Determines whether code content contains mutex or synchronization lock patterns based on the specified programming language.
-///
-/// # Arguments
-///
-/// * `content` - A string slice containing the code to analyze
-/// * `language` - An optional Language enum specifying the programming language. If None, performs a generic case-insensitive search
-///
-/// # Returns
-///
-/// Returns `true` if the content contains language-specific mutex or lock patterns, `false` otherwise.
+/// Whether the chunk contains mutex/lock markers.
+/// Per-language markers live on `LanguageDef::mutex_markers`.
 fn matches_mutex(content: &str, language: Option<Language>) -> bool {
-    match language {
-        Some(Language::Rust) => {
-            content.contains("Mutex") || content.contains("RwLock") || content.contains(".lock()")
-        }
-        Some(Language::Python) => content.contains("Lock()") || content.contains("threading.Lock"),
-        Some(Language::Go) => content.contains("sync.Mutex") || content.contains("sync.RWMutex"),
-        _ => {
-            content.contains("mutex")
-                || content.contains("Mutex")
-                || content.contains("lock()")
-                || content.contains("Lock()")
-        }
-    }
+    matches_any_marker(
+        content,
+        language,
+        |def| def.mutex_markers,
+        GENERIC_MUTEX_MARKERS,
+    )
 }
 
-/// Unsafe code patterns (primarily Rust and C)
+/// Whether the chunk contains unsafe-code markers.
+/// Per-language markers live on `LanguageDef::unsafe_markers`.
 fn matches_unsafe(content: &str, language: Option<Language>) -> bool {
-    match language {
-        Some(Language::Rust) => content.contains("unsafe "),
-        Some(Language::C) => {
-            // C is inherently unsafe, look for dangerous patterns
-            content.contains("memcpy")
-                || content.contains("strcpy")
-                || content.contains("sprintf")
-                || content.contains("gets(")
-        }
-        Some(Language::Go) => content.contains("unsafe.Pointer"),
-        _ => content.contains("unsafe"),
-    }
+    matches_any_marker(
+        content,
+        language,
+        |def| def.unsafe_markers,
+        GENERIC_UNSAFE_MARKERS,
+    )
 }
 
 /// Recursion: function calls itself by name
