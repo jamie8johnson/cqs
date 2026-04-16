@@ -1,0 +1,62 @@
+{
+  "measured_on": "2026-04-16",
+  "cqs_version": "1.26.1+post (Phase-1 through Phase-5b on main; Phase-5c PR #1020 + Phase-5d pending)",
+  "git_revision": "3a5ef5c",
+  "hardware": {
+    "gpu": "NVIDIA RTX A6000 (48 GB)",
+    "secondary_gpu": "Quadro RTX 4000 (8 GB, idle during measurement)",
+    "platform": "WSL2 Ubuntu on Windows host"
+  },
+  "models": {
+    "embedder": "BAAI/bge-large-en-v1.5 (1024-dim)",
+    "splade": "naver/splade-cocondenser-ensembledistil (110M, off-the-shelf)",
+    "reranker": "cross-encoder/ms-marco-MiniLM-L-6-v2 (22M)"
+  },
+  "corpus": {
+    "name": "cqs codebase",
+    "files": 562,
+    "chunks": 15516,
+    "chunks_per_file": 27.6,
+    "languages": "rust + python (eval scripts) + markdown + a few stragglers"
+  },
+  "index_size": {
+    "index_db_bytes": 2430783488,
+    "index_db_human": "2.4 GB (includes content, summaries, hyde, embeddings as BLOBs)",
+    "hnsw_enriched_data_bytes": 64559472,
+    "hnsw_enriched_graph_bytes": 8084767,
+    "hnsw_enriched_ids_bytes": 698875,
+    "hnsw_base_data_bytes": 63793896,
+    "cagra_bytes": 67527348,
+    "cagra_meta_bytes": 693113,
+    "bytes_per_chunk_db": 156661,
+    "bytes_per_chunk_hnsw_only": 4727,
+    "notes": "DB dominated by enrichments (LLM summaries + HyDE). HNSW alone is ~4.7 KB/chunk. Pre-enrichment indexes are far smaller."
+  },
+  "latency_ms": {
+    "daemon_callers_p50": 99,
+    "daemon_callers_range": "86-100",
+    "daemon_callers_samples": 10,
+    "daemon_search_warm_p50": 200,
+    "daemon_search_warm_range": "137-219",
+    "daemon_search_warm_samples": 9,
+    "daemon_search_first_call_after_idle": "1700-12000 (lazy ONNX init in daemon)",
+    "daemon_impact_p50": 199,
+    "daemon_impact_range": "120-279",
+    "daemon_impact_samples": 5,
+    "cli_cold_no_daemon_p50": 10500,
+    "cli_cold_no_daemon_range": "10396-10649",
+    "cli_cold_no_daemon_samples": 3,
+    "notes": "CLI cold = full process spawn + ONNX init + DB open + HNSW load. Daemon mode amortizes all of this."
+  },
+  "throughput": {
+    "batch_mixed_50_ops_seconds": 25.0,
+    "batch_mixed_ops_per_sec": 2.0,
+    "batch_composition": "20 search + 10 callers + 5 callees + 6 impact + 4 explain + 4 scout + 1 misc",
+    "notes": "Throughput dominated by search ops (200ms each). Pure graph-op throughput is much higher — callers alone runs at ~10 ops/sec via daemon."
+  },
+  "post_v1_26_1_perf_changes": [
+    "#917 streaming SPLADE serialize — eliminates ~5-10 MB peak memory duplication on default ensembledistil model (~60-100 MB on SPLADE-Code 0.6B)",
+    "#966 stream-hash enrichment — drops ~100 MB allocator pressure on a 100k-chunk reindex",
+    "#969 recency-based last_indexed_mtime prune — eliminates O(n) stat() syscalls on WSL watch path"
+  ]
+}
