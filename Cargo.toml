@@ -19,6 +19,14 @@ exclude = [
     "docs/AUDIT_*",
     "docs/DESIGN_SPEC_*",
     "docs/notes.toml",
+    # Eval datasets, internal tools, and vendored forks live in the repo
+    # for development and CI but are not user-facing crate content. v1.27.0
+    # added v3 eval JSON (~136MB total) which pushed the package past
+    # crates.io's 10MB compressed limit.
+    "evals/",
+    "samples/",
+    "tools/",
+    "cuvs-fork-push/",
 ]
 
 [dependencies]
