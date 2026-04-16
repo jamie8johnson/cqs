@@ -229,12 +229,17 @@ impl Parser {
     ) -> Result<Vec<Chunk>, ParserError> {
         let _span = tracing::info_span!("parse_source", path = %path.display()).entered();
 
-        // Grammar-less languages use custom parsers
+        // Grammar-less languages use custom parsers (issue #954):
+        // route via LanguageDef function pointers, not match arms. Adding
+        // a new grammar-less language without setting `custom_chunk_parser`
+        // falls through to the markdown default — same as before, but now
+        // the routing is declarative and centralized in the language row.
         if language.def().grammar.is_none() {
-            return match language {
-                Language::Aspx => crate::parser::aspx::parse_aspx_chunks(source, path, self),
-                _ => {
-                    // Markdown (and any future grammar-less language)
+            return match language.def().custom_chunk_parser {
+                Some(f) => f(source, path, self),
+                None => {
+                    // Markdown (and any future grammar-less language
+                    // that opts into the default line-based parser)
                     let mut chunks = crate::parser::markdown::parse_markdown_chunks(source, path)?;
                     let fenced = crate::parser::markdown::extract_fenced_blocks(source);
                     chunks.extend(self.parse_fenced_blocks(&fenced, source, path));
@@ -391,12 +396,14 @@ impl Parser {
         let language = Language::from_extension(&ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
 
-        // Grammar-less languages use custom parsers
+        // Grammar-less languages use custom parsers (issue #954):
+        // routing is declarative via `custom_all_parser`, not a match arm.
         if language.def().grammar.is_none() {
-            return match language {
-                Language::Aspx => crate::parser::aspx::parse_aspx_all(&source, path, self),
-                _ => {
-                    // Markdown (and any future grammar-less language)
+            return match language.def().custom_all_parser {
+                Some(f) => f(&source, path, self),
+                None => {
+                    // Markdown (and any future grammar-less language
+                    // that opts into the default line-based parser)
                     let mut chunks = crate::parser::markdown::parse_markdown_chunks(&source, path)?;
                     let calls = crate::parser::markdown::parse_markdown_references(&source, path)?;
                     let fenced = crate::parser::markdown::extract_fenced_blocks(&source);

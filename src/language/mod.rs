@@ -190,6 +190,46 @@ pub type PostProcessChunkFn = fn(&mut String, &mut ChunkType, tree_sitter::Node,
 /// Takes `(content, name)` and returns true if the pattern matches.
 pub type StructuralMatcherFn = fn(&str, &str) -> bool;
 
+/// Function signature for a custom chunk extractor on a grammar-less language.
+/// Invoked from `Parser::parse_source` when `LanguageDef::grammar` is `None`
+/// and `LanguageDef::custom_chunk_parser` is set.
+pub type CustomChunkParserFn =
+    fn(
+        source: &str,
+        path: &std::path::Path,
+        parser: &crate::parser::Parser,
+    ) -> Result<Vec<crate::parser::types::Chunk>, crate::parser::types::ParserError>;
+
+/// Function signature for a custom combined (chunks + calls + type-refs)
+/// extractor on a grammar-less language. Invoked from `Parser::parse_file_all`.
+pub type CustomAllParserFn = fn(
+    source: &str,
+    path: &std::path::Path,
+    parser: &crate::parser::Parser,
+) -> Result<
+    (
+        Vec<crate::parser::types::Chunk>,
+        Vec<crate::parser::types::FunctionCalls>,
+        Vec<crate::parser::types::ChunkTypeRefs>,
+    ),
+    crate::parser::types::ParserError,
+>;
+
+/// Function signature for a custom relationships-only (calls + type-refs)
+/// extractor on a grammar-less language. Invoked from
+/// `Parser::parse_file_relationships`.
+pub type CustomCallParserFn = fn(
+    source: &str,
+    path: &std::path::Path,
+    parser: &crate::parser::Parser,
+) -> Result<
+    (
+        Vec<crate::parser::types::FunctionCalls>,
+        Vec<crate::parser::types::ChunkTypeRefs>,
+    ),
+    crate::parser::types::ParserError,
+>;
+
 /// An injection rule for multi-grammar parsing.
 ///
 /// Defines how embedded language regions within a host grammar are identified
@@ -337,6 +377,25 @@ pub struct LanguageDef {
     /// headers during field extraction. Universal prefixes (empty, `//`, `/*`, `*`,
     /// braces) are always skipped regardless of this list.
     pub skip_line_prefixes: &'static [&'static str],
+    /// Custom chunk extraction for grammar-less languages.
+    /// When `grammar` is `None`, `parse_source`/`parse_file` uses this hook
+    /// instead of the tree-sitter pipeline. `None` falls through to the
+    /// default markdown-style parser. Adding a grammar-less language
+    /// without setting this field routes to the markdown fallback — which
+    /// is usually wrong. Closes the silent-routing class from issue #954.
+    pub custom_chunk_parser: Option<CustomChunkParserFn>,
+    /// Custom combined chunk+calls+type-refs extraction for grammar-less languages.
+    /// Used by `parse_file_all`. When `None`, falls through to the markdown default.
+    /// `parse_file_relationships` also consults this field as a fallback when
+    /// `custom_call_parser` is not set, so a language that defines only
+    /// `custom_all_parser` still gets correct call/type extraction.
+    pub custom_all_parser: Option<CustomAllParserFn>,
+    /// Custom calls + type-refs extraction for grammar-less languages.
+    /// Preferred over `custom_all_parser` when only relationships are needed
+    /// (avoids doing chunk extraction work twice). `None` causes
+    /// `parse_file_relationships` to fall back to `custom_all_parser`, then
+    /// to the markdown default.
+    pub custom_call_parser: Option<CustomCallParserFn>,
 }
 
 /// Helper: PascalCase test name from a base function name with a given prefix.

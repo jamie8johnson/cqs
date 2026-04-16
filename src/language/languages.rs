@@ -51,6 +51,9 @@ const DEFAULTS: LanguageDef = LanguageDef {
     doc_convention: "",
     field_style: FieldStyle::None,
     skip_line_prefixes: &[],
+    custom_chunk_parser: None,
+    custom_all_parser: None,
+    custom_call_parser: None,
 };
 
 // ============================================================================
@@ -8265,6 +8268,12 @@ static LANG_ASPX: LanguageDef = LanguageDef {
         "asmx",
     ],
     entry_point_names: &["Page_Load", "Page_Init", "Page_PreRender"],
+    // Grammar-less dispatch: closes the silent-routing class (issue #954).
+    // `parse_file_relationships` reuses `custom_all_parser` when
+    // `custom_call_parser` is None, so ASPX files still get call/type
+    // extraction without a dedicated calls-only function.
+    custom_chunk_parser: Some(crate::parser::aspx::parse_aspx_chunks),
+    custom_all_parser: Some(crate::parser::aspx::parse_aspx_all),
     ..DEFAULTS
 };
 
