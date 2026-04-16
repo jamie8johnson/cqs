@@ -35,6 +35,8 @@ checkpoints/
 evals/__pycache__/
 *.toml.lock
 .cqs/
+.cqs.*/
+.cqs.*.bak/
 .cq/
 .cqs.toml
 .cargo/
