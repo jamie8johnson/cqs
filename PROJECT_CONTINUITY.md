@@ -2,9 +2,9 @@
 
 ## Right Now
 
-**Session closing 2026-04-16. Alpha sweep + classifier audit complete. Small real win (+1.8pp R@1) shipped; most of the sweep didn't transfer.**
+**v1.26.1 released 2026-04-16.** Tag pushed, crates.io live, GitHub Release workflow building binaries. Session work consolidated: one shipped R@1 improvement (xlang α 1.00→0.10, +1.8pp on v3 test), two cqs bug fixes (RefCell panic, reranker `token_type_ids`), ROADMAP + README + CHANGELOG updated, GitHub About + crates description refreshed with honest v3 numbers.
 
-Branch: `chore/post-v1.26.0-tears-vllm-infra`. PR #1010 open, ready to merge after final push. CI last passed clippy+fmt+msrv; test job running.
+**Next lever:** HyDE on v3 dev (most promising untested representation change). All prereqs built — Gemma 4 31B via vLLM for synthesis, BGE embedder, v3 harness. Design requirement: hold production router fixed and vary only query embedding source.
 
 ### Final measurements on v3 test (109 queries, stable across 3 trials)
 
@@ -69,13 +69,13 @@ Plus 2 cqs bugs found and fixed as byproducts (RefCell panic, token_type_ids).
 
 ## Architecture state
 
-- **Version:** v1.26.0 + post-release fixes (will ship as v1.26.1 or folded into v1.27.0)
-- **Local binary:** v3 alphas (v1.26.0 + xlang=0.10) + classifier intact + bug fixes installed
+- **Version:** v1.26.1 (tag pushed, crates.io published, GitHub Release in progress)
+- **Local binary:** built from main at 396ef73; reinstall with `cargo build --release --features gpu-index && systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch`
 - **Index:** 14,917 chunks, 100% SPLADE coverage
-- **Production R@1 baseline on v3 test:** 42.2%
-- **Open PRs:** #1010 (session work)
-- **Open issues:** 18 (0 tier-1)
-- **cqs-watch daemon:** running patched binary
+- **Production R@1 baseline on v3 test:** 42.2% / R@5 64.2% / R@20 78.9%
+- **Open PRs:** none
+- **Open issues:** 17 (#855 closed by v1.26.1 env-var drift guard)
+- **cqs-watch daemon:** running — may be on pre-v1.26.1 binary until next rebuild/install
 
 ## Operational pitfalls added this session
 
