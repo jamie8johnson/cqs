@@ -1,12 +1,15 @@
-# ColBERT Integration — ColBERT-XM as 2-stage Reranker
+# ColBERT Integration — mxbai-edge-colbert-v0-32m as 2-stage Reranker
 
-> **License correction (2026-04-17):** the original draft of this plan
-> targeted `jinaai/jina-colbert-v2`. That model is CC-BY-NC-4.0 — non-
-> commercial only — which makes it unsuitable as a default for cqs (an
-> open-source project users can deploy commercially). Switched to
-> `antoinelouis/colbert-xm` (MIT, 81-language XMOD-based late
-> interaction). Jina is still on the table as an internal-research-only
-> ceiling reference, never as a shipped default.
+> **Default updated 2026-04-17 (research recheck):** the original draft
+> targeted `jinaai/jina-colbert-v2` (CC-BY-NC-4.0 — non-commercial only)
+> and was then switched to `antoinelouis/colbert-xm` (MIT, ~270M).
+> A literature recheck for late-2025/2026 papers found
+> **`mixedbread-ai/mxbai-edge-colbert-v0-32m`** (Apache-2.0, **32M** params,
+> **outperforms ColBERTv2 on BEIR**, ONNX-quantized variants already
+> published). 8x smaller than ColBERT-XM at higher quality, equally
+> permissive license. ColBERT-XM stays as a multilingual fallback for
+> low-resource languages where mxbai-edge regresses; Jina-ColBERT-v2
+> stays as a research-only ceiling reference.
 
 **Created:** 2026-04-17  
 **Sequencing:** runs after Phase 3 reranker training lands or fails (`docs/plans/2026-04-17-phase3-reranker-training.md`).  
@@ -30,39 +33,48 @@ This staging matches the "Reranker V2 first, ColBERT as confirmation" sequencing
 
 ## Off-the-shelf path
 
-- **Model:** `antoinelouis/colbert-xm` from HuggingFace
-  - **MIT licensed** — safe to ship as cqs default; users can deploy
-    commercially without license friction
-  - Backbone: XMOD (cross-lingual modular). Fine-tuned on English
-    MS-MARCO; XMOD adapters give zero-shot transfer to 81 languages
-  - 14 languages explicitly evaluated on mMARCO; programming-language
-    natural language headers ("function", "returns", "param", etc.)
-    are well-covered. Code identifier handling untested — that's our
-    A/B job
-  - ~270M params (XLM-R-base + XMOD adapters); fp16 fits in <8GB
-    → RTX 4000 viable
-- **Alternate (research-only):** `jinaai/jina-colbert-v2` (CC-BY-NC-4.0)
-  - 137M params, 89 languages, generally stronger multilingual numbers
-    than ColBERT-XM in the paper
-  - Use ONLY as a ceiling reference in internal eval; never ship as
-    default. If it's a much higher ceiling than ColBERT-XM, that's
-    motivation to either license-clear or train our own permissive
-    multilingual ColBERT
-- **Engine:** PyLate or sentence-transformers integration. Skip WARP for
-  the first pass — it's a latency optimization that only matters once we
-  have a per-token index.
+- **Model (default):** `mixedbread-ai/mxbai-edge-colbert-v0-32m`
+  - **Apache-2.0** — safe to ship; users can deploy commercially.
+  - 32M params; ONNX int8 variants already published (e.g.
+    `ryandono/mxbai-edge-colbert-v0-17m-onnx-int8`)
+  - Outperforms ColBERTv2 on BEIR per the Mixedbread blog post
+    ("Fantastic (small) Retrievers and How to Train Them: mxbai-edge-
+    colbert-v0", Oct 2025)
+  - English-trained — code identifiers and English natural-language
+    docstrings/comments are in-distribution. Per-language A/B will tell
+    us if rust/cpp regress.
+  - fp16 fits in <2GB; runs comfortably on RTX 4000 alongside other
+    workloads. Could even share A6000 with a future Phase 3 ensemble.
+- **Multilingual fallback:** `antoinelouis/colbert-xm`
+  - MIT, ~270M, 81-language XMOD-based zero-shot transfer
+  - Use only if mxbai-edge regresses on rust/cpp/non-English-comment
+    test queries
+- **Backup option:** `mixedbread-ai/mxbai-edge-colbert-v0-17m`
+  - Apache-2.0, 17M (smallest) — for latency-bound deployments if
+    32m proves slow at top-100 candidate counts
+- **Research-only ceiling:** `jinaai/jina-colbert-v2` (CC-BY-NC-4.0)
+  - 137M, 89 langs, generally stronger multilingual numbers per the
+    paper. Internal eval comparison only — never shipped default.
+  - If Jina opens a meaningful gap over mxbai-edge on our v3 test,
+    that's motivation to either license-clear or train our own
+    permissive multilingual ColBERT.
+- **Engine:** PyLate (preferred — native ColBERT inference) or
+  sentence-transformers. WARP (arXiv 2501.17788, 41x faster than
+  ColBERT reference engine) is a latency optimization for the per-token
+  index path; skip for the off-the-shelf 2-stage proof-of-value.
 - **Inference shape:** `MaxSim(query_tokens, doc_tokens)` for each
-  (query, candidate) pair. Sum over query token max-similarities to a
-  doc token. The "late interaction" is that token-level matching happens
-  at scoring time, not at index time.
+  (query, candidate) pair. Sum over query token max-similarities to
+  doc tokens. The "late interaction" is that token-level matching
+  happens at scoring time, not at index time. mxbai-edge's smaller
+  hidden dim (compared to BERT-base) means MaxSim is even cheaper.
 
 ## Hardware decision
 
 - Phase 3 cross-encoder runs on A6000 (needs ~6GB)
-- ColBERT-XM inference fits on RTX 4000 (8GB) at fp16
+- mxbai-edge-colbert-v0-32m fp16 fits in <2GB; RTX 4000 (8GB) trivially
 - Could run BOTH simultaneously if Phase 3 sequential A/B is going on
 
-Practical: run Phase 3 first (A6000 free of vLLM after labeling), land it, THEN bring up ColBERT-XM on RTX 4000 for the confirmation A/B.
+Practical: run Phase 3 first (A6000 free of vLLM after labeling), land it, THEN bring up mxbai-edge on RTX 4000 for the confirmation A/B.
 
 ## Wiring change scope
 
@@ -82,7 +94,7 @@ pub struct CrossEncoderReranker { ... }
 impl Reranker for CrossEncoderReranker { ... }
 
 // src/reranker/colbert.rs — new
-pub struct ColbertReranker { /* ONNX session for colbert-xm */ }
+pub struct ColbertReranker { /* ONNX session for mxbai-edge-colbert-v0-32m */ }
 impl Reranker for ColbertReranker { ... }
 ```
 
@@ -97,7 +109,7 @@ CLI flag changes:
 ColBERT-XM doesn't ship an ONNX file by default. Two options:
 
 1. **Use sentence-transformers / PyLate Python inference via subprocess.** Slower per-query (Python startup), simpler to wire. Acceptable for proof-of-value.
-2. **Export to ONNX with `optimum`** (`optimum-cli export onnx --model antoinelouis/colbert-xm --task feature-extraction colbert.onnx`). Fast-path for production. Requires manual MaxSim implementation in Rust (not trivial — token-level outputs need to be summed over query maxes). XMOD adapters add a wrinkle: language-specific adapter routing happens in the forward pass; check that ONNX export captures it correctly before assuming feature parity with the PyTorch reference.
+2. **Pre-built ONNX:** `ryandono/mxbai-edge-colbert-v0-17m-onnx-int8` exists on HuggingFace. Check whether a 32m ONNX is published or run `optimum-cli export onnx --model mixedbread-ai/mxbai-edge-colbert-v0-32m --task feature-extraction colbert.onnx`. mxbai-edge is a clean BERT-style architecture without XMOD adapter routing complexity, so ONNX export should be straightforward. Manual MaxSim still needs implementing in Rust — token-level outputs need to be summed over query maxes.
 
 Decision: start with option 1 for the A/B (cheaper to abandon if R@5 doesn't move). Move to option 2 only if we ship.
 
@@ -130,7 +142,7 @@ Decision gate:
 - `src/reranker/cross_encoder.rs` — existing impl refactored
 - `src/reranker/colbert.rs` — new
 - `evals/colbert_inference_smoke.py` — sentence-transformers inference smoke test
-- `models/colbert-xm/` — downloaded model artifacts (gitignored — track via cqs model swap)
+- `models/mxbai-edge-colbert-v0-32m/` — downloaded model artifacts (gitignored — track via cqs model swap)
 - `docs/colbert-rerank-results.md` — A/B writeup
 
 ## Stopping conditions
