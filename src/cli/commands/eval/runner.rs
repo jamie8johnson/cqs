@@ -68,7 +68,7 @@ pub(crate) struct GoldChunk {
 }
 
 /// Per-category aggregate. R@1/5/20 are fractions in [0.0, 1.0].
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CategoryStats {
     pub n: usize,
     pub r_at_1: f64,
@@ -77,7 +77,7 @@ pub(crate) struct CategoryStats {
 }
 
 /// Top-level aggregate.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Overall {
     pub n: usize,
     pub r_at_1: f64,
@@ -86,7 +86,12 @@ pub(crate) struct Overall {
 }
 
 /// Full eval output. Same shape for `--json` stdout and `--save` file.
-#[derive(Debug, Serialize)]
+///
+/// `Deserialize` is derived so `--baseline` can load a previously saved
+/// report and diff against the current run (Task C2). Optional fields at
+/// the tail preserve forward-compat with baselines from older `cqs eval`
+/// runs that pre-date them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct EvalReport {
     pub query_count: usize,
     pub skipped: usize,
@@ -100,7 +105,7 @@ pub(crate) struct EvalReport {
     /// Effective per-query result limit used for ranking (default 20).
     pub limit: usize,
     /// When `--category` filtered the run, the category name; otherwise `None`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub category_filter: Option<String>,
 }
 

@@ -696,10 +696,17 @@ pub(super) enum Commands {
         #[command(flatten)]
         args: super::commands::EvalCmdArgs,
     },
+    /// Show / list / swap the embedding model recorded in the index
+    Model {
+        #[command(subcommand)]
+        subcmd: ModelCommand,
+    },
 }
 
 // Re-export the subcommand types used in Commands variants
-pub(super) use super::commands::{CacheCommand, NotesCommand, ProjectCommand, RefCommand};
+pub(super) use super::commands::{
+    CacheCommand, ModelCommand, NotesCommand, ProjectCommand, RefCommand,
+};
 
 /// Classifier used by `try_daemon_query` to decide whether a CLI command can
 /// be forwarded to the batch daemon.
@@ -767,7 +774,10 @@ impl Commands {
             // Eval is a long-running per-process operation (file I/O, progress
             // to stderr, optional --save side effect). Not a fit for daemon
             // dispatch — runs inline via the CLI store path.
-            | Commands::Eval { .. } => BatchSupport::Cli,
+            | Commands::Eval { .. }
+            // Model swaps mutate `.cqs/`, restart the daemon, and may take
+            // minutes to reindex — exclusively a CLI operation.
+            | Commands::Model { .. } => BatchSupport::Cli,
 
             #[cfg(feature = "convert")]
             Commands::Convert { .. } => BatchSupport::Cli,

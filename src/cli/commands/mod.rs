@@ -96,12 +96,14 @@ pub(crate) use infra::cmd_cache;
 pub(crate) use infra::cmd_convert;
 pub(crate) use infra::cmd_doctor;
 pub(crate) use infra::cmd_init;
+pub(crate) use infra::cmd_model;
 pub(crate) use infra::cmd_ping;
 pub(crate) use infra::cmd_project;
 pub(crate) use infra::cmd_ref;
 pub(crate) use infra::cmd_telemetry;
 pub(crate) use infra::cmd_telemetry_reset;
 pub(crate) use infra::CacheCommand;
+pub(crate) use infra::ModelCommand;
 pub(crate) use infra::ProjectCommand;
 pub(crate) use infra::RefCommand;
 

@@ -86,12 +86,17 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
 
     let report = runner::run_eval(ctx, &args.query_file, args.category.as_deref(), args.limit)?;
 
-    // Output (text or JSON) before --save so the user sees results even
-    // if --save's directory is missing or unwritable.
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print_text_report(&report);
+    // When --baseline is set, prefer the diff output over the raw report —
+    // a CI-shaped invocation just wants the diff. The raw report still
+    // lands on disk via --save below if requested.
+    if args.baseline.is_none() {
+        // Output (text or JSON) before --save so the user sees results even
+        // if --save's directory is missing or unwritable.
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print_text_report(&report);
+        }
     }
 
     if let Some(save_path) = &args.save {
@@ -103,7 +108,19 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
     }
 
     if let Some(baseline_path) = &args.baseline {
-        baseline::compare_against_baseline(&report, baseline_path, args.tolerance)?;
+        let diff = baseline::compare_against_baseline(&report, baseline_path, args.tolerance)?;
+        baseline::print_diff_report(&diff, args.json);
+        if !diff.regressions.is_empty() {
+            // Per-category regression past tolerance → CI-friendly exit 1.
+            // Stderr summary so a wrapping shell script can grep for it
+            // even when stdout is consumed by --json.
+            eprintln!(
+                "[eval] {} regression(s) past tolerance \u{00b1}{:.1}pp — exit 1",
+                diff.regressions.len(),
+                diff.tolerance_pp
+            );
+            std::process::exit(1);
+        }
     }
 
     Ok(())
