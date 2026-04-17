@@ -987,14 +987,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "Expanded eval baseline is stale after v1.15.2 refactoring (35 PRs). Original v9-200k scores 80.1% pipeline R@1 on current index, not 90.5%. All E5-base models land 80-83%. Numbers in expanded eval table are relative rankings only. Re-baseline needed."
-mentions = [
-    "pipeline_eval",
-    "RESULTS.md",
-]
-
-[[note]]
 sentiment = 0.0
 text = "Rust stress MRR ~0.04 is a known eval artifact (documented since 2026-03-27). BGE-large 0.037, E5-base 0.037-0.046. Stress eval indexes cqs src/ (~8500 Rust chunks) as noise but no other language repos. Fixture queries drown in real code. Not a regression — same since stress eval was created."
 mentions = [
@@ -1079,7 +1071,7 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "Store get_embeddings_by_hashes is not model-aware — matches on content_hash only. Model switching without --force silently reuses wrong-model embeddings. Dim check added to pipeline but not yet released. Global cache (content_hash, model_fingerprint) is correct."
+text = "Store get_embeddings_by_hashes matches on content_hash only (not model-aware). Model switching daemon/CLI surface is now safe via #1026 (CommandContext::model_config reads Store::stored_model_name). Cache asymmetry warning still applies for direct get_embeddings_by_hashes callers. Global embedding_cache table IS keyed by (content_hash, model_fingerprint)."
 mentions = [
     "store/chunks/embeddings.rs",
     "cli/pipeline/embedding.rs",
@@ -1092,7 +1084,7 @@ mentions = ["splade/mod.rs"]
 
 [[note]]
 sentiment = 0.5
-text = "Best production config: BGE-large + LLM summaries, no SPLADE, no reranker. Summaries +25pp behavioral/multi_step, -25pp negation. SPLADE null across all configs."
+text = "Historical (pre-v1.23): BGE-large + LLM summaries was the best config when SPLADE was null and reranker was net-negative. Summaries +25pp behavioral/multi_step, -25pp negation. Current production (v1.27.0+) ships SPLADE per-category alpha routing — see ROADMAP for shipping alphas."
 mentions = [
     "nl/mod.rs",
     "enrichment.rs",
@@ -1314,4 +1306,107 @@ mentions = [
     "src/cli/args.rs",
     "src/cli/batch/commands.rs",
     "src/cli/definitions.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Agent worktree isolation is SOFT — agents using absolute paths in tool calls write to parent tree, not their .claude/worktrees/agent-X/ copy. Always add explicit path-discipline text to every parallel-agent prompt. Filed Anthropic feedback this session."
+mentions = [
+    "Agent",
+    "worktree",
+    "isolation",
+]
+
+[[note]]
+sentiment = 1.0
+text = "augmented_200k_keydac.jsonl already has pre-mined hard negatives via top-k=100 hard_negative method. Reranker V2 corpus build skips Step 2 (negative mining) entirely — 443k rows ready to label."
+mentions = [
+    "Reranker",
+    "augmented_200k_keydac",
+    "hard_negative",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Cargo publish 413 = exclude list missing. evals/queries/v3_*.json (~136MB) pushed package over 10MB. Cargo.toml exclude blocks evals/, samples/, tools/, cuvs-fork-push/. Re-check exclude after adding any new heavy dir."
+mentions = [
+    "cargo",
+    "Cargo.toml",
+    "publish",
+    "exclude",
+]
+
+[[note]]
+sentiment = 0.0
+text = "Cargo publish 503 = transient CDN issue. Auto-retry within minutes resolves it. Don't bump version chasing 503s."
+mentions = [
+    "cargo",
+    "publish",
+]
+
+[[note]]
+sentiment = 1.0
+text = "3-way git merge-file pattern works cleanly for parallel-agent aggregation when files don't overlap line-for-line. Use main as base: git merge-file current_with_A main_base other_worktree_with_B. Clean clap variant additions never conflict."
+mentions = [
+    "git",
+    "merge-file",
+    "agent",
+]
+
+[[note]]
+sentiment = -0.5
+text = "systemd --user doesn't inherit shell env. CQS_EMBEDDING_MODEL=foo systemctl start cqs-watch FAILS to propagate. Use systemctl --user set-environment KEY=VAL then start. Mostly obsolete after #1026 made resolution index-aware."
+mentions = [
+    "systemd",
+    "daemon",
+    "env",
+]
+
+[[note]]
+sentiment = -1.0
+text = "v9-200k embedder is fine-tuned E5-base, NOT a true code-aware model. v3 R@1 = 28.4% (vs BGE-large 42.2%, -13.8pp). The basin paper's 'ties on R@1' claim was on 296q chunk-to-description fixture, not v3 real-code search. Don't conflate."
+mentions = [
+    "v9-200k",
+    "embedder",
+    "E5",
+    "BGE-large",
+]
+
+[[note]]
+sentiment = -1.0
+text = "Wins-vanish-through-router pattern: this session saw 3 cases (centroid -4.6pp, reranker v2 pilot -5.5pp, full alpha sweep only xlang transferred). ALWAYS validate retrieval changes end-to-end on v3 dev with production router before declaring win. Forced-α/bypassed measurements lie."
+mentions = [
+    "router",
+    "wins-vanish",
+    "centroid",
+    "reranker",
+]
+
+[[note]]
+sentiment = 1.0
+text = '''.gitattributes with '* text=auto eol=lf' + git add --renormalize . killed the recurring CRLF tax from agent edits. Without it every agent PR needed manual sed -i 's/\r$//' on 11+ files.'''
+mentions = [
+    ".gitattributes",
+    "CRLF",
+    "line-endings",
+]
+
+[[note]]
+sentiment = 1.0
+text = "cqs eval --baseline X --tolerance N is the regression gate (PR #1030). Save baselines per release: evals/baseline-v1.27.0.json. Always run after retrieval changes — catches per-category R@K drops automatically. Exit 1 on regression past tolerance."
+mentions = [
+    "cqs eval",
+    "baseline",
+    "regression",
+    "evals",
+]
+
+[[note]]
+sentiment = 1.0
+text = "Calibration gate before full LLM labeling pass. Always run 1k-pair calibration with both Gemma + Claude before launching a 200k+ labeling job. Compute inter-rater agreement: ≥85% → trust Gemma alone, 70-85% → hybrid (Claude on low-confidence pairs), <70% → Claude-only. The 1k cost (Haiku batch ~3¢) is rounding error vs the cost of trusting noisy labels through 200k. Pattern from Reranker V2 corpus build (Task #18)."
+mentions = [
+    "Reranker",
+    "calibration",
+    "llm-judge",
+    "labeling",
 ]

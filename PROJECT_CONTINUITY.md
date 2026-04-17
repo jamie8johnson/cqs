@@ -2,97 +2,82 @@
 
 ## Right Now
 
-**v1.27.0 released 2026-04-16** (audit-wave release, PR #1023). Tag pushed, GitHub Release workflow built binaries successfully. **crates.io publish is currently 503-ing**; auto-retry monitor (bxv9f30kj) running. Closes 13 of 18 audit issues + MSRV bump 1.93→1.95.
+**Reranker V2 Phase 1 done — verdict GEMMA_ONLY** (Task #18, 2026-04-17). 1000 sampled triples from `~/training-data/augmented_200k_keydac.jsonl` labeled by both Gemma 4 31B (vLLM local) and Claude Haiku. Result: **98.3% inter-rater agreement, kappa 0.9663**, 0 parse errors, ground-truth agreement 98.79% (Gemma) / 98.30% (Claude). Clears 85% threshold by 13.3pp → use Gemma alone for the 200k pass. **PR #1031 open, in CI** (`feat/reranker-v2-phase1-calibration`).
 
-**v9-200k embedder eval IN PROGRESS** (Task #5). Backed up `.cqs/` to `.cqs.bge-large.bak/` (2.6 GB). Reindex with v9-200k running in background (PID 788797, log at `/tmp/v9-200k-reindex.log`). On completion: run `evals/run_ablation.py` against v3 test, capture R@1/5/20, compare vs BGE-large baseline (42.2/64.2/78.9 with xlang=0.10).
+**Reranker V2 Phase 2 in flight** (Task #19, 2026-04-17). Agent `a499dc706d1e2e055` building Stack v2 corpus + Gemma labeling. Phase 1 calibration source was 100% Python/CodeSearchNet — Phase 2 switches to `bigcode/the-stack-v2-dedup`, 9 languages (rust/py/js/ts/go/java/cpp/ruby/php), ~25k chunks/lang, function-level w/ docstring, BGE-large embed → HNSW → 7 hard negatives per (query, positive) → sample 200k triples → Gemma label via `--gemma-only` (Phase 1 decision). Final output: `evals/reranker_v2_train_200k.jsonl`. Wall ~32h on A6000 vLLM. Phase 3 (training) gated on corpus quality review.
 
-**Next levers (after v9-200k decision):**
-- R@5 failure-mode audit on the better-performing index (Task #3) — diagnose which queries put gold in ranks 6-20
-- Strategy session synthesizing R@5 levers + HyDE + Reranker V2 (Task #4)
-- HyDE on v3 dev — all prereqs built (Gemma 4 31B via vLLM, BGE/v9-200k embedder, v3 harness)
+**Branch:** `feat/reranker-v2-phase1-calibration`. Working tree clean except for tears.
 
-### Final measurements on v3 test (109 queries, stable across 3 trials)
+### What landed this session (after v1.27.0)
+
+| PR | Closes | Highlight |
+|---|---|---|
+| #1023 | release v1.27.0 | Audit-wave + MSRV bump 1.93→1.95 |
+| #1024 | tears | v1.27.0 ROADMAP refresh + embedder swap workflow plan |
+| #1025 | publish 413 fix | Excluded `evals/`, `samples/`, `tools/`, `cuvs-fork-push/` from package |
+| #1026 | #6, #7 | Embedder hygiene (index-aware resolution + dim-mismatch error) + proactive GC (startup + retroactive gitignore + idle-time periodic) |
+| #1027 | #11, #13, #14, #9 | `cqs stats` field expansion + `cqs doctor --verbose` + `cqs ping` + `cqs eval` subcommand |
+| #1028 | #12, #8 | `--limit` standardization + `--json` propagation through batch |
+| #1029 | #10 | `.gitattributes` + LF renormalize (closed CRLF tax) |
+| #1030 | #15, #16 | `cqs model swap` + `cqs eval --baseline` regression gate (merged) |
+| #1031 | Reranker V2 Phase 1 | Calibration gate → GEMMA_ONLY (98.3% agreement, kappa 0.97) |
+
+**v1.27.0 published on crates.io 2026-04-16.** GitHub Release with binaries built. crates.io was 503-ing initially; resolved after PR #1025 fixed 413 (eval datasets pushed package over 10MB).
+
+### v9-200k embedder eval result (2026-04-16)
+
+Completed. **Verdict: don't switch.** v9-200k v3 test = R@1 28.4% / R@5 49.5% / R@20 71.6% vs BGE-large 42.2% / 64.2% / 78.9%. Net −13.8/−14.7/−7.3pp. Confound: `--force` reindex dropped chunks 15.5k → 10.7k (stale-row cleanup), but the gap is too large for that alone to explain. v9-200k is fine-tuned E5-base; not a true code-aware model. The ROADMAP "ties on R@1" claim was on 296q fixture (chunk-to-description), not v3 real-code search.
+
+### v3 test baselines (still current)
 
 | Config | R@1 | R@5 | R@20 |
 |---|---|---|---|
-| v1.26.0 alphas | 40.4% | 64.2% | 80.7% |
-| **v1.26.0 + xlang=0.10 (shipped)** | **42.2%** | 64.2% | 78.9% |
-| Full v3-swept alphas | 41.3% | 63.3% | 78.9% |
+| **v1.27.0 shipping (xlang=0.10)** | **42.2%** | 64.2% | 78.9% |
+| Forced-α ceiling (no router) | ~48% | (untested) | (untested) |
 
-**Shipping only the cross_language α change (1.00 → 0.10).** +1.8pp R@1 over v1.26.0. Small R@20 regression (−1.8pp) is the trade-off.
+**R@5 ceiling on v3 is unmeasured.** Forced-α R@5 ceiling is the next sanity check before committing to Reranker V2.
 
-### What shipped in PR #1010
+## What's queued
 
-1. **cqs bug fixes:**
-   - RefCell panic in `batch/mod.rs` (try_borrow_mut + deferred retry)
-   - Reranker `token_type_ids` zeroed → populate from tokenizer encoding
-   - Reranker local-path support in `CQS_RERANKER_MODEL`
-2. **Clippy 1.95 compliance** (sort_by_key, checked_div).
-3. **One alpha change**: cross_language 1.00 → 0.10.
-4. **Centroid classifier infrastructure** (disabled by default, `CQS_CENTROID_CLASSIFIER=1` to enable). Infra includes alpha floor wiring and centroid file at `~/.local/share/cqs/classifier_centroids.v1.json`.
-5. **Classifier audit** as integration test (`tests/classifier_audit.rs`).
-6. **Eval pipeline** (14 scripts under `evals/`): telemetry mining, chunk-driven generation, pool building, dual-judge validation, consensus merge, alpha sweep, reranker training, centroid training, diagnose, heartbeat.
-7. **v3 dataset artifacts** checked in: `v3_all.json`, `v3_train/dev/test.json`, `v3_consensus.json`, `v3_pools.json`, `v3_alpha_sweep.json`, `v3_validated_*.json`.
+- **R@5 failure-mode audit** (Task #3) — extends `classifier_audit.rs` pattern to identify why gold misses top-5. Decomposes the 14.7pp R@5→R@20 gap (queries where gold is in top-20 but missed top-5) into failure modes: truncation, near-duplicate crowding, wrong abstraction, classifier misroute. Output: `docs/audit-r5-failure-modes.md`. Diagnostic, not fix-shipping. Drives Section-2 stack design (MMR, larger pool, chunk-type boost).
+- **R@5 strategy session** (Task #4, blocked on #3) — synthesize R@5 levers + HyDE + Reranker V2 into a single decision matrix.
+- **JSON output schema standardization** (Task #17) — wrap every JSON-emitting command's output in `{"data": ..., "error": null}`. Bigger refactor, runs after smaller items land.
+- **Reranker V2 Phases 2 + 3** (Tasks #19, #20) — full 200k labeling + train. Gated on Phase 1 calibration.
 
-### What didn't ship (and why)
+## R@5 90% target — analysis
 
-| Attempt | Why not |
-|---|---|
-| Centroid classifier (runtime) | −4.6pp R@1; wrong-alpha cost asymmetric |
-| Logistic regression (skipped) | Breakeven simulation proved max accuracy still net-negative for Unknown→category routing |
-| Reranker V2 | −5.5pp R@1 even fine-tuned. Needs 200k Gemma-labeled pairs + code-pretrained base + RRF fusion to be net-positive. Deferred. |
-| Full v3 alpha sweep | Only cross_language transferred through the router; rest was masked by strategy routing |
-| Classifier rule fixes (negation idiom guards) | Eliminated 2 misfires but no R@1 change within noise |
-
-### Classifier audit findings (v3 dev)
-
-Rule-based `classify_query` is **38.5% accurate** on v3 dev. 49.5% of queries land in Unknown (rule doesn't fire), 13.8% fire wrong. Per-category health:
-
-- **Perfect**: negation (100%), cross_language (100% precision when fires)
-- **Broken**: multi_step (0% correct on 14 queries — "AND" conjunctions get caught by structural first), conceptual_search (0% correct on 12 queries — abstract-noun patterns don't match v3 phrasings)
-- **Low precision**: type_filtered (17% — fires, but misclassifies most queries to structural/conceptual)
-
-Fix value is bounded: queries that fall to Unknown get α=1.0, which is often what they want anyway (per breakeven simulation). Fixing classifier misfires gives at best 1-3pp R@1 — not worth brittle pattern additions.
-
-### Session total findings
-
-Five experiments, one shipped improvement:
-1. Centroid classifier ❌ (−4.6pp dev R@1)
-2. Reranker V2 ❌ (−5.5pp dev R@1)
-3. Logistic regression — skipped after breakeven simulation
-4. Full v3 alpha sweep ❌ (masked by strategy routing)
-5. **Cross-language α 1.00 → 0.10** ✓ (+1.8pp test R@1)
-
-Plus 2 cqs bugs found and fixed as byproducts (RefCell panic, token_type_ids).
-
-### Lessons
-
-- **Simulate end metric before building** (already in memory from this session).
-- **Don't trust wins that bypass production path.** The forced-α sweep showed +13.8pp R@1 dev; through the full router only +0.9-1.8pp transferred. Strategy routing absorbs most of what alpha would give.
-- **Alpha tuning upper bound is closed.** We measured it (~48% forced-α, ~42% router). Real headroom is behind classifier accuracy, which is itself blocked by the breakeven constraint on Unknown queries.
-- **R@1 gains from here require representation work**, not more tuning of the current stack. HyDE, reranker V2 at scale, embedder switch.
+Honest framing (per session discussion):
+- **80% R@5 is the sharp goal.** Achievable with audit + Section-2 stack (MMR, larger pool, α resweep, chunk-type boost) + multi-query + per-category HyDE. Lower variance, infrastructure mostly exists. Estimated P(hit) ≥ 70%.
+- **90% R@5 is stretch.** Requires Reranker V2 done right with all 4 prereqs OR ColBERT (1-3 month architectural lift) OR both. Estimated P(hit) 30-40% even with full stack.
+- **Wins-vanish-through-router** is the recurring structural risk (centroid: −4.6pp, reranker v2 pilot: −5.5pp, full α sweep: only xlang transferred). Each phase must validate end-to-end on v3 dev.
 
 ## Architecture state
 
-- **Version:** v1.27.0 (tag pushed; GitHub Release built binaries; crates.io publish pending — auto-retry on 503)
-- **Local binary:** built from main at f195568. Reinstall with `cargo build --release --features gpu-index && systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch`
-- **MSRV:** 1.95 (bumped from 1.93 in v1.27.0 / Phase 5d)
-- **Index:** 15,517 chunks (BGE-large baseline, currently being re-embedded with v9-200k for the eval)
+- **Version:** v1.27.0 (live on crates.io + GitHub Releases with binaries)
+- **MSRV:** 1.95
+- **Local binary:** built from main; reinstall after merge with `cargo build --release --features gpu-index && systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch`
+- **Index:** ~14.9k chunks (BGE-large; stale-row cleanup after the v9-200k experiment may have shifted count slightly)
 - **Production R@1 baseline on v3 test:** 42.2% / R@5 64.2% / R@20 78.9%
-- **Open PRs:** post-v1.27.0 tears branch in flight
-- **Open issues:** 16 — all tier-3 deferred or external-blocked (#106 ort upstream, #717 hnswlib-rs migration, #916 depriorotized, #956 needs non-Linux CI, #255 design)
-- **cqs-watch daemon:** stopped during reindex; will restart for the v9-200k eval
+- **Open PRs:** #1031 (Phase 1 calibration, in CI)
+- **Open issues:** 5 — all tier-3 deferred or external-blocked: #106 (ort upstream RC), #717 (HNSW lib swap), #916 (mmap SPLADE — depriorotized behind #917 which shipped), #956 (CoreML/ROCm needs non-Linux CI), #255 (pre-built ref packages design)
+- **cqs-watch daemon:** running latest binary
+- **CRLF tax:** killed by #1029 (`.gitattributes` + `* text=auto eol=lf`)
 
-## Operational pitfalls added this session
+## Operational pitfalls (rolling forward)
 
-- **Measurement stability on v3 test:** 3-trial variance is ±1 query (~1pp). Always repeat measurements; single-trial readings can be off by 3-5pp (the "45.0%" that turned out to be 42.2%). The v1.26.0 "baseline" is actually 40.4 ± 0.9pp, not the 44.0% I cited early on.
-- **Forced-α measurements mislead.** Bypassing strategy routing inflates measured deltas by 5-10pp vs production. Always validate wins through the full router before shipping.
-- **Rust 1.95 adds clippy lints** (unnecessary_sort_by, manual_checked_div) that trigger `-D warnings` failures. Keep toolchain in sync with CI.
-- **Rebuilds invalidate daemon state.** After `cp cqs ~/.cargo/bin/` always `systemctl --user restart cqs-watch` or accept that the daemon is running the old binary.
+- **Agent worktree leak via absolute paths** — `isolation: "worktree"` is *soft* isolation; agents using absolute paths in tool calls write to parent tree. Add explicit path-discipline text to every parallel-agent prompt. **Filed as Anthropic feedback this session.**
+- **Cargo publish 413 = "exclude" list missing** — `evals/queries/v3_*.json` pushed package over 10MB. `Cargo.toml` exclude list now blocks `evals/`, `samples/`, `tools/`, `cuvs-fork-push/`. Re-check after adding any new heavy dir.
+- **Cargo publish 503 = transient CDN** — auto-retry within minutes resolves it. Don't bump version chasing 503s.
+- **3-way `git merge-file` works well** for parallel-agent aggregation when files don't overlap line-for-line. Pattern: `git merge-file <current> <main_base> <other_worktree>` produces clean merge for non-overlapping clap variant additions.
+- **systemd doesn't inherit shell env** — `CQS_EMBEDDING_MODEL=v9-200k systemctl start cqs-watch` doesn't propagate; use `systemctl --user set-environment KEY=VAL` then start. (Mostly obsolete now since #1026 made model resolution index-aware.)
+- **Always run `cqs eval --baseline` after retrieval changes** — the regression gate from #1030 catches per-category R@K drops automatically. Save baselines per release: `evals/baseline-v1.27.0.json` etc.
+- **Reranker V2 prereqs are non-negotiable**: 200k+ Gemma pairs, code-pretrained base (NOT MS-MARCO), RRF fusion (don't replace), top-K input (no over-retrieval). Pilot violated all 4 → −5pp. The 200k corpus build (Task #18-20) is the path to satisfying #1.
+- **No time estimates in specs** (per user feedback this session) — they're systemically too long. Frame in compute units / GPU hours / step counts.
 
 ## What's parked
 
-- **HyDE for structural/behavioral queries** — per old data +14pp structural, +12pp type_filtered. Attacks representation. Needs fresh v3 eval. Most promising next lever.
-- **Reranker V2 at scale** — Gemma pipeline already built; needs code-pretrained base + RRF fusion to be net-positive.
-- **Embedder switch BGE → E5 v9-200k** — v2 measurements said ties-on-R@1 with 1/3 dim. Needs v3 re-measurement.
-- **Classifier rule expansion for multi_step/conceptual/type_filtered** — low-risk pattern additions, low expected R@1 impact (+1-3pp ceiling). Worth doing with a larger eval set, not at current N=109.
+- **HyDE on v3 dev** — most promising untested representation lever. Per-category routing required (v2-era data: +14pp structural, −22pp conceptual). Treat v2 numbers as motivation only — wins-vanish risk is real.
+- **ColBERT-class late interaction** — biggest single lever for code retrieval (+10-25pp R@5 on benchmarks). Architectural rebuild. Plan: add `Reranker` trait → ColBERT impl as 2-stage re-ranker first → only do full per-token index if it wins.
+- **Code-aware embedder switch** — CodeBERT, CodeT5+-110M-embedding, UniXcoder all untested on v3. v9-200k didn't help but it's not a true code-aware model.
+- **Knowledge-augmented retrieval** — use the call/type graph as a structured filter. Multi_step queries currently weakest at 28-43% R@1; KG could help.
+- **Meta-routing** — current router commits to one strategy; ensemble of strategies with learned weights could stop the wins-vanishing pattern.
