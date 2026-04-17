@@ -334,6 +334,7 @@ impl<Mode> Store<Mode> {
     /// When `use_rrf` is true, fuses semantic rankings with FTS keyword results
     /// via Reciprocal Rank Fusion before fetching full content. Requests `limit * 2`
     /// candidates from RRF to compensate for parent dedup filtering.
+    #[allow(clippy::too_many_arguments)] // 8 args is the natural shape — the function joins per-call routing flags (use_rrf, mmr_lambda) with per-search inputs.
     async fn finalize_results(
         &self,
         mut scored: Vec<(String, f32)>,
@@ -492,11 +493,7 @@ impl<Mode> Store<Mode> {
                     }
                 }
                 results = reordered;
-                tracing::debug!(
-                    lambda = lambda,
-                    picked = picks.len(),
-                    "MMR re-rank applied"
-                );
+                tracing::debug!(lambda = lambda, picked = picks.len(), "MMR re-rank applied");
             }
         }
 

@@ -12,16 +12,20 @@
 //! similarity metric instead of cosine. The audit data shows the
 //! crowding pattern is almost always *same-file* — embedding cosine
 //! similarity is not required to detect it. We use a cheap path-based
-//! signal:
+//! signal (calibrated low after the v3-test sweep showed any larger
+//! penalty regresses R@5):
 //!
-//! - same file → 1.0
-//! - same parent dir → 0.4
-//! - same function name (cross-file) → 0.5
+//! - same file → 0.4
+//! - same function name (cross-file) → 0.2
+//! - same parent dir → 0.15
 //! - otherwise → 0.0
 //!
 //! For each pick, score = λ · relevance − (1 − λ) · max(similarity to
 //! already-selected). λ ∈ [0, 1]: 1.0 = pure relevance (no diversity),
-//! 0.0 = pure diversity. Recommended starting point: 0.7.
+//! 0.0 = pure diversity. The MMR sweep on v3 test (with surface
+//! features and the current pipeline) regressed R@5 at every λ < 1.0;
+//! see `similarity` and the commit message for the negative-result
+//! discussion.
 //!
 //! ## Why surface features, not cosine
 //!
@@ -151,8 +155,21 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn make(id: &'static str, score: f32, file: &'static str, name: &'static str) -> (PathBuf, MmrCandidateOwned) {
-        (PathBuf::from(file), MmrCandidateOwned { id, score, file: PathBuf::from(file), name })
+    fn make(
+        id: &'static str,
+        score: f32,
+        file: &'static str,
+        name: &'static str,
+    ) -> (PathBuf, MmrCandidateOwned) {
+        (
+            PathBuf::from(file),
+            MmrCandidateOwned {
+                id,
+                score,
+                file: PathBuf::from(file),
+                name,
+            },
+        )
     }
 
     struct MmrCandidateOwned {
@@ -163,7 +180,15 @@ mod tests {
     }
 
     fn refs(owned: &[(PathBuf, MmrCandidateOwned)]) -> Vec<MmrCandidate<'_>> {
-        owned.iter().map(|(_, o)| MmrCandidate { id: o.id, score: o.score, file: &o.file, name: o.name }).collect()
+        owned
+            .iter()
+            .map(|(_, o)| MmrCandidate {
+                id: o.id,
+                score: o.score,
+                file: &o.file,
+                name: o.name,
+            })
+            .collect()
     }
 
     #[test]
@@ -189,7 +214,7 @@ mod tests {
             make("router2", 0.92, "src/router.rs", "bench_classify"),
             make("router3", 0.90, "src/router.rs", "classify"),
             make("router4", 0.88, "src/router.rs", "resolve_alpha"),
-            make("llm1",    0.80, "src/llm.rs",    "classify"),
+            make("llm1", 0.80, "src/llm.rs", "classify"),
         ];
         let cands = refs(&owned);
         let picks = mmr_rerank(&cands, 3, 0.5);
@@ -215,8 +240,14 @@ mod tests {
         ];
         let cands = refs(&owned);
         let picks = mmr_rerank(&cands, 2, 0.0);
-        assert_eq!(picks[0], 0, "Highest score wins first slot regardless of lambda");
-        assert_eq!(picks[1], 3, "λ=0 picks the maximally-diverse candidate (cross-file)");
+        assert_eq!(
+            picks[0], 0,
+            "Highest score wins first slot regardless of lambda"
+        );
+        assert_eq!(
+            picks[1], 3,
+            "λ=0 picks the maximally-diverse candidate (cross-file)"
+        );
     }
 
     #[test]
@@ -237,27 +268,71 @@ mod tests {
         let owned = vec![make("a", 0.9, "x.rs", "n1"), make("b", 0.8, "y.rs", "n2")];
         let cands = refs(&owned);
         let picks = mmr_rerank(&cands, 5, 0.5);
-        assert_eq!(picks, vec![0, 1], "Returns all available when fewer than limit");
+        assert_eq!(
+            picks,
+            vec![0, 1],
+            "Returns all available when fewer than limit"
+        );
     }
 
     #[test]
     fn similarity_ordering() {
         // Calibrated values per v3-test sweep: 1.0 same-file penalty
         // regressed R@5 by 3-9pp; 0.4 is the largest that doesn't hurt R@1.
-        let same_file_a = MmrCandidate { id: "a", score: 1.0, file: Path::new("src/foo.rs"), name: "f1" };
-        let same_file_b = MmrCandidate { id: "b", score: 1.0, file: Path::new("src/foo.rs"), name: "f2" };
+        let same_file_a = MmrCandidate {
+            id: "a",
+            score: 1.0,
+            file: Path::new("src/foo.rs"),
+            name: "f1",
+        };
+        let same_file_b = MmrCandidate {
+            id: "b",
+            score: 1.0,
+            file: Path::new("src/foo.rs"),
+            name: "f2",
+        };
         assert_eq!(similarity(&same_file_a, &same_file_b), 0.4);
 
-        let same_name_a = MmrCandidate { id: "a", score: 1.0, file: Path::new("src/a.rs"), name: "shared" };
-        let same_name_b = MmrCandidate { id: "b", score: 1.0, file: Path::new("src/b.rs"), name: "shared" };
+        let same_name_a = MmrCandidate {
+            id: "a",
+            score: 1.0,
+            file: Path::new("src/a.rs"),
+            name: "shared",
+        };
+        let same_name_b = MmrCandidate {
+            id: "b",
+            score: 1.0,
+            file: Path::new("src/b.rs"),
+            name: "shared",
+        };
         assert_eq!(similarity(&same_name_a, &same_name_b), 0.2);
 
-        let same_dir_a = MmrCandidate { id: "a", score: 1.0, file: Path::new("src/cli/x.rs"), name: "n1" };
-        let same_dir_b = MmrCandidate { id: "b", score: 1.0, file: Path::new("src/cli/y.rs"), name: "n2" };
+        let same_dir_a = MmrCandidate {
+            id: "a",
+            score: 1.0,
+            file: Path::new("src/cli/x.rs"),
+            name: "n1",
+        };
+        let same_dir_b = MmrCandidate {
+            id: "b",
+            score: 1.0,
+            file: Path::new("src/cli/y.rs"),
+            name: "n2",
+        };
         assert_eq!(similarity(&same_dir_a, &same_dir_b), 0.15);
 
-        let diff_a = MmrCandidate { id: "a", score: 1.0, file: Path::new("src/x.rs"), name: "n1" };
-        let diff_b = MmrCandidate { id: "b", score: 1.0, file: Path::new("evals/y.py"), name: "n2" };
+        let diff_a = MmrCandidate {
+            id: "a",
+            score: 1.0,
+            file: Path::new("src/x.rs"),
+            name: "n1",
+        };
+        let diff_b = MmrCandidate {
+            id: "b",
+            score: 1.0,
+            file: Path::new("evals/y.py"),
+            name: "n2",
+        };
         assert_eq!(similarity(&diff_a, &diff_b), 0.0);
     }
 
@@ -266,9 +341,23 @@ mod tests {
         // Two candidates with empty `name` fields in different dirs should
         // produce 0.0 similarity. (Same dir would trigger the parent-dir
         // rule at 0.4, which is independent of name.)
-        let a = MmrCandidate { id: "a", score: 1.0, file: Path::new("src/a.rs"), name: "" };
-        let b = MmrCandidate { id: "b", score: 1.0, file: Path::new("evals/b.py"), name: "" };
-        assert_eq!(similarity(&a, &b), 0.0, "Empty names must not produce a name-match boost");
+        let a = MmrCandidate {
+            id: "a",
+            score: 1.0,
+            file: Path::new("src/a.rs"),
+            name: "",
+        };
+        let b = MmrCandidate {
+            id: "b",
+            score: 1.0,
+            file: Path::new("evals/b.py"),
+            name: "",
+        };
+        assert_eq!(
+            similarity(&a, &b),
+            0.0,
+            "Empty names must not produce a name-match boost"
+        );
     }
 
     #[test]
