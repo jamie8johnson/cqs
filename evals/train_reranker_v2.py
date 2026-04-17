@@ -151,7 +151,9 @@ def load_pointwise(path: Path, limit: int | None, events: EventLog) -> list[Inpu
                 skipped += 1
                 continue
             q = row.get("query")
-            p = row.get("passage")
+            # Phase 2's pairwise_to_pointwise.py emits the chunk under
+            # "content"; older synthetic fixtures used "passage". Accept both.
+            p = row.get("content") if "content" in row else row.get("passage")
             lbl = row.get("label")
             if q is None or p is None or lbl is None:
                 skipped += 1
