@@ -6,9 +6,13 @@
 
 **Reranker V2 Phase 2 in flight** (Task #19, 2026-04-17). Agent `a499dc706d1e2e055` building Stack v2 corpus + Gemma labeling. Phase 1 calibration source was 100% Python/CodeSearchNet — Phase 2 switches to `bigcode/the-stack-v2-dedup`, 9 languages (rust/py/js/ts/go/java/cpp/ruby/php), ~25k chunks/lang, function-level w/ docstring, BGE-large embed → HNSW → 7 hard negatives per (query, positive) → sample 200k triples → Gemma label via `--gemma-only` (Phase 1 decision). Final output: `evals/reranker_v2_train_200k.jsonl`. Wall ~32h on A6000 vLLM. Phase 3 (training) gated on corpus quality review.
 
-**R@5 audit + strategy + gc fix landed on the same branch** (Tasks #3, #4, #21). Audit shows permissive R@5 = **64.2%** (matches documented v1.27.0 baseline exactly after the gc cleanup). Strict R@5 = 51.4% — the 13pp gap is v3-fixture drift (chunk renames, line shifts), not retrieval drift. Failure modes: `near_dup_crowding` 60% (MMR target), `wrong_abstraction` 45% combined, `unexplained` 15% (Reranker V2 target). Strategy doc: `docs/r5-strategy-2026-04-17.md`. **GC fix #21:** dropped 522 worktree+gitignored chunks the daemon's startup-GC was missing because `origin_exists` had a `Path::exists()` fallback that kept any extant file regardless of indexer ownership.
+**R@5 audit + strategy + gc fix + MMR experiment landed on the same branch** (Tasks #3, #4, #21, #22). Audit shows permissive R@5 = **64.2%** (matches documented v1.27.0 baseline exactly after the gc cleanup). Strict R@5 = 51.4% — the 13pp gap is v3-fixture drift, not retrieval drift. Failure modes: `near_dup_crowding` 60%, `wrong_abstraction` 45%, `unexplained` 15%. Strategy doc: `docs/r5-strategy-2026-04-17.md`.
 
-**Branch:** `feat/reranker-v2-phase1-calibration`. PR #1031 has expanded scope: calibration + audit + strategy + gc fix.
+**MMR result: negative.** Surface-feature MMR (file/dir/name similarity) regressed R@5 at every λ < 1.0 in the v3-test sweep, even after calibrating same-file penalty 1.0 → 0.4. Root cause: pool expansion re-triggered type-boost re-sort, shifting top-1. Code shipped as inert opt-in infrastructure (`CQS_MMR_LAMBDA` env / `SearchFilter.mmr_lambda`) for future embedding-MMR experiments. **Type-boost calibration (CQS_TYPE_BOOST sweep):** noise window ±1pp; default 1.2 stays. **GC fix #21:** dropped 522 worktree+gitignored chunks the daemon was missing because `origin_exists` had a `Path::exists()` fallback that kept any extant file regardless of indexer ownership.
+
+**Branch:** `feat/reranker-v2-phase1-calibration`. PR #1031 expanded scope: calibration + audit + strategy + gc fix + MMR infra. CI is in flight (clippy + fmt + test fixes pushed at ad1be3d).
+
+**Phase 2 status:** Stage A done (225k chunks, 9 langs, ~56 min). Stage B (BGE embed) running at 67 chunks/sec on A6000, 97% GPU, ~24 min ETA. Stage C (HNSW + hard-neg mining) next, then Gemma labeling pass.
 
 ### What landed this session (after v1.27.0)
 
@@ -44,8 +48,8 @@ Completed. **Verdict: don't switch.** v9-200k v3 test = R@1 28.4% / R@5 49.5% / 
 Strategy ordering per `docs/r5-strategy-2026-04-17.md` (Tier 1 ships independent of Phase 2):
 
 - **Tier 1.1 — Eval-data hygiene** — regenerate `v3_test.json` against current corpus + Gemma re-judge of name-only matches (~14 queries). Half-day. No R@5 change but pre-requisite for trusting future lever measurements.
-- **Tier 1.2 — MMR re-rank** — biggest single near-miss mode (60% of misses). Wire into `search_filtered` post-rank step, λ≈0.5-0.7. Expected +3-5pp R@5. 1-2d.
-- **Tier 1.3 — Chunk-type aware boost** — addresses both `wrong_abstraction_*` modes (45% combined). Expected +2-3pp R@5. 2-3d.
+- ~~**Tier 1.2 — MMR re-rank**~~ — tested, **negative result**. Surface-feature MMR regressed R@5 at every tested λ. Code shipped inert as opt-in (`CQS_MMR_LAMBDA`). Embedding-MMR is the obvious follow-up if revisited.
+- ~~**Tier 1.3 — Chunk-type aware boost**~~ — partial test via `CQS_TYPE_BOOST` sweep (1.3 → 2.0). Within ±1pp noise window of default 1.2. Already wired via `extract_type_hints` + Aho-Corasick. Default stands; no action.
 - **Tier 2 — Reranker V2 Phase 2 in flight + Phase 3** (Tasks #19, #20). Catches `unexplained` (15%) plus likely improves wrong_abstraction. +5-10pp realistic. ~5d to deployment.
 - **Tier 3 — chunker fix for `truncated_gold`** (3 queries). Reindex cost; smaller lift.
 - **JSON output schema standardization** (Task #17) — bigger refactor, runs whenever ergonomics work resumes.
