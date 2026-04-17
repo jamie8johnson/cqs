@@ -224,10 +224,21 @@ pub(crate) struct BatchContext {
     /// When the staleness check last ran. Used to rate-limit `fs::metadata`
     /// on `index.db` — see [`STALENESS_CHECK_INTERVAL`]. PF-V1.25-10.
     last_staleness_check: Cell<Option<Instant>>,
-    error_count: AtomicU64,
+    pub(crate) error_count: AtomicU64,
     /// Tracks when the last command was processed.
     /// Used to clear ONNX sessions (embedder, reranker) after idle timeout.
     last_command_time: Cell<Instant>,
+    /// Wall-clock instant when this `BatchContext` was constructed.
+    ///
+    /// Task B2: surfaces `uptime_secs` for `cqs ping`. Held as `Instant`
+    /// rather than `SystemTime` so it's monotonic — daylight-savings or
+    /// `ntpd` slewing won't cause a sudden negative uptime.
+    started_at: Instant,
+    /// Cumulative number of socket / stdin queries this `BatchContext` has
+    /// dispatched. Bumped inside `dispatch_line` so both the daemon socket
+    /// path and the `cqs batch` stdin path increment the same counter.
+    /// Read by the `ping` handler.
+    query_count: AtomicU64,
 }
 
 impl BatchContext {
@@ -445,6 +456,13 @@ impl BatchContext {
 
     /// Dispatch a single command line (e.g. "search foo -n 5 --json") and
     /// write the JSON result to `out`. Used by the daemon socket handler.
+    ///
+    /// Task B2: every line that reaches the dispatcher bumps `query_count`
+    /// (so the ping handler can report total queries served), and any
+    /// parse / dispatch failure bumps `error_count` (so the daemon's
+    /// `cmd_batch` stdin loop and the daemon socket handler converge on
+    /// the same counter — previously only `cmd_batch` bumped `error_count`,
+    /// leaving socket queries invisible).
     pub(crate) fn dispatch_line(&self, line: &str, out: &mut impl std::io::Write) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -453,6 +471,7 @@ impl BatchContext {
         let tokens = match shell_words::split(trimmed) {
             Ok(t) => t,
             Err(e) => {
+                self.error_count.fetch_add(1, Ordering::Relaxed);
                 let err = serde_json::json!({"error": format!("Parse error: {e}")});
                 let _ = write_json_line(out, &err);
                 return;
@@ -462,12 +481,17 @@ impl BatchContext {
             return;
         }
         self.check_idle_timeout();
+        // Bump query_count *after* the early returns above (empty input is
+        // not a query). Counts both successes and errors — symmetric with
+        // how `total_queries` is described in PingResponse.
+        self.query_count.fetch_add(1, Ordering::Relaxed);
         match commands::BatchInput::try_parse_from(&tokens) {
             Ok(input) => match commands::dispatch(self, input.cmd) {
                 Ok(value) => {
                     let _ = write_json_line(out, &value);
                 }
                 Err(e) => {
+                    self.error_count.fetch_add(1, Ordering::Relaxed);
                     // EH-12: use anyhow chain formatter (`:#`) so the real
                     // root cause (e.g. CUDA OOM) surfaces to daemon clients
                     // instead of the flattened top-level "embedding failed".
@@ -476,9 +500,51 @@ impl BatchContext {
                 }
             },
             Err(e) => {
+                self.error_count.fetch_add(1, Ordering::Relaxed);
                 let err = serde_json::json!({"error": format!("{e:#}")});
                 let _ = write_json_line(out, &err);
             }
+        }
+    }
+
+    /// Build a [`cqs::daemon_translate::PingResponse`] snapshot of the
+    /// daemon's current state.
+    ///
+    /// Task B2: pure read-side helper — bumps no counters, blocks no
+    /// I/O, takes no locks. The `splade_loaded` / `reranker_loaded`
+    /// flags peek the `OnceLock`s without forcing a load, so calling
+    /// `ping` does not warm any ONNX session that wasn't already
+    /// resident. `last_indexed_at` reads `index.db`'s mtime as the
+    /// best available signal for "when did the index last change"; a
+    /// missing file or unreadable metadata yields `None` rather than
+    /// failing the whole ping.
+    pub(crate) fn ping_snapshot(&self) -> cqs::daemon_translate::PingResponse {
+        let last_indexed_at = std::fs::metadata(self.cqs_dir.join(cqs::INDEX_DB_FILENAME))
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64);
+        // SPLADE encoder slot is `OnceLock<Option<...>>`: only "loaded" if
+        // the inner Option is Some. A user with no SPLADE model configured
+        // populates the OnceLock with None on first sparse query; that's
+        // not a "loaded" model from the operator's POV.
+        let splade_loaded = self
+            .splade_encoder
+            .get()
+            .map(|opt| opt.is_some())
+            .unwrap_or(false);
+        cqs::daemon_translate::PingResponse {
+            model: self.model_config.name.clone(),
+            // Cast usize→u32. Real models are 384 / 768 / 1024 dim; clamp
+            // to u32::MAX rather than wrap if a future custom config goes
+            // pathological. The cast is information-preserving in practice.
+            dim: u32::try_from(self.model_config.dim).unwrap_or(u32::MAX),
+            uptime_secs: self.started_at.elapsed().as_secs(),
+            last_indexed_at,
+            error_count: self.error_count.load(Ordering::Relaxed),
+            total_queries: self.query_count.load(Ordering::Relaxed),
+            splade_loaded,
+            reranker_loaded: self.reranker.get().is_some(),
         }
     }
 
@@ -1092,6 +1158,11 @@ pub(crate) fn create_context_with_runtime(
         last_staleness_check: Cell::new(None),
         error_count: AtomicU64::new(0),
         last_command_time: Cell::new(Instant::now()),
+        // Task B2: `started_at` is captured here so `uptime_secs` in the
+        // ping response measures from BatchContext creation — which is the
+        // meaningful event for the daemon (the embedder load may be later).
+        started_at: Instant::now(),
+        query_count: AtomicU64::new(0),
     })
 }
 
@@ -1142,6 +1213,11 @@ pub(in crate::cli::batch) fn create_test_context(
         last_staleness_check: Cell::new(None),
         error_count: AtomicU64::new(0),
         last_command_time: Cell::new(Instant::now()),
+        // Task B2: same fields as production constructor — keep parity so
+        // ping-handler tests against `create_test_context` see realistic
+        // counter / uptime values.
+        started_at: Instant::now(),
+        query_count: AtomicU64::new(0),
     })
 }
 
@@ -1488,6 +1564,107 @@ mod tests {
         // Verify we can call a method on it (stats() queries the DB)
         let stats = store_ref.stats();
         assert!(stats.is_ok(), "Store should be usable via store() accessor");
+    }
+
+    // Task B2: dispatch_line bumps query_count once per non-empty line and
+    // bumps error_count when the parser rejects the input. The two are
+    // independent so a `cqs ping` reading both at once gets a consistent
+    // pair (parse-error queries are still queries).
+    #[test]
+    fn test_dispatch_line_bumps_query_counter() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        assert_eq!(ctx.query_count.load(Ordering::Relaxed), 0);
+        assert_eq!(ctx.error_count.load(Ordering::Relaxed), 0);
+
+        // `bogus` is not a valid BatchCmd — dispatch_line bumps both
+        // counters. write to /dev/null equivalent (a Vec).
+        let mut sink = Vec::new();
+        ctx.dispatch_line("bogus", &mut sink);
+        assert_eq!(
+            ctx.query_count.load(Ordering::Relaxed),
+            1,
+            "every non-empty line is a query, even parse failures"
+        );
+        assert_eq!(
+            ctx.error_count.load(Ordering::Relaxed),
+            1,
+            "clap rejection bumps error_count"
+        );
+
+        // `stats` parses fine but the underlying handler may or may not
+        // succeed against the empty test store. The key invariant is that
+        // query_count goes up regardless. Error count only goes up if the
+        // handler errors — we don't pin that here because Stats may
+        // legitimately succeed against an init-only store.
+        sink.clear();
+        ctx.dispatch_line("stats", &mut sink);
+        assert_eq!(
+            ctx.query_count.load(Ordering::Relaxed),
+            2,
+            "second call bumps to 2 regardless of dispatch outcome"
+        );
+
+        // Empty / whitespace lines must NOT bump either counter — they
+        // never reached the dispatcher in pre-B2 behaviour either.
+        sink.clear();
+        ctx.dispatch_line("", &mut sink);
+        ctx.dispatch_line("   ", &mut sink);
+        assert_eq!(ctx.query_count.load(Ordering::Relaxed), 2);
+    }
+
+    // Task B2: ping_snapshot returns a coherent picture even on an empty
+    // BatchContext (no commands run yet, no embedder warmed). Pins the
+    // initial values so the CLI can rely on the field shape.
+    #[test]
+    fn test_ping_snapshot_initial_state() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        let resp = ctx.ping_snapshot();
+        assert_eq!(resp.error_count, 0);
+        assert_eq!(resp.total_queries, 0);
+        // Reranker isn't lazy-loaded by anything in the test fixture.
+        assert!(!resp.reranker_loaded);
+        // SPLADE encoder slot stays unpopulated until first query that
+        // needs it; ping must not trigger init.
+        assert!(!resp.splade_loaded);
+        // Model name comes from the test context's resolved ModelConfig
+        // — non-empty regardless of which model the env points at.
+        assert!(!resp.model.is_empty(), "model name should be populated");
+        assert!(resp.dim > 0, "dim should be populated, got {}", resp.dim);
+        // index.db exists in the test store, so last_indexed_at is Some.
+        assert!(
+            resp.last_indexed_at.is_some(),
+            "test store has index.db, so mtime should be readable"
+        );
+    }
+
+    // Task B2: ping_snapshot reflects counter bumps from dispatch_line
+    // — the integration that gives `cqs ping` its value.
+    #[test]
+    fn test_ping_snapshot_reflects_counters() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        let mut sink = Vec::new();
+        // Three dispatches: one parse error, two parse-ok stats calls.
+        ctx.dispatch_line("bogus_cmd", &mut sink);
+        sink.clear();
+        ctx.dispatch_line("stats", &mut sink);
+        sink.clear();
+        ctx.dispatch_line("stats", &mut sink);
+
+        let resp = ctx.ping_snapshot();
+        assert_eq!(
+            resp.total_queries, 3,
+            "ping must surface the same query_count atomic dispatch_line bumps"
+        );
+        assert!(
+            resp.error_count >= 1,
+            "at least the parse error should be counted; got {}",
+            resp.error_count
+        );
     }
 
     // TC-7: sanitize_json_floats replaces NaN in nested objects

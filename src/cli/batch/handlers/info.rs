@@ -239,7 +239,7 @@ pub(in crate::cli::batch) fn dispatch_context(
 pub(in crate::cli::batch) fn dispatch_stats(ctx: &BatchContext) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_stats").entered();
     let errors = ctx.error_count.load(std::sync::atomic::Ordering::Relaxed);
-    let mut output = crate::cli::commands::build_stats(&ctx.store())?;
+    let mut output = crate::cli::commands::build_stats(&ctx.store(), &ctx.cqs_dir)?;
     output.errors = Some(errors as usize);
     Ok(serde_json::to_value(&output)?)
 }

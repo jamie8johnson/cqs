@@ -356,3 +356,244 @@ fn test_mock_socket_round_trip_for_daemon_command() {
         "daemon sentinel missing from stdout; stdout=<{stdout}> stderr=<{stderr}>"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task B2: `cqs ping` against a mock listener.
+//
+// Two flavours: connect-success (mock replies with a canned PingResponse,
+// the CLI prints the formatted output) and connect-failure (no socket,
+// CLI must exit 1 with "no daemon running").
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Mock daemon that recognises the `ping` request and replies with a
+/// canned PingResponse. Drains the request, asserts it looks like a ping
+/// frame, then writes the envelope `{status:ok,output:<PingResponse JSON>}`.
+///
+/// Why a separate fixture from `MockDaemon`? `MockDaemon` returns a string
+/// sentinel; `cqs ping` parses the output as JSON, so we need a structured
+/// response. Keeping the sentinel mock for the existing tests (so a future
+/// ping-fixture refactor doesn't disturb the bypass-regression seed).
+struct PingMockDaemon {
+    conn_count: Arc<AtomicUsize>,
+    last_request: Arc<std::sync::Mutex<String>>,
+    stop: Arc<AtomicBool>,
+    sock_path: PathBuf,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl PingMockDaemon {
+    fn new(sock_path: PathBuf) -> Self {
+        let listener = UnixListener::bind(&sock_path)
+            .unwrap_or_else(|e| panic!("bind {} failed: {e}", sock_path.display()));
+        listener
+            .set_nonblocking(true)
+            .expect("set_nonblocking on mock listener");
+
+        let conn_count = Arc::new(AtomicUsize::new(0));
+        let last_request = Arc::new(std::sync::Mutex::new(String::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let c2 = Arc::clone(&conn_count);
+        let r2 = Arc::clone(&last_request);
+        let s2 = Arc::clone(&stop);
+
+        // Build the canned PingResponse payload — values pinned in the
+        // assertions below. Real daemon response is a JSON-string-encoded
+        // payload inside the `output` field (see PingResponse docstring).
+        let payload = r#"{"model":"BAAI/bge-large-en-v1.5","dim":1024,"uptime_secs":9375,"last_indexed_at":1734120000,"error_count":3,"total_queries":12453,"splade_loaded":true,"reranker_loaded":false}"#;
+        // The envelope embeds the payload as a JSON string (current
+        // wire format). `serde_json::to_string` on the inner payload
+        // gives us the escaped form.
+        let envelope = format!(
+            r#"{{"status":"ok","output":{}}}"#,
+            serde_json::to_string(payload).unwrap()
+        );
+
+        let handle = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !s2.load(Ordering::SeqCst) && Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _addr)) => {
+                        c2.fetch_add(1, Ordering::SeqCst);
+                        let mut buf = String::new();
+                        let _ = BufReader::new(&stream).read_line(&mut buf);
+                        if let Ok(mut g) = r2.lock() {
+                            *g = buf.clone();
+                        }
+                        let _ = writeln!(stream, "{envelope}");
+                        let _ = stream.flush();
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Self {
+            conn_count,
+            last_request,
+            stop,
+            sock_path,
+            handle: Some(handle),
+        }
+    }
+
+    fn conn_count(&self) -> usize {
+        self.conn_count.load(Ordering::SeqCst)
+    }
+
+    fn last_request(&self) -> String {
+        self.last_request
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for PingMockDaemon {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+        let _ = std::fs::remove_file(&self.sock_path);
+    }
+}
+
+#[test]
+fn test_ping_round_trip() {
+    // Task B2: `cqs ping --json` must connect to the daemon, send a ping
+    // frame, read the envelope, deserialize the inner PingResponse, and
+    // print it as JSON. Pins the wire shape on both sides.
+    let (dir, sock_path) = setup_project();
+    let mock = PingMockDaemon::new(sock_path.clone());
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["ping", "--json"]);
+
+    let output = cmd.output().expect("cqs ping spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "`cqs ping --json` failed; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    assert_eq!(
+        mock.conn_count(),
+        1,
+        "expected exactly one daemon connection, got {}; stdout=<{stdout}> stderr=<{stderr}>",
+        mock.conn_count()
+    );
+    // The CLI sent the canonical ping frame.
+    let req = mock.last_request();
+    assert!(
+        req.contains("\"command\":\"ping\""),
+        "expected ping command in request, got: {req}"
+    );
+
+    // The CLI parsed the envelope and printed PingResponse as JSON.
+    // The trailing newline from println! is fine for the JSON parser.
+    let trimmed = stdout.trim();
+    let parsed: serde_json::Value = serde_json::from_str(trimmed)
+        .unwrap_or_else(|e| panic!("CLI did not print valid JSON; stdout=<{stdout}> err={e}"));
+    assert_eq!(parsed["model"], "BAAI/bge-large-en-v1.5");
+    assert_eq!(parsed["dim"], 1024);
+    assert_eq!(parsed["uptime_secs"], 9_375);
+    assert_eq!(parsed["last_indexed_at"], 1_734_120_000_i64);
+    assert_eq!(parsed["error_count"], 3);
+    assert_eq!(parsed["total_queries"], 12_453);
+    assert_eq!(parsed["splade_loaded"], true);
+    assert_eq!(parsed["reranker_loaded"], false);
+}
+
+#[test]
+fn test_ping_text_output() {
+    // Task B2: text mode must include the "daemon: running" header and
+    // the loaded= status line so the operator can read the daemon's
+    // state at a glance. Doesn't pin every field — leaves wiggle room
+    // for cosmetic tweaks — but pins the structurally-load-bearing bits.
+    let (dir, sock_path) = setup_project();
+    let _mock = PingMockDaemon::new(sock_path.clone());
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["ping"]);
+
+    let output = cmd.output().expect("cqs ping spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "`cqs ping` failed; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    // Spec output:
+    //   daemon: running
+    //   uptime: 2h 35m
+    //   model: BAAI/bge-large-en-v1.5 (1024-dim)
+    //   ...
+    //   loaded: splade=yes reranker=no
+    assert!(
+        stdout.contains("daemon: running"),
+        "expected 'daemon: running' line; got: {stdout}"
+    );
+    assert!(
+        stdout.contains("model: BAAI/bge-large-en-v1.5 (1024-dim)"),
+        "expected model line with dim; got: {stdout}"
+    );
+    assert!(
+        stdout.contains("queries: 12,453 served (3 errors)"),
+        "expected counters with thousands separator; got: {stdout}"
+    );
+    assert!(
+        stdout.contains("loaded: splade=yes reranker=no"),
+        "expected loaded= line; got: {stdout}"
+    );
+}
+
+#[test]
+fn test_ping_no_daemon_exits_one() {
+    // Task B2: when the socket is missing, `cqs ping` must exit 1 with a
+    // friendly stderr message. Differentiates the healthcheck from the
+    // regular daemon-forward path which silently falls back to CLI.
+    let (dir, _sock_path) = setup_project();
+    // Deliberately do NOT bind a mock — the socket file is absent.
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["ping"]);
+
+    let output = cmd.output().expect("cqs ping spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "`cqs ping` should fail when no daemon; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1 for missing daemon; got {:?}",
+        output.status.code()
+    );
+    assert!(
+        stderr.contains("no daemon running"),
+        "expected friendly 'no daemon running' message; stderr=<{stderr}>"
+    );
+}

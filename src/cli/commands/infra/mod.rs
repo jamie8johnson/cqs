@@ -1,4 +1,4 @@
-//! Infrastructure commands — init, doctor, audit mode, telemetry, projects, references, cache
+//! Infrastructure commands — init, doctor, audit mode, telemetry, projects, references, cache, ping
 
 mod audit_mode;
 mod cache_cmd;
@@ -6,6 +6,7 @@ mod cache_cmd;
 mod convert;
 mod doctor;
 mod init;
+mod ping;
 mod project;
 mod reference;
 mod telemetry_cmd;
@@ -16,6 +17,7 @@ pub(crate) use cache_cmd::{cmd_cache, CacheCommand};
 pub(crate) use convert::cmd_convert;
 pub(crate) use doctor::cmd_doctor;
 pub(crate) use init::cmd_init;
+pub(crate) use ping::cmd_ping;
 pub(crate) use project::{cmd_project, ProjectCommand};
 pub(crate) use reference::{cmd_ref, RefCommand};
 pub(crate) use telemetry_cmd::{cmd_telemetry, cmd_telemetry_reset};
