@@ -1052,6 +1052,21 @@ pub(crate) fn create_context_with_runtime(
         tracing::debug!("Could not stat index.db — staleness detection will be skipped until first successful stat");
     }
 
+    // Index-aware model resolution: prefer the model recorded in the store
+    // metadata over CQS_EMBEDDING_MODEL / config / default. Without this,
+    // running `CQS_EMBEDDING_MODEL=foo` against a `bar`-model index gives
+    // silent zero-result queries (the dim mismatch only surfaces as a
+    // tracing::warn! deep in the index backend). See ROADMAP.md "Embedder
+    // swap workflow".
+    let stored_model = store.stored_model_name();
+    let project_config = cqs::config::Config::load(&root);
+    let model_config = ModelConfig::resolve_for_query(
+        stored_model.as_deref(),
+        None,
+        project_config.embedding.as_ref(),
+    )
+    .apply_env_overrides();
+
     Ok(BatchContext {
         store: RefCell::new(store),
         runtime,
@@ -1070,7 +1085,7 @@ pub(crate) fn create_context_with_runtime(
         refs: RefCell::new(lru::LruCache::new(refs_lru_size())),
         root,
         cqs_dir,
-        model_config: ModelConfig::resolve(None, None).apply_env_overrides(),
+        model_config,
         index_id: Cell::new(index_id),
         // PF-V1.25-10: None means the first check runs unconditionally; the
         // 100ms rate-limit kicks in only after the first successful stat.

@@ -260,6 +260,135 @@ impl Store<ReadWrite> {
             })
         })
     }
+
+    /// Delete chunks for files whose path is now matched by a `.gitignore`
+    /// matcher. Used by the daemon's startup GC pass to clean up rows that
+    /// were indexed before v1.26.0 added gitignore-respect to `cqs watch`,
+    /// or that pre-date a `.gitignore` change.
+    ///
+    /// Walks each distinct origin in `chunks` (with `source_type='file'`),
+    /// resolves it against `root` to obtain an absolute path, and asks the
+    /// matcher whether the path or any parent is ignored. Matching paths are
+    /// deleted in batches of 100 in a single transaction (same shape as
+    /// `prune_missing`). Notes and other non-file source types are
+    /// untouched.
+    ///
+    /// `max_paths` caps how many distinct origins this call examines per
+    /// invocation. Pass `None` for "no cap" (startup-time full sweep);
+    /// the periodic idle-time GC passes a small bound (e.g. 1000) so a
+    /// single tick never holds the write transaction longer than necessary.
+    /// Returns the number of chunk rows actually deleted.
+    pub fn prune_gitignored(
+        &self,
+        matcher: &ignore::gitignore::Gitignore,
+        root: &Path,
+        max_paths: Option<usize>,
+    ) -> Result<u32, StoreError> {
+        let _span = tracing::info_span!("prune_gitignored", max_paths = ?max_paths).entered();
+        self.rt.block_on(async {
+            // Phase 1: collect distinct origins (Rust-side filter, outside tx
+            // so the matcher walk doesn't hold the write lock).
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+
+            let cap = max_paths.unwrap_or(usize::MAX);
+            let mut ignored: Vec<String> = Vec::new();
+            for (origin,) in rows.into_iter() {
+                if ignored.len() >= cap {
+                    break;
+                }
+                let origin_path = PathBuf::from(&origin);
+                let absolute = if origin_path.is_absolute() {
+                    origin_path
+                } else {
+                    root.join(&origin_path)
+                };
+                // `matched_path_or_any_parents` walks up the path's parents
+                // so that `.claude/worktrees/agent-x/src/lib.rs` is treated
+                // as ignored when `.claude/` is in `.gitignore`. The
+                // leaf-only `matched()` would miss this case — same logic
+                // as `collect_events` in `cli/watch.rs`.
+                if matcher
+                    .matched_path_or_any_parents(&absolute, false)
+                    .is_ignore()
+                {
+                    ignored.push(origin);
+                }
+            }
+
+            if ignored.is_empty() {
+                return Ok(0);
+            }
+
+            // Phase 2: batched delete in a single transaction. Same shape as
+            // `prune_missing` so a partial prune on crash leaves the index
+            // consistent with the remaining rows in `chunks`.
+            const BATCH_SIZE: usize = 100;
+            let mut deleted = 0u32;
+
+            let (_guard, mut tx) = self.begin_write().await?;
+
+            for batch in ignored.chunks(BATCH_SIZE) {
+                let placeholder_str = crate::store::helpers::make_placeholders(batch.len());
+
+                // Delete from FTS first
+                let fts_query = format!(
+                    "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin IN ({}))",
+                    placeholder_str
+                );
+                let mut fts_stmt = sqlx::query(&fts_query);
+                for origin in batch {
+                    fts_stmt = fts_stmt.bind(origin);
+                }
+                fts_stmt.execute(&mut *tx).await?;
+
+                // Delete from chunks
+                let chunks_query =
+                    format!("DELETE FROM chunks WHERE origin IN ({})", placeholder_str);
+                let mut chunks_stmt = sqlx::query(&chunks_query);
+                for origin in batch {
+                    chunks_stmt = chunks_stmt.bind(origin);
+                }
+                let result = chunks_stmt.execute(&mut *tx).await?;
+                deleted += result.rows_affected() as u32;
+            }
+
+            // Sweep orphan sparse_vectors inside the same transaction so a
+            // crash between DELETE chunks and DELETE sparse_vectors doesn't
+            // leave the SPLADE index over-counted (same fix as DS-1/DS-6 in
+            // `prune_missing`).
+            if deleted > 0 {
+                let sparse_result = sqlx::query(
+                    "DELETE FROM sparse_vectors WHERE chunk_id NOT IN \
+                     (SELECT id FROM chunks)",
+                )
+                .execute(&mut *tx)
+                .await?;
+                let pruned_sparse = sparse_result.rows_affected();
+                if pruned_sparse > 0 {
+                    tracing::debug!(
+                        pruned_sparse,
+                        "Pruned orphan sparse vectors in prune_gitignored tx"
+                    );
+                }
+            }
+
+            tx.commit().await?;
+
+            if deleted > 0 {
+                tracing::info!(
+                    deleted,
+                    paths = ignored.len(),
+                    "Pruned chunks for gitignored paths"
+                );
+            }
+
+            Ok(deleted)
+        })
+    }
 }
 
 impl<Mode> Store<Mode> {
@@ -1156,5 +1285,241 @@ mod tests {
         );
         assert!(report.missing.is_empty());
         assert_eq!(report.total_indexed, 1);
+    }
+
+    // ===== Daemon startup GC tests (#1024) =====
+    //
+    // These four tests pin the contract for the two prune passes the
+    // `cqs watch --serve` startup hook calls:
+    //
+    //   1. `prune_missing` — drop chunks whose origin no longer exists on
+    //      disk (e.g. file deleted while the daemon was down).
+    //   2. `prune_gitignored` — drop chunks whose path is now matched by
+    //      `.gitignore` (retroactive cleanup of pre-v1.26.0 pollution
+    //      that accumulated before `cqs watch` started honoring
+    //      `.gitignore`).
+    //
+    // Together they let the daemon idempotently reach the same chunk-count
+    // a fresh `cqs index --force` would produce, without rebuilding from
+    // scratch.
+
+    /// Build an `ignore::gitignore::Gitignore` matcher rooted at `root`
+    /// from the supplied pattern lines. Mirrors the `gitignore_from_lines`
+    /// helper in `src/cli/watch.rs::tests` so the staleness tests can build
+    /// matchers without importing from the binary crate.
+    fn matcher_from_lines(root: &std::path::Path, lines: &[&str]) -> ignore::gitignore::Gitignore {
+        let mut b = ignore::gitignore::GitignoreBuilder::new(root);
+        for line in lines {
+            b.add_line(None, line).expect("add_line");
+        }
+        b.build().expect("build gitignore")
+    }
+
+    /// Pass 1 — when the source file is gone from disk and absent from
+    /// `existing_files`, `prune_missing` must drop its chunks. Mirrors the
+    /// "deleted file" half of the daemon-startup pollution motivating
+    /// case (worktrees + deleted files).
+    #[test]
+    fn test_prune_missing_drops_chunks_for_deleted_files() {
+        let (store, dir) = setup_store();
+
+        // Seed two chunks: one for an actually-present file, one for a
+        // path the test never creates.
+        let kept_path = dir.path().join("src/keep.rs");
+        std::fs::create_dir_all(kept_path.parent().unwrap()).unwrap();
+        std::fs::write(&kept_path, "fn keep() {}").unwrap();
+        let kept_origin = kept_path.to_string_lossy().to_string();
+        let kept_chunk = Chunk {
+            id: format!("{}:1:keep", kept_origin),
+            file: kept_path.clone(),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "keep".to_string(),
+            signature: "fn keep()".to_string(),
+            content: "fn keep() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "keep".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+
+        let gone = make_chunk("gone", "/no/such/file.rs");
+
+        store
+            .upsert_chunks_batch(
+                &[
+                    (kept_chunk, mock_embedding(1.0)),
+                    (gone, mock_embedding(2.0)),
+                ],
+                Some(1000),
+            )
+            .unwrap();
+
+        // Existing files contains only the kept path; the deleted file is
+        // omitted. `prune_missing` must drop the orphan chunk.
+        let mut existing = HashSet::new();
+        existing.insert(kept_path);
+        let pruned = store.prune_missing(&existing, dir.path()).unwrap();
+        assert_eq!(
+            pruned, 1,
+            "Should prune exactly 1 chunk for the deleted file"
+        );
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 1, "Kept chunk must survive");
+    }
+
+    /// Pass 1 baseline — when every chunk's source file is still on disk,
+    /// `prune_missing` must return 0 and leave the index untouched.
+    /// Regression guard: a refactor that flips the existence check would
+    /// silently delete the entire index on the next daemon startup.
+    #[test]
+    fn test_prune_missing_keeps_chunks_for_present_files() {
+        let (store, dir) = setup_store();
+
+        // Two real files on disk, two chunks indexed.
+        let p1 = dir.path().join("src/a.rs");
+        let p2 = dir.path().join("src/b.rs");
+        std::fs::create_dir_all(p1.parent().unwrap()).unwrap();
+        std::fs::write(&p1, "fn a() {}").unwrap();
+        std::fs::write(&p2, "fn b() {}").unwrap();
+
+        let mk = |path: &std::path::Path, name: &str, hash: &str| {
+            let origin = path.to_string_lossy().to_string();
+            Chunk {
+                id: format!("{}:1:{}", origin, hash),
+                file: path.to_path_buf(),
+                language: Language::Rust,
+                chunk_type: ChunkType::Function,
+                name: name.to_string(),
+                signature: format!("fn {}()", name),
+                content: format!("fn {}() {{}}", name),
+                doc: None,
+                line_start: 1,
+                line_end: 1,
+                content_hash: hash.to_string(),
+                parent_id: None,
+                window_idx: None,
+                parent_type_name: None,
+            }
+        };
+        let c1 = mk(&p1, "a", "ahash");
+        let c2 = mk(&p2, "b", "bhash");
+
+        store
+            .upsert_chunks_batch(
+                &[(c1, mock_embedding(1.0)), (c2, mock_embedding(2.0))],
+                Some(1000),
+            )
+            .unwrap();
+
+        let existing: HashSet<_> = vec![p1, p2].into_iter().collect();
+        let pruned = store.prune_missing(&existing, dir.path()).unwrap();
+        assert_eq!(
+            pruned, 0,
+            "No files are missing — prune_missing must return 0"
+        );
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 2, "Both chunks must survive");
+    }
+
+    /// Pass 2 — when `.gitignore` ignores `target/`, a chunk whose origin
+    /// is `target/cache.rs` must be pruned. Models the canonical
+    /// pre-v1.26.0 pollution case (worktrees, build artifacts, etc.).
+    #[test]
+    fn test_prune_gitignored_drops_chunks_in_ignored_paths() {
+        let (store, dir) = setup_store();
+
+        // Build an "indexed-before-gitignore" chunk under `target/`. The
+        // file does not need to exist on disk for this test — the gitignore
+        // matcher walks the path string, not the filesystem.
+        let target_chunk = make_chunk("cache", "target/cache.rs");
+        let kept_path = dir.path().join("src/lib.rs");
+        std::fs::create_dir_all(kept_path.parent().unwrap()).unwrap();
+        std::fs::write(&kept_path, "pub fn lib() {}").unwrap();
+        let kept_origin = kept_path.to_string_lossy().to_string();
+        let kept_chunk = Chunk {
+            id: format!("{}:1:lib", kept_origin),
+            file: kept_path.clone(),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "lib".to_string(),
+            signature: "pub fn lib()".to_string(),
+            content: "pub fn lib() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "lib".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+
+        store
+            .upsert_chunks_batch(
+                &[
+                    (target_chunk, mock_embedding(1.0)),
+                    (kept_chunk, mock_embedding(2.0)),
+                ],
+                Some(1000),
+            )
+            .unwrap();
+
+        let matcher = matcher_from_lines(dir.path(), &["target/", ".claude/"]);
+        let pruned = store.prune_gitignored(&matcher, dir.path(), None).unwrap();
+        assert_eq!(
+            pruned, 1,
+            "target/cache.rs is now gitignored — must be pruned"
+        );
+
+        // The src/lib.rs chunk survives.
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 1);
+    }
+
+    /// Pass 2 baseline — when `.gitignore` only matches `target/`, a chunk
+    /// for `src/lib.rs` must survive. Regression guard: a refactor that
+    /// inverts the matcher result (or accidentally treats `Whitelist` as
+    /// "ignore") would wipe the entire tracked source tree on first
+    /// daemon startup.
+    #[test]
+    fn test_prune_gitignored_keeps_chunks_in_tracked_paths() {
+        let (store, dir) = setup_store();
+
+        let kept_path = dir.path().join("src/lib.rs");
+        std::fs::create_dir_all(kept_path.parent().unwrap()).unwrap();
+        std::fs::write(&kept_path, "pub fn lib() {}").unwrap();
+        let kept_origin = kept_path.to_string_lossy().to_string();
+        let kept_chunk = Chunk {
+            id: format!("{}:1:lib", kept_origin),
+            file: kept_path.clone(),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "lib".to_string(),
+            signature: "pub fn lib()".to_string(),
+            content: "pub fn lib() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "lib".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+
+        store
+            .upsert_chunks_batch(&[(kept_chunk, mock_embedding(1.0))], Some(1000))
+            .unwrap();
+
+        let matcher = matcher_from_lines(dir.path(), &["target/"]);
+        let pruned = store.prune_gitignored(&matcher, dir.path(), None).unwrap();
+        assert_eq!(pruned, 0, "src/lib.rs is not gitignored — must be kept");
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 1);
     }
 }

@@ -276,17 +276,6 @@ impl Cli {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("ModelConfig not resolved — call resolve_model() first"))
     }
-
-    /// Get the resolved model config. Panics if called before dispatch resolves it.
-    ///
-    /// **Deprecated:** Use [`try_model_config`] instead — it returns `Result`
-    /// rather than panicking on unresolved config.
-    #[deprecated(note = "use try_model_config() which returns Result instead of panicking")]
-    pub fn model_config(&self) -> &cqs::embedder::ModelConfig {
-        self.resolved_model
-            .as_ref()
-            .expect("BUG: ModelConfig not resolved — dispatch() must call resolve_model() first")
-    }
 }
 
 #[derive(Subcommand)]

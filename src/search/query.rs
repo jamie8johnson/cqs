@@ -83,6 +83,43 @@ pub(crate) fn type_boost_factor() -> f32 {
 }
 
 impl<Mode> Store<Mode> {
+    /// Defensive guard for query-time embedder/index dim mismatch.
+    ///
+    /// Returns [`StoreError::QueryDimMismatch`] when the query embedding's
+    /// dimension differs from the index's recorded dimension.
+    ///
+    /// # Why this exists
+    ///
+    /// Without this guard, a query against an index built with a different
+    /// model silently returns zero results: the dim mismatch surfaces as a
+    /// `tracing::warn!` deep inside the index backend (HNSW or CAGRA) and the
+    /// caller sees an empty result set with no actionable signal. Hours of
+    /// debugging followed (see ROADMAP.md "Embedder swap workflow").
+    ///
+    /// With index-aware embedder resolution in place
+    /// (`ModelConfig::resolve_for_query`), this case is rare — but the guard
+    /// remains as a defensive net for the "no recorded model" / corrupt-meta
+    /// edge case.
+    pub(crate) fn check_query_dim(&self, query: &Embedding) -> Result<(), StoreError> {
+        if query.len() == self.dim {
+            return Ok(());
+        }
+        let index_model = self
+            .stored_model_name()
+            .unwrap_or_else(|| "<unknown>".to_string());
+        // We do not have the embedder here, so we can only describe the query
+        // dim. The error template still gives the user enough information to
+        // fix the situation (rebuild against current model, or set
+        // CQS_EMBEDDING_MODEL to the indexed model).
+        let query_model = format!("{}-dim embedder", query.len());
+        Err(StoreError::QueryDimMismatch {
+            index_dim: self.dim,
+            query_dim: query.len(),
+            index_model,
+            query_model,
+        })
+    }
+
     /// Raw embedding-only cosine similarity search (no RRF, no keyword matching).
     ///
     /// **You almost certainly want `search_filtered()` instead.** This method skips
@@ -124,6 +161,12 @@ impl<Mode> Store<Mode> {
         let _span =
             tracing::info_span!("search_filtered", limit, threshold, rrf = filter.enable_rrf)
                 .entered();
+        // Defensive guard: surface query/index dim mismatch as a structured
+        // error instead of returning empty results from a downstream
+        // tracing::warn!. With Fix 1 (index-aware embedder resolution) in
+        // place this should rarely trigger, but it remains a safety net for
+        // missing-stored-model / corrupt-meta edges.
+        self.check_query_dim(query)?;
         // Load notes once for note-boosted ranking (cheap — no embeddings)
         let notes = match self.cached_notes_summaries() {
             Ok(n) => n,
@@ -623,6 +666,10 @@ impl<Mode> Store<Mode> {
         threshold: f32,
         index: Option<&dyn VectorIndex>,
     ) -> Result<Vec<SearchResult>, StoreError> {
+        // Defensive guard for query/index dim mismatch — see `check_query_dim`
+        // for rationale. Index backends (HNSW, CAGRA) used to swallow this
+        // case as a `tracing::warn!` and return zero candidates.
+        self.check_query_dim(query)?;
         // PERF-44: Load notes once for all search paths
         let notes = match self.cached_notes_summaries() {
             Ok(n) => n,
@@ -693,6 +740,8 @@ impl<Mode> Store<Mode> {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<SearchResult>, StoreError> {
+        // Defensive guard for query/index dim mismatch — see `check_query_dim`.
+        self.check_query_dim(query)?;
         // Load notes once for note-boosted ranking
         let notes = match self.cached_notes_summaries() {
             Ok(n) => n,

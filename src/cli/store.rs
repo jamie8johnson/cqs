@@ -69,6 +69,11 @@ pub(crate) struct CommandContext<'a, Mode = cqs::store::ReadWrite> {
     embedder: OnceLock<cqs::Embedder>,
     splade_encoder: OnceLock<Option<cqs::splade::SpladeEncoder>>,
     splade_index: OnceLock<Option<cqs::splade::index::SpladeIndex>>,
+    /// Index-aware ModelConfig override: if `Store::stored_model_name()` is
+    /// a known preset, that wins over CLI/env/config. Computed lazily on
+    /// first `model_config()` call. See
+    /// [`cqs::embedder::ModelConfig::resolve_for_query`].
+    index_aware_model: OnceLock<cqs::embedder::ModelConfig>,
 }
 
 impl<'a> CommandContext<'a, cqs::store::ReadOnly> {
@@ -84,6 +89,7 @@ impl<'a> CommandContext<'a, cqs::store::ReadOnly> {
             embedder: OnceLock::new(),
             splade_encoder: OnceLock::new(),
             splade_index: OnceLock::new(),
+            index_aware_model: OnceLock::new(),
         })
     }
 }
@@ -105,15 +111,46 @@ impl<'a> CommandContext<'a, cqs::store::ReadWrite> {
             embedder: OnceLock::new(),
             splade_encoder: OnceLock::new(),
             splade_index: OnceLock::new(),
+            index_aware_model: OnceLock::new(),
         })
     }
 }
 
 impl<'a, Mode> CommandContext<'a, Mode> {
-    /// Get the resolved model config from the CLI.
-    #[allow(deprecated)]
+    /// Get the resolved model config, preferring the model recorded in the
+    /// open store's metadata over CLI flag / env var / config / default.
+    ///
+    /// Index-time callers (`cqs index --force`) MUST NOT use this — they
+    /// should consult [`cqs::embedder::ModelConfig::resolve`] directly via
+    /// `cli.try_model_config()`. At index time the user's intent is to
+    /// install a new embedder; honouring the stored name would refuse to
+    /// switch models.
+    ///
+    /// Query-time commands (search, scout, gather, impact, ...) flow through
+    /// `CommandContext` and pick up the index-aware override here. This
+    /// closes the long-standing footgun where `CQS_EMBEDDING_MODEL=foo` set
+    /// in a shell would silently search a `bar`-model index with a wrong-dim
+    /// embedder and return zero results.
     pub fn model_config(&self) -> &cqs::embedder::ModelConfig {
-        self.cli.model_config()
+        self.index_aware_model.get_or_init(|| {
+            let stored = self.store.stored_model_name();
+            // Build a fresh resolution chain matching dispatch.rs logic.
+            // We re-load config because we don't carry it on the Cli.
+            let config = cqs::config::Config::load(&self.root);
+            let resolved = cqs::embedder::ModelConfig::resolve_for_query(
+                stored.as_deref(),
+                self.cli.model.as_deref(),
+                config.embedding.as_ref(),
+            )
+            .apply_env_overrides();
+            tracing::debug!(
+                stored_model = stored.as_deref().unwrap_or("<none>"),
+                resolved_model = %resolved.name,
+                resolved_dim = resolved.dim,
+                "CommandContext resolved index-aware model config"
+            );
+            resolved
+        })
     }
 
     /// Get or lazily create the cross-encoder reranker.
