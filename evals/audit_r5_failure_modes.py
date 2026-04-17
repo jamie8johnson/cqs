@@ -37,8 +37,19 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 QUERIES_DIR = Path(__file__).parent / "queries"
-TEST_PATH = QUERIES_DIR / "v3_test.json"
-DEV_PATH = QUERIES_DIR / "v3_dev.json"
+# Prefer the regenerated v2 fixture (Tier 1.1 hygiene pass, 2026-04-17) — it
+# fixes 17 queries whose gold paths drifted (renames, line shifts) since the
+# original was generated. Falls back to v1 if v2 is absent.
+TEST_PATH = (
+    QUERIES_DIR / "v3_test.v2.json"
+    if (QUERIES_DIR / "v3_test.v2.json").exists()
+    else QUERIES_DIR / "v3_test.json"
+)
+DEV_PATH = (
+    QUERIES_DIR / "v3_dev.v2.json"
+    if (QUERIES_DIR / "v3_dev.v2.json").exists()
+    else QUERIES_DIR / "v3_dev.json"
+)
 OUT_JSON = QUERIES_DIR / "v3_r5_audit.json"
 OUT_MD = Path(__file__).parent.parent / "docs" / "audit-r5-failure-modes.md"
 

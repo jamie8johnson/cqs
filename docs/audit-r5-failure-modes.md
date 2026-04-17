@@ -1,16 +1,16 @@
 # R@5 Failure-Mode Audit — v3 test
 
-**Run:** 2026-04-17 03:03:36  
+**Run:** 2026-04-17 03:25:33  
 **Config:** v1.27.0 shipping (cross_language α=0.10, BGE-large, no centroid classifier)
-**Queries:** 109 (loaded from `v3_test.json`)
+**Queries:** 109 (loaded from `v3_test.v2.json`)
 
 ## Top-line
 
 | Metric | strict % | permissive % | Δ |
 |---|---|---|---|
-| R@1  | 33.0% (36) | 42.2% (46) | +9.2pp |
-| R@5  | 51.4% (56) | 64.2% (70) | +12.8pp |
-| R@20 | 67.0% (73) | 80.7% (88) | +13.8pp |
+| R@1  | 41.3% (45) | 41.3% (45) | +0.0pp |
+| R@5  | 63.3% (69) | 63.3% (69) | +0.0pp |
+| R@20 | 80.7% (88) | 80.7% (88) | +0.0pp |
 
 - **Strict** = exact `(origin, name, line_start)` match — what `cqs eval` reports.
 - **Permissive** = also accept `(basename(origin), name, line_start)` and `name`-only matches. The gap reveals stale gold paths (worktree carve-outs, doc-to-code rename).
@@ -19,13 +19,11 @@
 
 | match_kind | N |
 |---|---|
-| `strict` | 73 |
+| `strict` | 88 |
 | `none` | 21 |
-| `name` | 13 |
-| `basename` | 2 |
 
-The strict R@5 → R@20 gap is **15.6pp**. 
-This audit decomposes the 18 queries that landed in rank [6, 20].
+The strict R@5 → R@20 gap is **17.4pp**. 
+This audit decomposes the 19 queries that landed in rank [6, 20].
 
 ### Baseline drift note
 
@@ -40,13 +38,12 @@ Each near-miss query is tagged with one or more failure modes. Counts overlap.
 
 | Mode | N | % of near-misses |
 |---|---|---|
-| `near_dup_crowding` | 11 | 61.1% |
-| `wrong_abstraction_top_too_big` | 5 | 27.8% |
-| `wrong_abstraction_top_too_small` | 3 | 16.7% |
-| `truncated_gold` | 3 | 16.7% |
-| `unexplained` | 2 | 11.1% |
-| `eval_artifact_worktree` | 1 | 5.6% |
-| `eval_artifact_docs` | 1 | 5.6% |
+| `near_dup_crowding` | 12 | 63.2% |
+| `wrong_abstraction_top_too_big` | 7 | 36.8% |
+| `wrong_abstraction_top_too_small` | 4 | 21.1% |
+| `truncated_gold` | 3 | 15.8% |
+| `unexplained` | 2 | 10.5% |
+| `eval_artifact_docs` | 1 | 5.3% |
 
 ### Mode definitions
 
@@ -61,14 +58,14 @@ Each near-miss query is tagged with one or more failure modes. Counts overlap.
 
 ## Per-category breakdown
 
-| Category | N | `eval_artifact_docs` | `eval_artifact_worktree` | `near_dup_crowding` | `truncated_gold` | `unexplained` | `wrong_abstraction_top_too_big` | `wrong_abstraction_top_too_small` |
-|---|---|---|---|---|---|---|---|---|
-| behavioral_search | 2 | 1 | 0 | 1 | 0 | 0 | 0 | 0 |
-| conceptual_search | 3 | 0 | 0 | 1 | 0 | 1 | 1 | 0 |
-| cross_language | 3 | 0 | 0 | 2 | 0 | 0 | 1 | 0 |
-| multi_step | 7 | 0 | 1 | 3 | 1 | 0 | 2 | 0 |
-| negation | 5 | 0 | 0 | 2 | 0 | 1 | 1 | 1 |
-| type_filtered | 6 | 0 | 0 | 2 | 2 | 0 | 0 | 2 |
+| Category | N | `eval_artifact_docs` | `near_dup_crowding` | `truncated_gold` | `unexplained` | `wrong_abstraction_top_too_big` | `wrong_abstraction_top_too_small` |
+|---|---|---|---|---|---|---|---|
+| behavioral_search | 3 | 1 | 1 | 0 | 0 | 0 | 1 |
+| conceptual_search | 3 | 0 | 1 | 0 | 1 | 1 | 0 |
+| cross_language | 4 | 0 | 2 | 0 | 0 | 2 | 0 |
+| multi_step | 8 | 0 | 4 | 1 | 0 | 3 | 0 |
+| negation | 5 | 0 | 2 | 0 | 1 | 1 | 1 |
+| type_filtered | 6 | 0 | 2 | 2 | 0 | 0 | 2 |
 
 ## Near-miss queries (rank 6-20)
 
@@ -94,17 +91,6 @@ Each near-miss query is tagged with one or more failure modes. Counts overlap.
   4. `extract_doc_title` in `src/convert/cleaning.rs` (L142-152) score=0.764
   5. `extract_text_content_razor` in `src/language/languages.rs` (L5601-5628) score=0.722
 
-### `[rank 6]` `negation` — markdown cleaning utility that is not a library
-
-- **Gold:** `main` in `scripts/clean_md.py` (L349-393, `function`, `python`)
-- **Failure modes:** `unexplained`
-- **Top-5:**
-  1. `definition_markdown` in `src/language/languages.rs` (L4246-4248) score=0.852
-  2. `pdf_to_markdown` in `src/convert/pdf.rs` (L13-47) score=0.677
-  3. `clean_markdown_file` in `scripts/clean_md.py` (L257-319) score=0.619
-  4. `clean_markdown` in `src/convert/cleaning.rs` (L109-139) score=0.615
-  5. `MD_HEADING_RE` in `src/nl/markdown.rs` (L52-53) score=0.609
-
 ### `[rank 6]` `type_filtered` — method implementations on the Store struct
 
 - **Gold:** `Store` in `src/store/search.rs` (L37-218, `impl`, `rust`)
@@ -115,17 +101,6 @@ Each near-miss query is tagged with one or more failure modes. Counts overlap.
   3. `DeadFunction` in `src/store/calls/mod.rs` (L29-34) score=0.793
   4. `search_by_name` in `src/store/search.rs` (L86-149) score=0.779
   5. `TRAIT_IMPL_RE` in `src/store/calls/mod.rs` (L121-122) score=0.769
-
-### `[rank 7]` `behavioral_search` — how does train_pairs extract NL description and code pairs for embedding fine-tuning
-
-- **Gold:** `load_pairs` in `docs/superpowers/plans/2026-03-20-code-reranker.md` (L43-92, `function`, `python`)
-- **Failure modes:** `eval_artifact_docs`
-- **Top-5:**
-  1. `TrainPair` in `src/cli/commands/train/train_pairs.rs` (L14-20) score=0.813
-  2. `embed_batch` in `src/embedder/mod.rs` (L751-893) score=0.800
-  3. `extract_return_nl` in `src/nl/mod.rs` (L433-435) score=0.796
-  4. `generate_nl_with_call_context_and_summary` in `src/nl/mod.rs` (L65-154) score=0.791
-  5. `flush_enrichment_batch` in `src/cli/enrichment.rs` (L337-370) score=0.781
 
 ### `[rank 7]` `conceptual_search` — schema for tracking function call graph
 
@@ -138,6 +113,17 @@ Each near-miss query is tagged with one or more failure modes. Counts overlap.
   4. `type_edges` in `src/schema.sql` (L95-102) score=0.801
   5. `find_hotspots` in `src/impact/hints.rs` (L258-272) score=0.794
 
+### `[rank 7]` `multi_step` — table named notes AND columns with NOT NULL constraint
+
+- **Gold:** `notes` in `src/schema.sql` (L108-118, `struct`, `sql`)
+- **Failure modes:** `near_dup_crowding`, `wrong_abstraction_top_too_big`
+- **Top-5:**
+  1. `parse_notes_str` in `src/note.rs` (L325-348) score=0.802
+  2. `NoteFile` in `src/note.rs` (L54-57) score=0.797
+  3. `parse_notes` in `src/note.rs` (L129-192) score=0.796
+  4. `NoteError` in `src/note.rs` (L24-37) score=0.793
+  5. `rewrite_notes_file` in `src/note.rs` (L198-318) score=0.784
+
 ### `[rank 7]` `type_filtered` — impl blocks for ModelConfig
 
 - **Gold:** `ModelConfig` in `src/embedder/models.rs` (L147-383, `impl`, `rust`)
@@ -149,17 +135,6 @@ Each near-miss query is tagged with one or more failure modes. Counts overlap.
   4. `Embedder` in `src/embedder/mod.rs` (L257-894) score=0.770
   5. `model_config` in `src/cli/definitions.rs` (L285-289) score=0.751
 
-### `[rank 7]` `type_filtered` — delegate and event handler type definitions
-
-- **Gold:** `StructuralMatcherFn` in `src/language/mod.rs` (L191-191, `typealias`, `rust`)
-- **Failure modes:** `near_dup_crowding`, `truncated_gold`
-- **Top-5:**
-  1. `post_process_swift_swift` in `src/language/languages.rs` (L7020-7095) score=0.683
-  2. `Language` in `src/language/mod.rs` (L1003-1057) score=0.676
-  3. `extract_method_receiver_type` in `src/parser/chunk.rs` (L330-343) score=0.673
-  4. `LANG_FSHARP` in `src/language/languages.rs` (L1593-1710) score=0.662
-  5. `LANG_RUST` in `src/language/languages.rs` (L6127-6286) score=0.662
-
 ### `[rank 8]` `behavioral_search` — parse function signatures
 
 - **Gold:** `extract_signature` in `src/parser/chunk.rs` (L135-167, `function`, `rust`)
@@ -170,6 +145,28 @@ Each near-miss query is tagged with one or more failure modes. Counts overlap.
   3. `extract_return_scala` in `src/language/languages.rs` (L6328-6350) score=0.831
   4. `extract_return_javascript` in `src/language/languages.rs` (L3213-3217) score=0.828
   5. `extract_return_solidity` in `src/language/languages.rs` (L6407-6424) score=0.826
+
+### `[rank 8]` `negation` — markdown cleaning utility that is not a library
+
+- **Gold:** `main` in `scripts/clean_md.py` (L349-393, `function`, `python`)
+- **Failure modes:** `unexplained`
+- **Top-5:**
+  1. `definition_markdown` in `src/language/languages.rs` (L4246-4248) score=0.852
+  2. `LANG_MARKDOWN` in `src/language/languages.rs` (L4167-4244) score=0.794
+  3. `pdf_to_markdown` in `src/convert/pdf.rs` (L13-47) score=0.677
+  4. `clean_markdown_file` in `scripts/clean_md.py` (L257-319) score=0.619
+  5. `clean_markdown` in `src/convert/cleaning.rs` (L109-139) score=0.615
+
+### `[rank 8]` `type_filtered` — delegate and event handler type definitions
+
+- **Gold:** `StructuralMatcherFn` in `src/language/mod.rs` (L191-191, `typealias`, `rust`)
+- **Failure modes:** `near_dup_crowding`, `truncated_gold`
+- **Top-5:**
+  1. `post_process_swift_swift` in `src/language/languages.rs` (L7020-7095) score=0.683
+  2. `Language` in `src/language/mod.rs` (L1003-1057) score=0.676
+  3. `extract_method_receiver_type` in `src/parser/chunk.rs` (L330-343) score=0.673
+  4. `LANG_FSHARP` in `src/language/languages.rs` (L1593-1710) score=0.662
+  5. `LANG_RUST` in `src/language/languages.rs` (L6127-6286) score=0.662
 
 ### `[rank 9]` `cross_language` — SQL equivalent of a TypeScript interface for a code chunk table
 
@@ -193,6 +190,28 @@ Each near-miss query is tagged with one or more failure modes. Counts overlap.
   4. `QUERIES_DIR` in `evals/build_reranker_train.py` (L27-27) score=0.744
   5. `QUERIES_DIR` in `evals/centroid_classifier.py` (L29-29) score=0.744
 
+### `[rank 9]` `negation` — audit mode that forces direct code examination without cached notes
+
+- **Gold:** `invalidate_mutable_caches` in `src/cli/batch/mod.rs` (L373-383, `method`, `rust`)
+- **Failure modes:** `near_dup_crowding`, `wrong_abstraction_top_too_big`
+- **Top-5:**
+  1. `audit_state` in `src/cli/batch/mod.rs` (L865-868) score=0.753
+  2. `invalidate_mutable_caches` in `src/cli/batch/mod.rs` (L384-427) score=0.720
+  3. `notes` in `src/cli/batch/mod.rs` (L871-894) score=0.709
+  4. `suggest_notes` in `src/suggest.rs` (L41-77) score=0.678
+  5. `cached_notes_summaries` in `src/store/metadata.rs` (L261-284) score=0.630
+
+### `[rank 10]` `behavioral_search` — how does train_pairs extract NL description and code pairs for embedding fine-tuning
+
+- **Gold:** `load_pairs` in `docs/superpowers/plans/2026-03-20-code-reranker.md` (L43-92, `function`, `python`)
+- **Failure modes:** `eval_artifact_docs`, `wrong_abstraction_top_too_small`
+- **Top-5:**
+  1. `TrainPair` in `src/cli/commands/train/train_pairs.rs` (L14-20) score=0.813
+  2. `embed_batch` in `src/embedder/mod.rs` (L751-893) score=0.800
+  3. `extract_return_nl` in `src/nl/mod.rs` (L433-435) score=0.796
+  4. `generate_nl_with_call_context_and_summary` in `src/nl/mod.rs` (L65-154) score=0.791
+  5. `make_hidden` in `src/embedder/mod.rs` (L1219-1225) score=0.788
+
 ### `[rank 10]` `type_filtered` — struct definitions in src/cli/commands/infra
 
 - **Gold:** `BatchInput` in `src/cli/batch/commands.rs` (L25-28, `struct`, `rust`)
@@ -204,7 +223,7 @@ Each near-miss query is tagged with one or more failure modes. Counts overlap.
   4. `EnvVar` in `src/cli/commands/infra/doctor.rs` (L446-449) score=0.767
   5. `Wrapper` in `src/cli/commands/eval/mod.rs` (L202-205) score=0.764
 
-### `[rank 12]` `conceptual_search` — composite primary key table definition
+### `[rank 11]` `conceptual_search` — composite primary key table definition
 
 - **Gold:** `llm_summaries` in `src/schema.sql` (L167-174, `struct`, `sql`)
 - **Failure modes:** `near_dup_crowding`, `wrong_abstraction_top_too_big`
@@ -215,38 +234,27 @@ Each near-miss query is tagged with one or more failure modes. Counts overlap.
   4. `metadata` in `src/schema.sql` (L17-20) score=0.677
   5. `migrate_v12_to_v13` in `src/store/migrations.rs` (L281-295) score=0.664
 
-### `[rank 12]` `cross_language` — how to define a table with foreign key constraints in SQLite vs PostgreSQL
+### `[rank 11]` `cross_language` — how to define a table with foreign key constraints in SQLite vs PostgreSQL
 
 - **Gold:** `type_edges` in `src/schema.sql` (L95-102, `struct`, `sql`)
-- **Failure modes:** `near_dup_crowding`
+- **Failure modes:** `near_dup_crowding`, `wrong_abstraction_top_too_big`
 - **Top-5:**
   1. `migrate_v15_to_v16` in `src/store/migrations.rs` (L353-384) score=0.747
-  2. `definition_sql` in `src/language/languages.rs` (L6631-6633) score=0.731
-  3. `CandidateRow` in `src/store/helpers/rows.rs` (L27-40) score=0.730
-  4. `migrate_v10_to_v11` in `src/store/migrations.rs` (L234-257) score=0.728
-  5. `migrate_v11_to_v12` in `src/store/migrations.rs` (L263-272) score=0.719
+  2. `CandidateRow` in `src/store/helpers/rows.rs` (L27-40) score=0.730
+  3. `migrate_v10_to_v11` in `src/store/migrations.rs` (L234-257) score=0.728
+  4. `migrate_v11_to_v12` in `src/store/migrations.rs` (L263-272) score=0.719
+  5. `migrate_v16_to_v17` in `src/store/migrations.rs` (L392-417) score=0.715
 
-### `[rank 12]` `multi_step` — structs that have a project String AND flatten CallerInfo
+### `[rank 13]` `multi_step` — structs that have a project String AND flatten CallerInfo
 
-- **Gold:** `CrossProjectCaller` in `.claude/worktrees/agent-a7cedd3c/src/store/calls/cross_project.rs` (L36-41, `struct`, `rust`)
-- **Failure modes:** `eval_artifact_worktree`, `wrong_abstraction_top_too_big`
+- **Gold:** `CrossProjectCaller` in `src/store/calls/cross_project.rs` (L36-41, `struct`, `rust`)
+- **Failure modes:** `wrong_abstraction_top_too_big`
 - **Top-5:**
   1. `CallersArgs` in `src/cli/args.rs` (L281-292) score=0.755
   2. `CallersArgs` in `src/cli/args.rs` (L253-259) score=0.749
   3. `CrossProjectContext` in `src/store/calls/cross_project.rs` (L64-68) score=0.748
   4. `post_process_solidity_solidity` in `src/language/languages.rs` (L6512-6530) score=0.716
   5. `post_process_cpp_cpp` in `src/language/languages.rs` (L273-306) score=0.715
-
-### `[rank 12]` `negation` — audit mode that forces direct code examination without cached notes
-
-- **Gold:** `invalidate_mutable_caches` in `src/cli/batch/mod.rs` (L373-383, `method`, `rust`)
-- **Failure modes:** `near_dup_crowding`, `wrong_abstraction_top_too_big`
-- **Top-5:**
-  1. `main` in `evals/audit_r5_failure_modes.py` (L212-446) score=0.759
-  2. `audit_state` in `src/cli/batch/mod.rs` (L865-868) score=0.753
-  3. `invalidate_mutable_caches` in `src/cli/batch/mod.rs` (L384-427) score=0.720
-  4. `notes` in `src/cli/batch/mod.rs` (L871-894) score=0.709
-  5. `OUT_MD` in `evals/audit_r5_failure_modes.py` (L43-43) score=0.679
 
 ### `[rank 14]` `negation` — training data generator that is not for non-git repositories
 
@@ -259,7 +267,7 @@ Each near-miss query is tagged with one or more failure modes. Counts overlap.
   4. `validate_git_repo` in `src/train_data/git.rs` (L25-46) score=0.763
   5. `Embedder` in `src/embedder/mod.rs` (L217-249) score=0.745
 
-### `[rank 15]` `multi_step` — virtual table using fts5 AND tokenize unicode61
+### `[rank 16]` `multi_step` — virtual table using fts5 AND tokenize unicode61
 
 - **Gold:** `notes_fts` in `src/schema.sql` (L123-127, `struct`, `sql`)
 - **Failure modes:** `truncated_gold`
@@ -276,18 +284,17 @@ Each lever's *expected R@5 lift on v3 test* is a back-of-envelope ceiling — as
 
 | Mode | Near-misses | R@5 ceiling if fully solved | Lever |
 |---|---|---|---|
-| `near_dup_crowding` | 11/109 | +10.1pp | MMR re-rank on top-K pool (λ≈0.5-0.7). Cheap, no model change. |
-| `wrong_abstraction_top_too_big` | 5/109 | +4.6pp | Chunk-type aware boost when query intent demands detail (e.g. `extract_*` queries → leaf functions). |
-| `wrong_abstraction_top_too_small` | 3/109 | +2.8pp | Boost orchestrators when query verbs/nouns suggest top-down (e.g. 'workflow', 'pipeline'). |
+| `near_dup_crowding` | 12/109 | +11.0pp | MMR re-rank on top-K pool (λ≈0.5-0.7). Cheap, no model change. |
+| `wrong_abstraction_top_too_big` | 7/109 | +6.4pp | Chunk-type aware boost when query intent demands detail (e.g. `extract_*` queries → leaf functions). |
+| `wrong_abstraction_top_too_small` | 4/109 | +3.7pp | Boost orchestrators when query verbs/nouns suggest top-down (e.g. 'workflow', 'pipeline'). |
 | `truncated_gold` | 3/109 | +2.8pp | Chunker fix: pad short chunks with leading docstring/comment block. Schema-level lift. |
 | `unexplained` | 2/109 | +1.8pp | Reranker V2 (Phase 2 in flight) — catches lexical mismatch via cross-encoder. |
-| `eval_artifact_worktree` | 1/109 | +0.9pp | Eval-data fix: rebuild v3 test fixture from current corpus (gold paths drift when worktrees come and go). |
 | `eval_artifact_docs` | 1/109 | +0.9pp | Eval-data fix or re-judging: gold-in-docs is often a superseded plan target. Check if production code with same name exists; if so, swap gold. |
 
 **Recommended ordering** (by effort/impact):
 
-1. **Eval-data hygiene first** (2 queries). Re-baselining without fixing eval artifacts means we're chasing noise.
-2. **MMR for `near_dup_crowding`** (11 queries — biggest single mode). 1-2 day implementation, no model change. Sanity-check on v3 dev before merging.
+1. **Eval-data hygiene first** (1 queries). Re-baselining without fixing eval artifacts means we're chasing noise.
+2. **MMR for `near_dup_crowding`** (12 queries — biggest single mode). 1-2 day implementation, no model change. Sanity-check on v3 dev before merging.
 3. **Reranker V2 for `unexplained`** (2 queries). Already in flight (Phase 2 corpus build). Wait for trained model.
 4. **Chunker tuning for `truncated_gold`** (3 queries). Bigger lift; gated on training-data signal that it's worth a reindex.
 5. **Skip `classifier_misroute` standalone work**. Centroid pilot proved this lever is harder than it looks (−4.6pp). Better lift comes from removing the router entirely once Reranker V2 lands.

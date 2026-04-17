@@ -1,0 +1,820 @@
+{
+  "generated_at": "2026-04-17T03:20:07",
+  "source": "v3_test.json",
+  "k": 50,
+  "counts": {
+    "strict": 78,
+    "basename": 2,
+    "name": 15,
+    "none": 14
+  },
+  "records": [
+    {
+      "query": "table named notes AND columns with NOT NULL constraint",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "impl blocks for Reranker",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/reranker.rs",
+        "line_start": 105
+      },
+      "new": {
+        "origin": "src/reranker.rs",
+        "line_start": 120
+      }
+    },
+    {
+      "query": "tables with columns of type TEXT, INTEGER, and REAL",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "load vectors from directory not using a database",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how to define a constant task template in Rust vs TypeScript",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "src/plan.rs:15:788d518b",
+        "name": "TaskTemplate",
+        "origin": "src/plan.rs",
+        "language": "rust",
+        "chunk_type": "struct",
+        "line_start": 15,
+        "line_end": 20
+      }
+    },
+    {
+      "query": "async functions taking a semaphore and an LLMClient",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "evals/generate_from_chunks.py:109:317f35ad",
+        "name": "_gen_one",
+        "origin": "evals/generate_from_chunks.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 109,
+        "line_end": 156
+      }
+    },
+    {
+      "query": "how to define a table with a composite primary key in SQL vs MongoDB",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "retry with exponential backoff",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/watch.rs",
+        "line_start": 458
+      },
+      "new": {
+        "origin": "src/cli/watch.rs",
+        "line_start": 512
+      }
+    },
+    {
+      "query": "how does impact analysis trace callers to find affected tests",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "table with weight REAL column AND foreign key referencing chunks(id)",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "cmd_gc",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how does context assembly decide which related chunks to include for a file",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": null,
+        "name": "dispatch_similar",
+        "origin": "src/cli/batch/handlers/info.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 93,
+        "line_end": 148
+      }
+    },
+    {
+      "query": "ChunkIdentity",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "create calls table without a callee_id foreign key",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "structs that have a project String AND flatten CallerInfo",
+      "match_kind": "basename",
+      "action": "updated",
+      "old": {
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/store/calls/cross_project.rs",
+        "line_start": 36
+      },
+      "new": {
+        "origin": "src/store/calls/cross_project.rs",
+        "line_start": 36
+      }
+    },
+    {
+      "query": "token budget packing for fitting results into context windows",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "impl blocks for HnswIndex",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how does the affected command trace from git diff to impacted functions and tests",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "VectorIndex trait definition",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "parse function signatures",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "trait definition for pluggable vector search index",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "markdown table formatting for evaluation results",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "evals/run_ablation.py:193:31486bfe",
+        "name": "format_category_table",
+        "origin": "evals/run_ablation.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 193,
+        "line_end": 209
+      }
+    },
+    {
+      "query": "struct definitions in src/llm",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/language/mod.rs",
+        "line_start": 237
+      },
+      "new": {
+        "origin": "src/language/mod.rs",
+        "line_start": 277
+      }
+    },
+    {
+      "query": "language definition macro that registers parser grammars",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "markdown cleaning utility that is not a library",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "function that shuffles queries AND assigns train or held_out splits",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:261:470e1b48",
+        "name": "assign_splits",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 261,
+        "line_end": 267
+      }
+    },
+    {
+      "query": "table definition for chunks that is not a view",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "structural pattern matching for code patterns like builder or async",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/structural.rs",
+        "line_start": 174
+      },
+      "new": {
+        "origin": "src/structural.rs",
+        "line_start": 196
+      }
+    },
+    {
+      "query": "file extension to programming language mapping",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/language/mod.rs",
+        "line_start": 679
+      },
+      "new": {
+        "origin": "src/language/mod.rs",
+        "line_start": 785
+      }
+    },
+    {
+      "query": "functions that build a query set AND take an existing path",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "table for sparse vectors that is not a simple key-value store",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "tables with a text primary key",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "tables with a text column that has a default empty string value",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "QueryCache",
+      "match_kind": "basename",
+      "action": "updated",
+      "old": {
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "line_start": 901
+      },
+      "new": {
+        "origin": "src/cache.rs",
+        "line_start": 901
+      }
+    },
+    {
+      "query": "enum variants for different kinds of code chunks",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "audit mode that forces direct code examination without cached notes",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "TraceHop",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "implementation of metadata",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "methods on LLMClient",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "function named main AND parses command-line arguments",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:349:9e87241d",
+        "name": "main",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 349,
+        "line_end": 393
+      }
+    },
+    {
+      "query": "database migration functions for schema upgrades",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "DiffEntryOutput",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "impl blocks for ModelConfig",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "table for metadata that is not created if it already exists",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how to implement a delete_by_origin database operation in Rust vs Go",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "LLMClient validate method that is not synchronous",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "fts5 table where id is not indexed",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "HnswIoCell",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "BoundedScoreHeap",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "functions that take a Vec of NamedStore",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "error types in src",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "implementation of TextJsonArgs",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "embedding dimension and model configuration management",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "dead code detection and unused function analysis",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "create notes table without allowing null text",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "sqlite table schema for storing notes with sentiment and embeddings",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 108
+      },
+      "new": {
+        "origin": "src/cli/batch/mod.rs",
+        "line_start": 805
+      }
+    },
+    {
+      "query": "LlmClient constructor without automatic redirects",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "test file suggestion based on language conventions",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/language/languages.rs",
+        "line_start": 5896
+      },
+      "new": {
+        "origin": "src/language/languages.rs",
+        "line_start": 5925
+      }
+    },
+    {
+      "query": "how to define a table with foreign key constraints in SQLite vs PostgreSQL",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "functions that validate field names AND check for invalid characters",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "detect semantic drift between a reference snapshot and current code",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/drift.rs",
+        "line_start": 47
+      },
+      "new": {
+        "origin": "src/drift.rs",
+        "line_start": 51
+      }
+    },
+    {
+      "query": "filter configuration for search queries with language and path constraints",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "ProjectSearchResult",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "classify_query router extract_type_hints",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/search/router.rs",
+        "line_start": 851
+      },
+      "new": {
+        "origin": "src/search/router.rs",
+        "line_start": 886
+      }
+    },
+    {
+      "query": "impl of fmt function for Language",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/language/mod.rs",
+        "line_start": 666
+      },
+      "new": {
+        "origin": "src/language/mod.rs",
+        "line_start": 772
+      }
+    },
+    {
+      "query": "composite primary key table definition",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "evict old entries from the global embedding cache by size limit",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how to implement a multi-part string hash in Python vs Go",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "create type_edges table not using a composite primary key",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "methods in CagraIndex impl",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cagra.rs",
+        "line_start": 748
+      },
+      "new": {
+        "origin": "src/cagra.rs",
+        "line_start": 241
+      }
+    },
+    {
+      "query": "training data generator that is not for non-git repositories",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "command dispatch",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "virtual table using fts5 AND tokenize unicode61",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "classify function AND async definition OR query argument",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "schema for tracking function call graph",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how does train_pairs extract NL description and code pairs for embedding fine-tuning",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "reciprocal rank fusion for combining search results",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "functions named make_section_chunk AND returning a Chunk",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "method implementations on the Store struct",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "save HNSW index to disk with checksum verification",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "SQL equivalent of a TypeScript interface for a code chunk table",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "functions that search for H1 headings AND return a stripped title string",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "Python equivalent of a regex-based copyright boilerplate removal function used in Java",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:30:d1d051ba",
+        "name": "remove_copyright_boilerplate",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 30,
+        "line_end": 53
+      }
+    },
+    {
+      "query": "dispatch_search",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "delegate and event handler type definitions",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "SPLADE encoder encode_batch tensor shape validation",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/splade/mod.rs",
+        "line_start": 580
+      },
+      "new": {
+        "origin": "docs/superpowers/plans/2026-04-06-splade-sparse-dense-hybrid.md",
+        "line_start": 220
+      }
+    },
+    {
+      "query": "convert a document file to markdown format",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": null,
+        "name": "html_file_to_markdown",
+        "origin": "src/convert/html.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 43,
+        "line_end": 57
+      }
+    },
+    {
+      "query": "how to parse OCaml function return types in Rust vs OCaml",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/language/languages.rs",
+        "line_start": 4529
+      },
+      "new": {
+        "origin": "src/language/languages.rs",
+        "line_start": 4550
+      }
+    },
+    {
+      "query": "constructor detection across language conventions",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/language/languages.rs",
+        "line_start": 6471
+      },
+      "new": {
+        "origin": "src/language/languages.rs",
+        "line_start": 6512
+      }
+    },
+    {
+      "query": "struct definitions in src/cli/commands/infra",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "table named chunks AND columns with NOT NULL constraints",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "src/schema.sql:22:ea43482c",
+        "name": "chunks",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 22,
+        "line_end": 45
+      }
+    },
+    {
+      "query": "build_query_set function AND generated parameter",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "ScoringContext",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "SQL equivalent of a Python dictionary stored in a database",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "src/schema.sql:17:88ae0c75",
+        "name": "metadata",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 17,
+        "line_end": 20
+      }
+    },
+    {
+      "query": "enrichment_pass",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "tables with a BLOB column and a PRIMARY KEY",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "src/schema.sql:108:744fc0db",
+        "name": "notes",
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 108,
+        "line_end": 118
+      }
+    },
+    {
+      "query": "columns for callee_name AND line_number OR caller_id",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "return type extraction from function signatures",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/language/languages.rs",
+        "line_start": 6366
+      },
+      "new": {
+        "origin": "src/language/languages.rs",
+        "line_start": 6407
+      }
+    },
+    {
+      "query": "gpu_embed_stage that is not using a local cache",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "async methods that return a string",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "evals/llm_client.py:157:b4f1c4e0:w0",
+        "name": "classify",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "method",
+        "line_start": 157,
+        "line_end": 220
+      }
+    },
+    {
+      "query": "methods for onboarding commands",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "create chunk summary without passing a parent id",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "abstract base class for large language model integration",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "evals/llm_client.py:111:b21042fa:w2",
+        "name": "LLMClient",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "class",
+        "line_start": 111,
+        "line_end": 286
+      }
+    },
+    {
+      "query": "call graph traversal for finding transitive dependencies",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "simple metadata storage table",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "load HNSW index from disk not build from scratch",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "Python equivalent of a close method in Rust's async traits",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "evals/llm_client.py:284:4df39237",
+        "name": "aclose",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "method",
+        "line_start": 284,
+        "line_end": 286
+      }
+    },
+    {
+      "query": "Store::open_readonly_small reference index mmap size",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "TaskTemplate",
+      "match_kind": "strict",
+      "action": "no_change"
+    }
+  ]
+}
