@@ -6,7 +6,9 @@
 
 **Reranker V2 Phase 2 in flight** (Task #19, 2026-04-17). Agent `a499dc706d1e2e055` building Stack v2 corpus + Gemma labeling. Phase 1 calibration source was 100% Python/CodeSearchNet — Phase 2 switches to `bigcode/the-stack-v2-dedup`, 9 languages (rust/py/js/ts/go/java/cpp/ruby/php), ~25k chunks/lang, function-level w/ docstring, BGE-large embed → HNSW → 7 hard negatives per (query, positive) → sample 200k triples → Gemma label via `--gemma-only` (Phase 1 decision). Final output: `evals/reranker_v2_train_200k.jsonl`. Wall ~32h on A6000 vLLM. Phase 3 (training) gated on corpus quality review.
 
-**Branch:** `feat/reranker-v2-phase1-calibration`. Working tree clean except for tears.
+**R@5 audit + strategy + gc fix landed on the same branch** (Tasks #3, #4, #21). Audit shows permissive R@5 = **64.2%** (matches documented v1.27.0 baseline exactly after the gc cleanup). Strict R@5 = 51.4% — the 13pp gap is v3-fixture drift (chunk renames, line shifts), not retrieval drift. Failure modes: `near_dup_crowding` 60% (MMR target), `wrong_abstraction` 45% combined, `unexplained` 15% (Reranker V2 target). Strategy doc: `docs/r5-strategy-2026-04-17.md`. **GC fix #21:** dropped 522 worktree+gitignored chunks the daemon's startup-GC was missing because `origin_exists` had a `Path::exists()` fallback that kept any extant file regardless of indexer ownership.
+
+**Branch:** `feat/reranker-v2-phase1-calibration`. PR #1031 has expanded scope: calibration + audit + strategy + gc fix.
 
 ### What landed this session (after v1.27.0)
 
@@ -39,10 +41,14 @@ Completed. **Verdict: don't switch.** v9-200k v3 test = R@1 28.4% / R@5 49.5% / 
 
 ## What's queued
 
-- **R@5 failure-mode audit** (Task #3) — extends `classifier_audit.rs` pattern to identify why gold misses top-5. Decomposes the 14.7pp R@5→R@20 gap (queries where gold is in top-20 but missed top-5) into failure modes: truncation, near-duplicate crowding, wrong abstraction, classifier misroute. Output: `docs/audit-r5-failure-modes.md`. Diagnostic, not fix-shipping. Drives Section-2 stack design (MMR, larger pool, chunk-type boost).
-- **R@5 strategy session** (Task #4, blocked on #3) — synthesize R@5 levers + HyDE + Reranker V2 into a single decision matrix.
-- **JSON output schema standardization** (Task #17) — wrap every JSON-emitting command's output in `{"data": ..., "error": null}`. Bigger refactor, runs after smaller items land.
-- **Reranker V2 Phases 2 + 3** (Tasks #19, #20) — full 200k labeling + train. Gated on Phase 1 calibration.
+Strategy ordering per `docs/r5-strategy-2026-04-17.md` (Tier 1 ships independent of Phase 2):
+
+- **Tier 1.1 — Eval-data hygiene** — regenerate `v3_test.json` against current corpus + Gemma re-judge of name-only matches (~14 queries). Half-day. No R@5 change but pre-requisite for trusting future lever measurements.
+- **Tier 1.2 — MMR re-rank** — biggest single near-miss mode (60% of misses). Wire into `search_filtered` post-rank step, λ≈0.5-0.7. Expected +3-5pp R@5. 1-2d.
+- **Tier 1.3 — Chunk-type aware boost** — addresses both `wrong_abstraction_*` modes (45% combined). Expected +2-3pp R@5. 2-3d.
+- **Tier 2 — Reranker V2 Phase 2 in flight + Phase 3** (Tasks #19, #20). Catches `unexplained` (15%) plus likely improves wrong_abstraction. +5-10pp realistic. ~5d to deployment.
+- **Tier 3 — chunker fix for `truncated_gold`** (3 queries). Reindex cost; smaller lift.
+- **JSON output schema standardization** (Task #17) — bigger refactor, runs whenever ergonomics work resumes.
 
 ## R@5 90% target — analysis
 
