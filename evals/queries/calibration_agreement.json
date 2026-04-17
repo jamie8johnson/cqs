@@ -1,0 +1,60 @@
+{
+  "schema": "calibration-v1",
+  "created_at": 1776406056,
+  "n_triples": 1000,
+  "n_compared": 1000,
+  "gemma_total_labeled": 1000,
+  "claude_total_labeled": 1000,
+  "gemma_parse_errors": 0,
+  "gemma_label_errors": 0,
+  "claude_parse_errors": 0,
+  "claude_label_errors": 0,
+  "agreement_pct": 98.3,
+  "cohen_kappa": 0.9663,
+  "confusion_matrix": {
+    "AA": 489,
+    "AB": 2,
+    "AT": 0,
+    "BA": 5,
+    "BB": 494,
+    "BT": 0,
+    "TA": 9,
+    "TB": 1,
+    "TT": 0
+  },
+  "ground_truth_agreement_gemma_pct": 98.79,
+  "ground_truth_agreement_gemma_n": 990,
+  "ground_truth_agreement_claude_pct": 98.3,
+  "ground_truth_agreement_claude_n": 1000,
+  "decision": "GEMMA_ONLY",
+  "decision_threshold": ">=85%",
+  "stratification": {
+    "sources": {
+      "codesearchnet": 1000
+    },
+    "languages": {
+      "python": 1000
+    },
+    "positive_is_a_pct": 49.8
+  },
+  "timing_s": {
+    "sampling_s": 1.33,
+    "labeling_s": 591.34,
+    "agreement_s": 0.04,
+    "total_s": 594.37
+  },
+  "label_distribution_gemma": {
+    "A": 491,
+    "B": 499,
+    "TIE": 10,
+    "PARSE_ERROR": 0,
+    "LABEL_ERROR": 0
+  },
+  "label_distribution_claude": {
+    "A": 503,
+    "B": 497,
+    "TIE": 0,
+    "PARSE_ERROR": 0,
+    "LABEL_ERROR": 0
+  }
+}
