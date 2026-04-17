@@ -1,7 +1,7 @@
 # Phase 3 — Reranker V2 Cross-Encoder Training
 
 **Created:** 2026-04-17  
-**Sequencing:** runs after Phase 2 labeling completes (~16:20 CDT 2026-04-17). ColBERT path (`docs/plans/2026-04-17-colbert-xm.md`) runs after this lands or fails.  
+**Sequencing:** runs after Phase 2 labeling completes (~16:20 CDT 2026-04-17). ColBERT path (`docs/plans/2026-04-17-colbert-2stage-rerank.md`) runs after this lands or fails.  
 **Owner:** human-driven; literature-informed defaults below.
 
 ## Goal
@@ -70,6 +70,17 @@ seed = 42                 # reproducible
 
 **One-shot, no sweep.** If first run misses the 3pp gate, then sweep LR ∈ {1e-5, 5e-5} and epochs ∈ {2, 4}.
 
+### Literature recheck (2026-04-17): additions to consider
+
+A late-2025/2026 paper recheck surfaced three findings worth incorporating opportunistically (NOT blocking the first one-shot):
+
+- **Pool-size sweep**: *Drowning in Documents* (arXiv 2411.11767, Nov 2024) shows rerankers degrade past a candidate-count threshold. The strategy doc's "top-K=50 input" prereq is partially arbitrary. After the first config lands, A/B at top-{20, 50, 100} pools — not as a hyperparameter of training but of inference wiring.
+- **Lion vs AdamW**: *Comparative Analysis of Lion and AdamW Optimizers for Cross-Encoder Reranking* (arXiv 2506.18297, Jun 2025) compared optimizers on MiniLM/GTE/ModernBERT. If first run lands within ±1pp of the gate, swap optimizer as a cheap second config.
+- **LoRA fine-tune**: *LoRACode* (arXiv 2503.05315, Mar 2025) gives +9.1% MRR Code2Code via LoRA on code embedders. Parameter-efficient alternative to full fine-tune. Run as a fourth config if both UniXcoder and CodeT5+ underperform — same base, much lower training cost so iterate-friendly.
+- **CoRNStack hard-neg recipe**: *CoRNStack* (arXiv 2412.01007, Dec 2024) introduces consistency filtering and curriculum hard negative mining for code (+9.4pp on CSN). Phase 2 already mined hard negatives from BGE HNSW top-100 — CoRNStack's curriculum approach (start easier, ramp difficulty) is a Phase 3-side training-time variant we haven't tried.
+
+None of these block the first-pass training. They're queued for the "what if first config doesn't hit the 3pp gate" branch of the decision tree.
+
 ## Wall-time estimate (A6000)
 
 - 200k pointwise rows × 3 epochs / batch 32 = ~18.75k steps
@@ -137,7 +148,7 @@ Existing reranker integration:
 
 ## What's NOT in scope here
 
-- ColBERT integration (separate plan: `docs/plans/2026-04-17-colbert-xm.md`)
+- ColBERT integration (separate plan: `docs/plans/2026-04-17-colbert-2stage-rerank.md`)
 - Multi-reranker ensemble (deferred until both single-model paths are scored)
 - Per-category reranker gating (decision gate #3 above considers it conditionally)
 - Pairwise loss training (literature consensus is pointwise wins; not running pairwise unless BiXSE result fails to replicate)
