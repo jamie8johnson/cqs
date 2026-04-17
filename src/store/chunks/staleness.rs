@@ -9,19 +9,25 @@ use std::path::{Path, PathBuf};
 use crate::store::helpers::{StaleFile, StaleReport, StoreError};
 use crate::store::{ReadWrite, Store};
 
-/// Decide whether a chunk origin refers to a file that exists.
+/// Decide whether a chunk origin refers to a file the indexer still owns.
 ///
-/// Used by all four staleness helpers in this module. Replaces the
-/// over-loose path-suffix matching that retained 81% of chunks as
-/// orphans on this repo (root cause of v1.22.0 → v1.25.0 eval drift).
+/// Used by all four staleness helpers in this module. The check is: does
+/// the origin's canonicalized absolute path appear in `existing_files`
+/// (which `enumerate_files` produces with the worktree-skip + gitignore
+/// filters applied).
 ///
-/// The check is: exact membership in `existing_files`, falling back to a
-/// filesystem `exists()` probe against `root` for paths that may have been
-/// stored under a different relative/absolute form. Filesystem existence is
-/// case-correct on every OS (including macOS case-fold), so the previous
-/// `#[cfg(target_os = "macos")]` branch is no longer needed.
+/// **No `exists()` fallback.** A bare `Path::exists()` probe would keep
+/// any file that is on disk regardless of whether the indexer should own
+/// it — that's how `.claude/worktrees/agent-X/...` chunks survived GC even
+/// though `enumerate_files` correctly skipped them. The fallback was
+/// originally added to compensate for a path-form mismatch (chunks store
+/// origin relative; `existing_files` may hold canonicalized absolutes).
+/// Canonicalizing both sides removes the form mismatch, which is the only
+/// reason the fallback existed.
 fn origin_exists(origin: &str, existing_files: &HashSet<PathBuf>, root: &Path) -> bool {
     let origin_path = PathBuf::from(origin);
+    // Cheap path: exact match as stored. Covers the case where the caller
+    // passes a HashSet built without canonicalization.
     if existing_files.contains(&origin_path) {
         return true;
     }
@@ -30,7 +36,14 @@ fn origin_exists(origin: &str, existing_files: &HashSet<PathBuf>, root: &Path) -
     } else {
         root.join(&origin_path)
     };
-    absolute.exists()
+    // Canonicalized match: `enumerate_files` canonicalizes via dunce, so
+    // we have to canonicalize here to compare apples to apples. If the
+    // file no longer exists (canonicalize fails), it definitely shouldn't
+    // count as owned by the indexer — drop it.
+    match dunce::canonicalize(&absolute) {
+        Ok(canonical) => existing_files.contains(&canonical),
+        Err(_) => false,
+    }
 }
 
 /// Result of running all GC prune operations atomically.
@@ -1006,6 +1019,60 @@ mod tests {
         assert_eq!(
             result.pruned_chunks, 1,
             "Worktree duplicate origin should be pruned"
+        );
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 1);
+    }
+
+    /// Regression for the production bug surfaced by the R@5 audit:
+    /// `enumerate_files` correctly skips nested git worktrees (the
+    /// directory-with-`.git`-as-file filter at `lib.rs:480-486`), so
+    /// worktree-prefixed origins do NOT appear in `existing_files`. But
+    /// the worktree files DO exist on disk while the agent runs, and the
+    /// old `origin_exists` had a `Path::exists()` fallback that returned
+    /// `true` for any extant file regardless of indexer ownership. Result:
+    /// chunks for `.claude/worktrees/agent-X/...` survived GC and polluted
+    /// search results. Fix: drop the `exists()` fallback; canonicalize on
+    /// both sides and require strict membership in `existing_files`.
+    #[test]
+    fn test_prune_all_drops_worktree_chunks_when_files_exist_on_disk() {
+        let (store, dir) = setup_store();
+
+        // The "real" file the indexer owns.
+        let real = chunk_at(dir.path(), "src/foo.rs", "foo_real");
+
+        // The worktree carve-out — write the file to disk so `exists()`
+        // returns true (this is the production scenario the old fallback
+        // mishandled).
+        let worktree_rel = ".claude/worktrees/agent-X/src/foo.rs";
+        let worktree_path = dir.path().join(worktree_rel);
+        std::fs::create_dir_all(worktree_path.parent().unwrap()).unwrap();
+        std::fs::write(&worktree_path, "fn foo_worktree() {}").unwrap();
+
+        let mut worktree_chunk = make_chunk("foo_worktree", worktree_rel);
+        worktree_chunk.id = format!("{}:1:{}", worktree_rel, &worktree_chunk.content_hash[..8]);
+
+        // `existing_files` mirrors what `enumerate_files` produces: the
+        // canonical absolute path of the real file, NOT the worktree.
+        let real_canonical = dunce::canonicalize(&real.file).unwrap();
+        let existing: HashSet<_> = vec![real_canonical].into_iter().collect();
+
+        store
+            .upsert_chunks_batch(
+                &[
+                    (real, mock_embedding(1.0)),
+                    (worktree_chunk, mock_embedding(2.0)),
+                ],
+                Some(1000),
+            )
+            .unwrap();
+
+        let result = store.prune_all(&existing, dir.path()).unwrap();
+        assert_eq!(
+            result.pruned_chunks, 1,
+            "Worktree chunk must be pruned even when the file exists on disk \
+             (origin_exists no longer falls through to Path::exists())"
         );
 
         let stats = store.stats().unwrap();
