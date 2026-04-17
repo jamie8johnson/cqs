@@ -342,6 +342,7 @@ fn search_for_rank(
         enable_splade: use_splade,
         splade_alpha,
         type_boost_types: classification.type_hints.clone(),
+        mmr_lambda: None, // Resolved by finalize_results via CQS_MMR_LAMBDA fallback.
     };
     filter
         .validate()

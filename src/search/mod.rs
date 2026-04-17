@@ -3,6 +3,7 @@
 //! Implements search methods on Store for semantic, hybrid, and index-guided
 //! search. See `math.rs` for similarity scoring.
 
+mod mmr;
 mod query;
 pub mod router;
 pub(crate) mod scoring;

@@ -19,6 +19,7 @@ use crate::store::helpers::{
 use crate::store::sanitize_fts_query;
 use crate::store::{NoteSummary, Store, StoreError};
 
+use super::mmr::{mmr_lambda_from_env, mmr_rerank, MmrCandidate};
 use super::scoring::{
     apply_parent_boost, apply_scoring_pipeline, build_filter_sql, compile_glob_filter,
     extract_file_from_chunk_id, score_candidate, BoundedScoreHeap, NameMatcher, NoteBoost,
@@ -315,6 +316,7 @@ impl<Mode> Store<Mode> {
                     limit,
                     glob_matcher.as_ref(),
                     filter.type_boost_types.as_deref(),
+                    filter.mmr_lambda,
                 )
                 .await?;
 
@@ -340,7 +342,20 @@ impl<Mode> Store<Mode> {
         limit: usize,
         glob_matcher: Option<&globset::GlobMatcher>,
         type_boost_types: Option<&[ChunkType]>,
+        mmr_lambda: Option<f32>,
     ) -> Result<Vec<SearchResult>, StoreError> {
+        // Resolve MMR setting: explicit `filter.mmr_lambda` wins, else env
+        // var, else None (disabled).
+        //
+        // Status: surface-feature MMR (path + name) was net-negative on
+        // v3 test for non-RRF queries — the first sweep regressed R@5 by
+        // 3-9pp at every λ ∈ [0.7, 0.95]. Root cause unconfirmed. Code
+        // is plumbed but inert under the default pool size; opt-in only.
+        // For RRF queries (pool = `limit * 2`) MMR has more to work
+        // with but hasn't been A/B'd yet — that's a follow-up. Embedding-
+        // based similarity (instead of surface features) is the other
+        // obvious direction.
+        let mmr_lambda = mmr_lambda.or_else(mmr_lambda_from_env);
         // Step 1: RRF fusion with FTS keyword search, or plain truncate
         let final_scored: Vec<(String, f32)> = if use_rrf {
             let normalized = normalize_for_fts(query_text);
@@ -444,6 +459,45 @@ impl<Mode> Store<Mode> {
                     .total_cmp(&a.score)
                     .then(a.chunk.id.cmp(&b.chunk.id))
             });
+        }
+
+        // Step 4c: MMR re-rank for diversity (opt-in via SearchFilter or
+        // CQS_MMR_LAMBDA env). Runs against the full post-dedup pool, which
+        // is up to `limit * 2` (RRF) or `limit * 3` (no-RRF expansion). Pure
+        // no-op when lambda is None or >= 1.0 — see `search::mmr::mmr_rerank`.
+        if let Some(lambda) = mmr_lambda {
+            if lambda < 1.0 && results.len() > limit {
+                let cands: Vec<MmrCandidate<'_>> = results
+                    .iter()
+                    .map(|r| MmrCandidate {
+                        id: r.chunk.id.as_str(),
+                        score: r.score,
+                        file: r.chunk.file.as_path(),
+                        name: r.chunk.name.as_str(),
+                    })
+                    .collect();
+                let picks = mmr_rerank(&cands, limit, lambda);
+                let mut reordered: Vec<SearchResult> = Vec::with_capacity(picks.len());
+                let mut taken = vec![false; results.len()];
+                for &i in &picks {
+                    taken[i] = true;
+                }
+                // Drain in pick order without cloning SearchResult.
+                let originals: Vec<Option<SearchResult>> =
+                    results.into_iter().map(Some).collect::<Vec<_>>();
+                let mut originals = originals;
+                for &i in &picks {
+                    if let Some(r) = originals[i].take() {
+                        reordered.push(r);
+                    }
+                }
+                results = reordered;
+                tracing::debug!(
+                    lambda = lambda,
+                    picked = picks.len(),
+                    "MMR re-rank applied"
+                );
+            }
         }
 
         // Step 5: Truncate back to requested limit after parent dedup
@@ -896,6 +950,7 @@ impl<Mode> Store<Mode> {
                 limit,
                 glob_matcher.as_ref(),
                 filter.type_boost_types.as_deref(),
+                filter.mmr_lambda,
             )
             .await
         })
