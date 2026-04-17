@@ -49,4 +49,12 @@ Append to `docs/audit-findings.md`:
 - Read archived triage files (`docs/audit-triage-v*.md`) — skip anything already triaged
 - Use cqs tools for exploration, not just raw file reads
 - Report findings, do NOT fix them
-- Stop at diminishing returns
+
+## Stop conditions
+
+Stop on the first of:
+- 10 findings reported for this category
+- 3 consecutive sub-scopes returned no findings
+- ~50 cqs/grep/read tool calls (you can count these as you go; orchestrator enforces real wall-time via the Task timeout — don't try to track wall time yourself, you have no internal clock)
+
+Don't keep mining for borderline issues — the triage step already filters by impact, so submarining low-value findings just costs the orchestrator review time. Report what you've got and stop.
