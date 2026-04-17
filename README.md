@@ -678,6 +678,9 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_CENTROID_ALPHA_FLOOR` | `0.7` | Minimum α when the centroid classifier overrides the rule-based classifier. Caps downside of wrong-category alpha routing. Only active when `CQS_CENTROID_CLASSIFIER=1`. |
 | `CQS_CENTROID_CLASSIFIER` | `0` | Set to `1` to enable the embedding-centroid query classifier (experimental; disabled because 76% accuracy still hurts R@1 by −4.6pp on v3 dev). Set to `0` to explicitly disable when a centroid file is present. |
 | `CQS_CENTROID_THRESHOLD` | `0.01` | Minimum cosine margin (top1 − top2) for the centroid classifier to commit to a category. Below this, falls back to the rule-based classifier. |
+| `CQS_DAEMON_PERIODIC_GC` | `1` | Set to `0` to disable the daemon's idle-time periodic GC (#1024). When on, every 30 min of idle the daemon prunes a bounded batch of missing-file and gitignored chunks so the index stays close to a fresh `cqs index --force` over long sessions. |
+| `CQS_DAEMON_PERIODIC_GC_CAP` | `1000` | Max distinct origins examined per periodic-GC tick. Lower = shorter write transactions; higher = faster convergence on a polluted index. |
+| `CQS_DAEMON_STARTUP_GC` | `1` | Set to `0` to skip the daemon's startup GC pass (#1024). The startup pass drops chunks for files no longer on disk and chunks whose path is now matched by `.gitignore`. Synchronous, runs once when `cqs watch --serve` starts. |
 | `CQS_DAEMON_TIMEOUT_MS` | `2000` | Daemon client connect/read timeout in milliseconds (CLI → daemon) |
 | `CQS_DEFERRED_FLUSH_INTERVAL` | `50` | Chunks between deferred flushes during indexing |
 | `CQS_DISABLE_BASE_INDEX` | (none) | Set to `1` to skip the base (non-enriched) HNSW at query time (eval A/B) |

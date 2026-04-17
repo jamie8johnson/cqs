@@ -228,6 +228,51 @@ impl ModelConfig {
         }
     }
 
+    /// Resolve model config for a **query path** against an existing index.
+    ///
+    /// When the index records a model name (`Store::stored_model_name()`), that
+    /// name wins over CLI flag / env / config / default. The reasoning:
+    /// the index was built with a specific embedder, and the only useful
+    /// embedder for querying it is the one whose dim matches. Honouring a CLI
+    /// flag or `CQS_EMBEDDING_MODEL` that points at a different model leads to
+    /// the silent "0 results, only a tracing::warn!" failure mode this method
+    /// was added to prevent (see ROADMAP.md "Embedder swap workflow").
+    ///
+    /// Index time (`cqs index --force`) must keep using [`resolve`] — there
+    /// the user's intent is precisely to install a new embedder, and the
+    /// stored name (if any) is about to be overwritten.
+    ///
+    /// Falls through to [`resolve`] when:
+    /// - `stored_model` is `None` (fresh project, or pre-model-name index)
+    /// - the stored name is not a known preset (custom config — caller's
+    ///   chain still matches)
+    pub fn resolve_for_query(
+        stored_model: Option<&str>,
+        cli_model: Option<&str>,
+        config_embedding: Option<&EmbeddingConfig>,
+    ) -> Self {
+        let _span = tracing::info_span!("resolve_model_config_for_query").entered();
+        if let Some(name) = stored_model {
+            if let Some(cfg) = Self::from_preset(name) {
+                tracing::info!(
+                    model = %cfg.name,
+                    source = "index",
+                    "Resolved model config from indexed model name"
+                );
+                return cfg;
+            }
+            // Stored name not a known preset — fall through. The caller's
+            // resolution chain (CLI / env / config / default) is the next
+            // best signal. The defensive `Store::check_query_dim` guard will
+            // still catch a dim mismatch with an actionable error.
+            tracing::debug!(
+                stored = %name,
+                "Stored model name is not a known preset, falling back to CLI/env/config resolution"
+            );
+        }
+        Self::resolve(cli_model, config_embedding)
+    }
+
     /// Resolve model config from (in priority order): CLI flag, env var, config file, default.
     ///
     /// Unknown preset names log a warning and fall back to default.

@@ -565,6 +565,51 @@ fn try_init_embedder<'a>(
     }
 }
 
+/// Resolve the embedding model for the watch / daemon path, preferring the
+/// model recorded in the open store's metadata over CLI flag / env / config.
+///
+/// Quick standalone read of `Store::stored_model_name()` — opened in
+/// read-only mode and dropped before the caller's main store handle is built,
+/// so this does not interfere with the watch loop's read-write store. The
+/// extra open is cheap (a single SELECT against the `metadata` table) and
+/// runs at most twice per `cmd_watch` invocation (once for the daemon
+/// thread's `daemon_model_config`, once for the watch loop's
+/// `cli.try_model_config()` override below).
+///
+/// See [`cqs::embedder::ModelConfig::resolve_for_query`] for the resolution
+/// chain when no stored name is present (CLI > env > config > default).
+fn resolve_index_aware_model_for_watch(
+    index_path: &std::path::Path,
+    root: &std::path::Path,
+    cli_model: Option<&str>,
+) -> Result<ModelConfig> {
+    let stored = match cqs::Store::open_readonly(index_path) {
+        Ok(s) => s.stored_model_name(),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Quick read-only open for stored_model_name() failed; \
+                 falling back to CLI/env/config resolution"
+            );
+            None
+        }
+    };
+    let project_config = cqs::config::Config::load(root);
+    let resolved = ModelConfig::resolve_for_query(
+        stored.as_deref(),
+        cli_model,
+        project_config.embedding.as_ref(),
+    )
+    .apply_env_overrides();
+    tracing::info!(
+        stored = stored.as_deref().unwrap_or("<none>"),
+        resolved = %resolved.name,
+        dim = resolved.dim,
+        "Watch resolved index-aware model config"
+    );
+    Ok(resolved)
+}
+
 /// PB-3: Check if a path is under a WSL DrvFS automount root.
 ///
 /// Default automount root is `/mnt/`, but users can customize it via `automount.root`
@@ -721,6 +766,191 @@ fn build_splade_encoder_for_watch() -> Option<cqs::splade::SpladeEncoder> {
                  coverage will drift until manual 'cqs index'"
             );
             None
+        }
+    }
+}
+
+/// #1024: Default cap on the number of distinct origins examined per
+/// idle-time periodic GC tick. Keeps each tick short — at ~10k origins the
+/// matcher walk is microseconds-scale, but capping keeps the write
+/// transaction's lock window small even on much larger indexes. Override
+/// with `CQS_DAEMON_PERIODIC_GC_CAP` (parsed at first read).
+const DAEMON_PERIODIC_GC_CAP_DEFAULT: usize = 1000;
+
+/// #1024: Idle-time periodic GC interval. The daemon checks for a tick
+/// every loop iteration via `Instant::elapsed()`; the actual prune only
+/// fires when the last event was more than `DAEMON_PERIODIC_GC_IDLE_SECS`
+/// ago, so a long burst of file changes never triggers GC mid-burst.
+const DAEMON_PERIODIC_GC_INTERVAL_SECS: u64 = 1800; // 30 minutes
+const DAEMON_PERIODIC_GC_IDLE_SECS: u64 = 60;
+
+/// #1024: Read `CQS_DAEMON_PERIODIC_GC_CAP` once and cache. Keeps the
+/// hot path free of repeated env lookups on every tick.
+fn daemon_periodic_gc_cap() -> usize {
+    static CACHE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("CQS_DAEMON_PERIODIC_GC_CAP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DAEMON_PERIODIC_GC_CAP_DEFAULT)
+    })
+}
+
+/// #1024: Run the daemon's startup GC sweep — Pass 1 (drop chunks for
+/// files no longer on disk) and Pass 2 (drop chunks for paths now matched
+/// by `.gitignore`). Runs once when `cqs watch --serve` starts, before
+/// the first request is served. Both passes are best-effort: failures are
+/// logged at warn and the daemon proceeds with whatever rows survived.
+///
+/// The eval-reliability motivating case: a `cqs index --force` on a
+/// long-running index dropped chunk count by 30 % (15 517 → 10 748). The
+/// extra 4 769 rows were a mix of deleted files and gitignored worktree
+/// pollution that accumulated before v1.26.0 added gitignore-respect to
+/// `cqs watch`. The startup pass closes that gap incrementally so the
+/// daemon converges to the same state a `--force` reindex would produce,
+/// without paying the embed cost.
+///
+/// Disable with `CQS_DAEMON_STARTUP_GC=0`.
+fn run_daemon_startup_gc(
+    store: &Store,
+    root: &Path,
+    parser: &CqParser,
+    matcher: Option<&ignore::gitignore::Gitignore>,
+) {
+    let _span = tracing::info_span!("daemon_startup_gc").entered();
+
+    if std::env::var("CQS_DAEMON_STARTUP_GC").as_deref() == Ok("0") {
+        tracing::info!("CQS_DAEMON_STARTUP_GC=0 — daemon startup GC disabled");
+        return;
+    }
+
+    // before/after counts are best-effort; if `stats()` fails we still run
+    // the prunes (the alternative is silent skip on a transient SQLite
+    // hiccup, which defeats the purpose of having a startup sweep).
+    let before = store.stats().map(|s| s.total_chunks).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to read stats() before startup GC");
+        0
+    });
+
+    // Pass 1: prune chunks for files no longer on disk. Re-uses the same
+    // `prune_missing` path that `cqs gc` and `cqs index` call.
+    let exts = parser.supported_extensions();
+    let after_missing = match cqs::enumerate_files(root, &exts, false) {
+        Ok(files) => {
+            let file_set: std::collections::HashSet<_> = files.into_iter().collect();
+            match store.prune_missing(&file_set, root) {
+                Ok(n) => {
+                    if n > 0 {
+                        tracing::info!(pruned = n, "Daemon startup GC: pruned missing-file chunks");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Daemon startup GC: prune_missing failed — continuing");
+                }
+            }
+            store.stats().map(|s| s.total_chunks).unwrap_or(before)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Daemon startup GC: enumerate_files failed — skipping prune_missing");
+            before
+        }
+    };
+
+    // Pass 2: retroactive gitignore prune. v1.26.0 only filters new events;
+    // pre-v1.26.0 rows (or rows added by `cqs index` before the
+    // gitignore-respect change) need this sweep to disappear.
+    let after = if let Some(gi) = matcher {
+        match store.prune_gitignored(gi, root, None) {
+            Ok(n) => {
+                if n > 0 {
+                    tracing::info!(pruned = n, "Daemon startup GC: pruned gitignored chunks");
+                }
+                store
+                    .stats()
+                    .map(|s| s.total_chunks)
+                    .unwrap_or(after_missing)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Daemon startup GC: prune_gitignored failed — continuing");
+                after_missing
+            }
+        }
+    } else {
+        tracing::debug!("No gitignore matcher available — skipping retroactive gitignore prune");
+        after_missing
+    };
+
+    let pruned_missing = before.saturating_sub(after_missing);
+    let pruned_ignored = after_missing.saturating_sub(after);
+
+    tracing::info!(
+        before,
+        after_missing,
+        after,
+        pruned_missing,
+        pruned_ignored,
+        "Daemon startup GC complete"
+    );
+}
+
+/// #1024: Run the periodic idle-time GC sweep. Called from the main loop
+/// when `last_event` is older than `DAEMON_PERIODIC_GC_IDLE_SECS` and
+/// the previous GC ran more than `DAEMON_PERIODIC_GC_INTERVAL_SECS` ago.
+///
+/// Bounded: examines at most `daemon_periodic_gc_cap()` distinct origins
+/// per pass so a single tick never holds the write transaction longer
+/// than necessary. The cap means a deeply-polluted index converges over
+/// many ticks rather than one big stop-the-world prune.
+///
+/// Disable with `CQS_DAEMON_PERIODIC_GC=0`.
+fn run_daemon_periodic_gc(
+    store: &Store,
+    root: &Path,
+    parser: &CqParser,
+    matcher: Option<&ignore::gitignore::Gitignore>,
+) {
+    let _span = tracing::info_span!("daemon_periodic_gc").entered();
+
+    let cap = daemon_periodic_gc_cap();
+
+    // Pass 1: missing-file prune. `enumerate_files` is the heavier call
+    // here (one full walk of the tree); running it on idle is fine —
+    // by definition there is no contention.
+    let exts = parser.supported_extensions();
+    match cqs::enumerate_files(root, &exts, false) {
+        Ok(files) => {
+            let file_set: std::collections::HashSet<_> = files.into_iter().collect();
+            match store.prune_missing(&file_set, root) {
+                Ok(n) if n > 0 => {
+                    tracing::info!(pruned = n, "Periodic GC: pruned missing-file chunks");
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "Periodic GC: prune_missing failed");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Periodic GC: enumerate_files failed");
+        }
+    }
+
+    // Pass 2: bounded gitignore prune. `cap` limits how many origins this
+    // tick examines, so a deeply-polluted index converges over many ticks
+    // rather than one giant batch.
+    if let Some(gi) = matcher {
+        match store.prune_gitignored(gi, root, Some(cap)) {
+            Ok(n) if n > 0 => {
+                tracing::info!(
+                    pruned = n,
+                    cap,
+                    "Periodic GC: pruned gitignored chunks (capped batch)"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Periodic GC: prune_gitignored failed");
+            }
         }
     }
 }
@@ -1063,7 +1293,13 @@ pub fn cmd_watch(
             // so both the outer watch loop and BatchContext see the same
             // Arc<Embedder>.
             let daemon_embedder = std::sync::Arc::clone(&shared_embedder);
-            let daemon_model_config = cli.try_model_config()?.clone();
+            // Index-aware model resolution for the daemon's embedder. Prefer
+            // the model recorded in the store metadata so a wrong-model
+            // CQS_EMBEDDING_MODEL doesn't silently produce zero-result queries
+            // (the dim mismatch otherwise only surfaces as a tracing::warn!).
+            // See ROADMAP.md "Embedder swap workflow" for the longer story.
+            let daemon_model_config =
+                resolve_index_aware_model_for_watch(&index_path, &root, cli.model.as_deref())?;
             // #968: Clone the shared runtime handle into the daemon closure so
             // its BatchContext opens its Store/EmbeddingCache/QueryCache on
             // the same multi-thread pool as the outer watch loop.
@@ -1316,7 +1552,26 @@ pub fn cmd_watch(
             }
         };
 
-    let model_config = cli.try_model_config()?;
+    // Index-aware model resolution: prefer the model recorded in the open
+    // store metadata over CLI flag / env / config / default. Without this,
+    // running `cqs watch` with `CQS_EMBEDDING_MODEL=wrong-model` would embed
+    // new chunks with a different dim than the index, corrupting
+    // incremental reindex.
+    let stored_model_for_watch = store.stored_model_name();
+    let project_config_for_watch = cqs::config::Config::load(&root);
+    let model_config_owned = ModelConfig::resolve_for_query(
+        stored_model_for_watch.as_deref(),
+        cli.model.as_deref(),
+        project_config_for_watch.embedding.as_ref(),
+    )
+    .apply_env_overrides();
+    tracing::info!(
+        stored = stored_model_for_watch.as_deref().unwrap_or("<none>"),
+        resolved = %model_config_owned.name,
+        dim = model_config_owned.dim,
+        "Watch loop resolved index-aware model config"
+    );
+    let model_config = &model_config_owned;
 
     // #1002: build the gitignore matcher once at startup. `no_ignore` (CLI)
     // and `CQS_WATCH_RESPECT_GITIGNORE=0` (env) both disable it. Held in
@@ -1328,6 +1583,47 @@ pub fn cmd_watch(
     } else {
         build_gitignore_matcher(&root)
     });
+
+    // #1024: Daemon startup GC. Two-pass sweep — drop chunks whose origin
+    // is gone from disk (Pass 1) and drop chunks whose path is now matched
+    // by `.gitignore` (Pass 2, retroactive cleanup of pre-v1.26.0 worktree
+    // pollution). Only runs in `--serve` mode (the systemd unit) and is
+    // disabled by `CQS_DAEMON_STARTUP_GC=0`. Synchronous on the main
+    // thread so the daemon socket sees a clean index from the first
+    // accepted connection.
+    //
+    // Acquires the index lock non-blockingly via `try_acquire_index_lock`
+    // — if a concurrent `cqs index` already holds the lock, we skip the
+    // startup pass and let the next periodic-GC tick catch up. Blocking
+    // here would defeat `cqs index`'s expectation that the daemon
+    // releases the lock between reindex cycles.
+    if serve {
+        match try_acquire_index_lock(&cqs_dir) {
+            Ok(Some(gc_lock)) => {
+                let matcher_guard = gitignore.read().ok();
+                let matcher_ref = matcher_guard.as_ref().and_then(|g| g.as_ref());
+                run_daemon_startup_gc(&store, &root, &parser, matcher_ref);
+                // Explicit drop so the read lock is released before the watch
+                // loop starts taking it on every event.
+                drop(matcher_guard);
+                drop(gc_lock);
+                // Clear caches so subsequent queries observe the pruned rows.
+                store.clear_caches();
+                db_id = db_file_identity(&index_path);
+            }
+            Ok(None) => {
+                tracing::info!(
+                    "Daemon startup GC: index lock held by another process — skipping (periodic GC will catch up)"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Daemon startup GC: failed to acquire index lock — skipping"
+                );
+            }
+        }
+    }
 
     // #1004: build the SPLADE encoder once at startup. `None` means
     // incremental SPLADE is disabled for this daemon lifetime — either
@@ -1370,6 +1666,18 @@ pub fn cmd_watch(
     // the reindex path only trims once per hour, keeping the WAL file
     // from churning on every micro-edit.
     let mut last_cache_evict = std::time::Instant::now();
+
+    // #1024: Track last periodic GC tick. Initialised to "now" so the
+    // first periodic sweep doesn't fire until DAEMON_PERIODIC_GC_INTERVAL_SECS
+    // after startup — the startup pass already covered the initial state.
+    // Disabled when --serve is off (this is a daemon-only feature) or
+    // when CQS_DAEMON_PERIODIC_GC=0.
+    let periodic_gc_enabled =
+        serve && std::env::var("CQS_DAEMON_PERIODIC_GC").as_deref() != Ok("0");
+    if !periodic_gc_enabled && serve {
+        tracing::info!("CQS_DAEMON_PERIODIC_GC=0 — periodic idle-time GC disabled");
+    }
+    let mut last_periodic_gc = std::time::Instant::now();
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -1476,6 +1784,52 @@ pub fn cmd_watch(
                         state.hnsw_index = None;
                         state.incremental_count = 0;
                         cycles_since_clear = 0;
+                    }
+
+                    // #1024: Idle-time periodic GC. Only fires when
+                    //   (a) `--serve` is on AND `CQS_DAEMON_PERIODIC_GC` != "0",
+                    //   (b) the last actual file event was more than
+                    //       DAEMON_PERIODIC_GC_IDLE_SECS ago (so a long burst
+                    //       of edits never triggers GC mid-burst), AND
+                    //   (c) the previous tick was more than
+                    //       DAEMON_PERIODIC_GC_INTERVAL_SECS ago.
+                    // The bounded sweep (cap = daemon_periodic_gc_cap()) keeps
+                    // each tick's write transaction short.
+                    //
+                    // Acquires the same `acquire_index_lock` semantics by
+                    // calling `try_acquire_index_lock` — if `cqs index` or
+                    // `cqs gc` is running, the GC tick skips and tries again
+                    // on the next interval.
+                    if periodic_gc_enabled
+                        && state.last_event.elapsed()
+                            >= Duration::from_secs(DAEMON_PERIODIC_GC_IDLE_SECS)
+                        && last_periodic_gc.elapsed()
+                            >= Duration::from_secs(DAEMON_PERIODIC_GC_INTERVAL_SECS)
+                    {
+                        match try_acquire_index_lock(&cqs_dir) {
+                            Ok(Some(gc_lock)) => {
+                                let matcher_guard = gitignore.read().ok();
+                                let matcher_ref = matcher_guard.as_ref().and_then(|g| g.as_ref());
+                                run_daemon_periodic_gc(&store, &root, &parser, matcher_ref);
+                                drop(matcher_guard);
+                                drop(gc_lock);
+                                // Clear caches so the next query observes the pruned rows.
+                                store.clear_caches();
+                                db_id = db_file_identity(&index_path);
+                            }
+                            Ok(None) => {
+                                tracing::debug!("Periodic GC: index lock held, skipping this tick");
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "Periodic GC: failed to acquire index lock — skipping tick"
+                                );
+                            }
+                        }
+                        // Always advance the timer so a wedged lock or
+                        // failed enumerate doesn't make us retry every loop.
+                        last_periodic_gc = std::time::Instant::now();
                     }
                 }
 

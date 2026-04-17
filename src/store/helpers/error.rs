@@ -34,6 +34,21 @@ pub enum StoreError {
         "Dimension mismatch: index has {0}-dim embeddings, current model expects {1}. Run 'cqs index --force' to rebuild."
     )]
     DimensionMismatch(u32, u32),
+    /// Query-time embedder dim does not match the index dim.
+    /// Distinct from [`StoreError::DimensionMismatch`] (storage-blob shape) so the CLI
+    /// can print a model-aware hint instead of the generic "rebuild" message.
+    /// `index_model` / `query_model` are best-effort short names ("v9-200k",
+    /// "BAAI/bge-large-en-v1.5", or `<unknown>` when the store predates model-name
+    /// metadata).
+    #[error(
+        "embedder dim mismatch — index built with {index_model} ({index_dim}-dim) but query embedder is {query_model} ({query_dim}-dim).\n       Run `cqs index --force --model {index_model}` to rebuild against the current embedder, or set CQS_EMBEDDING_MODEL={index_model} to query with the indexed model."
+    )]
+    QueryDimMismatch {
+        index_dim: usize,
+        query_dim: usize,
+        index_model: String,
+        query_model: String,
+    },
     #[error("Database integrity check failed: {0}")]
     Corruption(String),
     #[error("Embedding blob dimension mismatch: expected {expected}-dim ({expected_bytes} bytes), got {actual_bytes} bytes")]
