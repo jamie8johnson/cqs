@@ -101,10 +101,15 @@ pub(crate) fn cmd_trace(
     source: &str,
     target: &str,
     max_depth: usize,
+    _limit: usize,
     format: &OutputFormat,
     cross_project: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_trace", source, target, cross_project).entered();
+    // Task A3: `--limit` is accepted for parity with other graph commands.
+    // Today trace returns a single shortest path so the cap is a no-op; left
+    // in the signature so a future k-shortest-paths variant can read it
+    // without a re-flatten and so batch users get a uniform flag set.
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;

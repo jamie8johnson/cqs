@@ -67,17 +67,24 @@ pub(crate) fn build_callees(name: &str, callees: &[(String, u32)]) -> CalleesOut
 pub(crate) fn cmd_callers(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
+    limit: usize,
     cross_project: bool,
     json: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_callers", name, cross_project).entered();
+    let _span = tracing::info_span!("cmd_callers", name, limit, cross_project).entered();
     let store = &ctx.store;
+    // Task A3: standardised cap. The store query returns every caller; we
+    // truncate before rendering so the user can paginate via repeated calls
+    // (no offset surfaced yet — by design, agents pass `--limit N` once and
+    // ask for more by name if needed).
+    let limit = limit.clamp(1, 100);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let callers = cross_ctx
+        let mut callers = cross_ctx
             .get_callers_cross(name)
             .context("Failed to load cross-project callers")?;
+        callers.truncate(limit);
 
         if callers.is_empty() {
             if json {
@@ -109,9 +116,10 @@ pub(crate) fn cmd_callers(
     }
 
     // Standard single-project path
-    let callers = store
+    let mut callers = store
         .get_callers_full(name)
         .context("Failed to load callers")?;
+    callers.truncate(limit);
 
     if callers.is_empty() {
         if json {
@@ -147,17 +155,21 @@ pub(crate) fn cmd_callers(
 pub(crate) fn cmd_callees(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
+    limit: usize,
     cross_project: bool,
     json: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_callees", name, cross_project).entered();
+    let _span = tracing::info_span!("cmd_callees", name, limit, cross_project).entered();
     let store = &ctx.store;
+    // Task A3: see cmd_callers — same clamp range.
+    let limit = limit.clamp(1, 100);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let callees = cross_ctx
+        let mut callees = cross_ctx
             .get_callees_cross(name)
             .context("Failed to load cross-project callees")?;
+        callees.truncate(limit);
 
         if json {
             println!("{}", serde_json::to_string_pretty(&callees)?);
@@ -178,9 +190,10 @@ pub(crate) fn cmd_callees(
     }
 
     // Standard single-project path
-    let callees = store
+    let mut callees = store
         .get_callees_full(name, None)
         .context("Failed to load callees")?;
+    callees.truncate(limit);
 
     if json {
         let output = build_callees(name, &callees);

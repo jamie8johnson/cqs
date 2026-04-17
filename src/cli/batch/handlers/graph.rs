@@ -25,19 +25,25 @@ pub(in crate::cli::batch) fn dispatch_deps(
     ctx: &BatchContext,
     name: &str,
     reverse: bool,
+    limit: usize,
     cross_project: bool,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_deps", name, reverse, cross_project).entered();
+    let _span = tracing::info_span!("batch_deps", name, reverse, limit, cross_project).entered();
     if cross_project {
         tracing::warn!("cross-project deps not yet supported, returning local result");
     }
+    // Task A3: shared cap with `cmd_deps`. Truncates after fetch so the
+    // fetched set is bounded by the same value the CLI path would.
+    let limit = limit.clamp(1, 100);
 
     if reverse {
-        let types = ctx.store().get_types_used_by(name)?;
+        let mut types = ctx.store().get_types_used_by(name)?;
+        types.truncate(limit);
         let output = crate::cli::commands::build_deps_reverse(name, &types);
         Ok(serde_json::to_value(&output)?)
     } else {
-        let users = ctx.store().get_type_users(name)?;
+        let mut users = ctx.store().get_type_users(name)?;
+        users.truncate(limit);
         let output = crate::cli::commands::build_deps_forward(&users, &ctx.root);
         Ok(serde_json::to_value(&output)?)
     }
@@ -58,17 +64,22 @@ pub(in crate::cli::batch) fn dispatch_deps(
 pub(in crate::cli::batch) fn dispatch_callers(
     ctx: &BatchContext,
     name: &str,
+    limit: usize,
     cross_project: bool,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_callers", name, cross_project).entered();
+    let _span = tracing::info_span!("batch_callers", name, limit, cross_project).entered();
+    // Task A3: shared cap with `cmd_callers`. Truncate before serialization.
+    let limit = limit.clamp(1, 100);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let callers = cross_ctx.get_callers_cross(name)?;
+        let mut callers = cross_ctx.get_callers_cross(name)?;
+        callers.truncate(limit);
         return Ok(serde_json::to_value(&callers)?);
     }
 
-    let callers = ctx.store().get_callers_full(name)?;
+    let mut callers = ctx.store().get_callers_full(name)?;
+    callers.truncate(limit);
     let output = crate::cli::commands::build_callers(&callers);
     Ok(serde_json::to_value(&output)?)
 }
@@ -93,17 +104,22 @@ pub(in crate::cli::batch) fn dispatch_callers(
 pub(in crate::cli::batch) fn dispatch_callees(
     ctx: &BatchContext,
     name: &str,
+    limit: usize,
     cross_project: bool,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_callees", name, cross_project).entered();
+    let _span = tracing::info_span!("batch_callees", name, limit, cross_project).entered();
+    // Task A3: shared cap with `cmd_callees`.
+    let limit = limit.clamp(1, 100);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let callees = cross_ctx.get_callees_cross(name)?;
+        let mut callees = cross_ctx.get_callees_cross(name)?;
+        callees.truncate(limit);
         return Ok(serde_json::to_value(&callees)?);
     }
 
-    let callees = ctx.store().get_callees_full(name, None)?;
+    let mut callees = ctx.store().get_callees_full(name, None)?;
+    callees.truncate(limit);
     let output = crate::cli::commands::build_callees(name, &callees);
     Ok(serde_json::to_value(&output)?)
 }
@@ -129,22 +145,28 @@ pub(in crate::cli::batch) fn dispatch_impact(
     ctx: &BatchContext,
     name: &str,
     depth: usize,
+    limit: usize,
     do_suggest_tests: bool,
     include_types: bool,
     cross_project: bool,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_impact", name, cross_project).entered();
+    let _span = tracing::info_span!("batch_impact", name, limit, cross_project).entered();
     let depth = depth.clamp(1, 10);
+    // Task A3: shared per-section cap with `cmd_impact`. Test suggestions are
+    // computed off the un-truncated result so the engine sees every untested
+    // caller; truncation happens immediately before serialization.
+    let limit = limit.clamp(1, 100);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
-        let result = cqs::cross_project::analyze_impact_cross(
+        let mut result = cqs::cross_project::analyze_impact_cross(
             &mut cross_ctx,
             name,
             depth,
             do_suggest_tests,
             include_types,
         )?;
+        truncate_impact_sections(&mut result, limit);
         let json = cqs::impact_to_json(&result);
         return Ok(json);
     }
@@ -152,7 +174,7 @@ pub(in crate::cli::batch) fn dispatch_impact(
     let resolved = cqs::resolve_target(&ctx.store(), name)?;
     let chunk = &resolved.chunk;
 
-    let result = cqs::analyze_impact(
+    let mut result = cqs::analyze_impact(
         &ctx.store(),
         &chunk.name,
         &ctx.root,
@@ -162,10 +184,17 @@ pub(in crate::cli::batch) fn dispatch_impact(
         },
     )?;
 
+    let suggestions = if do_suggest_tests {
+        cqs::suggest_tests(&ctx.store(), &result, &ctx.root)
+    } else {
+        Vec::new()
+    };
+
+    truncate_impact_sections(&mut result, limit);
+
     let mut json = cqs::impact_to_json(&result);
 
     if do_suggest_tests {
-        let suggestions = cqs::suggest_tests(&ctx.store(), &result, &ctx.root);
         let suggestions_json = cqs::format_test_suggestions(&suggestions);
         if let Some(obj) = json.as_object_mut() {
             obj.insert(
@@ -176,6 +205,15 @@ pub(in crate::cli::batch) fn dispatch_impact(
     }
 
     Ok(json)
+}
+
+/// Task A3: per-section truncation for `ImpactResult`. Mirrors the helper in
+/// `cli::commands::graph::impact` so both code paths apply the same cap.
+fn truncate_impact_sections(result: &mut cqs::ImpactResult, limit: usize) {
+    result.callers.truncate(limit);
+    result.transitive_callers.truncate(limit);
+    result.tests.truncate(limit);
+    result.type_impacted.truncate(limit);
 }
 
 /// Performs a reverse breadth-first search through the call graph to find all test chunks that call a specified target chunk, up to a maximum depth.
@@ -197,9 +235,12 @@ pub(in crate::cli::batch) fn dispatch_test_map(
     ctx: &BatchContext,
     name: &str,
     max_depth: usize,
+    limit: usize,
     cross_project: bool,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_test_map", name, cross_project).entered();
+    let _span = tracing::info_span!("batch_test_map", name, limit, cross_project).entered();
+    // Task A3: shared cap with `cmd_test_map`.
+    let limit = limit.clamp(1, 100);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
@@ -208,8 +249,9 @@ pub(in crate::cli::batch) fn dispatch_test_map(
         let summaries: Vec<cqs::store::ChunkSummary> =
             test_chunks.iter().map(|tc| tc.chunk.clone()).collect();
 
-        let matches =
+        let mut matches =
             crate::cli::commands::build_test_map(name, &graph, &summaries, &ctx.root, max_depth);
+        matches.truncate(limit);
         let output = crate::cli::commands::build_test_map_output(name, &matches);
         return Ok(serde_json::to_value(&output)?);
     }
@@ -220,13 +262,14 @@ pub(in crate::cli::batch) fn dispatch_test_map(
     let graph = ctx.call_graph()?;
     let test_chunks = ctx.store().find_test_chunks()?;
 
-    let matches = crate::cli::commands::build_test_map(
+    let mut matches = crate::cli::commands::build_test_map(
         &target_name,
         &graph,
         &test_chunks,
         &ctx.root,
         max_depth,
     );
+    matches.truncate(limit);
     let output = crate::cli::commands::build_test_map_output(&target_name, &matches);
     Ok(serde_json::to_value(&output)?)
 }
@@ -252,9 +295,13 @@ pub(in crate::cli::batch) fn dispatch_trace(
     source: &str,
     target: &str,
     max_depth: usize,
+    _limit: usize,
     cross_project: bool,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_trace", source, target, cross_project).entered();
+    // Task A3: `--limit` is accepted for parity with other graph commands. See
+    // `cmd_trace` for rationale (single shortest path today; reserved for
+    // future k-shortest-paths variants).
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;

@@ -46,9 +46,13 @@ pub(in crate::cli::batch) fn dispatch_blame(
 pub(in crate::cli::batch) fn dispatch_explain(
     ctx: &BatchContext,
     target: &str,
+    limit: usize,
     tokens: Option<usize>,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_explain", target).entered();
+    let _span = tracing::info_span!("batch_explain", target, limit).entered();
+    // Task A3: shared cap with `cmd_explain`. Truncates the per-section
+    // lists (callers / callees / similar) before serialization.
+    let limit = limit.clamp(1, 100);
 
     let index = ctx.vector_index()?;
     let index = index.as_deref();
@@ -58,7 +62,7 @@ pub(in crate::cli::batch) fn dispatch_explain(
         None
     };
 
-    let data = crate::cli::commands::explain::build_explain_data(
+    let mut data = crate::cli::commands::explain::build_explain_data(
         &ctx.store(),
         &ctx.cqs_dir,
         target,
@@ -67,6 +71,9 @@ pub(in crate::cli::batch) fn dispatch_explain(
         embedder,
         &ctx.model_config,
     )?;
+    data.callers.truncate(limit);
+    data.callees.truncate(limit);
+    data.similar.truncate(limit);
 
     let output = crate::cli::commands::explain::build_explain_output(&data, &ctx.root);
     Ok(serde_json::to_value(&output)?)
@@ -258,12 +265,19 @@ pub(in crate::cli::batch) fn dispatch_onboard(
     ctx: &BatchContext,
     query: &str,
     depth: usize,
+    limit: usize,
     tokens: Option<usize>,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_onboard", query, depth).entered();
+    let _span = tracing::info_span!("batch_onboard", query, depth, limit).entered();
     let embedder = ctx.embedder()?;
     let depth = depth.clamp(1, 5);
-    let result = cqs::onboard(&ctx.store(), embedder, query, &ctx.root, depth)?;
+    // Task A3: cap on call_chain + callers + tests. entry_point always kept.
+    let limit = limit.clamp(1, 100);
+
+    let mut result = cqs::onboard(&ctx.store(), embedder, query, &ctx.root, depth)?;
+    result.call_chain.truncate(limit);
+    result.callers.truncate(limit);
+    result.tests.truncate(limit);
 
     let Some(budget) = tokens else {
         return serde_json::to_value(&result)

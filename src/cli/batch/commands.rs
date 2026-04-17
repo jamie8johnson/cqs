@@ -11,6 +11,7 @@ use crate::cli::args::{
     ReadArgs, RelatedArgs, ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs, StaleArgs, SuggestArgs,
     TaskArgs, TestMapArgs, TraceArgs, WhereArgs,
 };
+use crate::cli::definitions::{OutputArgs, TextJsonArgs};
 
 use super::handlers;
 
@@ -27,6 +28,21 @@ pub(crate) struct BatchInput {
     pub cmd: BatchCmd,
 }
 
+/// BatchCmd variants flatten an output struct (`TextJsonArgs` for text/json
+/// commands, `OutputArgs` for the impact/trace pair that supports `--format
+/// mermaid`) so callers can pass `--json` for parity with the CLI even though
+/// batch *always* serializes to JSON. Task #8: previously
+/// `echo 'callers Foo --json' | cqs batch` errored with "unexpected argument
+/// --json"; now the flag is accepted and silently a no-op (the handler
+/// ignores `output.json`/`output.format` because the batch transport itself
+/// frames the response as JSONL on the daemon socket and as JSONL on stdout).
+///
+/// We *intentionally* do not delete the `output` field — clap requires the
+/// flatten target to back the `--json` flag, and removing the field would
+/// re-introduce the "unexpected argument" parse error for users who want
+/// CLI-batch flag parity. The unused-field warning is silenced via the
+/// `#[allow]` attribute on each variant rather than a global allow so the
+/// dead-code signal stays meaningful elsewhere in the crate.
 #[derive(Subcommand, Debug)]
 pub(crate) enum BatchCmd {
     /// Semantic search
@@ -37,150 +53,252 @@ pub(crate) enum BatchCmd {
     Search {
         #[command(flatten)]
         args: SearchArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Semantic git blame: who changed a function, when, and why
     Blame {
         #[command(flatten)]
         args: BlameArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Type dependencies: who uses a type, or what types a function uses
     Deps {
         #[command(flatten)]
         args: DepsArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Find callers of a function
     Callers {
         #[command(flatten)]
         args: CallersArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Find callees of a function
     Callees {
         #[command(flatten)]
         args: CallersArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Function card: signature, callers, callees, similar
     Explain {
         #[command(flatten)]
         args: ExplainArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Find similar code
     Similar {
         #[command(flatten)]
         args: SimilarArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Smart context assembly
     Gather {
         #[command(flatten)]
         args: GatherArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Impact analysis
     Impact {
         #[command(flatten)]
         args: ImpactArgs,
+        /// Task #8: `OutputArgs` here matches the CLI side (text/json/mermaid).
+        /// Mermaid is silently downgraded to JSON in batch because the daemon
+        /// socket framer assumes JSONL. Adding a non-JSON wire format would
+        /// require re-shaping `dispatch_line` — out of scope.
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json/--format accepted for CLI parity")]
+        output: OutputArgs,
     },
     /// Map function to tests
     #[command(name = "test-map")]
     TestMap {
         #[command(flatten)]
         args: TestMapArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Trace call path between two functions
     Trace {
         #[command(flatten)]
         args: TraceArgs,
+        /// Task #8: see the `Impact` variant — `OutputArgs` mirrors the CLI's
+        /// `--format mermaid` flag for parity even though batch downgrades it.
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json/--format accepted for CLI parity")]
+        output: OutputArgs,
     },
     /// Find dead code
     Dead {
         #[command(flatten)]
         args: DeadArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Find related functions by co-occurrence
     Related {
         #[command(flatten)]
         args: RelatedArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Module-level context for a file
     Context {
         #[command(flatten)]
         args: ContextArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Index statistics
-    Stats,
+    Stats {
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
+    },
     /// Guided codebase tour
     Onboard {
         #[command(flatten)]
         args: OnboardArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Pre-investigation dashboard
     Scout {
         #[command(flatten)]
         args: ScoutArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Suggest where to add new code
     Where {
         #[command(flatten)]
         args: WhereArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Read file with note injection
     Read {
         #[command(flatten)]
         args: ReadArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Check index freshness
     Stale {
         #[command(flatten)]
         args: StaleArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Codebase quality snapshot
-    Health,
+    Health {
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
+    },
     /// Semantic drift detection between reference and project
     Drift {
         #[command(flatten)]
         args: DriftArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// List notes
     Notes {
         #[command(flatten)]
         args: NotesListArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// One-shot implementation context (terminal — no pipeline chaining)
     Task {
         #[command(flatten)]
         args: TaskArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Comprehensive diff review
     Review {
         #[command(flatten)]
         args: ReviewArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// CI pipeline: review + dead code + gate
     Ci {
         #[command(flatten)]
         args: CiArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Semantic diff between indexed snapshots
     Diff {
         #[command(flatten)]
         args: DiffArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Diff-aware impact analysis
     #[command(name = "impact-diff")]
     ImpactDiff {
         #[command(flatten)]
         args: ImpactDiffArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Task planning with template classification
     Plan {
         #[command(flatten)]
         args: PlanArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Auto-suggest notes from patterns
     Suggest {
         #[command(flatten)]
         args: SuggestArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
     },
     /// Garbage collection: prune stale index entries
-    Gc,
+    Gc {
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
+    },
     /// Invalidate all mutable caches and re-open the Store
     #[command(visible_alias = "invalidate")]
     Refresh,
@@ -223,12 +341,12 @@ impl BatchCmd {
             | BatchCmd::Trace { .. }
             | BatchCmd::Dead { .. }
             | BatchCmd::Context { .. }
-            | BatchCmd::Stats
+            | BatchCmd::Stats { .. }
             | BatchCmd::Onboard { .. }
             | BatchCmd::Where { .. }
             | BatchCmd::Read { .. }
             | BatchCmd::Stale { .. }
-            | BatchCmd::Health
+            | BatchCmd::Health { .. }
             | BatchCmd::Drift { .. }
             | BatchCmd::Notes { .. }
             | BatchCmd::Task { .. }
@@ -238,7 +356,7 @@ impl BatchCmd {
             | BatchCmd::ImpactDiff { .. }
             | BatchCmd::Plan { .. }
             | BatchCmd::Suggest { .. }
-            | BatchCmd::Gc
+            | BatchCmd::Gc { .. }
             | BatchCmd::Refresh
             | BatchCmd::Ping
             | BatchCmd::Help => false,
@@ -287,73 +405,98 @@ fn log_query(command: &str, query: &str) {
 /// with readline.
 pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::Value> {
     let _span = tracing::debug_span!("batch_dispatch").entered();
+    // Task #8: every variant now also carries `output` (TextJsonArgs or
+    // OutputArgs) for CLI flag parity, but batch always emits JSON via the
+    // socket framer / stdout JSONL — the output field is intentionally
+    // dropped here. Pattern-match `..` so the destructure stays exhaustive
+    // even if future fields are added to the variant.
     match cmd {
-        BatchCmd::Blame { args } => {
+        BatchCmd::Blame { args, .. } => {
             handlers::dispatch_blame(ctx, &args.name, args.depth, args.callers)
         }
-        BatchCmd::Search { args } => {
+        BatchCmd::Search { args, .. } => {
             log_query("search", &args.query);
             handlers::dispatch_search(ctx, &args)
         }
-        BatchCmd::Deps { args } => {
-            handlers::dispatch_deps(ctx, &args.name, args.reverse, args.cross_project)
+        BatchCmd::Deps { args, .. } => handlers::dispatch_deps(
+            ctx,
+            &args.name,
+            args.reverse,
+            args.limit_arg.limit,
+            args.cross_project,
+        ),
+        BatchCmd::Callers { args, .. } => {
+            handlers::dispatch_callers(ctx, &args.name, args.limit_arg.limit, args.cross_project)
         }
-        BatchCmd::Callers { args } => {
-            handlers::dispatch_callers(ctx, &args.name, args.cross_project)
+        BatchCmd::Callees { args, .. } => {
+            handlers::dispatch_callees(ctx, &args.name, args.limit_arg.limit, args.cross_project)
         }
-        BatchCmd::Callees { args } => {
-            handlers::dispatch_callees(ctx, &args.name, args.cross_project)
+        BatchCmd::Explain { args, .. } => {
+            handlers::dispatch_explain(ctx, &args.name, args.limit_arg.limit, args.tokens)
         }
-        BatchCmd::Explain { args } => handlers::dispatch_explain(ctx, &args.name, args.tokens),
-        BatchCmd::Similar { args } => {
+        BatchCmd::Similar { args, .. } => {
             handlers::dispatch_similar(ctx, &args.name, args.limit, args.threshold)
         }
-        BatchCmd::Gather { args } => {
+        BatchCmd::Gather { args, .. } => {
             log_query("gather", &args.query);
             handlers::dispatch_gather(ctx, &args)
         }
-        BatchCmd::Impact { args } => handlers::dispatch_impact(
+        BatchCmd::Impact { args, .. } => handlers::dispatch_impact(
             ctx,
             &args.name,
             args.depth,
+            args.limit_arg.limit,
             args.suggest_tests,
             args.type_impact,
             args.cross_project,
         ),
-        BatchCmd::TestMap { args } => {
-            handlers::dispatch_test_map(ctx, &args.name, args.depth, args.cross_project)
-        }
-        BatchCmd::Trace { args } => handlers::dispatch_trace(
+        BatchCmd::TestMap { args, .. } => handlers::dispatch_test_map(
+            ctx,
+            &args.name,
+            args.depth,
+            args.limit_arg.limit,
+            args.cross_project,
+        ),
+        BatchCmd::Trace { args, .. } => handlers::dispatch_trace(
             ctx,
             &args.source,
             &args.target,
             args.max_depth as usize,
+            args.limit_arg.limit,
             args.cross_project,
         ),
-        BatchCmd::Dead { args } => {
+        BatchCmd::Dead { args, .. } => {
             handlers::dispatch_dead(ctx, args.include_pub, &args.min_confidence)
         }
-        BatchCmd::Related { args } => handlers::dispatch_related(ctx, &args.name, args.limit),
-        BatchCmd::Context { args } => {
+        BatchCmd::Related { args, .. } => handlers::dispatch_related(ctx, &args.name, args.limit),
+        BatchCmd::Context { args, .. } => {
             handlers::dispatch_context(ctx, &args.path, args.summary, args.compact, args.tokens)
         }
-        BatchCmd::Stats => handlers::dispatch_stats(ctx),
-        BatchCmd::Onboard { args } => {
+        BatchCmd::Stats { .. } => handlers::dispatch_stats(ctx),
+        BatchCmd::Onboard { args, .. } => {
             log_query("onboard", &args.query);
-            handlers::dispatch_onboard(ctx, &args.query, args.depth, args.tokens)
+            handlers::dispatch_onboard(
+                ctx,
+                &args.query,
+                args.depth,
+                args.limit_arg.limit,
+                args.tokens,
+            )
         }
-        BatchCmd::Scout { args } => {
+        BatchCmd::Scout { args, .. } => {
             log_query("scout", &args.query);
             handlers::dispatch_scout(ctx, &args.query, args.limit, args.tokens)
         }
-        BatchCmd::Where { args } => {
+        BatchCmd::Where { args, .. } => {
             log_query("where", &args.description);
             handlers::dispatch_where(ctx, &args.description, args.limit)
         }
-        BatchCmd::Read { args } => handlers::dispatch_read(ctx, &args.path, args.focus.as_deref()),
-        BatchCmd::Stale { args } => handlers::dispatch_stale(ctx, args.count_only),
-        BatchCmd::Health => handlers::dispatch_health(ctx),
-        BatchCmd::Drift { args } => handlers::dispatch_drift(
+        BatchCmd::Read { args, .. } => {
+            handlers::dispatch_read(ctx, &args.path, args.focus.as_deref())
+        }
+        BatchCmd::Stale { args, .. } => handlers::dispatch_stale(ctx, args.count_only),
+        BatchCmd::Health { .. } => handlers::dispatch_health(ctx),
+        BatchCmd::Drift { args, .. } => handlers::dispatch_drift(
             ctx,
             &args.reference,
             args.threshold,
@@ -361,30 +504,32 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             args.lang.as_deref(),
             args.limit,
         ),
-        BatchCmd::Notes { args } => handlers::dispatch_notes(ctx, args.warnings, args.patterns),
-        BatchCmd::Task { args } => {
+        BatchCmd::Notes { args, .. } => handlers::dispatch_notes(ctx, args.warnings, args.patterns),
+        BatchCmd::Task { args, .. } => {
             log_query("task", &args.description);
             handlers::dispatch_task(ctx, &args.description, args.limit, args.tokens)
         }
-        BatchCmd::Review { args } => {
+        BatchCmd::Review { args, .. } => {
             handlers::dispatch_review(ctx, args.base.as_deref(), args.tokens)
         }
-        BatchCmd::Ci { args } => {
+        BatchCmd::Ci { args, .. } => {
             handlers::dispatch_ci(ctx, args.base.as_deref(), &args.gate, args.tokens)
         }
-        BatchCmd::Diff { args } => handlers::dispatch_diff(
+        BatchCmd::Diff { args, .. } => handlers::dispatch_diff(
             ctx,
             &args.source,
             args.target.as_deref(),
             args.threshold,
             args.lang.as_deref(),
         ),
-        BatchCmd::ImpactDiff { args } => handlers::dispatch_impact_diff(ctx, args.base.as_deref()),
-        BatchCmd::Plan { args } => {
+        BatchCmd::ImpactDiff { args, .. } => {
+            handlers::dispatch_impact_diff(ctx, args.base.as_deref())
+        }
+        BatchCmd::Plan { args, .. } => {
             handlers::dispatch_plan(ctx, &args.description, args.limit, args.tokens)
         }
-        BatchCmd::Suggest { args } => handlers::dispatch_suggest(ctx, args.apply),
-        BatchCmd::Gc => handlers::dispatch_gc(ctx),
+        BatchCmd::Suggest { args, .. } => handlers::dispatch_suggest(ctx, args.apply),
+        BatchCmd::Gc { .. } => handlers::dispatch_gc(ctx),
         BatchCmd::Refresh => handlers::dispatch_refresh(ctx),
         BatchCmd::Ping => handlers::dispatch_ping(ctx),
         BatchCmd::Help => handlers::dispatch_help(),
@@ -402,7 +547,7 @@ mod tests {
     fn test_parse_search() {
         let input = BatchInput::try_parse_from(["search", "hello"]).unwrap();
         match input.cmd {
-            BatchCmd::Search { ref args } => {
+            BatchCmd::Search { ref args, .. } => {
                 assert_eq!(args.query, "hello");
                 assert_eq!(args.limit, 5); // default
             }
@@ -415,7 +560,7 @@ mod tests {
         let input =
             BatchInput::try_parse_from(["search", "hello", "--limit", "3", "--name-only"]).unwrap();
         match input.cmd {
-            BatchCmd::Search { ref args } => {
+            BatchCmd::Search { ref args, .. } => {
                 assert_eq!(args.query, "hello");
                 assert_eq!(args.limit, 3);
                 assert!(args.name_only);
@@ -428,7 +573,7 @@ mod tests {
     fn test_parse_callers() {
         let input = BatchInput::try_parse_from(["callers", "my_func"]).unwrap();
         match input.cmd {
-            BatchCmd::Callers { ref args } => assert_eq!(args.name, "my_func"),
+            BatchCmd::Callers { ref args, .. } => assert_eq!(args.name, "my_func"),
             _ => panic!("Expected Callers command"),
         }
     }
@@ -438,7 +583,7 @@ mod tests {
         let input =
             BatchInput::try_parse_from(["gather", "alarm config", "--ref", "aveva"]).unwrap();
         match input.cmd {
-            BatchCmd::Gather { ref args } => {
+            BatchCmd::Gather { ref args, .. } => {
                 assert_eq!(args.query, "alarm config");
                 assert_eq!(args.ref_name.as_deref(), Some("aveva"));
             }
@@ -452,7 +597,7 @@ mod tests {
             BatchInput::try_parse_from(["dead", "--min-confidence", "high", "--include-pub"])
                 .unwrap();
         match input.cmd {
-            BatchCmd::Dead { ref args } => {
+            BatchCmd::Dead { ref args, .. } => {
                 assert!(args.include_pub);
                 assert!(matches!(
                     args.min_confidence,
@@ -486,7 +631,7 @@ mod tests {
     fn test_parse_trace() {
         let input = BatchInput::try_parse_from(["trace", "main", "validate"]).unwrap();
         match input.cmd {
-            BatchCmd::Trace { ref args } => {
+            BatchCmd::Trace { ref args, .. } => {
                 assert_eq!(args.source, "main");
                 assert_eq!(args.target, "validate");
                 assert_eq!(args.max_depth, 10); // default
@@ -499,7 +644,7 @@ mod tests {
     fn test_parse_context() {
         let input = BatchInput::try_parse_from(["context", "src/lib.rs", "--compact"]).unwrap();
         match input.cmd {
-            BatchCmd::Context { ref args } => {
+            BatchCmd::Context { ref args, .. } => {
                 assert_eq!(args.path, "src/lib.rs");
                 assert!(args.compact);
                 assert!(!args.summary);
@@ -511,7 +656,7 @@ mod tests {
     #[test]
     fn test_parse_stats() {
         let input = BatchInput::try_parse_from(["stats"]).unwrap();
-        assert!(matches!(input.cmd, BatchCmd::Stats));
+        assert!(matches!(input.cmd, BatchCmd::Stats { .. }));
     }
 
     #[test]
@@ -520,7 +665,7 @@ mod tests {
             BatchInput::try_parse_from(["impact", "foo", "--depth", "3", "--suggest-tests"])
                 .unwrap();
         match input.cmd {
-            BatchCmd::Impact { ref args } => {
+            BatchCmd::Impact { ref args, .. } => {
                 assert_eq!(args.name, "foo");
                 assert_eq!(args.depth, 3);
                 assert!(args.suggest_tests);
@@ -534,7 +679,7 @@ mod tests {
     fn test_parse_scout() {
         let input = BatchInput::try_parse_from(["scout", "error handling"]).unwrap();
         match input.cmd {
-            BatchCmd::Scout { ref args } => {
+            BatchCmd::Scout { ref args, .. } => {
                 assert_eq!(args.query, "error handling");
                 assert_eq!(args.limit, 5); // default
             }
@@ -554,7 +699,7 @@ mod tests {
         ])
         .unwrap();
         match input.cmd {
-            BatchCmd::Scout { ref args } => {
+            BatchCmd::Scout { ref args, .. } => {
                 assert_eq!(args.query, "error handling");
                 assert_eq!(args.limit, 20);
                 assert_eq!(args.tokens, Some(2000));
@@ -567,7 +712,7 @@ mod tests {
     fn test_parse_where() {
         let input = BatchInput::try_parse_from(["where", "new CLI command"]).unwrap();
         match input.cmd {
-            BatchCmd::Where { ref args } => {
+            BatchCmd::Where { ref args, .. } => {
                 assert_eq!(args.description, "new CLI command");
                 assert_eq!(args.limit, 3); // default
             }
@@ -579,7 +724,7 @@ mod tests {
     fn test_parse_read() {
         let input = BatchInput::try_parse_from(["read", "src/lib.rs"]).unwrap();
         match input.cmd {
-            BatchCmd::Read { ref args } => {
+            BatchCmd::Read { ref args, .. } => {
                 assert_eq!(args.path, "src/lib.rs");
                 assert!(args.focus.is_none());
             }
@@ -593,7 +738,7 @@ mod tests {
             BatchInput::try_parse_from(["read", "src/lib.rs", "--focus", "enumerate_files"])
                 .unwrap();
         match input.cmd {
-            BatchCmd::Read { ref args } => {
+            BatchCmd::Read { ref args, .. } => {
                 assert_eq!(args.path, "src/lib.rs");
                 assert_eq!(args.focus.as_deref(), Some("enumerate_files"));
             }
@@ -610,14 +755,14 @@ mod tests {
     #[test]
     fn test_parse_health() {
         let input = BatchInput::try_parse_from(["health"]).unwrap();
-        assert!(matches!(input.cmd, BatchCmd::Health));
+        assert!(matches!(input.cmd, BatchCmd::Health { .. }));
     }
 
     #[test]
     fn test_parse_notes() {
         let input = BatchInput::try_parse_from(["notes"]).unwrap();
         match input.cmd {
-            BatchCmd::Notes { ref args } => {
+            BatchCmd::Notes { ref args, .. } => {
                 assert!(!args.warnings);
                 assert!(!args.patterns);
             }
@@ -629,7 +774,7 @@ mod tests {
     fn test_parse_notes_warnings() {
         let input = BatchInput::try_parse_from(["notes", "--warnings"]).unwrap();
         match input.cmd {
-            BatchCmd::Notes { ref args } => {
+            BatchCmd::Notes { ref args, .. } => {
                 assert!(args.warnings);
                 assert!(!args.patterns);
             }
@@ -641,7 +786,7 @@ mod tests {
     fn test_parse_notes_patterns() {
         let input = BatchInput::try_parse_from(["notes", "--patterns"]).unwrap();
         match input.cmd {
-            BatchCmd::Notes { ref args } => {
+            BatchCmd::Notes { ref args, .. } => {
                 assert!(!args.warnings);
                 assert!(args.patterns);
             }
@@ -653,7 +798,7 @@ mod tests {
     fn test_parse_blame() {
         let input = BatchInput::try_parse_from(["blame", "my_func"]).unwrap();
         match input.cmd {
-            BatchCmd::Blame { ref args } => {
+            BatchCmd::Blame { ref args, .. } => {
                 assert_eq!(args.name, "my_func");
                 assert_eq!(args.depth, 10); // default
                 assert!(!args.callers);
@@ -667,7 +812,7 @@ mod tests {
         let input =
             BatchInput::try_parse_from(["blame", "my_func", "-d", "5", "--callers"]).unwrap();
         match input.cmd {
-            BatchCmd::Blame { ref args } => {
+            BatchCmd::Blame { ref args, .. } => {
                 assert_eq!(args.name, "my_func");
                 assert_eq!(args.depth, 5);
                 assert!(args.callers);
@@ -693,7 +838,9 @@ mod tests {
             args: crate::cli::args::CallersArgs {
                 name: "foo".into(),
                 cross_project: false,
+                limit_arg: crate::cli::args::LimitArg { limit: 5 },
             },
+            output: TextJsonArgs { json: false },
         };
         assert!(callers.is_pipeable());
 
@@ -703,17 +850,28 @@ mod tests {
                 limit: 5,
                 tokens: None,
             },
+            output: TextJsonArgs { json: false },
         };
         assert!(scout.is_pipeable());
 
         // Non-pipeable variants: should return false.
-        assert!(!BatchCmd::Stats.is_pipeable());
-        assert!(!BatchCmd::Health.is_pipeable());
-        assert!(!BatchCmd::Gc.is_pipeable());
+        assert!(!BatchCmd::Stats {
+            output: TextJsonArgs { json: false }
+        }
+        .is_pipeable());
+        assert!(!BatchCmd::Health {
+            output: TextJsonArgs { json: false }
+        }
+        .is_pipeable());
+        assert!(!BatchCmd::Gc {
+            output: TextJsonArgs { json: false }
+        }
+        .is_pipeable());
         assert!(!BatchCmd::Refresh.is_pipeable());
         assert!(!BatchCmd::Help.is_pipeable());
         assert!(!BatchCmd::Stale {
             args: crate::cli::args::StaleArgs { count_only: false },
+            output: TextJsonArgs { json: false },
         }
         .is_pipeable());
 
@@ -722,6 +880,7 @@ mod tests {
                 include_pub: false,
                 min_confidence: DeadConfidence::Low,
             },
+            output: TextJsonArgs { json: false },
         };
         assert!(!dead.is_pipeable());
     }

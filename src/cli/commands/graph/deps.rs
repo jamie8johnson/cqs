@@ -75,20 +75,24 @@ pub(crate) fn cmd_deps(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
     reverse: bool,
+    limit: usize,
     cross_project: bool,
     json: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_deps", name, reverse, cross_project).entered();
+    let _span = tracing::info_span!("cmd_deps", name, reverse, limit, cross_project).entered();
     if cross_project {
         tracing::warn!("cross-project deps not yet supported, returning local result");
     }
     let store = &ctx.store;
     let root = &ctx.root;
+    // Task A3: cap on user list (forward) or used-types list (reverse).
+    let limit = limit.clamp(1, 100);
 
     if reverse {
-        let types = store
+        let mut types = store
             .get_types_used_by(name)
             .context("Failed to load type dependencies")?;
+        types.truncate(limit);
         if json {
             let output = build_deps_reverse(name, &types);
             println!("{}", serde_json::to_string_pretty(&output)?);
@@ -108,9 +112,10 @@ pub(crate) fn cmd_deps(
             println!("Total: {} type(s)", types.len());
         }
     } else {
-        let users = store
+        let mut users = store
             .get_type_users(name)
             .context("Failed to load type users")?;
+        users.truncate(limit);
         if json {
             let output = build_deps_forward(&users, root);
             println!("{}", serde_json::to_string_pretty(&output)?);
