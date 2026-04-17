@@ -9,16 +9,24 @@ pub(crate) fn cmd_onboard(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     concept: &str,
     depth: usize,
+    limit: usize,
     json: bool,
     max_tokens: Option<usize>,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_onboard", concept, depth, ?max_tokens).entered();
+    let _span = tracing::info_span!("cmd_onboard", concept, depth, limit, ?max_tokens).entered();
     let store = &ctx.store;
     let root = &ctx.root;
     let embedder = ctx.embedder()?;
     let depth = depth.clamp(1, 5);
+    // Task A3: cap on call_chain + callers + tests entries. Applied AFTER the
+    // BFS+search so the entry_point is always preserved and so the order
+    // (relevance → depth) is respected before truncation.
+    let limit = limit.clamp(1, 100);
 
-    let result = onboard(store, embedder, concept, root, depth)?;
+    let mut result = onboard(store, embedder, concept, root, depth)?;
+    result.call_chain.truncate(limit);
+    result.callers.truncate(limit);
+    result.tests.truncate(limit);
 
     if json {
         let mut output =

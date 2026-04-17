@@ -303,13 +303,16 @@ pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOu
 pub(crate) fn cmd_explain(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     target: &str,
+    limit: usize,
     json: bool,
     max_tokens: Option<usize>,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_explain", target).entered();
+    let _span = tracing::info_span!("cmd_explain", target, limit).entered();
     let store = &ctx.store;
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
+    // Task A3: cap on callers/callees/similar lists in the function card.
+    let limit = limit.clamp(1, 100);
 
     let embedder = if max_tokens.is_some() {
         Some(ctx.embedder()?)
@@ -317,7 +320,7 @@ pub(crate) fn cmd_explain(
         None
     };
 
-    let data = build_explain_data(
+    let mut data = build_explain_data(
         store,
         cqs_dir,
         target,
@@ -326,6 +329,13 @@ pub(crate) fn cmd_explain(
         embedder,
         ctx.cli.try_model_config()?,
     )?;
+
+    // Truncate per-section AFTER hints (caller_count is computed from the
+    // un-truncated callers list inside `build_explain_data`, so the displayed
+    // hint counts remain accurate even when the user passes a small `--limit`).
+    data.callers.truncate(limit);
+    data.callees.truncate(limit);
+    data.similar.truncate(limit);
 
     // Proactive staleness warning
     if !ctx.cli.quiet && !ctx.cli.no_stale_check {

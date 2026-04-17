@@ -1306,3 +1306,12 @@ mentions = [
     "classifier",
     "alpha",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "Task A3 + #8: BatchCmd variants now flatten TextJsonArgs/OutputArgs alongside their args struct so --json works in batch (no-op since batch always emits JSON). Pattern is destructure with .. in dispatch. Limit standardized via shared LimitArg flatten on graph commands."
+mentions = [
+    "src/cli/args.rs",
+    "src/cli/batch/commands.rs",
+    "src/cli/definitions.rs",
+]

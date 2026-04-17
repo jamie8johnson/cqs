@@ -68,13 +68,15 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Init) => return cmd_init(&cli),
         Some(Commands::Cache { ref subcmd }) => return cmd_cache(subcmd),
         Some(Commands::Doctor { fix, verbose, json }) => {
-            return cmd_doctor(cli.model.as_deref(), fix, verbose, json)
+            // Task #8: top-level `--json` cascades into doctor's `--json` so
+            // `cqs --json doctor --verbose` emits JSON.
+            return cmd_doctor(cli.model.as_deref(), fix, verbose, cli.json || json);
         }
         // Task B2: ping does direct socket I/O via cqs::daemon_translate::
         // daemon_ping. Must NOT open a Store (works on fresh projects pre-
         // `cqs init`). Exits 1 if no daemon is running so health-monitor
         // scripts can act on the result.
-        Some(Commands::Ping { json }) => return cmd_ping(json),
+        Some(Commands::Ping { json }) => return cmd_ping(cli.json || json),
         Some(Commands::Index { ref args }) => return cmd_index(&cli, args),
         Some(Commands::Watch {
             debounce,
@@ -139,7 +141,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             return if reset {
                 cmd_telemetry_reset(&cqs_dir, reason.as_deref())
             } else {
-                cmd_telemetry(&cqs_dir, output.json, all)
+                cmd_telemetry(&cqs_dir, cli.json || output.json, all)
             }
         }
         Some(Commands::Project { ref subcmd }) => {
@@ -155,7 +157,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
                 args.target.as_deref(),
                 args.threshold,
                 args.lang.as_deref(),
-                output.json,
+                cli.json || output.json,
             )
         }
         Some(Commands::Drift {
@@ -168,18 +170,18 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
                 args.min_drift,
                 args.lang.as_deref(),
                 args.limit,
-                output.json,
+                cli.json || output.json,
             )
         }
         Some(Commands::Ref { ref subcmd }) => return cmd_ref(&cli, subcmd),
         // Special: uses read-write CommandContext::open_readwrite()
-        Some(Commands::Gc { ref output }) => return cmd_gc(&cli, output.json),
+        Some(Commands::Gc { ref output }) => return cmd_gc(&cli, cli.json || output.json),
         // AuditMode doesn't use a store — uses find_project_root + resolve_index_dir
         Some(Commands::AuditMode {
             ref state,
             ref expires,
             ref output,
-        }) => return cmd_audit_mode(state.as_ref(), expires, output.json),
+        }) => return cmd_audit_mode(state.as_ref(), expires, cli.json || output.json),
         // Notes: opening the readonly store is optional — mutations
         // (`add`/`update`/`remove`) must work on a fresh project before any
         // `cqs init && cqs index` has run (so a user can capture notes from
@@ -195,22 +197,36 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     }
 
     // ── Group B: store-using commands ───────────────────────────────────────
+    //
+    // Task #8 — `--json` precedence: every subcommand reads
+    // `cli.json || output.json` (OR semantics). Top-level `--json` wins when
+    // set; the subcommand's `--json` is the fallback. For the impact/trace
+    // pair (`OutputArgs` with `--format`), `cli.json` short-circuits to
+    // `OutputFormat::Json` regardless of `--format`. This makes
+    // `cqs --json <subcmd> ...` always emit JSON without forcing the user
+    // to remember whether the subcommand has its own `--json`.
     let ctx = crate::cli::CommandContext::open_readonly(&cli)?;
 
     match cli.command {
         Some(Commands::Affected {
             ref base,
             ref output,
-        }) => cmd_affected(&ctx, base.as_deref(), output.json),
+        }) => cmd_affected(&ctx, base.as_deref(), cli.json || output.json),
         Some(Commands::Blame {
             ref args,
             ref output,
-        }) => cmd_blame(&ctx, &args.name, args.depth, args.callers, output.json),
+        }) => cmd_blame(
+            &ctx,
+            &args.name,
+            args.depth,
+            args.callers,
+            cli.json || output.json,
+        ),
         Some(Commands::Brief {
             ref path,
             ref output,
-        }) => cmd_brief(&ctx, path, output.json),
-        Some(Commands::Stats { ref output }) => cmd_stats(&ctx, output.json),
+        }) => cmd_brief(&ctx, path, cli.json || output.json),
+        Some(Commands::Stats { ref output }) => cmd_stats(&ctx, cli.json || output.json),
         Some(Commands::Deps {
             ref args,
             ref output,
@@ -218,43 +234,84 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             &ctx,
             &args.name,
             args.reverse,
+            args.limit_arg.limit,
             args.cross_project,
-            output.json,
+            cli.json || output.json,
         ),
         Some(Commands::Callers {
             ref args,
             ref output,
-        }) => cmd_callers(&ctx, &args.name, args.cross_project, output.json),
+        }) => cmd_callers(
+            &ctx,
+            &args.name,
+            args.limit_arg.limit,
+            args.cross_project,
+            cli.json || output.json,
+        ),
         Some(Commands::Callees {
             ref args,
             ref output,
-        }) => cmd_callees(&ctx, &args.name, args.cross_project, output.json),
+        }) => cmd_callees(
+            &ctx,
+            &args.name,
+            args.limit_arg.limit,
+            args.cross_project,
+            cli.json || output.json,
+        ),
         Some(Commands::Onboard {
             ref args,
             ref output,
-        }) => cmd_onboard(&ctx, &args.query, args.depth, output.json, args.tokens),
+        }) => cmd_onboard(
+            &ctx,
+            &args.query,
+            args.depth,
+            args.limit_arg.limit,
+            cli.json || output.json,
+            args.tokens,
+        ),
         Some(Commands::Neighbors {
             ref name,
             limit,
             ref output,
-        }) => cmd_neighbors(&ctx, name, limit, output.json),
+        }) => cmd_neighbors(&ctx, name, limit, cli.json || output.json),
         Some(Commands::Explain {
             ref args,
             ref output,
-        }) => cmd_explain(&ctx, &args.name, output.json, args.tokens),
+        }) => cmd_explain(
+            &ctx,
+            &args.name,
+            args.limit_arg.limit,
+            cli.json || output.json,
+            args.tokens,
+        ),
         Some(Commands::Similar {
             ref args,
             ref output,
-        }) => cmd_similar(&ctx, &args.name, args.limit, args.threshold, output.json),
+        }) => cmd_similar(
+            &ctx,
+            &args.name,
+            args.limit,
+            args.threshold,
+            cli.json || output.json,
+        ),
         Some(Commands::Impact {
             ref args,
             ref output,
         }) => {
-            let format = output.effective_format();
+            // Task #8: top-level `--json` (cli.json) overrides whatever the
+            // subcommand's `--format` says. `effective_format()` already
+            // honours `output.json`; we OR cli.json on top so
+            // `cqs --json impact foo` works without `--json` on the subcommand.
+            let format = if cli.json {
+                crate::cli::OutputFormat::Json
+            } else {
+                output.effective_format()
+            };
             cmd_impact(
                 &ctx,
                 &args.name,
                 args.depth,
+                args.limit_arg.limit,
                 &format,
                 args.suggest_tests,
                 args.type_impact,
@@ -264,19 +321,32 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::ImpactDiff {
             ref args,
             ref output,
-        }) => cmd_impact_diff(&ctx, args.base.as_deref(), args.stdin, output.json),
+        }) => cmd_impact_diff(
+            &ctx,
+            args.base.as_deref(),
+            args.stdin,
+            cli.json || output.json,
+        ),
         Some(Commands::Review {
             ref args,
             ref output,
         }) => {
-            let format = output.effective_format();
+            let format = if cli.json {
+                crate::cli::OutputFormat::Json
+            } else {
+                output.effective_format()
+            };
             cmd_review(&ctx, args.base.as_deref(), args.stdin, &format, args.tokens)
         }
         Some(Commands::Ci {
             ref args,
             ref output,
         }) => {
-            let format = output.effective_format();
+            let format = if cli.json {
+                crate::cli::OutputFormat::Json
+            } else {
+                output.effective_format()
+            };
             cmd_ci(
                 &ctx,
                 args.base.as_deref(),
@@ -290,12 +360,18 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref args,
             ref output,
         }) => {
-            let format = output.effective_format();
+            // Task #8: cli.json wins over the subcommand format.
+            let format = if cli.json {
+                crate::cli::OutputFormat::Json
+            } else {
+                output.effective_format()
+            };
             cmd_trace(
                 &ctx,
                 &args.source,
                 &args.target,
                 args.max_depth as usize,
+                args.limit_arg.limit,
                 &format,
                 args.cross_project,
             )
@@ -307,8 +383,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             &ctx,
             &args.name,
             args.depth,
+            args.limit_arg.limit,
             args.cross_project,
-            output.json,
+            cli.json || output.json,
         ),
         Some(Commands::Context {
             ref args,
@@ -316,7 +393,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }) => cmd_context(
             &ctx,
             &args.path,
-            output.json,
+            cli.json || output.json,
             args.summary,
             args.compact,
             args.tokens,
@@ -324,7 +401,12 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Dead {
             ref args,
             ref output,
-        }) => cmd_dead(&ctx, output.json, args.include_pub, args.min_confidence),
+        }) => cmd_dead(
+            &ctx,
+            cli.json || output.json,
+            args.include_pub,
+            args.min_confidence,
+        ),
         Some(Commands::Gather {
             ref args,
             ref output,
@@ -336,37 +418,48 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             limit: args.limit,
             max_tokens: args.tokens,
             ref_name: args.ref_name.as_deref(),
-            json: output.json,
+            json: cli.json || output.json,
         }),
-        Some(Commands::Health { ref output }) => cmd_health(&ctx, output.json),
+        Some(Commands::Health { ref output }) => cmd_health(&ctx, cli.json || output.json),
         Some(Commands::Stale {
             ref args,
             ref output,
-        }) => cmd_stale(&ctx, output.json, args.count_only),
+        }) => cmd_stale(&ctx, cli.json || output.json, args.count_only),
         Some(Commands::Suggest {
             ref args,
             ref output,
-        }) => cmd_suggest(&ctx, output.json, args.apply),
+        }) => cmd_suggest(&ctx, cli.json || output.json, args.apply),
         Some(Commands::Read {
             ref args,
             ref output,
-        }) => cmd_read(&ctx, &args.path, args.focus.as_deref(), output.json),
+        }) => cmd_read(
+            &ctx,
+            &args.path,
+            args.focus.as_deref(),
+            cli.json || output.json,
+        ),
         Some(Commands::Reconstruct {
             ref path,
             ref output,
-        }) => cmd_reconstruct(&ctx, path, output.json),
+        }) => cmd_reconstruct(&ctx, path, cli.json || output.json),
         Some(Commands::Related {
             ref args,
             ref output,
-        }) => cmd_related(&ctx, &args.name, args.limit, output.json),
+        }) => cmd_related(&ctx, &args.name, args.limit, cli.json || output.json),
         Some(Commands::Where {
             ref args,
             ref output,
-        }) => cmd_where(&ctx, &args.description, args.limit, output.json),
+        }) => cmd_where(&ctx, &args.description, args.limit, cli.json || output.json),
         Some(Commands::Scout {
             ref args,
             ref output,
-        }) => cmd_scout(&ctx, &args.query, args.limit, output.json, args.tokens),
+        }) => cmd_scout(
+            &ctx,
+            &args.query,
+            args.limit,
+            cli.json || output.json,
+            args.tokens,
+        ),
         Some(Commands::Plan {
             ref args,
             ref output,
@@ -374,7 +467,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             &ctx,
             &args.description,
             args.limit,
-            output.json,
+            cli.json || output.json,
             args.tokens,
         ),
         Some(Commands::Task {
@@ -384,7 +477,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             &ctx,
             &args.description,
             args.limit,
-            output.json,
+            cli.json || output.json,
             args.tokens,
             args.brief,
         ),

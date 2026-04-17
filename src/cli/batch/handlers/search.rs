@@ -510,7 +510,7 @@ mod tests {
         full.extend_from_slice(cli_args);
         let input = BatchInput::try_parse_from(&full).expect("clap parse failed");
         match input.cmd {
-            BatchCmd::Search { args } => args,
+            BatchCmd::Search { args, .. } => args,
             other => panic!("Expected Search, got {:?}", other),
         }
     }

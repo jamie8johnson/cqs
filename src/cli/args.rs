@@ -11,6 +11,24 @@ use clap::Args;
 use super::{parse_finite_f32, parse_nonzero_usize};
 use cqs::store::DeadConfidence;
 
+/// Shared `--limit / -n` argument for graph commands that previously had no
+/// per-subcommand limit (callers, callees, deps, impact, test-map, trace,
+/// onboard, explain). Default mirrors the top-level `Cli::limit` (= 5) so a
+/// bare `cqs <query>` and `cqs callers <name> -n N` agree on the cap.
+///
+/// Task A3: standardises `--limit` across every graph subcommand. Previously
+/// only the top-level `Cli` accepted `--limit`, so batch users had no way to
+/// cap graph output (`echo 'callers Foo --limit 5' | cqs batch` errored with
+/// "unexpected argument"). Embedding this struct via `#[command(flatten)]`
+/// gives every subcommand its own `--limit` while keeping the default in one
+/// place.
+#[derive(Args, Debug, Clone)]
+pub(crate) struct LimitArg {
+    /// Max results to return (per category for impact/explain)
+    #[arg(short = 'n', long, default_value = "5")]
+    pub limit: usize,
+}
+
 /// Arguments for semantic search: the flagship command. Shared between CLI
 /// `search` (top-level + `cqs search …`) and batch `search`.
 ///
@@ -165,6 +183,10 @@ pub(crate) struct ImpactArgs {
     /// Query callers/impact across all configured reference projects
     #[arg(long)]
     pub cross_project: bool,
+    /// Task A3: per-section truncation cap (callers, transitive_callers,
+    /// tests, type_impacted). Defaults to 5 to match the top-level `Cli`.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
 }
 
 /// Arguments shared between CLI `scout` and batch `scout`.
@@ -246,6 +268,12 @@ pub(crate) struct TraceArgs {
     /// Trace across all configured reference projects
     #[arg(long)]
     pub cross_project: bool,
+    /// Task A3: cap on intermediate hops in the rendered path. Trace
+    /// returns a single shortest path today; the cap applies to future
+    /// k-shortest variants and to defensive truncation when path length
+    /// exceeds expectation. Accepted for parity with other graph commands.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
 }
 
 /// Arguments shared between CLI `callers`/`callees` and batch equivalents.
@@ -256,6 +284,11 @@ pub(crate) struct CallersArgs {
     /// Query callers across all configured reference projects
     #[arg(long)]
     pub cross_project: bool,
+    /// Task A3: cap on callers/callees returned. Defaults to 5 to match the
+    /// top-level `Cli`. The handler truncates the post-resolution list before
+    /// rendering — both text and JSON paths respect the cap.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
 }
 
 /// Arguments shared between CLI `deps` and batch `deps`.
@@ -269,6 +302,10 @@ pub(crate) struct DepsArgs {
     /// Query across all configured reference projects
     #[arg(long)]
     pub cross_project: bool,
+    /// Task A3: cap on type users (forward) or used types (reverse). Defaults
+    /// to 5 to match the top-level `Cli`. Truncated after fetch.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
 }
 
 /// Arguments shared between CLI `test-map` and batch `test-map`.
@@ -282,6 +319,10 @@ pub(crate) struct TestMapArgs {
     /// Search for tests across all configured reference projects
     #[arg(long)]
     pub cross_project: bool,
+    /// Task A3: cap on test matches returned. Defaults to 5 to match the
+    /// top-level `Cli`. Applied after BFS, before rendering.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
 }
 
 /// Arguments shared between CLI `related` and batch `related`.
@@ -305,6 +346,11 @@ pub(crate) struct OnboardArgs {
     /// Maximum token budget
     #[arg(long, value_parser = parse_nonzero_usize)]
     pub tokens: Option<usize>,
+    /// Task A3: cap on call_chain + callers entries (entry_point always
+    /// kept). Defaults to 5 to match the top-level `Cli`. Applies after
+    /// `--depth` traversal and before `--tokens` packing.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
 }
 
 /// Arguments shared between CLI `explain` and batch `explain`.
@@ -315,6 +361,10 @@ pub(crate) struct ExplainArgs {
     /// Maximum token budget (includes source content within budget)
     #[arg(long, value_parser = parse_nonzero_usize)]
     pub tokens: Option<usize>,
+    /// Task A3: cap on callers/callees/similar lists in the function card.
+    /// Defaults to 5 to match the top-level `Cli`. Applied per-section.
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
 }
 
 /// Arguments shared between CLI `where` and batch `where`.

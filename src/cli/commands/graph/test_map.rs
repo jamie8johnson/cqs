@@ -181,10 +181,14 @@ pub(crate) fn cmd_test_map(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
     max_depth: usize,
+    limit: usize,
     cross_project: bool,
     json: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_test_map", name, cross_project).entered();
+    let _span = tracing::info_span!("cmd_test_map", name, limit, cross_project).entered();
+    // Task A3: cap on rendered matches. Default is 5 (LimitArg). Truncates the
+    // BFS-derived matches AFTER sorting so the "closest" tests rank first.
+    let limit = limit.clamp(1, 100);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
@@ -195,7 +199,8 @@ pub(crate) fn cmd_test_map(
         let summaries: Vec<cqs::store::ChunkSummary> =
             test_chunks.iter().map(|tc| tc.chunk.clone()).collect();
 
-        let matches = build_test_map(name, &graph, &summaries, &ctx.root, max_depth);
+        let mut matches = build_test_map(name, &graph, &summaries, &ctx.root, max_depth);
+        matches.truncate(limit);
 
         if json {
             let output = build_test_map_output(name, &matches);
@@ -230,7 +235,8 @@ pub(crate) fn cmd_test_map(
         .find_test_chunks()
         .context("Failed to find test chunks")?;
 
-    let matches = build_test_map(&target_name, &graph, &test_chunks, root, max_depth);
+    let mut matches = build_test_map(&target_name, &graph, &test_chunks, root, max_depth);
+    matches.truncate(limit);
 
     if json {
         let output = build_test_map_output(&target_name, &matches);

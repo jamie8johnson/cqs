@@ -10,29 +10,40 @@ use cqs::{
 use crate::cli::commands::resolve::resolve_target;
 use crate::cli::OutputFormat;
 
+// Task A3 added `limit` as the 8th parameter; the CLI dispatcher inflates a
+// shared arg struct rather than calling this directly, so we accept the lint
+// here instead of forcing every call site through a wrapper.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_impact(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     name: &str,
     depth: usize,
+    limit: usize,
     format: &OutputFormat,
     do_suggest_tests: bool,
     include_types: bool,
     cross_project: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_impact", name, cross_project).entered();
+    let _span = tracing::info_span!("cmd_impact", name, limit, cross_project).entered();
     let store = &ctx.store;
     let root = &ctx.root;
     let depth = depth.clamp(1, 10);
+    // Task A3: per-section truncation cap. Default 5 from `LimitArg`. The
+    // analyzer returns the full result; we apply the cap at render time so
+    // the underlying graph data is unaffected (other consumers — mermaid,
+    // suggest_tests — still see the full set).
+    let limit = limit.clamp(1, 100);
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(root)?;
-        let result = cqs::cross_project::analyze_impact_cross(
+        let mut result = cqs::cross_project::analyze_impact_cross(
             &mut cross_ctx,
             name,
             depth,
             do_suggest_tests,
             include_types,
         )?;
+        truncate_impact_sections(&mut result, limit);
 
         if matches!(format, OutputFormat::Mermaid) {
             println!("{}", impact_to_mermaid(&result));
@@ -53,7 +64,7 @@ pub(crate) fn cmd_impact(
     let chunk = resolved.chunk;
 
     // Run shared impact analysis
-    let result = analyze_impact(
+    let mut result = analyze_impact(
         store,
         &chunk.name,
         root,
@@ -63,12 +74,15 @@ pub(crate) fn cmd_impact(
         },
     )?;
 
-    // Compute test suggestions if requested
+    // Compute test suggestions if requested (BEFORE truncation so the
+    // suggestion engine sees every untested caller, not just the first N).
     let suggestions = if do_suggest_tests {
         suggest_tests(store, &result, root)
     } else {
         Vec::new()
     };
+
+    truncate_impact_sections(&mut result, limit);
 
     if matches!(format, OutputFormat::Mermaid) {
         println!("{}", impact_to_mermaid(&result));
@@ -97,6 +111,18 @@ pub(crate) fn cmd_impact(
     }
 
     Ok(())
+}
+
+/// Task A3: truncate each list inside `ImpactResult` to `limit`. Operates
+/// in-place — used by both the local and cross-project paths in `cmd_impact`.
+/// Direct callers, transitive callers, affected tests, and type-impacted
+/// callers each get the same cap (a single `--limit` controls all four
+/// sections; no per-section knob today).
+fn truncate_impact_sections(result: &mut cqs::ImpactResult, limit: usize) {
+    result.callers.truncate(limit);
+    result.transitive_callers.truncate(limit);
+    result.tests.truncate(limit);
+    result.type_impacted.truncate(limit);
 }
 
 /// Display test suggestions with colored output
