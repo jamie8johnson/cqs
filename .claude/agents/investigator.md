@@ -33,3 +33,4 @@ Return a structured brief, not raw JSON. The consumer is an agent or human who n
 - Do NOT skip the cqs commands — they're the whole point
 - If cqs is unavailable, fall back to Grep/Read but note the degraded coverage
 - Keep the brief under 1000 tokens
+- **Path discipline**: if you're running in a worktree (cwd contains `.claude/worktrees/`), use paths relative to the project root (e.g. `src/foo.rs`, not `/mnt/c/Projects/cqs/.claude/worktrees/.../src/foo.rs`). Worktree isolation is soft — absolute paths leak into the parent index and pollute search results.

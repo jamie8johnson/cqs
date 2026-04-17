@@ -20,8 +20,10 @@ You explore codebases using cqs for semantic search and structural navigation. F
 - `cqs explain FN --json` — function card (signature, callers, callees, similar)
 - `cqs context FILE --json` — module overview
 - `cqs gather "query" --json` — BFS-expanded context from search seeds
+- `cqs onboard "concept" --json` — guided codebase tour: entry → call chain → types → tests
 - `cqs deps TYPE --json` — type dependencies
 - `cqs trace SOURCE TARGET --json` — shortest call path
+- `cqs similar FN --json` — find duplicate or near-duplicate code
 
 ## When to use what
 
@@ -30,6 +32,8 @@ You explore codebases using cqs for semantic search and structural navigation. F
 - "How does module Z work" → `cqs context src/z.rs --json`
 - "How are A and B connected" → `cqs trace A B --json`
 - "What's similar to function W" → `cqs similar W --json`
+- "Where do I start with concept Q" → `cqs onboard "Q" --json`
+- "Give me everything related to topic T" → `cqs gather "T" --json --tokens 800`
 
 ## Rules
 
