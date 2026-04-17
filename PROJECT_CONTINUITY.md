@@ -8,7 +8,7 @@
 
 **R@5 audit + strategy + gc fix + MMR experiment landed on the same branch** (Tasks #3, #4, #21, #22). Audit shows permissive R@5 = **64.2%** (matches documented v1.27.0 baseline exactly after the gc cleanup). Strict R@5 = 51.4% — the 13pp gap is v3-fixture drift, not retrieval drift. Failure modes: `near_dup_crowding` 60%, `wrong_abstraction` 45%, `unexplained` 15%. Strategy doc: `docs/r5-strategy-2026-04-17.md`.
 
-**MMR result: negative.** Surface-feature MMR (file/dir/name similarity) regressed R@5 at every λ < 1.0 in the v3-test sweep, even after calibrating same-file penalty 1.0 → 0.4. Root cause: pool expansion re-triggered type-boost re-sort, shifting top-1. Code shipped as inert opt-in infrastructure (`CQS_MMR_LAMBDA` env / `SearchFilter.mmr_lambda`) for future embedding-MMR experiments. **Type-boost calibration (CQS_TYPE_BOOST sweep):** noise window ±1pp; default 1.2 stays. **GC fix #21:** dropped 522 worktree+gitignored chunks the daemon was missing because `origin_exists` had a `Path::exists()` fallback that kept any extant file regardless of indexer ownership.
+**MMR result: negative.** Surface-feature MMR regressed R@5 at every λ < 1.0 in the v3-test sweep, even after calibrating same-file penalty 1.0 → 0.4. Code shipped as inert opt-in (`CQS_MMR_LAMBDA` env / `SearchFilter.mmr_lambda`) for future embedding-MMR experiments. **Type-boost calibration:** ±1pp noise window; default 1.2 stays. **GC fix #21:** pruned 522 worktree+gitignored chunks via fixed `origin_exists`. **Eval-data hygiene (#23):** v3_test.v2.json regenerated against current index — 78 strict / 2 basename / 15 name / 14 unresolved. New canonical baseline on v2: **R@1 41.3% / R@5 63.3% / R@20 80.7%** with strict==permissive (no more fixture-drift artifacts). Cleaner future A/B.
 
 **Branch:** `feat/reranker-v2-phase1-calibration`. PR #1031 expanded scope: calibration + audit + strategy + gc fix + MMR infra. CI is in flight (clippy + fmt + test fixes pushed at ad1be3d).
 
@@ -47,9 +47,11 @@ Completed. **Verdict: don't switch.** v9-200k v3 test = R@1 28.4% / R@5 49.5% / 
 
 Strategy ordering per `docs/r5-strategy-2026-04-17.md` (Tier 1 ships independent of Phase 2):
 
-- **Tier 1.1 — Eval-data hygiene** — regenerate `v3_test.json` against current corpus + Gemma re-judge of name-only matches (~14 queries). Half-day. No R@5 change but pre-requisite for trusting future lever measurements.
+- ~~**Tier 1.1 — Eval-data hygiene**~~ — done (#23). v3_test.v2.json regenerated; baseline now strict==permissive at R@5=63.3%. 14 queries unresolved (legitimately no match in current index — flagged with `_unresolved: true`).
 - ~~**Tier 1.2 — MMR re-rank**~~ — tested, **negative result**. Surface-feature MMR regressed R@5 at every tested λ. Code shipped inert as opt-in (`CQS_MMR_LAMBDA`). Embedding-MMR is the obvious follow-up if revisited.
-- ~~**Tier 1.3 — Chunk-type aware boost**~~ — partial test via `CQS_TYPE_BOOST` sweep (1.3 → 2.0). Within ±1pp noise window of default 1.2. Already wired via `extract_type_hints` + Aho-Corasick. Default stands; no action.
+- ~~**Tier 1.3 — Chunk-type aware boost**~~ — `CQS_TYPE_BOOST` sweep (1.3 → 2.0) within ±1pp noise of default 1.2. Already wired via `extract_type_hints` + Aho-Corasick. Default stands.
+
+**Net result for the cheap R@5 lever stack: zero usable lift.** Reranker V2 (Phase 2 in flight) is now the only path to R@5 >70%. ColBERT-class is the only path beyond.
 - **Tier 2 — Reranker V2 Phase 2 in flight + Phase 3** (Tasks #19, #20). Catches `unexplained` (15%) plus likely improves wrong_abstraction. +5-10pp realistic. ~5d to deployment.
 - **Tier 3 — chunker fix for `truncated_gold`** (3 queries). Reindex cost; smaller lift.
 - **JSON output schema standardization** (Task #17) — bigger refactor, runs whenever ergonomics work resumes.
