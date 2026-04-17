@@ -1,0 +1,19 @@
+# Normalize all text files to LF on commit; check out as-is.
+# Eliminates the CRLF-from-WSL-agent-edits churn that has been
+# polluting every PR since v1.27.0.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files (no text conversion)
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.onnx binary
+*.bin binary
+*.db binary
+*.sqlite binary
