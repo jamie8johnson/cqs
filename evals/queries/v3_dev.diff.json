@@ -1,0 +1,756 @@
+{
+  "generated_at": "2026-04-17T03:21:38",
+  "source": "v3_dev.json",
+  "k": 50,
+  "counts": {
+    "strict": 85,
+    "basename": 5,
+    "name": 13,
+    "none": 6
+  },
+  "records": [
+    {
+      "query": "function that embeds a batch of text documents using ONNX",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "tables with a not null text column",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "Rust implementation of VectorIndex for CagraIndex compared to Java",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "methods on EmbeddingCache that take a slice of tuples",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "functions that use argparse AND define a --config argument",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "evals/run_ablation.py",
+        "line_start": 33
+      },
+      "new": {
+        "origin": "evals/calibrate_reranker_labels.py",
+        "line_start": 858
+      }
+    },
+    {
+      "query": "struct definitions in src/impact",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "create llm_summaries table that is not using an auto-incrementing id",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how to implement a search result validation function in Python vs Bash",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "evals/generate_queries.py:70:71d9718a",
+        "name": "validate_query",
+        "origin": "evals/generate_queries.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 70,
+        "line_end": 86
+      }
+    },
+    {
+      "query": "GPU accelerated approximate nearest neighbor index",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": null,
+        "name": "build_vector_index_with_config",
+        "origin": "src/cli/store.rs",
+        "language": "rust",
+        "chunk_type": "function",
+        "line_start": 247,
+        "line_end": 402
+      }
+    },
+    {
+      "query": "how does multi-index search merge results from project and reference indexes",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "LLMClient implementation without specific identifier",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "functions that write TSV headers AND check if path exists",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "EmbedStageContext",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "check if a file needs reindexing based on modification time",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "ChunkSummary",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "SearchFilter struct",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how does the explain command assemble a function card with callers callees and similar",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "function type definitions and type aliases in the codebase",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": null,
+        "name": "Value",
+        "origin": "src/hnsw/persist.rs",
+        "language": "rust",
+        "chunk_type": "typealias",
+        "line_start": 753,
+        "line_end": 753
+      }
+    },
+    {
+      "query": "fn cmd_audit_mode",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "Rust implementation of OCaml type signature return value extraction",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/language/languages.rs",
+        "line_start": 4529
+      },
+      "new": {
+        "origin": "src/language/languages.rs",
+        "line_start": 4550
+      }
+    },
+    {
+      "query": "print pass rate without using a loop",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "Python equivalent of an async generate function that takes signature and preview strings",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "sparse vector search not dense embedding search",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/splade/index.rs",
+        "line_start": 121
+      },
+      "new": {
+        "origin": "src/splade/index.rs",
+        "line_start": 168
+      }
+    },
+    {
+      "query": "structs named CrossProjectCaller AND containing a project field",
+      "match_kind": "basename",
+      "action": "updated",
+      "old": {
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/store/calls/cross_project.rs",
+        "line_start": 36
+      },
+      "new": {
+        "origin": "src/store/calls/cross_project.rs",
+        "line_start": 36
+      }
+    },
+    {
+      "query": "application data storage path",
+      "match_kind": "basename",
+      "action": "updated",
+      "old": {
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "line_start": 51
+      },
+      "new": {
+        "origin": "src/cache.rs",
+        "line_start": 51
+      }
+    },
+    {
+      "query": "sqlite virtual table for text indexing",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "EmbeddingCache",
+      "match_kind": "basename",
+      "action": "updated",
+      "old": {
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "line_start": 40
+      },
+      "new": {
+        "origin": "src/cache.rs",
+        "line_start": 40
+      }
+    },
+    {
+      "query": "table named chunks_fts AND tokenize='unicode61'",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "DiffOutput",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "search by file path glob not by function name",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "methods for formatting",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "shared context struct that holds store embedder and paths for commands",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how does the enrichment pass add call graph context to embeddings",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "function named reindex AND takes optional model argument",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "evals/run_ablation.py:155:9ff05e71",
+        "name": "reindex",
+        "origin": "evals/run_ablation.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 155,
+        "line_end": 183
+      }
+    },
+    {
+      "query": "functions that run cqs search AND use subprocess.run",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "async functions for classify",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how does the embedding pipeline handle GPU failures by requeueing to CPU",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "embed a single query string not a batch of documents",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "crossbeam channel usage for pipeline message passing",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "functions named main AND print dense x sparse ablation",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "NlTemplate enum",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "methods on HnswIndex",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how to implement an async LLM client with caching in Python vs Go",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "llm based query classification",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "eval_callgraph function that is not using a hardcoded query list",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "functions taking a tree_sitter::Node as an argument",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/language/languages.rs",
+        "line_start": 3979
+      },
+      "new": {
+        "origin": "src/language/languages.rs",
+        "line_start": 4000
+      }
+    },
+    {
+      "query": "SpladeEncoder struct",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how to translate a GPU evaluation loop from Python to bash",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "scripts/full_model_matrix_eval.sh:28:2cd03818",
+        "name": "run_hard_eval",
+        "origin": "scripts/full_model_matrix_eval.sh",
+        "language": "bash",
+        "chunk_type": "function",
+        "line_start": 28,
+        "line_end": 41
+      }
+    },
+    {
+      "query": "how to implement a full text search table in SQLite vs PostgreSQL",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "structs representing call graph relationships",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how does the notes system boost or demote search results based on sentiment",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "collect events without adding to pending files if max is reached",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cli/watch.rs",
+        "line_start": 1505
+      },
+      "new": {
+        "origin": "src/cli/watch.rs",
+        "line_start": 1902
+      }
+    },
+    {
+      "query": "tables with an unindexed column",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "Default implementation for PlacementOptions struct",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "SQLite FTS5 virtual table definition",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "compute the blake3 hash of file contents for change detection",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "parse a source code file and extract all chunks from it",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "classify_query",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/search/router.rs",
+        "line_start": 431
+      },
+      "new": {
+        "origin": "src/search/router.rs",
+        "line_start": 524
+      }
+    },
+    {
+      "query": "function load_all_sparse_vectors in Store implementation",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "def main function",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "evals/generate_queries.py",
+        "line_start": 319
+      },
+      "new": {
+        "origin": "evals/calibrate_reranker_labels.py",
+        "line_start": 873
+      }
+    },
+    {
+      "query": "Python equivalent of removing markdown chapter headings using regex",
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "scripts/clean_md.py:173:100f5458",
+        "name": "remove_chapter_headings",
+        "origin": "scripts/clean_md.py",
+        "language": "python",
+        "chunk_type": "function",
+        "line_start": 173,
+        "line_end": 189
+      }
+    },
+    {
+      "query": "how does the doctor command check model index and hardware",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "parse L5X PLC export files into structured text chunks",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "Display trait implementation for human-readable output",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "table for type edges without a target_type_id foreign key",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "database schema migration system for version upgrades",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "methods for finding neighbors in Store",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "create virtual table for notes without indexing the id column",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "impl blocks for CagraIndex",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cagra.rs",
+        "line_start": 748
+      },
+      "new": {
+        "origin": "src/cagra.rs",
+        "line_start": 588
+      }
+    },
+    {
+      "query": "post-processing chunks after tree-sitter extraction",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/language/languages.rs",
+        "line_start": 7998
+      },
+      "new": {
+        "origin": "src/language/languages.rs",
+        "line_start": 8046
+      }
+    },
+    {
+      "query": "LLMClient that is not dependency injection based",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "entry point for markdown cleaning AND executes PDF workflow",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "extract references from text without using a full parser",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "markdown cleaner that is not recursive",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "CacheStats struct",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "focused read showing only a function and its type dependencies",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "methods that return a list of queries AND filter by type",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "default method for the struct",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "tables with a TEXT primary key and BLOB columns",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 22
+      },
+      "new": {
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
+        "line_start": 942
+      }
+    },
+    {
+      "query": "how does the plan command classify tasks and generate checklists",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "methods that call chunk_splade_texts_query AND return a Vec of String pairs",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "find functions similar to a given function by embedding distance",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "functions named find_reference AND defined as pub(crate)",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "sqlite schema for function call graph",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "functions that return a static slice of static strings",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/search/router.rs",
+        "line_start": 267
+      },
+      "new": {
+        "origin": "src/search/router.rs",
+        "line_start": 342
+      }
+    },
+    {
+      "query": "implementation of DriftEntryOutput",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "Section",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "implementations of VectorIndex AND CagraIndex",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "run_index_pipeline",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how to implement a file watch command in Rust vs Go",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/watch.rs",
+        "line_start": 573
+      },
+      "new": {
+        "origin": "src/cli/watch.rs",
+        "line_start": 896
+      }
+    },
+    {
+      "query": "LLM client wrapper class",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "How to implement a file change watcher with index persistence in Rust vs Go",
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cli/watch.rs",
+        "line_start": 1601
+      },
+      "new": {
+        "origin": "src/cli/watch.rs",
+        "line_start": 1998
+      }
+    },
+    {
+      "query": "find_dead_code",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "content based fingerprinting",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "onnx session",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "methods in NameMatcher impl",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "IndexStats",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "create sparse_vectors table without a single primary key column",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "markdown section chunks not code function chunks",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "functions that remove TOC section AND take a list of strings",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "ReviewResult",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "statistics about the embedding cache entries and size",
+      "match_kind": "basename",
+      "action": "updated",
+      "old": {
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
+        "line_start": 373
+      },
+      "new": {
+        "origin": "src/cache.rs",
+        "line_start": 373
+      }
+    },
+    {
+      "query": "lazy model loading to avoid startup overhead for simple commands",
+      "match_kind": "basename",
+      "action": "updated",
+      "old": {
+        "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/batch/mod.rs",
+        "line_start": 170
+      },
+      "new": {
+        "origin": "src/cli/batch/mod.rs",
+        "line_start": 170
+      }
+    },
+    {
+      "query": "implementation of DiffTestInfo",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "verify if tokens contain pipe not using a for loop",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "how to define a function call schema in SQLite vs PostgreSQL",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "format search results as JSON for CLI output",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "assign_splits function AND takes held_out_ratio as argument",
+      "match_kind": "strict",
+      "action": "no_change"
+    },
+    {
+      "query": "CrossProjectCaller struct without a custom serializer",
+      "match_kind": "strict",
+      "action": "no_change"
+    }
+  ]
+}

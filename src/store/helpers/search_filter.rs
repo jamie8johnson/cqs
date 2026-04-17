@@ -56,6 +56,16 @@ pub struct SearchFilter {
     /// This is additive (boost), not restrictive (filter) — non-matching
     /// types still appear, just ranked slightly lower.
     pub type_boost_types: Option<Vec<ChunkType>>,
+    /// Maximum Marginal Relevance λ ∈ [0.0, 1.0]. None disables MMR.
+    ///
+    /// 1.0 = pure relevance (same as no MMR). 0.0 = pure diversity.
+    /// 0.7 is a reasonable starting point for diversifying the top-K.
+    /// MMR runs after parent dedup and type boost, before truncating to
+    /// `limit` — so the candidate pool size matters (the post-RRF pool
+    /// is `limit * 2`, which is the working set for diversification).
+    /// See `src/search/mmr.rs` for the surface-feature similarity model
+    /// and `docs/audit-r5-failure-modes.md` for the motivating data.
+    pub mmr_lambda: Option<f32>,
 }
 
 impl Default for SearchFilter {
@@ -72,6 +82,7 @@ impl Default for SearchFilter {
             enable_splade: false,
             splade_alpha: 0.7,
             type_boost_types: None,
+            mmr_lambda: None,
         }
     }
 }

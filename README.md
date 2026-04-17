@@ -745,6 +745,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_SQLITE_CACHE_SIZE` | `-16384` (`-4096` for `open_readonly`) | SQLite `cache_size` PRAGMA. Negative = kibibytes, positive = page count. |
 | `CQS_TELEMETRY` | `0` | Set to `1` to enable command usage telemetry |
 | `CQS_TEST_MAP_MAX_NODES` | `10000` | Max BFS nodes in test-map traversal |
+| `CQS_MMR_LAMBDA` | unset (disabled) | Maximum Marginal Relevance λ ∈ `[0.0, 1.0]` for opt-in result diversification. `1.0` = pure relevance (no-op), `0.0` = pure diversity. **Note**: surface-feature MMR is currently inert under the default non-RRF pool size (no candidates to diversify across). The plumbing is in place for embedding-MMR experiments — see `src/search/mmr.rs`. |
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
 | `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
 | `CQS_WATCH_DEBOUNCE_MS` | `500` (inotify) / `1500` (WSL/poll auto) | Watch debounce window (milliseconds). Takes precedence over `--debounce`. |
