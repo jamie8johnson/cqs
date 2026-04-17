@@ -1,4 +1,12 @@
-# ColBERT Integration — Jina-ColBERT-v2 as 2-stage Reranker
+# ColBERT Integration — ColBERT-XM as 2-stage Reranker
+
+> **License correction (2026-04-17):** the original draft of this plan
+> targeted `jinaai/jina-colbert-v2`. That model is CC-BY-NC-4.0 — non-
+> commercial only — which makes it unsuitable as a default for cqs (an
+> open-source project users can deploy commercially). Switched to
+> `antoinelouis/colbert-xm` (MIT, 81-language XMOD-based late
+> interaction). Jina is still on the table as an internal-research-only
+> ceiling reference, never as a shipped default.
 
 **Created:** 2026-04-17  
 **Sequencing:** runs after Phase 3 reranker training lands or fails (`docs/plans/2026-04-17-phase3-reranker-training.md`).  
@@ -22,20 +30,39 @@ This staging matches the "Reranker V2 first, ColBERT as confirmation" sequencing
 
 ## Off-the-shelf path
 
-- **Model:** `jinaai/jina-colbert-v2` from HuggingFace
-  - Multilingual (89 languages), but the 9 we care about (rust, python, js, ts, go, java, cpp, ruby, php) are all in-distribution for Jina's training mix
-  - 137M params, fp16 fits in <12GB → RTX 4000 (8GB) at fp16/int8, or A6000 if convenient
-  - Released under Apache-2.0
-- **Engine:** PyLate or sentence-transformers integration. Skip WARP for the first pass — it's a latency optimization that only matters once we have a per-token index.
-- **Inference shape:** `MaxSim(query_tokens, doc_tokens)` for each (query, candidate) pair. Sum over query token max-similarities to a doc token. The "late interaction" is that token-level matching happens at scoring time, not at index time.
+- **Model:** `antoinelouis/colbert-xm` from HuggingFace
+  - **MIT licensed** — safe to ship as cqs default; users can deploy
+    commercially without license friction
+  - Backbone: XMOD (cross-lingual modular). Fine-tuned on English
+    MS-MARCO; XMOD adapters give zero-shot transfer to 81 languages
+  - 14 languages explicitly evaluated on mMARCO; programming-language
+    natural language headers ("function", "returns", "param", etc.)
+    are well-covered. Code identifier handling untested — that's our
+    A/B job
+  - ~270M params (XLM-R-base + XMOD adapters); fp16 fits in <8GB
+    → RTX 4000 viable
+- **Alternate (research-only):** `jinaai/jina-colbert-v2` (CC-BY-NC-4.0)
+  - 137M params, 89 languages, generally stronger multilingual numbers
+    than ColBERT-XM in the paper
+  - Use ONLY as a ceiling reference in internal eval; never ship as
+    default. If it's a much higher ceiling than ColBERT-XM, that's
+    motivation to either license-clear or train our own permissive
+    multilingual ColBERT
+- **Engine:** PyLate or sentence-transformers integration. Skip WARP for
+  the first pass — it's a latency optimization that only matters once we
+  have a per-token index.
+- **Inference shape:** `MaxSim(query_tokens, doc_tokens)` for each
+  (query, candidate) pair. Sum over query token max-similarities to a
+  doc token. The "late interaction" is that token-level matching happens
+  at scoring time, not at index time.
 
 ## Hardware decision
 
 - Phase 3 cross-encoder runs on A6000 (needs ~6GB)
-- Jina-ColBERT-v2 inference fits on RTX 4000 (8GB) at fp16
+- ColBERT-XM inference fits on RTX 4000 (8GB) at fp16
 - Could run BOTH simultaneously if Phase 3 sequential A/B is going on
 
-Practical: run Phase 3 first (A6000 free of vLLM after labeling), land it, THEN bring up ColBERT on RTX 4000 for the confirmation A/B.
+Practical: run Phase 3 first (A6000 free of vLLM after labeling), land it, THEN bring up ColBERT-XM on RTX 4000 for the confirmation A/B.
 
 ## Wiring change scope
 
@@ -55,7 +82,7 @@ pub struct CrossEncoderReranker { ... }
 impl Reranker for CrossEncoderReranker { ... }
 
 // src/reranker/colbert.rs — new
-pub struct ColbertReranker { /* ONNX session for jina-colbert-v2 */ }
+pub struct ColbertReranker { /* ONNX session for colbert-xm */ }
 impl Reranker for ColbertReranker { ... }
 ```
 
@@ -67,10 +94,10 @@ CLI flag changes:
 
 ## ONNX export
 
-Jina-ColBERT-v2 doesn't ship an ONNX file by default. Two options:
+ColBERT-XM doesn't ship an ONNX file by default. Two options:
 
-1. **Use sentence-transformers Python inference via subprocess.** Slower per-query (Python startup), simpler to wire. Acceptable for proof-of-value.
-2. **Export to ONNX with `optimum`** (`optimum-cli export onnx --model jinaai/jina-colbert-v2 --task feature-extraction colbert.onnx`). Fast-path for production. Requires manual MaxSim implementation in Rust (not trivial — token-level outputs need to be summed over query maxes).
+1. **Use sentence-transformers / PyLate Python inference via subprocess.** Slower per-query (Python startup), simpler to wire. Acceptable for proof-of-value.
+2. **Export to ONNX with `optimum`** (`optimum-cli export onnx --model antoinelouis/colbert-xm --task feature-extraction colbert.onnx`). Fast-path for production. Requires manual MaxSim implementation in Rust (not trivial — token-level outputs need to be summed over query maxes). XMOD adapters add a wrinkle: language-specific adapter routing happens in the forward pass; check that ONNX export captures it correctly before assuming feature parity with the PyTorch reference.
 
 Decision: start with option 1 for the A/B (cheaper to abandon if R@5 doesn't move). Move to option 2 only if we ship.
 
@@ -103,13 +130,13 @@ Decision gate:
 - `src/reranker/cross_encoder.rs` — existing impl refactored
 - `src/reranker/colbert.rs` — new
 - `evals/colbert_inference_smoke.py` — sentence-transformers inference smoke test
-- `models/colbert-jina-v2/` — downloaded model artifacts (gitignored — track via cqs model swap)
+- `models/colbert-xm/` — downloaded model artifacts (gitignored — track via cqs model swap)
 - `docs/colbert-rerank-results.md` — A/B writeup
 
 ## Stopping conditions
 
 - ColBERT inference >2s/query at top-50 candidates → drop top-K to 20 and re-A/B; if still slow, drop the plan
-- Per-language R@5 regresses on rust/cpp (lower-resource in Jina's mix) → restrict ColBERT to high-resource languages (python/java/js)
+- Per-language R@5 regresses on rust/cpp (lower-resource in XMOD's adapter coverage) → restrict ColBERT to high-resource languages (python/java/js)
 - Cross-encoder + ColBERT ensemble is no better than cross-encoder alone → ship cross-encoder, mark ColBERT as parked-with-evidence
 
 ## What's NOT in scope here

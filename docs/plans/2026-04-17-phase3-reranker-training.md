@@ -1,7 +1,7 @@
 # Phase 3 — Reranker V2 Cross-Encoder Training
 
 **Created:** 2026-04-17  
-**Sequencing:** runs after Phase 2 labeling completes (~16:20 CDT 2026-04-17). ColBERT path (`docs/plans/2026-04-17-colbert-jina-v2.md`) runs after this lands or fails.  
+**Sequencing:** runs after Phase 2 labeling completes (~16:20 CDT 2026-04-17). ColBERT path (`docs/plans/2026-04-17-colbert-xm.md`) runs after this lands or fails.  
 **Owner:** human-driven; literature-informed defaults below.
 
 ## Goal
@@ -137,7 +137,7 @@ Existing reranker integration:
 
 ## What's NOT in scope here
 
-- ColBERT integration (separate plan: `docs/plans/2026-04-17-colbert-jina-v2.md`)
+- ColBERT integration (separate plan: `docs/plans/2026-04-17-colbert-xm.md`)
 - Multi-reranker ensemble (deferred until both single-model paths are scored)
 - Per-category reranker gating (decision gate #3 above considers it conditionally)
 - Pairwise loss training (literature consensus is pointwise wins; not running pairwise unless BiXSE result fails to replicate)
