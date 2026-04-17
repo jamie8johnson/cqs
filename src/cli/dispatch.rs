@@ -13,12 +13,12 @@ use super::{batch, chat, watch};
 use super::commands::cmd_convert;
 use super::commands::{
     cmd_affected, cmd_audit_mode, cmd_blame, cmd_brief, cmd_cache, cmd_callees, cmd_callers,
-    cmd_ci, cmd_context, cmd_dead, cmd_deps, cmd_diff, cmd_doctor, cmd_drift, cmd_explain,
-    cmd_export_model, cmd_gather, cmd_gc, cmd_health, cmd_impact, cmd_impact_diff, cmd_index,
-    cmd_init, cmd_neighbors, cmd_notes, cmd_onboard, cmd_plan, cmd_project, cmd_query, cmd_read,
-    cmd_reconstruct, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale,
-    cmd_stats, cmd_suggest, cmd_task, cmd_telemetry, cmd_telemetry_reset, cmd_test_map, cmd_trace,
-    cmd_train_data, cmd_train_pairs, cmd_where,
+    cmd_ci, cmd_context, cmd_dead, cmd_deps, cmd_diff, cmd_doctor, cmd_drift, cmd_eval,
+    cmd_explain, cmd_export_model, cmd_gather, cmd_gc, cmd_health, cmd_impact, cmd_impact_diff,
+    cmd_index, cmd_init, cmd_neighbors, cmd_notes, cmd_onboard, cmd_ping, cmd_plan, cmd_project,
+    cmd_query, cmd_read, cmd_reconstruct, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar,
+    cmd_stale, cmd_stats, cmd_suggest, cmd_task, cmd_telemetry, cmd_telemetry_reset, cmd_test_map,
+    cmd_trace, cmd_train_data, cmd_train_pairs, cmd_where,
 };
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -67,7 +67,14 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     match cli.command {
         Some(Commands::Init) => return cmd_init(&cli),
         Some(Commands::Cache { ref subcmd }) => return cmd_cache(subcmd),
-        Some(Commands::Doctor { fix }) => return cmd_doctor(cli.model.as_deref(), fix),
+        Some(Commands::Doctor { fix, verbose, json }) => {
+            return cmd_doctor(cli.model.as_deref(), fix, verbose, json)
+        }
+        // Task B2: ping does direct socket I/O via cqs::daemon_translate::
+        // daemon_ping. Must NOT open a Store (works on fresh projects pre-
+        // `cqs init`). Exits 1 if no daemon is running so health-monitor
+        // scripts can act on the result.
+        Some(Commands::Ping { json }) => return cmd_ping(json),
         Some(Commands::Index { ref args }) => return cmd_index(&cli, args),
         Some(Commands::Watch {
             debounce,
@@ -387,6 +394,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref language,
             contrastive,
         }) => cmd_train_pairs(&ctx, output, limit, language.as_deref(), contrastive),
+        Some(Commands::Eval { ref args }) => cmd_eval(&ctx, args),
         None => match &cli.query {
             Some(q) => cmd_query(&ctx, q),
             None => {
@@ -463,6 +471,8 @@ fn command_variant_name(cmd: &Commands) -> &'static str {
         Commands::TrainData { .. } => "train-data",
         Commands::TrainPairs { .. } => "train-pairs",
         Commands::Cache { .. } => "cache",
+        Commands::Ping { .. } => "ping",
+        Commands::Eval { .. } => "eval",
     }
 }
 

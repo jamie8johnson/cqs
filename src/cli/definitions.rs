@@ -294,6 +294,18 @@ pub(super) enum Commands {
         /// Auto-fix detected issues (stale→index, schema→migrate)
         #[arg(long)]
         fix: bool,
+        /// Dump full setup introspection: resolved model config, env vars,
+        /// daemon socket state, index metadata, config precedence.
+        ///
+        /// Use this when queries return zero results or agents hit weird
+        /// model/daemon state — `--verbose` surfaces the cause in one call.
+        #[arg(long)]
+        verbose: bool,
+        /// Emit `--verbose` output as JSON instead of text. Implies `--verbose`.
+        ///
+        /// Ignored without `--verbose` (the default check format is text-only).
+        #[arg(long)]
+        json: bool,
     },
     /// Index current project
     Index {
@@ -668,6 +680,22 @@ pub(super) enum Commands {
         #[command(subcommand)]
         subcmd: CacheCommand,
     },
+    /// Daemon healthcheck — show daemon model, uptime, and counters
+    ///
+    /// Connects to the running daemon socket and prints its current state.
+    /// Exits 1 if no daemon is running. Use `--json` for machine-readable
+    /// output. Reuses [`cqs::daemon_translate::daemon_ping`] under the hood
+    /// so other tools (e.g. `cqs doctor --verbose`) can pull the same data.
+    Ping {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// First-class eval harness: run query set against current index, print R@K
+    Eval {
+        #[command(flatten)]
+        args: super::commands::EvalCmdArgs,
+    },
 }
 
 // Re-export the subcommand types used in Commands variants
@@ -724,11 +752,22 @@ impl Commands {
             | Commands::Ref { .. }
             | Commands::Project { .. }
             | Commands::ExportModel { .. }
+            // Task B2: `ping` is a CLI-only healthcheck. The daemon side
+            // exposes a `BatchCmd::Ping` handler, but the CLI handler
+            // (`cmd_ping`) talks to the socket directly so it can return a
+            // distinct exit code when no daemon is running. Routing through
+            // `try_daemon_query` would silently fall through to a
+            // store-opening CLI path — which we explicitly do not want.
+            | Commands::Ping { .. }
             // Not-yet-on-batch commands. Candidates for a future BatchCmd.
             | Commands::Affected { .. }
             | Commands::Brief { .. }
             | Commands::Neighbors { .. }
-            | Commands::Reconstruct { .. } => BatchSupport::Cli,
+            | Commands::Reconstruct { .. }
+            // Eval is a long-running per-process operation (file I/O, progress
+            // to stderr, optional --save side effect). Not a fit for daemon
+            // dispatch — runs inline via the CLI store path.
+            | Commands::Eval { .. } => BatchSupport::Cli,
 
             #[cfg(feature = "convert")]
             Commands::Convert { .. } => BatchSupport::Cli,

@@ -159,6 +159,58 @@ impl<Mode> Store<Mode> {
         }
     }
 
+    /// Read the stored SPLADE model identifier from metadata, if set.
+    ///
+    /// Tries `splade_model` first, then `splade_model_id` for forward
+    /// compatibility — neither key is currently written by any code path,
+    /// but the lookup is wired up so `cqs stats --json` can surface the
+    /// identifier as soon as the metadata write is added. Returns `None`
+    /// for fresh databases or indexes built without SPLADE.
+    pub fn stored_splade_model(&self) -> Option<String> {
+        for key in ["splade_model", "splade_model_id"] {
+            match self.get_metadata_opt(key) {
+                Ok(Some(val)) if !val.is_empty() => return Some(val),
+                Ok(_) => continue,
+                Err(e) => {
+                    tracing::warn!(key, error = %e, "Failed to read SPLADE model from metadata");
+                    return None;
+                }
+            }
+        }
+        None
+    }
+
+    /// Count distinct chunk_ids that have at least one row in `sparse_vectors`.
+    ///
+    /// Used by `cqs stats --json` to compute SPLADE coverage as
+    /// `chunks_with_sparse / total_chunks`. Returns 0 when no SPLADE
+    /// pass has run yet — the caller decides whether to treat 0 as
+    /// "no SPLADE index" (suppress the percent) or as 0% coverage.
+    pub fn chunks_with_sparse_count(&self) -> Result<u64, StoreError> {
+        let _span = tracing::debug_span!("chunks_with_sparse_count").entered();
+        self.rt.block_on(async {
+            let row: (i64,) = sqlx::query_as("SELECT COUNT(DISTINCT chunk_id) FROM sparse_vectors")
+                .fetch_one(&self.pool)
+                .await?;
+            Ok(row.0 as u64)
+        })
+    }
+
+    /// Count rows in the `llm_summaries` table (cached LLM-generated summaries).
+    ///
+    /// Each row is a `(content_hash, purpose)` pair, so the count includes
+    /// every cached summary regardless of purpose (`summary`, `doc-comment`,
+    /// `hyde`, etc.). Returns 0 when no SQ-6/SQ-8/SQ-10b pass has run yet.
+    pub fn llm_summary_count(&self) -> Result<u64, StoreError> {
+        let _span = tracing::debug_span!("llm_summary_count").entered();
+        self.rt.block_on(async {
+            let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM llm_summaries")
+                .fetch_one(&self.pool)
+                .await?;
+            Ok(row.0 as u64)
+        })
+    }
+
     /// Checks if the stored CQL version in the metadata table matches the current application version.
     /// Retrieves the `cq_version` value from the metadata table and compares it against the current package version. If versions differ, logs an informational message. Errors during version retrieval are logged at debug level but do not propagate, allowing the application to continue.
     /// # Arguments
@@ -845,5 +897,142 @@ mod tests {
             "dim=0 in metadata should fall back to EMBEDDING_DIM ({})",
             crate::EMBEDDING_DIM
         );
+    }
+
+    // ===== A2: stats-introspection accessors =====
+
+    #[test]
+    fn test_stored_splade_model_default_none() {
+        // Fresh store with no SPLADE metadata key set returns None.
+        let (store, _dir) = make_test_store_initialized();
+        assert_eq!(store.stored_splade_model(), None);
+    }
+
+    #[test]
+    fn test_stored_splade_model_reads_primary_key() {
+        // Primary key `splade_model` wins.
+        let (store, _dir) = make_test_store_initialized();
+        store
+            .set_metadata_opt(
+                "splade_model",
+                Some("naver/splade-cocondenser-ensembledistil"),
+            )
+            .unwrap();
+        assert_eq!(
+            store.stored_splade_model().as_deref(),
+            Some("naver/splade-cocondenser-ensembledistil"),
+        );
+    }
+
+    #[test]
+    fn test_stored_splade_model_falls_back_to_id_key() {
+        // When `splade_model` is absent, `splade_model_id` is consulted.
+        let (store, _dir) = make_test_store_initialized();
+        store
+            .set_metadata_opt("splade_model_id", Some("naver/splade-code-0.6B"))
+            .unwrap();
+        assert_eq!(
+            store.stored_splade_model().as_deref(),
+            Some("naver/splade-code-0.6B"),
+        );
+    }
+
+    #[test]
+    fn test_stored_splade_model_primary_beats_fallback() {
+        // Primary `splade_model` wins over `splade_model_id` when both set.
+        let (store, _dir) = make_test_store_initialized();
+        store
+            .set_metadata_opt("splade_model", Some("primary/key"))
+            .unwrap();
+        store
+            .set_metadata_opt("splade_model_id", Some("fallback/key"))
+            .unwrap();
+        assert_eq!(store.stored_splade_model().as_deref(), Some("primary/key"));
+    }
+
+    #[test]
+    fn test_stored_splade_model_empty_value_treated_as_none() {
+        // An empty string in metadata is treated the same as "missing".
+        let (store, _dir) = make_test_store_initialized();
+        store.set_metadata_opt("splade_model", Some("")).unwrap();
+        assert_eq!(store.stored_splade_model(), None);
+    }
+
+    #[test]
+    fn test_chunks_with_sparse_count_empty() {
+        let (store, _dir) = make_test_store_initialized();
+        assert_eq!(store.chunks_with_sparse_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_chunks_with_sparse_count_distinct_chunk_ids() {
+        // Two chunks each with multiple token rows → count is 2 (distinct chunk_ids),
+        // not the total row count. Uses the same insert pattern as
+        // `src/store/sparse.rs::tests::insert_test_chunk` (v19 FK requires a
+        // matching chunks row).
+        let (store, _dir) = make_test_store_initialized();
+        for id in ["c1", "c2"] {
+            let embedding = crate::embedder::Embedding::new(vec![0.0f32; crate::EMBEDDING_DIM]);
+            let embedding_bytes =
+                crate::store::helpers::embedding_to_bytes(&embedding, crate::EMBEDDING_DIM)
+                    .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            store.rt.block_on(async {
+                sqlx::query(
+                    "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name,
+                         signature, content, content_hash, doc, line_start, line_end, embedding,
+                         source_mtime, created_at, updated_at)
+                         VALUES (?1, ?1, 'file', 'rust', 'function', ?1,
+                         '', '', '', NULL, 1, 10, ?2, 0, ?3, ?3)",
+                )
+                .bind(id)
+                .bind(&embedding_bytes)
+                .bind(&now)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            });
+        }
+        store
+            .upsert_sparse_vectors(&[
+                ("c1".to_string(), vec![(1u32, 0.1f32), (2, 0.2), (3, 0.3)]),
+                ("c2".to_string(), vec![(4u32, 0.4f32), (5, 0.5)]),
+            ])
+            .unwrap();
+        // 5 token rows total but only 2 distinct chunk_ids
+        assert_eq!(store.chunks_with_sparse_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_llm_summary_count_empty() {
+        let (store, _dir) = make_test_store_initialized();
+        assert_eq!(store.llm_summary_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_llm_summary_count_includes_all_purposes() {
+        // The composite-PK schema means `(content_hash, purpose)` is unique;
+        // counting must include rows of every purpose, not just `summary`.
+        let (store, _dir) = make_test_store_initialized();
+        let now = chrono::Utc::now().to_rfc3339();
+        store.rt.block_on(async {
+            for (hash, purpose) in [
+                ("hash_a", "summary"),
+                ("hash_a", "doc-comment"),
+                ("hash_b", "summary"),
+            ] {
+                sqlx::query(
+                    "INSERT INTO llm_summaries (content_hash, purpose, summary, model, created_at)
+                     VALUES (?1, ?2, 'test summary', 'test-model', ?3)",
+                )
+                .bind(hash)
+                .bind(purpose)
+                .bind(&now)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            }
+        });
+        assert_eq!(store.llm_summary_count().unwrap(), 3);
     }
 }

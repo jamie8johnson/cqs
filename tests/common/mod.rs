@@ -25,6 +25,7 @@ pub struct TestStore {
 
 impl TestStore {
     /// Create an initialized test store in a temporary directory
+    #[allow(dead_code)]
     pub fn new() -> Self {
         let dir = TempDir::new().expect("Failed to create temp dir");
         let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);

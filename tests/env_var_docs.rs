@@ -71,6 +71,12 @@ fn all_cqs_env_vars_are_documented_in_readme() {
         if SPLADE_ALPHA_VARIANTS.contains(&v.as_str()) {
             continue;
         }
+        // Skip test-only fixture env vars (used by `set_var` inside `#[test]`
+        // bodies — they are local to a single test and have no production
+        // call site to document). Convention: name them `CQS_TEST_*`.
+        if v.starts_with("CQS_TEST_") {
+            continue;
+        }
         if !readme.contains(v) {
             missing.push(v.clone());
         }

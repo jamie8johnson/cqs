@@ -26,6 +26,6 @@ pub(super) use info::{
 };
 pub(super) use misc::{
     dispatch_diff, dispatch_drift, dispatch_gather, dispatch_gc, dispatch_help, dispatch_notes,
-    dispatch_plan, dispatch_refresh, dispatch_scout, dispatch_task, dispatch_where,
+    dispatch_ping, dispatch_plan, dispatch_refresh, dispatch_scout, dispatch_task, dispatch_where,
 };
 pub(super) use search::dispatch_search;

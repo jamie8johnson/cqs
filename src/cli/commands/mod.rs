@@ -9,6 +9,7 @@
 //! - `infra/` — init, doctor, audit mode, telemetry, projects, references
 //! - `train/` — planning, task context, training data, model export
 
+pub(crate) mod eval;
 mod graph;
 mod index;
 mod infra;
@@ -95,6 +96,7 @@ pub(crate) use infra::cmd_cache;
 pub(crate) use infra::cmd_convert;
 pub(crate) use infra::cmd_doctor;
 pub(crate) use infra::cmd_init;
+pub(crate) use infra::cmd_ping;
 pub(crate) use infra::cmd_project;
 pub(crate) use infra::cmd_ref;
 pub(crate) use infra::cmd_telemetry;
@@ -109,6 +111,9 @@ pub(crate) use train::cmd_plan;
 pub(crate) use train::cmd_task;
 pub(crate) use train::cmd_train_data;
 pub(crate) use train::cmd_train_pairs;
+
+// -- eval --
+pub(crate) use eval::{cmd_eval, EvalCmdArgs};
 
 // ---------------------------------------------------------------------------
 // Shared token-packing utilities (used by both CLI commands and batch handlers)

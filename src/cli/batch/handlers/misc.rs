@@ -456,3 +456,18 @@ pub(in crate::cli::batch) fn dispatch_help() -> Result<serde_json::Value> {
     let help_text = String::from_utf8_lossy(&buf).to_string();
     Ok(serde_json::json!({"help": help_text}))
 }
+
+/// Daemon healthcheck — returns the JSON-serialized [`PingResponse`] snapshot.
+///
+/// Task B2: thin wrapper over [`BatchContext::ping_snapshot`]. The handler
+/// touches no I/O beyond a single `metadata()` call inside `ping_snapshot`,
+/// so it stays cheap even on a very busy daemon — important because the
+/// CLI's `cqs ping` may be polled by orchestration scripts.
+///
+/// [`PingResponse`]: cqs::daemon_translate::PingResponse
+pub(in crate::cli::batch) fn dispatch_ping(ctx: &BatchContext) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_ping").entered();
+    let snapshot = ctx.ping_snapshot();
+    serde_json::to_value(&snapshot)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize PingResponse: {e}"))
+}

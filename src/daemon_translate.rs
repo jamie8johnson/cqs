@@ -150,6 +150,141 @@ pub fn daemon_socket_path(cqs_dir: &std::path::Path) -> std::path::PathBuf {
     sock_dir.join(sock_name)
 }
 
+/// Daemon healthcheck response — the payload returned by `cqs ping`.
+///
+/// Task B2: makes the daemon's runtime state observable from the CLI without
+/// having to grep `journalctl` for the right span. Exposed in the library
+/// crate (rather than `cli::`) so the in-tree `tests/daemon_forward_test.rs`
+/// integration tests and any sibling tooling (e.g. Task B1's
+/// `cqs doctor --verbose`) can deserialize the same shape the daemon writes.
+///
+/// Wire format: serialized as the `output` field of the existing
+/// `{"status":"ok","output":<json>}` daemon envelope. The daemon special-cases
+/// `command == "ping"` to emit a JSON object matching this struct rather than
+/// going through the batch dispatcher's free-form value path.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct PingResponse {
+    /// Embedding model the daemon currently has loaded (e.g.
+    /// `"BAAI/bge-large-en-v1.5"`). Comes from `BatchContext::model_config.name`.
+    pub model: String,
+    /// Embedding dimensionality the daemon reports for that model. Sourced
+    /// from the resolved `ModelConfig::dim` so it reflects any
+    /// `CQS_EMBEDDING_DIM` override at daemon startup.
+    pub dim: u32,
+    /// Seconds since the daemon's `BatchContext` was created. Approximates
+    /// "how long has the daemon been serving" — process uptime if the daemon
+    /// has been up since boot, otherwise time since last restart.
+    pub uptime_secs: u64,
+    /// Unix timestamp (UTC seconds) of the last write to `index.db`, or
+    /// `None` if the file is missing/unreadable. Best-effort proxy for
+    /// "when did the index last change" — reflects both `cqs index` and
+    /// incremental `cqs watch` updates because both touch the DB file.
+    pub last_indexed_at: Option<i64>,
+    /// Cumulative count of dispatch errors observed by the daemon since
+    /// the `BatchContext` was created. Includes parse failures and handler
+    /// errors; transport-level failures (closed sockets) are not counted.
+    pub error_count: u64,
+    /// Cumulative count of socket queries the daemon has dispatched since
+    /// the `BatchContext` was created. Counts every line that reached
+    /// `dispatch_line` whether it succeeded or errored.
+    pub total_queries: u64,
+    /// Whether the SPLADE encoder ONNX session is currently resident.
+    /// Lazy-loaded on first sparse-needing query; once loaded it stays
+    /// until idle eviction. `false` means the daemon hasn't run a query
+    /// that needed sparse retrieval yet, or the SPLADE model isn't
+    /// configured at all.
+    pub splade_loaded: bool,
+    /// Whether the cross-encoder reranker ONNX session is currently
+    /// resident. Same lazy-load semantics as `splade_loaded`.
+    pub reranker_loaded: bool,
+}
+
+/// Connect to the running daemon and request a `PingResponse`.
+///
+/// Task B2 helper: returns `Ok(PingResponse)` on success, `Err` if the
+/// socket is missing, the connection fails, the daemon returns a non-`ok`
+/// status, or the response payload doesn't deserialize. Errors are explicit
+/// strings the caller can present verbatim.
+///
+/// Reusable from Task B1 (`cqs doctor --verbose`) and from any future tool
+/// that wants to ask the daemon "are you alive and serving the right
+/// model?". Stays in the library crate (not `cli::`) so non-binary callers
+/// can use it.
+///
+/// Note: this function is unix-only because the daemon socket is unix-only.
+/// On non-unix platforms the daemon never starts in the first place.
+#[cfg(unix)]
+pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, String> {
+    use std::io::{BufRead, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let sock_path = daemon_socket_path(cqs_dir);
+    if !sock_path.exists() {
+        return Err(format!(
+            "no daemon running (socket {} does not exist)",
+            sock_path.display()
+        ));
+    }
+
+    let mut stream = UnixStream::connect(&sock_path)
+        .map_err(|e| format!("connect to {} failed: {e}", sock_path.display()))?;
+
+    // 5s is generous: the ping handler does no I/O — just snapshot reads
+    // off atomic counters and a single `metadata()` on `index.db`.
+    let timeout = Duration::from_secs(5);
+    if let Err(e) = stream.set_read_timeout(Some(timeout)) {
+        return Err(format!("set_read_timeout failed: {e}"));
+    }
+    if let Err(e) = stream.set_write_timeout(Some(timeout)) {
+        return Err(format!("set_write_timeout failed: {e}"));
+    }
+
+    let request = serde_json::json!({"command": "ping", "args": []});
+    writeln!(stream, "{}", request).map_err(|e| format!("write request failed: {e}"))?;
+    stream.flush().map_err(|e| format!("flush failed: {e}"))?;
+
+    // PingResponse is small (<1KB). Cap the read at 64KB to bound memory
+    // even if a buggy daemon ever writes a huge response — same defensive
+    // posture as the main `try_daemon_query` 16 MiB cap.
+    use std::io::Read as _;
+    let mut reader = std::io::BufReader::new(&stream).take(64 * 1024);
+    let mut response_line = String::new();
+    reader
+        .read_line(&mut response_line)
+        .map_err(|e| format!("read response failed: {e}"))?;
+
+    let envelope: serde_json::Value = serde_json::from_str(response_line.trim())
+        .map_err(|e| format!("parse envelope failed: {e}"))?;
+
+    let status = envelope
+        .get("status")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing 'status' field in daemon response".to_string())?;
+    if status != "ok" {
+        let msg = envelope
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("daemon error");
+        return Err(format!("daemon error: {msg}"));
+    }
+
+    let output = envelope
+        .get("output")
+        .ok_or_else(|| "missing 'output' field in daemon response".to_string())?;
+    // The daemon writes the PingResponse as a JSON-string-encoded payload
+    // (because the existing envelope is `{status, output: string}`). When
+    // `output` is a string, parse it; when it's already an object (future-
+    // proofing if the envelope is ever changed), accept that too.
+    let payload: serde_json::Value = match output {
+        serde_json::Value::String(s) => {
+            serde_json::from_str(s).map_err(|e| format!("parse output JSON failed: {e}"))?
+        }
+        other => other.clone(),
+    };
+    serde_json::from_value(payload).map_err(|e| format!("PingResponse deserialize failed: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +325,168 @@ mod tests {
             stripped_model_value(&v(&["search", "q", "--model=bge-large"])),
             Some("bge-large".to_string())
         );
+    }
+
+    /// Task B2: smoke-test PingResponse round-trips through serde without
+    /// schema drift. Pins the wire shape so a future field rename here
+    /// doesn't silently break the CLI<->daemon contract.
+    #[test]
+    fn ping_response_roundtrip_serde() {
+        let original = PingResponse {
+            model: "BAAI/bge-large-en-v1.5".to_string(),
+            dim: 1024,
+            uptime_secs: 9_375,
+            last_indexed_at: Some(1_734_120_000),
+            error_count: 3,
+            total_queries: 12_453,
+            splade_loaded: true,
+            reranker_loaded: false,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        // Spot-check field names: a typo here would be a wire-break.
+        assert!(json.contains("\"model\""));
+        assert!(json.contains("\"dim\""));
+        assert!(json.contains("\"uptime_secs\""));
+        assert!(json.contains("\"last_indexed_at\""));
+        assert!(json.contains("\"error_count\""));
+        assert!(json.contains("\"total_queries\""));
+        assert!(json.contains("\"splade_loaded\""));
+        assert!(json.contains("\"reranker_loaded\""));
+        let parsed: PingResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    /// Task B2: PingResponse with no last-indexed timestamp serializes as
+    /// `"last_indexed_at": null` and round-trips. Pins the Option<i64>
+    /// behaviour so the CLI doesn't have to special-case missing-field
+    /// vs. null vs. -1 sentinel.
+    #[test]
+    fn ping_response_null_last_indexed() {
+        let original = PingResponse {
+            model: "test".into(),
+            dim: 1,
+            uptime_secs: 0,
+            last_indexed_at: None,
+            error_count: 0,
+            total_queries: 0,
+            splade_loaded: false,
+            reranker_loaded: false,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(
+            json.contains("\"last_indexed_at\":null"),
+            "Option::None must serialize as JSON null, got {json}"
+        );
+        let parsed: PingResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.last_indexed_at, None);
+    }
+
+    /// Task B2: `daemon_ping` must surface a friendly error (not a panic
+    /// or generic IO message) when the socket file is absent. This is the
+    /// primary failure mode the CLI hits when no daemon is running.
+    #[cfg(unix)]
+    #[test]
+    fn daemon_ping_errors_without_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        // No XDG_RUNTIME_DIR override here — the helper hashes the cqs_dir
+        // path, so even if there's a real daemon socket somewhere the
+        // hashed name for this temp dir won't collide.
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        let result = daemon_ping(&cqs_dir);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("no daemon running"),
+            "expected friendly error, got: {err}"
+        );
+    }
+
+    /// Task B2: `daemon_ping` must round-trip through a mock listener that
+    /// speaks the same envelope as the real daemon. Asserts the field-by-
+    /// field decoding so a future drift in either side surfaces here.
+    #[cfg(unix)]
+    #[test]
+    fn daemon_ping_mock_round_trip() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        // Override XDG_RUNTIME_DIR so the socket lives in our temp dir.
+        // Snapshot the prior value to restore at the end (other tests
+        // may rely on the inherited environment).
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY: tests run sequentially within a process; this is only
+        // racy against parallel test workers, but the worst case is a
+        // sibling test computing a different socket path — not data
+        // corruption. The temp_dir itself is unique per test.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        }
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        // Mock daemon thread: accept one connection, drain the request
+        // line (just to confirm we got the expected JSON), reply with a
+        // canned `{"status":"ok","output":"<PingResponse JSON string>"}`.
+        let response_payload = serde_json::json!({
+            "model": "BAAI/bge-large-en-v1.5",
+            "dim": 1024,
+            "uptime_secs": 60,
+            "last_indexed_at": 1_734_120_000_i64,
+            "error_count": 2,
+            "total_queries": 100,
+            "splade_loaded": true,
+            "reranker_loaded": false,
+        })
+        .to_string();
+        let envelope = serde_json::json!({
+            "status": "ok",
+            "output": response_payload,
+        });
+        let envelope_str = envelope.to_string();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request_line = String::new();
+            BufReader::new(&stream)
+                .read_line(&mut request_line)
+                .unwrap();
+            // Sanity: confirm the helper actually sent a ping request.
+            assert!(
+                request_line.contains("\"command\":\"ping\""),
+                "expected ping request, got: {request_line}"
+            );
+            writeln!(stream, "{envelope_str}").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = daemon_ping(&cqs_dir);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+
+        // Restore prior XDG_RUNTIME_DIR before the assertion so a
+        // failure doesn't leak the temp-dir override into subsequent
+        // tests in the same process.
+        // SAFETY: see above.
+        unsafe {
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        let resp = result.expect("daemon_ping should succeed against mock");
+        assert_eq!(resp.model, "BAAI/bge-large-en-v1.5");
+        assert_eq!(resp.dim, 1024);
+        assert_eq!(resp.uptime_secs, 60);
+        assert_eq!(resp.last_indexed_at, Some(1_734_120_000));
+        assert_eq!(resp.error_count, 2);
+        assert_eq!(resp.total_queries, 100);
+        assert!(resp.splade_loaded);
+        assert!(!resp.reranker_loaded);
     }
 }

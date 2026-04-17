@@ -184,6 +184,12 @@ pub(crate) enum BatchCmd {
     /// Invalidate all mutable caches and re-open the Store
     #[command(visible_alias = "invalidate")]
     Refresh,
+    /// Daemon healthcheck — returns model, uptime, query/error counts
+    ///
+    /// Task B2: zero-arg command. The CLI `cqs ping` builds the request
+    /// from a fixed string, so we don't need any flags here. The handler
+    /// returns the JSON payload of `cqs::daemon_translate::PingResponse`.
+    Ping,
     /// Show help
     Help,
 }
@@ -234,6 +240,7 @@ impl BatchCmd {
             | BatchCmd::Suggest { .. }
             | BatchCmd::Gc
             | BatchCmd::Refresh
+            | BatchCmd::Ping
             | BatchCmd::Help => false,
         }
     }
@@ -379,6 +386,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
         BatchCmd::Suggest { args } => handlers::dispatch_suggest(ctx, args.apply),
         BatchCmd::Gc => handlers::dispatch_gc(ctx),
         BatchCmd::Refresh => handlers::dispatch_refresh(ctx),
+        BatchCmd::Ping => handlers::dispatch_ping(ctx),
         BatchCmd::Help => handlers::dispatch_help(),
     }
 }
@@ -459,6 +467,19 @@ mod tests {
     fn test_parse_unknown_command() {
         let result = BatchInput::try_parse_from(["bogus"]);
         assert!(result.is_err());
+    }
+
+    // Task B2: `ping` parses as a zero-arg subcommand. Pin both the parse
+    // and the `is_pipeable` classification so a future variant tweak
+    // doesn't accidentally make ping show up as a pipeable stage.
+    #[test]
+    fn test_parse_ping() {
+        let input = BatchInput::try_parse_from(["ping"]).unwrap();
+        assert!(matches!(input.cmd, BatchCmd::Ping));
+        assert!(
+            !input.cmd.is_pipeable(),
+            "ping is a healthcheck, not pipeable"
+        );
     }
 
     #[test]
