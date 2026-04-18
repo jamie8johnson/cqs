@@ -115,6 +115,11 @@ pub struct Reranker {
     model_paths: OnceCell<(PathBuf, PathBuf)>,
     provider: ExecutionProvider,
     max_length: usize,
+    /// Whether the loaded ONNX session expects a `token_type_ids` input.
+    /// BERT-family models do; RoBERTa-family (UniXcoder, CodeBERT, all
+    /// XLM-R variants) do not. Computed at session-init time by inspecting
+    /// the model's input names. `None` means "session not yet loaded."
+    expects_token_type_ids: Mutex<Option<bool>>,
 }
 
 impl Reranker {
@@ -144,6 +149,7 @@ impl Reranker {
             model_paths: OnceCell::new(),
             provider,
             max_length,
+            expects_token_type_ids: Mutex::new(None),
         })
     }
 
@@ -307,33 +313,49 @@ impl Reranker {
         // prior behavior) silently broke fine-tuned models that learned to
         // use the segment signal (caught during reranker v2 eval: gold chunks
         // got pushed below negatives because the model saw "query query" when
-        // the tokenizer had emitted "query passage").
-        let token_type_ids: Vec<Vec<i64>> = chunk
-            .iter()
-            .map(|e| e.get_type_ids().iter().map(|&t| t as i64).collect())
-            .collect();
-        let ids_arr = pad_2d_i64(&input_ids, max_len, 0);
-        let mask_arr = pad_2d_i64(&attention_mask, max_len, 0);
-        let type_arr = pad_2d_i64(&token_type_ids, max_len, 0);
-
-        // Create tensors (ort requires Value, not raw ndarray)
-        use ort::value::Tensor;
-        let ids_tensor = Tensor::from_array(ids_arr).map_err(ort_err)?;
-        let mask_tensor = Tensor::from_array(mask_arr).map_err(ort_err)?;
-        let type_tensor = Tensor::from_array(type_arr).map_err(ort_err)?;
-
-        // Run inference on this chunk only.
+        // the tokenizer had emitted "query passage"). RoBERTa-family models
+        // (UniXcoder, CodeBERT, XLM-R) don't accept this input at all —
+        // session() detects which family the loaded model is and we skip
+        // building the type tensor when the session doesn't expect it.
         let mut session_guard = self.session()?;
         let session = session_guard
             .as_mut()
             .expect("session() guarantees initialized after Ok return");
-        let outputs = session
-            .run(ort::inputs![
-                "input_ids" => ids_tensor,
-                "attention_mask" => mask_tensor,
-                "token_type_ids" => type_tensor,
-            ])
-            .map_err(ort_err)?;
+        let expects_tti = self
+            .expects_token_type_ids
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or(true); // session() always sets this; fallback to true matches BERT default
+
+        let ids_arr = pad_2d_i64(&input_ids, max_len, 0);
+        let mask_arr = pad_2d_i64(&attention_mask, max_len, 0);
+
+        use ort::value::Tensor;
+        let ids_tensor = Tensor::from_array(ids_arr).map_err(ort_err)?;
+        let mask_tensor = Tensor::from_array(mask_arr).map_err(ort_err)?;
+
+        let outputs = if expects_tti {
+            let token_type_ids: Vec<Vec<i64>> = chunk
+                .iter()
+                .map(|e| e.get_type_ids().iter().map(|&t| t as i64).collect())
+                .collect();
+            let type_arr = pad_2d_i64(&token_type_ids, max_len, 0);
+            let type_tensor = Tensor::from_array(type_arr).map_err(ort_err)?;
+            session
+                .run(ort::inputs![
+                    "input_ids" => ids_tensor,
+                    "attention_mask" => mask_tensor,
+                    "token_type_ids" => type_tensor,
+                ])
+                .map_err(ort_err)?
+        } else {
+            session
+                .run(ort::inputs![
+                    "input_ids" => ids_tensor,
+                    "attention_mask" => mask_tensor,
+                ])
+                .map_err(ort_err)?
+        };
 
         // Extract logits, apply sigmoid.
         if outputs.len() == 0 {
@@ -467,11 +489,24 @@ impl Reranker {
         if guard.is_none() {
             let _span = tracing::info_span!("reranker_session_init").entered();
             let (model_path, _) = self.model_paths()?;
-            *guard = Some(
-                create_session(model_path, self.provider)
-                    .map_err(|e| RerankerError::Inference(e.to_string()))?,
+            let session = create_session(model_path, self.provider)
+                .map_err(|e| RerankerError::Inference(e.to_string()))?;
+            // Inspect input names so run_chunk knows whether to send
+            // token_type_ids. BERT-family expects it; RoBERTa-family
+            // (UniXcoder, CodeBERT, XLM-R) doesn't.
+            let has_tti = session
+                .inputs()
+                .iter()
+                .any(|i| i.name() == "token_type_ids");
+            *self
+                .expects_token_type_ids
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some(has_tti);
+            tracing::info!(
+                expects_token_type_ids = has_tti,
+                "Reranker session initialized"
             );
-            tracing::info!("Reranker session initialized");
+            *guard = Some(session);
         }
         Ok(guard)
     }
@@ -483,6 +518,12 @@ impl Reranker {
     pub fn clear_session(&self) {
         let mut guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
         *guard = None;
+        // Reset the input-shape probe so the next session re-detects
+        // the loaded model's token_type_ids contract.
+        *self
+            .expects_token_type_ids
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
         // RM-V1.25-15: Drop the tokenizer too (~20MB for ms-marco MiniLM).
         // In-flight rerank() calls that grabbed an Arc clone before this
         // call keep their own copy; the slot is cleared and lazy-reloads
