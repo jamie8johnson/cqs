@@ -116,7 +116,10 @@ fn test_batch_single_command() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
-    assert!(parsed.is_array(), "callers should return a JSON array");
+    assert!(
+        parsed["data"].is_array(),
+        "callers should return a JSON array under data"
+    );
 }
 
 #[test]
@@ -137,11 +140,15 @@ fn test_batch_multiple_commands() {
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert_eq!(lines.len(), 2, "Should have two JSONL lines");
 
-    // Both lines should be valid JSON
+    // Both lines should be valid JSON envelopes
     for line in &lines {
         let parsed: serde_json::Value =
             serde_json::from_str(line).expect("Each line should be valid JSON");
-        assert!(parsed.is_array() || parsed.is_object());
+        assert!(
+            parsed["data"].is_array() || parsed["data"].is_object(),
+            "data payload should be array or object: {}",
+            line
+        );
     }
 }
 
@@ -165,9 +172,15 @@ fn test_batch_error_handling() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
+    // On batch error: data is null, error is {"code": ..., "message": ...}
     assert!(
-        parsed.get("error").is_some(),
-        "Should have error field: {}",
+        !parsed["error"].is_null(),
+        "Should have populated error field: {}",
+        stdout.trim()
+    );
+    assert!(
+        parsed["error"]["message"].is_string(),
+        "Error should have message field: {}",
         stdout.trim()
     );
 }
@@ -236,7 +249,7 @@ fn test_batch_stats() {
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
     assert!(
-        parsed.get("total_chunks").is_some(),
+        parsed["data"].get("total_chunks").is_some(),
         "Stats should have total_chunks: {}",
         stdout.trim()
     );
@@ -260,12 +273,12 @@ fn test_batch_explain() {
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
     assert!(
-        parsed.get("callers").is_some(),
+        parsed["data"].get("callers").is_some(),
         "Explain should have callers: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("callees").is_some(),
+        parsed["data"].get("callees").is_some(),
         "Explain should have callees: {}",
         stdout.trim()
     );
@@ -289,7 +302,7 @@ fn test_batch_dead() {
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
     assert!(
-        parsed.get("dead").is_some() || parsed.get("total_dead").is_some(),
+        parsed["data"].get("dead").is_some() || parsed["data"].get("total_dead").is_some(),
         "Dead should have dead code fields: {}",
         stdout.trim()
     );
@@ -313,12 +326,12 @@ fn test_batch_callees() {
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
     assert!(
-        parsed.get("calls").is_some(),
+        parsed["data"].get("calls").is_some(),
         "Callees should have calls field: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("count").is_some(),
+        parsed["data"].get("count").is_some(),
         "Callees should have count field: {}",
         stdout.trim()
     );
@@ -346,15 +359,21 @@ fn test_pipeline_callers_to_explain() {
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
-    // Pipeline envelope
-    assert_eq!(parsed.get("stages").and_then(|v| v.as_u64()), Some(2));
-    assert!(parsed.get("results").is_some(), "Should have results array");
+    // Pipeline envelope (under data)
+    assert_eq!(
+        parsed["data"].get("stages").and_then(|v| v.as_u64()),
+        Some(2)
+    );
     assert!(
-        parsed.get("pipeline").is_some(),
+        parsed["data"].get("results").is_some(),
+        "Should have results array"
+    );
+    assert!(
+        parsed["data"].get("pipeline").is_some(),
         "Should have pipeline field"
     );
     assert!(
-        parsed.get("total_inputs").is_some(),
+        parsed["data"].get("total_inputs").is_some(),
         "Should have total_inputs"
     );
 }
@@ -378,7 +397,7 @@ fn test_pipeline_three_stages() {
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
     assert_eq!(
-        parsed.get("stages").and_then(|v| v.as_u64()),
+        parsed["data"].get("stages").and_then(|v| v.as_u64()),
         Some(3),
         "Should be 3-stage pipeline: {}",
         stdout.trim()
@@ -404,15 +423,18 @@ fn test_pipeline_empty_upstream() {
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
-    // Should get empty results, not an error
-    let results = parsed.get("results").and_then(|v| v.as_array());
+    // Should get empty results, not an error (under data)
+    let results = parsed["data"].get("results").and_then(|v| v.as_array());
     assert!(results.is_some(), "Should have results: {}", stdout.trim());
     assert_eq!(
         results.unwrap().len(),
         0,
         "Should have 0 results for nonexistent function"
     );
-    assert_eq!(parsed.get("total_inputs").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(
+        parsed["data"].get("total_inputs").and_then(|v| v.as_u64()),
+        Some(0)
+    );
 }
 
 #[test]
@@ -433,11 +455,12 @@ fn test_pipeline_ineligible_downstream() {
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
-    let error = parsed.get("error").and_then(|v| v.as_str()).unwrap_or("");
+    // Pipeline error: error is now structured {code, message}
+    let error_msg = parsed["error"]["message"].as_str().unwrap_or("");
     assert!(
-        error.contains("Cannot pipe into 'stats'"),
+        error_msg.contains("Cannot pipe into 'stats'"),
         "Should reject non-pipeable downstream: {}",
-        error
+        error_msg
     );
 }
 
@@ -460,15 +483,15 @@ fn test_pipeline_single_stage_no_pipe() {
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
-    // Should be a bare array (callers output), NOT a pipeline envelope
+    // Should be a bare array under data (callers output), NOT a pipeline envelope
     assert!(
-        parsed.is_array(),
+        parsed["data"].is_array(),
         "Single command should not produce pipeline envelope: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("pipeline").is_none(),
-        "Should not have pipeline field"
+        parsed["data"].get("pipeline").is_none(),
+        "Should not have pipeline field under data"
     );
 }
 
@@ -492,14 +515,15 @@ fn test_pipeline_quoted_pipe_in_query() {
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
-    // Should be a normal search result (with results key), not a pipeline
+    // Should be a normal search result (with results key under data), not a pipeline.
+    // On error, error is non-null with structured {code, message}.
     assert!(
-        parsed.get("results").is_some() || parsed.get("error").is_some(),
+        parsed["data"].get("results").is_some() || !parsed["error"].is_null(),
         "Should be normal search output: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("pipeline").is_none(),
+        parsed["data"].get("pipeline").is_none(),
         "Quoted pipe should not trigger pipeline"
     );
 }
@@ -523,19 +547,19 @@ fn test_pipeline_mixed_with_single() {
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert_eq!(lines.len(), 2, "Should have two JSONL lines");
 
-    // First line: pipeline result
+    // First line: pipeline result (under data)
     let line1: serde_json::Value =
         serde_json::from_str(lines[0]).expect("First line should be valid JSON");
     assert!(
-        line1.get("pipeline").is_some(),
+        line1["data"].get("pipeline").is_some(),
         "First line should be pipeline envelope"
     );
 
-    // Second line: stats (single command)
+    // Second line: stats (single command, under data)
     let line2: serde_json::Value =
         serde_json::from_str(lines[1]).expect("Second line should be valid JSON");
     assert!(
-        line2.get("total_chunks").is_some(),
+        line2["data"].get("total_chunks").is_some(),
         "Second line should be stats output"
     );
 }
@@ -563,34 +587,34 @@ fn test_batch_impact() {
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
     assert_eq!(
-        parsed.get("name").and_then(|v| v.as_str()),
+        parsed["data"].get("name").and_then(|v| v.as_str()),
         Some("process"),
         "Impact should report the target function: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("callers").is_some(),
+        parsed["data"].get("callers").is_some(),
         "Impact should have callers field: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("tests").is_some(),
+        parsed["data"].get("tests").is_some(),
         "Impact should have tests field: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("caller_count").is_some(),
+        parsed["data"].get("caller_count").is_some(),
         "Impact should have caller_count: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("test_count").is_some(),
+        parsed["data"].get("test_count").is_some(),
         "Impact should have test_count: {}",
         stdout.trim()
     );
 
     // `process` is called by `main` -> at least 1 caller
-    let caller_count = parsed
+    let caller_count = parsed["data"]
         .get("caller_count")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
@@ -620,7 +644,7 @@ fn test_batch_impact_with_suggest_tests() {
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
     assert!(
-        parsed.get("test_suggestions").is_some(),
+        parsed["data"].get("test_suggestions").is_some(),
         "Impact with --suggest-tests should have test_suggestions: {}",
         stdout.trim()
     );
@@ -646,31 +670,31 @@ fn test_batch_trace_connected() {
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
     assert_eq!(
-        parsed.get("source").and_then(|v| v.as_str()),
+        parsed["data"].get("source").and_then(|v| v.as_str()),
         Some("main"),
         "Trace should report source: {}",
         stdout.trim()
     );
     assert_eq!(
-        parsed.get("target").and_then(|v| v.as_str()),
+        parsed["data"].get("target").and_then(|v| v.as_str()),
         Some("validate"),
         "Trace should report target: {}",
         stdout.trim()
     );
     assert_eq!(
-        parsed.get("found").and_then(|v| v.as_bool()),
+        parsed["data"].get("found").and_then(|v| v.as_bool()),
         Some(true),
         "Trace should find a path from main to validate: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("path").is_some(),
+        parsed["data"].get("path").is_some(),
         "Trace should have path field when found: {}",
         stdout.trim()
     );
 
     // Path should have at least 2 hops (main -> process -> validate)
-    let path = parsed.get("path").and_then(|v| v.as_array());
+    let path = parsed["data"].get("path").and_then(|v| v.as_array());
     assert!(
         path.is_some_and(|p| p.len() >= 2),
         "Trace path should have >= 2 hops: {}",
@@ -698,7 +722,7 @@ fn test_batch_trace_disconnected() {
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
     assert_eq!(
-        parsed.get("found").and_then(|v| v.as_bool()),
+        parsed["data"].get("found").and_then(|v| v.as_bool()),
         Some(false),
         "Trace should not find a path from validate to main: {}",
         stdout.trim()
@@ -724,24 +748,24 @@ fn test_batch_similar() {
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
     assert_eq!(
-        parsed.get("target").and_then(|v| v.as_str()),
+        parsed["data"].get("target").and_then(|v| v.as_str()),
         Some("process"),
         "Similar should report the target function: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("results").is_some(),
+        parsed["data"].get("results").is_some(),
         "Similar should have results array: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("total").is_some(),
+        parsed["data"].get("total").is_some(),
         "Similar should have total field: {}",
         stdout.trim()
     );
 
     // With 4 functions in the fixture, there should be at least 1 similar result
-    let results = parsed.get("results").and_then(|v| v.as_array());
+    let results = parsed["data"].get("results").and_then(|v| v.as_array());
     assert!(
         results.is_some_and(|r| !r.is_empty()),
         "Similar should find at least one result for process: {}",
@@ -777,44 +801,44 @@ fn test_batch_stale() {
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
     assert!(
-        parsed.get("stale").is_some(),
+        parsed["data"].get("stale").is_some(),
         "Stale should have stale array: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("missing").is_some(),
+        parsed["data"].get("missing").is_some(),
         "Stale should have missing array: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("stale_count").is_some(),
+        parsed["data"].get("stale_count").is_some(),
         "Stale should have stale_count: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("missing_count").is_some(),
+        parsed["data"].get("missing_count").is_some(),
         "Stale should have missing_count: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("total_indexed").is_some(),
+        parsed["data"].get("total_indexed").is_some(),
         "Stale should have total_indexed: {}",
         stdout.trim()
     );
 
     // Freshly indexed project should have 0 stale and 0 missing
     assert_eq!(
-        parsed.get("stale_count").and_then(|v| v.as_u64()),
+        parsed["data"].get("stale_count").and_then(|v| v.as_u64()),
         Some(0),
         "Fresh index should have 0 stale files"
     );
     assert_eq!(
-        parsed.get("missing_count").and_then(|v| v.as_u64()),
+        parsed["data"].get("missing_count").and_then(|v| v.as_u64()),
         Some(0),
         "Fresh index should have 0 missing files"
     );
     // Should have indexed at least our 2 files
-    let total = parsed
+    let total = parsed["data"]
         .get("total_indexed")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
@@ -844,43 +868,43 @@ fn test_batch_health() {
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
     assert!(
-        parsed.get("stats").is_some(),
+        parsed["data"].get("stats").is_some(),
         "Health should have stats object: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("stale_count").is_some(),
+        parsed["data"].get("stale_count").is_some(),
         "Health should have stale_count: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("missing_count").is_some(),
+        parsed["data"].get("missing_count").is_some(),
         "Health should have missing_count: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("dead_confident").is_some(),
+        parsed["data"].get("dead_confident").is_some(),
         "Health should have dead_confident: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("dead_possible").is_some(),
+        parsed["data"].get("dead_possible").is_some(),
         "Health should have dead_possible: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("hotspots").is_some(),
+        parsed["data"].get("hotspots").is_some(),
         "Health should have hotspots: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("note_count").is_some(),
+        parsed["data"].get("note_count").is_some(),
         "Health should have note_count: {}",
         stdout.trim()
     );
 
     // Stats sub-object should have chunk/file counts
-    let stats = parsed.get("stats").unwrap();
+    let stats = parsed["data"].get("stats").unwrap();
     assert!(
         stats.get("total_chunks").is_some(),
         "Stats should have total_chunks: {}",
@@ -912,18 +936,18 @@ fn test_batch_gather() {
         serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
 
     assert!(
-        parsed.get("query").is_some(),
+        parsed["data"].get("query").is_some(),
         "Gather should have query field: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("chunks").is_some(),
+        parsed["data"].get("chunks").is_some(),
         "Gather should have chunks array: {}",
         stdout.trim()
     );
 
     // Gather should find at least one chunk for "process input"
-    let chunks = parsed.get("chunks").and_then(|v| v.as_array());
+    let chunks = parsed["data"].get("chunks").and_then(|v| v.as_array());
     assert!(
         chunks.is_some_and(|c| !c.is_empty()),
         "Gather should find at least one chunk for 'process input': {}",
@@ -932,12 +956,12 @@ fn test_batch_gather() {
 
     // The expansion_capped and search_degraded fields should be present
     assert!(
-        parsed.get("expansion_capped").is_some(),
+        parsed["data"].get("expansion_capped").is_some(),
         "Gather should have expansion_capped: {}",
         stdout.trim()
     );
     assert!(
-        parsed.get("search_degraded").is_some(),
+        parsed["data"].get("search_degraded").is_some(),
         "Gather should have search_degraded: {}",
         stdout.trim()
     );
@@ -966,7 +990,7 @@ fn test_batch_multiple_hp4_commands() {
     let l1: serde_json::Value =
         serde_json::from_str(lines[0]).expect("Impact line should be valid JSON");
     assert!(
-        l1.get("name").is_some() && l1.get("callers").is_some(),
+        l1["data"].get("name").is_some() && l1["data"].get("callers").is_some(),
         "Line 1 should be impact output"
     );
 
@@ -974,12 +998,15 @@ fn test_batch_multiple_hp4_commands() {
     let l2: serde_json::Value =
         serde_json::from_str(lines[1]).expect("Stale line should be valid JSON");
     assert!(
-        l2.get("stale_count").is_some(),
+        l2["data"].get("stale_count").is_some(),
         "Line 2 should be stale output"
     );
 
     // Line 3: health
     let l3: serde_json::Value =
         serde_json::from_str(lines[2]).expect("Health line should be valid JSON");
-    assert!(l3.get("stats").is_some(), "Line 3 should be health output");
+    assert!(
+        l3["data"].get("stats").is_some(),
+        "Line 3 should be health output"
+    );
 }

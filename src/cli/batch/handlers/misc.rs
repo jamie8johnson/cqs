@@ -151,7 +151,7 @@ pub(in crate::cli::batch) fn dispatch_task(
 
     // Full waterfall budgeting (same as CLI) when --tokens is specified
     let json = if let Some(budget) = tokens {
-        crate::cli::commands::task::task_to_budgeted_json(&result, embedder, budget)
+        crate::cli::commands::task::task_to_budgeted_json(&result, embedder, budget)?
     } else {
         serde_json::to_value(&result)?
     };

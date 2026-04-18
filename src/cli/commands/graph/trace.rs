@@ -124,7 +124,7 @@ pub(crate) fn cmd_trace(
         };
 
         if matches!(format, OutputFormat::Json) {
-            println!("{}", serde_json::to_string_pretty(&trace_result)?);
+            crate::cli::json_envelope::emit_json(&trace_result)?;
         } else if matches!(format, OutputFormat::Mermaid) {
             if let Some(ref path) = trace_result.path {
                 println!("graph TD");
@@ -205,7 +205,7 @@ pub(crate) fn cmd_trace(
             let trivial_path = vec![source_name.clone()];
             let result =
                 build_trace_output(store, &source_name, &target_name, Some(&trivial_path), root)?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            crate::cli::json_envelope::emit_json(&result)?;
         } else if matches!(format, OutputFormat::Mermaid) {
             let rel_file = cqs::rel_display(&source_chunk.file, root);
             println!("graph TD");
@@ -232,7 +232,7 @@ pub(crate) fn cmd_trace(
             if matches!(format, OutputFormat::Json) {
                 let result =
                     build_trace_output(store, &source_name, &target_name, Some(&names), root)?;
-                println!("{}", serde_json::to_string_pretty(&result)?);
+                crate::cli::json_envelope::emit_json(&result)?;
             } else if matches!(format, OutputFormat::Mermaid) {
                 format_mermaid(store, root, &names)?;
             } else {
@@ -270,7 +270,7 @@ pub(crate) fn cmd_trace(
         None => {
             if matches!(format, OutputFormat::Json) {
                 let result = build_trace_output(store, &source_name, &target_name, None, root)?;
-                println!("{}", serde_json::to_string_pretty(&result)?);
+                crate::cli::json_envelope::emit_json(&result)?;
             } else if matches!(format, OutputFormat::Mermaid) {
                 // Empty graph with comment
                 println!("graph TD");

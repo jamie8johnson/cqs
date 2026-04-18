@@ -241,15 +241,13 @@ fn format_delta(delta: f64) -> String {
 /// running locally and a CI log render the same output.
 pub(crate) fn print_diff_report(report: &DiffReport, json: bool) {
     if json {
-        // unwrap is fine here — DiffReport derives Serialize over plain types
-        // (no maps with non-string keys, no custom serializers) so it cannot
-        // fail to serialize.
-        match serde_json::to_string_pretty(report) {
-            Ok(s) => println!("{}", s),
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to serialize DiffReport as JSON");
-                eprintln!("error: failed to serialize diff report as JSON: {e}");
-            }
+        // emit_json wraps in the standard envelope. DiffReport derives
+        // Serialize over plain types (no maps with non-string keys, no custom
+        // serializers) so it cannot fail to serialize — but we keep the
+        // defensive stderr path in case of an underlying writer failure.
+        if let Err(e) = crate::cli::json_envelope::emit_json(report) {
+            tracing::warn!(error = %e, "Failed to emit DiffReport JSON");
+            eprintln!("error: failed to emit diff report as JSON: {e}");
         }
         return;
     }

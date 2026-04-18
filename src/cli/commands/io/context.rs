@@ -354,7 +354,7 @@ pub(crate) fn cmd_context(
 
         if json {
             let output = compact_to_json(&data, path);
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            crate::cli::json_envelope::emit_json(&output)?;
         } else {
             print_compact_terminal(&data, path);
         }
@@ -372,7 +372,7 @@ pub(crate) fn cmd_context(
     if summary {
         if json {
             let output = summary_to_json(&data, path);
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            crate::cli::json_envelope::emit_json(&output)?;
         } else {
             print_summary_terminal(&data, path);
         }
@@ -380,7 +380,7 @@ pub(crate) fn cmd_context(
         let (content_set, token_info) =
             build_token_pack(store, &data.chunks, max_tokens, ctx.model_config())?;
         let output = full_to_json(&data, path, content_set.as_ref(), token_info);
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         let (content_set, token_info) =
             build_token_pack(store, &data.chunks, max_tokens, ctx.model_config())?;

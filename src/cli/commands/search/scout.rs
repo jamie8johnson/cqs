@@ -66,7 +66,7 @@ pub(crate) fn cmd_scout(
 
     if json {
         let output = build_scout_output(&result, content_map.as_ref(), token_info)?;
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         let token_label = match token_info {
             Some((used, budget)) => format!(" ({} of {} tokens)", used, budget),

@@ -150,12 +150,12 @@ fn test_scout_json_output() {
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
     assert!(
-        parsed["file_groups"].is_array(),
-        "scout --json should have file_groups array"
+        parsed["data"]["file_groups"].is_array(),
+        "scout --json should have data.file_groups array"
     );
     assert!(
-        parsed["summary"].is_object(),
-        "scout --json should have summary object"
+        parsed["data"]["summary"].is_object(),
+        "scout --json should have data.summary object"
     );
 }
 
@@ -194,8 +194,8 @@ fn test_where_json_output() {
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
     assert!(
-        parsed["suggestions"].is_array(),
-        "where --json should have suggestions array"
+        parsed["data"]["suggestions"].is_array(),
+        "where --json should have data.suggestions array"
     );
 }
 
@@ -233,20 +233,20 @@ fn test_related_json_output() {
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
     assert!(
-        parsed["target"].is_string(),
-        "related --json should have target field"
+        parsed["data"]["target"].is_string(),
+        "related --json should have data.target field"
     );
     assert!(
-        parsed["shared_callers"].is_array(),
-        "related --json should have shared_callers"
+        parsed["data"]["shared_callers"].is_array(),
+        "related --json should have data.shared_callers"
     );
     assert!(
-        parsed["shared_callees"].is_array(),
-        "related --json should have shared_callees"
+        parsed["data"]["shared_callees"].is_array(),
+        "related --json should have data.shared_callees"
     );
     assert!(
-        parsed["shared_types"].is_array(),
-        "related --json should have shared_types"
+        parsed["data"]["shared_types"].is_array(),
+        "related --json should have data.shared_types"
     );
 }
 
@@ -306,8 +306,8 @@ fn test_impact_diff_json_output() {
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
     assert!(
-        parsed["summary"].is_object(),
-        "impact-diff --json should have summary object"
+        parsed["data"]["summary"].is_object(),
+        "impact-diff --json should have data.summary object"
     );
 }
 
@@ -347,12 +347,12 @@ fn test_stale_json_fresh_index() {
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
     assert!(
-        parsed["stale"].is_array(),
-        "stale --json should have stale array"
+        parsed["data"]["stale"].is_array(),
+        "stale --json should have data.stale array"
     );
     assert!(
-        parsed["missing"].is_array(),
-        "stale --json should have missing array"
+        parsed["data"]["missing"].is_array(),
+        "stale --json should have data.missing array"
     );
 }
 
@@ -378,7 +378,7 @@ fn test_stale_after_modification() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
-    let stale = parsed["stale"].as_array().unwrap();
+    let stale = parsed["data"]["stale"].as_array().unwrap();
     assert!(!stale.is_empty(), "Modified file should appear as stale");
 }
 
@@ -429,18 +429,18 @@ fn test_query_tokens_limits_output() {
 
     // When --tokens is specified, JSON output must have token_count and token_budget
     assert!(
-        parsed["token_count"].is_number(),
-        "query --tokens --json should have token_count field, got: {}",
+        parsed["data"]["token_count"].is_number(),
+        "query --tokens --json should have data.token_count field, got: {}",
         parsed
     );
     assert!(
-        parsed["token_budget"].is_number(),
-        "query --tokens --json should have token_budget field, got: {}",
+        parsed["data"]["token_budget"].is_number(),
+        "query --tokens --json should have data.token_budget field, got: {}",
         parsed
     );
 
-    let token_count = parsed["token_count"].as_u64().unwrap();
-    let token_budget = parsed["token_budget"].as_u64().unwrap();
+    let token_count = parsed["data"]["token_count"].as_u64().unwrap();
+    let token_budget = parsed["data"]["token_budget"].as_u64().unwrap();
 
     assert_eq!(
         token_budget, 500,
@@ -471,18 +471,18 @@ fn test_gather_tokens_limits_output() {
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
     assert!(
-        parsed["token_count"].is_number(),
-        "gather --tokens --json should have token_count field, got: {}",
+        parsed["data"]["token_count"].is_number(),
+        "gather --tokens --json should have data.token_count field, got: {}",
         parsed
     );
     assert!(
-        parsed["token_budget"].is_number(),
-        "gather --tokens --json should have token_budget field, got: {}",
+        parsed["data"]["token_budget"].is_number(),
+        "gather --tokens --json should have data.token_budget field, got: {}",
         parsed
     );
 
-    let token_count = parsed["token_count"].as_u64().unwrap();
-    let token_budget = parsed["token_budget"].as_u64().unwrap();
+    let token_count = parsed["data"]["token_count"].as_u64().unwrap();
+    let token_budget = parsed["data"]["token_budget"].as_u64().unwrap();
 
     assert_eq!(
         token_budget, 500,
@@ -567,10 +567,10 @@ fn test_query_with_ref() {
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
     assert!(
-        parsed["results"].is_array(),
-        "query --ref --json should have results array"
+        parsed["data"]["results"].is_array(),
+        "query --ref --json should have data.results array"
     );
-    let results = parsed["results"].as_array().unwrap();
+    let results = parsed["data"]["results"].as_array().unwrap();
     assert!(
         !results.is_empty(),
         "query --ref should return at least one result from reference"
@@ -606,8 +606,8 @@ fn test_gather_with_ref() {
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
     assert!(
-        parsed["chunks"].is_array(),
-        "gather --ref --json should have chunks array"
+        parsed["data"]["chunks"].is_array(),
+        "gather --ref --json should have data.chunks array"
     );
 }
 

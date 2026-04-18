@@ -138,48 +138,48 @@ fn test_health_cli_json() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
-    // Verify expected fields (HealthReport derives Serialize directly)
+    // Verify expected fields (HealthReport derives Serialize directly, wrapped in data envelope)
     assert!(
-        parsed["stats"]["total_chunks"].is_number(),
-        "health --json should have stats.total_chunks"
+        parsed["data"]["stats"]["total_chunks"].is_number(),
+        "health --json should have data.stats.total_chunks"
     );
     assert!(
-        parsed["stats"]["total_files"].is_number(),
-        "health --json should have stats.total_files"
+        parsed["data"]["stats"]["total_files"].is_number(),
+        "health --json should have data.stats.total_files"
     );
     assert!(
-        parsed["dead_confident"].is_number(),
-        "health --json should have dead_confident"
+        parsed["data"]["dead_confident"].is_number(),
+        "health --json should have data.dead_confident"
     );
     assert!(
-        parsed["dead_possible"].is_number(),
-        "health --json should have dead_possible"
+        parsed["data"]["dead_possible"].is_number(),
+        "health --json should have data.dead_possible"
     );
     assert!(
-        parsed["hotspots"].is_array(),
-        "health --json should have hotspots array"
+        parsed["data"]["hotspots"].is_array(),
+        "health --json should have data.hotspots array"
     );
     assert!(
-        parsed["note_count"].is_number(),
-        "health --json should have note_count"
+        parsed["data"]["note_count"].is_number(),
+        "health --json should have data.note_count"
     );
     assert!(
-        parsed["note_warnings"].is_number(),
-        "health --json should have note_warnings"
+        parsed["data"]["note_warnings"].is_number(),
+        "health --json should have data.note_warnings"
     );
     assert!(
-        parsed["stats"]["schema_version"].is_number(),
-        "health --json should have stats.schema_version"
+        parsed["data"]["stats"]["schema_version"].is_number(),
+        "health --json should have data.stats.schema_version"
     );
     assert!(
-        parsed["stats"]["model_name"].is_string(),
-        "health --json should have stats.model_name"
+        parsed["data"]["stats"]["model_name"].is_string(),
+        "health --json should have data.stats.model_name"
     );
 
     // Verify total_chunks > 0 (we indexed real files)
-    let total_chunks = parsed["stats"]["total_chunks"]
+    let total_chunks = parsed["data"]["stats"]["total_chunks"]
         .as_u64()
-        .expect("stats.total_chunks should be a number");
+        .expect("data.stats.total_chunks should be a number");
     assert!(
         total_chunks > 0,
         "total_chunks should be > 0 after indexing, got {}",
@@ -224,20 +224,25 @@ fn test_suggest_cli_json() {
 
     assert!(
         parsed.is_object(),
-        "suggest --json should output a JSON object with suggestions, count, applied; got: {}",
+        "suggest --json envelope should be a JSON object with data, error, version; got: {}",
         parsed
     );
     assert!(
+        parsed["data"].is_object(),
+        "suggest --json data should be an object; got: {}",
         parsed
+    );
+    assert!(
+        parsed["data"]
             .get("suggestions")
             .and_then(|v| v.as_array())
             .is_some(),
-        "suggest --json should have a 'suggestions' array field, got: {}",
+        "suggest --json should have a 'data.suggestions' array field, got: {}",
         parsed
     );
     assert!(
-        parsed.get("count").is_some(),
-        "suggest --json should have a 'count' field, got: {}",
+        parsed["data"].get("count").is_some(),
+        "suggest --json should have a 'data.count' field, got: {}",
         parsed
     );
 }
@@ -263,10 +268,10 @@ fn test_deps_cli_json() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
-    // Forward deps output is an array of chunk users
+    // Forward deps output is an array of chunk users (under data envelope)
     assert!(
-        parsed.is_array(),
-        "deps --json (forward) should output a JSON array, got: {}",
+        parsed["data"].is_array(),
+        "deps --json (forward) should output a JSON array under data, got: {}",
         parsed
     );
 }
@@ -288,17 +293,17 @@ fn test_deps_reverse_cli_json() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
-    // Reverse deps output is an object with name, types, count
+    // Reverse deps output is an object with name, types, count (under data envelope)
     assert!(
-        parsed["name"].is_string(),
-        "deps --reverse --json should have name field"
+        parsed["data"]["name"].is_string(),
+        "deps --reverse --json should have data.name field"
     );
     assert!(
-        parsed["types"].is_array(),
-        "deps --reverse --json should have types array"
+        parsed["data"]["types"].is_array(),
+        "deps --reverse --json should have data.types array"
     );
     assert!(
-        parsed["count"].is_number(),
-        "deps --reverse --json should have count field"
+        parsed["data"]["count"].is_number(),
+        "deps --reverse --json should have data.count field"
     );
 }

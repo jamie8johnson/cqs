@@ -169,7 +169,7 @@ pub(crate) fn cmd_neighbors(
     let output = build_neighbors_output(&target.name, &neighbors, root);
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         use colored::Colorize;
         println!(

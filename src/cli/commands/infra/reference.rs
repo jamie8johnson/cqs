@@ -223,7 +223,7 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
                 }
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&refs)?);
+        crate::cli::json_envelope::emit_json(&refs)?;
         return Ok(());
     }
 

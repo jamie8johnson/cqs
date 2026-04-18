@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: Uniform JSON output envelope** (Task #17). Every JSON-emitting CLI / batch / daemon-socket response now wraps its payload as `{"data": <payload>, "error": null, "version": 1}` (success) or `{"data": null, "error": {"code": "...", "message": "..."}, "version": 1}` (batch / daemon failures). Agents parse one shape across all ~80 emit sites instead of per-command shapes (`{"results":[]}`, `{"queries":[]}`, raw arrays, `{"error":"..."}`). Error code taxonomy: `not_found`, `invalid_input`, `parse_error`, `io_error`, `internal`. The wrap is centralized in `src/cli/json_envelope.rs` (CLI top-level via `emit_json`) and `src/cli/batch/mod.rs::write_json_line` (batch + daemon-socket chokepoint). The daemon socket transport `{"status","output"}` framing is unchanged — its `output` field now carries the envelope. Wire-format `version: 1` bumps on any future breaking change to inner payload shapes.
+
 ## [1.27.0] - 2026-04-16
 
 The "audit-wave" release — closes 13 of the 18 open issues surfaced in the post-v1.26.1 audit (`docs/audit-open-issues-2026-04-16.md`). One MSRV bump (1.93 → 1.95) bundled in.

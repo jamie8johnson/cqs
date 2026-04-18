@@ -191,7 +191,7 @@ fn display_diff(result: &DiffResult) -> Result<()> {
 /// Formats and outputs a diff result as a formatted JSON document to stdout.
 fn display_diff_json(result: &DiffResult) -> Result<()> {
     let output = build_diff_output(result);
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    crate::cli::json_envelope::emit_json(&output)?;
     Ok(())
 }
 

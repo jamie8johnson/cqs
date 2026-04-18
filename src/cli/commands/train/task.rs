@@ -1,6 +1,6 @@
 //! Task command — one-shot implementation context for a task description.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 
 use cqs::{task, Embedder};
@@ -297,7 +297,7 @@ pub(crate) fn cmd_task(
         output_with_budget(&result, root, embedder, budget, json)?;
     } else if json {
         let output = serde_json::to_value(&result)?;
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         output_text(&result, root);
     }
@@ -310,7 +310,7 @@ fn output_brief(result: &cqs::TaskResult, root: &std::path::Path, json: bool) ->
     let brief = build_task_brief(result, root);
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&brief)?);
+        crate::cli::json_envelope::emit_json(&brief)?;
     } else {
         println!("{}", "Files:".bold());
         for f in &brief.files {
@@ -565,11 +565,13 @@ pub(crate) fn waterfall_pack(
 
 /// Build budgeted JSON for a task result using full waterfall token budgeting.
 /// Shared between CLI `cqs task --tokens --json` and batch `task --tokens`.
+/// Returns `Err` on serialization failure so the batch dispatcher can emit a
+/// proper envelope error instead of nesting `{"error": ...}` inside `data`.
 pub(crate) fn task_to_budgeted_json(
     result: &cqs::TaskResult,
     embedder: &Embedder,
     budget: usize,
-) -> serde_json::Value {
+) -> Result<serde_json::Value> {
     let packed = waterfall_pack(
         result,
         embedder,
@@ -577,18 +579,12 @@ pub(crate) fn task_to_budgeted_json(
         crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
     );
     let output = build_budgeted_task(result, &packed);
-    match serde_json::to_value(&output) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to serialize budgeted task output");
-            serde_json::json!({"error": e.to_string()})
-        }
-    }
+    serde_json::to_value(&output).context("Failed to serialize budgeted task output")
 }
 
 fn output_json_budgeted(result: &cqs::TaskResult, packed: &PackedSections) -> Result<()> {
     let output = build_budgeted_task(result, packed);
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    crate::cli::json_envelope::emit_json(&output)?;
     Ok(())
 }
 

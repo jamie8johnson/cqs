@@ -146,7 +146,7 @@ pub(crate) fn cmd_gc(cli: &crate::cli::definitions::Cli, json: bool) -> Result<(
             hnsw_rebuilt: pruned_chunks > 0,
             hnsw_vectors,
         };
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         if pruned_chunks == 0
             && pruned_calls == 0

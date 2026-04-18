@@ -331,7 +331,7 @@ pub(crate) fn cmd_read(
             path: path.to_string(),
             content: enriched,
         };
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        crate::cli::json_envelope::emit_json(&result)?;
     } else {
         print!("{}", enriched);
     }
@@ -375,7 +375,7 @@ fn cmd_read_focused(
             content: result.output,
             hints,
         };
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         print!("{}", result.output);
     }

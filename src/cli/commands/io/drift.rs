@@ -109,7 +109,7 @@ pub(crate) fn cmd_drift(
 
     if json {
         let output = build_drift_output(&result, limit);
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         println!(
             "Drift from {} (threshold: {:.2}, showing \u{2265}{:.2} drift)\n",

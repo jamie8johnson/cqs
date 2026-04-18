@@ -79,15 +79,15 @@ fn test_model_show_against_seeded_store() {
     let parsed: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|_| panic!("model show --json output must be JSON. got: {stdout}"));
     assert_eq!(
-        parsed["model"].as_str(),
+        parsed["data"]["model"].as_str(),
         Some("BAAI/bge-large-en-v1.5"),
-        "model field must reflect seeded model. got: {parsed:?}"
+        "data.model field must reflect seeded model. got: {parsed:?}"
     );
-    assert_eq!(parsed["dim"].as_u64(), Some(1024));
+    assert_eq!(parsed["data"]["dim"].as_u64(), Some(1024));
     // Field exists even if 0 — required by JSON contract.
-    assert!(parsed.get("total_chunks").is_some());
-    assert!(parsed.get("index_db_size_bytes").is_some());
-    assert!(parsed.get("hnsw_size_bytes").is_some());
+    assert!(parsed["data"].get("total_chunks").is_some());
+    assert!(parsed["data"].get("index_db_size_bytes").is_some());
+    assert!(parsed["data"].get("hnsw_size_bytes").is_some());
 }
 
 /// Test 2 — `cqs model list --json` lists every preset and flips the
@@ -116,9 +116,9 @@ fn test_model_list_includes_current() {
 
     let parsed: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|_| panic!("model list --json output must be JSON. got: {stdout}"));
-    let arr = parsed
+    let arr = parsed["data"]
         .as_array()
-        .expect("model list --json must be a JSON array");
+        .expect("model list --json data must be a JSON array");
     assert!(
         arr.len() >= 3,
         "expected at least 3 presets (bge-large, e5-base, v9-200k); got {arr:?}"
@@ -182,9 +182,9 @@ fn test_model_swap_same_preset_is_noop() {
         panic!("swap (no-op) --json output must be JSON. got: {stdout} stderr={stderr}")
     });
     assert_eq!(
-        parsed["noop"].as_bool(),
+        parsed["data"]["noop"].as_bool(),
         Some(true),
-        "swap to current model must report noop=true. got: {parsed:?}"
+        "swap to current model must report data.noop=true. got: {parsed:?}"
     );
 
     // index.db must be the same file (size + mtime unchanged) — no

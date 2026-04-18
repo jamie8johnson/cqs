@@ -132,7 +132,7 @@ pub(crate) fn cmd_project(subcmd: &ProjectCommand, model_config: &ModelConfig) -
                         score: r.score,
                     })
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&json_results)?);
+                crate::cli::json_envelope::emit_json(&json_results)?;
             } else if results.is_empty() {
                 println!("No results found across registered projects.");
             } else {

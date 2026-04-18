@@ -90,7 +90,7 @@ pub(crate) fn cmd_stale(
 
     if json {
         let output = build_stale(&report);
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         let stale_count = report.stale.len();
         let missing_count = report.missing.len();

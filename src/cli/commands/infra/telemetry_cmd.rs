@@ -412,7 +412,7 @@ pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()>
 
     if output.events == 0 {
         if json {
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            crate::cli::json_envelope::emit_json(&output)?;
         } else {
             println!("No telemetry data. Set CQS_TELEMETRY=1 to enable.");
         }
@@ -420,7 +420,7 @@ pub(crate) fn cmd_telemetry(cqs_dir: &Path, json: bool, all: bool) -> Result<()>
     }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         print_telemetry_text(&output);
     }

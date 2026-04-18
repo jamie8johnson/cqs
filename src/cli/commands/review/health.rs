@@ -26,7 +26,7 @@ pub(crate) fn cmd_health(
 
     if json {
         let json_val = serde_json::to_value(&report)?;
-        println!("{}", serde_json::to_string_pretty(&json_val)?);
+        crate::cli::json_envelope::emit_json(&json_val)?;
     } else {
         // Dashboard display
         println!("{}", "Codebase Health".bold());

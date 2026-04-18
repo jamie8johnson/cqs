@@ -76,7 +76,7 @@ pub(crate) fn cmd_related(
 
     if json {
         let output = build_related_output(&result, root);
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         use colored::Colorize;
         println!("{} {}", "Related to:".cyan(), result.target.bold());

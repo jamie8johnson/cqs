@@ -59,7 +59,7 @@ fn cache_stats(cache: &EmbeddingCache, cache_path: &std::path::Path, json: bool)
             "oldest_timestamp": stats.oldest_timestamp,
             "newest_timestamp": stats.newest_timestamp,
         });
-        println!("{}", serde_json::to_string_pretty(&obj)?);
+        crate::cli::json_envelope::emit_json(&obj)?;
     } else {
         println!("Embedding cache: {}", cache_path.display());
         println!("  Entries:  {}", stats.total_entries);
@@ -88,7 +88,7 @@ fn cache_clear(cache: &EmbeddingCache, model: Option<&str>, json: bool) -> Resul
             "deleted": deleted,
             "model": model,
         });
-        println!("{}", serde_json::to_string_pretty(&obj)?);
+        crate::cli::json_envelope::emit_json(&obj)?;
     } else if let Some(fp) = model {
         println!("Cleared {} entries for model {}", deleted, fp);
     } else {
@@ -109,7 +109,7 @@ fn cache_prune(cache: &EmbeddingCache, days: u32, json: bool) -> Result<()> {
             "pruned": pruned,
             "older_than_days": days,
         });
-        println!("{}", serde_json::to_string_pretty(&obj)?);
+        crate::cli::json_envelope::emit_json(&obj)?;
     } else {
         println!("Pruned {} entries older than {} days", pruned, days);
     }

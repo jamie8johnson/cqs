@@ -346,7 +346,7 @@ pub(crate) fn cmd_explain(
 
     if json {
         let output = build_explain_output(&data, root);
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         print_explain_terminal(&data, root);
     }

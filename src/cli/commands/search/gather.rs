@@ -177,7 +177,7 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
     if json {
         let token_info = token_count_used.map(|used| (used, max_tokens.unwrap_or(0)));
         let output = build_gather_output(&result, query, token_info);
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else if result.chunks.is_empty() {
         println!("No relevant code found for: {}", query);
     } else {

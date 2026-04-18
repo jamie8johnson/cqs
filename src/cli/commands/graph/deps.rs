@@ -95,7 +95,7 @@ pub(crate) fn cmd_deps(
         types.truncate(limit);
         if json {
             let output = build_deps_reverse(name, &types);
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            crate::cli::json_envelope::emit_json(&output)?;
         } else if types.is_empty() {
             println!("No type dependencies found for '{}'", name);
         } else {
@@ -118,7 +118,7 @@ pub(crate) fn cmd_deps(
         users.truncate(limit);
         if json {
             let output = build_deps_forward(&users, root);
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            crate::cli::json_envelope::emit_json(&output)?;
         } else if users.is_empty() {
             println!("No users found for type '{}'", name);
         } else {

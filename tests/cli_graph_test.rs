@@ -171,8 +171,8 @@ fn test_audit_mode_json() {
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
-    assert_eq!(parsed["audit_mode"], true);
-    assert!(parsed["expires_at"].is_string());
+    assert_eq!(parsed["data"]["audit_mode"], true);
+    assert!(parsed["data"]["expires_at"].is_string());
 }
 
 #[test]
@@ -259,9 +259,11 @@ fn test_trace_finds_path() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
 
-    assert_eq!(parsed["source"], "main");
-    assert_eq!(parsed["target"], "validate");
-    let path = parsed["path"].as_array().expect("path should be array");
+    assert_eq!(parsed["data"]["source"], "main");
+    assert_eq!(parsed["data"]["target"], "validate");
+    let path = parsed["data"]["path"]
+        .as_array()
+        .expect("data.path should be array");
     assert!(path.len() >= 2, "Path should have at least 2 hops");
 
     // Verify path starts with main and ends with validate
@@ -315,7 +317,10 @@ fn test_impact_json() {
         .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
 
     // validate is called by process, which is called by main
-    assert!(parsed["name"].is_string(), "Should have name field");
+    assert!(
+        parsed["data"]["name"].is_string(),
+        "Should have data.name field"
+    );
 }
 
 #[test]
@@ -348,8 +353,14 @@ fn test_test_map_json() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
 
-    assert!(parsed["name"].is_string(), "Should have name field");
-    assert!(parsed["tests"].is_array(), "Should have tests array");
+    assert!(
+        parsed["data"]["name"].is_string(),
+        "Should have data.name field"
+    );
+    assert!(
+        parsed["data"]["tests"].is_array(),
+        "Should have data.tests array"
+    );
 }
 
 #[test]
@@ -369,7 +380,10 @@ fn test_test_map_transitive() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
 
-    assert!(parsed["name"].is_string(), "Should have name field");
+    assert!(
+        parsed["data"]["name"].is_string(),
+        "Should have data.name field"
+    );
 }
 
 #[test]
@@ -388,10 +402,10 @@ fn test_context_json() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
 
-    assert_eq!(parsed["file"], "src/lib.rs");
-    let chunks = parsed["chunks"]
+    assert_eq!(parsed["data"]["file"], "src/lib.rs");
+    let chunks = parsed["data"]["chunks"]
         .as_array()
-        .expect("Should have chunks array");
+        .expect("Should have data.chunks array");
     assert!(
         chunks.len() >= 4,
         "Should have at least 4 chunks (main, process, validate, transform)"
@@ -459,10 +473,22 @@ fn test_explain_json() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
 
-    assert!(parsed["name"].is_string(), "Should have name field");
-    assert!(parsed["callers"].is_array(), "Should have callers array");
-    assert!(parsed["callees"].is_array(), "Should have callees array");
-    assert!(parsed["signature"].is_string(), "Should have signature");
+    assert!(
+        parsed["data"]["name"].is_string(),
+        "Should have data.name field"
+    );
+    assert!(
+        parsed["data"]["callers"].is_array(),
+        "Should have data.callers array"
+    );
+    assert!(
+        parsed["data"]["callees"].is_array(),
+        "Should have data.callees array"
+    );
+    assert!(
+        parsed["data"]["signature"].is_string(),
+        "Should have data.signature"
+    );
 }
 
 #[test]
@@ -514,11 +540,14 @@ fn test_gather_json() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
 
-    assert_eq!(parsed["query"], "process data");
-    assert!(parsed["chunks"].is_array(), "Should have chunks array");
+    assert_eq!(parsed["data"]["query"], "process data");
+    assert!(
+        parsed["data"]["chunks"].is_array(),
+        "Should have data.chunks array"
+    );
 
     // Verify language/chunk_type in JSON output
-    if let Some(chunks) = parsed["chunks"].as_array() {
+    if let Some(chunks) = parsed["data"]["chunks"].as_array() {
         for chunk_json in chunks {
             assert!(
                 chunk_json.get("language").is_some(),
@@ -669,11 +698,11 @@ fn hp5_context_json_chunk_fields() {
         .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
 
     // Top-level field
-    assert_eq!(parsed["file"], "src/lib.rs");
+    assert_eq!(parsed["data"]["file"], "src/lib.rs");
 
-    let chunks = parsed["chunks"]
+    let chunks = parsed["data"]["chunks"]
         .as_array()
-        .expect("Should have chunks array");
+        .expect("Should have data.chunks array");
     assert!(
         chunks.len() >= 4,
         "Expected at least 4 chunks (main, process, validate, transform), got {}",
@@ -718,16 +747,16 @@ fn hp5_context_json_chunk_fields() {
 
     // Verify external_callers and external_callees arrays exist
     assert!(
-        parsed["external_callers"].is_array(),
-        "Should have external_callers array"
+        parsed["data"]["external_callers"].is_array(),
+        "Should have data.external_callers array"
     );
     assert!(
-        parsed["external_callees"].is_array(),
-        "Should have external_callees array"
+        parsed["data"]["external_callees"].is_array(),
+        "Should have data.external_callees array"
     );
     assert!(
-        parsed["dependent_files"].is_array(),
-        "Should have dependent_files array"
+        parsed["data"]["dependent_files"].is_array(),
+        "Should have data.dependent_files array"
     );
 
     // The "line" field should NOT exist (agents need "line_start" instead)
@@ -756,15 +785,15 @@ fn hp5_context_compact_json_fields() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} — raw: {}", e, stdout));
 
-    assert_eq!(parsed["file"], "src/lib.rs");
+    assert_eq!(parsed["data"]["file"], "src/lib.rs");
 
     // chunk_count should match chunks array length
-    let chunks = parsed["chunks"]
+    let chunks = parsed["data"]["chunks"]
         .as_array()
-        .expect("Should have chunks array");
-    let chunk_count = parsed["chunk_count"]
+        .expect("Should have data.chunks array");
+    let chunk_count = parsed["data"]["chunk_count"]
         .as_u64()
-        .expect("Should have chunk_count field");
+        .expect("Should have data.chunk_count field");
     assert_eq!(
         chunk_count,
         chunks.len() as u64,

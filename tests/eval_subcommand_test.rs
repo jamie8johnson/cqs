@@ -159,13 +159,14 @@ fn test_eval_runs_against_seeded_store() {
 
     if result.status.success() {
         // Embedder + index both available — verify the JSON shape and
-        // that the gold chunk was found.
+        // that the gold chunk was found. CLI emits via `emit_json`, so the
+        // EvalReport is wrapped in `{data, error, version}`.
         let parsed: serde_json::Value =
             serde_json::from_str(stdout.trim()).expect("eval --json output is valid JSON");
-        assert_eq!(parsed["overall"]["n"].as_u64(), Some(1));
+        assert_eq!(parsed["data"]["overall"]["n"].as_u64(), Some(1));
         // R@1 should be 1.0 because the seeded embedding direction matches
         // the chunk content.
-        let r_at_1 = parsed["overall"]["r_at_1"].as_f64().unwrap_or(-1.0);
+        let r_at_1 = parsed["data"]["overall"]["r_at_1"].as_f64().unwrap_or(-1.0);
         assert!(
             (0.0..=1.0).contains(&r_at_1),
             "R@1 must be in [0, 1], got {r_at_1}"
@@ -220,12 +221,13 @@ fn test_eval_handles_missing_gold_chunk() {
     );
 
     if result.status.success() {
+        // Eval --json output wraps EvalReport under data envelope.
         let parsed: serde_json::Value =
             serde_json::from_str(stdout.trim()).expect("eval --json output is valid JSON");
-        assert_eq!(parsed["overall"]["n"].as_u64(), Some(1));
+        assert_eq!(parsed["data"]["overall"]["n"].as_u64(), Some(1));
         // Gold not in store → R@1 must be 0.
         assert_eq!(
-            parsed["overall"]["r_at_1"].as_f64(),
+            parsed["data"]["overall"]["r_at_1"].as_f64(),
             Some(0.0),
             "Gold absent → R@1 must be 0. got {}",
             stdout

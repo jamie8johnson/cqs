@@ -79,7 +79,7 @@ pub(crate) fn cmd_suggest(
     if suggestions.is_empty() {
         if json {
             let output = build_suggest_output(&suggestions, false);
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            crate::cli::json_envelope::emit_json(&output)?;
         } else {
             println!("No suggestions — codebase looks clean.");
         }
@@ -91,7 +91,7 @@ pub(crate) fn cmd_suggest(
             apply_suggestions(&suggestions, root, &ctx.cqs_dir)?;
         }
         let output = build_suggest_output(&suggestions, apply);
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else if apply {
         apply_suggestions(&suggestions, root, &ctx.cqs_dir)?;
         println!(

@@ -464,6 +464,7 @@ impl BatchContext {
     /// the same counter — previously only `cmd_batch` bumped `error_count`,
     /// leaving socket queries invisible).
     pub(crate) fn dispatch_line(&self, line: &str, out: &mut impl std::io::Write) {
+        use crate::cli::json_envelope::error_codes;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             return;
@@ -472,8 +473,11 @@ impl BatchContext {
             Ok(t) => t,
             Err(e) => {
                 self.error_count.fetch_add(1, Ordering::Relaxed);
-                let err = serde_json::json!({"error": format!("Parse error: {e}")});
-                let _ = write_json_line(out, &err);
+                let _ = write_envelope_error(
+                    out,
+                    error_codes::PARSE_ERROR,
+                    &format!("Parse error: {e}"),
+                );
                 return;
             }
         };
@@ -495,14 +499,12 @@ impl BatchContext {
                     // EH-12: use anyhow chain formatter (`:#`) so the real
                     // root cause (e.g. CUDA OOM) surfaces to daemon clients
                     // instead of the flattened top-level "embedding failed".
-                    let err = serde_json::json!({"error": format!("{e:#}")});
-                    let _ = write_json_line(out, &err);
+                    let _ = write_envelope_error(out, error_codes::INTERNAL, &format!("{e:#}"));
                 }
             },
             Err(e) => {
                 self.error_count.fetch_add(1, Ordering::Relaxed);
-                let err = serde_json::json!({"error": format!("{e:#}")});
-                let _ = write_json_line(out, &err);
+                let _ = write_envelope_error(out, error_codes::PARSE_ERROR, &format!("{e:#}"));
             }
         }
     }
@@ -1048,27 +1050,57 @@ fn sanitize_json_floats(value: &mut serde_json::Value) {
     }
 }
 
-/// Serialize a JSON value to a line on stdout. Sanitizes NaN/Infinity before
-/// serialization to prevent serde_json panics. Returns Err on write failure
-/// (broken pipe).
+/// Wrap a payload in the standard envelope and serialize to a JSONL record on
+/// stdout. Sanitizes NaN/Infinity before serialization to prevent serde_json
+/// panics. Returns Err on write failure (broken pipe).
+///
+/// Callers pass the raw per-handler payload (a `serde_json::Value` from
+/// `commands::dispatch`); this function wraps it with `{data, error: null,
+/// version}` so every batch / daemon-socket line shares one shape. See
+/// [`crate::cli::json_envelope`].
 fn write_json_line(
     out: &mut impl std::io::Write,
     value: &serde_json::Value,
 ) -> std::io::Result<()> {
-    match serde_json::to_string(value) {
+    let wrapped = crate::cli::json_envelope::wrap_value(value.clone());
+    match serde_json::to_string(&wrapped) {
         Ok(s) => writeln!(out, "{}", s),
         Err(_) => {
             // NaN/Infinity in the value — sanitize and retry
-            let mut sanitized = value.clone();
+            let mut sanitized = wrapped.clone();
             sanitize_json_floats(&mut sanitized);
             match serde_json::to_string(&sanitized) {
                 Ok(s) => writeln!(out, "{}", s),
                 Err(e) => {
                     tracing::warn!(error = %e, "JSON serialization failed after sanitization");
-                    writeln!(out, r#"{{"error":"JSON serialization failed"}}"#)
+                    let fallback = crate::cli::json_envelope::wrap_error(
+                        crate::cli::json_envelope::error_codes::INTERNAL,
+                        "JSON serialization failed",
+                    );
+                    let s = serde_json::to_string(&fallback)
+                        .unwrap_or_else(|_| String::from(r#"{"data":null,"error":{"code":"internal","message":"JSON serialization failed"},"version":1}"#));
+                    writeln!(out, "{}", s)
                 }
             }
         }
+    }
+}
+
+/// Serialize a pre-built envelope error directly. Used by error-emission
+/// sites that already need an envelope error (rather than wrapping a raw
+/// payload). Skips the success-path wrap performed by [`write_json_line`].
+fn write_envelope_error(
+    out: &mut impl std::io::Write,
+    code: &str,
+    message: &str,
+) -> std::io::Result<()> {
+    let env = crate::cli::json_envelope::wrap_error(code, message);
+    match serde_json::to_string(&env) {
+        Ok(s) => writeln!(out, "{}", s),
+        Err(_) => writeln!(
+            out,
+            r#"{{"data":null,"error":{{"code":"internal","message":"JSON serialization failed"}},"version":1}}"#
+        ),
     }
 }
 
@@ -1276,23 +1308,14 @@ pub(crate) fn cmd_batch() -> Result<()> {
             Ok(t) => t,
             Err(e) => {
                 ctx.error_count.fetch_add(1, Ordering::Relaxed);
-                let error_json = serde_json::json!({"error": format!("Parse error: {}", e)});
-                match serde_json::to_string(&error_json) {
-                    Ok(s) => {
-                        if writeln!(stdout, "{}", s).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => {
-                        if writeln!(
-                            stdout,
-                            r#"{{"error":"Parse error (serialization failed)"}}"#
-                        )
-                        .is_err()
-                        {
-                            break;
-                        }
-                    }
+                if write_envelope_error(
+                    &mut stdout,
+                    crate::cli::json_envelope::error_codes::PARSE_ERROR,
+                    &format!("Parse error: {}", e),
+                )
+                .is_err()
+                {
+                    break;
                 }
                 let _ = stdout.flush();
                 continue;
@@ -1307,8 +1330,13 @@ pub(crate) fn cmd_batch() -> Result<()> {
         // string processing in downstream consumers.
         if tokens.iter().any(|t| t.contains('\0')) {
             ctx.error_count.fetch_add(1, Ordering::Relaxed);
-            let error_json = serde_json::json!({"error": "Input contains null bytes"});
-            if write_json_line(&mut stdout, &error_json).is_err() {
+            if write_envelope_error(
+                &mut stdout,
+                crate::cli::json_envelope::error_codes::INVALID_INPUT,
+                "Input contains null bytes",
+            )
+            .is_err()
+            {
                 break;
             }
             continue;
@@ -1319,9 +1347,18 @@ pub(crate) fn cmd_batch() -> Result<()> {
 
         // Pipeline detection: if tokens contain a standalone `|`, route to pipeline
         if pipeline::has_pipe_token(&tokens) {
-            let result = pipeline::execute_pipeline(&ctx, &tokens, trimmed);
-            if write_json_line(&mut stdout, &result).is_err() {
-                break;
+            match pipeline::execute_pipeline(&ctx, &tokens, trimmed) {
+                Ok(value) => {
+                    if write_json_line(&mut stdout, &value).is_err() {
+                        break;
+                    }
+                }
+                Err(pe) => {
+                    ctx.error_count.fetch_add(1, Ordering::Relaxed);
+                    if write_envelope_error(&mut stdout, pe.code, &pe.message).is_err() {
+                        break;
+                    }
+                }
             }
         } else {
             // Single command — existing path
@@ -1337,16 +1374,26 @@ pub(crate) fn cmd_batch() -> Result<()> {
                         // EH-12: `:#` preserves anyhow's context chain so the
                         // root cause (e.g. CUDA OOM) reaches the caller
                         // instead of being flattened to a single message.
-                        let error_json = serde_json::json!({"error": format!("{e:#}")});
-                        if write_json_line(&mut stdout, &error_json).is_err() {
+                        if write_envelope_error(
+                            &mut stdout,
+                            crate::cli::json_envelope::error_codes::INTERNAL,
+                            &format!("{e:#}"),
+                        )
+                        .is_err()
+                        {
                             break;
                         }
                     }
                 },
                 Err(e) => {
                     ctx.error_count.fetch_add(1, Ordering::Relaxed);
-                    let error_json = serde_json::json!({"error": format!("{e:#}")});
-                    if write_json_line(&mut stdout, &error_json).is_err() {
+                    if write_envelope_error(
+                        &mut stdout,
+                        crate::cli::json_envelope::error_codes::PARSE_ERROR,
+                        &format!("{e:#}"),
+                    )
+                    .is_err()
+                    {
                         break;
                     }
                 }
@@ -1703,6 +1750,7 @@ mod tests {
     }
 
     // TC-7: write_json_line outputs valid JSON for clean values
+    // Wraps payload in the standard `{data, error, version}` envelope.
     #[test]
     fn test_write_json_line_clean() {
         let val = serde_json::json!({"name": "foo", "score": 0.95});
@@ -1710,11 +1758,17 @@ mod tests {
         write_json_line(&mut buf, &val).unwrap();
         let output = String::from_utf8(buf).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
-        assert_eq!(parsed["name"], "foo");
-        assert_eq!(parsed["score"], 0.95);
+        assert_eq!(parsed["data"]["name"], "foo");
+        assert_eq!(parsed["data"]["score"], 0.95);
+        assert!(parsed["error"].is_null());
+        assert_eq!(
+            parsed["version"],
+            crate::cli::json_envelope::JSON_OUTPUT_VERSION
+        );
     }
 
-    // TC-7: write_json_line sanitizes NaN via retry path and produces valid JSON
+    // TC-7: write_json_line sanitizes NaN via retry path and produces valid JSON.
+    // The wrapped payload still wraps in the envelope; sanitization runs on the wrap.
     #[test]
     fn test_write_json_line_nan_retry() {
         let val = serde_json::json!({"score": f64::NAN, "name": "bar"});
@@ -1723,7 +1777,10 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
         // Must be valid JSON (no panic, no NaN literal)
         let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
-        assert!(parsed["score"].is_null(), "NaN should be sanitized to null");
-        assert_eq!(parsed["name"], "bar");
+        assert!(
+            parsed["data"]["score"].is_null(),
+            "NaN should be sanitized to null"
+        );
+        assert_eq!(parsed["data"]["name"], "bar");
     }
 }

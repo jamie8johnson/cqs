@@ -53,7 +53,7 @@ pub(crate) fn cmd_reconstruct(
             lines: chunks.last().map(|c| c.line_end).unwrap_or(0),
             content: assemble(&chunks),
         };
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         print!("{}", assemble(&chunks));
     }

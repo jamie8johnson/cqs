@@ -313,9 +313,8 @@ pub(crate) fn cmd_doctor(
         let report = build_verbose_report(&root, &cqs_dir, &index_path, model_override, &config);
         if json {
             println!();
-            let buf = serde_json::to_string_pretty(&report)
+            crate::cli::json_envelope::emit_json(&report)
                 .context("Failed to serialize verbose doctor report")?;
-            println!("{}", buf);
         } else {
             println!();
             print_verbose_report(&report);
@@ -867,7 +866,7 @@ fn collect_cqs_env_vars() -> Vec<EnvVar> {
 }
 
 /// Pretty-print the verbose report in the same colored style as the legacy
-/// doctor output. JSON consumers go through `serde_json::to_string_pretty`
+/// doctor output. JSON consumers go through `crate::cli::json_envelope::emit_json`
 /// instead — they don't see this function.
 fn print_verbose_report(r: &VerboseReport) {
     println!("{}", "── Verbose ──".bold());

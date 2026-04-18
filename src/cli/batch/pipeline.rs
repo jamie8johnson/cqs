@@ -145,12 +145,45 @@ fn split_tokens_by_pipe(tokens: &[String]) -> Vec<Vec<String>> {
     segments
 }
 
+/// Pipeline-level error: distinguishes the (code, message) so the caller can
+/// emit a structured envelope error instead of double-wrapping a raw `{error}`
+/// value as success data. Per-row failures inside a successful pipeline still
+/// land in the `errors` array of [`build_pipeline_result`].
+pub(crate) struct PipelineError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl PipelineError {
+    fn parse(message: impl Into<String>) -> Self {
+        Self {
+            code: crate::cli::json_envelope::error_codes::PARSE_ERROR,
+            message: message.into(),
+        }
+    }
+    fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            code: crate::cli::json_envelope::error_codes::INVALID_INPUT,
+            message: message.into(),
+        }
+    }
+    fn internal(message: impl Into<String>) -> Self {
+        Self {
+            code: crate::cli::json_envelope::error_codes::INTERNAL,
+            message: message.into(),
+        }
+    }
+}
+
 /// Execute a pipeline: chain commands where upstream names feed downstream.
+/// Returns the pipeline result value on success; pipeline-level errors return
+/// an `Err` that the call site emits as a standard envelope error. Per-row
+/// failures inside a successful pipeline live in the result's `errors` array.
 pub(crate) fn execute_pipeline(
     ctx: &BatchContext,
     tokens: &[String],
     raw_line: &str,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, PipelineError> {
     let _span = tracing::info_span!("pipeline", input = raw_line).entered();
 
     let segments = split_tokens_by_pipe(tokens);
@@ -159,9 +192,10 @@ pub(crate) fn execute_pipeline(
     // Validate: no empty segments
     for (i, seg) in segments.iter().enumerate() {
         if seg.is_empty() {
-            return serde_json::json!({"error": format!(
-                "Empty pipeline segment at position {}", i + 1
-            )});
+            return Err(PipelineError::invalid(format!(
+                "Empty pipeline segment at position {}",
+                i + 1
+            )));
         }
     }
 
@@ -169,12 +203,12 @@ pub(crate) fn execute_pipeline(
     for seg in &segments[1..] {
         if !is_pipeable_command(seg) {
             let cmd = seg.first().map(|s| s.as_str()).unwrap_or("(empty)");
-            return serde_json::json!({"error": format!(
+            return Err(PipelineError::invalid(format!(
                 "Cannot pipe into '{}' \u{2014} it doesn't accept a function name. \
                  Pipeable commands: {}",
                 cmd,
                 pipeable_command_names()
-            )});
+            )));
         }
     }
 
@@ -183,9 +217,10 @@ pub(crate) fn execute_pipeline(
         if let Some(first) = seg.first() {
             let lower = first.to_ascii_lowercase();
             if lower == "quit" || lower == "exit" || lower == "help" {
-                return serde_json::json!({"error": format!(
-                    "'{}' cannot be used in a pipeline", first
-                )});
+                return Err(PipelineError::invalid(format!(
+                    "'{}' cannot be used in a pipeline",
+                    first
+                )));
             }
         }
     }
@@ -203,15 +238,17 @@ pub(crate) fn execute_pipeline(
             Ok(input) => match dispatch(ctx, input.cmd) {
                 Ok(val) => val,
                 Err(e) => {
-                    return serde_json::json!({"error": format!(
-                        "Pipeline stage 1 failed: {}", e
-                    )});
+                    return Err(PipelineError::internal(format!(
+                        "Pipeline stage 1 failed: {}",
+                        e
+                    )));
                 }
             },
             Err(e) => {
-                return serde_json::json!({"error": format!(
-                    "Pipeline stage 1 parse error: {}", e
-                )});
+                return Err(PipelineError::parse(format!(
+                    "Pipeline stage 1 parse error: {}",
+                    e
+                )));
             }
         }
     };
@@ -249,7 +286,14 @@ pub(crate) fn execute_pipeline(
 
         if names.is_empty() {
             // No names to fan out — return empty pipeline result
-            return build_pipeline_result(raw_line, stage_count, vec![], vec![], 0, false);
+            return Ok(build_pipeline_result(
+                raw_line,
+                stage_count,
+                vec![],
+                vec![],
+                0,
+                false,
+            ));
         }
 
         let mut results: Vec<(String, serde_json::Value)> = Vec::new();
@@ -280,14 +324,14 @@ pub(crate) fn execute_pipeline(
 
         // If this is the last stage, build the pipeline result envelope
         if stage_num == segments.len() - 1 {
-            return build_pipeline_result(
+            return Ok(build_pipeline_result(
                 raw_line,
                 stage_count,
                 results,
                 errors,
                 total_inputs,
                 any_truncated,
-            );
+            ));
         }
 
         // Intermediate stage: merge results for next stage's name extraction.
@@ -314,7 +358,9 @@ pub(crate) fn execute_pipeline(
     }
 
     // Should not reach here, but safety net
-    serde_json::json!({"error": "Pipeline execution ended unexpectedly"})
+    Err(PipelineError::internal(
+        "Pipeline execution ended unexpectedly",
+    ))
 }
 
 /// Build the final pipeline result envelope.

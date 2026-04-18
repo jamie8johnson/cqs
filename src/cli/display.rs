@@ -249,7 +249,7 @@ pub fn display_unified_results_json(
         output["token_budget"] = serde_json::json!(budget);
     }
 
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    super::json_envelope::emit_json(&output)?;
     Ok(())
 }
 
@@ -401,7 +401,7 @@ pub fn display_similar_results_json(
         "total": results.len(),
     });
 
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    super::json_envelope::emit_json(&output)?;
     Ok(())
 }
 
@@ -442,7 +442,7 @@ pub fn display_tagged_results_json(
         output["token_budget"] = serde_json::json!(budget);
     }
 
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    super::json_envelope::emit_json(&output)?;
     Ok(())
 }
 

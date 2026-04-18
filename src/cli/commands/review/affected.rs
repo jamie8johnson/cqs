@@ -38,7 +38,7 @@ pub(crate) fn cmd_affected(
     let hunks = parse_unified_diff(&diff_text);
     if hunks.is_empty() {
         if json {
-            println!("{}", serde_json::to_string_pretty(&empty_affected_json())?);
+            crate::cli::json_envelope::emit_json(&empty_affected_json())?;
         } else {
             println!("No changes detected.");
         }
@@ -49,7 +49,7 @@ pub(crate) fn cmd_affected(
     let changed = map_hunks_to_functions(store, &hunks);
     if changed.is_empty() {
         if json {
-            println!("{}", serde_json::to_string_pretty(&empty_affected_json())?);
+            crate::cli::json_envelope::emit_json(&empty_affected_json())?;
         } else {
             println!("No indexed functions affected by this diff.");
         }
@@ -64,7 +64,7 @@ pub(crate) fn cmd_affected(
         let mut json_val = diff_impact_to_json(&result);
         // Add overall risk
         json_val["overall_risk"] = serde_json::json!(overall_risk_label(&result));
-        println!("{}", serde_json::to_string_pretty(&json_val)?);
+        crate::cli::json_envelope::emit_json(&json_val)?;
     } else {
         display_affected_text(&result, root);
     }

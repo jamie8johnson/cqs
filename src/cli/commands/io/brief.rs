@@ -140,7 +140,7 @@ pub(crate) fn cmd_brief(
             functions: entries,
             total,
         };
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        crate::cli::json_envelope::emit_json(&result)?;
     } else {
         use colored::Colorize;
         println!("{} ({})", rel.bold(), entries.len());
