@@ -93,7 +93,7 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
         // Output (text or JSON) before --save so the user sees results even
         // if --save's directory is missing or unwritable.
         if args.json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            crate::cli::json_envelope::emit_json(&report)?;
         } else {
             print_text_report(&report);
         }

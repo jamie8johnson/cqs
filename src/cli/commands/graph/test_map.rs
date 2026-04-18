@@ -204,7 +204,7 @@ pub(crate) fn cmd_test_map(
 
         if json {
             let output = build_test_map_output(name, &matches);
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            crate::cli::json_envelope::emit_json(&output)?;
         } else {
             use colored::Colorize;
             println!("{} {} (cross-project)", "Tests for:".cyan(), name.bold());
@@ -240,7 +240,7 @@ pub(crate) fn cmd_test_map(
 
     if json {
         let output = build_test_map_output(&target_name, &matches);
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         use colored::Colorize;
         println!("{} {}", "Tests for:".cyan(), target_name.bold());

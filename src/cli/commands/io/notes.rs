@@ -284,7 +284,7 @@ fn cmd_notes_add(
             total_notes: indexed,
             index_error,
         };
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        crate::cli::json_envelope::emit_json(&result)?;
     } else {
         println!(
             "Added {} (sentiment: {:+.1}): {}",
@@ -390,7 +390,7 @@ fn cmd_notes_update(
             total_notes: indexed,
             index_error,
         };
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        crate::cli::json_envelope::emit_json(&result)?;
     } else {
         println!("Updated: {}", text_preview(final_text));
         if indexed > 0 {
@@ -462,7 +462,7 @@ fn cmd_notes_remove(
             total_notes: indexed,
             index_error,
         };
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        crate::cli::json_envelope::emit_json(&result)?;
     } else {
         println!("Removed: {}", text_preview(&removed_text));
         if indexed > 0 {
@@ -547,7 +547,7 @@ fn cmd_notes_list(
                 }
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&json_notes)?);
+        crate::cli::json_envelope::emit_json(&json_notes)?;
         return Ok(());
     }
 

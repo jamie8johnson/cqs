@@ -31,7 +31,9 @@ fn json_overhead_for(cli: &Cli) -> usize {
 fn emit_empty_results(query: &str, json: bool, context: Option<&str>) -> ! {
     if json {
         let obj = serde_json::json!({"results": [], "query": query, "total": 0});
-        println!("{}", obj);
+        // Best-effort wrap; falls back to raw print if envelope serialize fails
+        // (effectively impossible here — pure JSON object).
+        let _ = crate::cli::json_envelope::emit_json(&obj);
     } else if let Some(ctx) = context {
         println!("No results found in reference '{}'.", ctx);
     } else {

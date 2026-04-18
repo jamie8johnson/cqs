@@ -88,7 +88,7 @@ pub(crate) fn cmd_callers(
 
         if callers.is_empty() {
             if json {
-                println!("[]");
+                crate::cli::json_envelope::emit_json(&serde_json::json!([]))?;
             } else {
                 println!("No callers found for '{}' (cross-project)", name);
             }
@@ -96,7 +96,7 @@ pub(crate) fn cmd_callers(
         }
 
         if json {
-            println!("{}", serde_json::to_string_pretty(&callers)?);
+            crate::cli::json_envelope::emit_json(&callers)?;
         } else {
             println!("Functions that call '{}' (cross-project):", name);
             println!();
@@ -123,7 +123,7 @@ pub(crate) fn cmd_callers(
 
     if callers.is_empty() {
         if json {
-            println!("[]");
+            crate::cli::json_envelope::emit_json(&serde_json::json!([]))?;
         } else {
             println!("No callers found for '{}'", name);
         }
@@ -132,7 +132,7 @@ pub(crate) fn cmd_callers(
 
     if json {
         let output = build_callers(&callers);
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         println!("Functions that call '{}':", name);
         println!();
@@ -172,7 +172,7 @@ pub(crate) fn cmd_callees(
         callees.truncate(limit);
 
         if json {
-            println!("{}", serde_json::to_string_pretty(&callees)?);
+            crate::cli::json_envelope::emit_json(&callees)?;
         } else {
             println!("Functions called by '{}' (cross-project):", name.cyan());
             println!();
@@ -197,7 +197,7 @@ pub(crate) fn cmd_callees(
 
     if json {
         let output = build_callees(name, &callees);
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         println!("Functions called by '{}':", name.cyan());
         println!();

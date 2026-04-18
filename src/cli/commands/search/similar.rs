@@ -106,7 +106,7 @@ pub(crate) fn cmd_similar(
     if filtered.is_empty() {
         if json {
             let obj = serde_json::json!({"results": [], "target": chunk_name, "total": 0});
-            println!("{}", serde_json::to_string_pretty(&obj)?);
+            crate::cli::json_envelope::emit_json(&obj)?;
         } else {
             println!("No similar functions found for '{}'.", chunk_name);
         }

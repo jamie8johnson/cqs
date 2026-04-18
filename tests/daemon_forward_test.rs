@@ -500,17 +500,19 @@ fn test_ping_round_trip() {
 
     // The CLI parsed the envelope and printed PingResponse as JSON.
     // The trailing newline from println! is fine for the JSON parser.
+    // CLI emits via `emit_json`, so the PingResponse is wrapped in the
+    // standard `{data, error, version}` envelope.
     let trimmed = stdout.trim();
     let parsed: serde_json::Value = serde_json::from_str(trimmed)
         .unwrap_or_else(|e| panic!("CLI did not print valid JSON; stdout=<{stdout}> err={e}"));
-    assert_eq!(parsed["model"], "BAAI/bge-large-en-v1.5");
-    assert_eq!(parsed["dim"], 1024);
-    assert_eq!(parsed["uptime_secs"], 9_375);
-    assert_eq!(parsed["last_indexed_at"], 1_734_120_000_i64);
-    assert_eq!(parsed["error_count"], 3);
-    assert_eq!(parsed["total_queries"], 12_453);
-    assert_eq!(parsed["splade_loaded"], true);
-    assert_eq!(parsed["reranker_loaded"], false);
+    assert_eq!(parsed["data"]["model"], "BAAI/bge-large-en-v1.5");
+    assert_eq!(parsed["data"]["dim"], 1024);
+    assert_eq!(parsed["data"]["uptime_secs"], 9_375);
+    assert_eq!(parsed["data"]["last_indexed_at"], 1_734_120_000_i64);
+    assert_eq!(parsed["data"]["error_count"], 3);
+    assert_eq!(parsed["data"]["total_queries"], 12_453);
+    assert_eq!(parsed["data"]["splade_loaded"], true);
+    assert_eq!(parsed["data"]["reranker_loaded"], false);
 }
 
 #[test]

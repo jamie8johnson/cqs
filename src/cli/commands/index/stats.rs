@@ -300,7 +300,7 @@ pub(crate) fn cmd_stats(
     output.hnsw_vectors = hnsw_vectors;
 
     if json || ctx.cli.json {
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         print_stats_text(&output);
     }

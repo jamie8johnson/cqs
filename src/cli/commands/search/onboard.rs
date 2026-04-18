@@ -45,7 +45,7 @@ pub(crate) fn cmd_onboard(
             crate::cli::commands::inject_token_info(&mut output, Some((used, budget)));
         }
 
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         // Text output
         println!(

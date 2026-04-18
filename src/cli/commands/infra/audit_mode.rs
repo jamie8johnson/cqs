@@ -65,7 +65,7 @@ pub(crate) fn cmd_audit_mode(
                     expires_at: None,
                 }
             };
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            crate::cli::json_envelope::emit_json(&output)?;
         } else if mode.is_active() {
             println!(
                 "Audit mode: ON ({})",
@@ -97,7 +97,7 @@ pub(crate) fn cmd_audit_mode(
                     remaining: mode.remaining(),
                     expires_at: Some(expires_at.to_rfc3339()),
                 };
-                println!("{}", serde_json::to_string_pretty(&output)?);
+                crate::cli::json_envelope::emit_json(&output)?;
             } else {
                 println!(
                     "Audit mode enabled. Notes excluded. Expires in {}.",
@@ -119,7 +119,7 @@ pub(crate) fn cmd_audit_mode(
                     remaining: None,
                     expires_at: None,
                 };
-                println!("{}", serde_json::to_string_pretty(&output)?);
+                crate::cli::json_envelope::emit_json(&output)?;
             } else {
                 println!("Audit mode disabled. Notes included.");
             }

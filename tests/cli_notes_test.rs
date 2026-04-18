@@ -103,19 +103,20 @@ fn test_notes_add_creates_file_and_persists() {
     );
 
     let json = notes_add_json(&dir, "hello from CLI", "0.5", None);
-    assert_eq!(json["status"], "added");
-    assert_eq!(json["file"], "docs/notes.toml");
+    // CLI emits via `emit_json`, so payload is wrapped in {data, error, version}.
+    assert_eq!(json["data"]["status"], "added");
+    assert_eq!(json["data"]["file"], "docs/notes.toml");
     // text_preview is either the full text or "first-100-chars...".
     assert!(
-        json["text_preview"]
+        json["data"]["text_preview"]
             .as_str()
             .unwrap()
             .contains("hello from CLI"),
         "text_preview should echo the note text, got {:?}",
-        json["text_preview"]
+        json["data"]["text_preview"]
     );
     // sentiment 0.5 lands in the "pattern" bucket (above +0.3).
-    assert_eq!(json["type"], "pattern");
+    assert_eq!(json["data"]["type"], "pattern");
 
     assert!(
         notes_path(&dir).exists(),
@@ -253,7 +254,8 @@ fn test_notes_add_update_remove_lifecycle() {
 fn test_notes_add_sentiment_clamps() {
     let dir = setup_notes_project();
     let json = notes_add_json(&dir, "clamp me", "5.0", None);
-    let sent = json["sentiment"].as_f64().unwrap();
+    // Sentiment field lives under data envelope.
+    let sent = json["data"]["sentiment"].as_f64().unwrap();
     assert!(
         (sent - 1.0).abs() < 1e-6,
         "sentiment 5.0 must clamp to 1.0 in JSON envelope, got {sent}"

@@ -39,7 +39,7 @@ pub(crate) fn cmd_impact_diff(
     let hunks = parse_unified_diff(&diff_text);
     if hunks.is_empty() {
         if json {
-            println!("{}", serde_json::to_string_pretty(&empty_impact_json())?);
+            crate::cli::json_envelope::emit_json(&empty_impact_json())?;
         } else {
             println!("No changes detected.");
         }
@@ -51,7 +51,7 @@ pub(crate) fn cmd_impact_diff(
 
     if changed.is_empty() {
         if json {
-            println!("{}", serde_json::to_string_pretty(&empty_impact_json())?);
+            crate::cli::json_envelope::emit_json(&empty_impact_json())?;
         } else {
             println!("No indexed functions affected by this diff.");
         }
@@ -64,7 +64,7 @@ pub(crate) fn cmd_impact_diff(
     // 5. Display
     if json {
         let json_val = diff_impact_to_json(&result);
-        println!("{}", serde_json::to_string_pretty(&json_val)?);
+        crate::cli::json_envelope::emit_json(&json_val)?;
     } else {
         display_diff_impact_text(&result, root);
     }

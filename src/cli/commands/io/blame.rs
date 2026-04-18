@@ -300,10 +300,7 @@ pub(crate) fn cmd_blame(
 
     if json {
         let value = blame_to_json(&data, root);
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&value).context("Failed to serialize blame output")?
-        );
+        crate::cli::json_envelope::emit_json(&value).context("Failed to serialize blame output")?;
     } else {
         print_blame_terminal(&data, root);
     }

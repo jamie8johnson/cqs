@@ -94,7 +94,7 @@ pub(crate) fn cmd_where(
 
     if json {
         let output = build_where_output(&result, description, root);
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         use colored::Colorize;
 

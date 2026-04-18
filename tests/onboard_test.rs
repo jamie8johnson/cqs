@@ -90,41 +90,41 @@ fn test_onboard_cli_json() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
-    // Verify top-level fields exist
+    // Verify top-level fields exist (under data envelope)
     assert!(
-        parsed["entry_point"].is_object(),
-        "onboard --json should have entry_point object"
+        parsed["data"]["entry_point"].is_object(),
+        "onboard --json should have data.entry_point object"
     );
     assert!(
-        parsed["call_chain"].is_array(),
-        "onboard --json should have call_chain array"
+        parsed["data"]["call_chain"].is_array(),
+        "onboard --json should have data.call_chain array"
     );
     assert!(
-        parsed["callers"].is_array(),
-        "onboard --json should have callers array"
+        parsed["data"]["callers"].is_array(),
+        "onboard --json should have data.callers array"
     );
     assert!(
-        parsed["key_types"].is_array(),
-        "onboard --json should have key_types array"
+        parsed["data"]["key_types"].is_array(),
+        "onboard --json should have data.key_types array"
     );
     assert!(
-        parsed["tests"].is_array(),
-        "onboard --json should have tests array"
+        parsed["data"]["tests"].is_array(),
+        "onboard --json should have data.tests array"
     );
     assert!(
-        parsed["summary"].is_object(),
-        "onboard --json should have summary object"
+        parsed["data"]["summary"].is_object(),
+        "onboard --json should have data.summary object"
     );
 
     // Verify summary has callee_depth as a number
     assert!(
-        parsed["summary"]["callee_depth"].is_number(),
-        "summary.callee_depth should be a number, got: {}",
-        parsed["summary"]["callee_depth"]
+        parsed["data"]["summary"]["callee_depth"].is_number(),
+        "data.summary.callee_depth should be a number, got: {}",
+        parsed["data"]["summary"]["callee_depth"]
     );
 
     // Verify entry_point has expected fields
-    let entry = &parsed["entry_point"];
+    let entry = &parsed["data"]["entry_point"];
     assert!(entry["name"].is_string(), "entry_point should have name");
     assert!(entry["file"].is_string(), "entry_point should have file");
     assert!(
@@ -134,8 +134,8 @@ fn test_onboard_cli_json() {
 
     // Verify concept is stored
     assert!(
-        parsed["concept"].is_string(),
-        "onboard --json should have concept field"
+        parsed["data"]["concept"].is_string(),
+        "onboard --json should have data.concept field"
     );
 
     // --- Content assertions (issue #974) ---
@@ -143,15 +143,15 @@ fn test_onboard_cli_json() {
     // Verify the retrieval actually names the right chunks, not just field shape.
 
     assert_eq!(
-        parsed["entry_point"]["name"].as_str(),
+        parsed["data"]["entry_point"]["name"].as_str(),
         Some("process_data"),
         "entry_point.name should be 'process_data' for query 'process data', got: {}",
-        parsed["entry_point"]["name"]
+        parsed["data"]["entry_point"]["name"]
     );
 
-    let call_chain = parsed["call_chain"]
+    let call_chain = parsed["data"]["call_chain"]
         .as_array()
-        .expect("call_chain should be an array");
+        .expect("data.call_chain should be an array");
     let chain_names: Vec<&str> = call_chain
         .iter()
         .filter_map(|c| c["name"].as_str())
@@ -162,9 +162,9 @@ fn test_onboard_cli_json() {
         chain_names
     );
 
-    let callers = parsed["callers"]
+    let callers = parsed["data"]["callers"]
         .as_array()
-        .expect("callers should be an array");
+        .expect("data.callers should be an array");
     let caller_names: Vec<&str> = callers.iter().filter_map(|c| c["name"].as_str()).collect();
     assert!(
         caller_names.contains(&"test_process"),
@@ -172,9 +172,9 @@ fn test_onboard_cli_json() {
         caller_names
     );
 
-    let tests = parsed["tests"]
+    let tests = parsed["data"]["tests"]
         .as_array()
-        .expect("tests should be an array");
+        .expect("data.tests should be an array");
     let test_names: Vec<&str> = tests.iter().filter_map(|t| t["name"].as_str()).collect();
     assert!(
         test_names.contains(&"test_process"),
@@ -201,9 +201,9 @@ fn test_onboard_depth_limits_chain() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
-    let call_chain = parsed["call_chain"]
+    let call_chain = parsed["data"]["call_chain"]
         .as_array()
-        .expect("call_chain should be an array");
+        .expect("data.call_chain should be an array");
 
     // With --depth 1, every returned callee must be at depth <= 1.
     // (The entry point is not in call_chain; it has its own field.)
@@ -237,9 +237,9 @@ fn test_onboard_text_matches_json() {
     let json_stdout = String::from_utf8(json_output.get_output().stdout.clone()).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(json_stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, json_stdout));
-    let json_entry = parsed["entry_point"]["name"]
+    let json_entry = parsed["data"]["entry_point"]["name"]
         .as_str()
-        .expect("JSON output should have entry_point.name string")
+        .expect("JSON output should have data.entry_point.name string")
         .to_string();
     assert_eq!(
         json_entry, "process_data",

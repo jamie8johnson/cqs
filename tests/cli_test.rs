@@ -354,11 +354,14 @@ fn test_callers_json_output() {
         .assert()
         .success();
 
-    // Parse stdout to verify it's valid JSON
+    // Parse stdout to verify it's valid JSON envelope with array under data
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON output: {} — raw: {}", e, stdout));
-    assert!(parsed.is_array(), "callers --json should return array");
+    assert!(
+        parsed["data"].is_array(),
+        "callers --json should return array under data"
+    );
 }
 
 #[test]
@@ -390,7 +393,10 @@ fn test_callees_json_output() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON output: {} — raw: {}", e, stdout));
     assert!(parsed.is_object(), "callees --json should return object");
-    assert!(parsed["name"].is_string(), "Should have name field");
+    assert!(
+        parsed["data"]["name"].is_string(),
+        "Should have data.name field"
+    );
 }
 
 // =============================================================================
@@ -439,14 +445,17 @@ fn test_gc_json_on_clean_index() {
         .unwrap_or_else(|e| panic!("Invalid JSON output: {} — raw: {}", e, stdout));
 
     assert_eq!(
-        parsed["pruned_chunks"], 0,
+        parsed["data"]["pruned_chunks"], 0,
         "Fresh index should have 0 pruned chunks"
     );
     assert_eq!(
-        parsed["pruned_calls"], 0,
+        parsed["data"]["pruned_calls"], 0,
         "Fresh index should have 0 pruned calls"
     );
-    assert_eq!(parsed["hnsw_rebuilt"], false, "HNSW should not be rebuilt");
+    assert_eq!(
+        parsed["data"]["hnsw_rebuilt"], false,
+        "HNSW should not be rebuilt"
+    );
 }
 
 #[test]
@@ -485,32 +494,32 @@ fn test_gc_prunes_missing_files() {
     // missing_files. A regression in any of these would silently
     // accumulate orphan call graph / type edge / summary rows.
     assert!(
-        parsed["pruned_chunks"].as_u64().unwrap() > 0,
+        parsed["data"]["pruned_chunks"].as_u64().unwrap() > 0,
         "Should prune chunks for missing file"
     );
     assert_eq!(
-        parsed["missing_files"].as_u64().unwrap(),
+        parsed["data"]["missing_files"].as_u64().unwrap(),
         1,
         "Should report 1 missing file"
     );
     // The deleted src/lib.rs had call graph entries (add, subtract); their
     // orphan function_calls rows must also be pruned in the same tx.
     assert!(
-        parsed["pruned_calls"].as_u64().is_some(),
+        parsed["data"]["pruned_calls"].as_u64().is_some(),
         "pruned_calls must be present in GcOutput"
     );
     // Type edges and summaries may or may not be present for this fixture,
     // but the fields must serialize as u64 (never missing, never null).
     assert!(
-        parsed["pruned_type_edges"].as_u64().is_some(),
+        parsed["data"]["pruned_type_edges"].as_u64().is_some(),
         "pruned_type_edges must be present in GcOutput"
     );
     assert!(
-        parsed["pruned_summaries"].as_u64().is_some(),
+        parsed["data"]["pruned_summaries"].as_u64().is_some(),
         "pruned_summaries must be present in GcOutput"
     );
     assert_eq!(
-        parsed["hnsw_rebuilt"].as_bool().unwrap(),
+        parsed["data"]["hnsw_rebuilt"].as_bool().unwrap(),
         true,
         "HNSW should be rebuilt after pruning chunks"
     );
@@ -561,21 +570,21 @@ fn test_dead_json_output() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON output: {} — raw: {}", e, stdout));
 
-    // Should have dead and possibly_dead_pub arrays
+    // Should have dead and possibly_dead_pub arrays (under data envelope)
     assert!(
-        parsed["dead"].is_array(),
-        "dead --json should have 'dead' array, got: {}",
+        parsed["data"]["dead"].is_array(),
+        "dead --json should have 'data.dead' array, got: {}",
         parsed
     );
     assert!(
-        parsed["possibly_dead_pub"].is_array(),
-        "dead --json should have 'possibly_dead_pub' array, got: {}",
+        parsed["data"]["possibly_dead_pub"].is_array(),
+        "dead --json should have 'data.possibly_dead_pub' array, got: {}",
         parsed
     );
 
     // Our test project has two pub functions (add, subtract) with no callers
     // They should appear in possibly_dead_pub (since they're public)
-    let possibly_dead = parsed["possibly_dead_pub"].as_array().unwrap();
+    let possibly_dead = parsed["data"]["possibly_dead_pub"].as_array().unwrap();
     assert!(
         !possibly_dead.is_empty(),
         "Public functions with no callers should be in possibly_dead_pub"
@@ -609,11 +618,14 @@ fn test_dead_include_pub_flag() {
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON output: {} — raw: {}", e, stdout));
-    assert!(parsed["dead"].is_array(), "Should have 'dead' array");
+    assert!(
+        parsed["data"]["dead"].is_array(),
+        "Should have 'data.dead' array"
+    );
     // With --include-pub, public functions should move to the dead list
-    let dead = parsed["dead"].as_array().unwrap();
+    let dead = parsed["data"]["dead"].as_array().unwrap();
     assert!(
         !dead.is_empty(),
-        "With --include-pub, public functions should be in 'dead' list"
+        "With --include-pub, public functions should be in 'data.dead' list"
     );
 }

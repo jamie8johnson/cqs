@@ -25,7 +25,7 @@ pub(crate) fn cmd_plan(
         if let Some(budget) = tokens {
             json_val["token_budget"] = serde_json::json!(budget);
         }
-        println!("{}", serde_json::to_string_pretty(&json_val)?);
+        crate::cli::json_envelope::emit_json(&json_val)?;
     } else {
         display_plan_text(&result, root, tokens);
     }

@@ -35,7 +35,7 @@ pub(crate) fn cmd_review(
     match result {
         None => {
             if json {
-                println!("{}", serde_json::to_string_pretty(&empty_review_json())?);
+                crate::cli::json_envelope::emit_json(&empty_review_json())?;
             } else {
                 println!("No indexed functions affected by this diff.");
             }
@@ -51,7 +51,7 @@ pub(crate) fn cmd_review(
                     output["token_count"] = serde_json::json!(tokens);
                     output["token_budget"] = serde_json::json!(max_tokens.unwrap_or(0));
                 }
-                println!("{}", serde_json::to_string_pretty(&output)?);
+                crate::cli::json_envelope::emit_json(&output)?;
             } else {
                 display_review_text(&review, root, token_count_used, max_tokens);
             }

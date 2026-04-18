@@ -195,7 +195,14 @@ pub(crate) fn cmd_chat() -> Result<()> {
 
                 // Execute: pipeline or single command
                 let result = if batch::has_pipe_token(&tokens) {
-                    batch::execute_pipeline(&ctx, &tokens, trimmed)
+                    match batch::execute_pipeline(&ctx, &tokens, trimmed) {
+                        Ok(value) => value,
+                        Err(pe) => {
+                            tracing::warn!(code = pe.code, message = %pe.message, command = trimmed, "Pipeline failed");
+                            eprintln!("Error: {}", pe.message);
+                            continue;
+                        }
+                    }
                 } else {
                     match batch::BatchInput::try_parse_from(&tokens) {
                         Ok(input) => match batch::dispatch(&ctx, input.cmd) {
@@ -213,8 +220,10 @@ pub(crate) fn cmd_chat() -> Result<()> {
                     }
                 };
 
-                // Pretty-print result
-                match serde_json::to_string_pretty(&result) {
+                // Pretty-print result wrapped in standard envelope so the chat
+                // surface matches batch / CLI shape.
+                let wrapped = crate::cli::json_envelope::wrap_value(result);
+                match serde_json::to_string_pretty(&wrapped) {
                     Ok(s) => println!("{}", s),
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to format result");

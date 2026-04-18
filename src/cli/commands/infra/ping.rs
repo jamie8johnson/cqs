@@ -173,8 +173,7 @@ pub(crate) fn cmd_ping(json: bool) -> Result<()> {
         match cqs::daemon_translate::daemon_ping(&cqs_dir) {
             Ok(resp) => {
                 if json {
-                    let s = serde_json::to_string(&resp)?;
-                    println!("{}", s);
+                    crate::cli::json_envelope::emit_json(&resp)?;
                 } else {
                     print_text(&resp);
                 }

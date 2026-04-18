@@ -51,7 +51,7 @@ pub(crate) fn cmd_impact(
         }
         if matches!(format, OutputFormat::Json) {
             let json = impact_to_json(&result);
-            println!("{}", serde_json::to_string_pretty(&json)?);
+            crate::cli::json_envelope::emit_json(&json)?;
         } else {
             let rel_file = "(cross-project)";
             display_impact_text(&result, root, rel_file);
@@ -100,7 +100,7 @@ pub(crate) fn cmd_impact(
                 );
             }
         }
-        println!("{}", serde_json::to_string_pretty(&json)?);
+        crate::cli::json_envelope::emit_json(&json)?;
     } else {
         let rel_file = cqs::rel_display(&chunk.file, root);
         display_impact_text(&result, root, &rel_file);

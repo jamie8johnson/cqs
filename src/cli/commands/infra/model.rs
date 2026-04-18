@@ -173,7 +173,7 @@ fn cmd_model_show(json: bool) -> Result<()> {
             hnsw_size_bytes: hnsw_size,
             cagra_size_bytes: cagra_size,
         };
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        crate::cli::json_envelope::emit_json(&out)?;
     } else {
         println!("current model: {} ({}-dim)", model, dim);
         println!("chunks:        {}", total_chunks);
@@ -218,7 +218,7 @@ fn cmd_model_list(json: bool) -> Result<()> {
         .collect();
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&entries)?);
+        crate::cli::json_envelope::emit_json(&entries)?;
     } else {
         println!("{:<12} {:<6} {:<3} REPO", "NAME", "DIM", "CUR");
         println!("{}", "-".repeat(60));
@@ -274,15 +274,13 @@ fn cmd_model_swap(cli: &Cli, preset: &str, no_backup: bool, json: bool) -> Resul
         && (current_model == new_cfg.name || current_model == new_cfg.repo);
     if already_on_target {
         if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "from": current_model,
-                    "to": new_cfg.name,
-                    "noop": true,
-                    "message": format!("already on {}, no-op", new_cfg.name),
-                })
-            );
+            let out = serde_json::json!({
+                "from": current_model,
+                "to": new_cfg.name,
+                "noop": true,
+                "message": format!("already on {}, no-op", new_cfg.name),
+            });
+            crate::cli::json_envelope::emit_json(&out)?;
         } else {
             println!("already on {}, no-op", new_cfg.name);
         }
@@ -355,7 +353,7 @@ fn cmd_model_swap(cli: &Cli, preset: &str, no_backup: bool, json: bool) -> Resul
                     elapsed_secs,
                     backup_path: backup_path.as_ref().map(|p| p.display().to_string()),
                 };
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                crate::cli::json_envelope::emit_json(&out)?;
             } else {
                 println!(
                     "swapped: {} -> {} ({chunks_indexed} chunks, {elapsed_secs:.1}s)",

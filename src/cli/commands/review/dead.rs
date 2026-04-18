@@ -98,7 +98,7 @@ pub(crate) fn cmd_dead(
 
     if json {
         let output = build_dead_output(&confident, &possibly_pub, root);
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::cli::json_envelope::emit_json(&output)?;
     } else {
         display_dead_text(&confident, &possibly_pub, root, ctx.cli.quiet);
     }

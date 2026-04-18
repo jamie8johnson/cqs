@@ -60,6 +60,36 @@ Rules:
 - Don't stack suffixes (`_with_graph_depth`). Add parameters to the existing `_with_*` function instead.
 - If the `_with_*` variant has no external callers, fold it into the base function.
 
+### JSON Output Envelope
+
+Every JSON-emitting command (CLI `--json`, batch line, daemon socket response) wraps its payload in a uniform envelope so agents parse one shape across all commands.
+
+**Success:**
+```json
+{ "data": <payload>, "error": null, "version": 1 }
+```
+
+**Failure (batch / daemon):**
+```json
+{ "data": null, "error": { "code": "...", "message": "..." }, "version": 1 }
+```
+
+CLI command failures still propagate via `anyhow → stderr` for now; the envelope error path is reserved for batch and future CLI migration.
+
+**Error codes** (small, additive — see `src/cli/json_envelope.rs::error_codes`):
+- `not_found` — function/file/symbol absent
+- `invalid_input` — bad user-supplied argument
+- `parse_error` — failed to parse a query/expression/diff
+- `io_error` — filesystem/network failure
+- `internal` — anything else (carries the full anyhow chain in `message`)
+
+**`version`** is the wire-format version. Bump on any breaking change to inner `data` payload shapes; the envelope itself stays stable across versions.
+
+**How to emit:**
+- CLI handlers call `crate::cli::json_envelope::emit_json(&output)?` instead of `println!("{}", serde_json::to_string_pretty(&output)?)`.
+- Batch handlers return raw `serde_json::Value` from `dispatch()` — the chokepoint at `src/cli/batch/mod.rs::write_json_line` wraps every line.
+- The daemon socket `{ "status", "output" }` framing is transport-level and orthogonal — its `output` field carries this envelope as a string.
+
 ### JSON Output Field Naming Conventions
 
 All `--json` output uses consistent field names across commands:
