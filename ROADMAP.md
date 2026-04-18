@@ -6,14 +6,16 @@
 
 **v1.27.0** shipped 2026-04-16: closes 13 of 18 open issues from the post-v1.26.1 audit. Major perf wins (#917 streaming SPLADE, #966 stream-hash enrichment, #969 recency-based watch prune) + the `AuxModelConfig` preset registry (#957) that makes SPLADE-Code 0.6B a one-line config switch. See [`docs/audit-open-issues-2026-04-16.md`](docs/audit-open-issues-2026-04-16.md) for the audit ledger.
 
-### Eval baselines on v3.v2 (canonical, 2026-04-17 regen)
+### Eval baselines on v3.v2 (canonical, 2026-04-17/18)
 
-| Split | R@1 | R@5 | R@20 |
-|---|---|---|---|
-| **test (n=109), v1.27.0 shipping config** | **41.3%** | **63.3%** | **80.7%** |
-| dev (n=109), same config | 41.3% | 74.3% | 86.2% |
+| Split | R@1 | R@5 | R@20 | Notes |
+|---|---|---|---|---|
+| **test (n=109), post-#1040 (chunker doc fallback + LLM regen)** | **41.3%** | **67.0%** | 75.2% | reindex 2026-04-18, 14,734 chunks, 47.7% LLM coverage |
+| test (n=109), v1.27.0 shipping config | 41.3% | 63.3% | 80.7% | 2026-04-17 regen, 16,095 chunks |
+| dev (n=109), post-#1040 | 40.4% | 71.6% | 79.8% | same reindex |
+| dev (n=109), v1.27.0 shipping config | 41.3% | 74.3% | 86.2% | 2026-04-17 regen |
 
-Strict == permissive on v2 fixture — no fixture drift artifacts. Subsequent A/B should always quote both test AND dev; wins on test alone don't generalize (saw this with the ColBERT 2-stage A/B). N=109 per split is noisy at ±2-3pp single-trial. The cheap-lever sweep this session arc landed within that noise window — current architecture's R@5 ceiling sits around 63-65%.
+#1040 (chunker doc fallback for short chunks) plus an LLM summary regen lifts test R@5 to 67.0% (+3.7pp vs canonical) but drops dev R@5 to 71.6% (−2.7pp) and both R@20 by 5-6pp. Part of the dev / R@20 movement is corpus-pruning in the reindex (16,095 → 14,734 chunks) rather than the fix itself; a third reindex would help isolate. **R@5 ceiling moved up — the "cheap-lever well dry" claim from earlier in the session arc was wrong.** Subsequent A/B should always quote both test AND dev; N=109 per split is noisy at ±2-3pp single-trial.
 
 ---
 
@@ -31,6 +33,8 @@ Strict == permissive on v2 fixture — no fixture drift artifacts. Subsequent A/
   All three are fixable but combined ~1-2 weeks. Not currently top priority. The "ms-marco net negative" result still stands for off-the-shelf rerankers; we now also have the matching result for in-domain-trained rerankers when domain isn't actually matched.
 
 - [x] **ColBERT 2-stage rerank — tested 2026-04-17/18.** `mixedbread-ai/mxbai-edge-colbert-v0-32m` (Apache-2.0, 32M, beats ColBERTv2 on BEIR) via PyLate. Three modes (pure replacement, RRF fusion, alpha sweep). **Test α=0.9: R@5 +2.8pp; dev α=0.9: R@5 +0.9pp.** Test gain didn't fully replicate on dev; only R@20 improves consistently. Eval tool shipped (PR #1037), default OFF in production. Rust integration deferred — gains too marginal/inconsistent to justify the work.
+
+- [x] **Chunker doc fallback for short chunks — landed 2026-04-18 (PR #1040).** `extract_doc_fallback_for_short_chunk` in `src/parser/chunk.rs` plus blank-line tolerance in `extract_doc_comment` close the `truncated_gold` failure mode (chunks <5 lines that ship without leading comment context). 10 happy/sad-path tests; reindex required. **Test R@5 +3.7pp vs canonical (63.3% → 67.0%); dev R@5 −2.7pp** (74.3% → 71.6%) — interlocked with LLM summary regen (5,486 → 7,018 cached, 47.7% coverage). The dev regression and R@20 movement on both splits are partly corpus-pruning artifact (16,095 → 14,734 chunks during reindex); follow-up A/B with a third reindex would isolate.
 
 - [ ] **Reranker V2 retrain with post-mortem fixes — open path.** Mine hard negatives against cqs's *own* index (~16k chunks) for domain match, keep TIE labels in pointwise as 0.5, cap reranker pool at 20. ~1-2 weeks. Plausibly lands where the Stack-v2-trained version didn't.
 
@@ -162,6 +166,7 @@ Audited 2026-04-16 post-v1.26.1 — see [`docs/audit-open-issues-2026-04-16.md`]
 
 | Version | Highlights |
 |---------|-----------|
+| post-v1.27.0 (unreleased) | **Cheap-lever sweep + Tier 3 chunker fix.** PR #1037 ColBERT 2-stage eval tool (default OFF). PR #1038 uniform JSON envelope across all CLI/batch/daemon-socket commands (Task #17). PR #1039 rustls-webpki 0.103.10→0.103.12 (Dependabot #7/#8). PR #1040 chunker doc fallback for short chunks (truncated_gold lever, test R@5 +3.7pp). |
 | v1.26.0 | **Watch + SPLADE hardening + Wave D–F audit batch.** `cqs watch` respects `.gitignore` (#1002, PR #1006). Incremental SPLADE in watch (#1004, PR #1007) — 100% coverage stays. Per-category α re-fit on clean 14,882-chunk index (PR #1005, +1.8pp R@1 on v2). `--splade` CLI flag respects router (PR #1008). `Store::open_readonly_after_init` replaces unsafe `into_readonly` (#986, PR #998). **Refactor lane** #946–#950 all closed (PRs #981–#985): Store typestate, Commands/BatchCmd unification, `cqs::fs::atomic_replace` helper, embedder model abstraction, CAGRA persistence. **Quick-wins lane**: WSL 9P/NTFS mmap auto-detect + CAGRA itopk envs + reranker batch chunking (#961/#962/#963, PR #979). **Wave D–F batch**: Aho-Corasick language_names (#964, PR #992), dispatch_search content tests (#973, PR #997), shared `Arc<Runtime>` (#968, PR #1000), migration fs-backup (#953, PR #996), NameMatcher ASCII fast path (#965, PR #990), `open_readonly_small` (#970, PR #993), reindex drain-owned chunks (#967, PR #991), `INDEX_DB_FILENAME` constant (#923, PR #994), CAGRA sentinel `INVALID_DISTANCE` (#952, PR #995), daemon `try_daemon_query` test scaffold (#972, PR #999). **Eval expansion**: v3 consensus dataset (544 dual-judge queries, train/dev/test 326/109/109, every category N≥23). |
 | v1.25.0 | **11th full audit** (16 categories, 236 findings). Per-category SPLADE α defaults from clean 21-point sweep. Multi_step router fix (`"how does"` → not Behavioral, +0.7pp). Eval output to `~/.cache/cqs/evals/` (#943, root cause of 2 days of eval drift). Notes daemon-bypass routing (#945). Determinism fixes across 15+ sort sites + GC suffix-match bug (81% chunks orphaned, root cause of v1.24.0 → v1.25.0 R@1 inflation). |
 | v1.24.0 | GPU-native CAGRA bitset filtering (upstream PR rapidsai/cuvs#2019), daemon stability (CAGRA non-consuming search fixes SIGABRT under load), cagra.rs simplified −357 lines, batch/daemon base index routing, router update (type_filtered + multi_step → base), cuVS 26.4. |
