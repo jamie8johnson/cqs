@@ -78,8 +78,14 @@ impl Parser {
         // Extract signature
         let signature = extract_signature(&content, language);
 
-        // Extract doc comments
-        let doc = extract_doc_comment(node, source, language);
+        // Extract doc comments. For short chunks (typically tree-sitter
+        // captures of `CREATE TABLE`, type aliases, or thin helper fns) the
+        // tree-sitter sibling walk often misses the leading comment block
+        // because the grammar surfaces blank-line gaps as siblings that stop
+        // the walk. Fall back to a comment-only preceding-lines scan in that
+        // case so the embedding gets a richer NL signal.
+        let doc = extract_doc_comment(node, source, language)
+            .or_else(|| extract_doc_fallback_for_short_chunk(node, source, line_start, line_end));
 
         // Determine chunk type - only infer for functions (to detect methods)
         let (chunk_type, parent_type_name) = if base_chunk_type == ChunkType::Function {
@@ -167,13 +173,13 @@ pub(crate) fn extract_signature(content: &str, language: Language) -> String {
 }
 
 /// Extracts documentation comments associated with a syntax node.
-/// Searches backwards through sibling nodes to find documentation comments matching the language's doc node types. Skips over non-doc comments and stops at the first non-comment node. For Python, also checks for a docstring as the first statement in the node's body if no preceding comments are found.
-/// # Arguments
-/// * `node` - The syntax tree node to extract documentation for
-/// * `source` - The source code text containing the node
-/// * `language` - The programming language context used to identify doc comment node types
-/// # Returns
-/// Returns `Some(String)` containing the extracted documentation comment(s) joined by newlines, or `None` if no documentation is found.
+/// Searches backwards through sibling nodes to find documentation comments
+/// matching the language's doc node types. Skips over non-doc comments AND
+/// whitespace-only siblings (some grammars surface blank-line gaps as explicit
+/// nodes that would otherwise stop the walk before the comment block). Stops
+/// at the first sibling whose text contains substantive non-whitespace,
+/// non-comment content. For Python, also checks for a docstring as the first
+/// statement in the node's body if no preceding comments are found.
 fn extract_doc_comment(
     node: tree_sitter::Node,
     source: &str,
@@ -184,6 +190,7 @@ fn extract_doc_comment(
     // Walk backwards through siblings looking for comments
     let mut comments = Vec::new();
     let mut current = node.prev_sibling();
+    let mut tolerated_blanks = 0usize;
 
     while let Some(sibling) = current {
         let kind = sibling.kind();
@@ -196,7 +203,24 @@ fn extract_doc_comment(
             // Keep looking past non-doc comments
             current = sibling.prev_sibling();
         } else {
-            break;
+            // Tolerate whitespace-only siblings — some grammars (notably the
+            // SQL grammar's handling of blank lines between file-level `--`
+            // comments and the next CREATE TABLE) emit gap nodes that would
+            // otherwise prematurely stop the walk before the doc block.
+            // Cap the tolerance so a malformed file with thousands of empty
+            // siblings can't make us walk to the start of the file.
+            let text = &source[sibling.byte_range()];
+            if text.chars().all(char::is_whitespace) && tolerated_blanks < 4 {
+                tolerated_blanks += 1;
+                tracing::trace!(
+                    skipped_kind = kind,
+                    blanks = tolerated_blanks,
+                    "extract_doc_comment: tolerated whitespace sibling"
+                );
+                current = sibling.prev_sibling();
+            } else {
+                break;
+            }
         }
     }
 
@@ -220,6 +244,100 @@ fn extract_doc_comment(
 
     comments.reverse();
     Some(comments.join("\n"))
+}
+
+/// Maximum line count for a chunk to be considered "short" and eligible for
+/// the leading-comment fallback. Matches the `truncated_gold` failure-mode
+/// threshold from `evals/audit_r5_failure_modes.py`.
+const SHORT_CHUNK_LINE_THRESHOLD: u32 = 5;
+
+/// Maximum number of preceding source lines to capture as a fallback `doc`
+/// for short chunks. Bounded so the fallback can't pull in a large preceding
+/// function body when the chunk happens to follow non-comment code.
+const FALLBACK_DOC_MAX_LINES: usize = 8;
+
+/// Returns true if a single source line looks like the start of a
+/// comment in any common language (Rust `//`, SQL/Lua `--`, Python/Ruby/sh
+/// `#`, C/Java `/*`/`*`, HTML/XML/JSP `<!--`/`<%--`, F# `(*`).
+/// Trims the leading whitespace before checking; `*` alone is also accepted
+/// for the inner lines of a `/** ... */` block.
+fn line_looks_comment_like(line: &str) -> bool {
+    let t = line.trim_start();
+    t.is_empty()
+        || t.starts_with("//")
+        || t.starts_with("--")
+        || t.starts_with('#')
+        || t.starts_with("/*")
+        || t.starts_with("*/")
+        || t.starts_with('*')
+        || t.starts_with("<!--")
+        || t.starts_with("<%--")
+        || t.starts_with("(*")
+}
+
+/// Fallback `doc` enrichment for short chunks (`<5` lines) that have no
+/// tree-sitter-attached doc comment. Walks back up to
+/// [`FALLBACK_DOC_MAX_LINES`] preceding source lines from `node.start_position`
+/// and returns them as a single string, but only if every captured line looks
+/// comment-like — otherwise returns `None` so we never pull arbitrary code in.
+///
+/// This addresses the `truncated_gold` failure mode (~13 queries on
+/// `v3_test.v2`, 11 on `v3_dev.v2`): SQL `CREATE TABLE` definitions, short
+/// type aliases, and tiny helper functions that ship with leading file-level
+/// comments which the normal sibling walk fails to surface (typically because
+/// of grammar-emitted blank-line gap nodes).
+fn extract_doc_fallback_for_short_chunk(
+    node: tree_sitter::Node,
+    source: &str,
+    line_start: u32,
+    line_end: u32,
+) -> Option<String> {
+    if line_end.saturating_sub(line_start) >= SHORT_CHUNK_LINE_THRESHOLD {
+        return None;
+    }
+    let _span = tracing::trace_span!("extract_doc_fallback_for_short_chunk", line_start, line_end)
+        .entered();
+
+    // `node.start_position().row` is 0-indexed; `line_start` is 1-indexed.
+    // Use the byte position to slice deterministically rather than re-counting
+    // newlines from the start of the file.
+    let start_byte = node.start_byte();
+    let prefix = source.get(..start_byte)?;
+    let lines: Vec<&str> = prefix.lines().map(|l| l.trim_end_matches('\r')).collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    // Walk back from the line immediately preceding the chunk, gathering
+    // contiguous comment-like lines. Stop at the first non-comment-like line.
+    let mut start = lines.len();
+    let mut taken = 0usize;
+    while start > 0 && taken < FALLBACK_DOC_MAX_LINES {
+        let candidate = lines[start - 1];
+        if !line_looks_comment_like(candidate) {
+            break;
+        }
+        start -= 1;
+        taken += 1;
+    }
+    // Strip leading blank lines from the selection so we don't return an
+    // empty/whitespace-only `doc`.
+    while start < lines.len() && lines[start].trim().is_empty() {
+        start += 1;
+    }
+    if start >= lines.len() {
+        return None;
+    }
+    let captured: String = lines[start..].join("\n");
+    if captured.trim().is_empty() {
+        return None;
+    }
+    tracing::debug!(
+        prepended_lines = lines.len() - start,
+        line_start,
+        "extract_doc_fallback_for_short_chunk: filled empty doc for short chunk"
+    );
+    Some(captured)
 }
 
 /// Extract a name from chunk content when tree-sitter's @name capture is wrong.
@@ -987,5 +1105,227 @@ public class Calculator {
         let content = "CREATE FUNCTION caf\u{00e9}_func() RETURNS void";
         let name = extract_name_fallback(content);
         assert_eq!(name, Some("caf\u{00e9}_func".to_string()));
+    }
+
+    /// Tests for the `truncated_gold` fix: leading-comment fallback for short
+    /// chunks plus blank-line tolerance in the sibling walk. Targets the
+    /// failure mode catalogued in `evals/audit_r5_failure_modes.py` and the
+    /// recommendation in `docs/audit-r5-failure-modes.md`.
+    mod doc_fallback_tests {
+        use super::*;
+
+        // ─── line_looks_comment_like (pure unit) ────────────────────────────
+
+        #[test]
+        fn comment_like_accepts_common_prefixes() {
+            for line in [
+                "// rust",
+                "/// outer doc",
+                "//! inner doc",
+                "-- sql",
+                "# python",
+                "/* block",
+                " * inner of /** */ block",
+                "*/ block end",
+                "<!-- html -->",
+                "<%-- jsp --%>",
+                "(* fsharp",
+            ] {
+                assert!(
+                    line_looks_comment_like(line),
+                    "expected comment-like: {line:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn comment_like_accepts_blank_and_whitespace() {
+            assert!(line_looks_comment_like(""));
+            assert!(line_looks_comment_like("   "));
+            assert!(line_looks_comment_like("\t  "));
+        }
+
+        #[test]
+        fn comment_like_rejects_code() {
+            for line in [
+                "fn main() {",
+                "let x = 5;",
+                "CREATE TABLE foo (",
+                "def add(a, b):",
+                "package main",
+            ] {
+                assert!(
+                    !line_looks_comment_like(line),
+                    "expected NOT comment-like: {line:?}"
+                );
+            }
+        }
+
+        // ─── extract_doc_fallback_for_short_chunk via Parser end-to-end ─────
+
+        /// Happy path 1: SQL `CREATE TABLE` with leading `--` comment block
+        /// and a blank line gap (the canonical `truncated_gold` shape).
+        /// Either the sibling-walk tolerance OR the preceding-lines fallback
+        /// must surface the comment.
+        #[test]
+        fn sql_short_table_with_blank_line_gap_gets_doc() {
+            let content = "\
+-- Stores per-row metadata for cqs chunks.
+-- Indexed by chunk id; bumped on every reindex.
+
+CREATE TABLE metadata (
+    chunk_id TEXT PRIMARY KEY,
+    value TEXT
+);
+";
+            let file = write_temp_file(content, "sql");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "metadata")
+                .expect("metadata chunk should exist");
+            let doc = chunk.doc.as_deref().unwrap_or("");
+            assert!(
+                doc.contains("per-row metadata"),
+                "expected leading comment to be captured, got: {doc:?}"
+            );
+        }
+
+        /// Happy path 2: short Rust type alias with adjacent leading
+        /// comment — already worked via the normal sibling walk; pin it so
+        /// the fallback doesn't regress the happy path.
+        #[test]
+        fn rust_short_type_alias_with_adjacent_comment_gets_doc() {
+            let content = "\
+// Marker for things resolved at query time.
+type ResolvedAt = u32;
+";
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "ResolvedAt")
+                .expect("ResolvedAt chunk should exist");
+            assert!(chunk.doc.is_some(), "expected doc for short type alias");
+        }
+
+        /// Sad path 1: short chunk follows arbitrary code (no leading
+        /// comment). The fallback MUST NOT pull in random preceding code.
+        #[test]
+        fn short_chunk_following_code_keeps_doc_none() {
+            let content = "\
+fn unrelated() {
+    let x = 5;
+    println!(\"{x}\");
+}
+type Tiny = u8;
+";
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "Tiny")
+                .expect("Tiny chunk should exist");
+            assert!(
+                chunk.doc.is_none(),
+                "fallback must not capture non-comment-like preceding lines, got: {:?}",
+                chunk.doc
+            );
+        }
+
+        /// Sad path 2: short chunk at the very top of a file (no preceding
+        /// source at all). Must not panic and must not invent a doc.
+        #[test]
+        fn short_chunk_at_top_of_file_keeps_doc_none() {
+            let content = "type AtTop = u8;\n";
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "AtTop")
+                .expect("AtTop chunk should exist");
+            assert!(chunk.doc.is_none());
+        }
+
+        /// Sad path 3: long chunk with no doc must not trigger the fallback
+        /// (the threshold is short-chunks-only on purpose).
+        #[test]
+        fn long_chunk_does_not_get_fallback_doc() {
+            let content = "\
+fn longish() {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let _ = a + b + c + d + e;
+}
+";
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "longish")
+                .expect("longish chunk should exist");
+            assert!(
+                chunk.doc.is_none(),
+                "long chunk should not trigger fallback, got: {:?}",
+                chunk.doc
+            );
+        }
+
+        /// Sad path 4: UTF-8 multi-byte character in the leading comment
+        /// must not crash the byte-prefix slice. Covers the chunker hardening
+        /// per Reranker V2 / WSL session learnings.
+        #[test]
+        fn fallback_handles_utf8_in_leading_comment() {
+            let content = "\
+-- caf\u{00e9} table — s\u{00e9}rieux
+
+CREATE TABLE notes (id TEXT);
+";
+            let file = write_temp_file(content, "sql");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "notes")
+                .expect("notes chunk should exist");
+            let doc = chunk.doc.as_deref().unwrap_or("");
+            assert!(
+                doc.contains("caf\u{00e9}"),
+                "UTF-8 should round-trip through the fallback, got: {doc:?}"
+            );
+        }
+
+        /// Sad path 5: chunk with explicit doc comment from tree-sitter must
+        /// surface that doc verbatim. The fallback only runs when
+        /// `extract_doc_comment` returns None (`or_else` short-circuits), so
+        /// confirming the explicit `///` content reaches the chunk
+        /// demonstrates the fallback didn't replace it.
+        #[test]
+        fn explicit_doc_comment_takes_precedence_over_fallback() {
+            let content = "\
+/// real doc for the alias
+type WithDoc = u8;
+";
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "WithDoc")
+                .expect("WithDoc chunk should exist");
+            let doc = chunk.doc.as_deref().unwrap_or("");
+            assert!(
+                doc.contains("real doc"),
+                "expected explicit /// doc to reach chunk, got: {doc:?}"
+            );
+        }
     }
 }
