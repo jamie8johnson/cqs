@@ -99,16 +99,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 1.0
-text = "BGE-large-en-v1.5 (335M) is the default model: 90.5% R@1 on 296-query expanded eval. v9-200k (110M) 90.2%, v5 (110M) 89.5% — all within GPU non-determinism (~1.4pp). Enrichment compresses top model differences to ~1pp above a ~54% raw R@1 threshold."
-mentions = [
-    "src/embedder/mod.rs",
-    "CUDA",
-    "model selection",
-    "E5",
-]
-
-[[note]]
 sentiment = -1.0
 text = "Glob filter BEFORE heap was the #1 correctness bug from the 20-category audit. Brute-force search applied glob AFTER selecting top-k from heap, meaning filtered results could miss relevant chunks that were displaced by non-matching ones. Always filter before ranking."
 mentions = [
@@ -954,23 +944,9 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "Real codebase eval hierarchy: training signal (CG filter) > embedding quality (BGE-large) > context length (nomic 8K). v9-200k 48%, BGE-large 46%, nomic 32% on 50-query real eval. Fixture convergence at 90% was artifact — models separate on harder evals."
-mentions = [
-    "pipeline_eval",
-    "search",
-    "research",
-]
-
-[[note]]
 sentiment = -1.0
 text = "Real eval script had schema mismatch — real_eval_expanded.json uses function_lookup/conceptual keys, script expected queries. Prior 187q/100q claims were inflated. Only 50 manual queries actually ran. Fixed 2026-04-03."
 mentions = ["run_real_eval.py"]
-
-[[note]]
-sentiment = -0.5
-text = "v9-200k collapsed from 49% to 26% R@1 after commands subdirectory restructure. 768-dim model less robust to file path changes than 1024-dim BGE-large. Path-dependent embeddings are fragile."
-mentions = ["search"]
 
 [[note]]
 sentiment = 0.0
@@ -1193,14 +1169,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -1.0
-text = "tests/cli_health_test.rs tests take 60-300s EACH because they shell out to cqs and cold-load ONNX/HNSW/SPLADE per invocation. Normal test-job CI time is ~22min. Do NOT cancel running CI under 30min without a specific hang signal. Filed #980 with in-process-fixture fix."
-mentions = [
-    "tests/cli_health_test.rs",
-    "ci",
-]
-
-[[note]]
 sentiment = 0.0
 text = "gh pr merge --admin (when auth'd as repo owner) overrides 'fail' and 'stale' status checks but NOT 'in progress' ones. If branch protection is blocking, empty commit to retrigger fresh CI + wait for it, THEN admin-merge if needed. Don't try to admin-bypass a running check."
 mentions = [
@@ -1410,3 +1378,37 @@ mentions = [
     "llm-judge",
     "labeling",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Reranker V2 cross-encoder trained on Stack v2 chunks regressed −24pp R@5 when deployed against cqs's enriched-chunk index. Domain shift (raw vs enriched chunk format) is the dominant cause; binary-only labels (TIE filtered from pointwise) and pool-size amplification compound it. Same model can score sort-vs-print correctly (0.74 vs 0.06) but degenerates on tighter pairs."
+mentions = [
+    "reranker.rs",
+    "evals/train_reranker_v2.py",
+    "reranker_v2_corpus",
+]
+
+[[note]]
+sentiment = -0.5
+text = "ColBERT 2-stage rerank R@5 wins on test (+5.5pp at α=0.7) don't replicate on dev (0.0pp at α=0.7). Test baseline 58.7% leaves headroom; dev baseline 74.3% doesn't. Single-split A/B at N=109 is noisy; always confirm both splits before declaring a lever real."
+mentions = ["evals/colbert_rerank_eval.py"]
+
+[[note]]
+sentiment = -0.5
+text = "MMR re-rank with surface-feature similarity (file/dir/name) regressed R@5 at every λ < 1.0 even after calibrating same-file penalty 1.0 → 0.4. Pool expansion re-triggered type-boost re-sort, shifting top-1. Code shipped inert via CQS_MMR_LAMBDA opt-in; embedding-MMR is the obvious follow-up if revisited."
+mentions = ["src/search/mmr.rs"]
+
+[[note]]
+sentiment = 0.5
+text = "Reranker hardcoded token_type_ids in ort::inputs! macro broke RoBERTa-family models (UniXcoder, CodeBERT, ColBERT-XM, jina-colbert-v2, mxbai-edge-colbert). Fix at session-init: inspect session.inputs(), cache has_token_type_ids bool, build inputs dict conditionally. Caught during Phase 3 reranker A/B; prerequisite for any future RoBERTa-based reranker work including ColBERT integration."
+mentions = ["src/reranker.rs"]
+
+[[note]]
+sentiment = 0.0
+text = "ColBERT model license check before defaulting: jinaai/jina-colbert-v2 and jinaai/jina-reranker-v3 are CC-BY-NC-4.0 (research-only, blocks commercial users). antoinelouis/colbert-xm is MIT. mixedbread-ai/mxbai-edge-colbert-v0-32m is Apache-2.0 (preferred default for our 2-stage path; 32M params, beats ColBERTv2 on BEIR)."
+mentions = ["evals/colbert_rerank_eval.py"]
+
+[[note]]
+sentiment = -0.5
+text = "cqs gc had a latent bug: origin_exists fell through to Path::exists(), keeping any chunk whose file was on disk regardless of whether enumerate_files (worktree-skip + gitignore filter) actually owned it. Fix: drop the exists() fallback, canonicalize via dunce, require strict membership in existing_files. Pruned 522 worktree+gitignored chunks from production index. Watch for this pattern when adding new schema-prune logic."
+mentions = ["src/store/chunks/staleness.rs"]
