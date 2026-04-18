@@ -2,19 +2,18 @@
 
 ## Current: v1.27.0 (audit-wave release)
 
-54 languages. 29 chunk types. v3 eval canonical (544 dual-judge queries, train/dev/test 326/109/109). Daemon mode (`cqs watch --serve`, 99ms graph p50 / 200ms search-warm p50). Per-category SPLADE alpha routing via compile-enforced `define_query_categories!` macro. GPU-native CAGRA bitset filtering (patched cuvs 26.4). MSRV 1.95 (bumped from 1.93).
+54 languages. 29 chunk types. v3 eval canonical, regenerated to v2 fixture 2026-04-17 (109 test / 109 dev with strict==permissive matching after `regenerate_v3_test.py`). Daemon mode (`cqs watch --serve`, 99ms graph p50 / 200ms search-warm p50). Per-category SPLADE alpha routing via compile-enforced `define_query_categories!` macro. GPU-native CAGRA bitset filtering (patched cuvs 26.4). MSRV 1.95 (bumped from 1.93).
 
 **v1.27.0** shipped 2026-04-16: closes 13 of 18 open issues from the post-v1.26.1 audit. Major perf wins (#917 streaming SPLADE, #966 stream-hash enrichment, #969 recency-based watch prune) + the `AuxModelConfig` preset registry (#957) that makes SPLADE-Code 0.6B a one-line config switch. See [`docs/audit-open-issues-2026-04-16.md`](docs/audit-open-issues-2026-04-16.md) for the audit ledger.
 
-### Eval baselines on v3 test (production router, 3-trial stable)
+### Eval baselines on v3.v2 (canonical, 2026-04-17 regen)
 
-| Config | R@1 | R@5 | R@20 |
+| Split | R@1 | R@5 | R@20 |
 |---|---|---|---|
-| v1.26.0 alphas | 40.4% | 64.2% | 80.7% |
-| **v1.27.0 shipping (xlang=0.10)** | **42.2%** | 64.2% | 78.9% |
-| Full v3-swept per-category α | 41.3% | 63.3% | 78.9% |
+| **test (n=109), v1.27.0 shipping config** | **41.3%** | **63.3%** | **80.7%** |
+| dev (n=109), same config | 41.3% | 74.3% | 86.2% |
 
-Single-trial v3 test readings drift ±1pp; always confirm over 3 trials. Forced-α (no strategy router) tops out around 48% — the ceiling if the rule-based classifier perfectly routed every query. Breakeven simulation shows per-category α routing on Unknown queries (~48% of traffic) is net-negative at *any* classifier accuracy. Real reachable tuning ceiling is ~1-3pp above 42.2%. Further R@1 requires representation changes (HyDE, reranker V2 at scale, embedder switch).
+Strict == permissive on v2 fixture — no fixture drift artifacts. Subsequent A/B should always quote both test AND dev; wins on test alone don't generalize (saw this with the ColBERT 2-stage A/B). N=109 per split is noisy at ±2-3pp single-trial. The cheap-lever sweep this session arc landed within that noise window — current architecture's R@5 ceiling sits around 63-65%.
 
 ---
 
@@ -22,17 +21,18 @@ Single-trial v3 test readings drift ±1pp; always confirm over 3 trials. Forced-
 
 ### GPU Lane
 
-- [ ] **Reranker V2 — code-trained cross-encoder.** Pilot (2270 v3 triples, ms-marco-MiniLM-L-6-v2 fine-tune) landed net-negative. Default ms-marco without fine-tuning: 28.4% R@1. Full pipeline verified end-to-end (training, ONNX export, local-path loading, `--rerank` integration).
+- [x] **Reranker V2 — code-trained cross-encoder, 2026-04-17/18 pass.** Phase 1 calibration: 1k Gemma+Claude triples → 98.3% inter-rater agreement → GEMMA_ONLY decision (PR #1031). Phase 2: 200k Stack v2 hard-negative triples labeled by Gemma 4 31B AWQ on A6000 (12h45m wall, 95.31% overall agreement, 0 parse errors, balanced across 9 langs). Phase 3: trained `microsoft/unixcoder-base` + BCE on 382k pointwise rows. **Result: −24pp R@5 on v3.v2 test.** Even at smallest pool: −4.6pp R@5. Weights stay local at `~/training-data/reranker-v2-unixcoder/`.
 
-  **Prerequisites to ship — all four required:**
-  1. Scale — 200k+ Gemma-labeled pairs (pipeline built 2026-04-15: vLLM Gemma 4 31B serving, blake3-cached prompts, Haiku fallback for hard tail).
-  2. Code-pretrained base — CodeBERT, CodeT5+-110M-embedding, or UniXcoder. MS-MARCO on web passages doesn't transfer to code.
-  3. RRF fusion — combine reranker logit with hybrid score rather than replacing it. Preserves SPLADE signal.
-  4. Don't over-retrieve — keep reranker input = top-K, not 4×K. Prevents R@20 drop.
+  **Post-mortem (full detail `~/training-data/research/reranker.md`):**
+  1. TIE labels were dropped from pointwise → trained on binary, weaker signal than BiXSE assumes
+  2. Domain shift: trained on raw Stack v2 chunks, deployed on cqs's enriched chunks (NL desc + signature + content + doc)
+  3. Pool-size brittleness: `(limit*4).min(100)` over-retrieves; weak rerankers get amplified
 
-  Bi-encoder alternative is blocked by the research/models.md "basin" result: v9-200k, v9-200k-hn, v9-200k-testq, v9-175k, v9-500k, v9-mini, v8, contrastive-B all land 81-82% R@1 on 296q regardless of training variation. Architectural ceiling of E5-base, not a training gap.
+  All three are fixable but combined ~1-2 weeks. Not currently top priority. The "ms-marco net negative" result still stands for off-the-shelf rerankers; we now also have the matching result for in-domain-trained rerankers when domain isn't actually matched.
 
-  Gating: idle GPU window + decision on LLM-judged vs click-signal labels. Calibration gate (≥85% Gemma↔Haiku agreement on 1k gold) before committing to local-only labeling. Full design in `~/training-data/research/models.md`.
+- [x] **ColBERT 2-stage rerank — tested 2026-04-17/18.** `mixedbread-ai/mxbai-edge-colbert-v0-32m` (Apache-2.0, 32M, beats ColBERTv2 on BEIR) via PyLate. Three modes (pure replacement, RRF fusion, alpha sweep). **Test α=0.9: R@5 +2.8pp; dev α=0.9: R@5 +0.9pp.** Test gain didn't fully replicate on dev; only R@20 improves consistently. Eval tool shipped (PR #1037), default OFF in production. Rust integration deferred — gains too marginal/inconsistent to justify the work.
+
+- [ ] **Reranker V2 retrain with post-mortem fixes — open path.** Mine hard negatives against cqs's *own* index (~16k chunks) for domain match, keep TIE labels in pointwise as 0.5, cap reranker pool at 20. ~1-2 weeks. Plausibly lands where the Stack-v2-trained version didn't.
 
 ### CPU Lane
 
