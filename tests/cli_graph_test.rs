@@ -581,12 +581,16 @@ fn test_read_nonexistent() {
     let dir = setup_graph_project();
     init_and_index(&dir);
 
+    // P1 D.5 (PR #1041) reordered the existence vs traversal checks and
+    // unified both rejection paths to emit "Invalid path" — closing the
+    // daemon path-existence oracle. The pre-fix message was
+    // "File not found".
     cqs()
         .args(["read", "src/nope.rs"])
         .current_dir(dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("File not found"));
+        .stderr(predicate::str::contains("Invalid path"));
 }
 
 #[test]

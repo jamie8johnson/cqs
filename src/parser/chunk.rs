@@ -102,7 +102,7 @@ impl Parser {
         // the walk. Fall back to a comment-only preceding-lines scan in that
         // case so the embedding gets a richer NL signal.
         let doc = extract_doc_comment(node, source, language).or_else(|| {
-            extract_doc_fallback_for_short_chunk(node, source, line_start, line_end, language)
+            extract_doc_fallback_for_short_chunk(node, source, line_start, line_end, language, path)
         });
 
         // Determine chunk type - only infer for functions (to detect methods)
@@ -226,10 +226,13 @@ fn extract_doc_comment(
             // SQL grammar's handling of blank lines between file-level `--`
             // comments and the next CREATE TABLE) emit gap nodes that would
             // otherwise prematurely stop the walk before the doc block.
-            // Cap the tolerance so a malformed file with thousands of empty
-            // siblings can't make us walk to the start of the file.
+            // Cap at MAX_TOLERATED_BLANK_SIBLINGS so a malformed file with
+            // thousands of empty siblings can't make us walk to the start of
+            // the file.
             let text = &source[sibling.byte_range()];
-            if text.chars().all(char::is_whitespace) && tolerated_blanks < 4 {
+            if text.chars().all(char::is_whitespace)
+                && tolerated_blanks < MAX_TOLERATED_BLANK_SIBLINGS
+            {
                 tolerated_blanks += 1;
                 tracing::trace!(
                     skipped_kind = kind,
@@ -266,14 +269,25 @@ fn extract_doc_comment(
 }
 
 /// Maximum line count for a chunk to be considered "short" and eligible for
-/// the leading-comment fallback. Matches the `truncated_gold` failure-mode
-/// threshold from `evals/audit_r5_failure_modes.py`.
+/// the leading-comment fallback. The check is `line_end - line_start <
+/// SHORT_CHUNK_LINE_THRESHOLD`, so chunks spanning **5 or fewer lines**
+/// qualify (a 5-line chunk has `line_end - line_start = 4`). Matches the
+/// `truncated_gold` failure-mode threshold from
+/// `evals/audit_r5_failure_modes.py`.
 const SHORT_CHUNK_LINE_THRESHOLD: u32 = 5;
 
 /// Maximum number of preceding source lines to capture as a fallback `doc`
 /// for short chunks. Bounded so the fallback can't pull in a large preceding
 /// function body when the chunk happens to follow non-comment code.
 const FALLBACK_DOC_MAX_LINES: usize = 8;
+
+/// Maximum whitespace-only siblings that `extract_doc_comment` will skip past
+/// while walking backwards in search of a doc-comment block. Bounds the walk
+/// so a malformed file with thousands of empty siblings can't make us walk
+/// to the start of the file, while still tolerating the blank-line gap nodes
+/// some grammars (notably the SQL grammar) emit between file-level comments
+/// and the next CREATE TABLE.
+const MAX_TOLERATED_BLANK_SIBLINGS: usize = 4;
 
 /// Returns true if a single source line looks like the start of a
 /// comment in the given language.
@@ -324,8 +338,9 @@ fn line_looks_comment_like(line: &str, _lang: Language) -> bool {
     false
 }
 
-/// Fallback `doc` enrichment for short chunks (spanning 5 or fewer lines)
-/// that have no tree-sitter-attached doc comment. Walks back up to
+/// Fallback `doc` enrichment for short chunks (chunks spanning 5 or fewer
+/// source lines, gated by [`SHORT_CHUNK_LINE_THRESHOLD`]) that have no
+/// tree-sitter-attached doc comment. Walks back up to
 /// [`FALLBACK_DOC_MAX_LINES`] preceding source lines from
 /// `node.start_position` and returns them as a single string, but only if
 /// every captured line looks comment-like — otherwise returns `None` so we
@@ -350,12 +365,18 @@ fn extract_doc_fallback_for_short_chunk(
     line_start: u32,
     line_end: u32,
     language: Language,
+    path: &Path,
 ) -> Option<String> {
     if line_end.saturating_sub(line_start) >= SHORT_CHUNK_LINE_THRESHOLD {
         return None;
     }
-    let _span = tracing::trace_span!("extract_doc_fallback_for_short_chunk", line_start, line_end)
-        .entered();
+    let _span = tracing::trace_span!(
+        "extract_doc_fallback_for_short_chunk",
+        line_start,
+        line_end,
+        path = %path.display()
+    )
+    .entered();
 
     // Cap the run of consecutive blanks so a malformed file with kilobytes
     // of empty siblings can't stall.
@@ -367,8 +388,24 @@ fn extract_doc_fallback_for_short_chunk(
     // comment block separated from the chunk by up to MAX_CONSECUTIVE_BLANKS
     // blanks is still reachable — matching the walk-back loop's tolerance
     // below. Any prefix beyond that tail is unreachable and not split.
+    //
+    // P3 #84 / #133: tree-sitter occasionally surfaces non-codepoint-boundary
+    // `start_byte` values on injection-rooted nodes; we previously dropped
+    // this case silently via `?`. Emit a warn so a pathological grammar
+    // change (or a malformed input) is visible in the journal.
     let start_byte = node.start_byte();
-    let prefix = source.get(..start_byte)?;
+    let prefix = match source.get(..start_byte) {
+        Some(p) => p,
+        None => {
+            tracing::warn!(
+                start_byte,
+                path = %path.display(),
+                "extract_doc_fallback_for_short_chunk: start_byte not on UTF-8 boundary — \
+                 skipping fallback for this chunk"
+            );
+            return None;
+        }
+    };
     let bytes = prefix.as_bytes();
     let max_newlines = FALLBACK_DOC_MAX_LINES + MAX_CONSECUTIVE_BLANKS + 1;
     let mut newline_count = 0usize;
@@ -383,7 +420,10 @@ fn extract_doc_fallback_for_short_chunk(
         }
     }
     let tail = &prefix[tail_start..];
-    let lines: Vec<&str> = tail.lines().map(|l| l.trim_end_matches('\r')).collect();
+    // P3 #140: `str::lines()` already strips trailing `\r` from `\r\n` line
+    // terminators, so the previous `.map(|l| l.trim_end_matches('\r'))` was
+    // redundant.
+    let lines: Vec<&str> = tail.lines().collect();
     if lines.is_empty() {
         return None;
     }
@@ -426,6 +466,7 @@ fn extract_doc_fallback_for_short_chunk(
     tracing::debug!(
         prepended_lines = lines.len() - start,
         line_start,
+        path = %path.display(),
         "extract_doc_fallback_for_short_chunk: filled empty doc for short chunk"
     );
     Some(captured)

@@ -56,7 +56,13 @@ fn run_fixes(issues: &[DoctorIssue]) -> Result<()> {
                     println!("  {} Index rebuilt", "[✓]".green());
                 } else {
                     println!("  {} Index rebuild failed", "[✗]".red());
-                    tracing::warn!("cqs index exited with status {}", status);
+                    // P3 #91: structured fields so an operator can grep
+                    // `op="cqs index"` rather than parse a free-form string.
+                    tracing::warn!(
+                        code = ?status.code(),
+                        op = "cqs index",
+                        "Sub-process index command exited non-zero"
+                    );
                 }
             }
             IssueKind::Schema => {
@@ -72,7 +78,12 @@ fn run_fixes(issues: &[DoctorIssue]) -> Result<()> {
                     println!("  {} Index rebuilt with schema migration", "[✓]".green());
                 } else {
                     println!("  {} Schema migration failed", "[✗]".red());
-                    tracing::warn!("cqs index --force exited with status {}", status);
+                    // P3 #91: same structured form as the sibling arm.
+                    tracing::warn!(
+                        code = ?status.code(),
+                        op = "cqs index --force",
+                        "Sub-process index command exited non-zero"
+                    );
                 }
             }
             IssueKind::ModelError => {

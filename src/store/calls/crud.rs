@@ -111,12 +111,11 @@ impl<Mode> Store<Mode> {
         self.rt.block_on(async {
             let mut found = std::collections::HashSet::new();
             let id_vec: Vec<&str> = ids.iter().copied().collect();
+            use crate::store::helpers::make_placeholders;
             use crate::store::helpers::sql::max_rows_per_statement;
             for batch in id_vec.chunks(max_rows_per_statement(1)) {
-                let placeholders: String = (0..batch.len())
-                    .map(|i| format!("?{}", i + 1))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                // P3 #130: cached helper — `Cow::Borrowed(&'static str)` on hit.
+                let placeholders = make_placeholders(batch.len());
                 let sql = format!("SELECT id FROM chunks WHERE id IN ({placeholders})");
                 let mut query = sqlx::query_scalar::<_, String>(&sql);
                 for id in batch {

@@ -26,8 +26,17 @@ use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::StreamingIterator;
 
-/// Maximum file size for parsing (50 MB). Files larger than this are skipped.
-pub(crate) const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
+/// Default per-file size cap for parsing (50 MiB). Files larger than this
+/// are skipped at parse time. Override at runtime via
+/// `CQS_PARSER_MAX_FILE_SIZE`. P3 #104: distinct from `CQS_MAX_FILE_SIZE`
+/// (the file-discovery gate in `lib.rs::max_file_size`) so per-stage
+/// knobs stay independent — bumping one doesn't silently bump the other.
+///
+/// Production paths read [`crate::limits::parser_max_file_size`]; this
+/// constant exists for the legacy `tc35_max_file_size_is_50mb` test pin
+/// and for downstream crates that still re-export it.
+#[allow(dead_code)]
+pub(crate) const MAX_FILE_SIZE: u64 = crate::limits::PARSER_MAX_FILE_SIZE;
 
 /// Combined parse result: chunks, function calls, and type references.
 /// Returned by `parse_file_all()` and `parse_injected_all()` which extract
@@ -49,8 +58,15 @@ pub type ParseAllWithChunkCallsResult = (
     Vec<(String, CallSite)>,
 );
 
-/// Maximum chunk content size (100 KB). Larger chunks are skipped.
-pub(crate) const MAX_CHUNK_BYTES: usize = 100_000;
+/// Default per-chunk byte cap (100 KiB). Larger chunks are dropped at
+/// parse time before windowing sees them. Override at runtime via
+/// `CQS_PARSER_MAX_CHUNK_BYTES`. P3 #105.
+///
+/// Production paths read [`crate::limits::parser_max_chunk_bytes`]; this
+/// constant is kept for crate-external references and any future test
+/// pins.
+#[allow(dead_code)]
+pub(crate) const MAX_CHUNK_BYTES: usize = crate::limits::PARSER_MAX_CHUNK_BYTES;
 
 /// Code parser using tree-sitter grammars
 /// Extracts functions, methods, classes, and other code elements
@@ -187,13 +203,15 @@ impl Parser {
     pub fn parse_file(&self, path: &Path) -> Result<Vec<Chunk>, ParserError> {
         let _span = tracing::info_span!("parse_file", path = %path.display()).entered();
 
-        // Check file size to prevent OOM on huge files
+        // P3 #104: cap is env-overridable (CQS_PARSER_MAX_FILE_SIZE).
+        let max_file_size = crate::limits::parser_max_file_size();
         match std::fs::metadata(path) {
-            Ok(meta) if meta.len() > MAX_FILE_SIZE => {
+            Ok(meta) if meta.len() > max_file_size => {
                 tracing::warn!(
                     size_mb = meta.len() / (1024 * 1024),
+                    cap_mb = max_file_size / (1024 * 1024),
                     path = %path.display(),
-                    "Skipping large file (> 50MB limit)"
+                    "Skipping large file; bump CQS_PARSER_MAX_FILE_SIZE if needed"
                 );
                 return Ok(vec![]);
             }
@@ -282,18 +300,28 @@ impl Parser {
         let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
 
         let mut chunks = Vec::new();
+        // P3 #105: env-overridable per-chunk byte cap. Track drops so we
+        // can emit a single summary warn at end-of-file rather than one
+        // log line per skipped chunk.
+        let max_chunk_bytes = crate::limits::parser_max_chunk_bytes();
+        let mut dropped_oversized = 0usize;
 
         while let Some(m) = matches.next() {
             match self.extract_chunk(source, m, query, language, path) {
                 Ok(mut chunk) => {
-                    // Skip chunks over 100KB (large functions are handled by windowing in the pipeline)
-                    if chunk.content.len() > MAX_CHUNK_BYTES {
+                    // P3 #105: chunks above the cap are dropped. The
+                    // pipeline's windowing stage only sees chunks that pass
+                    // here — windowing is downstream of this gate, not a
+                    // mitigation for it (the previous "handled by windowing"
+                    // comment was wrong).
+                    if chunk.content.len() > max_chunk_bytes {
                         tracing::debug!(
                             "Skipping {} ({} bytes > {} max)",
                             chunk.id,
                             chunk.content.len(),
-                            MAX_CHUNK_BYTES
+                            max_chunk_bytes
                         );
+                        dropped_oversized += 1;
                         continue;
                     }
                     // Apply post-process hook (e.g., HCL block reclassification)
@@ -365,6 +393,18 @@ impl Parser {
             }
         }
 
+        // P3 #105: per-file summary of oversized-chunk drops, surfaced at
+        // warn level so users discover CQS_PARSER_MAX_CHUNK_BYTES instead of
+        // wondering why their indexed corpus has gaps.
+        if dropped_oversized > 0 {
+            tracing::warn!(
+                path = %path.display(),
+                dropped = dropped_oversized,
+                cap_bytes = max_chunk_bytes,
+                "Dropped oversized chunks; bump CQS_PARSER_MAX_CHUNK_BYTES if needed"
+            );
+        }
+
         Ok(chunks)
     }
 
@@ -421,13 +461,15 @@ impl Parser {
     ) -> Result<ParseAllWithChunkCallsResult, ParserError> {
         let _span = tracing::info_span!("parse_file_all", path = %path.display()).entered();
 
-        // Check file size to prevent OOM on huge files
+        // P3 #104: env-overridable cap (CQS_PARSER_MAX_FILE_SIZE).
+        let max_file_size = crate::limits::parser_max_file_size();
         match std::fs::metadata(path) {
-            Ok(meta) if meta.len() > MAX_FILE_SIZE => {
+            Ok(meta) if meta.len() > max_file_size => {
                 tracing::warn!(
                     size_mb = meta.len() / (1024 * 1024),
+                    cap_mb = max_file_size / (1024 * 1024),
                     path = %path.display(),
-                    "Skipping large file (> 50MB limit)"
+                    "Skipping large file; bump CQS_PARSER_MAX_FILE_SIZE if needed"
                 );
                 return Ok((vec![], vec![], vec![], vec![]));
             }
@@ -517,6 +559,10 @@ impl Parser {
         // without re-parsing the chunk body — eliminating the per-chunk
         // tree-sitter re-parse the indexing pipeline used to run.
         let mut byte_range_to_chunk_id: HashMap<(usize, usize), String> = HashMap::new();
+        // P3 #105: env-overridable per-chunk byte cap; track drops for a
+        // single warn at end-of-file.
+        let max_chunk_bytes = crate::limits::parser_max_chunk_bytes();
+        let mut dropped_oversized = 0usize;
 
         while let Some(m) = matches.next() {
             // Capture the def node up-front so we can record its byte_range
@@ -532,13 +578,14 @@ impl Parser {
             };
             match self.extract_chunk(&source, m, chunk_query, language, path) {
                 Ok(mut chunk) => {
-                    if chunk.content.len() > MAX_CHUNK_BYTES {
+                    if chunk.content.len() > max_chunk_bytes {
                         tracing::debug!(
                             "Skipping {} ({} bytes > {} max)",
                             chunk.id,
                             chunk.content.len(),
-                            MAX_CHUNK_BYTES
+                            max_chunk_bytes
                         );
+                        dropped_oversized += 1;
                         continue;
                     }
                     if let Some(post_process) = language.def().post_process_chunk {
@@ -800,6 +847,17 @@ impl Parser {
             }
         }
 
+        // P3 #105: per-file summary of oversized-chunk drops, surfaced at
+        // warn level so users discover CQS_PARSER_MAX_CHUNK_BYTES.
+        if dropped_oversized > 0 {
+            tracing::warn!(
+                path = %path.display(),
+                dropped = dropped_oversized,
+                cap_bytes = max_chunk_bytes,
+                "Dropped oversized chunks; bump CQS_PARSER_MAX_CHUNK_BYTES if needed"
+            );
+        }
+
         Ok((chunks, call_results, type_results, chunk_calls))
     }
 
@@ -865,10 +923,13 @@ impl Parser {
             // Line offset: fenced block content starts on the line after the opening fence
             let line_offset = block.line_start; // fence is at line_start, content starts at line_start+1
 
+            // P3 #105: env-overridable per-chunk byte cap.
+            let max_chunk_bytes = crate::limits::parser_max_chunk_bytes();
+
             while let Some(m) = matches.next() {
                 match self.extract_chunk(&block.content, m, query, language, path) {
                     Ok(mut chunk) => {
-                        if chunk.content.len() > MAX_CHUNK_BYTES {
+                        if chunk.content.len() > max_chunk_bytes {
                             continue;
                         }
                         // Apply post-process if defined

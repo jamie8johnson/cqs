@@ -2,7 +2,7 @@
 
 **Issue:** #912 (PF-1)
 **Date:** 2026-04-12
-**Status:** Design (reviewed)
+**Status:** Shipped (v1.24.0)
 
 ## Problem
 
@@ -270,3 +270,7 @@ The in-memory `LruCache<String, Embedding>` in Embedder is empty on every CLI in
 - Multi-tenant / auth (single-user tool)
 - Windows named pipes (WSL uses Unix sockets)
 - Parallel query dispatch (serial is fine for agent burst patterns)
+
+## Outcome
+
+Shipped in v1.24.0 as `cqs watch --serve`. Per-command JSON-line socket dispatch over a Unix socket at `$XDG_RUNTIME_DIR/cqs-{hash}.sock`, served by the same `watch` process that incrementally updates the index. Systemd unit `cqs-watch.service` runs it 24/7. CLI commands auto-connect to the daemon when present; `CQS_NO_DAEMON=1` forces direct CLI execution. Measured query latency on a warm daemon: 99ms graph p50 / 200ms search-warm p50 (v1.27.0 ROADMAP). Subsequent v1.25.x/v1.26.x/v1.27.0 releases hardened the surface: socket bind-then-chmod ordering (P1 #21 followup), idle eviction of heavy caches (`CQS_BATCH_DATA_IDLE_MINUTES`), periodic GC (`CQS_DAEMON_PERIODIC_GC`), and unified JSON envelope across CLI/batch/socket (PR #1038).

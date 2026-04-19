@@ -37,9 +37,11 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
     let _span = tracing::info_span!("apply_windowing", chunk_count = chunks.len()).entered();
     let mut result = Vec::with_capacity(chunks.len());
 
+    // P3 #119: max_tokens and overlap are model-fixed; computed once outside the loop.
+    let max_tokens = max_tokens_per_window(embedder.model_config().max_seq_length);
+    let overlap = window_overlap_tokens(max_tokens);
+
     for chunk in chunks {
-        let max_tokens = max_tokens_per_window(embedder.model_config().max_seq_length);
-        let overlap = window_overlap_tokens(max_tokens);
         match embedder.split_into_windows(&chunk.content, max_tokens, overlap) {
             Ok(windows) if windows.len() == 1 => {
                 // Fits in one window - pass through unchanged

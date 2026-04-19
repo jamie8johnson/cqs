@@ -1,7 +1,7 @@
 # Markdown Indexing for cqs
 
 **Date:** 2026-02-08
-**Status:** Design
+**Status:** Shipped (v1.24.0)
 
 ## Problem
 
@@ -95,3 +95,7 @@ Tested chunking strategy against 5 sample files (43KB–1.7MB). Heading-based sp
 - aveva-scripting (375KB): 982 code blocks, function-level H4-H6. H2/H3 split keeps function docs intact with their examples.
 - aveva-sql-script-library (140KB): consistent method docs. H3 aligns with method boundaries.
 - intouch-hmi-app-development (1.7MB, 60K lines): H1-H4, 2180 code blocks. H2 primary + H3 overflow keeps task-level docs together.
+
+## Outcome
+
+Shipped in v1.24.0. Markdown chunking landed via `src/parser/markdown/` (`mod.rs` for the heading-based splitter, `code_blocks.rs` for fenced code extraction). Added `Language::Markdown` and `ChunkType::Section` (a Section now has its own variant in `define_chunk_types!`). Chunks carry the breadcrumb path in `signature` as designed; H2 is the primary split with H3 overflow when an H2 exceeds the line cap. Fenced code blocks are extracted as separate chunks via `parser/markdown::normalize_lang` (acknowledged as duplicating the language registry — tracked as P2 #55 in the post-v1.27.0 audit). Production users include cqs's own `docs/notes.toml`-adjacent reference indexes built with `cqs ref add`.

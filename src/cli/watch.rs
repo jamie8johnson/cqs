@@ -82,10 +82,27 @@ extern "C" fn on_sigterm(_sig: libc::c_int) {
 
 /// SEC-V1.25-1: cap concurrent daemon client threads so a misbehaving
 /// (or malicious) local client can't spawn unbounded handlers and exhaust
-/// fds, threads, or stacks. 64 is comfortably above typical agent traffic
-/// and still bounded — at 2 MB stack each this is ~128 MB worst case.
+/// fds, threads, or stacks. The BatchContext mutex serialises dispatch
+/// inside `handle_socket_client`; this cap only bounds parallel
+/// read/parse/write I/O.
+///
+/// P3 #125: default lowered from 64 → 16 (matches typical agent fan-out)
+/// and overridable via `CQS_MAX_DAEMON_CLIENTS`. At ~2 MB stack each, 16
+/// caps worst-case at ~32 MB instead of ~128 MB.
 #[cfg(unix)]
-const MAX_CONCURRENT_DAEMON_CLIENTS: usize = 64;
+const DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS: usize = 16;
+
+/// Resolve the effective cap from `CQS_MAX_DAEMON_CLIENTS`, defaulting to
+/// [`DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS`]. Called once at daemon
+/// startup, so an env-var change requires `systemctl restart cqs-watch`.
+#[cfg(unix)]
+fn max_concurrent_daemon_clients() -> usize {
+    std::env::var("CQS_MAX_DAEMON_CLIENTS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_CONCURRENT_DAEMON_CLIENTS)
+}
 
 /// Build the tokio runtime that the daemon shares across `Store`,
 /// `EmbeddingCache`, and `QueryCache` (#968).
@@ -213,9 +230,38 @@ fn handle_socket_client(
         .get("command")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let args: Vec<String> = request
-        .get("args")
-        .and_then(|v| v.as_array())
+    // P3 #86: structurally validate args. The previous `filter_map` silently
+    // dropped non-string elements (numbers, nested arrays, nulls); the
+    // surviving args looked correct but the daemon then ran a half-formed
+    // command with no diagnostic. Now: collect the indices of non-string
+    // elements, warn on them, and reject the whole request as malformed
+    // rather than execute on a truncated arg list.
+    let raw_args = request.get("args").and_then(|v| v.as_array());
+    let bad_arg_indices: Vec<usize> = raw_args
+        .map(|arr| {
+            arr.iter()
+                .enumerate()
+                .filter_map(|(i, v)| if v.as_str().is_none() { Some(i) } else { None })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !bad_arg_indices.is_empty() {
+        tracing::warn!(
+            command,
+            ?bad_arg_indices,
+            "Daemon rejected request: args contains non-string elements"
+        );
+        let delivered =
+            write_daemon_error_tracked(&mut stream, "args contains non-string elements");
+        tracing::info!(
+            status = "bad_args",
+            delivered,
+            latency_ms = start.elapsed().as_millis() as u64,
+            "Daemon query complete"
+        );
+        return;
+    }
+    let args: Vec<String> = raw_args
         .map(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(String::from))
@@ -242,39 +288,16 @@ fn handle_socket_client(
     };
     span.record("command", command_for_log.as_str());
 
-    // SEC-V1.25-9: avoid echoing full query args — search strings and
-    // notes bodies may contain snippets of private source or secrets.
-    // Log only a length + 80-char preview at debug level; the full
-    // command name is already on the span.
-    //
-    // SEC-V1.25-16: for notes mutations the body *is* the sensitive
-    // payload, so skip the preview entirely and record only the arg
-    // count.
-    //
-    // P2 #51 (post-v1.27.0 audit): strip ASCII control characters
-    // (anything < 0x20 except space, plus DEL 0x7F) from the preview
-    // before it reaches the journal. A request whose args contain raw
-    // CR/LF/escape sequences could otherwise inject log-line splits or
-    // ANSI escape codes into journalctl output, which would render
-    // attacker-controlled text on operator terminals.
-    let args_preview: String = if command == "notes" {
-        "<redacted>".to_string()
-    } else {
-        let joined = args.join(" ");
-        let end = joined
-            .char_indices()
-            .nth(80)
-            .map(|(i, _)| i)
-            .unwrap_or(joined.len());
-        joined[..end]
-            .chars()
-            .filter(|c| !c.is_control() || *c == ' ')
-            .collect()
-    };
+    // P3 #138 (supersedes SEC-V1.25-9 / SEC-V1.25-16 / P2 #51 preview path):
+    // drop `args_preview` from `tracing::debug!` entirely. The 80-char preview
+    // still leaked file path fragments and search-query snippets at the daemon
+    // debug level — privileged-journal harvest. The command name is already on
+    // the span; `args_len` is enough for traffic shaping. If a finer-grained
+    // preview is ever needed, gate it behind `tracing::trace!` (off by default
+    // in production loggers).
     tracing::debug!(
         command = %command_for_log,
         args_len = args.len(),
-        args_preview = %args_preview,
         "Daemon request"
     );
 
@@ -1431,16 +1454,21 @@ pub fn cmd_watch(
                 // accept loop for `5 * N` seconds and DoS the daemon.
                 let ctx = Arc::new(Mutex::new(ctx));
                 let in_flight = Arc::new(AtomicUsize::new(0));
-                tracing::info!(
-                    max_concurrent = MAX_CONCURRENT_DAEMON_CLIENTS,
-                    "Daemon query thread ready"
-                );
+                // P3 #125: resolve cap once at startup so a `CQS_MAX_DAEMON_CLIENTS`
+                // change requires daemon restart (matches the rest of the env-var
+                // surface — config reload is not a goal for caps).
+                let max_clients = max_concurrent_daemon_clients();
+                tracing::info!(max_concurrent = max_clients, "Daemon query thread ready");
                 // RM-V1.25-3: Periodically sweep idle ONNX sessions even if
                 // no client connects. `check_idle_timeout` only fires on
                 // `dispatch_line`, so a warmed-but-untouched daemon would
                 // otherwise pin ~500MB+ indefinitely. Tick once per minute.
                 let mut last_idle_sweep = std::time::Instant::now();
                 let idle_sweep_interval = Duration::from_secs(60);
+                // P3 #125: report current in-flight client count once a minute
+                // so operators can see whether the cap is being approached.
+                let mut last_inflight_report = std::time::Instant::now();
+                let inflight_report_interval = Duration::from_secs(60);
                 // RM-V1.25-9: Poll accept with a short sleep so the loop
                 // can notice SIGTERM and drain cleanly instead of blocking
                 // indefinitely on a syscall that systemd has to kill.
@@ -1462,17 +1490,27 @@ pub fn cmd_watch(
                         }
                         last_idle_sweep = std::time::Instant::now();
                     }
+                    // P3 #125: periodic in-flight report so operators can
+                    // spot saturation in `journalctl --user-unit cqs-watch`.
+                    if last_inflight_report.elapsed() >= inflight_report_interval {
+                        let current = in_flight.load(Ordering::Acquire);
+                        tracing::info!(
+                            current_in_flight = current,
+                            cap = max_clients,
+                            "Daemon client count"
+                        );
+                        last_inflight_report = std::time::Instant::now();
+                    }
                     match listener.accept() {
                         Ok((stream, _addr)) => {
-                            // SEC-V1.25-1: back-pressure. If we're already at
-                            // `MAX_CONCURRENT_DAEMON_CLIENTS` in-flight
-                            // handlers, reject this connection quickly rather
-                            // than spawning an unbounded number of threads.
-                            // Daemon is local-only, but we still want a hard
-                            // cap so a misbehaving client can't exhaust fds
-                            // or thread stacks.
+                            // SEC-V1.25-1: back-pressure. If we're already at the
+                            // `CQS_MAX_DAEMON_CLIENTS` cap of in-flight handlers,
+                            // reject this connection quickly rather than spawning
+                            // an unbounded number of threads. Daemon is local-only,
+                            // but we still want a hard cap so a misbehaving client
+                            // can't exhaust fds or thread stacks.
                             let current = in_flight.load(Ordering::Acquire);
-                            if current >= MAX_CONCURRENT_DAEMON_CLIENTS {
+                            if current >= max_clients {
                                 let mut s = stream;
                                 let _ = write_daemon_error(
                                     &mut s,
@@ -1480,7 +1518,7 @@ pub fn cmd_watch(
                                 );
                                 tracing::warn!(
                                     in_flight = current,
-                                    cap = MAX_CONCURRENT_DAEMON_CLIENTS,
+                                    cap = max_clients,
                                     "Rejecting new daemon connection — at concurrency cap"
                                 );
                                 continue;

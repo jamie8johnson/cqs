@@ -233,6 +233,17 @@ fn cmd_notes_add(
     mentions: Option<&[String]>,
     no_reindex: bool,
 ) -> Result<()> {
+    // P3 #92: per-subhandler span so the shared "Note operation warning"
+    // line carries enough context (op + sentiment for add, op + length
+    // discriminator for the others) to disambiguate add/update/remove in
+    // journalctl without pulling in arg payloads.
+    let _span = tracing::info_span!(
+        "cmd_notes_add",
+        text_len = text.len(),
+        sentiment,
+        no_reindex
+    )
+    .entered();
     if text.is_empty() {
         bail!("Note text cannot be empty");
     }
@@ -327,6 +338,15 @@ fn cmd_notes_update(
     new_mentions: Option<&[String]>,
     no_reindex: bool,
 ) -> Result<()> {
+    // P3 #92: per-subhandler span — see `cmd_notes_add`.
+    let _span = tracing::info_span!(
+        "cmd_notes_update",
+        text_len = text.len(),
+        new_text_len = new_text.map(str::len),
+        new_sentiment,
+        no_reindex
+    )
+    .entered();
     if text.is_empty() {
         bail!("Note text cannot be empty");
     }
@@ -428,6 +448,9 @@ fn cmd_notes_remove(
     text: &str,
     no_reindex: bool,
 ) -> Result<()> {
+    // P3 #92: per-subhandler span — see `cmd_notes_add`.
+    let _span =
+        tracing::info_span!("cmd_notes_remove", text_len = text.len(), no_reindex).entered();
     if text.is_empty() {
         bail!("Note text cannot be empty");
     }

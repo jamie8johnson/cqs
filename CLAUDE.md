@@ -45,7 +45,7 @@ Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
 - `/update-tears` -- capture state before compaction or task switch
 - `/groom-notes` -- review and clean up stale notes
 - `/release` -- version bump, changelog, publish, GitHub release
-- `/audit` -- 14-category code audit with parallel agents
+- `/audit` -- 16-category code audit with parallel agents
 - `/pr` -- WSL-safe PR creation (always `--body-file`)
 - `/cqs <command>` -- unified CLI dispatcher (search, callers, impact, etc.)
 - `/cqs-bootstrap` -- set up tears infrastructure for new projects
@@ -211,6 +211,7 @@ The configurable models disaster: `build_batched_with_dim()` existed and worked,
 ## Project Conventions
 
 - Rust edition 2021
+- MSRV 1.95 (bumped 1.93 → 1.95 in v1.27.0). 1.95 features are fair game; let-chains in if/while (Rust 2024) are out of scope until edition bumps.
 - `thiserror` for library errors, `anyhow` in CLI
 - No `unwrap()` except in tests
 - GPU detection at runtime, graceful CPU fallback

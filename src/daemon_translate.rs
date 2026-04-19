@@ -243,6 +243,9 @@ pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, String> {
     use std::time::Duration;
 
     let sock_path = daemon_socket_path(cqs_dir);
+    // P3 #99: span ties every warn below to the same socket path so a
+    // multi-project agent loop can disambiguate which daemon failed.
+    let _span = tracing::info_span!("daemon_ping", path = %sock_path.display()).entered();
     if !sock_path.exists() {
         return Err(format!(
             "no daemon running (socket {} does not exist)",
@@ -250,22 +253,32 @@ pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, String> {
         ));
     }
 
-    let mut stream = UnixStream::connect(&sock_path)
-        .map_err(|e| format!("connect to {} failed: {e}", sock_path.display()))?;
+    let mut stream = UnixStream::connect(&sock_path).map_err(|e| {
+        tracing::warn!(stage = "connect", error = %e, "daemon_ping failed");
+        format!("connect to {} failed: {e}", sock_path.display())
+    })?;
 
     // 5s is generous: the ping handler does no I/O — just snapshot reads
     // off atomic counters and a single `metadata()` on `index.db`.
     let timeout = Duration::from_secs(5);
     if let Err(e) = stream.set_read_timeout(Some(timeout)) {
+        tracing::warn!(stage = "set_read_timeout", error = %e, "daemon_ping failed");
         return Err(format!("set_read_timeout failed: {e}"));
     }
     if let Err(e) = stream.set_write_timeout(Some(timeout)) {
+        tracing::warn!(stage = "set_write_timeout", error = %e, "daemon_ping failed");
         return Err(format!("set_write_timeout failed: {e}"));
     }
 
     let request = serde_json::json!({"command": "ping", "args": []});
-    writeln!(stream, "{}", request).map_err(|e| format!("write request failed: {e}"))?;
-    stream.flush().map_err(|e| format!("flush failed: {e}"))?;
+    writeln!(stream, "{}", request).map_err(|e| {
+        tracing::warn!(stage = "write", error = %e, "daemon_ping failed");
+        format!("write request failed: {e}")
+    })?;
+    stream.flush().map_err(|e| {
+        tracing::warn!(stage = "flush", error = %e, "daemon_ping failed");
+        format!("flush failed: {e}")
+    })?;
 
     // PingResponse is small (<1KB). Cap the read at 64KB to bound memory
     // even if a buggy daemon ever writes a huge response — same defensive
@@ -273,28 +286,41 @@ pub fn daemon_ping(cqs_dir: &std::path::Path) -> Result<PingResponse, String> {
     use std::io::Read as _;
     let mut reader = std::io::BufReader::new(&stream).take(64 * 1024);
     let mut response_line = String::new();
-    reader
-        .read_line(&mut response_line)
-        .map_err(|e| format!("read response failed: {e}"))?;
+    reader.read_line(&mut response_line).map_err(|e| {
+        tracing::warn!(stage = "read", error = %e, "daemon_ping failed");
+        format!("read response failed: {e}")
+    })?;
 
-    let envelope: serde_json::Value = serde_json::from_str(response_line.trim())
-        .map_err(|e| format!("parse envelope failed: {e}"))?;
+    let envelope: serde_json::Value = serde_json::from_str(response_line.trim()).map_err(|e| {
+        tracing::warn!(stage = "parse", error = %e, "daemon_ping failed");
+        format!("parse envelope failed: {e}")
+    })?;
 
     let status = envelope
         .get("status")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "missing 'status' field in daemon response".to_string())?;
+        .ok_or_else(|| {
+            tracing::warn!(stage = "parse", "daemon_ping failed: missing status field");
+            "missing 'status' field in daemon response".to_string()
+        })?;
     if status != "ok" {
         let msg = envelope
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("daemon error");
+        tracing::warn!(
+            stage = "parse",
+            status,
+            msg,
+            "daemon_ping failed: non-ok status"
+        );
         return Err(format!("daemon error: {msg}"));
     }
 
-    let output = envelope
-        .get("output")
-        .ok_or_else(|| "missing 'output' field in daemon response".to_string())?;
+    let output = envelope.get("output").ok_or_else(|| {
+        tracing::warn!(stage = "parse", "daemon_ping failed: missing output field");
+        "missing 'output' field in daemon response".to_string()
+    })?;
     // The daemon writes the PingResponse as a JSON-string-encoded payload
     // (because the existing envelope is `{status, output: string}`). When
     // `output` is a string, parse it; when it's already an object (future-

@@ -60,8 +60,8 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
     // See `verify_extraction_safety` for the per-entry rules (audit P2 #37).
     verify_extraction_safety(temp_dir.path())?;
 
-    // Maximum number of pages to process from a single CHM archive.
-    const MAX_PAGES: usize = 1000;
+    // P3 #106: shared cap honoring CQS_CONVERT_MAX_PAGES.
+    let max_pages = crate::limits::doc_max_pages();
 
     // Collect all HTML pages, sorted by name for consistent ordering.
     // Skip symlinks (SEC-9) to prevent symlink escape attacks.
@@ -91,14 +91,14 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
         anyhow::bail!("CHM archive contained no HTML files");
     }
 
-    if pages.len() > MAX_PAGES {
+    if pages.len() > max_pages {
         tracing::warn!(
             path = %path.display(),
             total = pages.len(),
-            limit = MAX_PAGES,
-            "CHM page count exceeds limit, truncating"
+            limit = max_pages,
+            "CHM page count exceeds limit, truncating; bump CQS_CONVERT_MAX_PAGES if needed"
         );
-        pages.truncate(MAX_PAGES);
+        pages.truncate(max_pages);
     }
 
     let mut merged = String::new();

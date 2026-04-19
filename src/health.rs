@@ -196,12 +196,23 @@ mod tests {
     fn test_health_with_chunks() {
         let (store, dir) = make_store();
 
-        // Insert 3 chunks with distinct files
+        // Insert 3 chunks with distinct files. Materialize each file on disk
+        // under the project root so `list_stale_files`'s `metadata()` call
+        // succeeds — P3 #135 changed the staleness check to treat metadata
+        // failures as stale (with a `current_mtime = -1` sentinel) rather
+        // than silently fresh, so synthetic happy-path tests must back the
+        // chunks with real files.
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
         for (i, name) in ["alpha", "beta", "gamma"].iter().enumerate() {
             let file = format!("src/mod{}.rs", i);
+            std::fs::write(dir.path().join(&file), format!("fn {}() {{ }}", name)).unwrap();
             let chunk = test_chunk(&file, name, 1, &format!("fn {}() {{ }}", name));
+            // Stamp the stored mtime to a large future value so the post-#135
+            // staleness check (now `current_mtime > stored_mtime`) correctly
+            // sees these chunks as fresh — the file's real mtime from
+            // `std::fs::write` above will be smaller.
             store
-                .upsert_chunk(&chunk, &mock_embedding(0.0), Some(1000))
+                .upsert_chunk(&chunk, &mock_embedding(0.0), Some(i64::MAX))
                 .unwrap();
         }
 

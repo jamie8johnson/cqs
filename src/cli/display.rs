@@ -43,14 +43,16 @@ pub fn read_context_lines(
         }
     }
 
-    // Size guard: don't read files larger than 10MB for context display
-    const MAX_DISPLAY_FILE_SIZE: u64 = 10 * 1024 * 1024;
+    // Size guard: don't read files larger than the configured cap for
+    // context display. P3 #107: env-overridable via
+    // `CQS_MAX_DISPLAY_FILE_SIZE` (default 10 MiB).
+    let max_display_size = crate::cli::limits::max_display_file_size();
     if let Ok(meta) = std::fs::metadata(file) {
-        if meta.len() > MAX_DISPLAY_FILE_SIZE {
+        if meta.len() > max_display_size {
             anyhow::bail!(
-                "File too large for context display: {}MB (limit {}MB)",
+                "File too large for context display: {}MB (limit {}MB; CQS_MAX_DISPLAY_FILE_SIZE)",
                 meta.len() / (1024 * 1024),
-                MAX_DISPLAY_FILE_SIZE / (1024 * 1024)
+                max_display_size / (1024 * 1024)
             );
         }
     }

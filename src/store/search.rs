@@ -83,13 +83,31 @@ impl<Mode> Store<Mode> {
     ///
     /// Searches the FTS5 name column for exact or prefix matches.
     /// Use this for "where is X defined?" queries instead of semantic search.
+    ///
+    /// # Limit cap (P3 #101)
+    ///
+    /// `limit` is silently clamped to a hard ceiling of **100**. Callers
+    /// requesting more get exactly 100 results. The clamp is logged at
+    /// `WARN` level (`search_by_name cap hit`) so callers debugging
+    /// missing definitions can find the cap. The ceiling is intentional:
+    /// definition lookups should never need 100+ overloads, and the FTS5
+    /// query cost grows linearly with `LIMIT`.
     pub fn search_by_name(
         &self,
         name: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>, StoreError> {
         let _span = tracing::info_span!("search_by_name", %name, limit).entered();
-        let limit = limit.min(100);
+        const NAME_SEARCH_CAP: usize = 100;
+        if limit > NAME_SEARCH_CAP {
+            tracing::warn!(
+                requested = limit,
+                cap = NAME_SEARCH_CAP,
+                name = %name,
+                "search_by_name cap hit; results truncated"
+            );
+        }
+        let limit = limit.min(NAME_SEARCH_CAP);
         let normalized = sanitize_fts_query(&normalize_for_fts(name));
         if normalized.is_empty() {
             return Ok(vec![]);
@@ -136,11 +154,16 @@ impl<Mode> Store<Mode> {
                 .collect::<Vec<_>>();
 
             // Re-sort by name-match score (FTS bm25 ordering may differ).
-            // Secondary sort on chunk id ensures equal-score candidates have a
-            // deterministic order across process invocations.
+            // P3 #122: chunk id sorts line numbers lexicographically
+            // (`"file.rs:10:..." < "file.rs:2:..."`), so the *real* line-2
+            // definition would lose to the line-10 stub at score ties.
+            // Tuple key prefers earlier file (alphabetic), then earlier
+            // line (numeric), then chunk id for absolute determinism.
             results.sort_by(|a, b| {
                 b.score
                     .total_cmp(&a.score)
+                    .then(a.chunk.file.cmp(&b.chunk.file))
+                    .then(a.chunk.line_start.cmp(&b.chunk.line_start))
                     .then(a.chunk.id.cmp(&b.chunk.id))
             });
 
@@ -221,7 +244,101 @@ impl<Mode> Store<Mode> {
 mod tests {
     use super::*;
     use crate::store::ReadOnly;
+    use crate::test_helpers::setup_store;
     use proptest::prelude::*;
+
+    /// Insert a minimal chunk + FTS row for `search_by_name` tie-breaker tests.
+    /// Mirrors the production upsert path closely enough that the FTS index
+    /// rowid matches the chunks row, which is what `search_by_name` joins on.
+    fn insert_named_chunk(
+        store: &crate::Store,
+        id: &str,
+        file: &str,
+        name: &str,
+        line_start: u32,
+        line_end: u32,
+    ) {
+        store.rt.block_on(async {
+            let embedding = crate::embedder::Embedding::new(vec![0.0f32; crate::EMBEDDING_DIM]);
+            let embedding_bytes =
+                crate::store::helpers::embedding_to_bytes(&embedding, crate::EMBEDDING_DIM)
+                    .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name,
+                     signature, content, content_hash, doc, line_start, line_end, embedding,
+                     source_mtime, created_at, updated_at)
+                     VALUES (?1, ?2, 'file', 'rust', 'function', ?3,
+                     '', '', '', NULL, ?4, ?5, ?6, 0, ?7, ?7)",
+            )
+            .bind(id)
+            .bind(file)
+            .bind(name)
+            .bind(line_start as i64)
+            .bind(line_end as i64)
+            .bind(&embedding_bytes)
+            .bind(&now)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
+            // FTS5 join target — `search_by_name` matches against `chunks_fts`
+            // and the join is by `id`. Use the same `normalize_for_fts` the
+            // real upsert uses so query tokens match.
+            sqlx::query("INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, '', '', '')")
+                .bind(id)
+                .bind(crate::nl::normalize_for_fts(name))
+                .execute(&store.pool)
+                .await
+                .unwrap();
+        });
+    }
+
+    /// P3 #122 regression: when two chunks share a name in the same file but
+    /// at different line numbers, the result for `cqs --name-only build`
+    /// must list the *earlier* line first. The previous chunk-id-only
+    /// tie-breaker sorted "file.rs:10:..." before "file.rs:2:..." because
+    /// `"1" < "2"` lexicographically, so the line-10 stub beat the line-2
+    /// real definition. Tuple key fixes it: `(file, line_start, id)`.
+    #[test]
+    fn search_by_name_prefers_earlier_line_in_same_file() {
+        let (store, _dir) = setup_store();
+        // Same file, same name, different line numbers. ID prefix order
+        // mirrors what the real chunker would emit: a longer chunk-id
+        // string for line 10 sorts before line 2 lexicographically.
+        insert_named_chunk(&store, "src/lib.rs:2:abc", "src/lib.rs", "build", 2, 5);
+        insert_named_chunk(&store, "src/lib.rs:10:def", "src/lib.rs", "build", 10, 12);
+
+        let results = store.search_by_name("build", 10).unwrap();
+        assert_eq!(results.len(), 2, "should match both `build` definitions");
+        // Earlier line wins under the tuple tie-breaker.
+        assert_eq!(
+            results[0].chunk.line_start, 2,
+            "expected line 2 first (real definition), got line {}: \
+             chunk-id-only sort regressed",
+            results[0].chunk.line_start
+        );
+        assert_eq!(results[1].chunk.line_start, 10);
+    }
+
+    /// Cross-file tie-breaker: at equal score, the alphabetically-earlier
+    /// file wins. Pins the documented contract from the doc comment so a
+    /// future "swap to ordering by id-suffix-hash" refactor is caught.
+    #[test]
+    fn search_by_name_prefers_earlier_file_at_equal_score() {
+        let (store, _dir) = setup_store();
+        insert_named_chunk(&store, "src/zz.rs:1:aaa", "src/zz.rs", "boot", 1, 3);
+        insert_named_chunk(&store, "src/aa.rs:1:zzz", "src/aa.rs", "boot", 1, 3);
+
+        let results = store.search_by_name("boot", 10).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results[0].chunk.file.to_string_lossy(),
+            "src/aa.rs",
+            "expected src/aa.rs first (alphabetic), got {}",
+            results[0].chunk.file.display()
+        );
+    }
 
     // ===== Property-based tests for RRF =====
 

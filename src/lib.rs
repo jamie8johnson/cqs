@@ -88,6 +88,7 @@ pub use drift::{detect_drift, DriftEntry, DriftResult};
 pub(crate) mod focused_read;
 pub(crate) mod gather;
 pub(crate) mod impact;
+pub(crate) mod limits;
 pub(crate) mod math;
 pub(crate) mod nl;
 pub(crate) mod onboard;
@@ -337,15 +338,43 @@ use std::path::Path;
 ///
 /// Converts `Path`/`PathBuf` to `String`, replacing backslashes with forward slashes
 /// for cross-platform consistency (WSL, Windows paths in JSON output).
+///
+/// P3 #142: strips the Windows `\\?\` UNC prefix (and `\\?\UNC\`) before
+/// slash conversion so JSON output and chunk IDs don't carry the verbatim
+/// path marker. `dunce::canonicalize` strips most of these at ingest, but
+/// callers passing already-canonicalized `&Path` deserve symmetric behavior.
 pub fn normalize_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    let raw = path.to_string_lossy();
+    let stripped = strip_windows_verbatim_prefix(&raw);
+    stripped.replace('\\', "/")
 }
 
 /// Normalize backslashes to forward slashes in a string path.
 ///
-/// For already-stringified paths. Returns the input unchanged on Unix.
+/// For already-stringified paths. Strips Windows `\\?\` / `\\?\UNC\` verbatim
+/// prefix (P3 #142) before slash conversion. Returns the input unchanged on
+/// non-Windows-flavored strings.
 pub fn normalize_slashes(path: &str) -> String {
-    path.replace('\\', "/")
+    strip_windows_verbatim_prefix(path).replace('\\', "/")
+}
+
+/// Strip the Windows verbatim path prefix before slash normalization.
+///
+/// Recognized prefixes:
+/// - `\\?\C:\foo`  → `C:\foo`
+/// - `\\?\UNC\server\share` → `\\server\share`
+fn strip_windows_verbatim_prefix(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        // `\\?\UNC\server\share` → `\\server\share`
+        let mut out = String::with_capacity(rest.len() + 2);
+        out.push_str(r"\\");
+        out.push_str(rest);
+        out
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 /// Generate an unpredictable u64 suffix for temporary file names.
@@ -517,13 +546,13 @@ pub fn enumerate_files(
             Err(_) => false,
         })
         .filter(|e| {
+            // P3 #141: `to_ascii_lowercase` allocated a fresh `String` per
+            // candidate file. `eq_ignore_ascii_case` compares case-insensitively
+            // without an allocation.
             e.path()
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .map(|ext| {
-                    let lower = ext.to_ascii_lowercase();
-                    extensions.contains(&lower.as_str())
-                })
+                .map(|ext| extensions.iter().any(|e| ext.eq_ignore_ascii_case(e)))
                 .unwrap_or(false)
         })
         .filter_map({
@@ -653,6 +682,35 @@ mod tests {
         let root = Path::new("/opt/tools");
         let path = Path::new("/var/log/app.log");
         assert_eq!(rel_display(path, root), "/var/log/app.log");
+    }
+
+    // ─── normalize_path / normalize_slashes verbatim-prefix tests (P3 #142) ─
+
+    #[test]
+    fn test_normalize_path_strips_windows_verbatim_prefix() {
+        // \\?\C:\foo\bar → C:/foo/bar
+        let p = Path::new(r"\\?\C:\foo\bar");
+        assert_eq!(normalize_path(p), "C:/foo/bar");
+    }
+
+    #[test]
+    fn test_normalize_path_strips_windows_unc_verbatim_prefix() {
+        // \\?\UNC\server\share\file → //server/share/file
+        let p = Path::new(r"\\?\UNC\server\share\file");
+        assert_eq!(normalize_path(p), "//server/share/file");
+    }
+
+    #[test]
+    fn test_normalize_path_passthrough_without_verbatim() {
+        let p = Path::new("/usr/local/bin/cqs");
+        assert_eq!(normalize_path(p), "/usr/local/bin/cqs");
+    }
+
+    #[test]
+    fn test_normalize_slashes_strips_verbatim_prefix() {
+        assert_eq!(normalize_slashes(r"\\?\C:\foo"), "C:/foo");
+        assert_eq!(normalize_slashes(r"\\?\UNC\srv\sh"), "//srv/sh");
+        assert_eq!(normalize_slashes("plain/unix/path"), "plain/unix/path");
     }
 
     // ─── index_notes tests ──────────────────────────────────────────────────

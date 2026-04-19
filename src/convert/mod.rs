@@ -614,10 +614,11 @@ fn convert_directory(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<Vec<Co
         }
     }
 
-    // Walk individual files, skipping symlinks and those under web help directories
-    const MAX_WALK_DEPTH: usize = 50;
+    // P3 #108: env-overridable walkdir depth cap (CQS_CONVERT_MAX_WALK_DEPTH).
+    let max_walk_depth = crate::limits::doc_max_walk_depth();
+    let mut depth_cap_hit = false;
     for entry in walkdir::WalkDir::new(dir)
-        .max_depth(MAX_WALK_DEPTH)
+        .max_depth(max_walk_depth)
         .into_iter()
         .filter_entry(|e| !e.path_is_symlink())
         .filter_map(|e| match e {
@@ -631,6 +632,11 @@ fn convert_directory(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<Vec<Co
         .filter(|e| detect_format(e.path()).is_some())
         .filter(|e| !webhelp_dirs.iter().any(|wh| e.path().starts_with(wh)))
     {
+        // P3 #108: any entry exactly at the depth cap means deeper
+        // descendants were silently dropped — surface it once.
+        if entry.depth() >= max_walk_depth {
+            depth_cap_hit = true;
+        }
         match convert_file(entry.path(), opts) {
             Ok(r) => results.push(r),
             Err(e) => tracing::warn!(
@@ -639,6 +645,13 @@ fn convert_directory(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<Vec<Co
                 "Failed to convert document"
             ),
         }
+    }
+    if depth_cap_hit {
+        tracing::warn!(
+            dir = %dir.display(),
+            cap = max_walk_depth,
+            "Doc walk hit max-depth cap; bump CQS_CONVERT_MAX_WALK_DEPTH if your tree is legitimately deeper"
+        );
     }
 
     tracing::info!(

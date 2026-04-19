@@ -18,6 +18,10 @@ use super::definitions;
 fn open_store_with<Mode>(
     opener: fn(&Path) -> std::result::Result<cqs::Store<Mode>, cqs::store::StoreError>,
 ) -> Result<(cqs::Store<Mode>, PathBuf, PathBuf)> {
+    // P3 #131: span on the shared opener so both `open_project_store` and
+    // `open_project_store_readonly` (which fan into here) get consistent
+    // tracing identity covering the index existence check + open.
+    let _span = tracing::info_span!("open_project_store").entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);

@@ -134,7 +134,14 @@ fn sanitize_untrusted(content: &str) -> String {
             }
         }
         // Copy one char (not byte) to preserve UTF-8 boundaries.
-        let ch = content[i..].chars().next().expect("valid UTF-8");
+        // P3 #83: harden against any future invariant break — `content` is a
+        // `&str` so this branch is logically unreachable, but a defensive
+        // no-panic fallback is cheaper than an `expect` that could one day fire
+        // if a sandbox marker probe lands mid-UTF-8 because of a refactor.
+        let Some(ch) = content[i..].chars().next() else {
+            i += 1;
+            continue;
+        };
         out.push(ch);
         i += ch.len_utf8();
     }
@@ -359,6 +366,29 @@ mod tests {
         let out = sanitize_untrusted(content);
         assert!(out.starts_with("代码 🦀 "));
         assert!(!out.contains("<UNTRUSTED_CONTENT>"));
+    }
+
+    /// P3 #83: stress the no-panic path with multibyte runes immediately
+    /// adjacent to every kind of sandbox marker the sanitizer probes for.
+    /// All of these would have triggered the old `expect("valid UTF-8")`
+    /// fallback if the byte cursor ever landed mid-codepoint after a probe.
+    #[test]
+    fn sanitize_untrusted_no_panic_on_multibyte_around_markers() {
+        // 4-byte emoji + each marker variant
+        let cases = [
+            "🦀<<<UNTRUSTED_CONTENT_FENCE_b3:abc>>>🦀",
+            "🦀<<<END_UNTRUSTED_CONTENT_FENCE_b3:abc>>>🦀",
+            "🦀<UNTRUSTED_CONTENT>🦀",
+            "🦀</UNTRUSTED_CONTENT>🦀",
+            "🦀```🦀",
+            "代码<<<x>>>代码",
+            "代码`代码",
+        ];
+        for case in &cases {
+            // Must not panic and must produce some output.
+            let out = sanitize_untrusted(case);
+            assert!(!out.is_empty(), "empty output on input: {case:?}");
+        }
     }
 
     // P2 #34: triple-backtick neutralization.

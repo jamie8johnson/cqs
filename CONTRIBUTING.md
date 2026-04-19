@@ -83,6 +83,8 @@ CLI command failures still propagate via `anyhow → stderr` for now; the envelo
 - `io_error` — filesystem/network failure
 - `internal` — anything else (carries the full anyhow chain in `message`)
 
+Today only `internal`, `invalid_input`, and `parse_error` are emitted by production handlers; `not_found` and `io_error` are reserved for future use and currently collapse into `internal`.
+
 **`version`** is the wire-format version. Bump on any breaking change to inner `data` payload shapes; the envelope itself stays stable across versions.
 
 **How to emit:**
@@ -303,7 +305,7 @@ src/
     groom-notes/  - Interactive note review and cleanup
     update-tears/ - Session state capture for context persistence
     release/      - Version bump, changelog, publish workflow
-    audit/        - 14-category code audit with parallel agents
+    audit/        - 16-category code audit with parallel agents
     red-team/     - Adversarial security audit (attacker mindset, PoC-required)
     pr/           - WSL-safe PR creation
     cqs-bootstrap/ - New project setup with tears infrastructure

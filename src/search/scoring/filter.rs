@@ -1,5 +1,6 @@
 //! SQL filter building, glob compilation, and chunk ID parsing.
 
+use crate::store::helpers::sql::make_placeholders_offset;
 use crate::store::helpers::SearchFilter;
 
 use super::name_match::is_name_like_query;
@@ -78,34 +79,28 @@ pub(crate) fn build_filter_sql(filter: &SearchFilter) -> FilterSql {
     let mut conditions = Vec::new();
     let mut bind_values: Vec<String> = Vec::new();
 
+    // P3 #130: each branch uses the cached `make_placeholders_offset` helper
+    // instead of inlining `(0..n).map(format!).collect::<Vec<_>>().join(",")`.
+    // Bind indices stay 1-based and contiguous across branches.
     if let Some(ref langs) = filter.languages {
-        let placeholders: Vec<_> = (0..langs.len())
-            .map(|i| format!("?{}", bind_values.len() + i + 1))
-            .collect();
-        conditions.push(format!(
-            "language COLLATE NOCASE IN ({})",
-            placeholders.join(",")
-        ));
+        let placeholders = make_placeholders_offset(langs.len(), bind_values.len() + 1);
+        conditions.push(format!("language COLLATE NOCASE IN ({placeholders})"));
         for lang in langs {
             bind_values.push(lang.to_string());
         }
     }
 
     if let Some(ref types) = filter.include_types {
-        let placeholders: Vec<_> = (0..types.len())
-            .map(|i| format!("?{}", bind_values.len() + i + 1))
-            .collect();
-        conditions.push(format!("chunk_type IN ({})", placeholders.join(",")));
+        let placeholders = make_placeholders_offset(types.len(), bind_values.len() + 1);
+        conditions.push(format!("chunk_type IN ({placeholders})"));
         for ct in types {
             bind_values.push(ct.to_string());
         }
     }
 
     if let Some(ref types) = filter.exclude_types {
-        let placeholders: Vec<_> = (0..types.len())
-            .map(|i| format!("?{}", bind_values.len() + i + 1))
-            .collect();
-        conditions.push(format!("chunk_type NOT IN ({})", placeholders.join(",")));
+        let placeholders = make_placeholders_offset(types.len(), bind_values.len() + 1);
+        conditions.push(format!("chunk_type NOT IN ({placeholders})"));
         for ct in types {
             bind_values.push(ct.to_string());
         }

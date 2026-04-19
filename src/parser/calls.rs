@@ -20,6 +20,17 @@ impl Parser {
         end_byte: usize,
         line_offset: u32,
     ) -> Vec<CallSite> {
+        // P3 #93: span carries the language + chunk byte range so the
+        // tree-sitter parse-failure warns below have enough identity to
+        // distinguish "grammar broken globally" from "one weird chunk".
+        let _span = tracing::debug_span!(
+            "extract_calls",
+            %language,
+            start_byte,
+            end_byte
+        )
+        .entered();
+
         // Grammar-less languages (Markdown) — no tree-sitter call extraction
         if language.def().grammar.is_none() {
             return vec![];
@@ -38,14 +49,25 @@ impl Parser {
         };
         let mut parser = tree_sitter::Parser::new();
         if let Err(e) = parser.set_language(&grammar) {
-            tracing::warn!(error = ?e, %language, "set_language failed in extract_calls");
+            tracing::warn!(
+                error = ?e,
+                %language,
+                start_byte,
+                end_byte,
+                "set_language failed in extract_calls"
+            );
             return vec![];
         }
 
         let tree = match parser.parse(source.as_ref(), None) {
             Some(t) => t,
             None => {
-                tracing::warn!(%language, "tree-sitter parse returned None in extract_calls");
+                tracing::warn!(
+                    %language,
+                    start_byte,
+                    end_byte,
+                    "tree-sitter parse returned None in extract_calls"
+                );
                 return vec![];
             }
         };
@@ -53,7 +75,13 @@ impl Parser {
         let query = match self.get_call_query(language) {
             Ok(q) => q,
             Err(e) => {
-                tracing::warn!(error = %e, "Tree-sitter query failed in extract_calls");
+                tracing::warn!(
+                    error = %e,
+                    %language,
+                    start_byte,
+                    end_byte,
+                    "Tree-sitter query failed in extract_calls"
+                );
                 return vec![];
             }
         };
@@ -178,16 +206,23 @@ impl Parser {
             }
         }
 
-        // Build set of type names that have at least one classified entry
-        let classified_names: std::collections::HashSet<String> =
-            classified.iter().map(|t| t.type_name.clone()).collect();
-
-        // Keep catch-all entries only for types NOT already classified
-        for t in catch_all {
-            if !classified_names.contains(&t.type_name) {
-                classified.push(t);
-            }
-        }
+        // Build set of type names that have at least one classified entry.
+        //
+        // P3 #129: borrow `&str` from `classified` instead of cloning every
+        // `type_name` into an owned `HashSet<String>` — the membership check
+        // doesn't outlive `classified`, so no allocation is needed.
+        // The set is consumed via `into_iter` of catch_all below; it must
+        // not survive the subsequent `classified.push(t)` (which would alias
+        // the borrow), so we materialize the keep-list first and push after.
+        let to_keep: Vec<TypeRef> = {
+            let classified_names: std::collections::HashSet<&str> =
+                classified.iter().map(|t| t.type_name.as_str()).collect();
+            catch_all
+                .into_iter()
+                .filter(|t| !classified_names.contains(t.type_name.as_str()))
+                .collect()
+        };
+        classified.extend(to_keep);
 
         // Dedup by (type_name, kind) — same type as Param twice → one entry,
         // but same type as Param AND Return → two entries
@@ -220,13 +255,15 @@ impl Parser {
         let _span =
             tracing::info_span!("parse_file_relationships", path = %path.display()).entered();
 
-        // Check file size (matching parse_file limit)
+        // P3 #104: env-overridable cap (CQS_PARSER_MAX_FILE_SIZE).
+        let max_file_size = crate::limits::parser_max_file_size();
         match std::fs::metadata(path) {
-            Ok(meta) if meta.len() > super::MAX_FILE_SIZE => {
+            Ok(meta) if meta.len() > max_file_size => {
                 tracing::warn!(
-                    "Skipping large file ({}MB > 50MB limit): {}",
-                    meta.len() / (1024 * 1024),
-                    path.display()
+                    size_mb = meta.len() / (1024 * 1024),
+                    cap_mb = max_file_size / (1024 * 1024),
+                    path = %path.display(),
+                    "Skipping large file; bump CQS_PARSER_MAX_FILE_SIZE if needed"
                 );
                 return Ok((vec![], vec![]));
             }

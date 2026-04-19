@@ -124,9 +124,11 @@ pub(crate) fn cmd_query(
         }
     }
 
-    // Over-retrieve when reranking to give the cross-encoder more candidates
+    // Over-retrieve when reranking to give the cross-encoder more candidates.
+    // P3 #100: pool sizing centralized in `cli/limits.rs::rerank_pool_size`,
+    // honors CQS_RERANK_OVER_RETRIEVAL / CQS_RERANK_POOL_MAX.
     let effective_limit = if cli.rerank {
-        (cli.limit * 4).min(100)
+        crate::cli::limits::rerank_pool_size(cli.limit)
     } else {
         cli.limit
     };
@@ -687,8 +689,9 @@ fn cmd_query_ref_only(ctx: &RefQueryContext<'_>, ref_name: &str) -> Result<()> {
 
     let ref_idx = crate::cli::commands::resolve::find_reference(ctx.root, ref_name)?;
 
+    // P3 #100: shared pool sizing.
     let ref_limit = if ctx.cli.rerank {
-        (ctx.cli.limit * 4).min(100)
+        crate::cli::limits::rerank_pool_size(ctx.cli.limit)
     } else {
         ctx.cli.limit
     };

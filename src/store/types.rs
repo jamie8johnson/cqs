@@ -455,27 +455,30 @@ impl<Mode> Store<Mode> {
     }
 
     /// Load the type graph as forward + reverse adjacency lists.
-    /// Single SQL scan of `type_edges` joined with `chunks`, capped at 500K edges.
+    /// Single SQL scan of `type_edges` joined with `chunks`, capped at 500K edges
+    /// (override via `CQS_TYPE_GRAPH_MAX_EDGES`).
     /// Forward: chunk_name -> Vec<type_name>, Reverse: type_name -> Vec<chunk_name>.
     pub fn get_type_graph(&self) -> Result<TypeGraph, StoreError> {
         let _span = tracing::info_span!("get_type_graph").entered();
 
         self.rt.block_on(async {
-            const MAX_TYPE_GRAPH_EDGES: usize = 500_000;
+            // P3 #103: env-overridable via CQS_TYPE_GRAPH_MAX_EDGES.
+            let max_edges = crate::limits::type_graph_max_edges();
             let rows: Vec<(String, String)> = sqlx::query_as(
                 "SELECT c.name, te.target_type_name
                  FROM type_edges te
                  JOIN chunks c ON te.source_chunk_id = c.id
                  LIMIT ?1",
             )
-            .bind(MAX_TYPE_GRAPH_EDGES as i64)
+            .bind(max_edges as i64)
             .fetch_all(&self.pool)
             .await?;
 
-            if rows.len() >= MAX_TYPE_GRAPH_EDGES {
+            if rows.len() >= max_edges {
                 tracing::warn!(
-                    cap = MAX_TYPE_GRAPH_EDGES,
-                    "Type graph hit edge cap, results may be incomplete"
+                    cap = max_edges,
+                    "Type graph hit edge cap, results may be incomplete; \
+                     bump CQS_TYPE_GRAPH_MAX_EDGES if your corpus needs it"
                 );
             }
 

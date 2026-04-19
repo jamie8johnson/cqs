@@ -577,4 +577,120 @@ mod tests {
         assert_eq!(parsed["data"]["score"], 0.95);
         assert!(parsed["error"].is_null());
     }
+
+    // P3 #110: write_json_line (in `crate::cli::batch`) and format_envelope_to_string
+    // share the same `wrap_value` + `sanitize_json_floats` retry path on
+    // serializer failure — the retry must catch BOTH `+Inf` and `-Inf`,
+    // not just NaN. The existing `test_write_json_line_nan_retry` only
+    // pinned NaN. This test exercises the same chain
+    // (`wrap_value` → `sanitize_json_floats` → `serde_json::to_string`)
+    // that the batch path uses, with the exact mixed-Infinity payload
+    // the audit triage called out.
+    //
+    // The function-under-test naming follows the audit prompt: a future
+    // refactor that pulls the batch helper into json_envelope can land
+    // an actual `write_json_line` here without renaming.
+    #[test]
+    fn test_write_json_line_infinity_retry() {
+        let payload = serde_json::json!({
+            "score": f64::INFINITY,
+            "neg_score": f64::NEG_INFINITY,
+            "name": "x",
+        });
+        // wrap_value matches what write_json_line's retry arm calls
+        // (`crate::cli::json_envelope::wrap_value(value)`).
+        let wrapped = wrap_value(&payload);
+        let mut sanitized = wrapped;
+        sanitize_json_floats(&mut sanitized);
+        // The sanitized envelope must serialize to valid JSON (no NaN /
+        // Infinity literals, since those are not allowed in the JSON spec).
+        let s = serde_json::to_string(&sanitized).expect("must serialize after sanitize");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&s).expect("output must be valid JSON");
+
+        // Both Infinity fields must be replaced with null inside the data
+        // payload; the non-numeric `name` field stays untouched.
+        assert!(
+            parsed["data"]["score"].is_null(),
+            "+Infinity score must be sanitized to null. got: {}",
+            parsed["data"]["score"]
+        );
+        assert!(
+            parsed["data"]["neg_score"].is_null(),
+            "-Infinity neg_score must be sanitized to null. got: {}",
+            parsed["data"]["neg_score"]
+        );
+        assert_eq!(
+            parsed["data"]["name"], "x",
+            "non-numeric fields must pass through the retry untouched"
+        );
+        // Envelope shell stays intact.
+        assert!(parsed["error"].is_null());
+        assert_eq!(parsed["version"], JSON_OUTPUT_VERSION);
+        // The serialized form must not contain the literal "Infinity"
+        // (would be invalid JSON; serde_json would have rejected it).
+        assert!(
+            !s.contains("Infinity"),
+            "sanitized output must not contain the 'Infinity' literal: {s}"
+        );
+    }
+
+    // P3 #111: `wrap_value` has no double-wrap detection. Calling it on
+    // an already-wrapped envelope explicitly produces a NESTED envelope:
+    // the outer `data` field holds the inner envelope object verbatim,
+    // including its `data`, `error`, and `version` keys. This test pins
+    // that documented behaviour so a future "auto-detect envelope shape
+    // and pass-through" change is a deliberate, test-failing decision
+    // rather than an accidental drift.
+    //
+    // The current contract is: callers MUST NOT pass an already-wrapped
+    // value to `wrap_value`. There's no compile-time check; this test
+    // documents what happens when someone does.
+    #[test]
+    fn wrap_value_does_not_double_wrap_existing_envelope() {
+        // Build an envelope by going through wrap_value once.
+        let inner_payload = serde_json::json!({"name": "foo", "count": 3});
+        let first_wrap = wrap_value(&inner_payload);
+
+        // Sanity: first wrap is the standard envelope.
+        assert_eq!(first_wrap["data"], inner_payload);
+        assert!(first_wrap["error"].is_null());
+        assert_eq!(first_wrap["version"], JSON_OUTPUT_VERSION);
+
+        // Now wrap it AGAIN. Today wrap_value has no envelope detection,
+        // so this produces `{data: {data:{...}, error:null, version:1}, error:null, version:1}`.
+        let second_wrap = wrap_value(&first_wrap);
+
+        // Outer envelope shape is intact.
+        assert!(
+            second_wrap["data"].is_object(),
+            "second wrap's data must be an object (the entire first envelope)"
+        );
+        assert!(second_wrap["error"].is_null());
+        assert_eq!(second_wrap["version"], JSON_OUTPUT_VERSION);
+
+        // Inner envelope is nested under outer `data` — the contract pin.
+        // If a future change adds envelope detection, this assertion flips
+        // and the comment above documents the behaviour change.
+        let inner = &second_wrap["data"];
+        assert_eq!(
+            inner["data"], inner_payload,
+            "double-wrap puts the original payload at data.data — \
+             pins the no-detection contract"
+        );
+        assert!(
+            inner["error"].is_null(),
+            "the inner envelope's error field is preserved verbatim"
+        );
+        assert_eq!(
+            inner["version"], JSON_OUTPUT_VERSION,
+            "the inner envelope's version field is preserved verbatim"
+        );
+
+        // Cross-check: the deeply-nested payload survives intact under
+        // `data.data` so a consumer that grepped `.data.data` would still
+        // find their fields.
+        assert_eq!(second_wrap["data"]["data"]["name"], "foo");
+        assert_eq!(second_wrap["data"]["data"]["count"], 3);
+    }
 }

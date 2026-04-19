@@ -486,12 +486,31 @@ impl<Mode> Store<Mode> {
                 } else {
                     root.join(&path)
                 };
-                let current_mtime = lookup_path
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as i64);
+                // P3 #135: previously this code threaded `metadata()` errors
+                // through `.ok()`, so a permission-denied or busy-file failure
+                // yielded `None` and the file was silently treated as fresh.
+                // Surface the failure and treat the file as stale with a
+                // sentinel `current_mtime = -1` so an operator can spot the
+                // unreadable origin in `cqs stats --json`.
+                let current_mtime = match lookup_path.metadata().and_then(|m| m.modified()) {
+                    Ok(t) => t
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| d.as_millis() as i64),
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %lookup_path.display(),
+                            error = %e,
+                            "Failed to read mtime for indexed file — treating as stale"
+                        );
+                        stale.push(StaleFile {
+                            file: path,
+                            stored_mtime: stored,
+                            current_mtime: -1,
+                        });
+                        continue;
+                    }
+                };
 
                 if let Some(current) = current_mtime {
                     if current > stored {

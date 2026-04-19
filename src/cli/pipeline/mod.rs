@@ -140,7 +140,9 @@ pub(crate) fn run_index_pipeline(
             ProgressStyle::default_bar()
                 .template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}")
                 .unwrap_or_else(|e| {
-                    tracing::warn!("Progress template error: {}, using default", e);
+                    // P3 #95: structured fields — same rationale as the
+                    // sibling parse warn in `pipeline/parsing.rs`.
+                    tracing::warn!(error = %e, "Progress bar template invalid, using default");
                     ProgressStyle::default_bar()
                 }),
         );

@@ -264,7 +264,9 @@ pub(crate) struct BatchContext {
     base_hnsw: RefCell<Option<std::sync::Arc<dyn VectorIndex>>>,
     call_graph: RefCell<Option<std::sync::Arc<cqs::store::CallGraph>>>,
     test_chunks: RefCell<Option<std::sync::Arc<Vec<cqs::store::ChunkSummary>>>>,
-    file_set: RefCell<Option<HashSet<PathBuf>>>,
+    /// P3 #123: cache returns `Arc<HashSet<PathBuf>>` so callers don't clone
+    /// the full set on every invocation. Mirrors `call_graph` / `test_chunks`.
+    file_set: RefCell<Option<std::sync::Arc<HashSet<PathBuf>>>>,
     notes_cache: RefCell<Option<Vec<cqs::note::Note>>>,
     // Single-threaded by design — RefCell is correct, no Mutex needed
     // RM-27: Reduced from 4 to 2 — each ReferenceIndex holds Store + HNSW (50-200MB)
@@ -954,21 +956,24 @@ impl BatchContext {
     }
 
     /// Get or build the file set for staleness checks (cached).
-    pub(super) fn file_set(&self) -> Result<HashSet<PathBuf>> {
+    ///
+    /// P3 #123: returns `Arc<HashSet<PathBuf>>` so callers don't clone the
+    /// full set per invocation. Mirrors `call_graph` / `test_chunks`.
+    pub(super) fn file_set(&self) -> Result<std::sync::Arc<HashSet<PathBuf>>> {
         self.check_index_staleness();
         {
             let cached = self.file_set.borrow();
             if let Some(fs) = cached.as_ref() {
-                return Ok(fs.clone());
+                return Ok(std::sync::Arc::clone(fs));
             }
         }
         let _span = tracing::info_span!("batch_file_set").entered();
         let exts: Vec<&str> = cqs::language::REGISTRY.supported_extensions().collect();
         let files = cqs::enumerate_files(&self.root, &exts, false)?;
         let set: HashSet<PathBuf> = files.into_iter().collect();
-        let result = set.clone();
-        *self.file_set.borrow_mut() = Some(set);
-        Ok(result)
+        let arc = std::sync::Arc::new(set);
+        *self.file_set.borrow_mut() = Some(std::sync::Arc::clone(&arc));
+        Ok(arc)
     }
 
     /// Get cached audit state. Reloads from `.cqs/audit-mode.json` when the
@@ -1020,9 +1025,34 @@ impl BatchContext {
         let notes = if notes_path.exists() {
             match cqs::note::parse_notes(&notes_path) {
                 Ok(notes) => notes,
+                // P3 #97: split absent-file (TOCTOU after the .exists()
+                // check above) from genuine parse failures, and include
+                // the path in the warn so the journal isn't ambiguous
+                // about which notes file failed.
                 Err(e) => {
-                    tracing::warn!(error = %e, "Failed to parse notes.toml for batch");
-                    vec![]
+                    if let cqs::NoteError::Io(ref io_err) = e {
+                        if io_err.kind() == std::io::ErrorKind::NotFound {
+                            tracing::debug!(
+                                path = %notes_path.display(),
+                                "notes.toml disappeared between exists() and parse — treating as empty"
+                            );
+                            vec![]
+                        } else {
+                            tracing::warn!(
+                                path = %notes_path.display(),
+                                error = %e,
+                                "Failed to parse notes.toml for batch"
+                            );
+                            vec![]
+                        }
+                    } else {
+                        tracing::warn!(
+                            path = %notes_path.display(),
+                            error = %e,
+                            "Failed to parse notes.toml for batch"
+                        );
+                        vec![]
+                    }
                 }
             }
         } else {
@@ -1183,6 +1213,35 @@ pub(crate) fn evict_global_embedding_cache_with_runtime(
         }
         Err(e) => {
             tracing::warn!(error = %e, trigger, "Global cache eviction failed");
+        }
+    }
+
+    // P3 #124: same daemon tick also evicts the persistent QueryCache. The
+    // QueryCache is per-user disk-resident and grew unbounded before the
+    // 100 MB default cap landed; one shared tick keeps both caches honest
+    // without a second timer.
+    let q_path = cqs::cache::QueryCache::default_path();
+    if q_path.exists() {
+        match cqs::cache::QueryCache::open(&q_path) {
+            Ok(qc) => match qc.evict() {
+                Ok(n) if n > 0 => {
+                    tracing::info!(
+                        evicted = n,
+                        trigger,
+                        path = %q_path.display(),
+                        "Query cache evicted"
+                    );
+                }
+                Ok(_) => {
+                    tracing::debug!(trigger, "Query cache under cap, no eviction");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, trigger, "Query cache eviction failed");
+                }
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, path = %q_path.display(), "Query cache evict skipped — open failed");
+            }
         }
     }
 }
@@ -1653,7 +1712,7 @@ mod tests {
         let ctx = create_test_context(&cqs_dir).unwrap();
 
         // Populate mutable caches
-        *ctx.file_set.borrow_mut() = Some(HashSet::new());
+        *ctx.file_set.borrow_mut() = Some(std::sync::Arc::new(HashSet::new()));
         *ctx.notes_cache.borrow_mut() = Some(vec![]);
         *ctx.call_graph.borrow_mut() = Some(std::sync::Arc::new(
             cqs::store::CallGraph::from_string_maps(Default::default(), Default::default()),
