@@ -46,7 +46,7 @@ pub(crate) enum RefCommand {
         /// Path to the source codebase to index
         source: PathBuf,
         /// Score weight multiplier (0.0-1.0, default 0.8)
-        #[arg(long, default_value = "0.8")]
+        #[arg(long, default_value = "0.8", value_parser = crate::cli::definitions::parse_finite_f32)]
         weight: f32,
     },
     /// List configured references

@@ -65,8 +65,21 @@ fn build_neighbors_output(
 // ─── Internal helpers ──────────────────────────────────────────────────────
 
 /// Dot product for L2-normalized vectors (= cosine similarity).
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+///
+/// Returns `None` if the dimensions disagree — indicates a partial reindex
+/// or mid-flight model swap. The caller should skip the chunk rather than
+/// emit a meaningless score (`Iterator::zip` truncates to the shorter input
+/// and would otherwise produce a well-defined-but-incorrect partial dot).
+fn dot(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.len() != b.len() {
+        tracing::warn!(
+            target_dim = a.len(),
+            batch_dim = b.len(),
+            "neighbors: embedding dim mismatch, skipping chunk (partial reindex?)"
+        );
+        return None;
+    }
+    Some(a.iter().zip(b.iter()).map(|(x, y)| x * y).sum())
 }
 
 /// Find top-K nearest neighbors by brute-force cosine similarity.
@@ -98,8 +111,11 @@ fn find_neighbors<Mode>(
             if id == target.id {
                 continue; // exclude self
             }
-            let sim = dot(target_slice, embedding.as_slice());
-            scored.push((id, sim));
+            // Skip dim-mismatched chunks (partial reindex / mid-flight model
+            // swap). `dot` already emitted a `tracing::warn!` with the dims.
+            if let Some(sim) = dot(target_slice, embedding.as_slice()) {
+                scored.push((id, sim));
+            }
         }
     }
 
@@ -201,14 +217,33 @@ mod tests {
     fn dot_product_identical_vectors() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
-        assert!((dot(&a, &b) - 1.0).abs() < 1e-6);
+        let result = dot(&a, &b).expect("equal-length vectors should return Some");
+        assert!((result - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn dot_product_orthogonal() {
         let a = vec![1.0, 0.0];
         let b = vec![0.0, 1.0];
-        assert!((dot(&a, &b)).abs() < 1e-6);
+        let result = dot(&a, &b).expect("equal-length vectors should return Some");
+        assert!(result.abs() < 1e-6);
+    }
+
+    #[test]
+    fn dot_returns_some_for_equal_dim() {
+        let a = [1.0_f32, 0.0, 0.0];
+        let b = [1.0_f32, 0.0, 0.0];
+        assert_eq!(dot(&a, &b), Some(1.0));
+    }
+
+    #[test]
+    fn dot_returns_none_for_dim_mismatch() {
+        // Mid-flight model swap simulation: 1024-dim target vs 768-dim batch.
+        // dot() must skip the chunk and emit a tracing warning rather than
+        // computing a meaningless partial sum over the shorter prefix.
+        let a = [1.0_f32, 0.0, 0.0];
+        let b = [1.0_f32, 0.0];
+        assert_eq!(dot(&a, &b), None);
     }
 
     #[test]
@@ -351,10 +386,15 @@ mod tests {
 
     #[test]
     fn dot_product_with_nan_returns_nan() {
-        // TC-13: verify dot() propagates NaN from corrupt embedding vectors
+        // TC-13: verify dot() propagates NaN from corrupt embedding vectors.
+        // Equal-length inputs with internal NaN must still return Some(NaN)
+        // (the dim-mismatch guard only fires on length disagreement).
         let a = vec![1.0, f32::NAN, 0.0];
         let b = vec![1.0, 1.0, 0.0];
-        let result = dot(&a, &b);
-        assert!(result.is_nan(), "dot() with NaN input should return NaN");
+        let result = dot(&a, &b).expect("equal-length inputs should return Some");
+        assert!(
+            result.is_nan(),
+            "dot() with NaN input should propagate NaN inside Some"
+        );
     }
 }

@@ -234,11 +234,15 @@ fn test_diff_zero_tolerance_flags_any_drop() {
 /// stdout) will fail at runtime.
 #[test]
 fn test_diff_text_output_format_field_contract() {
-    // The text output reads `overall_delta.r1` / `r5` / `r20`,
+    // The text output reads `overall_delta.r_at_1` / `r_at_5` / `r_at_20`,
     // `by_category_delta`, `regressions[].metric`, `tolerance_pp`. Pin
     // those field names by deserializing a hand-built DiffReport JSON
     // and checking each field. If `compare_against_baseline` ever renames
     // any of these, this test fails.
+    //
+    // P1 #26: the per-K field names match the sibling `EvalReport` shape
+    // (`r_at_1` / `r_at_5` / `r_at_20`) so the same command emits one
+    // consistent JSON convention.
     let raw = json!({
         "baseline_path": "/tmp/baseline.json",
         "baseline_meta": {
@@ -253,10 +257,10 @@ fn test_diff_text_output_format_field_contract() {
             "query_file": "q.json",
             "overall_n": 10,
         },
-        "overall_delta": {"r1": 1.2, "r5": -0.8, "r20": 0.0},
+        "overall_delta": {"r_at_1": 1.2, "r_at_5": -0.8, "r_at_20": 0.0},
         "by_category_delta": {
-            "alpha": {"r1": 1.2, "r5": 0.0, "r20": -0.5},
-            "beta":  {"r1": 0.0, "r5": -0.8, "r20": 0.5},
+            "alpha": {"r_at_1": 1.2, "r_at_5": 0.0, "r_at_20": -0.5},
+            "beta":  {"r_at_1": 0.0, "r_at_5": -0.8, "r_at_20": 0.5},
         },
         "regressions": [
             {
@@ -295,19 +299,20 @@ fn test_diff_json_output_shape() {
             "cqs_version": "1.0", "index_model": "m",
             "query_file": "q.json", "overall_n": 1,
         },
-        "overall_delta": {"r1": 0.0, "r5": 0.0, "r20": 0.0},
-        "by_category_delta": {"a": {"r1": 0.0, "r5": 0.0, "r20": 0.0}},
+        "overall_delta": {"r_at_1": 0.0, "r_at_5": 0.0, "r_at_20": 0.0},
+        "by_category_delta": {"a": {"r_at_1": 0.0, "r_at_5": 0.0, "r_at_20": 0.0}},
         "regressions": [],
         "tolerance_pp": 1.0,
         "warnings": [],
     });
     // Confirm the keys callers will index into are present and typed
     // the way `compare_against_baseline` emits them.
+    // P1 #26: per-K fields are `r_at_1`/`r_at_5`/`r_at_20` to match `EvalReport`.
     assert!(raw["regressions"].is_array());
     assert!(raw["by_category_delta"].is_object());
-    assert!(raw["overall_delta"]["r1"].is_number());
-    assert!(raw["overall_delta"]["r5"].is_number());
-    assert!(raw["overall_delta"]["r20"].is_number());
+    assert!(raw["overall_delta"]["r_at_1"].is_number());
+    assert!(raw["overall_delta"]["r_at_5"].is_number());
+    assert!(raw["overall_delta"]["r_at_20"].is_number());
     assert!(raw["tolerance_pp"].is_number());
 }
 

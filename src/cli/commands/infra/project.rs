@@ -12,6 +12,8 @@ use cqs::normalize_path;
 use cqs::Embedder;
 use cqs::{search_across_projects, ProjectRegistry};
 
+use crate::cli::Cli;
+
 // ---------------------------------------------------------------------------
 // Output struct
 // ---------------------------------------------------------------------------
@@ -64,7 +66,11 @@ pub(crate) enum ProjectCommand {
     },
 }
 
-pub(crate) fn cmd_project(subcmd: &ProjectCommand, model_config: &ModelConfig) -> Result<()> {
+pub(crate) fn cmd_project(
+    cli: &Cli,
+    subcmd: &ProjectCommand,
+    model_config: &ModelConfig,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_project").entered();
     match subcmd {
         ProjectCommand::Register { name, path } => {
@@ -120,7 +126,11 @@ pub(crate) fn cmd_project(subcmd: &ProjectCommand, model_config: &ModelConfig) -
 
             let results = search_across_projects(&query_embedding, query, *limit, *threshold)?;
 
-            if *json {
+            // Top-level `--json` always wins (mirrors `cmd_model` at
+            // `src/cli/commands/infra/model.rs:113`). `cqs --json project search foo`
+            // must emit envelope JSON without `--json` after the subcommand.
+            let json = cli.json || *json;
+            if json {
                 let json_results: Vec<_> = results
                     .iter()
                     .map(|r| ProjectSearchResult {

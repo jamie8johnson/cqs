@@ -1203,8 +1203,24 @@ pub fn cmd_watch(
                 }
             }
         }
+        // SEC-D.6: between `bind()` (creates socket honoring umask) and
+        // `set_permissions(0o600)`, the socket inode is world-creatable
+        // for ~ms. On `/tmp` fallback (`XDG_RUNTIME_DIR` unset) any local
+        // user could connect during that window. Set umask to 0o077
+        // immediately before bind so the socket is born private, then
+        // restore. Keep the explicit chmod as belt-and-suspenders in case
+        // a future refactor drops the umask wrap.
+        //
+        // SAFETY: `libc::umask` is process-global. We do this on the daemon
+        // startup path before any concurrent file-creating code runs.
+        #[cfg(unix)]
+        let prev_umask = unsafe { libc::umask(0o077) };
         let listener = std::os::unix::net::UnixListener::bind(&sock_path)
             .with_context(|| format!("Failed to bind socket at {}", sock_path.display()))?;
+        #[cfg(unix)]
+        unsafe {
+            libc::umask(prev_umask);
+        }
         listener.set_nonblocking(true)?;
         {
             use std::os::unix::fs::PermissionsExt;
@@ -2305,14 +2321,19 @@ fn reindex_files(
                     }
                     // RT-DATA-8: Write function_calls table (file-level call graph).
                     // Previously discarded — callers/impact/trace commands need this.
-                    if !calls.is_empty() {
-                        if let Err(e) = store.upsert_function_calls(rel_path, &calls) {
-                            tracing::warn!(
-                                path = %rel_path.display(),
-                                error = %e,
-                                "Failed to write function_calls for watched file"
-                            );
-                        }
+                    //
+                    // Always invoked, even on empty `calls`: the function does
+                    // DELETE WHERE file=X then INSERT current. Skipping the call
+                    // when current is empty leaks rows for files that previously
+                    // had function_calls but no longer do (audit P1 #17 / E.2:
+                    // `delete_phantom_chunks` cannot do this cleanup itself
+                    // because it would wipe the just-written rows).
+                    if let Err(e) = store.upsert_function_calls(rel_path, &calls) {
+                        tracing::warn!(
+                            path = %rel_path.display(),
+                            error = %e,
+                            "Failed to write function_calls for watched file"
+                        );
                     }
                     file_chunks
                 }

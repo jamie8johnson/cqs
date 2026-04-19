@@ -180,10 +180,19 @@ pub(crate) fn cmd_ping(json: bool) -> Result<()> {
                 Ok(())
             }
             Err(msg) => {
-                // Spec: "no daemon running" → exit 1. Print to stderr so
-                // a script can still capture stdout for the JSON path
-                // when it succeeds.
-                eprintln!("cqs: {msg}");
+                // Spec: "no daemon running" → exit 1. PR #1038 envelope contract
+                // requires `{data:null, error:{code,message}, version:1}` on JSON
+                // failure paths so health-monitor scripts get a single uniform
+                // shape. IO_ERROR is the right code: socket connection failures
+                // and timeouts both fall under filesystem/socket I/O.
+                if json {
+                    crate::cli::json_envelope::emit_json_error(
+                        crate::cli::json_envelope::error_codes::IO_ERROR,
+                        &msg,
+                    )?;
+                } else {
+                    eprintln!("cqs: {msg}");
+                }
                 std::process::exit(1);
             }
         }

@@ -122,8 +122,16 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
 /// Uses a min-heap internally so the smallest score is always at the top,
 /// allowing O(log N) eviction when the heap is full. This bounds memory to
 /// O(limit) instead of O(total_chunks) for the scoring phase.
+///
+/// The heap key wraps the id in `Reverse` so that `peek()` returns the
+/// element that ranks worst under the final sort order (score desc, id asc):
+/// the smallest score, and among ties the *largest* id. That is the correct
+/// eviction candidate — replacing the largest-id-at-lowest-score entry with
+/// a smaller-id entry preserves the "smaller id wins among ties" invariant
+/// that callers rely on for determinism (e.g., `rrf_fuse` feeding from a
+/// process-seed-randomized HashMap).
 pub(crate) struct BoundedScoreHeap {
-    heap: BinaryHeap<Reverse<(OrderedFloat, String)>>,
+    heap: BinaryHeap<Reverse<(OrderedFloat, Reverse<String>)>>,
     capacity: usize,
 }
 
@@ -183,13 +191,24 @@ impl BoundedScoreHeap {
         }
     }
 
-    /// Push a scored result. If at capacity, evicts the lowest score.
+    /// Push a scored result. If at capacity, evicts the worst entry.
     ///
     /// Tie-breaking at the eviction boundary is deterministic on id
     /// (ascending) — when scores are equal, the smaller id wins. This keeps
     /// the final top-K set independent of insertion order, which matters for
     /// callers that feed results from a HashMap or other randomly-ordered
     /// source (e.g. `rrf_fuse`).
+    ///
+    /// Implementation: the heap key `Reverse<(score, Reverse<id>)>` causes
+    /// `peek()` to return the worst element under the final sort order
+    /// (smallest score, largest id at that score). The eviction check
+    /// `score > worst_score || (score == worst_score && id < worst_largest_id)`
+    /// then correctly replaces the largest-id-at-lowest-score entry with a
+    /// smaller-id incoming entry. Earlier versions wrapped only the score in
+    /// `Reverse`, so `peek()` returned the *best* boundary entry (smallest
+    /// id at lowest score) and the eviction inverted the intended invariant
+    /// — under reverse push order ("c", "b", "a") the surviving set was
+    /// {"c", "a"} instead of {"a", "b"}.
     pub fn push(&mut self, id: String, score: f32) {
         if !score.is_finite() {
             tracing::warn!(id = %id, score = ?score, "BoundedScoreHeap: ignoring non-finite score");
@@ -198,20 +217,21 @@ impl BoundedScoreHeap {
 
         // If below capacity, always insert
         if self.heap.len() < self.capacity {
-            self.heap.push(Reverse((OrderedFloat(score), id)));
+            self.heap.push(Reverse((OrderedFloat(score), Reverse(id))));
             return;
         }
 
-        // At capacity - evict current min if the incoming pair is a better
-        // (score, id) under the final sort order: score desc, id asc.
-        // Strict ">" on score keeps first-seen on pure score ties at the
-        // non-boundary cases; at the eviction boundary we additionally break
-        // score ties on id ascending so the surviving set is deterministic.
-        if let Some(Reverse((OrderedFloat(min_score), min_id))) = self.heap.peek() {
-            let better = score > *min_score || (score == *min_score && id < *min_id);
+        // At capacity - evict current worst if the incoming pair is better
+        // under the final sort order: score desc, id asc. The peeked element
+        // is `(min_score, max_id_at_min_score)`. Strict ">" on score keeps
+        // first-seen on pure score ties for non-boundary cases; at the
+        // eviction boundary we break score ties on id ascending so the
+        // surviving set is deterministic.
+        if let Some(Reverse((OrderedFloat(worst_score), Reverse(worst_id)))) = self.heap.peek() {
+            let better = score > *worst_score || (score == *worst_score && id < *worst_id);
             if better {
                 self.heap.pop();
-                self.heap.push(Reverse((OrderedFloat(score), id)));
+                self.heap.push(Reverse((OrderedFloat(score), Reverse(id))));
             }
         }
     }
@@ -226,7 +246,7 @@ impl BoundedScoreHeap {
         let mut results: Vec<_> = self
             .heap
             .into_iter()
-            .map(|Reverse((OrderedFloat(score), id))| (id, score))
+            .map(|Reverse((OrderedFloat(score), Reverse(id)))| (id, score))
             .collect();
         results.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         results
@@ -354,6 +374,40 @@ mod tests {
         let heap = BoundedScoreHeap::new(5);
         let results = heap.into_sorted_vec();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn bounded_heap_deterministic_under_reverse_push_order() {
+        // Reverse insertion order ("c", "b", "a") with capacity 2: at the
+        // eviction boundary "a" must displace "c" so the surviving set is
+        // {"a", "b"} — the smallest-id-wins-among-ties invariant. Earlier
+        // versions of `push` peeked the *best* boundary entry and ended up
+        // with {"c", "a"} instead.
+        let mut heap = BoundedScoreHeap::new(2);
+        heap.push("c".to_string(), 0.5);
+        heap.push("b".to_string(), 0.5);
+        heap.push("a".to_string(), 0.5);
+        let top = heap.into_sorted_vec();
+        let names: Vec<_> = top.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["a", "b"],
+            "expected smallest-id wins among ties"
+        );
+    }
+
+    #[test]
+    fn bounded_heap_deterministic_under_forward_push_order() {
+        // Forward insertion order ("a", "b", "c") with capacity 2: "a" and
+        // "b" are inserted under capacity, then "c" is rejected because
+        // ("c" is not less than the worst tied id "b").
+        let mut heap = BoundedScoreHeap::new(2);
+        heap.push("a".to_string(), 0.5);
+        heap.push("b".to_string(), 0.5);
+        heap.push("c".to_string(), 0.5);
+        let top = heap.into_sorted_vec();
+        let names: Vec<_> = top.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(names, vec!["a", "b"]);
     }
 
     // ===== parent_boost tests =====

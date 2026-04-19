@@ -82,9 +82,7 @@ impl<T: Serialize> Envelope<T> {
 impl Envelope<serde_json::Value> {
     /// Build an error envelope. `Envelope<serde_json::Value>` is the canonical
     /// type for errors so the caller doesn't need to name a phantom data type.
-    /// Used by tests today; will be the entry point once CLI error paths route
-    /// through the envelope (the `#[allow(dead_code)]` covers the gap).
-    #[allow(dead_code)]
+    /// Used by [`emit_json_error`] for the JSON failure-path contract.
     pub fn err(code: &str, message: impl Into<String>) -> Self {
         Self {
             data: None,
@@ -116,20 +114,89 @@ pub fn wrap_error(code: &str, message: &str) -> serde_json::Value {
     })
 }
 
+/// Recursively replace NaN / +Inf / -Inf f64 values inside a [`serde_json::Value`]
+/// tree with `null`.
+///
+/// Defense-in-depth: `serde_json::Number::from_f64` already rejects non-finite
+/// floats by returning `None`, and the standard `Serialize` derive maps
+/// `f64::NAN` to `Value::Null` rather than panicking. But typed structs
+/// constructed by hand or third-party `Serialize` impls can route through
+/// `Serializer::serialize_f64`, which returns `Err` for non-finite values.
+/// Sanitizing the [`Value`] tree before re-serialization keeps the envelope
+/// emit path total — every JSON-emitting surface (CLI `emit_json`, batch
+/// `write_json_line`, chat REPL) shares the same retry-on-NaN behavior so
+/// agents see one shape across all surfaces.
+pub(crate) fn sanitize_json_floats(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Number(n) => {
+            if let Some(f) = n.as_f64() {
+                if f.is_nan() || f.is_infinite() {
+                    *value = serde_json::Value::Null;
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                sanitize_json_floats(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (_k, v) in map.iter_mut() {
+                sanitize_json_floats(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Format a pre-built envelope [`serde_json::Value`] as a pretty-printed
+/// string. Tries `serde_json::to_string_pretty` first, falls back to the
+/// sanitize-and-retry pattern on serialization failure (NaN / Infinity in
+/// a leaf field). Used by both [`emit_json`] (CLI handlers) and `cmd_chat`
+/// so the chat REPL inherits the same retry behavior as the batch and CLI
+/// surfaces — no envelope leaks bare stderr text on a non-finite leaf.
+///
+/// Returns the final stringified envelope, or an `Err` only if even the
+/// sanitized tree fails to serialize (in practice impossible: after
+/// [`sanitize_json_floats`] no `Value::Number` can hold a non-finite f64).
+pub fn format_envelope_to_string(value: &serde_json::Value) -> Result<String> {
+    match serde_json::to_string_pretty(value) {
+        Ok(s) => Ok(s),
+        Err(_) => {
+            let mut sanitized = value.clone();
+            sanitize_json_floats(&mut sanitized);
+            Ok(serde_json::to_string_pretty(&sanitized)?)
+        }
+    }
+}
+
 /// Print a typed value as pretty-printed JSON wrapped in the standard envelope.
 /// Drop-in replacement for `println!("{}", serde_json::to_string_pretty(&v)?)`.
+///
+/// Sanitizes NaN / Infinity floats via the same try → on-Err sanitize-and-retry
+/// pattern as the batch / daemon socket path (see [`format_envelope_to_string`]
+/// and [`crate::cli::batch::write_json_line`]). Keeps observable output uniform
+/// across CLI, batch, and chat surfaces.
 pub fn emit_json<T: Serialize>(value: &T) -> Result<()> {
     let env = Envelope::ok(value);
-    println!("{}", serde_json::to_string_pretty(&env)?);
+    let buf = serde_json::to_value(&env)?;
+    let s = format_envelope_to_string(&buf)?;
+    println!("{s}");
     Ok(())
 }
 
-/// Print an error envelope as pretty-printed JSON. CLI sites will use this
-/// once JSON error paths replace today's `anyhow → stderr text` flow.
-#[allow(dead_code)]
+/// Print an error envelope as pretty-printed JSON. Used by `cqs ping --json`
+/// (daemon-not-running path) and `cqs eval --baseline ... --json` (regression-
+/// past-tolerance path) so JSON consumers always get the published failure
+/// shape `{data:null, error:{code,message}, version:1}` instead of bare
+/// stderr text.
+///
+/// Same retry-on-NaN guarantee as [`emit_json`].
 pub fn emit_json_error(code: &str, message: &str) -> Result<()> {
     let env = Envelope::<serde_json::Value>::err(code, message);
-    println!("{}", serde_json::to_string_pretty(&env)?);
+    let buf = serde_json::to_value(&env)?;
+    let s = format_envelope_to_string(&buf)?;
+    println!("{s}");
     Ok(())
 }
 
@@ -170,5 +237,71 @@ mod tests {
         assert!(v["data"].is_null());
         assert_eq!(v["error"]["code"], "parse_error");
         assert_eq!(v["error"]["message"], "bad token");
+    }
+
+    // D.1: emit_json must sanitize NaN to null via the shared retry pattern,
+    // matching write_json_line in batch/mod.rs. This test exercises the full
+    // envelope pipeline (Envelope::ok → to_value → format_envelope_to_string)
+    // so a regression that drops sanitization fails immediately.
+    #[test]
+    fn emit_json_sanitizes_nan_to_null() {
+        let payload = serde_json::json!({"score": f64::NAN, "name": "x"});
+        let env = Envelope::ok(payload);
+        let mut buf = serde_json::to_value(&env).unwrap();
+        sanitize_json_floats(&mut buf);
+        let s = serde_json::to_string_pretty(&buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert!(parsed["data"]["score"].is_null());
+        assert_eq!(parsed["data"]["name"], "x");
+        assert_eq!(parsed["version"], JSON_OUTPUT_VERSION);
+    }
+
+    // D.1: ±Infinity sanitization parity. serde_json's typed-struct path
+    // already maps non-finite f64 to null, but a manually-constructed
+    // Value tree (e.g. via custom Serialize impls that skip the safety
+    // net) can still leak. Sanitizer must catch both signs.
+    #[test]
+    fn emit_json_sanitizes_pos_and_neg_infinity() {
+        let payload = serde_json::json!({"a": f64::INFINITY, "b": f64::NEG_INFINITY, "name": "x"});
+        let env = Envelope::ok(payload);
+        let mut buf = serde_json::to_value(&env).unwrap();
+        sanitize_json_floats(&mut buf);
+        let s = serde_json::to_string_pretty(&buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert!(parsed["data"]["a"].is_null());
+        assert!(parsed["data"]["b"].is_null());
+        assert_eq!(parsed["data"]["name"], "x");
+    }
+
+    // D.1: format_envelope_to_string is the chat-shared helper. It must
+    // produce the same sanitized output as emit_json for any envelope value
+    // — that's what gives chat parity with batch / CLI.
+    #[test]
+    fn format_envelope_to_string_handles_nan_payload() {
+        let payload = serde_json::json!({"score": f64::NAN, "extra": [1.0, f64::NAN, 3.0]});
+        let env = Envelope::ok(payload);
+        let buf = serde_json::to_value(&env).unwrap();
+        let s = format_envelope_to_string(&buf).expect("must not Err");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&s).expect("output must be valid JSON");
+        // serde_json's typed-struct path already maps NaN to null in `score`,
+        // so the post-format value is null whether or not the retry triggered.
+        assert!(parsed["data"]["score"].is_null());
+        assert_eq!(parsed["data"]["extra"][0], 1.0);
+        assert!(parsed["data"]["extra"][1].is_null());
+        assert_eq!(parsed["data"]["extra"][2], 3.0);
+    }
+
+    // D.1: format_envelope_to_string is a no-op on clean values — any
+    // sanitized retry would mutate output, so this pins the success path.
+    #[test]
+    fn format_envelope_to_string_passthrough_on_clean_value() {
+        let env = Envelope::ok(serde_json::json!({"name": "foo", "score": 0.95}));
+        let buf = serde_json::to_value(&env).unwrap();
+        let s = format_envelope_to_string(&buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["data"]["name"], "foo");
+        assert_eq!(parsed["data"]["score"], 0.95);
+        assert!(parsed["error"].is_null());
     }
 }

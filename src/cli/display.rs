@@ -22,9 +22,14 @@ pub fn read_context_lines(
     // Path traversal guard: reject absolute paths and `..` traversal that could
     // escape the project root via tampered DB paths. (RT-FS-1/RT-FS-2/SEC-12)
     //
-    // DB stores relative paths; absolute paths indicate injection.
+    // DB stores relative paths; absolute paths indicate injection. The byte-
+    // index check missed Windows UNC (`\\server\share`) and extended-length
+    // (`\\?\C:\...`) paths — a tampered DB could trigger an SMB connection
+    // and leak NTLM hashes via SMB relay. `Path::is_absolute` correctly
+    // recognizes drive-letter (and some UNC) on Windows; the explicit
+    // starts_with checks catch UNC consistently across platforms.
     let path_str = file.to_string_lossy();
-    if path_str.starts_with('/') || (path_str.len() >= 2 && path_str.as_bytes()[1] == b':') {
+    if file.is_absolute() || path_str.starts_with("\\\\") || path_str.starts_with("//") {
         anyhow::bail!("Absolute path blocked: {}", file.display());
     }
     if path_str.contains("..") {
@@ -593,6 +598,38 @@ mod tests {
         assert!(
             err.contains("Absolute path blocked"),
             "Expected absolute path error, got: {err}"
+        );
+    }
+
+    /// C.3 / SEC: tampered DB row could carry a Windows UNC path
+    /// (`\\server\share\loot`). On Windows that triggers an SMB mount and
+    /// can leak NTLM hashes via SMB relay. The byte-2 drive-letter check
+    /// missed UNC entirely; the new guard rejects via either
+    /// `Path::is_absolute()` or a literal `\\` / `//` prefix.
+    #[test]
+    fn read_context_lines_rejects_unc_paths() {
+        let p = Path::new("\\\\evil-server\\share\\loot");
+        let result = read_context_lines(p, 1, 1, 0);
+        assert!(result.is_err(), "UNC path must be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Absolute path blocked"),
+            "Expected absolute-path block, got: {err}"
+        );
+    }
+
+    /// C.3 / SEC: extended-length / device-namespace paths
+    /// (`\\?\C:\loot`, `\\.\PIPE\foo`) bypass MAX_PATH and reach Win32
+    /// directly. Same guard family — must also be blocked.
+    #[test]
+    fn read_context_lines_rejects_extended_length_path() {
+        let p = Path::new("\\\\?\\C:\\loot");
+        let result = read_context_lines(p, 1, 1, 0);
+        assert!(result.is_err(), "Extended-length path must be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Absolute path blocked"),
+            "Expected absolute-path block, got: {err}"
         );
     }
 

@@ -473,15 +473,26 @@ impl BatchContext {
             Ok(t) => t,
             Err(e) => {
                 self.error_count.fetch_add(1, Ordering::Relaxed);
-                let _ = write_envelope_error(
-                    out,
-                    error_codes::PARSE_ERROR,
-                    &format!("Parse error: {e}"),
-                );
+                let msg = format!("Parse error: {e}");
+                tracing::warn!(code = error_codes::PARSE_ERROR, error = %msg, "Batch dispatch_line: tokenization failed");
+                let _ = write_envelope_error(out, error_codes::PARSE_ERROR, &msg);
                 return;
             }
         };
         if tokens.is_empty() {
+            return;
+        }
+        // D.2: NUL byte check parity with the daemon socket loop in cmd_batch.
+        // Both surfaces share downstream handlers; they must share input
+        // validation too. RT-INJ-2.
+        if let Err(msg) = reject_null_tokens(&tokens) {
+            self.error_count.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                code = error_codes::INVALID_INPUT,
+                error = msg,
+                "Batch dispatch_line: NUL byte in tokens"
+            );
+            let _ = write_envelope_error(out, error_codes::INVALID_INPUT, msg);
             return;
         }
         self.check_idle_timeout();
@@ -499,12 +510,16 @@ impl BatchContext {
                     // EH-12: use anyhow chain formatter (`:#`) so the real
                     // root cause (e.g. CUDA OOM) surfaces to daemon clients
                     // instead of the flattened top-level "embedding failed".
-                    let _ = write_envelope_error(out, error_codes::INTERNAL, &format!("{e:#}"));
+                    let msg = format!("{e:#}");
+                    tracing::warn!(code = error_codes::INTERNAL, error = %msg, "Batch dispatch_line: command execution failed");
+                    let _ = write_envelope_error(out, error_codes::INTERNAL, &msg);
                 }
             },
             Err(e) => {
                 self.error_count.fetch_add(1, Ordering::Relaxed);
-                let _ = write_envelope_error(out, error_codes::PARSE_ERROR, &format!("{e:#}"));
+                let msg = format!("{e:#}");
+                tracing::warn!(code = error_codes::PARSE_ERROR, error = %msg, "Batch dispatch_line: clap parse failed");
+                let _ = write_envelope_error(out, error_codes::PARSE_ERROR, &msg);
             }
         }
     }
@@ -1025,30 +1040,10 @@ pub(crate) fn evict_global_embedding_cache_with_runtime(
 
 // ─── JSON serialization helpers ──────────────────────────────────────────────
 
-/// Recursively replace NaN/Infinity f64 values with null in a serde_json::Value.
-/// serde_json::to_string panics on NaN — this prevents that.
-fn sanitize_json_floats(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Number(n) => {
-            if let Some(f) = n.as_f64() {
-                if f.is_nan() || f.is_infinite() {
-                    *value = serde_json::Value::Null;
-                }
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            for item in arr {
-                sanitize_json_floats(item);
-            }
-        }
-        serde_json::Value::Object(map) => {
-            for (_k, v) in map.iter_mut() {
-                sanitize_json_floats(v);
-            }
-        }
-        _ => {}
-    }
-}
+// `sanitize_json_floats` lives in `crate::cli::json_envelope` so all
+// JSON-emitting surfaces (CLI `emit_json`, batch `write_json_line`, chat REPL)
+// share one definition and one retry pattern. D.1 audit fix.
+use crate::cli::json_envelope::sanitize_json_floats;
 
 /// Wrap a payload in the standard envelope and serialize to a JSONL record on
 /// stdout. Sanitizes NaN/Infinity before serialization to prevent serde_json
@@ -1066,7 +1061,11 @@ fn write_json_line(
     match serde_json::to_string(&wrapped) {
         Ok(s) => writeln!(out, "{}", s),
         Err(_) => {
-            // NaN/Infinity in the value — sanitize and retry
+            // NaN/Infinity in the value — sanitize and retry. Mirrors the
+            // try → on-Err sanitize → on-Err envelope-error pattern that
+            // `crate::cli::json_envelope::format_envelope_to_string` uses
+            // for the CLI / chat surfaces. The shared `sanitize_json_floats`
+            // keeps both behaviors in lock-step.
             let mut sanitized = wrapped.clone();
             sanitize_json_floats(&mut sanitized);
             match serde_json::to_string(&sanitized) {
@@ -1101,6 +1100,23 @@ fn write_envelope_error(
             out,
             r#"{{"data":null,"error":{{"code":"internal","message":"JSON serialization failed"}},"version":1}}"#
         ),
+    }
+}
+
+/// RT-INJ-2: Reject token sequences containing NUL bytes. Returns the
+/// canonical error string (caller passes to [`write_envelope_error`] with
+/// `error_codes::INVALID_INPUT`) on rejection, `Ok(())` otherwise.
+///
+/// D.2 audit fix: the daemon socket loop (`cmd_batch` stdin path at
+/// `cmd_batch`) and the daemon socket handler (`BatchContext::dispatch_line`)
+/// share the same downstream handlers but had divergent input validation —
+/// the CLI dispatch_line path missed the NUL check. Centralizing here
+/// keeps both call sites in lock-step on the rejection contract.
+fn reject_null_tokens(tokens: &[String]) -> Result<(), &'static str> {
+    if tokens.iter().any(|t| t.contains('\0')) {
+        Err("Input contains null bytes")
+    } else {
+        Ok(())
     }
 }
 
@@ -1308,10 +1324,16 @@ pub(crate) fn cmd_batch() -> Result<()> {
             Ok(t) => t,
             Err(e) => {
                 ctx.error_count.fetch_add(1, Ordering::Relaxed);
+                let msg = format!("Parse error: {}", e);
+                tracing::warn!(
+                    code = crate::cli::json_envelope::error_codes::PARSE_ERROR,
+                    error = %msg,
+                    "Batch cmd_batch: tokenization failed"
+                );
                 if write_envelope_error(
                     &mut stdout,
                     crate::cli::json_envelope::error_codes::PARSE_ERROR,
-                    &format!("Parse error: {}", e),
+                    &msg,
                 )
                 .is_err()
                 {
@@ -1326,14 +1348,21 @@ pub(crate) fn cmd_batch() -> Result<()> {
             continue;
         }
 
-        // RT-INJ-2: Reject tokens containing null bytes — they can bypass
-        // string processing in downstream consumers.
-        if tokens.iter().any(|t| t.contains('\0')) {
+        // D.2: NUL byte rejection via shared helper. Both this stdin loop
+        // and `BatchContext::dispatch_line` (daemon socket handler) share
+        // the same downstream commands and must share the same input
+        // validation. RT-INJ-2.
+        if let Err(msg) = reject_null_tokens(&tokens) {
             ctx.error_count.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                code = crate::cli::json_envelope::error_codes::INVALID_INPUT,
+                error = msg,
+                "Batch cmd_batch: NUL byte in tokens"
+            );
             if write_envelope_error(
                 &mut stdout,
                 crate::cli::json_envelope::error_codes::INVALID_INPUT,
-                "Input contains null bytes",
+                msg,
             )
             .is_err()
             {
@@ -1355,6 +1384,11 @@ pub(crate) fn cmd_batch() -> Result<()> {
                 }
                 Err(pe) => {
                     ctx.error_count.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        code = pe.code,
+                        error = %pe.message,
+                        "Batch cmd_batch: pipeline failed"
+                    );
                     if write_envelope_error(&mut stdout, pe.code, &pe.message).is_err() {
                         break;
                     }
@@ -1374,10 +1408,16 @@ pub(crate) fn cmd_batch() -> Result<()> {
                         // EH-12: `:#` preserves anyhow's context chain so the
                         // root cause (e.g. CUDA OOM) reaches the caller
                         // instead of being flattened to a single message.
+                        let msg = format!("{e:#}");
+                        tracing::warn!(
+                            code = crate::cli::json_envelope::error_codes::INTERNAL,
+                            error = %msg,
+                            "Batch cmd_batch: command execution failed"
+                        );
                         if write_envelope_error(
                             &mut stdout,
                             crate::cli::json_envelope::error_codes::INTERNAL,
-                            &format!("{e:#}"),
+                            &msg,
                         )
                         .is_err()
                         {
@@ -1387,10 +1427,16 @@ pub(crate) fn cmd_batch() -> Result<()> {
                 },
                 Err(e) => {
                     ctx.error_count.fetch_add(1, Ordering::Relaxed);
+                    let msg = format!("{e:#}");
+                    tracing::warn!(
+                        code = crate::cli::json_envelope::error_codes::PARSE_ERROR,
+                        error = %msg,
+                        "Batch cmd_batch: clap parse failed"
+                    );
                     if write_envelope_error(
                         &mut stdout,
                         crate::cli::json_envelope::error_codes::PARSE_ERROR,
-                        &format!("{e:#}"),
+                        &msg,
                     )
                     .is_err()
                     {
@@ -1782,5 +1828,70 @@ mod tests {
             "NaN should be sanitized to null"
         );
         assert_eq!(parsed["data"]["name"], "bar");
+    }
+
+    // D.2: reject_null_tokens helper unit test. Pure function, no fixture
+    // needed. Pins the contract both call sites depend on.
+    #[test]
+    fn test_reject_null_tokens_accepts_clean_input() {
+        let tokens = vec!["search".to_string(), "foo".to_string(), "bar".to_string()];
+        assert!(reject_null_tokens(&tokens).is_ok());
+    }
+
+    #[test]
+    fn test_reject_null_tokens_rejects_nul_in_any_token() {
+        // NUL embedded mid-token (the RT-INJ-2 attack shape — splits a string
+        // arg downstream consumers might C-truncate).
+        let tokens = vec!["search".to_string(), "foo\0bar".to_string()];
+        assert_eq!(
+            reject_null_tokens(&tokens),
+            Err("Input contains null bytes")
+        );
+    }
+
+    #[test]
+    fn test_reject_null_tokens_rejects_nul_at_start() {
+        let tokens = vec!["\0".to_string()];
+        assert!(reject_null_tokens(&tokens).is_err());
+    }
+
+    // D.2: dispatch_line (daemon socket path) must reject NUL-byte tokens
+    // with the same envelope error code (`invalid_input`) as the cmd_batch
+    // stdin loop. Previously dispatch_line skipped this check entirely —
+    // the daemon socket handler would forward NUL-tainted tokens to
+    // commands::dispatch downstream.
+    #[test]
+    fn test_dispatch_line_rejects_null_byte_tokens() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        let mut sink = Vec::new();
+        // shell_words::split keeps NUL bytes inside double-quoted args, so
+        // this exercises the post-tokenization validation path.
+        ctx.dispatch_line("search \"foo\0bar\"", &mut sink);
+
+        let output = String::from_utf8(sink).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(output.trim()).expect("envelope JSON");
+        assert!(
+            parsed["data"].is_null(),
+            "expected error envelope, got {output}"
+        );
+        assert_eq!(
+            parsed["error"]["code"],
+            crate::cli::json_envelope::error_codes::INVALID_INPUT
+        );
+        assert_eq!(parsed["error"]["message"], "Input contains null bytes");
+        // error_count must bump so `cqs ping` reflects the rejection.
+        assert!(
+            ctx.error_count.load(Ordering::Relaxed) >= 1,
+            "NUL rejection must bump error_count"
+        );
+        // query_count must NOT bump — early-return before the increment, so
+        // ping's total_queries stays accurate. Mirrors the empty-tokens path.
+        assert_eq!(
+            ctx.query_count.load(Ordering::Relaxed),
+            0,
+            "NUL rejection happens before query_count bump"
+        );
     }
 }

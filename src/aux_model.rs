@@ -109,13 +109,20 @@ fn expand_tilde(raw: &str) -> PathBuf {
 
 /// Decide whether a user-supplied string looks like a filesystem path.
 ///
-/// Paths start with `/` (absolute Unix) or `~/` (home-relative). Everything
-/// else is treated as an HF repo id of the form `org/model`. Deliberately
-/// conservative — we don't want to misinterpret `./relative/path` as a
-/// repo id, but we also don't want to guess about bare `foo/bar` which is
-/// a valid repo id.
+/// Paths start with `/` (absolute Unix), `~/` (home-relative), `\\` (UNC
+/// share, e.g. `\\server\share\splade`), or any path that
+/// [`Path::is_absolute`] recognizes (covers Windows drive-letter paths
+/// like `C:\Models\splade` on Windows builds). Everything else is treated
+/// as an HF repo id of the form `org/model`.
+///
+/// Deliberately conservative — we don't want to misinterpret
+/// `./relative/path` as a repo id, but we also don't want to guess about
+/// bare `foo/bar` which is a valid repo id.
 fn is_path_like(raw: &str) -> bool {
-    raw.starts_with('/') || raw.starts_with("~/")
+    raw.starts_with('/')
+        || raw.starts_with("~/")
+        || raw.starts_with("\\\\")
+        || std::path::Path::new(raw).is_absolute()
 }
 
 /// Build an [`AuxModelConfig`] from a concrete directory, using the
@@ -724,6 +731,42 @@ mod tests {
         assert!(is_path_like("~/home"));
         assert!(!is_path_like("org/model"));
         assert!(!is_path_like("ms-marco-minilm"));
+    }
+
+    /// BUG-D.7: Windows users couldn't pass `--reranker-model C:\Models\splade`
+    /// — the string was treated as an HF repo id and shipped to Hub fetcher.
+    /// `Path::is_absolute()` recognizes drive-letter paths on Windows builds.
+    #[test]
+    #[cfg(windows)]
+    fn is_path_like_accepts_windows_drive_letter() {
+        assert!(is_path_like("C:\\Models\\splade"));
+        assert!(is_path_like("D:/foo/bar"));
+    }
+
+    /// BUG-D.7: UNC paths (`\\server\share\splade`) must also route through
+    /// the local-path branch, not the HF Hub fetch path. The leading `\\\\`
+    /// check works on every platform — `Path::is_absolute()` agrees on
+    /// Windows; on Unix the explicit prefix check covers it.
+    #[test]
+    fn is_path_like_accepts_unc_paths() {
+        assert!(is_path_like("\\\\server\\share\\splade"));
+    }
+
+    /// Regression: the existing unix-absolute and tilde behavior must not
+    /// regress when the new Windows branches were added.
+    #[test]
+    fn is_path_like_still_accepts_unix_absolute_and_tilde() {
+        assert!(is_path_like("/usr/local/models/splade"));
+        assert!(is_path_like("~/models/splade"));
+    }
+
+    /// Negative: bare HF repo ids like `org/model` must still be rejected
+    /// by the path-like discriminator so the reranker resolver routes them
+    /// to the Hub fetcher.
+    #[test]
+    fn is_path_like_rejects_repo_id() {
+        assert!(!is_path_like("mixedbread-ai/mxbai-edge-colbert-v0-32m"));
+        assert!(!is_path_like("naver/splade-cocondenser-ensembledistil"));
     }
 
     #[test]

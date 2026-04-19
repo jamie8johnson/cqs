@@ -5,6 +5,8 @@ use clap::Subcommand;
 
 use cqs::cache::EmbeddingCache;
 
+use crate::cli::Cli;
+
 #[derive(Subcommand, Clone, Debug)]
 pub(crate) enum CacheCommand {
     /// Show cache statistics (entries, size, models)
@@ -32,17 +34,22 @@ pub(crate) enum CacheCommand {
     },
 }
 
-pub(crate) fn cmd_cache(subcmd: &CacheCommand) -> Result<()> {
+pub(crate) fn cmd_cache(cli: &Cli, subcmd: &CacheCommand) -> Result<()> {
     let _span = tracing::info_span!("cmd_cache").entered();
 
     let cache_path = EmbeddingCache::default_path();
     let cache = EmbeddingCache::open(&cache_path)
         .with_context(|| format!("Failed to open embedding cache at {}", cache_path.display()))?;
 
+    // Top-level `--json` always wins (mirrors `cmd_model` at
+    // `src/cli/commands/infra/model.rs:113`). `cqs --json cache stats` must
+    // emit envelope JSON even without `--json` after the subcommand.
     match subcmd {
-        CacheCommand::Stats { json } => cache_stats(&cache, &cache_path, *json),
-        CacheCommand::Clear { model, json } => cache_clear(&cache, model.as_deref(), *json),
-        CacheCommand::Prune { days, json } => cache_prune(&cache, *days, *json),
+        CacheCommand::Stats { json } => cache_stats(&cache, &cache_path, cli.json || *json),
+        CacheCommand::Clear { model, json } => {
+            cache_clear(&cache, model.as_deref(), cli.json || *json)
+        }
+        CacheCommand::Prune { days, json } => cache_prune(&cache, *days, cli.json || *json),
     }
 }
 
@@ -51,10 +58,13 @@ fn cache_stats(cache: &EmbeddingCache, cache_path: &std::path::Path, json: bool)
     let stats = cache.stats().context("Failed to get cache stats")?;
 
     if json {
+        // P1 #11: `total_size_mb` is a numeric field so consumers can do
+        // arithmetic on it (e.g., `obj["total_size_mb"] + 1`). Earlier
+        // `format!("{:.1}", ...)` made it a string and broke programmatic use.
         let obj = serde_json::json!({
             "total_entries": stats.total_entries,
             "total_size_bytes": stats.total_size_bytes,
-            "total_size_mb": format!("{:.1}", stats.total_size_bytes as f64 / 1_048_576.0),
+            "total_size_mb": stats.total_size_bytes as f64 / 1_048_576.0,
             "unique_models": stats.unique_models,
             "oldest_timestamp": stats.oldest_timestamp,
             "newest_timestamp": stats.newest_timestamp,
