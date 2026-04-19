@@ -109,3 +109,35 @@ pub(crate) fn make_placeholders(n: usize) -> std::borrow::Cow<'static, str> {
         std::borrow::Cow::Owned(build_placeholders(n))
     }
 }
+
+/// Build a comma-separated list of numbered SQL placeholders starting at
+/// `start`: `"?{start},?{start+1},...,?{start+n-1}"`.
+///
+/// P3 #130: replaces the inline `(0..n).map(|i| format!("?{}", base + i + 1))
+/// .collect::<Vec<_>>().join(",")` pattern that allocated `n` `String`s plus
+/// an intermediate `Vec`. For `start = 1` this routes to the cached
+/// [`make_placeholders`] (zero allocation on cache hit).
+pub(crate) fn make_placeholders_offset(n: usize, start: usize) -> std::borrow::Cow<'static, str> {
+    assert!(
+        n <= 100_000,
+        "make_placeholders_offset called with unreasonable n={n}"
+    );
+    if start == 1 {
+        return make_placeholders(n);
+    }
+    if n == 0 {
+        return std::borrow::Cow::Borrowed("");
+    }
+    // Offset variants are not cached — a `(n, start)` keyed cache would
+    // explode for large filter chains. Build once on demand without the
+    // intermediate `Vec<String>` the inline pattern allocated.
+    let mut s = String::with_capacity(n * 5);
+    use std::fmt::Write;
+    for i in 0..n {
+        if i > 0 {
+            s.push(',');
+        }
+        let _ = write!(&mut s, "?{}", start + i);
+    }
+    std::borrow::Cow::Owned(s)
+}

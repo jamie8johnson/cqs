@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::store::helpers::sql::{busy_timeout_from_env, max_rows_per_statement};
+use crate::store::helpers::sql::{
+    busy_timeout_from_env, make_placeholders_offset, max_rows_per_statement,
+};
 
 #[derive(Error, Debug)]
 pub enum CacheError {
@@ -195,12 +197,12 @@ impl EmbeddingCache {
             // added to in the future. Cache hit lookups for a 50k-chunk index
             // now fire 2-3 SELECTs instead of 500.
             for batch in content_hashes.chunks(max_rows_per_statement(2)) {
-                let placeholders: Vec<String> =
-                    (0..batch.len()).map(|i| format!("?{}", i + 2)).collect();
+                // P3 #130: cached helper. `?1` is `model_fingerprint`, the IN
+                // clause starts at `?2`.
+                let placeholders = make_placeholders_offset(batch.len(), 2);
                 let sql = format!(
                     "SELECT content_hash, embedding, dim FROM embedding_cache \
-                     WHERE model_fingerprint = ?1 AND content_hash IN ({})",
-                    placeholders.join(",")
+                     WHERE model_fingerprint = ?1 AND content_hash IN ({placeholders})"
                 );
 
                 let mut query = sqlx::query(&sql).bind(model_fingerprint);
@@ -252,11 +254,34 @@ impl EmbeddingCache {
         })
     }
 
-    /// Write a batch of embeddings to the cache.
-    /// Best-effort: returns the number written, errors are logged.
-    pub fn write_batch(
+    /// Write a batch of embeddings to the cache (owned variant).
+    ///
+    /// Convenience wrapper that calls [`write_batch`](Self::write_batch) with
+    /// borrowed slices. Used by tests; production paths should call
+    /// `write_batch` directly with `&str` / `&[f32]` to avoid the intermediate
+    /// `Vec<(String, Vec<f32>)>` allocation (P3 #127).
+    pub fn write_batch_owned(
         &self,
         entries: &[(String, Vec<f32>)],
+        model_fingerprint: &str,
+        dim: usize,
+    ) -> Result<usize, CacheError> {
+        let borrowed: Vec<(&str, &[f32])> = entries
+            .iter()
+            .map(|(h, e)| (h.as_str(), e.as_slice()))
+            .collect();
+        self.write_batch(&borrowed, model_fingerprint, dim)
+    }
+
+    /// Write a batch of embeddings to the cache.
+    /// Best-effort: returns the number written, errors are logged.
+    ///
+    /// P3 #127: signature accepts borrows (`&str`, `&[f32]`) so the GPU/CPU
+    /// embed paths don't need to clone every `content_hash` and embedding
+    /// vector into an intermediate `Vec<(String, Vec<f32>)>` per batch.
+    pub fn write_batch(
+        &self,
+        entries: &[(&str, &[f32])],
         model_fingerprint: &str,
         dim: usize,
     ) -> Result<usize, CacheError> {
@@ -281,7 +306,7 @@ impl EmbeddingCache {
             let mut written = 0usize;
             let mut blob = Vec::with_capacity(dim * 4); // PF-6: reuse scratch buffer
 
-            for (content_hash, embedding) in entries {
+            for &(content_hash, embedding) in entries {
                 if embedding.is_empty() {
                     continue;
                 }
@@ -297,7 +322,7 @@ impl EmbeddingCache {
                     continue;
                 }
 
-                // Encode Vec<f32> to blob (PF-6: reuse buffer)
+                // Encode &[f32] to blob (PF-6: reuse buffer)
                 blob.clear();
                 blob.extend(embedding.iter().flat_map(|f| f.to_le_bytes()));
 
@@ -531,7 +556,7 @@ mod tests {
         let (cache, _dir) = test_cache();
         let emb = make_embedding(1024, 1.0);
         let entries = vec![("hash_a".to_string(), emb.clone())];
-        cache.write_batch(&entries, "fp_1", 1024).unwrap();
+        cache.write_batch_owned(&entries, "fp_1", 1024).unwrap();
 
         let result = cache.read_batch(&["hash_a"], "fp_1", 1024).unwrap();
         assert_eq!(result.len(), 1);
@@ -553,7 +578,7 @@ mod tests {
         let entries: Vec<_> = (0..100)
             .map(|i| (format!("hash_{i}"), make_embedding(768, i as f32)))
             .collect();
-        let written = cache.write_batch(&entries, "fp_1", 768).unwrap();
+        let written = cache.write_batch_owned(&entries, "fp_1", 768).unwrap();
         assert_eq!(written, 100);
 
         let hashes: Vec<&str> = entries.iter().map(|(h, _)| h.as_str()).collect();
@@ -568,10 +593,10 @@ mod tests {
         let emb_b = make_embedding(1024, 2.0);
 
         cache
-            .write_batch(&[("hash_x".to_string(), emb_a.clone())], "fp_a", 1024)
+            .write_batch_owned(&[("hash_x".to_string(), emb_a.clone())], "fp_a", 1024)
             .unwrap();
         cache
-            .write_batch(&[("hash_x".to_string(), emb_b.clone())], "fp_b", 1024)
+            .write_batch_owned(&[("hash_x".to_string(), emb_b.clone())], "fp_b", 1024)
             .unwrap();
 
         let a = cache.read_batch(&["hash_x"], "fp_a", 1024).unwrap();
@@ -586,7 +611,7 @@ mod tests {
         let (cache, _dir) = test_cache();
         let emb = make_embedding(768, 1.0);
         cache
-            .write_batch(&[("hash_a".to_string(), emb)], "fp_1", 768)
+            .write_batch_owned(&[("hash_a".to_string(), emb)], "fp_1", 768)
             .unwrap();
 
         // Read with wrong expected dim — should miss
@@ -598,7 +623,7 @@ mod tests {
     fn test_zero_length_embedding() {
         let (cache, _dir) = test_cache();
         let entries = vec![("hash_a".to_string(), vec![])];
-        let written = cache.write_batch(&entries, "fp_1", 0).unwrap();
+        let written = cache.write_batch_owned(&entries, "fp_1", 0).unwrap();
         assert_eq!(written, 0); // empty embeddings skipped
     }
 
@@ -630,7 +655,7 @@ mod tests {
         let entries: Vec<_> = (0..10)
             .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
             .collect();
-        cache.write_batch(&entries, "fp_1", 128).unwrap();
+        cache.write_batch_owned(&entries, "fp_1", 128).unwrap();
 
         let deleted = cache.clear(None).unwrap();
         assert_eq!(deleted, 10);
@@ -643,10 +668,10 @@ mod tests {
     fn test_clear_by_model() {
         let (cache, _dir) = test_cache();
         cache
-            .write_batch(&[("h1".to_string(), make_embedding(128, 1.0))], "fp_a", 128)
+            .write_batch_owned(&[("h1".to_string(), make_embedding(128, 1.0))], "fp_a", 128)
             .unwrap();
         cache
-            .write_batch(&[("h2".to_string(), make_embedding(128, 2.0))], "fp_b", 128)
+            .write_batch_owned(&[("h2".to_string(), make_embedding(128, 2.0))], "fp_b", 128)
             .unwrap();
 
         cache.clear(Some("fp_a")).unwrap();
@@ -663,7 +688,7 @@ mod tests {
         let entries: Vec<_> = (0..5)
             .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
             .collect();
-        cache.write_batch(&entries, "fp_1", 128).unwrap();
+        cache.write_batch_owned(&entries, "fp_1", 128).unwrap();
 
         let stats = cache.stats().unwrap();
         assert_eq!(stats.total_entries, 5);
@@ -725,7 +750,7 @@ mod tests {
         let entries: Vec<_> = (0..10)
             .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
             .collect();
-        cache.write_batch(&entries, "fp_1", 128).unwrap();
+        cache.write_batch_owned(&entries, "fp_1", 128).unwrap();
 
         let evicted = cache.evict().unwrap();
         assert!(evicted > 0, "Should have evicted entries");
@@ -762,7 +787,7 @@ mod tests {
         let entries: Vec<_> = (0..150)
             .map(|i| (format!("hash_{i:04}"), make_embedding(768, i as f32)))
             .collect();
-        let written = cache.write_batch(&entries, "fp_cross", 768).unwrap();
+        let written = cache.write_batch_owned(&entries, "fp_cross", 768).unwrap();
         assert_eq!(written, 150);
 
         // Read all 150 back in one call
@@ -799,7 +824,7 @@ mod tests {
         let entries = vec![("hash_nan".to_string(), nan_emb)];
         // write_batch does not currently reject NaN — it round-trips through blob encoding.
         // This test documents the current behavior: NaN is stored and retrieved.
-        let written = cache.write_batch(&entries, "fp_nan", 128).unwrap();
+        let written = cache.write_batch_owned(&entries, "fp_nan", 128).unwrap();
         assert_eq!(written, 1);
 
         let result = cache.read_batch(&["hash_nan"], "fp_nan", 128).unwrap();
@@ -821,7 +846,7 @@ mod tests {
         let entries: Vec<_> = (0..5)
             .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
             .collect();
-        cache.write_batch(&entries, "fp_1", 128).unwrap();
+        cache.write_batch_owned(&entries, "fp_1", 128).unwrap();
 
         // Prune with 0 days — cutoff is "now - 0 seconds" = now.
         // Entries written in the same second should survive (created_at >= cutoff).
@@ -845,7 +870,7 @@ mod tests {
         let entries: Vec<_> = (0..3)
             .map(|i| (format!("h{i}"), make_embedding(128, i as f32)))
             .collect();
-        cache.write_batch(&entries, "fp_1", 128).unwrap();
+        cache.write_batch_owned(&entries, "fp_1", 128).unwrap();
 
         // Prune with u32::MAX days — should not panic (overflow-safe).
         // cutoff = now - (u32::MAX as i64 * 86400) will go deeply negative,
@@ -876,7 +901,7 @@ mod tests {
         ];
 
         // write_batch uses INSERT OR IGNORE — the second insert is silently dropped.
-        let written = cache.write_batch(&entries, "fp_dup", 128).unwrap();
+        let written = cache.write_batch_owned(&entries, "fp_dup", 128).unwrap();
         // Only 1 row should be written (second is ignored due to PK conflict)
         assert_eq!(
             written, 1,
@@ -922,7 +947,7 @@ mod tests {
         let entries: Vec<_> = (0..3)
             .map(|i| (format!("new_{i}"), make_embedding(128, i as f32)))
             .collect();
-        cache.write_batch(&entries, "fp_1", 128).unwrap();
+        cache.write_batch_owned(&entries, "fp_1", 128).unwrap();
 
         // Prune entries older than 1 day — should remove the 5 old ones
         let pruned = cache.prune_older_than(1).unwrap();
@@ -946,6 +971,10 @@ pub struct QueryCache {
     /// runtime across `Store`, `EmbeddingCache`, and `QueryCache`. When
     /// no runtime is supplied `open` constructs its own.
     rt: Arc<tokio::runtime::Runtime>,
+    /// P3 #124: max size cap. Honours `CQS_QUERY_CACHE_MAX_SIZE` (bytes,
+    /// default 100 MB). Read at `open` time and used by [`Self::evict`] —
+    /// no resize support, daemon restart picks up env changes.
+    max_size_bytes: u64,
 }
 
 impl QueryCache {
@@ -1048,8 +1077,91 @@ impl QueryCache {
             }
         }
 
-        tracing::debug!(path = %path.display(), "Query cache opened");
-        Ok(Self { pool, rt })
+        // P3 #124: surface cap from env, default 100 MB. Disk-only — no per-row
+        // accounting because the cache may persist across daemon restarts.
+        let max_size_bytes = std::env::var("CQS_QUERY_CACHE_MAX_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&n: &u64| n > 0)
+            .unwrap_or(100 * 1024 * 1024);
+
+        tracing::debug!(path = %path.display(), max_size_bytes, "Query cache opened");
+        Ok(Self {
+            pool,
+            rt,
+            max_size_bytes,
+        })
+    }
+
+    /// Evict the oldest entries until the cache fits within
+    /// `CQS_QUERY_CACHE_MAX_SIZE` (default 100 MB). Best-effort — sqlite
+    /// errors are logged and reported as `Ok(0)`.
+    ///
+    /// P3 #124: mirrors [`EmbeddingCache::evict`]. Run from the same daemon
+    /// periodic-eviction tick so disk usage stays bounded across long
+    /// sessions.
+    pub fn evict(&self) -> Result<usize, CacheError> {
+        let _span = tracing::info_span!("query_cache_evict").entered();
+
+        self.rt.block_on(async {
+            // Same logical-data measure as `EmbeddingCache::evict` (data + per-row
+            // overhead). Page-count would over-report after deletions because the
+            // SQLite file doesn't shrink without VACUUM.
+            let size: i64 = match sqlx::query_scalar(
+                "SELECT COALESCE(SUM(LENGTH(embedding)), 0) + COUNT(*) * 200 FROM query_cache",
+            )
+            .fetch_one(&self.pool)
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Query cache evict size query failed");
+                    return Ok(0);
+                }
+            };
+
+            if size <= 0 || (size as u64) <= self.max_size_bytes {
+                return Ok(0);
+            }
+
+            let excess = size as u64 - self.max_size_bytes;
+            let avg_entry: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(AVG(LENGTH(embedding) + 200), 4200) FROM query_cache",
+            )
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Query cache evict avg-entry query failed, using default");
+                4200
+            });
+            let entries_to_delete = (excess / avg_entry.max(1) as u64).max(1);
+
+            let result = sqlx::query(
+                "DELETE FROM query_cache WHERE rowid IN \
+                 (SELECT rowid FROM query_cache ORDER BY ts ASC LIMIT ?1)",
+            )
+            .bind(entries_to_delete as i64)
+            .execute(&self.pool)
+            .await?;
+
+            let evicted = result.rows_affected() as usize;
+            tracing::info!(evicted, "Query cache eviction complete");
+            Ok(evicted)
+        })
+    }
+
+    /// Logical size of the cache in bytes (sum of embedding blobs + row overhead).
+    /// Used by `cqs cache stats --json` to surface query-cache size alongside
+    /// the embedding cache (P3 #124).
+    pub fn size_bytes(&self) -> Result<u64, CacheError> {
+        self.rt.block_on(async {
+            let size: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(LENGTH(embedding)), 0) + COUNT(*) * 200 FROM query_cache",
+            )
+            .fetch_one(&self.pool)
+            .await?;
+            Ok(size.max(0) as u64)
+        })
     }
 
     /// Look up a cached query embedding.
@@ -1202,7 +1314,7 @@ mod shared_runtime_tests {
             EmbeddingCache::open_with_runtime(&emb_path, Some(Arc::clone(&shared_rt))).unwrap();
         // Round-trip one entry so the cache actually uses the runtime.
         let entries = vec![("h1".to_string(), vec![0.1_f32; 8])];
-        assert_eq!(emb_cache.write_batch(&entries, "fp", 8).unwrap(), 1);
+        assert_eq!(emb_cache.write_batch_owned(&entries, "fp", 8).unwrap(), 1);
         let got = emb_cache.read_batch(&["h1"], "fp", 8).unwrap();
         assert_eq!(got.len(), 1);
 

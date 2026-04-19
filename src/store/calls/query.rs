@@ -69,8 +69,9 @@ impl<Mode> Store<Mode> {
     }
 
     /// Load the call graph as forward + reverse adjacency lists.
-    /// Single SQL scan of `function_calls`, capped at 500K edges to prevent OOM
-    /// on adversarial databases. Typical projects have ~2000 edges.
+    /// Single SQL scan of `function_calls`, capped at 500K edges (override via
+    /// `CQS_CALL_GRAPH_MAX_EDGES`) to prevent OOM on adversarial databases.
+    /// Typical projects have ~2000 edges.
     /// Used by trace (forward BFS), impact (reverse BFS), and test-map (reverse BFS).
     /// Cached call graph — populated on first access, returns clone from OnceLock.
     /// **No invalidation by design.** The cache lives for the `Store` lifetime and is
@@ -84,20 +85,23 @@ impl<Mode> Store<Mode> {
         }
         let _span = tracing::info_span!("get_call_graph").entered();
         let graph = self.rt.block_on(async {
-            const MAX_CALL_GRAPH_EDGES: i64 = 500_000;
+            // P3 #103: cap is env-overridable via CQS_CALL_GRAPH_MAX_EDGES
+            // so monorepos above 500K edges can lift the ceiling.
+            let max_edges = crate::limits::call_graph_max_edges() as i64;
             let rows: Vec<(String, String)> = sqlx::query_as(
                 "SELECT DISTINCT caller_name, callee_name FROM function_calls LIMIT ?1",
             )
-            .bind(MAX_CALL_GRAPH_EDGES)
+            .bind(max_edges)
             .fetch_all(&self.pool)
             .await?;
 
             let edge_count = rows.len();
-            if edge_count as i64 >= MAX_CALL_GRAPH_EDGES {
+            if edge_count as i64 >= max_edges {
                 tracing::warn!(
-                    limit = MAX_CALL_GRAPH_EDGES,
-                    "Call graph truncated at {} edges — analysis may be incomplete",
-                    MAX_CALL_GRAPH_EDGES
+                    limit = max_edges,
+                    "Call graph truncated at {} edges — analysis may be incomplete; \
+                     bump CQS_CALL_GRAPH_MAX_EDGES if your corpus is legitimately larger",
+                    max_edges
                 );
             } else {
                 tracing::info!(edges = edge_count, "Call graph loaded");

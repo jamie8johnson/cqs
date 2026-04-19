@@ -100,12 +100,22 @@ fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> u
     // Notes are always included (small, high value)
     used += review.relevant_notes.len() * tokens_per_note;
 
-    // Fit callers within remaining budget (prioritize callers over tests)
+    // Fit callers within remaining budget (prioritize callers over tests).
+    //
+    // P3 #121: gate the `.max(1)` floor on a positive budget so a true-zero
+    // budget produces zero callers/tests. Previously the floor always added
+    // at least one item, overshooting tight budgets by ~50 tokens with no
+    // way for the caller to shrink to nothing.
     let callers_budget = (budget.saturating_sub(used)) * 2 / 3; // 2/3 of remaining for callers
     let max_callers = callers_budget / tokens_per_caller;
     let original_callers = review.affected_callers.len();
     if review.affected_callers.len() > max_callers {
-        review.affected_callers.truncate(max_callers.max(1));
+        let floor = if budget > 0 && callers_budget > 0 {
+            1
+        } else {
+            0
+        };
+        review.affected_callers.truncate(max_callers.max(floor));
     }
     used += review.affected_callers.len() * tokens_per_caller;
 
@@ -114,7 +124,8 @@ fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> u
     let max_tests = tests_budget / tokens_per_test;
     let original_tests = review.affected_tests.len();
     if review.affected_tests.len() > max_tests {
-        review.affected_tests.truncate(max_tests.max(1));
+        let floor = if budget > 0 && tests_budget > 0 { 1 } else { 0 };
+        review.affected_tests.truncate(max_tests.max(floor));
     }
     used += review.affected_tests.len() * tokens_per_test;
 
@@ -409,14 +420,14 @@ mod tests {
             "Tests should be truncated, got {}",
             review.affected_tests.len()
         );
-        // At least 1 caller and 1 test guaranteed by the max(1) logic
+        // At least 1 caller and 1 test guaranteed by the max(1) logic when budget > 0
         assert!(
             !review.affected_callers.is_empty(),
-            "At least 1 caller guaranteed"
+            "At least 1 caller guaranteed when budget > 0"
         );
         assert!(
             !review.affected_tests.is_empty(),
-            "At least 1 test guaranteed"
+            "At least 1 test guaranteed when budget > 0"
         );
         assert!(
             !review.warnings.is_empty(),
@@ -425,6 +436,33 @@ mod tests {
         assert!(
             used <= budget + 50,
             "Used tokens ({used}) should be near budget ({budget})"
+        );
+    }
+
+    /// P3 #121: a true-zero budget must produce zero callers/tests, not one.
+    /// Previously the `.max(1)` floor unconditionally added at least one
+    /// caller and one test, overshooting the requested budget by ~50 tokens.
+    /// The fix gates the floor on a positive budget.
+    #[test]
+    fn test_apply_token_budget_zero_produces_zero_items() {
+        let mut review = make_review(10, 10);
+        let used = apply_token_budget(&mut review, 0, false);
+
+        assert!(
+            review.affected_callers.is_empty(),
+            "callers must be empty when budget = 0, got {}",
+            review.affected_callers.len()
+        );
+        assert!(
+            review.affected_tests.is_empty(),
+            "tests must be empty when budget = 0, got {}",
+            review.affected_tests.len()
+        );
+        // BASE_OVERHEAD + changed_functions still count toward `used`, but the
+        // variable-size sections must contribute zero.
+        assert!(
+            used >= 30 && used < 100,
+            "used = {used} should reflect base overhead only"
         );
     }
 }

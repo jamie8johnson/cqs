@@ -636,7 +636,8 @@ define_chunk_types! {
     Function => "function", hints = ["all functions", "every function"];
     /// Method (function inside a class/struct/impl)
     Method => "method", hints = ["all methods", "every method"];
-    /// Class definition (Python, TypeScript, JavaScript)
+    /// OO class definition across most class-based languages (Python, JS/TS,
+    /// Java, C#, C++, Kotlin, Scala, Swift, PHP, Ruby, Dart, etc.).
     Class => "class", hints = ["all classes", "every class"];
     /// Struct definition (Rust, Go)
     Struct => "struct", hints = ["all structs", "every struct"];
@@ -644,7 +645,9 @@ define_chunk_types! {
     Enum => "enum", hints = ["all enums", "every enum"];
     /// Trait definition (Rust)
     Trait => "trait", hints = ["all traits", "every trait"];
-    /// Interface definition (TypeScript, Go)
+    /// Interface / protocol definition across languages that distinguish them
+    /// from classes (TypeScript, Go, Java, C#, Kotlin, PHP, Swift `protocol`,
+    /// etc.).
     Interface => "interface", hints = ["all interfaces", "every interface"];
     /// Constant or static variable
     Constant => "constant", capture = "const", hints = ["all constants", "every constant"];
@@ -656,7 +659,9 @@ define_chunk_types! {
     Delegate => "delegate", hints = ["all delegates", "every delegate"];
     /// Event declaration (C#)
     Event => "event", hints = ["all events", "every event"];
-    /// Module definition (F#, future: Ruby, Elixir)
+    /// Module / package-scope definition across languages that surface modules
+    /// as first-class declarations (F#, OCaml, Ruby, Elixir, Erlang, Rust
+    /// `mod`, etc.).
     Module => "module", hints = ["all modules", "every module"];
     /// Macro definition (Rust `macro_rules!`, future: Elixir `defmacro`)
     Macro => "macro", hints = ["all macros", "every macro", "macro_rules"];
@@ -781,8 +786,26 @@ impl ChunkType {
     }
 
     /// Returns all code chunk types (for use in SearchFilter::include_types).
+    ///
+    /// P3 #128: cached via `LazyLock`. The set is derived from a const
+    /// classification (`classify`) so it is fixed at build time; previously
+    /// every search query allocated a fresh ~20-element `Vec`.
     pub fn code_types() -> Vec<ChunkType> {
-        Self::ALL.iter().copied().filter(|t| t.is_code()).collect()
+        Self::code_types_static().to_vec()
+    }
+
+    /// Borrowed view of the code-types set — zero allocation. Prefer this
+    /// for new call sites; [`code_types`] retained for API stability with
+    /// `SearchFilter::include_types` which expects an owned `Vec`.
+    pub fn code_types_static() -> &'static [ChunkType] {
+        static CODE_TYPES: LazyLock<Vec<ChunkType>> = LazyLock::new(|| {
+            ChunkType::ALL
+                .iter()
+                .copied()
+                .filter(|t| t.is_code())
+                .collect()
+        });
+        CODE_TYPES.as_slice()
     }
 
     /// SQL IN clause string for all callable chunk types.

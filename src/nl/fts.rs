@@ -99,15 +99,20 @@ impl<'a> Iterator for TokenizeIdentifierIter<'a> {
     }
 }
 
-/// Maximum output length for FTS normalization.
-/// Prevents memory exhaustion from pathological inputs where tokenization
-/// expands text (e.g., "ABCD" → "a b c d" doubles length).
-const MAX_FTS_OUTPUT_LEN: usize = 16384;
+/// Default upper bound on `normalize_for_fts` output bytes (kept for the
+/// existing test that pins the value). Production code resolves the cap
+/// via `crate::limits::fts_normalize_max()` so `CQS_FTS_NORMALIZE_MAX`
+/// can override it. P3 #102.
+#[allow(dead_code)]
+const MAX_FTS_OUTPUT_LEN: usize = crate::limits::FTS_NORMALIZE_MAX;
 
 /// Normalize code text for FTS5 indexing.
 /// Splits identifiers on camelCase/snake_case boundaries and joins with spaces.
 /// Used to make code searchable with natural language queries.
-/// Output is capped at 16KB to prevent memory issues with pathological inputs.
+/// Output is capped (default 16 KiB; override via `CQS_FTS_NORMALIZE_MAX`)
+/// to prevent memory issues with pathological inputs. Truncation is
+/// surfaced at `WARN` level so silent FTS-recall gaps on long chunks
+/// (P3 #102) become visible.
 /// # Security: FTS5 Injection Protection
 /// This function provides implicit protection against FTS5 injection attacks.
 /// By only emitting alphanumeric tokens joined by spaces, special FTS5 operators
@@ -124,6 +129,9 @@ const MAX_FTS_OUTPUT_LEN: usize = 16384;
 pub fn normalize_for_fts(text: &str) -> String {
     let mut result = String::new();
     let mut current_word = String::new();
+    // P3 #102: env-overridable cap via CQS_FTS_NORMALIZE_MAX.
+    let cap = crate::limits::fts_normalize_max();
+    let input_len = text.len();
 
     let flush_word = |word: &str, result: &mut String| {
         for token in tokenize_identifier_iter(word) {
@@ -142,10 +150,16 @@ pub fn normalize_for_fts(text: &str) -> String {
             current_word.clear();
 
             // Cap output to prevent memory issues - truncate at last space boundary
-            if result.len() >= MAX_FTS_OUTPUT_LEN {
-                let boundary = result.floor_char_boundary(MAX_FTS_OUTPUT_LEN);
+            if result.len() >= cap {
+                let boundary = result.floor_char_boundary(cap);
                 let truncate_at = result[..boundary].rfind(' ').unwrap_or(boundary);
                 result.truncate(truncate_at);
+                tracing::warn!(
+                    input_len,
+                    output_len = result.len(),
+                    cap,
+                    "FTS normalization truncated (mid-stream); bump CQS_FTS_NORMALIZE_MAX if FTS recall on long chunks matters"
+                );
                 return result;
             }
         }
@@ -155,10 +169,16 @@ pub fn normalize_for_fts(text: &str) -> String {
     }
 
     // Final cap check - truncate at last space to avoid splitting words
-    if result.len() > MAX_FTS_OUTPUT_LEN {
-        let boundary = result.floor_char_boundary(MAX_FTS_OUTPUT_LEN);
+    if result.len() > cap {
+        let boundary = result.floor_char_boundary(cap);
         let truncate_at = result[..boundary].rfind(' ').unwrap_or(boundary);
         result.truncate(truncate_at);
+        tracing::warn!(
+            input_len,
+            output_len = result.len(),
+            cap,
+            "FTS normalization truncated (post-process); bump CQS_FTS_NORMALIZE_MAX if FTS recall on long chunks matters"
+        );
     }
     result
 }

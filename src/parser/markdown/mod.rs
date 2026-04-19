@@ -726,7 +726,13 @@ fn extract_references_from_text_with_start_line(text: &str, start_line: u32) -> 
         // match position and this one.
         link_line += count_newlines_in_range(bytes, link_cursor, match_start);
         link_cursor = match_start;
-        // Skip image links: preceded by '!'
+        // Skip image links: preceded by '!'.
+        //
+        // P3 #85: Safe to compare a single byte at `match_start - 1` even
+        // though `text` may contain multi-byte UTF-8: '!' is ASCII (0x21),
+        // and any byte that participates in a multi-byte codepoint has its
+        // high bit set (>= 0x80), so a continuation byte cannot accidentally
+        // equal `b'!'`. No `is_char_boundary` check needed.
         if match_start > 0 && text.as_bytes()[match_start - 1] == b'!' {
             continue;
         }

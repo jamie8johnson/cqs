@@ -706,10 +706,12 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
 
     // RB-NEW-4: bound the response so a rogue/buggy daemon can't force us to
     // allocate unbounded memory on `read_line`. 16 MiB matches the practical
-    // ceiling for gather/task JSON outputs.
-    const MAX_DAEMON_RESPONSE: u64 = 16 * 1024 * 1024;
+    // ceiling for gather/task JSON outputs. P3 #109: env-overridable via
+    // CQS_DAEMON_MAX_RESPONSE_BYTES so large gather/task outputs on big
+    // corpora can lift the cap.
+    let max_daemon_response = crate::cli::limits::max_daemon_response_bytes();
     use std::io::Read as _;
-    let mut reader = std::io::BufReader::new(&stream).take(MAX_DAEMON_RESPONSE);
+    let mut reader = std::io::BufReader::new(&stream).take(max_daemon_response);
     let mut response_line = String::new();
     let bytes_read = match reader.read_line(&mut response_line) {
         Ok(n) => n,
@@ -722,10 +724,18 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
             return None;
         }
     };
-    if bytes_read as u64 == MAX_DAEMON_RESPONSE {
+    if bytes_read as u64 == max_daemon_response {
+        // P3 #109: surface the silent perf regression on stderr, not
+        // just tracing — agents tuning latency won't see tracing.
+        let cap_mib = max_daemon_response / 1024 / 1024;
+        eprintln!(
+            "warning: cqs daemon response exceeded {cap_mib} MiB cap — falling back to direct CLI execution. \
+             Set CQS_DAEMON_MAX_RESPONSE_BYTES to lift the cap."
+        );
         tracing::warn!(
             bytes = bytes_read,
-            "Daemon response exceeded 16 MiB cap — falling back to CLI"
+            cap_mib,
+            "Daemon response exceeded cap — falling back to CLI"
         );
         return None;
     }

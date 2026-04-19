@@ -343,12 +343,14 @@ impl Parser {
         let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
 
         let mut chunks = Vec::new();
+        // P3 #105: env-overridable per-chunk byte cap.
+        let max_chunk_bytes = crate::limits::parser_max_chunk_bytes();
 
         while let Some(m) = matches.next() {
             match self.extract_chunk(source, m, query, inner_language, path) {
                 Ok(mut chunk) => {
                     // Skip oversized chunks
-                    if chunk.content.len() > super::MAX_CHUNK_BYTES {
+                    if chunk.content.len() > max_chunk_bytes {
                         tracing::debug!(
                             id = %chunk.id,
                             bytes = chunk.content.len(),
@@ -644,11 +646,13 @@ impl Parser {
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(chunk_query, tree.root_node(), source.as_bytes());
         let mut chunks = Vec::new();
+        // P3 #105: env-overridable per-chunk byte cap.
+        let max_chunk_bytes = crate::limits::parser_max_chunk_bytes();
 
         while let Some(m) = matches.next() {
             match self.extract_chunk(source, m, chunk_query, inner_language, path) {
                 Ok(mut chunk) => {
-                    if chunk.content.len() > super::MAX_CHUNK_BYTES {
+                    if chunk.content.len() > max_chunk_bytes {
                         tracing::debug!(
                             id = %chunk.id,
                             bytes = chunk.content.len(),

@@ -66,8 +66,8 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
         );
     }
 
-    // Maximum number of pages to process from a single web help site.
-    const MAX_PAGES: usize = 1000;
+    // P3 #106: shared cap honoring CQS_CONVERT_MAX_PAGES.
+    let max_pages = crate::limits::doc_max_pages();
 
     // Collect all HTML pages under content/, sorted for consistent ordering.
     // Skip symlinks (SEC-11) to prevent symlink traversal attacks.
@@ -96,14 +96,14 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
         anyhow::bail!("No HTML files found in {}", content_dir.display());
     }
 
-    if pages.len() > MAX_PAGES {
+    if pages.len() > max_pages {
         tracing::warn!(
             dir = %dir.display(),
             total = pages.len(),
-            limit = MAX_PAGES,
-            "Web help page count exceeds limit, truncating"
+            limit = max_pages,
+            "Web help page count exceeds limit, truncating; bump CQS_CONVERT_MAX_PAGES if needed"
         );
-        pages.truncate(MAX_PAGES);
+        pages.truncate(max_pages);
     }
 
     tracing::info!(

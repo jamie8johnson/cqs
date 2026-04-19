@@ -120,7 +120,15 @@ pub(super) fn parser_stage(
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
+                            // P3 #95: structured fields so a hot-path parse
+                            // failure carries `path` + `error` cleanly across
+                            // the rayon reduce instead of being interpolated
+                            // into the message.
+                            tracing::warn!(
+                                path = %abs_path.display(),
+                                error = %e,
+                                "Failed to parse file"
+                            );
                             parse_errors.fetch_add(1, Ordering::Relaxed);
                         }
                     }

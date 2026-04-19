@@ -64,6 +64,8 @@ pub(in crate::cli::batch) fn dispatch_stale(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_stale", count_only).entered();
 
+    // P3 #123: `file_set` is now `Arc<HashSet<PathBuf>>`. Auto-deref hands
+    // the inner `&HashSet` to the store helpers without cloning.
     let file_set = ctx.file_set()?;
     let report = ctx.store().list_stale_files(&file_set, &ctx.root)?;
 
@@ -90,6 +92,8 @@ pub(in crate::cli::batch) fn dispatch_stale(
 pub(in crate::cli::batch) fn dispatch_health(ctx: &BatchContext) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_health").entered();
 
+    // P3 #123: `Arc<HashSet>` auto-derefs through `&file_set` for the
+    // borrowed-only callee.
     let file_set = ctx.file_set()?;
     let report = cqs::health::health_check(&ctx.store(), &file_set, &ctx.cqs_dir, &ctx.root)?;
 

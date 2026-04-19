@@ -761,11 +761,20 @@ impl<Mode> Store<Mode> {
             };
 
             if index_results.is_empty() {
-                tracing::info!("Index returned no candidates, falling back to brute-force search (performance may degrade)");
+                // P3 #98: structured fields so the brute-force fallback is
+                // attributable per call without having to grep the message.
+                tracing::info!(
+                    query_dim = query.len(),
+                    limit,
+                    "Index returned no candidates — falling back to brute-force scan"
+                );
                 return self.search_filtered_with_notes(query, filter, limit, threshold, &notes);
             }
 
-            tracing::debug!("Index returned {} candidates", index_results.len());
+            tracing::debug!(
+                candidates = index_results.len(),
+                "Vector index returned candidates"
+            );
 
             let candidate_ids: Vec<&str> = index_results.iter().map(|r| r.id.as_str()).collect();
             return self.search_by_candidate_ids_with_notes(

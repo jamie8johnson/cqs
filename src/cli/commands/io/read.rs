@@ -47,14 +47,14 @@ pub(crate) fn validate_and_read_file(root: &Path, path: &str) -> Result<(PathBuf
         bail!("Invalid path");
     }
 
-    // File size limit (10MB)
-    const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+    // P3 #107: env-overridable via CQS_READ_MAX_FILE_SIZE (default 10 MiB).
+    let max_file_size = crate::cli::limits::read_max_file_size();
     let metadata = std::fs::metadata(&file_path).context("Failed to read file metadata")?;
-    if metadata.len() > MAX_FILE_SIZE {
+    if metadata.len() > max_file_size {
         bail!(
-            "File too large: {} bytes (max {} bytes)",
+            "File too large: {} bytes (max {} bytes; CQS_READ_MAX_FILE_SIZE)",
             metadata.len(),
-            MAX_FILE_SIZE
+            max_file_size
         );
     }
 

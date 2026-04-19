@@ -607,7 +607,7 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 
 1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, interfaces, constants, tests, endpoints, modules, and 19 other chunk types across 54 languages (plus L5X/L5K PLC exports). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination (SQ-11). Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 91.2% Recall@1 on fixture eval (BGE-large, 296 queries across 7 languages). On the v1.25.0 live 265-query V2 eval against a real 11k-chunk codebase (post-GC clean index, today), the full router scores 37.4% R@1 / 55.8% R@5 / 77.4% R@20; per-category oracle ceiling is 49.4% R@1. Identifier lookup is 50% R@1 / 73% R@5 on a 100-query slice. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
+3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 91.2% Recall@1 on fixture eval (BGE-large, 296 queries across 7 languages). On the v3 live eval (109-query test split, real cqs codebase, post-#1040 reindex) the full router scores 41.3% R@1 / 67.0% R@5 / 75.2% R@20; the dev split scores 40.4% / 71.6% / 79.8%. See `ROADMAP.md` "Eval baselines on v3.v2" for the full table and the v1.27.0 shipping config baseline. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
@@ -645,18 +645,18 @@ Two eval suites measure different things:
 | v9-200k LoRA (preset) | 110M | 81.4% | 99.3% | 0.898 |
 | E5-base (preset) | 110M | 75.3% | 99.0% | 0.869 |
 
-**Live codebase eval** (v1.25.0 full router, 265-query V2, real 11k-chunk cqs codebase, clean post-GC index, today):
+**Live codebase eval** (v3 dual-judge consensus dataset, full router on the real cqs codebase). v3 is the canonical eval; the v2 / 11k-chunk framing from earlier releases is retired. v3 splits at 326 train / 109 dev / 109 test, every category N≥23. Two reference points:
 
-| Config | Recall@1 | Recall@5 | Recall@20 |
-|--------|----------|----------|-----------|
-| Full router (per-category alpha + clean multi_step) | **37.4%** | **55.8%** | **77.4%** |
-| Oracle ceiling (best alpha per-category, known category) | **49.4%** | — | — |
+| Split | R@1 | R@5 | R@20 | Notes |
+|-------|-----|-----|------|-------|
+| **test (n=109), post-#1040 (chunker doc fallback + LLM regen)** | **41.3%** | **67.0%** | **75.2%** | reindex 2026-04-18, 14,734 chunks, 47.7% LLM coverage |
+| test (n=109), v1.27.0 shipping config | 41.3% | 63.3% | 80.7% | 2026-04-17 regen, 16,095 chunks |
+| dev (n=109), post-#1040 | 40.4% | 71.6% | 79.8% | same reindex |
+| dev (n=109), v1.27.0 shipping config | 41.3% | 74.3% | 86.2% | 2026-04-17 regen |
 
-Identifier-lookup slice (100-query subset): 50% R@1, 73% R@5 — this is the metric that matters most for agent search.
+N=109 per split is noisy at ±2-3pp single-trial — always quote both test AND dev when comparing changes. ROADMAP.md keeps the canonical baseline up to date.
 
-The older `48.5% / 66.7%` numbers came from a pre-v1.25.0 index contaminated by watch-reindex races between eval runs (fixed by PR #943) and pre-determinism-fix SPLADE noise (fixed by PR #942). They are historical and no longer representative.
-
-The fixture eval measures retrieval from small synthetic fixtures (high ceiling). The live eval measures retrieval from a real 11k-chunk codebase across identifier lookup, behavioral, conceptual, structural, negation, type-filtered, multi-step, and cross-language queries. The gap reflects that real-world queries are harder than synthetic benchmarks.
+The fixture eval measures retrieval from small synthetic fixtures (high ceiling). The live eval measures retrieval from the real cqs codebase across identifier lookup, behavioral, conceptual, structural, negation, type-filtered, multi-step, and cross-language queries. The gap reflects that real-world queries are harder than synthetic benchmarks.
 
 Best production config: **BGE-large** (`cqs index`). LLM summaries provide marginal R@5 improvement. Use `CQS_EMBEDDING_MODEL=v9-200k` for resource-constrained environments.
 
@@ -670,6 +670,11 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_BUSY_TIMEOUT_MS` | `5000` | SQLite busy timeout in milliseconds |
 | `CQS_CACHE_MAX_SIZE` | `1073741824` (1 GB) | Global embedding cache size limit |
 | `CQS_CAGRA_GRAPH_DEGREE` | `64` | CAGRA output graph degree at build time (cuVS default 64; higher → better recall, longer build) |
+| `CQS_CHAT_HISTORY` | `1` | Set to `0` to disable disk-persisted `cqs chat` REPL history. |
+| `CQS_MAX_DAEMON_CLIENTS` | `16` | Max concurrent in-flight handlers in the daemon socket loop. ~2 MiB stack each → default budget ~32 MiB. Read once at daemon startup. |
+| `CQS_QUERY_CACHE_MAX_SIZE` | `104857600` (100 MiB) | Disk-cap on the embedding query cache. Best-effort prune past the cap; default is 100 MiB. |
+| `CQS_TELEMETRY_REDACT_QUERY` | `1` | Set to `0` to log raw query strings in telemetry. Default redacts so search queries containing secrets/snippets aren't persisted. |
+| `CQS_CALL_GRAPH_MAX_EDGES` | `500000` | Max `function_calls` rows loaded into the in-memory call graph (`cqs impact`, `cqs trace`, `cqs related`). Bump for very large monorepos that exceed 500K edges. |
 | `CQS_CAGRA_INTERMEDIATE_GRAPH_DEGREE` | `128` | CAGRA pruned-input graph degree at build time (cuVS default 128) |
 | `CQS_CAGRA_ITOPK_MAX` | (log₂(n)·32 clamped 128-4096) | Upper clamp on CAGRA `itopk_size`. Default scales with corpus size (1k→320, 100k→532, 1M→640). Raise for better recall on large indexes at the cost of search latency. |
 | `CQS_CAGRA_ITOPK_MIN` | `128` | Lower clamp on CAGRA `itopk_size`. `itopk_size = (k*2).clamp(min, max)`. |
@@ -679,6 +684,9 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_CENTROID_ALPHA_FLOOR` | `0.7` | Minimum α when the centroid classifier overrides the rule-based classifier. Caps downside of wrong-category alpha routing. Only active when `CQS_CENTROID_CLASSIFIER=1`. |
 | `CQS_CENTROID_CLASSIFIER` | `0` | Set to `1` to enable the embedding-centroid query classifier (experimental; disabled because 76% accuracy still hurts R@1 by −4.6pp on v3 dev). Set to `0` to explicitly disable when a centroid file is present. |
 | `CQS_CENTROID_THRESHOLD` | `0.01` | Minimum cosine margin (top1 − top2) for the centroid classifier to commit to a category. Below this, falls back to the rule-based classifier. |
+| `CQS_CONVERT_MAX_PAGES` | `1000` | Max HTML pages processed from a single CHM archive or web-help directory by `cqs convert`. Excess pages are dropped with a warn. Bump for multi-thousand-page vendor docs. |
+| `CQS_CONVERT_MAX_WALK_DEPTH` | `50` | Max recursion depth for `cqs convert <dir>`'s walkdir. Entries deeper than this are silently dropped by walkdir; depth-cap-hit emits a warn so you can detect the truncation. |
+| `CQS_DAEMON_MAX_RESPONSE_BYTES` | `16777216` (16 MiB) | Max response bytes the CLI accepts from the daemon socket before falling back to direct execution. Larger `gather`/`task` outputs need this lifted. |
 | `CQS_DAEMON_PERIODIC_GC` | `1` | Set to `0` to disable the daemon's idle-time periodic GC (#1024). When on, every 30 min of idle the daemon prunes a bounded batch of missing-file and gitignored chunks so the index stays close to a fresh `cqs index --force` over long sessions. |
 | `CQS_DAEMON_PERIODIC_GC_CAP` | `1000` | Max distinct origins examined per periodic-GC tick. Lower = shorter write transactions; higher = faster convergence on a polluted index. |
 | `CQS_DAEMON_STARTUP_GC` | `1` | Set to `0` to skip the daemon's startup GC pass (#1024). The startup pass drops chunks for files no longer on disk and chunks whose path is now matched by `.gitignore`. Synchronous, runs once when `cqs watch --serve` starts. |
@@ -693,6 +701,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_EVAL_TIMEOUT_SECS` | `300` | Per-query timeout in seconds inside `evals/run_ablation.py` |
 | `CQS_FILE_BATCH_SIZE` | `5000` | Files per parse batch in pipeline |
 | `CQS_FORCE_BASE_INDEX` | (none) | Set to `1` to force search via the base (non-enriched) HNSW index |
+| `CQS_FTS_NORMALIZE_MAX` | `16384` | Max bytes of `normalize_for_fts` output per chunk. Truncation is emitted at warn level; bump if FTS recall on long chunks (large generated tables, monolithic functions) is degraded. |
 | `CQS_GATHER_MAX_NODES` | `200` | Max BFS nodes in `gather` context assembly |
 | `CQS_HNSW_EF_CONSTRUCTION` | `200` | HNSW construction-time search width |
 | `CQS_HNSW_EF_SEARCH` | `100` | HNSW query-time search width |
@@ -714,6 +723,8 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_LLM_PROVIDER` | `anthropic` | LLM provider (`anthropic`) |
 | `CQS_MAX_CONNECTIONS` | `4` | SQLite write-pool max connections |
 | `CQS_MAX_CONTRASTIVE_CHUNKS` | `30000` | Max chunks for contrastive summary matrix (memory = N*N*4 bytes) |
+| `CQS_MAX_DIFF_BYTES` | `52428800` (50 MiB) | Max bytes accepted on stdin (`cqs review --stdin`, `cqs impact --diff`) and from `git diff` subprocess. Long-running feature branches with multi-MB diffs need this lifted. |
+| `CQS_MAX_DISPLAY_FILE_SIZE` | `10485760` (10 MiB) | Max file size that `read_context_lines` (snippet extraction for search results) will open. |
 | `CQS_MAX_FILE_SIZE` | `1048576` (1 MB) | Per-file size cap (bytes) for indexing. Files above this are skipped with an `info!` log; bump for generated code (`bindings.rs`, compiled TS, migrations). |
 | `CQS_MAX_QUERY_BYTES` | `32768` | Max query input bytes for embedding |
 | `CQS_MAX_SEQ_LENGTH` | (auto) | Override max sequence length for custom ONNX models |
@@ -724,13 +735,18 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_NO_DAEMON` | (none) | Set to `1` to force CLI mode (skip daemon connection attempt) |
 | `CQS_ONNX_DIR` | (auto) | Custom ONNX model directory (must contain `model.onnx` + `tokenizer.json`) |
 | `CQS_PARSE_CHANNEL_DEPTH` | `512` | Parse pipeline channel depth |
+| `CQS_PARSER_MAX_CHUNK_BYTES` | `100000` (100 KiB) | Per-chunk byte cap inside the parser. Chunks above this are dropped before windowing sees them; per-file warn summarises the count. Distinct from `CQS_MAX_FILE_SIZE` (file-discovery gate) so per-stage knobs stay independent. |
+| `CQS_PARSER_MAX_FILE_SIZE` | `52428800` (50 MiB) | Per-file size cap inside the parser. Files above this are skipped with a warn. Distinct from `CQS_MAX_FILE_SIZE` (which gates file enumeration before the parser even runs). |
 | `CQS_PDF_SCRIPT` | (auto) | Path to `pdf_to_md.py` for PDF conversion |
 | `CQS_QUERY_CACHE_SIZE` | `128` | Embedding query cache entries |
 | `CQS_RAYON_THREADS` | (auto) | Rayon thread pool size for parallel operations |
+| `CQS_READ_MAX_FILE_SIZE` | `10485760` (10 MiB) | Max file size that `cqs read` will open (full-file body emit + note injection). Distinct from `CQS_MAX_DISPLAY_FILE_SIZE` because `cqs read` emits the entire file, not just a snippet. |
 | `CQS_REFS_LRU_SIZE` | `2` | Slots in the batch-mode reference-index LRU cache (sibling projects loaded via `@name`). |
 | `CQS_RERANKER_BATCH` | `32` | Cross-encoder batch size per ORT run (reduce if reranker OOMs on large `--rerank-k`) |
 | `CQS_RERANKER_MAX_LENGTH` | `512` | Max input length for cross-encoder reranker |
 | `CQS_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder model for `--rerank` |
+| `CQS_RERANK_OVER_RETRIEVAL` | `4` | Multiplier on `--limit` for the reranker over-retrieval pool. At `--rerank --limit N`, stage-1 returns `N * MULTIPLIER` candidates so the cross-encoder has recall headroom. Bump for projects where the right answer routinely sits past rank-20 in stage-1. |
+| `CQS_RERANK_POOL_MAX` | `100` | Hard cap on the reranker pool regardless of multiplier. Caps ORT memory + per-batch latency on small GPUs. Bump on workstations with headroom for larger reranker batches. |
 | `CQS_RRF_K` | `60` | RRF fusion constant (higher = more weight to top results) |
 | `CQS_SKIP_ENRICHMENT` | (none) | Comma-separated enrichment layers to skip (e.g. `llm,hyde,callgraph`) |
 | `CQS_SKIP_INTEGRITY_CHECK` | (none) | Set to `1` to skip `PRAGMA quick_check` on write-mode store opens |
@@ -749,6 +765,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_MMR_LAMBDA` | unset (disabled) | Maximum Marginal Relevance λ ∈ `[0.0, 1.0]` for opt-in result diversification. `1.0` = pure relevance (no-op), `0.0` = pure diversity. **Note**: surface-feature MMR is currently inert under the default non-RRF pool size (no candidates to diversify across). The plumbing is in place for embedding-MMR experiments — see `src/search/mmr.rs`. |
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
 | `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
+| `CQS_TYPE_GRAPH_MAX_EDGES` | `500000` | Max `type_edges` rows loaded into the in-memory type graph. Sibling of `CQS_CALL_GRAPH_MAX_EDGES` for type-dependency analysis. |
 | `CQS_WATCH_DEBOUNCE_MS` | `500` (inotify) / `1500` (WSL/poll auto) | Watch debounce window (milliseconds). Takes precedence over `--debounce`. |
 | `CQS_WATCH_INCREMENTAL_SPLADE` | `1` | Set to `0` to disable inline SPLADE encoding in `cqs watch`. Daemon then runs dense-only and sparse coverage drifts until a manual `cqs index`. |
 | `CQS_WATCH_MAX_PENDING` | `10000` | Max pending file changes before watch forces flush |

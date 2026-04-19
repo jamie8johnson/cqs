@@ -25,6 +25,33 @@ use std::time::SystemTime;
 /// Maximum telemetry file size before auto-archiving (10 MB).
 const MAX_TELEMETRY_BYTES: u64 = 10 * 1024 * 1024;
 
+/// P3 #136: redact telemetry `query` strings by default. Search queries can
+/// carry secrets and source snippets; logging them in plaintext at every
+/// invocation is a privileged-journal harvest. Set
+/// `CQS_TELEMETRY_REDACT_QUERY=0` to log the raw text (useful for offline
+/// analysis on a single-user machine).
+fn redact_query_str(query: &str) -> String {
+    let redact = std::env::var("CQS_TELEMETRY_REDACT_QUERY")
+        .ok()
+        .as_deref()
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    if redact {
+        // 8-char blake3 prefix is collision-resistant for telemetry buckets,
+        // not reversible. Mirrors the SEC-V1.25-16 redaction shape used for
+        // notes args in the daemon journal.
+        let h = blake3::hash(query.as_bytes());
+        h.to_hex().as_str()[..8].to_string()
+    } else {
+        query.to_string()
+    }
+}
+
+/// Optional variant for `Option<&str>` fields.
+fn redact_query_opt(query: Option<&str>) -> Option<String> {
+    query.map(redact_query_str)
+}
+
 /// Log a command invocation to the telemetry file.
 ///
 /// Does nothing if `CQS_TELEMETRY` env var is not set to "1".
@@ -55,15 +82,21 @@ pub fn log_command(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
+    // P3 #136: redact `query` by default to keep search strings out of the
+    // telemetry log. `CQS_TELEMETRY_REDACT_QUERY=0` opts back in to raw text.
+    let query_field = redact_query_opt(query);
     let entry = serde_json::json!({
         "ts": timestamp,
         "cmd": command,
-        "query": query,
+        "query": query_field,
         "results": result_count,
     });
 
     // path already declared above for existence check
-    let _ = (|| -> std::io::Result<()> {
+    // P3 #134: surface the closure result at debug. A telemetry write that
+    // fails (lock contention, disk full, perms) should not be a hard error
+    // — but `let _ = ...` made the failure invisible to the journal.
+    let result: std::io::Result<()> = (|| -> std::io::Result<()> {
         // DS-V1.25-8: single-writer assumption — telemetry is per-process, but
         // multiple cqs invocations (CLI + agents + `cqs watch`) write to the
         // same `.cqs/telemetry.jsonl` concurrently. The advisory `flock` on
@@ -122,6 +155,9 @@ pub fn log_command(
         }
         Ok(())
     })();
+    if let Err(e) = result {
+        tracing::debug!(error = %e, "Telemetry write skipped");
+    }
 }
 
 /// Log a search command with adaptive routing classification.
@@ -155,10 +191,12 @@ pub fn log_routed(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
+    // P3 #136: redact `query` by default — see `redact_query_str` doc.
+    let query_field = redact_query_str(query);
     let entry = serde_json::json!({
         "ts": timestamp,
         "cmd": "search",
-        "query": query,
+        "query": query_field,
         "category": category,
         "confidence": confidence,
         "strategy": strategy,
@@ -166,7 +204,8 @@ pub fn log_routed(
         "results": result_count,
     });
 
-    let _ = (|| -> std::io::Result<()> {
+    // P3 #134: same surface-at-debug treatment as `log_command`.
+    let result: std::io::Result<()> = (|| -> std::io::Result<()> {
         // DS-V1.25-8: see the corresponding block in `log_command` above for the
         // full single-writer rationale. In short: telemetry is per-process but
         // many cqs invocations (CLI + agents + `cqs watch`) share the file, and
@@ -222,6 +261,9 @@ pub fn log_routed(
         }
         Ok(())
     })();
+    if let Err(e) = result {
+        tracing::debug!(error = %e, "Telemetry write skipped");
+    }
 }
 
 /// Extract command name and query from CLI args for telemetry.

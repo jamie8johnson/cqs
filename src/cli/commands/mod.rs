@@ -470,16 +470,20 @@ pub(crate) fn index_pack(
     (kept, used)
 }
 
-/// Read diff text from stdin, capped at 50 MB.
+/// Read diff text from stdin, capped at `CQS_MAX_DIFF_BYTES` (default 50 MiB).
+/// P3 #107: shares the same env knob with `git diff` subprocess output.
 pub(crate) fn read_stdin() -> anyhow::Result<String> {
     use std::io::Read;
-    const MAX_STDIN_SIZE: usize = 50 * 1024 * 1024; // 50 MB
+    let max_stdin_size = crate::cli::limits::max_diff_bytes();
     let mut buf = String::new();
     std::io::stdin()
-        .take(MAX_STDIN_SIZE as u64 + 1)
+        .take(max_stdin_size as u64 + 1)
         .read_to_string(&mut buf)?;
-    if buf.len() > MAX_STDIN_SIZE {
-        anyhow::bail!("stdin input exceeds 50 MB limit");
+    if buf.len() > max_stdin_size {
+        anyhow::bail!(
+            "stdin input exceeds {} MiB limit (CQS_MAX_DIFF_BYTES)",
+            max_stdin_size / 1024 / 1024
+        );
     }
     Ok(buf)
 }
@@ -509,11 +513,12 @@ pub(crate) fn run_git_diff(base: Option<&str>) -> anyhow::Result<String> {
         anyhow::bail!("git diff failed: {}", stderr.trim());
     }
 
-    const MAX_DIFF_SIZE: usize = 50 * 1024 * 1024; // 50 MB
-    if output.stdout.len() > MAX_DIFF_SIZE {
+    // P3 #107: shared cap with stdin (CQS_MAX_DIFF_BYTES, default 50 MiB).
+    let max_diff_size = crate::cli::limits::max_diff_bytes();
+    if output.stdout.len() > max_diff_size {
         anyhow::bail!(
-            "git diff output exceeds {} MB limit ({} bytes)",
-            MAX_DIFF_SIZE / 1024 / 1024,
+            "git diff output exceeds {} MiB limit (CQS_MAX_DIFF_BYTES; {} bytes seen)",
+            max_diff_size / 1024 / 1024,
             output.stdout.len()
         );
     }

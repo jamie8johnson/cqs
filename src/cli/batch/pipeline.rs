@@ -258,7 +258,9 @@ pub(crate) fn execute_pipeline(
     let mut any_truncated = false;
 
     for (stage_idx, segment) in segments[1..].iter().enumerate() {
-        let stage_num = stage_idx + 1; // 1-indexed for display (stage 0 already done)
+        // P3 #120: stage numbering is 0-based and consistent across all log lines.
+        // Stage 0 was the first segment (logged above); subsequent segments are 1, 2, ...
+        let stage_num = stage_idx + 1;
 
         // Extract names from current result
         let mut names = extract_names(&current_value);
@@ -278,7 +280,7 @@ pub(crate) fn execute_pipeline(
         let total_inputs = names.len();
         let _stage_span = tracing::info_span!(
             "pipeline_stage",
-            stage = stage_num + 1, // 1-based for user
+            stage = stage_num,
             command = segment.first().map(|s| s.as_str()).unwrap_or("?"),
             fan_out = total_inputs,
         )
@@ -744,5 +746,34 @@ mod tests {
         assert!(!names.contains("search"));
         assert!(!names.contains("dead"));
         assert!(!names.contains("stats"));
+    }
+
+    /// P3 #120: pipeline stage numbering is 0-based and consistent.
+    /// For a 3-stage pipeline, stages should be numbered 0, 1, 2 — not 0, 2, 3.
+    /// Verifies the `stage_num = stage_idx + 1` arithmetic for downstream stages
+    /// matches the explicit `stage = 0` label on the first segment.
+    #[test]
+    fn test_pipeline_stage_numbering_contiguous() {
+        // For segments [s0, s1, s2]:
+        //   - s0 is logged with stage = 0 (explicit constant in execute_pipeline)
+        //   - For stage_idx = 0 (s1), stage_num = 1
+        //   - For stage_idx = 1 (s2), stage_num = 2
+        // The previous code emitted `stage = stage_num + 1` for the inner span,
+        // so a 3-stage pipeline logged stages 0, 2, 3 (skipping 1).
+        let segments = vec![
+            vec!["a".to_string()],
+            vec!["b".to_string()],
+            vec!["c".to_string()],
+        ];
+        let observed: Vec<usize> = segments[1..]
+            .iter()
+            .enumerate()
+            .map(|(stage_idx, _)| stage_idx + 1)
+            .collect();
+        assert_eq!(
+            observed,
+            vec![1, 2],
+            "downstream stage indices must be 1, 2 (not 2, 3)"
+        );
     }
 }

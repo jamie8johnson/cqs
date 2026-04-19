@@ -170,7 +170,16 @@ pub(crate) fn build_stats<Mode>(store: &cqs::Store<Mode>, cqs_dir: &Path) -> Res
         hnsw_graph_bytes: file_size_bytes(&cqs_dir.join("index.hnsw.graph")),
         cagra_size_bytes: file_size_bytes(&cqs_dir.join("index.cagra")),
         llm_summary_count,
-        schema_version: stats.schema_version as u32,
+        // P3 #87: schema_version is read as i64 from SQLite; an explicit cast
+        // would silently wrap a (logically impossible but observed-during-
+        // migration-bugs) negative value. Surface the breach instead.
+        schema_version: u32::try_from(stats.schema_version).unwrap_or_else(|_| {
+            tracing::warn!(
+                schema_version = stats.schema_version,
+                "negative schema_version in stats — clamping to 0"
+            );
+            0
+        }),
         stale_files: None,
         missing_files: None,
         created_at: None,

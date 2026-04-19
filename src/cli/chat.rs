@@ -71,11 +71,22 @@ impl Helper for ChatHelper {}
 
 // ─── Meta-commands ───────────────────────────────────────────────────────────
 
-/// Handle meta-commands (help, exit, quit, clear).
-/// Returns Some(true) for exit/quit, Some(false) for other meta-commands, None if not a meta-command.
-fn handle_meta(line: &str) -> Option<bool> {
+/// Result of a meta-command, returned by [`handle_meta`].
+#[derive(Debug, PartialEq, Eq)]
+enum MetaAction {
+    /// Quit the REPL.
+    Exit,
+    /// Continue the loop (no exit).
+    Continue,
+    /// Continue, and ask the caller to wipe persisted chat history.
+    ClearHistory,
+}
+
+/// Handle meta-commands (help, exit, quit, clear, clear-history).
+/// Returns `None` if `line` is not a meta-command.
+fn handle_meta(line: &str) -> Option<MetaAction> {
     match line.to_ascii_lowercase().as_str() {
-        "exit" | "quit" => Some(true),
+        "exit" | "quit" => Some(MetaAction::Exit),
         "help" => {
             let app = batch::BatchInput::command();
             let mut cmd_names: Vec<&str> = app.get_subcommands().map(|sc| sc.get_name()).collect();
@@ -83,14 +94,16 @@ fn handle_meta(line: &str) -> Option<bool> {
             println!("Available commands: {}", cmd_names.join(", "));
             println!();
             println!("Pipeline: search \"query\" | callers | test-map");
-            println!("Meta: help, exit, quit, clear");
-            Some(false)
+            println!("Meta: help, exit, quit, clear, clear-history");
+            Some(MetaAction::Continue)
         }
         "clear" => {
             // ANSI clear screen
             print!("\x1b[2J\x1b[H");
-            Some(false)
+            Some(MetaAction::Continue)
         }
+        // P3 #137: wipe persisted history on demand without leaving the REPL.
+        "clear-history" => Some(MetaAction::ClearHistory),
         _ => None,
     }
 }
@@ -136,6 +149,16 @@ pub(crate) fn cmd_chat() -> Result<()> {
 
     let ctx = batch::create_context()?;
     ctx.warm(); // Pre-warm embedder so first query doesn't pay ~500ms ONNX init
+
+    // P3 #137: `CQS_CHAT_HISTORY=0` opts out of disk-persisted history.
+    // The `chat_history` file otherwise captures every command (including
+    // sensitive search queries) in plain text under the project `.cqs/`
+    // directory. Default is enabled for ergonomic up-arrow recall.
+    let history_enabled = std::env::var("CQS_CHAT_HISTORY")
+        .ok()
+        .as_deref()
+        .map(|v| v != "0")
+        .unwrap_or(true);
     let history_path = ctx.cqs_dir.join("chat_history");
 
     let helper = ChatHelper {
@@ -150,9 +173,14 @@ pub(crate) fn cmd_chat() -> Result<()> {
     editor.set_helper(Some(helper));
 
     // Load history (ignore if missing)
-    let _ = editor.load_history(&history_path);
+    if history_enabled {
+        let _ = editor.load_history(&history_path);
+    }
 
     println!("cqs interactive mode. Type 'help' for commands, 'exit' to quit.");
+    if !history_enabled {
+        println!("(chat history disabled by CQS_CHAT_HISTORY=0)");
+    }
 
     loop {
         match editor.readline("cqs> ") {
@@ -168,9 +196,27 @@ pub(crate) fn cmd_chat() -> Result<()> {
                 }
 
                 // Check meta-commands
-                if let Some(should_exit) = handle_meta(trimmed) {
-                    if should_exit {
-                        break;
+                if let Some(action) = handle_meta(trimmed) {
+                    match action {
+                        MetaAction::Exit => break,
+                        MetaAction::Continue => {}
+                        MetaAction::ClearHistory => {
+                            // P3 #137: wipe both in-memory and on-disk history.
+                            editor.clear_history()?;
+                            if history_path.exists() {
+                                if let Err(e) = std::fs::remove_file(&history_path) {
+                                    tracing::warn!(
+                                        error = %e,
+                                        path = %history_path.display(),
+                                        "Failed to remove chat history file"
+                                    );
+                                } else {
+                                    println!("Chat history cleared.");
+                                }
+                            } else {
+                                println!("No chat history to clear.");
+                            }
+                        }
                     }
                     continue;
                 }
@@ -254,9 +300,29 @@ pub(crate) fn cmd_chat() -> Result<()> {
         }
     }
 
-    // Save history
-    if let Err(e) = editor.save_history(&history_path) {
-        tracing::warn!(error = %e, "Failed to save chat history");
+    // P3 #137: only save history when not opted out, and chmod to 0o600
+    // immediately after rustyline writes (mirrors QueryCache::open behaviour).
+    if history_enabled {
+        if let Err(e) = editor.save_history(&history_path) {
+            tracing::warn!(error = %e, "Failed to save chat history");
+        } else {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if history_path.exists() {
+                    if let Err(e) = std::fs::set_permissions(
+                        &history_path,
+                        std::fs::Permissions::from_mode(0o600),
+                    ) {
+                        tracing::warn!(
+                            error = %e,
+                            path = %history_path.display(),
+                            "Failed to set chat history file mode to 0o600"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
@@ -289,17 +355,17 @@ mod tests {
 
     #[test]
     fn test_handle_meta_help() {
-        assert_eq!(handle_meta("help"), Some(false));
-        assert_eq!(handle_meta("HELP"), Some(false));
-        assert_eq!(handle_meta("Help"), Some(false));
+        assert_eq!(handle_meta("help"), Some(MetaAction::Continue));
+        assert_eq!(handle_meta("HELP"), Some(MetaAction::Continue));
+        assert_eq!(handle_meta("Help"), Some(MetaAction::Continue));
     }
 
     #[test]
     fn test_handle_meta_exit() {
-        assert_eq!(handle_meta("exit"), Some(true));
-        assert_eq!(handle_meta("quit"), Some(true));
-        assert_eq!(handle_meta("EXIT"), Some(true));
-        assert_eq!(handle_meta("Quit"), Some(true));
+        assert_eq!(handle_meta("exit"), Some(MetaAction::Exit));
+        assert_eq!(handle_meta("quit"), Some(MetaAction::Exit));
+        assert_eq!(handle_meta("EXIT"), Some(MetaAction::Exit));
+        assert_eq!(handle_meta("Quit"), Some(MetaAction::Exit));
     }
 
     #[test]
@@ -307,6 +373,17 @@ mod tests {
         assert_eq!(handle_meta("search foo"), None);
         assert_eq!(handle_meta("callers bar"), None);
         assert_eq!(handle_meta(""), None);
+    }
+
+    /// P3 #137: `clear-history` returns the dedicated MetaAction so the
+    /// REPL knows to wipe both editor history and the on-disk file.
+    #[test]
+    fn test_handle_meta_clear_history() {
+        assert_eq!(handle_meta("clear-history"), Some(MetaAction::ClearHistory));
+        assert_eq!(handle_meta("CLEAR-HISTORY"), Some(MetaAction::ClearHistory));
+        // Unrelated patterns must not collide.
+        assert_eq!(handle_meta("clearhistory"), None);
+        assert_eq!(handle_meta("clear "), None);
     }
 
     // ===== ChatHelper::complete tests (TC-4) =====

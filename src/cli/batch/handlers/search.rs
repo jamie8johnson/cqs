@@ -72,8 +72,9 @@ pub(in crate::cli::batch) fn dispatch_search(
     };
 
     let limit = args.limit.clamp(1, 100);
+    // P3 #100: shared rerank pool sizing.
     let effective_limit = if args.rerank {
-        (limit * 4).min(100)
+        crate::cli::limits::rerank_pool_size(limit)
     } else {
         limit
     };
@@ -147,8 +148,9 @@ pub(in crate::cli::batch) fn dispatch_search(
     // --ref scoped search: search only the named reference
     if let Some(ref ref_name) = args.ref_name {
         let ref_idx = crate::cli::commands::resolve::find_reference(&ctx.root, ref_name)?;
+        // P3 #100: shared rerank pool sizing.
         let ref_limit = if args.rerank {
-            (limit * 4).min(100)
+            crate::cli::limits::rerank_pool_size(limit)
         } else {
             limit
         };

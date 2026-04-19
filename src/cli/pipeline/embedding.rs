@@ -64,7 +64,7 @@ pub(super) fn prepare_for_embedding(
     // Step 2b: Check store for cached embeddings by content hash.
     // Skip when the embedder dim differs from store dim — prevents reusing
     // embeddings from a different model after model switching.
-    let existing = if dim == store.dim() {
+    let mut existing = if dim == store.dim() {
         match store.get_embeddings_by_hashes(&hashes) {
             Ok(map) => map,
             Err(e) => {
@@ -81,15 +81,23 @@ pub(super) fn prepare_for_embedding(
         HashMap::new()
     };
 
-    // Step 3: Separate into cached vs to_embed (global cache > store cache > embed)
+    // Step 3: Separate into cached vs to_embed (global cache > store cache > embed).
+    //
+    // P3 #126: take ownership via `.remove()` so we don't `.clone()` every
+    // cached embedding twice — once when collecting from `read_batch` and
+    // again into `cached`. Duplicate content_hashes within a single batch
+    // (rare — implies identical chunks across files) fall through to the
+    // store cache or `to_embed` on the second hit, which is correct
+    // behaviour: one cached embedding can only satisfy one slot.
     let mut to_embed: Vec<Chunk> = Vec::new();
     let mut cached: Vec<(Chunk, Embedding)> = Vec::new();
+    let global_hits_total = global_hits.len();
 
     for chunk in windowed_chunks {
-        if let Some(emb) = global_hits.get(&chunk.content_hash) {
-            cached.push((chunk, emb.clone()));
-        } else if let Some(emb) = existing.get(&chunk.content_hash) {
-            cached.push((chunk, emb.clone()));
+        if let Some(emb) = global_hits.remove(&chunk.content_hash) {
+            cached.push((chunk, emb));
+        } else if let Some(emb) = existing.remove(&chunk.content_hash) {
+            cached.push((chunk, emb));
         } else {
             to_embed.push(chunk);
         }
@@ -97,8 +105,8 @@ pub(super) fn prepare_for_embedding(
 
     tracing::info!(
         total = cached.len() + to_embed.len(),
-        global_hits = global_hits.len(),
-        store_hits = cached.len().saturating_sub(global_hits.len()),
+        global_hits = global_hits_total,
+        store_hits = cached.len().saturating_sub(global_hits_total),
         to_embed = to_embed.len(),
         "Embedding cache stats"
     );
@@ -272,13 +280,18 @@ pub(super) fn gpu_embed_stage(
                 );
                 let new_embeddings: Vec<Embedding> = embs;
 
-                // Write new embeddings to global cache (best-effort)
+                // Write new embeddings to global cache (best-effort).
+                //
+                // P3 #127: build with borrows so we don't clone every
+                // `content_hash` and embedding vec into an owned tuple per
+                // batch. The borrowed slices live until `write_batch`
+                // returns, well within the chunk/embedding lifetimes here.
                 if let Some(ref cache) = ctx.global_cache {
-                    let entries: Vec<(String, Vec<f32>)> = prepared
+                    let entries: Vec<(&str, &[f32])> = prepared
                         .to_embed
                         .iter()
                         .zip(new_embeddings.iter())
-                        .map(|(chunk, emb)| (chunk.content_hash.clone(), emb.as_slice().to_vec()))
+                        .map(|(chunk, emb)| (chunk.content_hash.as_str(), emb.as_slice()))
                         .collect();
                     if let Err(e) =
                         cache.write_batch(&entries, &fingerprint, embedder.embedding_dim())
@@ -400,13 +413,16 @@ pub(super) fn cpu_embed_stage(
                 e
             })?;
 
-            // Write new embeddings to global cache (best-effort)
+            // Write new embeddings to global cache (best-effort).
+            //
+            // P3 #127: build with borrows so we don't clone every
+            // `content_hash` and embedding vec into an owned tuple per batch.
             if let Some(ref cache) = ctx.global_cache {
-                let entries: Vec<(String, Vec<f32>)> = prepared
+                let entries: Vec<(&str, &[f32])> = prepared
                     .to_embed
                     .iter()
                     .zip(embs.iter())
-                    .map(|(chunk, emb)| (chunk.content_hash.clone(), emb.as_slice().to_vec()))
+                    .map(|(chunk, emb)| (chunk.content_hash.as_str(), emb.as_slice()))
                     .collect();
                 if let Err(e) = cache.write_batch(&entries, fp, emb.embedding_dim()) {
                     tracing::warn!(error = %e, "Global cache write failed (best-effort)");

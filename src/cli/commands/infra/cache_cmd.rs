@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
-use cqs::cache::EmbeddingCache;
+use cqs::cache::{EmbeddingCache, QueryCache};
 
 use crate::cli::definitions::TextJsonArgs;
 use crate::cli::Cli;
@@ -58,6 +58,27 @@ fn cache_stats(cache: &EmbeddingCache, cache_path: &std::path::Path, json: bool)
     let _span = tracing::info_span!("cache_stats").entered();
     let stats = cache.stats().context("Failed to get cache stats")?;
 
+    // P3 #124: surface persistent QueryCache size alongside the embedding
+    // cache so `cqs cache stats --json` consumers can monitor both.
+    // Open is best-effort — missing file is reported as 0 bytes.
+    let query_cache_size_bytes: u64 = {
+        let q_path = QueryCache::default_path();
+        if q_path.exists() {
+            match QueryCache::open(&q_path) {
+                Ok(qc) => qc.size_bytes().unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Query cache size_bytes failed");
+                    0
+                }),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Query cache open failed for stats");
+                    0
+                }
+            }
+        } else {
+            0
+        }
+    };
+
     if json {
         // P1 #11: `total_size_mb` is a numeric field so consumers can do
         // arithmetic on it (e.g., `obj["total_size_mb"] + 1`). Earlier
@@ -69,6 +90,9 @@ fn cache_stats(cache: &EmbeddingCache, cache_path: &std::path::Path, json: bool)
             "unique_models": stats.unique_models,
             "oldest_timestamp": stats.oldest_timestamp,
             "newest_timestamp": stats.newest_timestamp,
+            // P3 #124: parallel `query_cache_size_bytes` field. Always present;
+            // 0 when the QueryCache file doesn't exist yet.
+            "query_cache_size_bytes": query_cache_size_bytes,
         });
         crate::cli::json_envelope::emit_json(&obj)?;
     } else {
@@ -85,6 +109,12 @@ fn cache_stats(cache: &EmbeddingCache, cache_path: &std::path::Path, json: bool)
         if let Some(newest) = stats.newest_timestamp {
             println!("  Newest:   {}", format_timestamp(newest));
         }
+        // P3 #124: query cache size (0 when file absent). Single line — full
+        // QueryCache stats live behind `cqs cache prune` and the daemon log.
+        println!(
+            "Query cache size: {:.1} MB",
+            query_cache_size_bytes as f64 / 1_048_576.0
+        );
     }
 
     Ok(())

@@ -1000,7 +1000,14 @@ impl CentroidClassifier {
         }
 
         if centroids.is_empty() {
-            tracing::warn!("centroid file contained 0 valid centroids");
+            // P3 #94: include the path and expected dim so an operator can
+            // tell whether the file is at the wrong location, was generated
+            // for a different embedding model, or is genuinely empty.
+            tracing::warn!(
+                path = %path.display(),
+                expected_dim = dim,
+                "centroid file contained 0 valid centroids"
+            );
             return None;
         }
 

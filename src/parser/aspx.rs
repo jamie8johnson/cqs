@@ -262,11 +262,13 @@ fn parse_server_code(
     let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
 
     let mut chunks = Vec::new();
+    // P3 #105: env-overridable per-chunk byte cap.
+    let max_chunk_bytes = crate::limits::parser_max_chunk_bytes();
 
     while let Some(m) = matches.next() {
         match cqs_parser.extract_chunk(source, m, query, language, path) {
             Ok(mut chunk) => {
-                if chunk.content.len() > super::MAX_CHUNK_BYTES {
+                if chunk.content.len() > max_chunk_bytes {
                     tracing::debug!(
                         id = %chunk.id,
                         bytes = chunk.content.len(),

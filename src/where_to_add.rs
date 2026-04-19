@@ -121,6 +121,15 @@ pub fn suggest_placement_with_options<Mode>(
     limit: usize,
     opts: &PlacementOptions,
 ) -> Result<PlacementResult, AnalysisError> {
+    // P3 #132: entry-level span so an `embed_query` failure (which short-
+    // circuits before `_core`'s span fires) still has tracing identity for
+    // the placement call.
+    let _span = tracing::info_span!(
+        "suggest_placement_with_options",
+        desc_len = description.len(),
+        limit
+    )
+    .entered();
     if opts.query_embedding.is_some() {
         return suggest_placement_with_options_core(store, description, limit, opts);
     }

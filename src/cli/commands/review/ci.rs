@@ -88,12 +88,20 @@ fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> u
     // Notes are always included
     used += review.relevant_notes.len() * tokens_per_note;
 
-    // Fit callers within remaining budget (2/3 for callers)
+    // Fit callers within remaining budget (2/3 for callers).
+    //
+    // P3 #121: gate the `.max(1)` floor on positive budget — true-zero must
+    // produce zero, not one. Mirrors the same fix in `diff_review.rs`.
     let callers_budget = (budget.saturating_sub(used)) * 2 / 3;
     let max_callers = callers_budget / tokens_per_caller;
     let original_callers = review.affected_callers.len();
     if review.affected_callers.len() > max_callers {
-        review.affected_callers.truncate(max_callers.max(1));
+        let floor = if budget > 0 && callers_budget > 0 {
+            1
+        } else {
+            0
+        };
+        review.affected_callers.truncate(max_callers.max(floor));
     }
     used += review.affected_callers.len() * tokens_per_caller;
 
@@ -102,7 +110,8 @@ fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> u
     let max_tests = tests_budget / tokens_per_test;
     let original_tests = review.affected_tests.len();
     if review.affected_tests.len() > max_tests {
-        review.affected_tests.truncate(max_tests.max(1));
+        let floor = if budget > 0 && tests_budget > 0 { 1 } else { 0 };
+        review.affected_tests.truncate(max_tests.max(floor));
     }
     used += review.affected_tests.len() * tokens_per_test;
 
