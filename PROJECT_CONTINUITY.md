@@ -2,11 +2,11 @@
 
 ## Right Now
 
-**Tier 3 chunker fix landed: +6.4pp R@5 test, +6.5pp R@5 dev (2026-04-18).** PR #1040 open. The leading-comment fallback for short chunks (`extract_doc_fallback_for_short_chunk` in `src/parser/chunk.rs`) plus blank-line tolerance in `extract_doc_comment` close the `truncated_gold` failure mode. Combined with an LLM summary regen (5,486 → 7,018 cached, 36.9% → 47.2% coverage) the net result is the largest single retrieval lift this session arc has produced. Cheap-lever well is **not** dry after all — a Tier 3 win was sitting on the table.
+**v1.28.0 shipped (2026-04-19) — post-audit release closes the post-v1.27.0 16-category audit.** All 150 findings landed across PRs #1041 (P1, 26), #1045 (P2, 47), #1046 (P3, 69); 6 deferred items filed as issues #1042-#1044 (hard P4) + #1047-#1049 (trivial P4). Plus chunker doc fallback (PR #1040, +3.7pp test R@5), uniform JSON envelope (PR #1038, BREAKING), schema v21 migration, 17 new env vars, daemon defaults tuned. Live on crates.io + GitHub Releases.
 
-**Also open:** PR #1040 (chunker doc fallback). Recently merged: PR #1038 (uniform JSON envelope), PR #1039 (rustls-webpki CVE bumps).
+**Right Now:** v1.28.0 binary installed at `~/.cargo/bin/cqs`, daemon restarted on it. Audit dossier at `docs/audit-{findings,triage}.md` (renamed v1.27.0 archives still in `docs/`). Next strategic question is open: chunker fix lifted test R@5 to 67.0% (above canonical 63.3%) but dev R@5 sits at 71.6% (still below canonical 74.3%) — partly corpus-pruning artifact (16,095 → 14,734 chunks during reindex). Worth a third reindex + re-eval to isolate the chunker contribution from the pruning noise.
 
-**Branch:** `feat/chunker-doc-fallback` (PR #1040 open).
+**Branch:** main.
 
 ### Lever-by-lever results
 
@@ -17,7 +17,7 @@
 | Tier 1.3 — chunk-type aware boost | within ±1pp noise of default 1.2 | default stays |
 | Tier 2 — Reranker V2 (Phase 3 cross-encoder) | −24pp R@5 (domain shift + binary-label loss) | weights stay local at `~/training-data/reranker-v2-unixcoder/`; not shipped |
 | Tier 2 — ColBERT 2-stage (mxbai-edge-colbert-v0-32m) | marginal/inconsistent: test α=0.9 +2.8pp R@5, dev α=0.9 +0.9pp | eval tool shipped; default OFF; PR #1037 |
-| **Tier 3 — chunker doc fallback for short chunks** | **+6.4pp R@5 test, +6.5pp R@5 dev** (interlocked with LLM summary regen) | **PR #1040 open; tests 10/10; reindex required** |
+| **Tier 3 — chunker doc fallback for short chunks** | **+3.7pp R@5 test vs canonical** (interlocked with LLM summary regen; dev ambiguous due to corpus-pruning artifact) | shipped in #1040 + #1041 P1 #3-#4 hardening |
 
 ### What landed this session arc (post-v1.27.0)
 
@@ -38,9 +38,13 @@
 | #1035 | fix(train): accept `content` field in pointwise rows |
 | #1036 | fix(reranker): detect ONNX input shape, skip token_type_ids for RoBERTa-family |
 | #1037 | feat(evals): ColBERT 2-stage + RRF fusion eval tool |
-| #1038 | feat(cli): uniform JSON output envelope across all commands (Task #17) |
+| #1038 | feat(cli): uniform JSON output envelope across all commands (Task #17, BREAKING) |
 | #1039 | chore(deps): bump rustls-webpki 0.103.10 → 0.103.12 (Dependabot #7, #8) |
-| #1040 | fix(parser): doc enrichment for short chunks (truncated_gold, +6.4/+6.5pp R@5) — open |
+| #1040 | fix(parser): doc enrichment for short chunks (truncated_gold lever) |
+| #1041 | chore(audit): land 26 P1 fixes from post-v1.27.0 audit |
+| #1045 | chore(audit): land 47 P2 fixes from post-v1.27.0 audit (wave 1) |
+| #1046 | chore(audit): land 69 P3 fixes from post-v1.27.0 audit (audit complete) |
+| #1050 | chore: Release v1.28.0 |
 
 Reranker V2 work also produced commits in the private `cqs-training` repo (research/reranker.md updated with Phase 1/2/3 + ColBERT results + post-mortem).
 
@@ -69,13 +73,13 @@ The Tier 3 chunker fix unlocked R@5 lift; remaining options — pick by appetite
 
 ## Architecture state
 
-- **Version:** v1.27.0 (live on crates.io + GitHub Releases with binaries)
+- **Version:** v1.28.0 (live on crates.io 2026-04-19; GitHub Release workflow building binaries)
 - **MSRV:** 1.95
 - **Local binary:** built from main; reinstall after merge with `cargo build --release --features gpu-index && systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch`
 - **Index:** 14,734 chunks (BGE-large; reindexed 2026-04-18 with chunker doc fallback). 7,018 LLM summaries cached (47.7% coverage; remainder are non-callable chunks not eligible for SQ-6).
 - **Production R@5 on v3.v2 test (post-#1040):** **67.0%** (was 63.3% at v1.27.0 shipping)
-- **Open PRs:** #1040 (chunker doc fallback)
-- **Open issues:** 5 — all tier-3 deferred or external-blocked: #106 (ort upstream RC), #717 (HNSW lib swap), #916 (mmap SPLADE — depriorotized behind #917 which shipped), #956 (CoreML/ROCm needs non-Linux CI), #255 (pre-built ref packages design)
+- **Open PRs:** none (audit + release queue cleared)
+- **Open issues:** 5 pre-audit (tier-3 deferred / external-blocked: #106, #255, #717, #916, #956) plus 6 newly-filed audit deferrals (#1042-#1044 hard P4, #1047-#1049 trivial P4)
 - **cqs-watch daemon:** running latest binary (post-#1040 chunker fix installed at `~/.cargo/bin/cqs`, daemon restarted 2026-04-18)
 - **Pending uncommitted:** 4 files in `evals/queries/colbert_rerank_{test,dev}.{json,events.jsonl}` — eval artifacts from PR #1037 work; intentionally not staged (reproducible from script)
 
