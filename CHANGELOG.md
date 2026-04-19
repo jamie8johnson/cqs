@@ -7,9 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-04-19
+
+The "post-audit" release — closes the post-v1.27.0 16-category audit (150 findings landed across PRs #1041 / #1045 / #1046; 6 hard-deferred items filed as issues #1042-#1044, #1047-#1049). Plus the chunker doc-fallback retrieval lift, uniform JSON envelope across all CLI/batch/daemon-socket commands, and a v21 schema migration.
+
+**Eval impact:** v3.v2 test R@5 lifted from 63.3% (v1.27.0 canonical) → **67.0%** (chunker doc fallback in #1040 + LLM summary regen). Dev R@5 from 65.1% baseline → 71.6%. Combined with the parser hardening, attribute-noise rejection (`#[derive]`, `#include`, `*ptr` no longer treated as comment-like for the short-chunk fallback), and walk-back blank-line budget fix (P1 #4) the chunker now correctly enriches short SQL `CREATE TABLE`s, type aliases, and short helpers with their leading comment context.
+
+### Added
+
+- **Uniform JSON output envelope** across every CLI / batch / daemon-socket command. **BREAKING:** every JSON-emitting handler now wraps as `{"data": <payload>, "error": null, "version": 1}` (success) or `{"data": null, "error": {"code": "...", "message": "..."}, "version": 1}` (batch / daemon failures). Agents parse one shape instead of per-command logic. Error code taxonomy: `not_found`, `invalid_input`, `parse_error`, `io_error`, `internal` — now exposed as a `pub enum ErrorCode` with `#[non_exhaustive]` (PR #1038, P2 #54).
+- **Chunker doc fallback for short chunks** (`extract_doc_fallback_for_short_chunk` in `src/parser/chunk.rs`). Chunks <5 lines that ship without leading comment context (SQL `CREATE TABLE`, type aliases, tiny helpers) now pick up their preceding `--`/`//`/`#`/`/*`/`(*` block as `doc`. Sibling-walk in `extract_doc_comment` tolerates whitespace-only siblings (capped at 4) so blank-line gaps don't break the lookup. Reverse byte-walk bounds per-chunk work to O(8 lines) instead of O(N²) for heading-dense files. (PRs #1040 + #1041 P1 #3-#4 + #1045 P2 #43.)
+- **ColBERT 2-stage rerank eval tool** (`evals/colbert_rerank_eval.py`) — PyLate-backed A/B harness for `mxbai-edge-colbert-v0-32m`, supports pure ColBERT replacement, RRF fusion, and α-sweep. Default OFF in production (test α=0.9 R@5 +2.8pp / dev R@5 +0.9pp marginal-positive only) (PR #1037).
+- **Reranker V2 Phase 1** (calibration gate, PR #1031): 1000 sampled triples labeled by both Gemma 4 31B (vLLM local) and Claude Haiku → 98.3% inter-rater agreement, kappa 0.97, GEMMA_ONLY decision for the 200k labeling pass. Phases 2/3 ran in `~/training-data/`; Phase 3 produced a negative result (−24pp R@5) so weights stay local — full post-mortem in `~/training-data/research/reranker.md`.
+- **`cqs eval` first-class A/B harness** with `--baseline X.json --tolerance N` regression gate (PR #1027 / #1030). Replaces ad-hoc `evals/*.py` scripts for shipped flow; integrates with `cqs model swap` for back-to-back eval.
+- **`cqs model { show, list, swap }`** subcommand for runtime embedder model swapping with index backup/restore (PR #1030).
+- **`cqs ping` daemon healthcheck** (PR #1027) returning daemon model, dim, uptime, query/error counts.
+- **`cqs doctor --verbose`** machine-readable structured introspection (PR #1027). Now also emits one JSON envelope when `--json` is set, with text checks suppressed (P2 #27).
+- **`cqs stats` field expansion** (PR #1027): adds `schema_version`, `total_files`, `total_chunks`, etc. for diagnostic completeness.
+- **17 new env-var knobs** for tuning resource limits and pool sizes — see README env-var table for the full list (P2 / P3): `CQS_BATCH_DATA_IDLE_MINUTES`, `CQS_RERANK_OVER_RETRIEVAL`, `CQS_RERANK_POOL_MAX`, `CQS_FTS_NORMALIZE_MAX`, `CQS_CALL_GRAPH_MAX_EDGES`, `CQS_TYPE_GRAPH_MAX_EDGES`, `CQS_PARSER_MAX_FILE_SIZE`, `CQS_PARSER_MAX_CHUNK_BYTES`, `CQS_CONVERT_MAX_PAGES`, `CQS_CONVERT_MAX_WALK_DEPTH`, `CQS_MAX_DIFF_BYTES`, `CQS_MAX_DISPLAY_FILE_SIZE`, `CQS_READ_MAX_FILE_SIZE`, `CQS_DAEMON_MAX_RESPONSE_BYTES`, `CQS_QUERY_CACHE_MAX_SIZE`, `CQS_MAX_DAEMON_CLIENTS`, `CQS_CHAT_HISTORY`, `CQS_TELEMETRY_REDACT_QUERY`.
+- **Embedder hygiene** (PR #1026): index-aware model resolution (trust `index.db` recorded model over `CQS_EMBEDDING_MODEL`), hard dim-mismatch error on read.
+- **Proactive GC** (PR #1026): startup prune of orphan chunks, retroactive `.gitignore` enforcement, idle-time periodic GC.
+- **`.gitattributes` + LF renormalize** (PR #1029) — closes the WSL CRLF tax across the repo.
+
 ### Changed
 
-- **BREAKING: Uniform JSON output envelope** (Task #17). Every JSON-emitting CLI / batch / daemon-socket response now wraps its payload as `{"data": <payload>, "error": null, "version": 1}` (success) or `{"data": null, "error": {"code": "...", "message": "..."}, "version": 1}` (batch / daemon failures). Agents parse one shape across all ~80 emit sites instead of per-command shapes (`{"results":[]}`, `{"queries":[]}`, raw arrays, `{"error":"..."}`). Error code taxonomy: `not_found`, `invalid_input`, `parse_error`, `io_error`, `internal`. The wrap is centralized in `src/cli/json_envelope.rs` (CLI top-level via `emit_json`) and `src/cli/batch/mod.rs::write_json_line` (batch + daemon-socket chokepoint). The daemon socket transport `{"status","output"}` framing is unchanged — its `output` field now carries the envelope. Wire-format `version: 1` bumps on any future breaking change to inner payload shapes.
+- **Schema bumped to v21** (P2 #29): adds `parser_version` column on `chunks`. The `batch_insert_chunks` UPDATE-WHERE clause now refreshes a row when EITHER `content_hash` OR `parser_version` differs — closes the silent-skip-on-incremental-reindex regression class. Migration is automatic; users on v20 see a brief reindex on first open.
+- **Reranker V2 reranker.rs ONNX shape detection** (PR #1036): inputs dict built by introspecting `session.inputs()` at init time so RoBERTa-family models (no `token_type_ids`) work alongside BERT-family. Closes the per-model wiring gap that broke UniXcoder.
+- **Phase 3 training script content-field acceptance** (PR #1035): pointwise loader accepts both `passage` and `content` so synthetic and real Phase 2 outputs both deserialize.
+- **API renames** (P2 #39): `Cli::expand` → `Cli::expand_parent` (disambiguates from `GatherArgs::expand`); `BlameArgs::depth` → `commits` (`-n`/`--commits`); `TrainData::max_commits` from `usize` (`0 = unlimited`) → `Option<usize>` (`None = unlimited`); `TrainPairs::output: PathBuf` (was `String`). Plus `--stdin` added to `cqs affected`.
+- **Daemon defaults**: `MAX_CONCURRENT_DAEMON_CLIENTS` 64 → 16 (mutex-serialized dispatch never benefits from 64; 16 is the right sweet spot for stack pressure) (P3 #125). `OnceLock`s for daemon `audit_state` and `config` replaced with TTL'd `RefCell` (audit_state 30s, config 5min) so config edits and audit-mode auto-expire are picked up without daemon restart (P2 #69).
+- **`cqs doctor --json`** no longer emits text checks before the JSON envelope — produces one parseable JSON document. Text mode unchanged (P2 #27).
+- **`cqs cache stats --json`** `total_size_mb` now numeric `f64` instead of string (P1 #11).
+- **`cqs eval`** `KDelta` field rename `r1`/`r5`/`r20` → `r_at_1`/`r_at_5`/`r_at_20` to match `r_at_K` convention used elsewhere (P1 #26).
+- **LLM sandbox marker** switched from triple-backtick fence to per-prompt 128-bit unique sentinel (`<<<UNTRUSTED_CONTENT_FENCE_b3:{nonce}>>>`). `sanitize_untrusted` collapses any triple-backtick run AND rewrites literal sentinel-shaped tokens with `NESTED_` prefix (P2 #34, sandbox escape closed).
+- **`Store::search_by_name`** tie-breaker now `(file, line_start, id)` tuple — line "2" wins over line "10" in the same file (P3 #122).
+- **`is_safe_executable_path`** uses runtime-derived dangerous prefixes via `Path::starts_with()`; Windows-only python allowlist for `C:\Python*`, `C:\Program Files\Python*`, `%LOCALAPPDATA%\Programs\Python\*` (P2 #35).
+- **Daemon socket umask 0o077** wrap around `UnixListener::bind` (P1 #21) closes the bind-then-chmod TOCTOU window.
+- **Cross-language SPLADE α**: 1.00 → 0.10 carried from v1.26.1 (+1.8pp R@1 on v3 test).
+
+### Fixed
+
+- **150 audit findings** from the post-v1.27.0 16-category audit (PRs #1041 / #1045 / #1046). Highlights:
+  - `BoundedScoreHeap::push` evicted the *best* tied-score id instead of the *worst* — non-deterministic top-K under HashMap-fed input (P1 #5)
+  - `function_calls` rows leaked on every incremental delete path (`prune_missing`, `delete_by_origin`, `delete_phantom_chunks`) — ghost callers in `cqs callers`/`callees`/`dead` (P1 #17)
+  - `dot()` for neighbor search silently truncated on dim mismatch (P1 #6)
+  - Chunker doc fallback false-positives on `#[derive]` / `#include` / `*ptr` (P1 #3)
+  - Chunker walk-back loop spent budget on blank lines then discarded them (P1 #4)
+  - Migration `UPDATE schema_version` silently no-op'd if metadata row missing — switched to `INSERT ... ON CONFLICT(key) DO UPDATE` (P1 #16)
+  - `EmbeddingCache::open` swallowed chmod failures (P1 #18); `cqs read` had a path-existence oracle (P1 #20)
+  - `acquire_index_lock` race that could leave two writers (P2 #31)
+  - HNSW save backup-rename failure left rollback path with no original to restore (P2 #30)
+  - `prune_all` Phase 1 read outside the write transaction → TOCTOU vs concurrent watch reindex (P2 #32)
+  - `wrap_value` cloned multi-MB `serde_json::Value` per daemon record — refactored to `&Value` and streaming serializer (P2 #28)
+  - Daemon batch error envelope leaked raw HTTP bodies → `redact_error` helper added (P2 #33)
+  - `EmbeddingCache` and `QueryCache` had no `Drop` impl — added WAL checkpoint on drop (P2 #70)
+  - Reindex pipeline re-parsed every chunk to extract call edges — `parse_file_all_with_chunk_calls` produces both shapes from one Pass-2 walk (P2 #63)
+  - `chat_history` file now created with `0o600` chmod + `clear-history` meta-command (P3 #137)
+  - 17 magic constants converted to env-overridable named consts; `Store::list_stale_files` no longer silently treats metadata-failure as fresh; many tracing fields gain `path`/`code`/structured payloads
+- **Native Windows / cross-platform groundwork** filed as issues #1042 (slow-mmap detection), #1043 (Windows network drives), #1044 (clean shutdown via `SetConsoleCtrlHandler`)
+
+### Removed
+
+- **`evals/schema.rs`** — orphan duplicate of the production eval row types. `cqs::eval::schema` is now the single source of truth (P2 #61).
+
+### Performance
+
+- **Streaming SPLADE / enrichment hash** (PR #1018): byte-identical output, ~5-10MB peak memory drop on default ensembledistil.
+- **Recency-based watch prune** (PR #1015): O(n) `stat()`-per-entry replaced with in-memory `SystemTime` comparison; WSL 9P mounts no longer stall on prune.
+- **`code_types()`** cached via `LazyLock` (P3 #128); `extract_types` borrows `&str` instead of cloning into `HashSet<String>` (P3 #129).
+- **SQL placeholders** — three production sites now use the cached `make_placeholders` helper (P3 #130).
 
 ## [1.27.0] - 2026-04-16
 
