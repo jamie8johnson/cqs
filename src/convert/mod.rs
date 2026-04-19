@@ -140,11 +140,17 @@ fn resolve_on_path(name: &str) -> Option<std::path::PathBuf> {
 
 /// Reject a resolved binary path if it is in a user-writable directory.
 ///
-/// SEC-V1.25-10:
-///   * Paths under `/tmp/` or `/var/tmp/` are rejected outright.
+/// SEC-V1.25-10 + audit P2 #35 (cross-platform):
+///   * Paths under `/tmp/`, `/var/tmp/`, the OS temp dir (`std::env::temp_dir()`),
+///     or the user cache dir (`dirs::cache_dir()`) are rejected outright. The
+///     comparison uses `Path::starts_with()` (component-wise) so Windows paths
+///     under `%TEMP%` / `%LOCALAPPDATA%\Temp` are caught too.
 ///   * On Unix, paths whose parent directory is group- or world-writable
 ///     (mode bits `022`) are rejected — this catches PATH entries like
 ///     `$HOME/.local/bin` that have been accidentally made writable.
+///   * On non-Unix (Windows), a python interpreter (`python*`) is additionally
+///     restricted to a small allowlist of trusted install roots. See
+///     [`is_safe_python_path_windows`].
 ///   * A binary that cannot be canonicalized is treated as unsafe.
 pub(crate) fn is_safe_executable_path(p: &std::path::Path) -> bool {
     let canonical = match p.canonicalize() {
@@ -154,11 +160,16 @@ pub(crate) fn is_safe_executable_path(p: &std::path::Path) -> bool {
             return false;
         }
     };
-    let s = canonical.to_string_lossy();
-    const DANGEROUS_PREFIXES: &[&str] = &["/tmp/", "/var/tmp/"];
-    if DANGEROUS_PREFIXES.iter().any(|pfx| s.starts_with(pfx)) {
-        return false;
+
+    // Build the set of dangerous parent prefixes at runtime. Component-wise
+    // `Path::starts_with` is used (not raw substring) so platform-correct
+    // separators are handled.
+    for prefix in dangerous_parent_dirs() {
+        if canonical.starts_with(&prefix) {
+            return false;
+        }
     }
+
     #[cfg(unix)]
     if let Some(parent) = canonical.parent() {
         if let Ok(md) = std::fs::metadata(parent) {
@@ -168,7 +179,114 @@ pub(crate) fn is_safe_executable_path(p: &std::path::Path) -> bool {
             }
         }
     }
+
+    // On non-Unix (Windows): if this looks like a python interpreter, force
+    // it through the allowlist. We have no DACL inspection here — the
+    // allowlist is the only positive signal that the binary belongs to a
+    // legitimate install.
+    #[cfg(not(unix))]
+    {
+        if is_python_basename(&canonical) && !is_safe_python_path_windows(&canonical) {
+            return false;
+        }
+    }
+
     true
+}
+
+/// Collects the set of parent directory prefixes that should never be allowed
+/// to host a trusted executable. Includes:
+///   * Hard-coded `/tmp/` and `/var/tmp/` (Unix conventions; cheap to check
+///     even on Windows).
+///   * Whatever `std::env::temp_dir()` resolves to at runtime (covers
+///     `$TMPDIR` on Unix, `%TEMP%` / `%TMP%` / `C:\Windows\Temp` on Windows).
+///   * `dirs::cache_dir()` (covers `$XDG_CACHE_HOME` /
+///     `~/Library/Caches` / `%LOCALAPPDATA%`).
+///
+/// Each prefix is canonicalized when possible so the eventual
+/// `Path::starts_with` comparison is on canonical-vs-canonical paths.
+fn dangerous_parent_dirs() -> Vec<std::path::PathBuf> {
+    let mut out: Vec<std::path::PathBuf> = Vec::with_capacity(4);
+    for p in [
+        std::path::Path::new("/tmp"),
+        std::path::Path::new("/var/tmp"),
+    ] {
+        out.push(p.to_path_buf());
+        if let Ok(c) = p.canonicalize() {
+            out.push(c);
+        }
+    }
+    let temp = std::env::temp_dir();
+    if let Ok(c) = temp.canonicalize() {
+        out.push(c);
+    } else {
+        out.push(temp);
+    }
+    if let Some(cache) = dirs::cache_dir() {
+        if let Ok(c) = cache.canonicalize() {
+            out.push(c);
+        } else {
+            out.push(cache);
+        }
+    }
+    out
+}
+
+/// True if the file's basename matches `python`, `python3`, `python.exe`, etc.
+#[cfg(not(unix))]
+fn is_python_basename(p: &std::path::Path) -> bool {
+    let Some(file) = p.file_name().and_then(|f| f.to_str()) else {
+        return false;
+    };
+    let lower = file.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
+    stem == "python" || stem == "python3" || stem == "py" || stem.starts_with("python3.")
+}
+
+/// Windows allowlist for python interpreters. A canonical path is accepted
+/// only if it lives under one of:
+///   * `C:\Python*` (any drive letter)
+///   * `C:\Program Files\Python*` (or `Program Files (x86)`)
+///   * `%LOCALAPPDATA%\Programs\Python\*`
+///
+/// This is intentionally narrow. Anything outside these roots — `%TEMP%`,
+/// downloads, shared workspaces — is rejected. Operators with custom
+/// install locations should symlink (or PATH-prefix) into one of the
+/// approved roots.
+#[cfg(not(unix))]
+fn is_safe_python_path_windows(canonical: &std::path::Path) -> bool {
+    let lossy = canonical.to_string_lossy().to_ascii_lowercase();
+
+    // C:\PythonNN, D:\PythonNN, ...
+    // The component immediately under the drive letter must start with "python".
+    let mut comps = canonical.components();
+    if let Some(std::path::Component::Prefix(_)) = comps.next() {
+        // skip RootDir
+        let _ = comps.next();
+        if let Some(std::path::Component::Normal(first)) = comps.next() {
+            if let Some(s) = first.to_str() {
+                if s.to_ascii_lowercase().starts_with("python") {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // C:\Program Files\Python311\python.exe (and (x86) variant)
+    if lossy.contains("\\program files\\python") || lossy.contains("\\program files (x86)\\python")
+    {
+        return true;
+    }
+
+    // %LOCALAPPDATA%\Programs\Python\PythonNN\python.exe
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let prefix = format!("{}\\programs\\python\\", local.to_ascii_lowercase());
+        if lossy.starts_with(&prefix) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Document format detected from file extension.
@@ -668,5 +786,95 @@ mod tests {
             !is_safe_executable_path(bogus),
             "nonexistent path must fail canonicalize and be rejected"
         );
+    }
+
+    /// Audit P2 #35: a binary dropped into the OS temp dir must be rejected
+    /// regardless of platform — the prior code only rejected hard-coded
+    /// `/tmp/` and `/var/tmp/`. `std::env::temp_dir()` covers the platform
+    /// convention (`%TEMP%` on Windows, `$TMPDIR` on macOS, `/tmp` on Linux),
+    /// so the test runs on every host.
+    #[test]
+    fn is_safe_executable_path_rejects_runtime_temp_dir() {
+        let dir = tempfile::tempdir_in(std::env::temp_dir()).unwrap();
+        let fake = dir.path().join("fake_binary");
+        std::fs::write(&fake, b"placeholder").unwrap();
+        assert!(
+            !is_safe_executable_path(&fake),
+            "binary in std::env::temp_dir() must be rejected: {}",
+            fake.display()
+        );
+    }
+
+    /// Audit P2 #35: same as above but specifically gated on Windows so the
+    /// test name pins the threat model (`%TEMP%\python.exe` PATH injection).
+    #[test]
+    #[cfg(windows)]
+    fn is_safe_executable_path_rejects_windows_temp_python() {
+        let dir = tempfile::tempdir_in(std::env::temp_dir()).unwrap();
+        let exe = dir.path().join("python.exe");
+        std::fs::write(&exe, b"MZ\x90\x00").unwrap();
+        assert!(
+            !is_safe_executable_path(&exe),
+            "python.exe under %TEMP% must be rejected (audit P2 #35): {}",
+            exe.display()
+        );
+    }
+
+    /// Audit P2 #35: the python-basename helper recognizes the documented
+    /// interpreter names so the Windows allowlist can be applied.
+    #[test]
+    #[cfg(not(unix))]
+    fn is_python_basename_matches_documented_names() {
+        use std::path::PathBuf;
+        for name in &[
+            "python.exe",
+            "python3.exe",
+            "python",
+            "python3",
+            "python3.12.exe",
+            "py.exe",
+        ] {
+            let p = PathBuf::from(name);
+            assert!(
+                is_python_basename(&p),
+                "{name} should be recognized as a python interpreter"
+            );
+        }
+        for name in &["pwsh.exe", "powershell.exe", "ruby.exe", "node.exe"] {
+            let p = PathBuf::from(name);
+            assert!(
+                !is_python_basename(&p),
+                "{name} should NOT be classified as python"
+            );
+        }
+    }
+
+    /// Audit P2 #35: the Windows allowlist for python interpreters must
+    /// reject anything that doesn't live under the documented install roots.
+    #[test]
+    #[cfg(not(unix))]
+    fn is_safe_python_path_windows_allowlist() {
+        use std::path::PathBuf;
+        for safe in &[
+            r"C:\Python311\python.exe",
+            r"D:\Python\python.exe",
+            r"C:\Program Files\Python311\python.exe",
+            r"C:\Program Files (x86)\Python310\python.exe",
+        ] {
+            assert!(
+                is_safe_python_path_windows(&PathBuf::from(safe)),
+                "{safe} should be in the allowlist"
+            );
+        }
+        for bad in &[
+            r"C:\Users\u\AppData\Local\Temp\python.exe",
+            r"C:\Users\u\Downloads\python.exe",
+            r"C:\evil\python.exe",
+        ] {
+            assert!(
+                !is_safe_python_path_windows(&PathBuf::from(bad)),
+                "{bad} should NOT be in the allowlist"
+            );
+        }
     }
 }

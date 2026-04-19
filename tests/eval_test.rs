@@ -210,6 +210,7 @@ fn seed_chunk(name: &str, file: &str, hash: &str) -> Chunk {
         parent_id: None,
         window_idx: None,
         parent_type_name: None,
+        parser_version: 0,
     }
 }
 
@@ -275,4 +276,122 @@ fn test_search_pipeline_mock_embedder() {
         "Exact embedding match should rank #1, got top-3 {:?}",
         top_names
     );
+}
+
+// ============ Audit P2 #61: schema field coverage =====================
+//
+// `cqs::eval::schema::EvalQuery` is the single source of truth for the v3
+// query envelope. Adding a new field to the on-disk JSON without modeling
+// it in the schema would silently drop it under serde's default
+// `ignore-unknown` behavior — the bug class the audit flagged.
+//
+// This test parses every query in `evals/queries/v3_dev.v2.json` twice:
+// once through the strongly typed `EvalQuery` (asserts no shape regression),
+// once as a generic `Value` whose top-level keys are then checked against
+// the schema's known field set. Any unknown key fails the test with a
+// pointer to which query and which field.
+
+/// Set of every field declared on `cqs::eval::schema::EvalQuery`.
+///
+/// Hardcoded mirror of the struct definition. If you add a field to the
+/// schema, add it here too. The deny test below also catches the inverse
+/// (known field present in JSON but missing from the schema) by asserting
+/// every JSON key is in this set.
+const EVAL_QUERY_KNOWN_FIELDS: &[&str] = &[
+    "query",
+    "category",
+    "gold_chunk",
+    "source",
+    "judges",
+    "metadata",
+    "pool_size",
+    "tier",
+    "gold_chunk_source",
+    "tags",
+    "_unresolved",
+];
+
+/// Same idea for `GoldChunk` — every key in the on-disk gold chunk must
+/// be modeled or this test fails.
+const GOLD_CHUNK_KNOWN_FIELDS: &[&str] = &[
+    "name",
+    "origin",
+    "line_start",
+    "id",
+    "line_end",
+    "chunk_type",
+    "language",
+];
+
+/// Audit P2 #61c: every row of `v3_dev.v2.json` must deserialize through
+/// `cqs::eval::schema::EvalQuery`, and every JSON key in each row must be
+/// modeled (a runtime `deny_unknown_fields` equivalent that doesn't
+/// require a parallel test-only schema).
+#[test]
+fn test_v3_dev_v2_schema_covers_all_fields() {
+    use cqs::eval::schema::EvalQuery;
+    use serde::Deserialize;
+    use std::collections::HashSet;
+
+    let path = "evals/queries/v3_dev.v2.json";
+    let raw = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            // CI environments without the dataset skip silently.
+            eprintln!("skipping schema-coverage test: {path} not readable ({e})");
+            return;
+        }
+    };
+
+    let envelope: serde_json::Value =
+        serde_json::from_str(&raw).expect("v3_dev.v2.json must be valid JSON");
+    let queries_array = envelope
+        .get("queries")
+        .and_then(|v| v.as_array())
+        .expect("v3_dev.v2.json must have a top-level `queries` array");
+
+    let known_eval: HashSet<&str> = EVAL_QUERY_KNOWN_FIELDS.iter().copied().collect();
+    let known_gold: HashSet<&str> = GOLD_CHUNK_KNOWN_FIELDS.iter().copied().collect();
+
+    let mut typed_count = 0usize;
+    for (idx, raw_query) in queries_array.iter().enumerate() {
+        // 1) Strong-type deserialization — must succeed.
+        let _typed: EvalQuery = EvalQuery::deserialize(raw_query.clone()).unwrap_or_else(|e| {
+            panic!(
+                "EvalQuery #{idx} failed to deserialize from v3_dev.v2.json: {e}\nrow = {raw_query}",
+            )
+        });
+
+        // 2) Field-coverage check — every JSON key must be modeled.
+        let obj = raw_query
+            .as_object()
+            .unwrap_or_else(|| panic!("query #{idx} must be a JSON object"));
+        for key in obj.keys() {
+            assert!(
+                known_eval.contains(key.as_str()),
+                "query #{idx} has unknown field {key:?} not modeled in EvalQuery — \
+                 update src/eval/schema.rs and EVAL_QUERY_KNOWN_FIELDS in this test",
+            );
+        }
+
+        // 3) Same coverage check on the nested gold_chunk.
+        if let Some(gold) = obj.get("gold_chunk").and_then(|v| v.as_object()) {
+            for key in gold.keys() {
+                assert!(
+                    known_gold.contains(key.as_str()),
+                    "query #{idx} gold_chunk has unknown field {key:?} not modeled in \
+                     GoldChunk — update src/eval/schema.rs and GOLD_CHUNK_KNOWN_FIELDS \
+                     in this test",
+                );
+            }
+        }
+
+        typed_count += 1;
+    }
+
+    assert!(
+        typed_count > 0,
+        "v3_dev.v2.json had zero queries — fixture is empty or malformed",
+    );
+    eprintln!("v3_dev.v2.json schema coverage: {typed_count} queries, all fields modeled");
 }

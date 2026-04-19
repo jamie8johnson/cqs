@@ -665,6 +665,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CQS_API_BASE` | (none) | LLM API base URL (legacy alias for `CQS_LLM_API_BASE`) |
+| `CQS_BATCH_DATA_IDLE_MINUTES` | `30` | Minutes of inactivity before `cqs batch` / `cqs chat` evicts heavy data caches (HNSW, SPLADE index, call graph, test chunks, file set, refs). Independent of the ONNX-session sweep above. `0` disables. |
 | `CQS_BATCH_IDLE_MINUTES` | `5` | Minutes of inactivity before `cqs batch` / `cqs chat` clears ONNX sessions (`0` disables eviction). |
 | `CQS_BUSY_TIMEOUT_MS` | `5000` | SQLite busy timeout in milliseconds |
 | `CQS_CACHE_MAX_SIZE` | `1073741824` (1 GB) | Global embedding cache size limit |

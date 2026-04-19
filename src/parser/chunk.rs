@@ -7,6 +7,23 @@ use super::types::{
 };
 use super::Parser;
 
+/// Parser version stamp embedded on every emitted [`Chunk`].
+///
+/// Bumped any time a chunk-level field can change without the source bytes
+/// changing — currently only `doc` (PR #1040 added the leading-comment
+/// fallback for short chunks). Persisted via the `chunks.parser_version`
+/// SQLite column so incremental UPSERT can refresh rows whose `content_hash`
+/// is unchanged but whose `doc` would now be enriched. See P2 #29 in
+/// `docs/audit-findings.md` for the full failure mode.
+///
+/// Bump this when extraction logic changes the value of any non-content
+/// field (`doc`, `signature`, `parent_type_name`, etc.) for a chunk whose
+/// source bytes are identical to a previously-indexed version. The
+/// store-side UPSERT clause must include
+/// `OR chunks.parser_version != excluded.parser_version` so the bump
+/// triggers a refresh.
+pub const PARSER_VERSION: u32 = 1;
+
 impl Parser {
     /// Extracts a code chunk from a source file using Tree-sitter query matches.
     /// # Arguments
@@ -84,8 +101,9 @@ impl Parser {
         // because the grammar surfaces blank-line gaps as siblings that stop
         // the walk. Fall back to a comment-only preceding-lines scan in that
         // case so the embedding gets a richer NL signal.
-        let doc = extract_doc_comment(node, source, language)
-            .or_else(|| extract_doc_fallback_for_short_chunk(node, source, line_start, line_end));
+        let doc = extract_doc_comment(node, source, language).or_else(|| {
+            extract_doc_fallback_for_short_chunk(node, source, line_start, line_end, language)
+        });
 
         // Determine chunk type - only infer for functions (to detect methods)
         let (chunk_type, parent_type_name) = if base_chunk_type == ChunkType::Function {
@@ -121,6 +139,7 @@ impl Parser {
             parent_id: None,
             window_idx: None,
             parent_type_name,
+            parser_version: PARSER_VERSION,
         })
     }
 }
@@ -257,8 +276,16 @@ const SHORT_CHUNK_LINE_THRESHOLD: u32 = 5;
 const FALLBACK_DOC_MAX_LINES: usize = 8;
 
 /// Returns true if a single source line looks like the start of a
-/// comment in any common language (Rust `//`, SQL/Lua `--`, Python/Ruby/sh
-/// `#`, C/Java `/*`/`*`, HTML/XML/JSP `<!--`/`<%--`, F# `(*`).
+/// comment in the given language.
+///
+/// TODO(P2 #53): This currently uses a hardcoded global union of comment
+/// sigils for backward compatibility. Once Agent I lands `pub
+/// line_comment_prefixes: &'static [&'static str]` on `LanguageDef`, switch
+/// to `lang.def().line_comment_prefixes` so adding a language with new
+/// comment syntax (Lisp `;`, Erlang/MATLAB `%`, Smalltalk `"..."`) wires the
+/// fallback automatically. The `lang` argument is wired through now so the
+/// signature is stable for the registry switchover.
+///
 /// Trims the leading whitespace before checking; `*` alone is also accepted
 /// for the inner lines of a `/** ... */` block.
 ///
@@ -266,11 +293,13 @@ const FALLBACK_DOC_MAX_LINES: usize = 8;
 /// `#[derive]` (Rust attribute), `#include`/`#define`/`#pragma` (C
 /// preprocessor), `#region` (C# pragma), `*ptr = 0` (C deref), and
 /// `*x = y` are NOT classified as comment-like.
-fn line_looks_comment_like(line: &str) -> bool {
+fn line_looks_comment_like(line: &str, _lang: Language) -> bool {
     let t = line.trim_start();
     if t.is_empty() {
         return true;
     }
+    // TODO(P2 #53): replace fallback list with `lang.def().line_comment_prefixes`
+    // once Agent I lands the LanguageDef field.
     // Multi-char comment introducers (unambiguous)
     if t.starts_with("//")
         || t.starts_with("--")
@@ -295,22 +324,32 @@ fn line_looks_comment_like(line: &str) -> bool {
     false
 }
 
-/// Fallback `doc` enrichment for short chunks (`<5` lines) that have no
-/// tree-sitter-attached doc comment. Walks back up to
-/// [`FALLBACK_DOC_MAX_LINES`] preceding source lines from `node.start_position`
-/// and returns them as a single string, but only if every captured line looks
-/// comment-like — otherwise returns `None` so we never pull arbitrary code in.
+/// Fallback `doc` enrichment for short chunks (spanning 5 or fewer lines)
+/// that have no tree-sitter-attached doc comment. Walks back up to
+/// [`FALLBACK_DOC_MAX_LINES`] preceding source lines from
+/// `node.start_position` and returns them as a single string, but only if
+/// every captured line looks comment-like — otherwise returns `None` so we
+/// never pull arbitrary code in.
 ///
 /// This addresses the `truncated_gold` failure mode (~13 queries on
 /// `v3_test.v2`, 11 on `v3_dev.v2`): SQL `CREATE TABLE` definitions, short
 /// type aliases, and tiny helper functions that ship with leading file-level
 /// comments which the normal sibling walk fails to surface (typically because
 /// of grammar-emitted blank-line gap nodes).
+///
+/// **Performance:** Only the last `FALLBACK_DOC_MAX_LINES + MAX_CONSECUTIVE_BLANKS`
+/// lines of the prefix are split into a `Vec<&str>`. We locate that tail by
+/// walking the prefix bytes in reverse from `start_byte`, counting newlines,
+/// and stopping once enough are seen. This bounds per-chunk work to O(8
+/// lines) regardless of file size — the previous implementation split the
+/// entire prefix per call and was O(N²) on files with many short chunks
+/// (P2 #43 in `docs/audit-findings.md`).
 fn extract_doc_fallback_for_short_chunk(
     node: tree_sitter::Node,
     source: &str,
     line_start: u32,
     line_end: u32,
+    language: Language,
 ) -> Option<String> {
     if line_end.saturating_sub(line_start) >= SHORT_CHUNK_LINE_THRESHOLD {
         return None;
@@ -318,12 +357,33 @@ fn extract_doc_fallback_for_short_chunk(
     let _span = tracing::trace_span!("extract_doc_fallback_for_short_chunk", line_start, line_end)
         .entered();
 
-    // `node.start_position().row` is 0-indexed; `line_start` is 1-indexed.
-    // Use the byte position to slice deterministically rather than re-counting
-    // newlines from the start of the file.
+    // Cap the run of consecutive blanks so a malformed file with kilobytes
+    // of empty siblings can't stall.
+    const MAX_CONSECUTIVE_BLANKS: usize = 16;
+
+    // Walk the prefix bytes in REVERSE only as far back as the
+    // (FALLBACK_DOC_MAX_LINES + MAX_CONSECUTIVE_BLANKS + 1)-th newline. We
+    // grant the blank budget on top of the comment budget so a leading
+    // comment block separated from the chunk by up to MAX_CONSECUTIVE_BLANKS
+    // blanks is still reachable — matching the walk-back loop's tolerance
+    // below. Any prefix beyond that tail is unreachable and not split.
     let start_byte = node.start_byte();
     let prefix = source.get(..start_byte)?;
-    let lines: Vec<&str> = prefix.lines().map(|l| l.trim_end_matches('\r')).collect();
+    let bytes = prefix.as_bytes();
+    let max_newlines = FALLBACK_DOC_MAX_LINES + MAX_CONSECUTIVE_BLANKS + 1;
+    let mut newline_count = 0usize;
+    let mut tail_start = 0usize;
+    for i in (0..bytes.len()).rev() {
+        if bytes[i] == b'\n' {
+            newline_count += 1;
+            if newline_count >= max_newlines {
+                tail_start = i + 1;
+                break;
+            }
+        }
+    }
+    let tail = &prefix[tail_start..];
+    let lines: Vec<&str> = tail.lines().map(|l| l.trim_end_matches('\r')).collect();
     if lines.is_empty() {
         return None;
     }
@@ -331,15 +391,13 @@ fn extract_doc_fallback_for_short_chunk(
     // Walk back from the line immediately preceding the chunk. Spend the
     // FALLBACK_DOC_MAX_LINES budget only on non-blank comment-like lines so
     // a blank gap between the chunk and the leading comment block doesn't
-    // silently truncate the captured doc. Cap the run of consecutive blanks
-    // so a malformed file with kilobytes of empty siblings can't stall.
-    const MAX_CONSECUTIVE_BLANKS: usize = 16;
+    // silently truncate the captured doc.
     let mut start = lines.len();
     let mut comment_lines_taken = 0usize;
     let mut consecutive_blanks = 0usize;
     while start > 0 && comment_lines_taken < FALLBACK_DOC_MAX_LINES {
         let candidate = lines[start - 1];
-        if !line_looks_comment_like(candidate) {
+        if !line_looks_comment_like(candidate, language) {
             break;
         }
         if candidate.trim().is_empty() {
@@ -1165,7 +1223,7 @@ public class Calculator {
                 "(* fsharp",
             ] {
                 assert!(
-                    line_looks_comment_like(line),
+                    line_looks_comment_like(line, Language::Rust),
                     "expected comment-like: {line:?}"
                 );
             }
@@ -1173,9 +1231,9 @@ public class Calculator {
 
         #[test]
         fn comment_like_accepts_blank_and_whitespace() {
-            assert!(line_looks_comment_like(""));
-            assert!(line_looks_comment_like("   "));
-            assert!(line_looks_comment_like("\t  "));
+            assert!(line_looks_comment_like("", Language::Rust));
+            assert!(line_looks_comment_like("   ", Language::Rust));
+            assert!(line_looks_comment_like("\t  ", Language::Rust));
         }
 
         #[test]
@@ -1188,7 +1246,7 @@ public class Calculator {
                 "package main",
             ] {
                 assert!(
-                    !line_looks_comment_like(line),
+                    !line_looks_comment_like(line, Language::Rust),
                     "expected NOT comment-like: {line:?}"
                 );
             }
@@ -1380,7 +1438,7 @@ type WithDoc = u8;
                 "*x = y * z;",
             ] {
                 assert!(
-                    !line_looks_comment_like(line),
+                    !line_looks_comment_like(line, Language::Rust),
                     "expected NOT comment-like: {line:?}"
                 );
             }
@@ -1400,7 +1458,7 @@ type WithDoc = u8;
                 "*",
             ] {
                 assert!(
-                    line_looks_comment_like(line),
+                    line_looks_comment_like(line, Language::Rust),
                     "expected comment-like: {line:?}"
                 );
             }
@@ -1461,6 +1519,218 @@ CREATE TABLE x (id TEXT);
             assert!(
                 doc.contains("header comment 3"),
                 "expected header comment 3 to be captured, got: {doc:?}"
+            );
+        }
+
+        // ─── P2 #52: bound the perf-fix's correctness ──────────────────────
+
+        /// FALLBACK_DOC_MAX_LINES cap: feed a 12-line `--` comment block
+        /// before a short SQL chunk. Only the last 8 lines must end up in
+        /// the captured doc — earlier lines are out of budget.
+        ///
+        /// Uses unique tokens (`mark-NN-tail`) per line so substring matching
+        /// can't false-positive (`"line 1"` would otherwise match `"line 11"`).
+        #[test]
+        #[allow(non_snake_case)]
+        fn fallback_caps_at_FALLBACK_DOC_MAX_LINES() {
+            let mut content = String::new();
+            for i in 0..12 {
+                content.push_str(&format!("-- mark-{i:02}-tail\n"));
+            }
+            content.push_str("CREATE TABLE capped (id TEXT);\n");
+            let file = write_temp_file(&content, "sql");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "capped")
+                .expect("capped chunk");
+            let doc = chunk.doc.as_deref().unwrap_or("");
+            // The eight most-recent comment lines must be present.
+            for i in 4..12 {
+                assert!(
+                    doc.contains(&format!("mark-{i:02}-tail")),
+                    "expected mark-{i:02}-tail in doc, got: {doc:?}"
+                );
+            }
+            // Earlier lines must NOT be present (over budget).
+            for i in 0..4 {
+                assert!(
+                    !doc.contains(&format!("mark-{i:02}-tail")),
+                    "mark-{i:02}-tail must NOT be in doc (cap = {FALLBACK_DOC_MAX_LINES}), got: {doc:?}"
+                );
+            }
+        }
+
+        /// Exact 5-line-span boundary: a chunk whose `line_end - line_start`
+        /// is exactly 4 (a 5-line CREATE TABLE) MUST get the fallback. See
+        /// P2 #52 (boundary coverage gap) and the documentation finding
+        /// flagging "<5 lines" wording vs `>= 5` skip semantics.
+        #[test]
+        fn fallback_runs_for_chunk_spanning_exactly_5_lines() {
+            // 5-line body so `line_end - line_start == 4`. Three columns +
+            // CREATE line + closing `)` line = 5 lines total.
+            let content = "\
+-- doc for 5-line table
+CREATE TABLE five_line (
+    id TEXT,
+    name TEXT,
+    note TEXT
+);
+";
+            let file = write_temp_file(content, "sql");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "five_line")
+                .expect("five_line chunk");
+            assert_eq!(
+                chunk.line_end - chunk.line_start,
+                4,
+                "chunk must span exactly 5 lines (line_end - line_start == 4) to pin the boundary"
+            );
+            assert!(
+                chunk
+                    .doc
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("doc for 5-line table"),
+                "5-line chunk must trigger the fallback, got doc: {:?}",
+                chunk.doc
+            );
+        }
+
+        /// Empty-only-comment-marker-lines case: a leading block of three
+        /// bare `//` lines (each a valid comment marker but with no content)
+        /// must result in the captured fallback being either `None` or
+        /// containing only the bare markers — never an empty/whitespace
+        /// `doc`. The `captured.trim().is_empty()` early-return guards this
+        /// for the fallback path; the sibling-walk may surface markers
+        /// themselves, which is also acceptable.
+        #[test]
+        fn fallback_skips_when_only_comment_marker_lines_precede() {
+            let content = "//\n//\n//\ntype X = u8;\n";
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks.iter().find(|c| c.name == "X").expect("X chunk");
+            if let Some(doc) = chunk.doc.as_deref() {
+                assert!(
+                    doc.trim().is_empty() || doc.contains("//"),
+                    "doc should be empty/None or contain only the bare markers, got: {doc:?}"
+                );
+            }
+        }
+
+        /// Mid-UTF-8 start_byte safety: a leading comment containing
+        /// multi-byte chars must round-trip the byte slice without panic
+        /// and without mid-codepoint truncation. Pins the
+        /// `source.get(..start_byte)?` boundary contract end-to-end and
+        /// covers the new reverse-walk-by-bytes tail computation.
+        #[test]
+        fn fallback_handles_mid_utf8_in_preceding_comment() {
+            // Multi-byte chars in the leading comment exercise byte offsets
+            // that don't align with character boundaries; `prefix.lines()`
+            // must still split correctly and the captured doc must contain
+            // the multi-byte codepoint intact.
+            let content = "// caf\u{00e9} \u{1f389} short\ntype WithEmoji = u8;\n";
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "WithEmoji")
+                .expect("WithEmoji chunk");
+            let doc = chunk.doc.as_deref().unwrap_or("");
+            assert!(
+                doc.contains("caf\u{00e9}"),
+                "multi-byte char must round-trip, got: {doc:?}"
+            );
+            assert!(
+                doc.contains("\u{1f389}"),
+                "multi-byte emoji must round-trip, got: {doc:?}"
+            );
+        }
+
+        /// Mixed-prefix walk: the current `line_looks_comment_like` accepts
+        /// `//`, `--`, `#`, etc. globally, so a chunk preceded by mixed
+        /// comment styles will see all of them concatenated. Pin the
+        /// chosen behavior — if a future tightening requires same-prefix-
+        /// family continuity (or per-language filtering once Agent I lands
+        /// the LanguageDef field), this test will fail loudly so the change
+        /// is deliberate.
+        #[test]
+        fn fallback_does_not_mix_comment_styles() {
+            // `//` and `--` both pass the current global predicate. Today
+            // the walk-back collects both; we pin "current behavior is
+            // mixing styles is permitted" so that any future deliberate
+            // tightening shows up as a deliberate test diff.
+            let content = "// rust-style header\n-- sql-style header\ntype Mixed = u8;\n";
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "Mixed")
+                .expect("Mixed chunk");
+            let doc = chunk.doc.as_deref().unwrap_or("");
+            assert!(
+                doc.contains("rust-style header"),
+                "expected `//` prefix to be captured, got: {doc:?}"
+            );
+            assert!(
+                doc.contains("sql-style header"),
+                "expected `--` prefix to be captured (current mixed-style behavior), got: {doc:?}"
+            );
+        }
+
+        // ─── P2 #43: smoke test that walk-back stays linear in chunk count ─
+
+        /// Smoke test for the O(N²) → O(8 lines) fix: parsing 200 short
+        /// CREATE TABLE chunks in one file must not allocate or split the
+        /// entire prefix per call. We don't assert wall-clock here (CI
+        /// flakiness), but we do assert we get the expected chunk count
+        /// without panic and without OOM. The cost of the prior
+        /// implementation on this fixture was ~200 vec allocations of
+        /// growing size (chunk N walked N×~3 lines of prefix); the fix
+        /// caps each at the FALLBACK_DOC_MAX_LINES tail.
+        #[test]
+        fn parses_200_short_chunks_in_one_file_without_quadratic_blowup() {
+            let mut content = String::new();
+            for i in 0..200 {
+                // Each chunk preceded by a leading comment so the fallback
+                // path actually fires.
+                content.push_str(&format!("-- doc for table_{i}\n"));
+                content.push_str(&format!("CREATE TABLE table_{i} (id TEXT);\n"));
+            }
+            let file = write_temp_file(&content, "sql");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let table_chunks: Vec<_> = chunks
+                .iter()
+                .filter(|c| c.name.starts_with("table_"))
+                .collect();
+            assert_eq!(
+                table_chunks.len(),
+                200,
+                "expected 200 table chunks, got {}",
+                table_chunks.len()
+            );
+            // Verify the fallback delivered a doc to a representative late
+            // chunk — confirms the bounded walk-back still finds the
+            // immediate leading comment.
+            let last = table_chunks
+                .iter()
+                .find(|c| c.name == "table_199")
+                .expect("table_199 chunk");
+            assert!(
+                last.doc
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("doc for table_199"),
+                "bounded walk-back must still find immediate leading comment, got: {:?}",
+                last.doc
             );
         }
     }

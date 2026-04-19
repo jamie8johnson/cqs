@@ -629,6 +629,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         // Get current mtime
@@ -677,6 +678,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         // Store with an old mtime (before the file was created)
@@ -735,6 +737,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         // Store with None mtime (will be NULL in DB)
@@ -787,6 +790,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         let mtime = file_path
@@ -831,6 +835,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         let fresh_mtime = fresh_path
@@ -866,6 +871,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         store
@@ -918,6 +924,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         }
     }
 
@@ -1280,6 +1287,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         // Store with the exact mtime currently on disk.
@@ -1340,6 +1348,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         // Store with an mtime 10_000_000 ms (~2.7 hours) in the future
@@ -1428,6 +1437,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         let gone = make_chunk("gone", "/no/such/file.rs");
@@ -1488,6 +1498,7 @@ mod tests {
                 parent_id: None,
                 window_idx: None,
                 parent_type_name: None,
+                parser_version: 0,
             }
         };
         let c1 = mk(&p1, "a", "ahash");
@@ -1541,6 +1552,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         store
@@ -1593,6 +1605,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         store

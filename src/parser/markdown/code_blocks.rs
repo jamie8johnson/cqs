@@ -3,6 +3,9 @@
 //! Scans for `` ```lang `` and `~~~lang` markers, normalizes language aliases
 //! (e.g., `js` -> `javascript`), and returns blocks with recognized languages.
 
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 /// A fenced code block found in markdown source
 #[derive(Debug)]
 pub struct FencedBlock {
@@ -16,66 +19,95 @@ pub struct FencedBlock {
     pub line_end: u32,
 }
 
-/// Common language aliases in markdown fenced code blocks
-pub(super) fn normalize_lang(lang: &str) -> Option<&'static str> {
-    match lang {
-        // Direct matches (most common)
-        "rust" => Some("rust"),
-        "python" | "py" => Some("python"),
-        "typescript" | "ts" => Some("typescript"),
-        "javascript" | "js" => Some("javascript"),
-        "go" | "golang" => Some("go"),
-        "c" => Some("c"),
-        "cpp" | "c++" | "cxx" => Some("cpp"),
-        "java" => Some("java"),
-        "csharp" | "cs" | "c#" => Some("csharp"),
-        "fsharp" | "fs" | "f#" => Some("fsharp"),
-        "powershell" | "ps1" | "pwsh" => Some("powershell"),
-        "scala" => Some("scala"),
-        "ruby" | "rb" => Some("ruby"),
-        "bash" | "sh" | "shell" | "zsh" => Some("bash"),
-        "hcl" | "terraform" | "tf" => Some("hcl"),
-        "kotlin" | "kt" => Some("kotlin"),
-        "swift" => Some("swift"),
-        "objc" | "objective-c" | "objectivec" => Some("objc"),
-        "sql" => Some("sql"),
-        "protobuf" | "proto" => Some("protobuf"),
-        "graphql" | "gql" => Some("graphql"),
-        "php" => Some("php"),
-        "lua" => Some("lua"),
-        "zig" => Some("zig"),
-        "r" => Some("r"),
-        "yaml" | "yml" => Some("yaml"),
-        "toml" => Some("toml"),
-        "elixir" | "ex" => Some("elixir"),
-        "elm" => Some("elm"),
-        "erlang" | "erl" => Some("erlang"),
-        "haskell" | "hs" => Some("haskell"),
-        "ocaml" | "ml" => Some("ocaml"),
-        "julia" | "jl" => Some("julia"),
-        "gleam" => Some("gleam"),
-        "css" => Some("css"),
-        "perl" | "pl" => Some("perl"),
-        "html" => Some("html"),
-        "json" | "jsonc" => Some("json"),
-        "xml" | "svg" | "xsl" => Some("xml"),
-        "nix" => Some("nix"),
-        "make" | "makefile" => Some("make"),
-        "latex" | "tex" => Some("latex"),
-        "solidity" | "sol" => Some("solidity"),
-        "cuda" | "cu" => Some("cuda"),
-        "glsl" => Some("glsl"),
-        "vue" => Some("vue"),
-        "svelte" => Some("svelte"),
-        "razor" | "cshtml" => Some("razor"),
-        "vb" | "vbnet" | "vb.net" => Some("vbnet"),
-        "ini" => Some("ini"),
-        "markdown" | "md" => Some("markdown"),
-        "aspx" | "ascx" | "asmx" | "webforms" => Some("aspx"),
-        "structured_text" | "st" | "stl" | "iec61131" | "iec-st" => Some("structured_text"),
-        "dart" => Some("dart"),
-        _ => None,
+/// Plain-text fenced-block alias map.
+///
+/// TODO(P2 #55): Once Agent I adds `pub aliases: &'static [&'static str]` to
+/// `LanguageDef`, replace this static table with an iteration over
+/// `crate::language::REGISTRY.all()`, populating `(alias → canonical name)`
+/// from `def.name + def.aliases`. The current static table is the
+/// transitional shim — it duplicates the language registry and will drift
+/// from `define_languages!` until the registry conversion lands.
+///
+/// Note: Dart IS a `Language` variant (see `languages.rs`), so its alias is
+/// retained here. An earlier pass removed it on the assumption that it
+/// wasn't registered — `test_normalize_lang_covers_all_languages` catches
+/// that class of drift.
+static FENCED_LANG_ALIASES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    let entries: &[(&str, &[&str])] = &[
+        ("rust", &["rust"]),
+        ("python", &["python", "py"]),
+        ("typescript", &["typescript", "ts"]),
+        ("javascript", &["javascript", "js"]),
+        ("go", &["go", "golang"]),
+        ("c", &["c"]),
+        ("cpp", &["cpp", "c++", "cxx"]),
+        ("java", &["java"]),
+        ("csharp", &["csharp", "cs", "c#"]),
+        ("fsharp", &["fsharp", "fs", "f#"]),
+        ("powershell", &["powershell", "ps1", "pwsh"]),
+        ("scala", &["scala"]),
+        ("ruby", &["ruby", "rb"]),
+        ("bash", &["bash", "sh", "shell", "zsh"]),
+        ("hcl", &["hcl", "terraform", "tf"]),
+        ("kotlin", &["kotlin", "kt"]),
+        ("swift", &["swift"]),
+        ("objc", &["objc", "objective-c", "objectivec"]),
+        ("sql", &["sql"]),
+        ("protobuf", &["protobuf", "proto"]),
+        ("graphql", &["graphql", "gql"]),
+        ("php", &["php"]),
+        ("lua", &["lua"]),
+        ("zig", &["zig"]),
+        ("r", &["r"]),
+        ("yaml", &["yaml", "yml"]),
+        ("toml", &["toml"]),
+        ("elixir", &["elixir", "ex"]),
+        ("elm", &["elm"]),
+        ("erlang", &["erlang", "erl"]),
+        ("haskell", &["haskell", "hs"]),
+        ("ocaml", &["ocaml", "ml"]),
+        ("julia", &["julia", "jl"]),
+        ("gleam", &["gleam"]),
+        ("css", &["css"]),
+        ("perl", &["perl", "pl"]),
+        ("html", &["html"]),
+        ("json", &["json", "jsonc"]),
+        ("xml", &["xml", "svg", "xsl"]),
+        ("nix", &["nix"]),
+        ("make", &["make", "makefile"]),
+        ("latex", &["latex", "tex"]),
+        ("solidity", &["solidity", "sol"]),
+        ("cuda", &["cuda", "cu"]),
+        ("glsl", &["glsl"]),
+        ("vue", &["vue"]),
+        ("svelte", &["svelte"]),
+        ("razor", &["razor", "cshtml"]),
+        ("vbnet", &["vb", "vbnet", "vb.net"]),
+        ("ini", &["ini"]),
+        ("markdown", &["markdown", "md"]),
+        ("aspx", &["aspx", "ascx", "asmx", "webforms"]),
+        (
+            "structured_text",
+            &["structured_text", "st", "stl", "iec61131", "iec-st"],
+        ),
+        ("dart", &["dart"]),
+    ];
+    for (canonical, aliases) in entries {
+        for alias in *aliases {
+            m.insert(*alias, *canonical);
+        }
     }
+    m
+});
+
+/// Common language aliases in markdown fenced code blocks.
+///
+/// Resolves an incoming fence tag (e.g., `js`, `c++`) to a canonical
+/// `Language` name for downstream parsing. Returns `None` for unknown tags
+/// or for tags whose canonical name is not a `Language` variant.
+pub(super) fn normalize_lang(lang: &str) -> Option<&'static str> {
+    FENCED_LANG_ALIASES.get(lang).copied()
 }
 
 /// Extract fenced code blocks from markdown source.

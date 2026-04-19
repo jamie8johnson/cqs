@@ -24,8 +24,14 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
 
     let mut output_arg = std::ffi::OsString::from("-o");
     output_arg.push(temp_dir.path());
+    // Audit P2 #37: `-snl` disables symbolic-link creation during extraction.
+    // CHM is a CAB-based archive; a malicious file can embed a symlink whose
+    // target is `../../escape`, and without `-snl` the extracted on-disk
+    // entry IS the symlink — any subsequent file write through that path
+    // escapes `temp_dir`. With `-snl`, 7z either skips the link or stores
+    // it as a regular file containing the link target string.
     let output = std::process::Command::new(&sevenzip)
-        .args(["x", "--"])
+        .args(["x", "-snl", "--"])
         .arg(path)
         .arg(&output_arg)
         .arg("-y")
@@ -50,41 +56,9 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
         );
     }
 
-    // Zip-slip containment: verify all extracted files are inside temp_dir
-    let canonical_temp = dunce::canonicalize(temp_dir.path()).with_context(|| {
-        format!(
-            "Failed to canonicalize temp dir: {}",
-            temp_dir.path().display()
-        )
-    })?;
-    for entry in walkdir::WalkDir::new(temp_dir.path())
-        .into_iter()
-        .filter_map(|e| match e {
-            Ok(entry) => Some(entry),
-            Err(err) => {
-                tracing::warn!(error = %err, "Skipping entry during zip-slip check due to walkdir error");
-                None
-            }
-        })
-    {
-        match dunce::canonicalize(entry.path()) {
-            Ok(canonical) => {
-                if !canonical.starts_with(&canonical_temp) {
-                    anyhow::bail!(
-                        "CHM archive contains path traversal: {}",
-                        entry.path().display()
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    path = %entry.path().display(),
-                    error = %e,
-                    "Cannot canonicalize extracted path, skipping"
-                );
-            }
-        }
-    }
+    // Zip-slip containment: verify all extracted files are inside temp_dir.
+    // See `verify_extraction_safety` for the per-entry rules (audit P2 #37).
+    verify_extraction_safety(temp_dir.path())?;
 
     // Maximum number of pages to process from a single CHM archive.
     const MAX_PAGES: usize = 1000;
@@ -175,6 +149,70 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
     Ok(merged)
 }
 
+/// Walk every entry under `extract_root` and reject anything that escapes it.
+///
+/// Audit P2 #37 hardening:
+///   * Any symbolic link in the extraction is fatal — a benign CHM/CAB
+///     archive does not contain symbolic links.
+///   * Any path that cannot be canonicalized (e.g. a dangling symlink, a
+///     permission failure) is fatal — broken paths in extracted output are
+///     themselves an attack signal, not a benign curiosity to skip.
+///   * Any canonical path that does not start with the canonicalized
+///     `extract_root` is fatal — classic zip-slip.
+///
+/// Extracted into a standalone helper so the bail behavior can be unit
+/// tested without needing a real CHM archive on disk (building a malicious
+/// CHM blob is impractical; the symlink-extraction code path is what we
+/// actually care about and it does not depend on `7z`).
+fn verify_extraction_safety(extract_root: &Path) -> Result<()> {
+    let canonical_root = dunce::canonicalize(extract_root).with_context(|| {
+        format!(
+            "Failed to canonicalize extraction root: {}",
+            extract_root.display()
+        )
+    })?;
+    for entry in walkdir::WalkDir::new(extract_root)
+        .into_iter()
+        .filter_map(|e| match e {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                tracing::warn!(error = %err, "Skipping entry during zip-slip check due to walkdir error");
+                None
+            }
+        })
+    {
+        // A symlink in extracted output is itself an attack signal.
+        if let Ok(md) = entry.path().symlink_metadata() {
+            if md.file_type().is_symlink() {
+                anyhow::bail!(
+                    "CHM extraction produced symlink (rejected for security): {}",
+                    entry.path().display()
+                );
+            }
+        }
+        match dunce::canonicalize(entry.path()) {
+            Ok(canonical) => {
+                if !canonical.starts_with(&canonical_root) {
+                    anyhow::bail!(
+                        "CHM archive contains path traversal: {}",
+                        entry.path().display()
+                    );
+                }
+            }
+            Err(e) => {
+                // Broken symlink / permission failure → attack signal, bail.
+                anyhow::bail!(
+                    "CHM extraction produced an entry that cannot be canonicalized \
+                     (treating as attack signal): {} ({})",
+                    entry.path().display(),
+                    e
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Find a working `7z` executable.
 /// Checks that the candidate actually executes successfully (exit code 0 or
 /// recognizable help output). This prevents accidentally running an unrelated
@@ -248,5 +286,67 @@ mod tests {
             result.is_err(),
             "chm_to_markdown should return an error for a nonexistent file"
         );
+    }
+
+    /// Audit P2 #37: a symlink inside an "extracted" archive must cause
+    /// `verify_extraction_safety` to bail with a clear error. Building a
+    /// real malicious CHM is impractical (would need a fixture binary in
+    /// CAB format); since #37 hardens the post-extraction walk, we test
+    /// that walk directly against a manually-constructed extract dir.
+    #[test]
+    #[cfg(unix)]
+    fn verify_extraction_safety_rejects_relative_symlink_to_escape() {
+        let extract_dir = tempfile::tempdir().unwrap();
+        let escape_link = extract_dir.path().join("inner.html");
+        // Mirror the attack pattern an attacker would embed in a malicious CHM.
+        std::os::unix::fs::symlink("../../escape", &escape_link).unwrap();
+
+        let result = verify_extraction_safety(extract_dir.path());
+        let err = result.expect_err("symlink in extraction must be rejected");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("symlink") || msg.contains("path traversal"),
+            "error should explain the rejection (symlink/traversal); got: {msg}"
+        );
+    }
+
+    /// Audit P2 #37: a broken symlink (target doesn't exist) must cause the
+    /// walk to bail — the prior code logged a warning and silently skipped.
+    /// A broken symlink in extracted archive output is itself an attack
+    /// signal: a benign archive does not contain dangling references.
+    #[test]
+    #[cfg(unix)]
+    fn verify_extraction_safety_bails_on_broken_symlink() {
+        let extract_dir = tempfile::tempdir().unwrap();
+        let broken = extract_dir.path().join("dangling.html");
+        std::os::unix::fs::symlink("/this/path/does/not/exist/anywhere", &broken).unwrap();
+
+        let result = verify_extraction_safety(extract_dir.path());
+        let err = result.expect_err("broken symlink must be rejected, not skipped");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("symlink")
+                || msg.contains("canonicalize")
+                || msg.contains("attack signal"),
+            "error should not be silent; got: {msg}"
+        );
+    }
+
+    /// Plain extracted files inside the temp dir must not trigger the
+    /// safety walk — guards against the symlink check accidentally
+    /// rejecting legitimate output.
+    #[test]
+    fn verify_extraction_safety_accepts_plain_files() {
+        let extract_dir = tempfile::tempdir().unwrap();
+        std::fs::write(extract_dir.path().join("page1.html"), b"<html>ok</html>").unwrap();
+        std::fs::create_dir(extract_dir.path().join("sub")).unwrap();
+        std::fs::write(
+            extract_dir.path().join("sub/page2.html"),
+            b"<html>ok</html>",
+        )
+        .unwrap();
+
+        verify_extraction_safety(extract_dir.path())
+            .expect("plain file extraction must pass the safety walk");
     }
 }

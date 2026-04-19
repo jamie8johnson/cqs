@@ -129,6 +129,7 @@ fn parse_st_regions(
                     parent_id: None,
                     window_idx: None,
                     parent_type_name: region.program_name.clone(),
+                    parser_version: super::chunk::PARSER_VERSION,
                 });
             }
         }
@@ -206,6 +207,7 @@ fn extract_st_chunk(
         parent_id: None,
         window_idx: None,
         parent_type_name: region.program_name.clone(),
+        parser_version: super::chunk::PARSER_VERSION,
     })
 }
 

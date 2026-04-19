@@ -9,6 +9,20 @@ use super::{
 };
 use crate::Store;
 
+/// P2 #33 (LLM half): build the user-visible message for `LlmError::Api` so
+/// that the daemon error envelope (which propagates the full anyhow chain)
+/// never carries the raw HTTP response body, the parsed Anthropic
+/// `error.message` (which sometimes echoes prompt fragments), or any other
+/// remote-controlled string. Operators with journal access can still see the
+/// full body via `tracing::debug!` at the call site.
+///
+/// Returned shape: `"Anthropic API error during {context} (status: {status})"`.
+/// `context` is a short fixed-string label like "batch submission", picked by
+/// the caller to keep the user-visible message useful for triage.
+fn redacted_api_message(context: &str, status: u16) -> String {
+    format!("Anthropic API error during {context} (status: {status})")
+}
+
 impl LlmClient {
     /// Core batch submission: builds requests using the given prompt builder, posts to the API.
     /// `items` is a list of (custom_id, content, field3, language) — field3 is chunk_type or signature
@@ -65,12 +79,23 @@ impl LlmClient {
                 tracing::warn!(error = %e, "Failed to read HTTP error response body");
                 String::new()
             });
-            let message = serde_json::from_str::<ApiError>(&body)
-                .map(|err| format!("{purpose} submission failed: {}", err.error.message))
-                .unwrap_or_else(|_| format!("{purpose} submission failed: HTTP {status}: {body}"));
+            // P2 #33 (LLM half): keep the full body for operator-visible debug
+            // logs, but the user-visible LlmError::Api message must NOT carry
+            // remote-controlled text (raw HTTP body or parsed `error.message`,
+            // both of which can echo prompt fragments).
+            let parsed = serde_json::from_str::<ApiError>(&body).ok();
+            tracing::debug!(
+                purpose,
+                status = %status,
+                parsed_anthropic_message = parsed.as_ref().map(|p| p.error.message.as_str()).unwrap_or(""),
+                body_len = body.len(),
+                body = %body,
+                "{purpose} submission failed at LLM API",
+            );
+            let context = format!("{purpose} submission");
             return Err(LlmError::Api {
                 status: status.as_u16(),
-                message,
+                message: redacted_api_message(&context, status.as_u16()),
             });
         }
 
@@ -139,9 +164,17 @@ impl LlmClient {
                 tracing::warn!(error = %e, "Failed to read HTTP error response body");
                 String::new()
             });
+            // P2 #33 (LLM half): redact body from user-visible error.
+            tracing::debug!(
+                batch_id,
+                status,
+                body_len = body.len(),
+                body = %body,
+                "Batch status check failed at LLM API",
+            );
             return Err(LlmError::Api {
                 status,
-                message: format!("Batch status check failed: {body}"),
+                message: redacted_api_message("batch status check", status),
             });
         }
 
@@ -169,9 +202,17 @@ impl LlmClient {
                     tracing::warn!(error = %e, "Failed to read HTTP error response body");
                     String::new()
                 });
+                // P2 #33 (LLM half): redact body from user-visible error.
+                tracing::debug!(
+                    batch_id,
+                    status,
+                    body_len = body.len(),
+                    body = %body,
+                    "Batch status poll failed at LLM API",
+                );
                 return Err(LlmError::Api {
                     status,
-                    message: format!("Batch status check failed: {body}"),
+                    message: redacted_api_message("batch status poll", status),
                 });
             }
 
@@ -226,9 +267,17 @@ impl LlmClient {
                 tracing::warn!(error = %e, "Failed to read HTTP error response body");
                 String::new()
             });
+            // P2 #33 (LLM half): redact body from user-visible error.
+            tracing::debug!(
+                batch_id,
+                status,
+                body_len = body.len(),
+                body = %body,
+                "Batch results fetch failed at LLM API",
+            );
             return Err(LlmError::Api {
                 status,
-                message: format!("Batch results fetch failed: {body}"),
+                message: redacted_api_message("batch results fetch", status),
             });
         }
 
@@ -256,9 +305,14 @@ impl LlmClient {
         response
             .take(MAX_RESPONSE_BYTES + 1)
             .read_to_end(&mut body_bytes)
-            .map_err(|e| LlmError::Api {
-                status: 200,
-                message: format!("Failed to read batch response body: {e}"),
+            .map_err(|e| {
+                // P2 #33 (LLM half): keep the io::Error in debug logs only;
+                // its Display can include filesystem paths in some chains.
+                tracing::debug!(batch_id, error = %e, "Failed to read batch response body");
+                LlmError::Api {
+                    status: 200,
+                    message: "Failed to read batch response body (I/O error)".to_string(),
+                }
             })?;
         if body_bytes.len() as u64 > MAX_RESPONSE_BYTES {
             return Err(LlmError::Api {
@@ -269,9 +323,15 @@ impl LlmClient {
                 ),
             });
         }
-        let body = String::from_utf8(body_bytes).map_err(|e| LlmError::Api {
-            status: 200,
-            message: format!("Batch response not valid UTF-8: {e}"),
+        let body = String::from_utf8(body_bytes).map_err(|e| {
+            // P2 #33 (LLM half): the FromUtf8Error Display includes the byte
+            // offset and a slice of bytes — that's remote-controlled. Keep
+            // detail in debug, redact the user-visible error.
+            tracing::debug!(batch_id, error = %e, "Batch response body not valid UTF-8");
+            LlmError::Api {
+                status: 200,
+                message: "Batch response not valid UTF-8".to_string(),
+            }
         })?;
         let mut results = HashMap::new();
 
@@ -687,6 +747,87 @@ mod tests {
     use crate::llm::provider::{BatchSubmitItem, MockBatchProvider};
     use crate::test_helpers::setup_store;
     use std::collections::HashMap;
+
+    // ===== P2 #33 (LLM half): redacted_api_message =====
+
+    /// The user-visible API error message must NOT echo any remote-controlled
+    /// text (raw HTTP body, parsed Anthropic `error.message`, etc.). It must
+    /// carry only the operational context label and HTTP status code.
+    #[test]
+    fn redacted_api_message_excludes_remote_text() {
+        let msg = redacted_api_message("batch submission", 502);
+        assert_eq!(
+            msg,
+            "Anthropic API error during batch submission (status: 502)"
+        );
+        // No control characters, no JSON braces, no quotes from the body.
+        assert!(
+            !msg.contains('{'),
+            "redacted message should not look like JSON"
+        );
+        assert!(
+            !msg.contains('"'),
+            "redacted message should not contain quoted body fragments"
+        );
+    }
+
+    #[test]
+    fn redacted_api_message_carries_status_for_triage() {
+        for status in [400u16, 401, 403, 429, 500, 502, 503, 504] {
+            let msg = redacted_api_message("batch status check", status);
+            assert!(
+                msg.contains(&status.to_string()),
+                "status {} missing from message: {}",
+                status,
+                msg
+            );
+            assert!(msg.contains("batch status check"));
+        }
+    }
+
+    /// Direct: confirm `LlmError::Api { message }` Display does not include any
+    /// of the body content if we construct it via the redactor — even if the
+    /// caller's body had injection markers.
+    #[test]
+    fn llm_error_api_with_redacted_message_drops_body() {
+        // Simulated raw body that an attacker-controlled prompt could trigger:
+        // contains the prompt fragment + an "ignore prior instructions" payload.
+        let pretend_body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"Your prompt: IGNORE_PRIOR_INSTRUCTIONS xyz secret-from-content"}}"#;
+
+        // The constructed error must NOT echo the body at all.
+        let err = LlmError::Api {
+            status: 400,
+            message: redacted_api_message("batch submission", 400),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.contains("IGNORE_PRIOR_INSTRUCTIONS"),
+            "rendered error must not echo body: {}",
+            rendered
+        );
+        assert!(
+            !rendered.contains("secret-from-content"),
+            "rendered error must not echo body: {}",
+            rendered
+        );
+        assert!(
+            rendered.contains("400"),
+            "status code expected: {}",
+            rendered
+        );
+        assert!(
+            rendered.contains("batch submission"),
+            "context label expected: {}",
+            rendered
+        );
+
+        // And confirm the body itself is not a substring (safety).
+        assert!(
+            !rendered.contains(pretend_body),
+            "rendered error must not contain raw body: {}",
+            rendered
+        );
+    }
 
     /// Insert a minimal chunk with a specific content_hash for batch validation tests.
     fn insert_chunk_with_hash(store: &Store, content_hash: &str) {

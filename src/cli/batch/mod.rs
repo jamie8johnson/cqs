@@ -118,6 +118,44 @@ fn idle_timeout_minutes() -> u64 {
         .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES)
 }
 
+/// P2 #67 / P2 #68: longer idle window for the heavyweight data caches
+/// (`hnsw`, `splade_index`, `call_graph`, `test_chunks`, `notes_cache`,
+/// `file_set`). The ONNX-session timeout (`CQS_BATCH_IDLE_MINUTES`,
+/// default 5 min) is tuned so the *next* user query stays responsive —
+/// reloading an ONNX model is ~500 ms. The data caches cost much more to
+/// rebuild (HNSW + SPLADE inverted index can take seconds), so we hold
+/// them for a longer window before invalidating. 30 min mirrors the
+/// audit-mode auto-expire window and is a safe default for an
+/// interactive workstation.
+///
+/// Override via `CQS_BATCH_DATA_IDLE_MINUTES`. Set to `0` to disable
+/// data-cache eviction entirely (the previous behavior).
+const DEFAULT_DATA_CACHE_IDLE_MINUTES: u64 = 30;
+
+/// Resolve the data-cache idle-timeout minutes from env; 0 disables data-
+/// cache eviction entirely. P2 #67 / #68.
+fn data_cache_idle_timeout_minutes() -> u64 {
+    std::env::var("CQS_BATCH_DATA_IDLE_MINUTES")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_DATA_CACHE_IDLE_MINUTES)
+}
+
+/// P2 #69: TTL for the `audit_state` reload cache. The audit-mode file
+/// (`.cqs/audit-mode.json`) carries its own embedded `expires_at`, but the
+/// daemon's `OnceLock` cached the loaded value forever — a user who flipped
+/// `cqs audit-mode on` after the daemon booted, or whose audit window
+/// auto-expired mid-session, kept seeing the stale state. Re-reading every
+/// 30 s on each query is cheap (sub-ms file read) and bounds the staleness.
+const AUDIT_STATE_RELOAD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// P2 #69: TTL for the `config` reload cache. `.cqs/config.toml` edits
+/// (e.g. tuning `splade_alpha` or `ef_search`) previously took effect only
+/// after a daemon restart because the config was held in `OnceLock`. 5 min
+/// is long enough to avoid hot-loop file reads while keeping ad-hoc config
+/// tweaks usable without `systemctl restart cqs-watch`.
+const CONFIG_RELOAD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 /// Default number of reference indexes kept in the LRU cache. A "reference"
 /// is a sibling cqs project loaded via `@name` syntax. Memory-constrained
 /// environments can keep 2; workstation users can bump via `CQS_REFS_LRU_SIZE`.
@@ -143,6 +181,20 @@ fn refs_lru_size() -> std::num::NonZeroUsize {
 /// syscall rate at ~10 Hz per batch session while keeping reindex
 /// detection latency well under a second.
 const STALENESS_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// P2 #69: a cached value paired with the instant it was loaded. The
+/// accessor consults `loaded_at.elapsed()` against a per-field reload
+/// interval; once the cache is older than the interval the value is
+/// re-loaded from the underlying source.
+///
+/// Replaces the prior `OnceLock<T>` pattern for `config` and `audit_state`
+/// where the OnceLock cached the boot-time value forever — a documented
+/// 30-min audit-mode auto-expire would never fire on a long-lived daemon,
+/// and `.cqs/config.toml` edits required `systemctl restart cqs-watch`.
+struct CachedReload<T> {
+    value: T,
+    loaded_at: Instant,
+}
 
 // ─── BatchContext ────────────────────────────────────────────────────────────
 
@@ -193,10 +245,20 @@ pub(crate) struct BatchContext {
     // accepts a pre-built Arc; `create_context` (CLI path) still
     // creates a fresh one lazily via `warm`.
     embedder: OnceLock<std::sync::Arc<Embedder>>,
-    config: OnceLock<cqs::config::Config>,
+    /// P2 #69: was `OnceLock`. Now `RefCell<Option<CachedReload<Config>>>`
+    /// so a `.cqs/config.toml` edit shows up after `CONFIG_RELOAD_INTERVAL`
+    /// (default 5 min) instead of requiring a daemon restart. The reload is
+    /// a sub-ms file read; cost is negligible per query.
+    config: RefCell<Option<CachedReload<cqs::config::Config>>>,
     reranker: OnceLock<cqs::Reranker>,
-    // Time-bounded (30min expiry), not index-derived — keep OnceLock
-    audit_state: OnceLock<cqs::audit::AuditMode>,
+    /// P2 #69: was `OnceLock`. Now `RefCell<Option<CachedReload<AuditMode>>>`
+    /// so the documented 30-min audit auto-expire actually fires while the
+    /// daemon is up — previously the OnceLock cached the boot-time state
+    /// forever. Reloads from `.cqs/audit-mode.json` every
+    /// `AUDIT_STATE_RELOAD_INTERVAL` (default 30 s); the file already
+    /// carries its own embedded `expires_at` so the load itself respects
+    /// expiration.
+    audit_state: RefCell<Option<CachedReload<cqs::audit::AuditMode>>>,
     // Mutable caches — RefCell<Option<T>> for invalidation on index change
     hnsw: RefCell<Option<std::sync::Arc<dyn VectorIndex>>>,
     base_hnsw: RefCell<Option<std::sync::Arc<dyn VectorIndex>>>,
@@ -261,39 +323,66 @@ impl BatchContext {
     /// `check_idle_timeout` it does NOT update `last_command_time`; the tick
     /// is a passive observer.
     ///
-    /// SHL-V1.25-16: timeout is configurable via `CQS_BATCH_IDLE_MINUTES`
-    /// (default 5). Set to 0 to disable eviction entirely.
+    /// SHL-V1.25-16: ONNX timeout is configurable via `CQS_BATCH_IDLE_MINUTES`
+    /// (default 5). Set to 0 to disable ONNX eviction entirely.
+    ///
+    /// P2 #67 / P2 #68: also clears the data caches (`hnsw`, `splade_index`,
+    /// `call_graph`, `test_chunks`, `notes_cache`, `file_set`) after a
+    /// longer idle window, configurable via `CQS_BATCH_DATA_IDLE_MINUTES`
+    /// (default 30 min). Without this, a daemon idle for hours holds 600 MB+
+    /// of HNSW + SPLADE-index + call-graph caches that no agent is using.
+    /// The split timeout (5 min ONNX, 30 min data) preserves first-query
+    /// responsiveness — the next user query pays a sub-second ONNX init
+    /// rather than a multi-second HNSW rebuild.
     pub(crate) fn sweep_idle_sessions(&self) {
         let timeout_minutes = idle_timeout_minutes();
-        if timeout_minutes == 0 {
+        if timeout_minutes > 0 {
+            let elapsed = self.last_command_time.get().elapsed();
+            let timeout = std::time::Duration::from_secs(timeout_minutes * 60);
+            if elapsed >= timeout {
+                if let Some(emb) = self.embedder.get() {
+                    emb.clear_session();
+                    tracing::info!(
+                        idle_minutes = elapsed.as_secs() / 60,
+                        "Cleared embedder session after idle timeout"
+                    );
+                }
+                if let Some(rr) = self.reranker.get() {
+                    rr.clear_session();
+                    tracing::info!(
+                        idle_minutes = elapsed.as_secs() / 60,
+                        "Cleared reranker session after idle timeout"
+                    );
+                }
+                // RM-3: Also clear SPLADE encoder session
+                if let Some(splade) = self.splade_encoder.get().and_then(|opt| opt.as_ref()) {
+                    splade.clear_session();
+                    tracing::info!(
+                        idle_minutes = elapsed.as_secs() / 60,
+                        "Cleared SPLADE session after idle timeout"
+                    );
+                }
+            }
+        }
+
+        // P2 #67 / P2 #68: separate (longer) idle window for the heavyweight
+        // data caches. Independent of the ONNX-session check above so an
+        // operator can disable one without disabling the other.
+        let data_timeout_minutes = data_cache_idle_timeout_minutes();
+        if data_timeout_minutes == 0 {
             return;
         }
         let elapsed = self.last_command_time.get().elapsed();
-        let timeout = std::time::Duration::from_secs(timeout_minutes * 60);
-        if elapsed < timeout {
-            return;
-        }
-        if let Some(emb) = self.embedder.get() {
-            emb.clear_session();
+        let data_timeout = std::time::Duration::from_secs(data_timeout_minutes * 60);
+        if elapsed >= data_timeout {
             tracing::info!(
                 idle_minutes = elapsed.as_secs() / 60,
-                "Cleared embedder session after idle timeout"
+                "Clearing data caches (hnsw / splade_index / call_graph / test_chunks / notes / file_set) after idle timeout"
             );
-        }
-        if let Some(rr) = self.reranker.get() {
-            rr.clear_session();
-            tracing::info!(
-                idle_minutes = elapsed.as_secs() / 60,
-                "Cleared reranker session after idle timeout"
-            );
-        }
-        // RM-3: Also clear SPLADE encoder session
-        if let Some(splade) = self.splade_encoder.get().and_then(|opt| opt.as_ref()) {
-            splade.clear_session();
-            tracing::info!(
-                idle_minutes = elapsed.as_secs() / 60,
-                "Cleared SPLADE session after idle timeout"
-            );
+            // Reuses the same try_borrow_mut-tolerant code path as the
+            // index-change invalidation, so a handler holding a Ref<...>
+            // mid-query simply defers the eviction to the next sweep tick.
+            self.invalidate_mutable_caches();
         }
     }
 
@@ -507,16 +596,21 @@ impl BatchContext {
                 }
                 Err(e) => {
                     self.error_count.fetch_add(1, Ordering::Relaxed);
-                    // EH-12: use anyhow chain formatter (`:#`) so the real
-                    // root cause (e.g. CUDA OOM) surfaces to daemon clients
-                    // instead of the flattened top-level "embedding failed".
-                    let msg = format!("{e:#}");
-                    tracing::warn!(code = error_codes::INTERNAL, error = %msg, "Batch dispatch_line: command execution failed");
-                    let _ = write_envelope_error(out, error_codes::INTERNAL, &msg);
+                    // P2 #33: redact_error walks the source chain and emits
+                    // a stable (code, message) pair instead of echoing the
+                    // raw anyhow chain (which can carry HTTP bodies, sqlite
+                    // query text, filesystem paths). The full unredacted
+                    // chain is logged via tracing::warn! inside redact_error
+                    // so an operator can correlate by chain-id.
+                    let (code, msg) = crate::cli::json_envelope::redact_error(&e);
+                    let _ = write_envelope_error(out, code.as_str(), &msg);
                 }
             },
             Err(e) => {
                 self.error_count.fetch_add(1, Ordering::Relaxed);
+                // Parse errors come from user-supplied tokens — they're
+                // safe to surface verbatim and useful for the agent to
+                // correct its query. No redaction needed.
                 let msg = format!("{e:#}");
                 tracing::warn!(code = error_codes::PARSE_ERROR, error = %msg, "Batch dispatch_line: clap parse failed");
                 let _ = write_envelope_error(out, error_codes::PARSE_ERROR, &msg);
@@ -877,11 +971,40 @@ impl BatchContext {
         Ok(result)
     }
 
-    /// Get cached audit state (loaded once per session).
-    /// NOT index-derived — time-bounded (30min expiry). Stays OnceLock.
-    pub(super) fn audit_state(&self) -> &cqs::audit::AuditMode {
+    /// Get cached audit state. Reloads from `.cqs/audit-mode.json` when the
+    /// cached value is older than [`AUDIT_STATE_RELOAD_INTERVAL`] (default
+    /// 30 s), then returns an owned snapshot.
+    ///
+    /// P2 #69: previously `OnceLock<AuditMode>`, which cached the boot-time
+    /// state forever. CLAUDE.md documents a 30-min auto-expire, but the
+    /// daemon never re-read the file — so `cqs audit-mode on` after daemon
+    /// boot, or audit-mode auto-expiring mid-session, both went unnoticed.
+    /// The file is sub-ms to read; the 30 s interval bounds staleness while
+    /// keeping accessor cost negligible. Returning owned `AuditMode`
+    /// (rather than `&AuditMode` from a borrow) keeps the existing
+    /// `let audit = ctx.audit_state(); &audit` call-site pattern working
+    /// without juggling `Ref<'_, ...>` lifetimes.
+    pub(super) fn audit_state(&self) -> cqs::audit::AuditMode {
+        let needs_reload = match self.audit_state.borrow().as_ref() {
+            Some(c) => c.loaded_at.elapsed() >= AUDIT_STATE_RELOAD_INTERVAL,
+            None => true,
+        };
+        if needs_reload {
+            let fresh = cqs::audit::load_audit_state(&self.cqs_dir);
+            *self.audit_state.borrow_mut() = Some(CachedReload {
+                value: fresh,
+                loaded_at: Instant::now(),
+            });
+        }
+        // Clone the cached value for the caller. AuditMode is small (bool +
+        // Option<DateTime>), so the clone is cheap and frees the RefCell
+        // borrow before any downstream code runs.
         self.audit_state
-            .get_or_init(|| cqs::audit::load_audit_state(&self.cqs_dir))
+            .borrow()
+            .as_ref()
+            .expect("audit_state populated above")
+            .value
+            .clone()
     }
 
     /// Get cached notes (parsed once per session, invalidated on index change).
@@ -961,10 +1084,36 @@ impl BatchContext {
         Ok(result)
     }
 
-    /// Get cached project config (loaded once per session). (RM-21)
-    pub(super) fn config(&self) -> &cqs::config::Config {
+    /// Get cached project config. Reloads from `.cqs/config.toml` when the
+    /// cached value is older than [`CONFIG_RELOAD_INTERVAL`] (default 5 min),
+    /// then returns an owned snapshot.
+    ///
+    /// P2 #69 (originally RM-21): previously `OnceLock<Config>` which
+    /// cached the boot-time config forever — `.cqs/config.toml` edits
+    /// (e.g. `splade_alpha`, `ef_search`) required `systemctl restart
+    /// cqs-watch`. The 5-minute interval is conservative enough to avoid
+    /// hot-loop file reads while keeping ad-hoc tweaks usable. Returning
+    /// owned `Config` keeps existing call sites unchanged
+    /// (`self.config().ef_search` and `self.config().references` both
+    /// work via auto-deref).
+    pub(super) fn config(&self) -> cqs::config::Config {
+        let needs_reload = match self.config.borrow().as_ref() {
+            Some(c) => c.loaded_at.elapsed() >= CONFIG_RELOAD_INTERVAL,
+            None => true,
+        };
+        if needs_reload {
+            let fresh = cqs::config::Config::load(&self.root);
+            *self.config.borrow_mut() = Some(CachedReload {
+                value: fresh,
+                loaded_at: Instant::now(),
+            });
+        }
         self.config
-            .get_or_init(|| cqs::config::Config::load(&self.root))
+            .borrow()
+            .as_ref()
+            .expect("config populated above")
+            .value
+            .clone()
     }
 
     /// Get or create the reranker (cached for session). (RM-18)
@@ -1053,20 +1202,50 @@ use crate::cli::json_envelope::sanitize_json_floats;
 /// `commands::dispatch`); this function wraps it with `{data, error: null,
 /// version}` so every batch / daemon-socket line shares one shape. See
 /// [`crate::cli::json_envelope`].
+///
+/// P2 #28: streams the envelope directly to `out` via a `Vec<u8>` buffer
+/// + `serde_json::to_writer` instead of allocating a full intermediate
+/// `serde_json::Value` for the wrap. Steady-state hot path is now
+/// `to_writer(payload)` (no payload clone) plus three small literal writes
+/// for the `{"data":..."error":null,"version":N}` shell. The retry-on-NaN
+/// path falls back to the legacy `wrap_value` + sanitize pattern with one
+/// clone — that's a rare failure mode (typed serde struct emitting NaN),
+/// so the clone stays bounded to the recovery path. Saves multi-MB of
+/// allocator churn per dispatched daemon query at scale.
 fn write_json_line(
     out: &mut impl std::io::Write,
     value: &serde_json::Value,
 ) -> std::io::Result<()> {
-    let wrapped = crate::cli::json_envelope::wrap_value(value.clone());
-    match serde_json::to_string(&wrapped) {
-        Ok(s) => writeln!(out, "{}", s),
+    // Steady-state: build the line in a `Vec<u8>` so the entire envelope
+    // is one `writeln!` (avoids interleaved partial writes if `out` is a
+    // shared TcpStream / UnixStream). Buffering also amortizes allocator
+    // hits across many small literal writes.
+    //
+    // The envelope is opened by hand and the payload is streamed via
+    // `to_writer` — no intermediate `Value` allocation. The version
+    // literal is emitted as a constant so a future `JSON_OUTPUT_VERSION`
+    // bump still flows through.
+    let mut buf: Vec<u8> = Vec::with_capacity(256);
+    buf.extend_from_slice(b"{\"data\":");
+    match serde_json::to_writer(&mut buf, value) {
+        Ok(()) => {
+            buf.extend_from_slice(b",\"error\":null,\"version\":");
+            // Version is a small u32; emit as decimal text directly so we
+            // don't pay another to_writer call for an integer.
+            let version = crate::cli::json_envelope::JSON_OUTPUT_VERSION;
+            buf.extend_from_slice(version.to_string().as_bytes());
+            buf.push(b'}');
+            buf.push(b'\n');
+            out.write_all(&buf)
+        }
         Err(_) => {
-            // NaN/Infinity in the value — sanitize and retry. Mirrors the
-            // try → on-Err sanitize → on-Err envelope-error pattern that
-            // `crate::cli::json_envelope::format_envelope_to_string` uses
-            // for the CLI / chat surfaces. The shared `sanitize_json_floats`
-            // keeps both behaviors in lock-step.
-            let mut sanitized = wrapped.clone();
+            // NaN / Infinity in the payload caused `to_writer` to fail
+            // partway through. The buffer holds a half-written prefix
+            // (`{"data":...`) — discard it and retry via the sanitize-
+            // and-retry path that the CLI / chat surfaces share.
+            // Mirrors `format_envelope_to_string`'s recovery semantics.
+            let wrapped = crate::cli::json_envelope::wrap_value(value);
+            let mut sanitized = wrapped;
             sanitize_json_floats(&mut sanitized);
             match serde_json::to_string(&sanitized) {
                 Ok(s) => writeln!(out, "{}", s),
@@ -1185,9 +1364,11 @@ pub(crate) fn create_context_with_runtime(
         store: RefCell::new(store),
         runtime,
         embedder: OnceLock::new(),
-        config: OnceLock::new(),
+        // P2 #69: was OnceLock — see field doc.
+        config: RefCell::new(None),
         reranker: OnceLock::new(),
-        audit_state: OnceLock::new(),
+        // P2 #69: was OnceLock — see field doc.
+        audit_state: RefCell::new(None),
         hnsw: RefCell::new(None),
         base_hnsw: RefCell::new(None),
         call_graph: RefCell::new(None),
@@ -1242,9 +1423,11 @@ pub(in crate::cli::batch) fn create_test_context(
         store: RefCell::new(store),
         runtime,
         embedder: OnceLock::new(),
-        config: OnceLock::new(),
+        // P2 #69: was OnceLock — see field doc.
+        config: RefCell::new(None),
         reranker: OnceLock::new(),
-        audit_state: OnceLock::new(),
+        // P2 #69: was OnceLock — see field doc.
+        audit_state: RefCell::new(None),
         hnsw: RefCell::new(None),
         base_hnsw: RefCell::new(None),
         call_graph: RefCell::new(None),
@@ -1405,22 +1588,13 @@ pub(crate) fn cmd_batch() -> Result<()> {
                     }
                     Err(e) => {
                         ctx.error_count.fetch_add(1, Ordering::Relaxed);
-                        // EH-12: `:#` preserves anyhow's context chain so the
-                        // root cause (e.g. CUDA OOM) reaches the caller
-                        // instead of being flattened to a single message.
-                        let msg = format!("{e:#}");
-                        tracing::warn!(
-                            code = crate::cli::json_envelope::error_codes::INTERNAL,
-                            error = %msg,
-                            "Batch cmd_batch: command execution failed"
-                        );
-                        if write_envelope_error(
-                            &mut stdout,
-                            crate::cli::json_envelope::error_codes::INTERNAL,
-                            &msg,
-                        )
-                        .is_err()
-                        {
+                        // P2 #33: redact_error walks the source chain and
+                        // emits a stable (code, message) pair instead of
+                        // echoing the raw anyhow chain. Full unredacted
+                        // chain is logged via tracing::warn! inside
+                        // redact_error for operator correlation.
+                        let (code, msg) = crate::cli::json_envelope::redact_error(&e);
+                        if write_envelope_error(&mut stdout, code.as_str(), &msg).is_err() {
                             break;
                         }
                     }
@@ -1619,19 +1793,27 @@ mod tests {
         let (_dir, cqs_dir) = setup_test_store();
         let ctx = create_test_context(&cqs_dir).unwrap();
 
-        // Set audit_state (stable — OnceLock, not index-derived)
-        let _ = ctx.audit_state.set(cqs::audit::AuditMode {
-            enabled: false,
-            expires_at: None,
+        // P2 #69: audit_state moved from OnceLock to RefCell<Option<CachedReload>>
+        // for time-bounded reload. Populate the slot directly so the test does
+        // not depend on a real .cqs/audit-mode.json being present.
+        *ctx.audit_state.borrow_mut() = Some(CachedReload {
+            value: cqs::audit::AuditMode {
+                enabled: false,
+                expires_at: None,
+            },
+            loaded_at: Instant::now(),
         });
 
-        // Invalidate mutable caches
+        // Invalidate mutable caches (does NOT touch time-bounded caches like
+        // audit_state — it survives index-change invalidation).
         ctx.invalidate().unwrap();
 
-        // Verify stable cache survives
+        // Verify the slot survives index-change invalidation. (It may still
+        // be reloaded later by the accessor's TTL-driven refresh; the
+        // invariant tested here is "invalidate() does not clear it".)
         assert!(
-            ctx.audit_state.get().is_some(),
-            "audit_state should survive invalidation"
+            ctx.audit_state.borrow().is_some(),
+            "audit_state should survive invalidate (only TTL reload clears it)"
         );
     }
 
@@ -1830,6 +2012,25 @@ mod tests {
         assert_eq!(parsed["data"]["name"], "bar");
     }
 
+    // P2 #28: write_json_line streams via to_writer instead of allocating
+    // an intermediate Value. The shape (data/error/version) and the version
+    // literal must still match the typed Envelope::ok path so consumers
+    // see one envelope across all surfaces.
+    #[test]
+    fn test_write_json_line_matches_envelope_ok_shape() {
+        let val = serde_json::json!({"big": (0..50).collect::<Vec<_>>(), "name": "stream-test"});
+        let mut buf = Vec::new();
+        write_json_line(&mut buf, &val).unwrap();
+        let streamed = String::from_utf8(buf).unwrap();
+        let parsed_streamed: serde_json::Value = serde_json::from_str(streamed.trim()).unwrap();
+
+        let typed = serde_json::to_value(crate::cli::json_envelope::Envelope::ok(&val)).unwrap();
+        assert_eq!(
+            parsed_streamed, typed,
+            "streamed envelope must match typed Envelope::ok shape"
+        );
+    }
+
     // D.2: reject_null_tokens helper unit test. Pure function, no fixture
     // needed. Pins the contract both call sites depend on.
     #[test]
@@ -1892,6 +2093,79 @@ mod tests {
             ctx.query_count.load(Ordering::Relaxed),
             0,
             "NUL rejection happens before query_count bump"
+        );
+    }
+
+    // P2 #51: alias for the rename suggested in the audit findings — keeps
+    // the contract grep-discoverable under the new name as well.
+    #[test]
+    fn test_dispatch_line_handles_embedded_null_byte() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        let mut sink = Vec::new();
+        // Embedded NUL within a double-quoted token. shell_words preserves
+        // NUL bytes inside quoted strings; the validator must reject them.
+        ctx.dispatch_line("search \"foo\0bar\"", &mut sink);
+        let output = String::from_utf8(sink).unwrap();
+        // (a) no panic — implicit by reaching this line.
+        // (b) envelope error with code `invalid_input`.
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.trim()).expect("must produce a parseable envelope");
+        assert!(
+            parsed["data"].is_null(),
+            "expected error envelope, got {output}"
+        );
+        assert_eq!(
+            parsed["error"]["code"],
+            crate::cli::json_envelope::error_codes::INVALID_INPUT
+        );
+        // (c) message identifies the rejection class without echoing the
+        // raw NUL-tainted token.
+        let msg = parsed["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("null byte"),
+            "expected NUL-byte rejection message, got {msg:?}"
+        );
+        assert!(
+            !msg.contains('\0'),
+            "raw NUL byte must not echo into envelope message"
+        );
+    }
+
+    // P2 #51: shell_words::split fails on unbalanced quotes; the dispatcher
+    // must surface a parse_error envelope (no panic, no half-tokenized
+    // command leaking downstream).
+    #[test]
+    fn test_dispatch_line_handles_unbalanced_quote() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        let mut sink = Vec::new();
+        // Trailing unmatched double quote.
+        ctx.dispatch_line("search \"unclosed", &mut sink);
+        let output = String::from_utf8(sink).unwrap();
+        // (a) no panic.
+        // (b) envelope error with code `parse_error`.
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.trim()).expect("must produce a parseable envelope");
+        assert!(
+            parsed["data"].is_null(),
+            "expected error envelope, got {output}"
+        );
+        assert_eq!(
+            parsed["error"]["code"],
+            crate::cli::json_envelope::error_codes::PARSE_ERROR,
+            "unbalanced quote must emit parse_error envelope"
+        );
+        // error_count bumps; query_count stays at 0 because we never
+        // reached the post-tokenization increment.
+        assert!(
+            ctx.error_count.load(Ordering::Relaxed) >= 1,
+            "tokenization failure must bump error_count"
+        );
+        assert_eq!(
+            ctx.query_count.load(Ordering::Relaxed),
+            0,
+            "tokenization failure happens before query_count bump"
         );
     }
 }

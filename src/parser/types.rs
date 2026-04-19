@@ -59,6 +59,11 @@ pub struct Chunk {
     pub window_idx: Option<u32>,
     /// Parent type name for methods (e.g., "CircuitBreaker" for `impl CircuitBreaker { ... }`)
     pub parent_type_name: Option<String>,
+    /// Parser logic version stamp (see `parser::chunk::PARSER_VERSION`).
+    /// Bumped when chunk-level extraction logic changes a non-content field
+    /// (e.g., `doc` enrichment) so incremental UPSERT can refresh rows whose
+    /// `content_hash` is unchanged. See P2 #29 in `docs/audit-findings.md`.
+    pub parser_version: u32,
 }
 
 /// A function call site extracted from code

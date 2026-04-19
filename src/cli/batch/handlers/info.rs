@@ -359,10 +359,12 @@ pub(in crate::cli::batch) fn dispatch_read(
 
     let (file_path, content) = crate::cli::commands::read::validate_and_read_file(&ctx.root, path)?;
 
+    // P2 #69: ctx.audit_state() now returns owned AuditMode (cached + TTL'd
+    // reload). build_file_note_header still expects `&AuditMode`, so borrow.
     let audit_state = ctx.audit_state();
     let notes = ctx.notes();
     let (header, notes_injected) =
-        crate::cli::commands::read::build_file_note_header(path, &file_path, audit_state, &notes);
+        crate::cli::commands::read::build_file_note_header(path, &file_path, &audit_state, &notes);
 
     let enriched = if header.is_empty() {
         content
@@ -392,13 +394,15 @@ pub(in crate::cli::batch) fn dispatch_read(
 fn dispatch_read_focused(ctx: &BatchContext, focus: &str) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_read_focused", focus).entered();
 
+    // P2 #69: ctx.audit_state() now returns owned AuditMode; borrow at the
+    // call site since build_focused_output takes `&AuditMode`.
     let audit_state = ctx.audit_state();
     let notes = ctx.notes();
     let result = crate::cli::commands::read::build_focused_output(
         &ctx.store(),
         focus,
         &ctx.root,
-        audit_state,
+        &audit_state,
         &notes,
     )?;
 

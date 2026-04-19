@@ -1,15 +1,40 @@
 //! Shared evaluation infrastructure — types, test cases, and fixture paths.
 //!
 //! Used by eval_test.rs, model_eval.rs, pipeline_eval.rs, and eval_harness.rs.
+//!
+//! Audit P2 #56 / #61: the canonical `QueryCategory` enum and the v3 query-row
+//! schema live in the lib crate (`cqs::search::router::QueryCategory` and
+//! `cqs::eval::schema`). This module re-exports them so tests use a single
+//! source of truth. The v2 query types (`EvalQuery`, `EvalQuerySet`,
+//! `EvalSplit`, etc.) defined below are a *legacy* shape consumed only by
+//! `eval_harness.rs` against `evals/queries/v2_300q.json`; they don't share
+//! fields with the v3 production runner so they stay local to this helper.
 
 #![allow(dead_code)]
 
 use cqs::parser::Language;
 use std::path::PathBuf;
 
+// Single source of truth for the category enum — production's
+// `define_query_categories!` macro generates `from_snake_case` with the
+// alias table that v2_300q.json depends on (e.g., `behavioral_search` →
+// `Behavioral`). Audit P2 #56 closure.
+pub use cqs::search::router::QueryCategory;
+
+// V3 production schema — re-exported under a namespace so tests reaching
+// the production deserialization types don't need their own `use cqs::...`
+// import. Audit P2 #61.
+pub use cqs::eval::schema as prod_schema;
+
 // ===== V2 Eval Schema (300q harness) =====
 
 /// A single eval query with ground truth and categorization.
+///
+/// V2 shape — predates the v3 production `cqs::eval::schema::EvalQuery`.
+/// Consumed only by `tests/eval_harness.rs` against `v2_300q.json`. Kept
+/// distinct (not a re-export) because the field set is genuinely different
+/// (`primary_answer`/`acceptable_answers`/`split` here vs `gold_chunk` in
+/// v3).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EvalQuery {
     /// Unique identifier (e.g., "beh-042", "id-007")
@@ -45,35 +70,6 @@ pub struct GroundTruth {
     /// Optional line range for disambiguation
     #[serde(default)]
     pub line_start: Option<u32>,
-}
-
-/// Primary query category — mutually exclusive
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum QueryCategory {
-    IdentifierLookup,
-    BehavioralSearch,
-    ConceptualSearch,
-    TypeFiltered,
-    CrossLanguage,
-    StructuralSearch,
-    Negation,
-    MultiStep,
-}
-
-impl std::fmt::Display for QueryCategory {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::IdentifierLookup => write!(f, "identifier"),
-            Self::BehavioralSearch => write!(f, "behavioral"),
-            Self::ConceptualSearch => write!(f, "conceptual"),
-            Self::TypeFiltered => write!(f, "type_filtered"),
-            Self::CrossLanguage => write!(f, "cross_lang"),
-            Self::StructuralSearch => write!(f, "structural"),
-            Self::Negation => write!(f, "negation"),
-            Self::MultiStep => write!(f, "multi_step"),
-        }
-    }
 }
 
 /// Secondary tags
@@ -2614,5 +2610,33 @@ mod tests {
         let path = dir.path().join("bad.json");
         std::fs::write(&path, "not json").unwrap();
         load_eval_cases_from_json(&path);
+    }
+
+    /// Audit P2 #56: every `QueryCategory` variant's `Display` string must
+    /// round-trip back through `from_snake_case`. Drift between canonical
+    /// names and the parser's alias table would make eval JSON silently
+    /// unparseable; this test fails immediately on that drift.
+    ///
+    /// Aliases (e.g., `"behavioral_search"` → `Behavioral`) are not asserted
+    /// here — they're additional snake_case strings that map back to a
+    /// variant whose `Display` is the canonical name. The
+    /// `Display → from_snake_case → Display` cycle still lands on the
+    /// canonical name for an aliased variant.
+    #[test]
+    fn test_query_category_display_roundtrips_through_from_snake_case() {
+        for &cat in QueryCategory::all_variants() {
+            let display = cat.to_string();
+            let parsed = QueryCategory::from_snake_case(&display).unwrap_or_else(|| {
+                panic!(
+                    "QueryCategory::{:?} Display name {:?} does not parse via from_snake_case",
+                    cat, display
+                )
+            });
+            assert_eq!(
+                parsed, cat,
+                "QueryCategory::{:?} display {:?} parsed back to {:?}, not the original variant",
+                cat, display, parsed
+            );
+        }
     }
 }

@@ -19,53 +19,16 @@ use std::time::Instant;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
+use cqs::eval::schema::{GoldChunk, QuerySet};
 use cqs::language::ChunkType;
 use cqs::store::{ReadOnly, UnifiedResult};
 use cqs::{SearchFilter, Store};
 
 use crate::cli::CommandContext;
 
-/// Query set file as produced by the v3 eval pipeline.
-///
-/// The judges/metadata fields are ignored at parse time — we keep parsing
-/// forgiving so a future eval set with a different envelope still loads.
-#[derive(Debug, Deserialize)]
-pub(crate) struct QuerySet {
-    pub queries: Vec<EvalQuery>,
-}
-
-/// One eval query with its expected gold chunk.
-///
-/// Gold matching uses `(file == origin) AND (name == name) AND
-/// (line_start == line_start)` — the v3 standard. Queries without a gold
-/// chunk are skipped (counted in `skipped`, not in `total`) so the
-/// reported R@K is over scoreable queries only.
-#[derive(Debug, Deserialize)]
-pub(crate) struct EvalQuery {
-    pub query: String,
-    #[serde(default)]
-    pub category: Option<String>,
-    #[serde(default)]
-    pub gold_chunk: Option<GoldChunk>,
-}
-
-/// The expected matching chunk. `origin` is the file path as indexed.
-#[derive(Debug, Deserialize)]
-pub(crate) struct GoldChunk {
-    pub name: String,
-    pub origin: String,
-    pub line_start: u32,
-    // Optional metadata kept for forward compat; we don't match on them.
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub line_end: Option<u32>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub chunk_type: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub language: Option<String>,
-}
+// Wire-format types (`QuerySet`, `EvalQuery`, `GoldChunk`) live in the lib
+// crate at `cqs::eval::schema` so the integration tests and any future
+// Rust-side eval tooling share one definition. Audit P2 #61.
 
 /// Per-category aggregate. R@1/5/20 are fractions in [0.0, 1.0].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -403,54 +366,10 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// Sanity: minimal v3-shaped payload deserializes into the eval structs.
-    /// The `judges` and `metadata` fields are present in real query files
-    /// but the runner ignores them — confirm they don't break parsing.
-    #[test]
-    fn test_query_set_parses_v3_envelope() {
-        let raw = r#"{
-            "schema_version": "v3-consensus",
-            "n": 1,
-            "queries": [
-                {
-                    "query": "table named notes",
-                    "category": "multi_step",
-                    "metadata": {"target_category": "multi_step"},
-                    "judges": {"claude": {"verified": true}},
-                    "gold_chunk": {
-                        "id": "src/schema.sql:108:744fc0db",
-                        "name": "notes",
-                        "origin": "src/schema.sql",
-                        "language": "sql",
-                        "chunk_type": "struct",
-                        "line_start": 108,
-                        "line_end": 118
-                    }
-                }
-            ]
-        }"#;
-
-        let set: QuerySet = serde_json::from_str(raw).expect("v3 envelope must parse");
-        assert_eq!(set.queries.len(), 1);
-        let q = &set.queries[0];
-        assert_eq!(q.query, "table named notes");
-        assert_eq!(q.category.as_deref(), Some("multi_step"));
-        let gold = q.gold_chunk.as_ref().expect("gold_chunk must parse");
-        assert_eq!(gold.name, "notes");
-        assert_eq!(gold.origin, "src/schema.sql");
-        assert_eq!(gold.line_start, 108);
-    }
-
-    /// Forward compat: a query with no gold_chunk and no category still
-    /// parses (will be reported as `skipped` at runtime).
-    #[test]
-    fn test_query_set_parses_minimal() {
-        let raw = r#"{"queries": [{"query": "anything"}]}"#;
-        let set: QuerySet = serde_json::from_str(raw).expect("minimal payload must parse");
-        assert_eq!(set.queries.len(), 1);
-        assert!(set.queries[0].gold_chunk.is_none());
-        assert!(set.queries[0].category.is_none());
-    }
+    // Schema deserialization is exercised in `cqs::eval::schema::tests` —
+    // the types live there now (audit P2 #61), and `tests/eval_test.rs`
+    // runs `deny_unknown_fields` against the on-disk v3 fixture. The
+    // remaining test below pins the runner's file-I/O contract.
 
     /// Writing a tiny query file and reading it back through `read_to_string`
     /// is the same path the runner uses — pin the I/O contract here.

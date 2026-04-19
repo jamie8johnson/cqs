@@ -247,9 +247,15 @@ pub(crate) struct SimilarArgs {
 pub(crate) struct BlameArgs {
     /// Function name or file:function
     pub name: String,
-    /// Max commits to show
-    #[arg(short = 'd', long, default_value = "10")]
-    pub depth: usize,
+    /// Max commits to show.
+    ///
+    /// API-V1.22-4: renamed from `--depth`/`-d` to `--commits`/`-n` so blame
+    /// stops sharing the `--depth` spelling with `onboard` (callee expansion
+    /// depth) and `test-map` (call-chain BFS depth) — three commands had three
+    /// different semantics under the same flag name. Hard rename, no alias —
+    /// internal-only tool, see CLAUDE.md "No External Users".
+    #[arg(short = 'n', long, default_value = "10")]
+    pub commits: usize,
     /// Also show callers of the function
     #[arg(long)]
     pub callers: bool,
@@ -539,7 +545,12 @@ pub(crate) struct IndexArgs {
     /// Re-index all files, ignore mtime cache
     #[arg(long)]
     pub force: bool,
-    /// Show what would be indexed, don't write
+    /// Show what would be indexed (default writes the index).
+    ///
+    /// Audit P2 #38: per the CONTRIBUTING "Dry-Run vs Apply" rule, side-effect
+    /// commands (`index`, `convert`) default to mutating; analyser commands
+    /// (`doctor`, `suggest`) default to read-only and require `--fix`/`--apply`
+    /// to mutate. TODO(docs-agent): document this rule in CONTRIBUTING.md.
     #[arg(long)]
     pub dry_run: bool,
     /// Index files ignored by .gitignore

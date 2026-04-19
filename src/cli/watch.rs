@@ -150,13 +150,20 @@ fn handle_socket_client(
 
     // EH-14: explicit warn on timeout failures rather than silent `.ok()` —
     // without a timeout a wedged client would pin the handler thread forever.
-    if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(5))) {
+    //
+    // P2 #41 (post-v1.27.0 audit): both timeouts now come from the shared
+    // `cqs::daemon_translate::resolve_daemon_timeout_ms` helper so a user
+    // raising `CQS_DAEMON_TIMEOUT_MS` raises both sides symmetrically. The
+    // previously-hardcoded 5s/30s values were the source of the
+    // TODO(cross-coordination) note in dispatch.rs.
+    let timeout = cqs::daemon_translate::resolve_daemon_timeout_ms();
+    if let Err(e) = stream.set_read_timeout(Some(timeout)) {
         tracing::warn!(
             error = %e,
             "Failed to set read timeout on daemon stream — slow client could pin handler"
         );
     }
-    if let Err(e) = stream.set_write_timeout(Some(Duration::from_secs(30))) {
+    if let Err(e) = stream.set_write_timeout(Some(timeout)) {
         tracing::warn!(
             error = %e,
             "Failed to set write timeout on daemon stream — slow client could pin handler"
@@ -243,6 +250,13 @@ fn handle_socket_client(
     // SEC-V1.25-16: for notes mutations the body *is* the sensitive
     // payload, so skip the preview entirely and record only the arg
     // count.
+    //
+    // P2 #51 (post-v1.27.0 audit): strip ASCII control characters
+    // (anything < 0x20 except space, plus DEL 0x7F) from the preview
+    // before it reaches the journal. A request whose args contain raw
+    // CR/LF/escape sequences could otherwise inject log-line splits or
+    // ANSI escape codes into journalctl output, which would render
+    // attacker-controlled text on operator terminals.
     let args_preview: String = if command == "notes" {
         "<redacted>".to_string()
     } else {
@@ -252,7 +266,10 @@ fn handle_socket_client(
             .nth(80)
             .map(|(i, _)| i)
             .unwrap_or(joined.len());
-        joined[..end].to_string()
+        joined[..end]
+            .chars()
+            .filter(|c| !c.is_control() || *c == ' ')
+            .collect()
     };
     tracing::debug!(
         command = %command_for_log,
@@ -289,14 +306,44 @@ fn handle_socket_client(
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             ctx.dispatch_line(&full_line, &mut output);
         }
-        String::from_utf8(output).map_err(|e| format!("non-UTF-8 output: {e}"))
+        // P2 #62 (post-v1.27.0 audit, partial): the audit's full fix routes
+        // dispatch through a `dispatch_value` sibling in `batch/mod.rs` that
+        // returns `Value` directly. That refactor is owned by another agent
+        // and is deferred for this wave; see TODO below.
+        //
+        // Partial win applied here: parse the dispatch bytes into a JSON
+        // `Value` and embed it as a real JSON field of the response envelope
+        // instead of round-tripping through `String::from_utf8` and embedding
+        // as a string-in-string. This eliminates the per-byte JSON-escape
+        // inflation that doubled large search responses on the wire.
+        //
+        // TODO(P2 #62 full fix): replace this parse with a `dispatch_value`
+        // call once `batch/mod.rs` exposes it. The bytes-then-parse shape
+        // here keeps the wire compatible while removing the escape pass.
+        let trimmed = trim_trailing_newline(&output);
+        match serde_json::from_slice::<serde_json::Value>(trimmed) {
+            Ok(v) => Ok(v),
+            Err(parse_err) => {
+                // Non-JSON dispatch output (e.g. a plaintext handler) falls
+                // back to the legacy string-in-string envelope so the client
+                // still receives the bytes. UTF-8 validation here flags the
+                // rare case where the handler produced binary garbage.
+                String::from_utf8(trimmed.to_vec())
+                    .map(serde_json::Value::String)
+                    .map_err(|utf_err| {
+                        format!(
+                            "dispatch output is neither valid JSON ({parse_err}) nor valid UTF-8 ({utf_err})"
+                        )
+                    })
+            }
+        }
     }));
 
     let (status, delivered) = match result {
-        Ok(Ok(output)) => {
+        Ok(Ok(output_value)) => {
             let resp = serde_json::json!({
                 "status": "ok",
-                "output": output.trim_end(),
+                "output": output_value,
             });
             let delivered = match writeln!(stream, "{}", resp) {
                 Ok(()) => true,
@@ -343,6 +390,25 @@ fn write_daemon_error(
     use std::io::Write;
     let resp = serde_json::json!({ "status": "error", "message": message });
     writeln!(stream, "{}", resp)
+}
+
+/// Trim a trailing `\n` (and optional `\r`) from `buf` and return the
+/// resulting slice. Mirrors `str::trim_end_matches` for newline cases
+/// without forcing a UTF-8 validation step on the way in.
+///
+/// Used by `handle_socket_client` to strip the trailing newline that
+/// `write_json_line` always emits before parsing the dispatch output as
+/// JSON.
+#[cfg(unix)]
+fn trim_trailing_newline(buf: &[u8]) -> &[u8] {
+    let mut end = buf.len();
+    if end > 0 && buf[end - 1] == b'\n' {
+        end -= 1;
+        if end > 0 && buf[end - 1] == b'\r' {
+            end -= 1;
+        }
+    }
+    &buf[..end]
 }
 
 /// Like `write_daemon_error`, but logs on failure and returns whether
@@ -3190,5 +3256,40 @@ mod tests {
     fn max_pending_files_is_bounded() {
         assert!(max_pending_files() > 0);
         assert!(max_pending_files() <= 100_000);
+    }
+
+    // ===== P2 #62 trim_trailing_newline tests =====
+
+    #[cfg(unix)]
+    #[test]
+    fn trim_newline_strips_lf() {
+        assert_eq!(trim_trailing_newline(b"hello\n"), b"hello");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trim_newline_strips_crlf() {
+        assert_eq!(trim_trailing_newline(b"hello\r\n"), b"hello");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trim_newline_no_op_when_absent() {
+        assert_eq!(trim_trailing_newline(b"hello"), b"hello");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trim_newline_handles_empty() {
+        assert_eq!(trim_trailing_newline(b""), b"");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trim_newline_only_strips_one_lf() {
+        // Two trailing newlines → only the last is stripped (callers that
+        // wrote two newlines deliberately are uncommon, but we don't want
+        // to silently consume more than one terminator).
+        assert_eq!(trim_trailing_newline(b"hello\n\n"), b"hello\n");
     }
 }

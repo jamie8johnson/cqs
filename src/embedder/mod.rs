@@ -3,10 +3,18 @@
 pub mod models;
 mod provider;
 
-pub use models::{
-    EmbeddingConfig, InputNames, ModelConfig, ModelInfo, PoolingStrategy, DEFAULT_DIM,
-    DEFAULT_MODEL_REPO,
-};
+pub use models::{EmbeddingConfig, InputNames, ModelConfig, ModelInfo, PoolingStrategy};
+
+/// Default embedding dimension (compile-time mirror of `ModelConfig::DEFAULT_DIM`).
+/// Kept as a `pub const` for `pub const EMBEDDING_DIM` in `lib.rs` and other
+/// `pub const` consumers. Sourced from the `default = true` row in
+/// `define_embedder_presets!`.
+pub const DEFAULT_DIM: usize = ModelConfig::DEFAULT_DIM;
+
+/// Default model repo as a `&'static str` (compile-time mirror of
+/// `ModelConfig::DEFAULT_REPO`). Kept for store/metadata callers that
+/// want a `&'static str` rather than `default_model().repo` (a `String`).
+pub const DEFAULT_MODEL_REPO: &str = ModelConfig::DEFAULT_REPO;
 
 use provider::ort_err;
 pub(crate) use provider::{create_session, select_provider};

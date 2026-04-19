@@ -65,6 +65,7 @@ fn chunk_with_path(name: &str, file: &str, lang: Language) -> cqs::Chunk {
         parent_id: None,
         window_idx: None,
         parent_type_name: None,
+        parser_version: 0,
     }
 }
 

@@ -1616,6 +1616,7 @@ mod tests {
                 parent_id: None,
                 window_idx: None,
                 parent_type_name: None,
+                parser_version: 0,
             };
             // A unit-vector embedding of the store's configured dim.
             let mut v = vec![0.0f32; store.dim()];

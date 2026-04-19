@@ -31,26 +31,75 @@ use serde::Serialize;
 /// keys) is stable across versions.
 pub const JSON_OUTPUT_VERSION: u32 = 1;
 
-/// Standard error code taxonomy. Keep small; refine as new categories prove
-/// necessary. Map anyhow chains to [`error_codes::INTERNAL`] by default.
+/// Canonical error-code taxonomy. Single source of truth for the wire-format
+/// strings emitted in [`JsonError::code`]. `as_str()` is `const fn` so the
+/// legacy `error_codes::FOO` `&'static str` constants below can re-export
+/// these without duplicating the string literals — adding a new code requires
+/// adding a variant here first. P2 #54.
 ///
-/// `NOT_FOUND` and `IO_ERROR` are part of the published taxonomy but no CLI
-/// site uses them yet (anyhow errors flow through main → stderr as text);
-/// the `#[allow(dead_code)]` keeps them reachable for future error-path
-/// migrations without warning noise.
-#[allow(dead_code)]
-pub mod error_codes {
+/// `#[non_exhaustive]` lets us add new codes without requiring downstream
+/// matchers to handle every variant; consumers should always treat unknown
+/// codes as an internal error.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCode {
     /// Requested entity does not exist (function name, file path, etc.).
-    pub const NOT_FOUND: &str = "not_found";
+    NotFound,
     /// User-supplied input was malformed or out of range.
-    pub const INVALID_INPUT: &str = "invalid_input";
+    InvalidInput,
     /// Failed to parse a command, query, or input file.
-    pub const PARSE_ERROR: &str = "parse_error";
+    ParseError,
     /// Filesystem, network, or socket I/O failure.
-    pub const IO_ERROR: &str = "io_error";
+    IoError,
     /// Catch-all for unexpected internal errors. Carries the anyhow chain
     /// in `message` so the root cause stays visible.
-    pub const INTERNAL: &str = "internal";
+    Internal,
+}
+
+impl ErrorCode {
+    /// Render the variant as the wire-format string. `const fn` so the
+    /// `error_codes::FOO` constants can delegate without runtime cost.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            ErrorCode::NotFound => "not_found",
+            ErrorCode::InvalidInput => "invalid_input",
+            ErrorCode::ParseError => "parse_error",
+            ErrorCode::IoError => "io_error",
+            ErrorCode::Internal => "internal",
+        }
+    }
+}
+
+impl From<ErrorCode> for &'static str {
+    fn from(code: ErrorCode) -> Self {
+        code.as_str()
+    }
+}
+
+/// Standard error code taxonomy as `&'static str` constants. Each constant
+/// delegates to [`ErrorCode::as_str`] so the wire-format strings live in
+/// exactly one place.
+///
+/// Today only `internal`, `invalid_input`, and `parse_error` are emitted by
+/// CLI / batch / daemon paths; `not_found` and `io_error` are reserved for
+/// future error-path migrations (see ping/eval emit-on-failure paths). Keep
+/// them exposed so the `tracing::warn!(code = ...)` calls and downstream
+/// matchers stay grounded against the same taxonomy.
+#[allow(dead_code)]
+pub mod error_codes {
+    use super::ErrorCode;
+
+    /// Requested entity does not exist (function name, file path, etc.).
+    pub const NOT_FOUND: &str = ErrorCode::NotFound.as_str();
+    /// User-supplied input was malformed or out of range.
+    pub const INVALID_INPUT: &str = ErrorCode::InvalidInput.as_str();
+    /// Failed to parse a command, query, or input file.
+    pub const PARSE_ERROR: &str = ErrorCode::ParseError.as_str();
+    /// Filesystem, network, or socket I/O failure.
+    pub const IO_ERROR: &str = ErrorCode::IoError.as_str();
+    /// Catch-all for unexpected internal errors. Carries the anyhow chain
+    /// in `message` so the root cause stays visible.
+    pub const INTERNAL: &str = ErrorCode::Internal.as_str();
 }
 
 /// Standard envelope for all JSON-emitting commands.
@@ -82,7 +131,8 @@ impl<T: Serialize> Envelope<T> {
 impl Envelope<serde_json::Value> {
     /// Build an error envelope. `Envelope<serde_json::Value>` is the canonical
     /// type for errors so the caller doesn't need to name a phantom data type.
-    /// Used by [`emit_json_error`] for the JSON failure-path contract.
+    /// Used by [`wrap_error`] and [`emit_json_error`] for the JSON failure-
+    /// path contract.
     pub fn err(code: &str, message: impl Into<String>) -> Self {
         Self {
             data: None,
@@ -97,20 +147,50 @@ impl Envelope<serde_json::Value> {
 
 /// Wrap a raw [`serde_json::Value`] payload in the standard envelope.
 /// Used by batch and pipeline paths that already work with untyped values.
-pub fn wrap_value(payload: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "data": payload,
-        "error": null,
-        "version": JSON_OUTPUT_VERSION,
+///
+/// P2 #28: takes `&serde_json::Value` so the daemon hot path (one wrap per
+/// dispatched query) does not deep-clone the inner Map/Vec. The envelope
+/// construction itself still allocates the outer `{data, error, version}`
+/// object plus a shallow clone of the payload (necessary because
+/// `serde_json::json!` macro takes ownership).
+///
+/// P2 #40: thin wrapper over the typed [`Envelope::ok`] path so both code
+/// paths share the same shape — adding a new envelope field (e.g. `meta`)
+/// touches one place.
+pub fn wrap_value(payload: &serde_json::Value) -> serde_json::Value {
+    serde_json::to_value(Envelope::ok(payload)).unwrap_or_else(|e| {
+        // Envelope<T> serialize failures are structurally impossible today
+        // (the inner payload is already a Value, the wrapper has no
+        // non-Serializable fields). Logging at warn keeps the failure
+        // visible if the structure ever changes. The fallback path clones
+        // the payload (json! macro takes ownership) — acceptable cost
+        // because we only reach this branch on a serializer regression.
+        tracing::warn!(error = %e, "wrap_value: envelope serialization failed; emitting fallback shape");
+        let owned = payload.clone();
+        serde_json::json!({
+            "data": owned,
+            "error": null,
+            "version": JSON_OUTPUT_VERSION,
+        })
     })
 }
 
-/// Build an error envelope as a raw [`serde_json::Value`].
+/// Build an error envelope as a raw [`serde_json::Value`]. P2 #40: thin
+/// wrapper over the typed [`Envelope::err`] path — same rationale as
+/// [`wrap_value`].
+///
+/// Accepts `&str` for the code rather than [`ErrorCode`] because some
+/// legacy call sites (pipeline error structs in `cli::batch::pipeline`)
+/// carry the code as `&'static str` from `error_codes::FOO`. New code
+/// should prefer [`ErrorCode::as_str`] for compile-checked emission.
 pub fn wrap_error(code: &str, message: &str) -> serde_json::Value {
-    serde_json::json!({
-        "data": null,
-        "error": { "code": code, "message": message },
-        "version": JSON_OUTPUT_VERSION,
+    serde_json::to_value(Envelope::<serde_json::Value>::err(code, message)).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "wrap_error: envelope serialization failed; emitting fallback shape");
+        serde_json::json!({
+            "data": null,
+            "error": { "code": code, "message": message },
+            "version": JSON_OUTPUT_VERSION,
+        })
     })
 }
 
@@ -191,13 +271,96 @@ pub fn emit_json<T: Serialize>(value: &T) -> Result<()> {
 /// shape `{data:null, error:{code,message}, version:1}` instead of bare
 /// stderr text.
 ///
-/// Same retry-on-NaN guarantee as [`emit_json`].
+/// Same retry-on-NaN guarantee as [`emit_json`]. Accepts `&str` for the
+/// code so legacy callers using `error_codes::FOO` keep working; new code
+/// should prefer [`ErrorCode::as_str`] for compile-checked emission.
 pub fn emit_json_error(code: &str, message: &str) -> Result<()> {
     let env = Envelope::<serde_json::Value>::err(code, message);
     let buf = serde_json::to_value(&env)?;
     let s = format_envelope_to_string(&buf)?;
     println!("{s}");
     Ok(())
+}
+
+/// Redact an error chain to a stable `(code, message)` pair safe to surface
+/// over the daemon socket or to JSON consumers. P2 #33.
+///
+/// `format!("{e:#}")` on an `anyhow::Error` walks the entire context chain
+/// and may emit raw HTTP bodies, filesystem paths, sqlite query fragments,
+/// or other operator-side detail that has no business reaching a daemon
+/// client. This helper:
+///
+/// - Inspects the root cause's type for a small allowlist of known-safe
+///   downcasts (sqlx errors → `internal`, IO errors → `io_error`, anyhow
+///   with no specific source → `internal`).
+/// - Returns a stable `(ErrorCode, message)` pair where `message` is
+///   either a redacted summary (for known classes) or a correlation
+///   chain-id (`"err-<u64-hex>"`) that an operator can grep for in
+///   `journalctl -u cqs-watch`.
+/// - Logs the full chain via `tracing::warn!(chain_id, error = %format!("{:#}"))`
+///   so the unredacted form stays available to the operator without
+///   reaching the client.
+///
+/// The four daemon batch dispatch sites in `BatchContext::dispatch_line`
+/// and `cmd_batch`'s stdin loop call this so a panicked sqlite query or
+/// HTTP fetch failure can't leak request URLs / row contents to the
+/// daemon socket client.
+pub fn redact_error(err: &anyhow::Error) -> (ErrorCode, String) {
+    // Generate a stable chain id once per error so the warn log and the
+    // client-facing message both reference the same correlation handle.
+    // Process-local; not a security boundary, just a grep target.
+    let chain_id = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        // Hash the rendered chain so retrying the same error gets the
+        // same id (operator can correlate journal lines).
+        format!("{err:#}").hash(&mut h);
+        format!("err-{:016x}", h.finish())
+    };
+
+    // Walk the source chain to inspect the root cause type. Only specific
+    // downcasts emit the underlying message; everything else gets the
+    // opaque chain-id form so we never hand out arbitrary error text.
+    let root: &(dyn std::error::Error + 'static) = err.chain().last().unwrap_or(err.as_ref());
+
+    // sqlx errors leak query text and binding values via their Display
+    // impl — never surface those to clients.
+    if root.downcast_ref::<sqlx::Error>().is_some() {
+        tracing::warn!(
+            chain_id = %chain_id,
+            error = %format!("{err:#}"),
+            "Daemon batch: sqlite error redacted"
+        );
+        return (
+            ErrorCode::Internal,
+            format!("internal database error ({chain_id})"),
+        );
+    }
+
+    // IO errors: the Display form is safe (kind + os error message), but
+    // the surrounding anyhow context may carry the path. Return the root
+    // io::Error display only.
+    if let Some(io_err) = root.downcast_ref::<std::io::Error>() {
+        tracing::warn!(
+            chain_id = %chain_id,
+            error = %format!("{err:#}"),
+            "Daemon batch: IO error redacted"
+        );
+        return (ErrorCode::IoError, format!("{io_err} ({chain_id})"));
+    }
+
+    // Default: unknown root. Surface only the chain-id; operators can
+    // correlate via the warn log below.
+    tracing::warn!(
+        chain_id = %chain_id,
+        error = %format!("{err:#}"),
+        "Daemon batch: unknown error class redacted"
+    );
+    (
+        ErrorCode::Internal,
+        format!("internal error ({chain_id}); see daemon log"),
+    )
 }
 
 #[cfg(test)]
@@ -225,7 +388,7 @@ mod tests {
 
     #[test]
     fn wrap_value_shape() {
-        let v = wrap_value(serde_json::json!([1, 2, 3]));
+        let v = wrap_value(&serde_json::json!([1, 2, 3]));
         assert_eq!(v["data"], serde_json::json!([1, 2, 3]));
         assert!(v["error"].is_null());
         assert_eq!(v["version"], JSON_OUTPUT_VERSION);
@@ -237,6 +400,116 @@ mod tests {
         assert!(v["data"].is_null());
         assert_eq!(v["error"]["code"], "parse_error");
         assert_eq!(v["error"]["message"], "bad token");
+    }
+
+    // P2 #54: ErrorCode enum drives the const proxies. Test that adding /
+    // renaming a variant requires a compile-time match update — the as_str
+    // arm and the const proxy stay in lockstep with the enum.
+    #[test]
+    fn error_code_str_round_trip() {
+        assert_eq!(ErrorCode::NotFound.as_str(), error_codes::NOT_FOUND);
+        assert_eq!(ErrorCode::InvalidInput.as_str(), error_codes::INVALID_INPUT);
+        assert_eq!(ErrorCode::ParseError.as_str(), error_codes::PARSE_ERROR);
+        assert_eq!(ErrorCode::IoError.as_str(), error_codes::IO_ERROR);
+        assert_eq!(ErrorCode::Internal.as_str(), error_codes::INTERNAL);
+    }
+
+    #[test]
+    fn error_code_into_static_str() {
+        let code: &'static str = ErrorCode::ParseError.into();
+        assert_eq!(code, "parse_error");
+    }
+
+    // P2 #40: wrap_value / wrap_error are now thin wrappers over the typed
+    // Envelope::ok / Envelope::err paths. Same shape on both surfaces means
+    // adding a field (e.g. `meta`) touches one place.
+    #[test]
+    fn wrap_value_matches_envelope_ok_shape() {
+        let payload = serde_json::json!({"x": 1, "y": [2, 3]});
+        let via_wrap = wrap_value(&payload);
+        let via_typed = serde_json::to_value(Envelope::ok(&payload)).unwrap();
+        assert_eq!(via_wrap, via_typed);
+    }
+
+    #[test]
+    fn wrap_error_matches_envelope_err_shape() {
+        let via_wrap = wrap_error(error_codes::INVALID_INPUT, "bad query");
+        let via_typed = serde_json::to_value(Envelope::<serde_json::Value>::err(
+            "invalid_input",
+            "bad query",
+        ))
+        .unwrap();
+        assert_eq!(via_wrap, via_typed);
+    }
+
+    // P2 #28: wrap_value takes &Value — confirm the caller doesn't need to
+    // clone the payload at the call site. (The function still allocates the
+    // outer envelope; the goal is to remove the redundant deep clone.)
+    #[test]
+    fn wrap_value_takes_reference_no_caller_clone() {
+        let payload = serde_json::json!({"big": (0..100).collect::<Vec<_>>()});
+        // Pass by reference; payload is still owned at the call site.
+        let _wrapped = wrap_value(&payload);
+        assert_eq!(payload["big"][0], 0);
+        assert_eq!(payload["big"][99], 99);
+    }
+
+    // P2 #33: redact_error returns a stable code+chain-id pair for unknown
+    // error roots so the daemon socket never echoes raw anyhow chains.
+    #[test]
+    fn redact_error_unknown_root_returns_internal_with_chain_id() {
+        let err = anyhow::anyhow!("some internal failure with /etc/passwd in path");
+        let (code, msg) = redact_error(&err);
+        assert_eq!(code, ErrorCode::Internal);
+        // The message must include the chain-id correlation handle and
+        // must NOT include the original (potentially sensitive) text.
+        assert!(msg.contains("err-"), "expected chain-id in message: {msg}");
+        assert!(
+            !msg.contains("/etc/passwd"),
+            "raw error text leaked to client: {msg}"
+        );
+    }
+
+    // P2 #33: same input → same chain-id (deterministic correlation). An
+    // operator grepping the journal for the chain-id finds the matching warn.
+    #[test]
+    fn redact_error_chain_id_is_deterministic_for_same_root() {
+        let err1 = anyhow::anyhow!("repeatable error text");
+        let err2 = anyhow::anyhow!("repeatable error text");
+        let (_, msg1) = redact_error(&err1);
+        let (_, msg2) = redact_error(&err2);
+        // Both messages should embed the same chain-id since the rendered
+        // chain text is identical.
+        let extract = |msg: &str| -> Option<String> {
+            msg.split_whitespace()
+                .find(|w| w.contains("err-"))
+                .map(|w| w.trim_start_matches('(').trim_end_matches(')').to_string())
+        };
+        assert_eq!(
+            extract(&msg1),
+            extract(&msg2),
+            "chain-id should be deterministic for same root"
+        );
+    }
+
+    // P2 #33: sqlx errors are downcast and redacted to "internal database
+    // error" — never echoing the SQL query string or row binding values.
+    #[test]
+    fn redact_error_sqlite_root_returns_redacted_database_message() {
+        // RowNotFound is a simple sqlx::Error variant that doesn't need a
+        // real sqlite handle to construct. Surrounding context() carries
+        // the SQL the redaction must drop.
+        let sqlx_err = sqlx::Error::RowNotFound;
+        let err = anyhow::Error::from(sqlx_err)
+            .context("SELECT secret FROM users WHERE id = 'sensitive'");
+        let (code, msg) = redact_error(&err);
+        assert_eq!(code, ErrorCode::Internal);
+        assert!(msg.starts_with("internal database error"));
+        assert!(!msg.contains("SELECT"), "SQL leaked to client: {msg}");
+        assert!(
+            !msg.contains("sensitive"),
+            "binding leaked to client: {msg}"
+        );
     }
 
     // D.1: emit_json must sanitize NaN to null via the shared retry pattern,

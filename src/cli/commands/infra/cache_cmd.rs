@@ -5,32 +5,33 @@ use clap::Subcommand;
 
 use cqs::cache::EmbeddingCache;
 
+use crate::cli::definitions::TextJsonArgs;
 use crate::cli::Cli;
 
+/// API-V1.22-2: subcommands flatten the shared `TextJsonArgs` instead of
+/// declaring inline `json: bool` fields, so every `--json`-bearing subcommand
+/// in the CLI uses one definition.
 #[derive(Subcommand, Clone, Debug)]
 pub(crate) enum CacheCommand {
     /// Show cache statistics (entries, size, models)
     Stats {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Delete all cached embeddings (or only for a model fingerprint)
     Clear {
         /// Only clear entries for this model fingerprint
         #[arg(long)]
         model: Option<String>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Remove entries older than N days
     Prune {
         /// Days to keep (entries older than this are removed)
         days: u32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
 }
 
@@ -45,11 +46,11 @@ pub(crate) fn cmd_cache(cli: &Cli, subcmd: &CacheCommand) -> Result<()> {
     // `src/cli/commands/infra/model.rs:113`). `cqs --json cache stats` must
     // emit envelope JSON even without `--json` after the subcommand.
     match subcmd {
-        CacheCommand::Stats { json } => cache_stats(&cache, &cache_path, cli.json || *json),
-        CacheCommand::Clear { model, json } => {
-            cache_clear(&cache, model.as_deref(), cli.json || *json)
+        CacheCommand::Stats { output } => cache_stats(&cache, &cache_path, cli.json || output.json),
+        CacheCommand::Clear { model, output } => {
+            cache_clear(&cache, model.as_deref(), cli.json || output.json)
         }
-        CacheCommand::Prune { days, json } => cache_prune(&cache, *days, cli.json || *json),
+        CacheCommand::Prune { days, output } => cache_prune(&cache, *days, cli.json || output.json),
     }
 }
 

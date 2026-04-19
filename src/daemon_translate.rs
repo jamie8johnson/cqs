@@ -110,6 +110,29 @@ pub fn translate_cli_args_to_batch(raw: &[String], has_subcommand: bool) -> (Str
     }
 }
 
+/// Resolve the daemon socket read/write timeout used on both the CLI client
+/// side (`cli::dispatch::try_daemon_query`) and the daemon server side
+/// (`cli::watch::handle_socket_client`).
+///
+/// SHL-V1.25-1 / SHL-V1.25-2 / P2 #41 (post-v1.27.0 audit): a single env knob
+/// keeps the two surfaces symmetric. Previously the daemon hardcoded 5 s read
+/// / 30 s write while the CLI honored `CQS_DAEMON_TIMEOUT_MS` — a user who
+/// raised the CLI cap to allow a slow rerank would still hit the daemon's 30 s
+/// write cap, getting a truncated/parse-error JSON line.
+///
+/// Honors `CQS_DAEMON_TIMEOUT_MS` (millisecond integer). Defaults to
+/// 30 s; floors to 1 s so a misconfigured `=500` doesn't collapse to
+/// `Duration::from_secs(0)` (which is unusable on UnixStream timeouts).
+pub fn resolve_daemon_timeout_ms() -> std::time::Duration {
+    std::time::Duration::from_millis(
+        std::env::var("CQS_DAEMON_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|ms| ms.max(1_000))
+            .unwrap_or(30_000),
+    )
+}
+
 /// Extract the value of `--model` from the raw argv, if present. Used by the
 /// caller to emit a "daemon ignores your --model" warning without duplicating
 /// the arg-scanning logic here. Supports both `--model VAL` and `--model=VAL`.
@@ -291,6 +314,20 @@ mod tests {
 
     fn v(tokens: &[&str]) -> Vec<String> {
         tokens.iter().map(|s| s.to_string()).collect()
+    }
+
+    // P2 #41: env-var-driven timeout helper used by both daemon and CLI sides.
+    // Test only the unset path; mutating env vars in a parallel test runner
+    // is fragile, and the floor / honor logic is small enough to inspect.
+    #[test]
+    fn resolve_daemon_timeout_default_is_30s() {
+        if std::env::var("CQS_DAEMON_TIMEOUT_MS").is_ok() {
+            return;
+        }
+        assert_eq!(
+            resolve_daemon_timeout_ms(),
+            std::time::Duration::from_secs(30)
+        );
     }
 
     // Sanity parity with the inline block that was removed from

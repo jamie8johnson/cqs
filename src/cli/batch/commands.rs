@@ -412,7 +412,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
     // even if future fields are added to the variant.
     match cmd {
         BatchCmd::Blame { args, .. } => {
-            handlers::dispatch_blame(ctx, &args.name, args.depth, args.callers)
+            handlers::dispatch_blame(ctx, &args.name, args.commits, args.callers)
         }
         BatchCmd::Search { args, .. } => {
             log_query("search", &args.query);
@@ -800,7 +800,7 @@ mod tests {
         match input.cmd {
             BatchCmd::Blame { ref args, .. } => {
                 assert_eq!(args.name, "my_func");
-                assert_eq!(args.depth, 10); // default
+                assert_eq!(args.commits, 10); // default
                 assert!(!args.callers);
             }
             _ => panic!("Expected Blame command"),
@@ -809,13 +809,27 @@ mod tests {
 
     #[test]
     fn test_parse_blame_with_flags() {
+        // API-V1.22-4: short flag is `-n`, long flag is `--commits`. Old
+        // `-d`/`--depth` is hard-renamed (no alias) — see CLAUDE.md
+        // "No External Users" / agents-only contract.
         let input =
-            BatchInput::try_parse_from(["blame", "my_func", "-d", "5", "--callers"]).unwrap();
+            BatchInput::try_parse_from(["blame", "my_func", "-n", "5", "--callers"]).unwrap();
         match input.cmd {
             BatchCmd::Blame { ref args, .. } => {
                 assert_eq!(args.name, "my_func");
-                assert_eq!(args.depth, 5);
+                assert_eq!(args.commits, 5);
                 assert!(args.callers);
+            }
+            _ => panic!("Expected Blame command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_blame_long_commits() {
+        let input = BatchInput::try_parse_from(["blame", "my_func", "--commits", "3"]).unwrap();
+        match input.cmd {
+            BatchCmd::Blame { ref args, .. } => {
+                assert_eq!(args.commits, 3);
             }
             _ => panic!("Expected Blame command"),
         }

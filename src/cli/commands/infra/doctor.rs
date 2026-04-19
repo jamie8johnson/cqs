@@ -86,14 +86,18 @@ fn run_fixes(issues: &[DoctorIssue]) -> Result<()> {
     Ok(())
 }
 
-/// Run diagnostic checks on cqs installation and index
+/// Run diagnostic checks on cqs installation and index.
+///
 /// Reports runtime info, embedding provider, model status, and index statistics.
 /// With `--fix`, automatically remediates issues: stale→index, schema→migrate.
 /// With `--verbose`, also dumps the full setup introspection (resolved model
 /// config, env vars, daemon socket, index metadata, config precedence) — the
 /// one-call diagnostic for "queries return zero results" / "weird daemon state".
-/// `--json` implies `--verbose` and emits the introspection as a structured
-/// document instead of human-readable text.
+///
+/// P2 #27: `--json` implies `--verbose`, suppresses all human-readable check
+/// output on stdout (colored checks go to stderr instead so a TTY user still
+/// sees them), and emits a single JSON document covering both check results
+/// and verbose introspection. `cqs doctor --json | jq` works.
 pub(crate) fn cmd_doctor(
     model_override: Option<&str>,
     fix: bool,
@@ -111,30 +115,67 @@ pub(crate) fn cmd_doctor(
     // legacy text output serialized as JSON, which has no real consumer.
     let want_verbose = verbose || json;
 
-    println!("Runtime:");
+    // P2 #27: when `--json` is set we accumulate the structured equivalent of
+    // each check line into `check_records`. The colored human-readable lines
+    // still print but go to stderr (via `out`) so stdout stays pristine for
+    // the final JSON envelope.
+    let mut check_records: Vec<CheckRecord> = Vec::new();
+
+    out(json, "Runtime:");
 
     // Check model
     let model_config = ModelConfig::resolve(model_override, None);
     match Embedder::new(model_config.clone()) {
         Ok(embedder) => {
-            println!(
-                "  {} Model: {} (metadata: {})",
-                "[✓]".green(),
-                cqs::embedder::model_repo(),
-                cqs::store::MODEL_NAME
+            out(
+                json,
+                &format!(
+                    "  {} Model: {} (metadata: {})",
+                    "[✓]".green(),
+                    cqs::embedder::model_repo(),
+                    cqs::store::MODEL_NAME
+                ),
             );
-            println!("  {} Tokenizer: loaded", "[✓]".green());
-            println!("  {} Execution: {}", "[✓]".green(), embedder.provider());
+            check_records.push(CheckRecord::ok(
+                "runtime",
+                "model",
+                format!(
+                    "{} (metadata: {})",
+                    cqs::embedder::model_repo(),
+                    cqs::store::MODEL_NAME
+                ),
+            ));
+            out(json, &format!("  {} Tokenizer: loaded", "[✓]".green()));
+            check_records.push(CheckRecord::ok(
+                "runtime",
+                "tokenizer",
+                "loaded".to_string(),
+            ));
+            let provider = embedder.provider().to_string();
+            out(
+                json,
+                &format!("  {} Execution: {}", "[✓]".green(), provider),
+            );
+            check_records.push(CheckRecord::ok("runtime", "execution", provider));
 
             // Test embedding
             let start = std::time::Instant::now();
             embedder.warm()?;
             let elapsed = start.elapsed();
-            println!("  {} Test embedding: {:?}", "[✓]".green(), elapsed);
+            out(
+                json,
+                &format!("  {} Test embedding: {:?}", "[✓]".green(), elapsed),
+            );
+            check_records.push(CheckRecord::ok(
+                "runtime",
+                "test_embedding",
+                format!("{:?}", elapsed),
+            ));
         }
         Err(e) => {
             let msg = format!("Model load failed: {}", e);
-            println!("  {} Model: {}", "[✗]".red(), e);
+            out(json, &format!("  {} Model: {}", "[✗]".red(), e));
+            check_records.push(CheckRecord::err("runtime", "model", e.to_string()));
             issues.push(DoctorIssue {
                 kind: IssueKind::ModelError,
                 message: msg,
@@ -143,61 +184,95 @@ pub(crate) fn cmd_doctor(
         }
     }
 
-    println!();
-    println!("Parser:");
+    out(json, "");
+    out(json, "Parser:");
     match CqParser::new() {
         Ok(parser) => {
-            println!("  {} tree-sitter: loaded", "[✓]".green());
-            println!(
-                "  {} Languages: {}",
-                "[✓]".green(),
-                parser.supported_extensions().join(", ")
-            );
+            out(json, &format!("  {} tree-sitter: loaded", "[✓]".green()));
+            check_records.push(CheckRecord::ok(
+                "parser",
+                "tree_sitter",
+                "loaded".to_string(),
+            ));
+            let langs = parser.supported_extensions().join(", ");
+            out(json, &format!("  {} Languages: {}", "[✓]".green(), langs));
+            check_records.push(CheckRecord::ok("parser", "languages", langs));
         }
         Err(e) => {
-            println!("  {} Parser: {}", "[✗]".red(), e);
+            out(json, &format!("  {} Parser: {}", "[✗]".red(), e));
+            check_records.push(CheckRecord::err("parser", "tree_sitter", e.to_string()));
             // Parser errors are not auto-fixable
             any_failed = true;
         }
     }
 
-    println!();
-    println!("Index:");
+    out(json, "");
+    out(json, "Index:");
     if index_path.exists() {
         match Store::open(&index_path) {
             Ok(store) => {
                 let stats = store.stats()?;
-                println!("  {} Location: {}", "[✓]".green(), index_path.display());
-                println!(
-                    "  {} Schema version: {}",
-                    "[✓]".green(),
-                    stats.schema_version
+                out(
+                    json,
+                    &format!("  {} Location: {}", "[✓]".green(), index_path.display()),
                 );
-                println!("  {} {} chunks indexed", "[✓]".green(), stats.total_chunks);
+                check_records.push(CheckRecord::ok(
+                    "index",
+                    "location",
+                    index_path.display().to_string(),
+                ));
+                out(
+                    json,
+                    &format!(
+                        "  {} Schema version: {}",
+                        "[✓]".green(),
+                        stats.schema_version
+                    ),
+                );
+                check_records.push(CheckRecord::ok(
+                    "index",
+                    "schema_version",
+                    stats.schema_version.to_string(),
+                ));
+                out(
+                    json,
+                    &format!("  {} {} chunks indexed", "[✓]".green(), stats.total_chunks),
+                );
+                check_records.push(CheckRecord::ok(
+                    "index",
+                    "total_chunks",
+                    stats.total_chunks.to_string(),
+                ));
                 if !stats.chunks_by_language.is_empty() {
                     let lang_summary: Vec<_> = stats
                         .chunks_by_language
                         .iter()
                         .map(|(l, c)| format!("{} {}", c, l))
                         .collect();
-                    println!("      ({})", lang_summary.join(", "));
+                    out(json, &format!("      ({})", lang_summary.join(", ")));
                 }
 
                 // Check schema version against expected
                 let expected = cqs::store::CURRENT_SCHEMA_VERSION;
                 if stats.schema_version != expected {
-                    println!(
-                        "  {} Schema mismatch: index is v{}, cqs expects v{}",
-                        "[!]".yellow(),
-                        stats.schema_version,
-                        expected
+                    out(
+                        json,
+                        &format!(
+                            "  {} Schema mismatch: index is v{}, cqs expects v{}",
+                            "[!]".yellow(),
+                            stats.schema_version,
+                            expected
+                        ),
                     );
+                    let msg = format!("Schema v{} != expected v{}", stats.schema_version, expected);
+                    check_records.push(CheckRecord::warn(
+                        "index",
+                        "schema_compatibility",
+                        msg.clone(),
+                    ));
                     issues.push(DoctorIssue {
                         kind: IssueKind::Schema,
-                        message: format!(
-                            "Schema v{} != expected v{}",
-                            stats.schema_version, expected
-                        ),
+                        message: msg,
                     });
                     any_failed = true;
                 }
@@ -207,19 +282,27 @@ pub(crate) fn cmd_doctor(
                 let configured = &model_config.name;
                 match stored {
                     Some(ref stored_name) if stored_name != configured => {
-                        println!(
-                            "  {} Model mismatch: index uses \"{}\", configured is \"{}\"",
-                            "[!]".yellow(),
-                            stored_name,
-                            configured
+                        out(
+                            json,
+                            &format!(
+                                "  {} Model mismatch: index uses \"{}\", configured is \"{}\"",
+                                "[!]".yellow(),
+                                stored_name,
+                                configured
+                            ),
                         );
-                        println!("      Run `cqs index --force` to reindex with the new model.");
+                        out(
+                            json,
+                            "      Run `cqs index --force` to reindex with the new model.",
+                        );
+                        let msg = format!(
+                            "Model mismatch: index uses \"{}\", configured is \"{}\"",
+                            stored_name, configured
+                        );
+                        check_records.push(CheckRecord::warn("index", "model_match", msg.clone()));
                         issues.push(DoctorIssue {
                             kind: IssueKind::Stale,
-                            message: format!(
-                                "Model mismatch: index uses \"{}\", configured is \"{}\"",
-                                stored_name, configured
-                            ),
+                            message: msg,
                         });
                         any_failed = true;
                     }
@@ -228,7 +311,8 @@ pub(crate) fn cmd_doctor(
             }
             Err(e) => {
                 let err_str = e.to_string();
-                println!("  {} Index: {}", "[✗]".red(), e);
+                out(json, &format!("  {} Index: {}", "[✗]".red(), e));
+                check_records.push(CheckRecord::err("index", "open", err_str.clone()));
                 if err_str.contains("Schema version mismatch") {
                     issues.push(DoctorIssue {
                         kind: IssueKind::Schema,
@@ -239,8 +323,16 @@ pub(crate) fn cmd_doctor(
             }
         }
     } else {
-        println!("  {} Index: not created yet", "[!]".yellow());
-        println!("      Run 'cqs index' to create the index");
+        out(
+            json,
+            &format!("  {} Index: not created yet", "[!]".yellow()),
+        );
+        out(json, "      Run 'cqs index' to create the index");
+        check_records.push(CheckRecord::warn(
+            "index",
+            "exists",
+            "Index not created".to_string(),
+        ));
         issues.push(DoctorIssue {
             kind: IssueKind::NoIndex,
             message: "Index not created".to_string(),
@@ -250,17 +342,25 @@ pub(crate) fn cmd_doctor(
     // Check references
     let config = cqs::config::Config::load(&root);
     if !config.references.is_empty() {
-        println!();
-        println!("References:");
+        out(json, "");
+        out(json, "References:");
         for r in &config.references {
             let db_path = r.path.join(cqs::INDEX_DB_FILENAME);
             if !r.path.exists() {
-                println!(
-                    "  {} {}: path missing ({})",
-                    "[✗]".red(),
-                    r.name,
-                    r.path.display()
+                out(
+                    json,
+                    &format!(
+                        "  {} {}: path missing ({})",
+                        "[✗]".red(),
+                        r.name,
+                        r.path.display()
+                    ),
                 );
+                check_records.push(CheckRecord::err(
+                    "references",
+                    &r.name,
+                    format!("path missing ({})", r.path.display()),
+                ));
                 any_failed = true;
                 continue;
             }
@@ -275,46 +375,65 @@ pub(crate) fn cmd_doctor(
                     } else {
                         "no HNSW".to_string()
                     };
-                    println!(
-                        "  {} {}: {} chunks, {} (weight {:.1})",
-                        "[✓]".green(),
-                        r.name,
-                        chunks,
-                        hnsw,
-                        r.weight
+                    out(
+                        json,
+                        &format!(
+                            "  {} {}: {} chunks, {} (weight {:.1})",
+                            "[✓]".green(),
+                            r.name,
+                            chunks,
+                            hnsw,
+                            r.weight
+                        ),
                     );
+                    check_records.push(CheckRecord::ok(
+                        "references",
+                        &r.name,
+                        format!("{chunks} chunks, {hnsw} (weight {:.1})", r.weight),
+                    ));
                 }
                 Err(e) => {
-                    println!("  {} {}: {}", "[✗]".red(), r.name, e);
+                    out(json, &format!("  {} {}: {}", "[✗]".red(), r.name, e));
+                    check_records.push(CheckRecord::err("references", &r.name, e.to_string()));
                     any_failed = true;
                 }
             }
         }
     }
 
-    println!();
+    out(json, "");
     if any_failed {
-        println!("Some checks failed — see {} items above.", "[✗]".red());
+        out(
+            json,
+            &format!("Some checks failed — see {} items above.", "[✗]".red()),
+        );
     } else {
-        println!("All checks passed.");
+        out(json, "All checks passed.");
     }
 
     // --fix: attempt automatic remediation
     if fix && !issues.is_empty() {
-        println!();
-        println!("{}:", "Auto-fixing issues".bold());
+        out(json, "");
+        out(json, &format!("{}:", "Auto-fixing issues".bold()));
         run_fixes(&issues)?;
     } else if fix && issues.is_empty() {
-        println!("Nothing to fix.");
+        out(json, "Nothing to fix.");
     }
 
     // --verbose: emit the full setup introspection
     if want_verbose {
         let report = build_verbose_report(&root, &cqs_dir, &index_path, model_override, &config);
         if json {
-            println!();
-            crate::cli::json_envelope::emit_json(&report)
-                .context("Failed to serialize verbose doctor report")?;
+            // P2 #27: emit ONE JSON document on stdout combining check
+            // results and verbose introspection. The colored check log
+            // already went to stderr; nothing on stdout has been written.
+            let combined = DoctorReport {
+                checks: check_records,
+                any_failed,
+                report: &report,
+            };
+            crate::cli::json_envelope::emit_json(&combined)
+                .context("Failed to serialize doctor report")?;
         } else {
             println!();
             print_verbose_report(&report);
@@ -322,6 +441,75 @@ pub(crate) fn cmd_doctor(
     }
 
     Ok(())
+}
+
+/// P2 #27: route a human-readable check line to stdout (text mode) or stderr
+/// (JSON mode), so `cqs doctor --json` keeps stdout pristine for `jq` while
+/// a TTY user still sees the colored check progress on stderr.
+fn out(json: bool, line: &str) {
+    if json {
+        eprintln!("{line}");
+    } else {
+        println!("{line}");
+    }
+}
+
+/// One row in the structured check log emitted by `cqs doctor --json`.
+///
+/// Mirrors the human-readable lines (`[✓] Model: ...`) but in a shape agents
+/// can branch on: `severity` is `ok` / `warn` / `err`, `section` names the
+/// textual heading the line belonged to (`runtime`, `parser`, `index`,
+/// `references`), and `name` is the per-line check id.
+#[derive(Debug, serde::Serialize)]
+struct CheckRecord {
+    section: String,
+    name: String,
+    severity: String,
+    message: String,
+}
+
+impl CheckRecord {
+    fn ok(section: &str, name: &str, message: String) -> Self {
+        Self {
+            section: section.to_string(),
+            name: name.to_string(),
+            severity: "ok".to_string(),
+            message,
+        }
+    }
+    fn warn(section: &str, name: &str, message: String) -> Self {
+        Self {
+            section: section.to_string(),
+            name: name.to_string(),
+            severity: "warn".to_string(),
+            message,
+        }
+    }
+    fn err(section: &str, name: &str, message: String) -> Self {
+        Self {
+            section: section.to_string(),
+            name: name.to_string(),
+            severity: "err".to_string(),
+            message,
+        }
+    }
+}
+
+/// `cqs doctor --json` payload: the structured check log + the verbose
+/// introspection, emitted as one envelope so `jq` consumers see a single
+/// document.
+#[derive(Debug, serde::Serialize)]
+struct DoctorReport<'a> {
+    /// Structured equivalent of the colored check lines (one entry per
+    /// `[✓]/[!]/[✗]` line). `severity` of `err` or `warn` corresponds to
+    /// `any_failed = true`.
+    checks: Vec<CheckRecord>,
+    /// Mirrors the trailing "All checks passed." / "Some checks failed."
+    /// summary — consumers can branch on this directly.
+    any_failed: bool,
+    /// Verbose setup introspection (always present in `--json` mode because
+    /// `--json` implies `--verbose`).
+    report: &'a VerboseReport,
 }
 
 // ── Verbose introspection ────────────────────────────────────────────────────
@@ -1233,5 +1421,56 @@ mod tests {
         assert!(!state.socket_exists);
         assert!(!state.connected);
         assert!(state.connect_error.is_none());
+    }
+
+    /// P2 #27: `CheckRecord::ok/warn/err` produce the exact `severity` shape
+    /// agents will branch on. A typo here breaks every consumer downstream.
+    #[test]
+    fn check_record_severity_shape() {
+        let ok = CheckRecord::ok("runtime", "model", "bge-large".to_string());
+        let warn_rec = CheckRecord::warn("index", "schema", "v19 != v20".to_string());
+        let err_rec = CheckRecord::err("parser", "tree_sitter", "load failed".to_string());
+
+        let ok_json = serde_json::to_value(&ok).unwrap();
+        assert_eq!(ok_json["severity"], "ok");
+        assert_eq!(ok_json["section"], "runtime");
+        assert_eq!(ok_json["name"], "model");
+        assert_eq!(ok_json["message"], "bge-large");
+
+        let warn_json = serde_json::to_value(&warn_rec).unwrap();
+        assert_eq!(warn_json["severity"], "warn");
+
+        let err_json = serde_json::to_value(&err_rec).unwrap();
+        assert_eq!(err_json["severity"], "err");
+    }
+
+    /// P2 #27: the combined `DoctorReport` envelope serializes with both the
+    /// check log AND the verbose introspection in one document. Agents call
+    /// `cqs doctor --json | jq` and expect both top-level keys.
+    #[test]
+    fn doctor_report_combines_checks_and_verbose() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("CQS_EMBEDDING_MODEL");
+        std::env::remove_var("CQS_ONNX_DIR");
+        let tmp = TempDir::new().expect("tempdir");
+        let report = empty_report(&tmp);
+        let combined = DoctorReport {
+            checks: vec![
+                CheckRecord::ok("runtime", "model", "bge-large".to_string()),
+                CheckRecord::warn("index", "exists", "Index not created".to_string()),
+            ],
+            any_failed: true,
+            report: &report,
+        };
+        let json = serde_json::to_value(&combined).unwrap();
+        // Both top-level shapes present.
+        assert!(json.get("checks").is_some(), "checks key required");
+        assert!(json.get("any_failed").is_some(), "any_failed key required");
+        assert!(json.get("report").is_some(), "report key required");
+        assert_eq!(json["any_failed"], true);
+        assert_eq!(json["checks"].as_array().unwrap().len(), 2);
+        // Verbose introspection round-trips inside the envelope.
+        assert!(json["report"].get("resolved_model").is_some());
+        assert!(json["report"].get("project_root").is_some());
     }
 }

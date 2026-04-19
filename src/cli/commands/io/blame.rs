@@ -295,7 +295,7 @@ fn print_blame_terminal(data: &BlameData, root: &Path) {
 pub(crate) fn cmd_blame(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     target: &str,
-    depth: usize,
+    commits: usize,
     show_callers: bool,
     json: bool,
 ) -> Result<()> {
@@ -303,7 +303,7 @@ pub(crate) fn cmd_blame(
 
     let store = &ctx.store;
     let root = &ctx.root;
-    let data = build_blame_data(store, root, target, depth, show_callers)?;
+    let data = build_blame_data(store, root, target, commits, show_callers)?;
 
     if json {
         let value = blame_to_json(&data, root);

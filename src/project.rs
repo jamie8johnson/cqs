@@ -517,6 +517,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         // Create a simple embedding (EMBEDDING_DIM)

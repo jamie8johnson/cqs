@@ -298,7 +298,7 @@ fn detect_error_style(chunks: &[ChunkSummary], patterns: &[(&str, &str)]) -> Str
 // ---------------------------------------------------------------------------
 
 /// How to detect dominant visibility from chunk signatures.
-enum VisibilityRule {
+pub enum VisibilityRule {
     /// Fixed string, no detection needed (e.g., "module-level", "default").
     Fixed(&'static str),
     /// Majority wins: count chunks where signature contains `keyword`.
@@ -333,10 +333,14 @@ enum VisibilityRule {
 }
 
 /// Data-driven definition for per-language pattern extraction.
-struct LanguagePatternDef {
-    import_prefixes: &'static [&'static str],
-    error_patterns: &'static [(&'static str, &'static str)],
-    visibility: VisibilityRule,
+///
+/// Stored on `LanguageDef::patterns` so adding a new language with patterns
+/// is one edit at the language row in `src/language/languages.rs` rather
+/// than a second match arm here.
+pub struct LanguagePatternDef {
+    pub import_prefixes: &'static [&'static str],
+    pub error_patterns: &'static [(&'static str, &'static str)],
+    pub visibility: VisibilityRule,
 }
 
 /// Evaluate a `VisibilityRule` against chunks, returning the visibility string.
@@ -416,18 +420,21 @@ fn eval_visibility(rule: &VisibilityRule, chunks: &[ChunkSummary]) -> String {
     }
 }
 
-/// Lookup table: language → pattern definition.
-/// Returns `None` for languages with custom logic (Rust, TS/JS, Go) or
-/// non-code languages (SQL, Markdown, JSON, etc.) that have no patterns.
-fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
-    use Language::*;
-    // Static definitions — one per language family.
-    static PYTHON: LanguagePatternDef = LanguagePatternDef {
+/// Per-language pattern defaults, exported for use by `LanguageDef` rows.
+///
+/// Each `pub static` is referenced by exactly one `LanguageDef::patterns`
+/// slot in `src/language/languages.rs`. Adding a new language with patterns
+/// means writing the row's `patterns: Some(&YOUR_DEF),` and (if reusing an
+/// existing family) pointing at one of these statics.
+pub mod patterns_data {
+    use super::{LanguagePatternDef, VisibilityRule};
+
+    pub static PYTHON: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import ", "from "],
         error_patterns: &[("raise ", "raise"), ("try:", "try/except")],
         visibility: VisibilityRule::Fixed("module-level"),
     };
-    static C: LanguagePatternDef = LanguagePatternDef {
+    pub static C: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["#include"],
         error_patterns: &[("errno", "errno"), ("perror", "perror")],
         visibility: VisibilityRule::SigStartsMajority {
@@ -436,7 +443,7 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
             if_minority: "extern",
         },
     };
-    static CPP_LIKE: LanguagePatternDef = LanguagePatternDef {
+    pub static CPP_LIKE: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["#include"],
         error_patterns: &[
             ("errno", "errno"),
@@ -449,7 +456,7 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
             if_minority: "extern",
         },
     };
-    static JAVA: LanguagePatternDef = LanguagePatternDef {
+    pub static JAVA: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import "],
         error_patterns: &[("throws ", "checked exceptions"), ("try {", "try/catch")],
         visibility: VisibilityRule::SigContainsMajority {
@@ -458,7 +465,7 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
             if_minority: "package-private",
         },
     };
-    static JVM: LanguagePatternDef = LanguagePatternDef {
+    pub static JVM: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import "],
         error_patterns: &[("throws ", "checked exceptions"), ("try {", "try/catch")],
         visibility: VisibilityRule::SigContainsMajority {
@@ -467,7 +474,7 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
             if_minority: "package-private",
         },
     };
-    static DOTNET: LanguagePatternDef = LanguagePatternDef {
+    pub static DOTNET: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["using ", "open "],
         error_patterns: &[("throw ", "throw"), ("try {", "try/catch")],
         visibility: VisibilityRule::TwoKeywordCompare {
@@ -477,12 +484,12 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
             if_int_wins: "internal",
         },
     };
-    static RUBY: LanguagePatternDef = LanguagePatternDef {
+    pub static RUBY: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["require ", "require_relative "],
         error_patterns: &[("raise ", "raise"), ("rescue", "begin/rescue")],
         visibility: VisibilityRule::Fixed("module-level"),
     };
-    static PHP: LanguagePatternDef = LanguagePatternDef {
+    pub static PHP: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["require ", "require_once ", "include ", "use "],
         error_patterns: &[("throw ", "throw"), ("try {", "try/catch")],
         visibility: VisibilityRule::SigContainsMajority {
@@ -491,27 +498,27 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
             if_minority: "default",
         },
     };
-    static PERL: LanguagePatternDef = LanguagePatternDef {
+    pub static PERL: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["use ", "require "],
         error_patterns: &[("die ", "die"), ("croak", "croak")],
         visibility: VisibilityRule::Fixed("module-level"),
     };
-    static LUA: LanguagePatternDef = LanguagePatternDef {
+    pub static LUA: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["require(", "require \"", "require '"],
         error_patterns: &[("error(", "error"), ("pcall(", "pcall")],
         visibility: VisibilityRule::Fixed("module-level"),
     };
-    static HASKELL: LanguagePatternDef = LanguagePatternDef {
+    pub static HASKELL: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import "],
         error_patterns: &[("error ", "error"), ("throwIO", "throwIO")],
         visibility: VisibilityRule::Fixed("module-level"),
     };
-    static OCAML: LanguagePatternDef = LanguagePatternDef {
+    pub static OCAML: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["open "],
         error_patterns: &[("raise ", "raise"), ("Result.", "Result")],
         visibility: VisibilityRule::Fixed("module-level"),
     };
-    static ELIXIR: LanguagePatternDef = LanguagePatternDef {
+    pub static ELIXIR: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import ", "alias ", "use ", "require "],
         error_patterns: &[("raise ", "raise"), ("{:error,", "{:error, _}")],
         visibility: VisibilityRule::SigStartsMajority {
@@ -520,12 +527,12 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
             if_minority: "public",
         },
     };
-    static ERLANG: LanguagePatternDef = LanguagePatternDef {
+    pub static ERLANG: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["-include"],
         error_patterns: &[("throw(", "throw"), ("{error,", "{error, _}")],
         visibility: VisibilityRule::Fixed("module-level"),
     };
-    static GLEAM: LanguagePatternDef = LanguagePatternDef {
+    pub static GLEAM: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import "],
         error_patterns: &[("Error(", "Error"), ("Result(", "Result")],
         visibility: VisibilityRule::SigStartsMajority {
@@ -534,17 +541,17 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
             if_minority: "private",
         },
     };
-    static R_LANG: LanguagePatternDef = LanguagePatternDef {
+    pub static R_LANG: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["library(", "require("],
         error_patterns: &[],
         visibility: VisibilityRule::Fixed("default"),
     };
-    static JULIA: LanguagePatternDef = LanguagePatternDef {
+    pub static JULIA: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["using ", "import "],
         error_patterns: &[("throw(", "throw"), ("error(", "error")],
         visibility: VisibilityRule::Fixed("module-level"),
     };
-    static ZIG: LanguagePatternDef = LanguagePatternDef {
+    pub static ZIG: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["@import("],
         error_patterns: &[("error.", "error set"), ("catch", "catch")],
         visibility: VisibilityRule::SigStartsMajority {
@@ -553,7 +560,7 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
             if_minority: "private",
         },
     };
-    static SWIFT: LanguagePatternDef = LanguagePatternDef {
+    pub static SWIFT: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import "],
         error_patterns: &[("throw ", "throw"), ("try ", "do/catch")],
         visibility: VisibilityRule::SigContainsMajority {
@@ -562,7 +569,7 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
             if_minority: "internal",
         },
     };
-    static SOLIDITY: LanguagePatternDef = LanguagePatternDef {
+    pub static SOLIDITY: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import "],
         error_patterns: &[("revert ", "revert"), ("require(", "require")],
         visibility: VisibilityRule::SigContainsEitherMajority {
@@ -572,44 +579,27 @@ fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
             if_minority: "internal",
         },
     };
-    static BASH: LanguagePatternDef = LanguagePatternDef {
+    pub static BASH: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["source ", ". "],
         error_patterns: &[("exit ", "exit code"), ("set -e", "set -e")],
         visibility: VisibilityRule::Fixed("default"),
     };
-    static POWERSHELL: LanguagePatternDef = LanguagePatternDef {
+    pub static POWERSHELL: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["Import-Module ", "using module "],
         error_patterns: &[("throw ", "throw"), ("try {", "try/catch")],
         visibility: VisibilityRule::Fixed("default"),
     };
+}
 
-    match lang {
-        Python => Some(&PYTHON),
-        Language::C => Some(&C),
-        Cpp | ObjC | Cuda | Glsl => Some(&CPP_LIKE),
-        Java => Some(&JAVA),
-        Scala | Kotlin => Some(&JVM),
-        CSharp | FSharp | VbNet | Razor | Aspx => Some(&DOTNET),
-        Ruby => Some(&RUBY),
-        Php => Some(&PHP),
-        Perl => Some(&PERL),
-        Lua => Some(&LUA),
-        Haskell => Some(&HASKELL),
-        OCaml => Some(&OCAML),
-        Elixir => Some(&ELIXIR),
-        Erlang => Some(&ERLANG),
-        Gleam => Some(&GLEAM),
-        R => Some(&R_LANG),
-        Julia => Some(&JULIA),
-        Zig => Some(&ZIG),
-        Swift => Some(&SWIFT),
-        Solidity => Some(&SOLIDITY),
-        Language::Bash => Some(&BASH),
-        PowerShell => Some(&POWERSHELL),
-        // Custom logic: Rust, TypeScript, JavaScript, Go — handled in extract_patterns
-        // Non-code: no meaningful patterns
-        _ => None,
-    }
+/// Look up the per-language pattern definition.
+///
+/// Delegates to `LanguageDef::patterns` so that adding or changing the
+/// pattern data for a language is a one-line edit at the language row in
+/// `src/language/languages.rs`, not a second match arm here.
+/// Returns `None` for languages with custom logic (Rust, TS/JS, Go) or
+/// non-code languages (SQL, Markdown, JSON, etc.) that have no patterns.
+fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
+    lang.def().patterns
 }
 
 /// Extract local coding patterns from a file's chunks.

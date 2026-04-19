@@ -93,11 +93,20 @@ struct ModelListEntry {
 }
 
 /// `cqs model swap --json` payload (success case).
+///
+/// P2 #73: `chunks_indexed` is `i64` rather than `u64` so we can emit `-1`
+/// as a sentinel meaning "swap succeeded but we couldn't read back the
+/// post-swap chunk count" (store open failed, or chunk_count failed).
+/// `count_error` carries the underlying error string in that case so agents
+/// can distinguish "really zero" (`chunks_indexed: 0, count_error: null`)
+/// from "couldn't count" (`chunks_indexed: -1, count_error: Some(...)`).
 #[derive(Debug, Serialize)]
 struct ModelSwapOutput {
     from: String,
     to: String,
-    chunks_indexed: u64,
+    chunks_indexed: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count_error: Option<String>,
     elapsed_secs: f64,
     backup_path: Option<String>,
 }
@@ -335,13 +344,32 @@ fn cmd_model_swap(cli: &Cli, preset: &str, no_backup: bool, json: bool) -> Resul
 
     match reindex_result {
         Ok(()) => {
-            // Count chunks for the success report. Soft-fail to 0 if the
-            // store can't be read — the swap itself succeeded; we just
-            // can't confirm the count.
-            let chunks_indexed = Store::open_readonly(&index_path)
-                .ok()
-                .and_then(|s| s.chunk_count().ok())
-                .unwrap_or(0);
+            // P2 #73: count chunks for the success report. Bind both error
+            // paths and emit a `-1` sentinel + `count_error` when we can't
+            // read back the post-swap chunk count, so agents can distinguish
+            // "really empty project" (chunks_indexed=0, count_error=null)
+            // from "swap succeeded but the new index is unreadable"
+            // (chunks_indexed=-1, count_error=Some(...)).
+            let (chunks_indexed, count_error): (i64, Option<String>) =
+                match Store::open_readonly(&index_path) {
+                    Ok(s) => match s.chunk_count() {
+                        Ok(n) => (n as i64, None),
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "Swap reported success but post-swap chunk_count failed"
+                            );
+                            (-1, Some(format!("chunk_count failed: {e}")))
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "Swap reported success but post-swap store open failed"
+                        );
+                        (-1, Some(format!("store open failed: {e}")))
+                    }
+                };
 
             restart_daemon_if_needed(daemon_was_running, cli.quiet);
 
@@ -350,14 +378,26 @@ fn cmd_model_swap(cli: &Cli, preset: &str, no_backup: bool, json: bool) -> Resul
                     from: from_label.clone(),
                     to: new_cfg.name.clone(),
                     chunks_indexed,
+                    count_error,
                     elapsed_secs,
                     backup_path: backup_path.as_ref().map(|p| p.display().to_string()),
                 };
                 crate::cli::json_envelope::emit_json(&out)?;
             } else {
+                if let Some(ref err) = count_error {
+                    eprintln!(
+                        "warning: swap succeeded but could not read back chunk count: {}",
+                        err
+                    );
+                }
+                let chunks_label = if chunks_indexed < 0 {
+                    "?".to_string()
+                } else {
+                    chunks_indexed.to_string()
+                };
                 println!(
-                    "swapped: {} -> {} ({chunks_indexed} chunks, {elapsed_secs:.1}s)",
-                    from_label, new_cfg.name
+                    "swapped: {} -> {} ({} chunks, {:.1}s)",
+                    from_label, new_cfg.name, chunks_label, elapsed_secs
                 );
                 if let Some(bp) = &backup_path {
                     println!(
@@ -464,9 +504,17 @@ fn clone_cli_for_reindex(cli: &Cli) -> Cli {
     fresh
 }
 
-/// Best-effort `systemctl --user stop cqs-watch`. Returns true if the daemon
-/// was likely running before the call (used to decide whether to restart on
-/// the way out).
+/// Best-effort daemon stop. Returns true if the daemon was likely running
+/// before the call (used to decide whether to restart on the way out).
+///
+/// Linux: `systemctl --user stop cqs-watch`.
+///
+/// P2 #71: macOS — `systemctl` doesn't exist, but `cqs watch --serve` is
+/// equally Unix domain socket-based. Discover the daemon PID via
+/// `LOCAL_PEERPID` on a fresh socket connection, then `SIGTERM` it and poll
+/// for socket disappearance. Without this fix `cqs model swap` on macOS would
+/// always proceed against a live daemon holding the OLD model in memory and
+/// the old store pool open against the database file the swap is rewriting.
 fn stop_daemon_best_effort(cqs_dir: &Path) -> bool {
     let _span = tracing::info_span!("stop_daemon_best_effort").entered();
     let was_running = daemon_socket_alive(cqs_dir);
@@ -475,6 +523,7 @@ fn stop_daemon_best_effort(cqs_dir: &Path) -> bool {
     }
     #[cfg(target_os = "linux")]
     {
+        let _ = cqs_dir; // not needed on the Linux systemctl path
         let status = std::process::Command::new("systemctl")
             .args(["--user", "stop", "cqs-watch"])
             .status();
@@ -496,16 +545,123 @@ fn stop_daemon_best_effort(cqs_dir: &Path) -> bool {
             }
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
-        let _ = cqs_dir; // silence unused warning on non-Linux
-        tracing::debug!("systemctl daemon control is Linux-only; skipping");
+        match stop_daemon_via_sigterm_macos(cqs_dir) {
+            Ok(()) => {
+                tracing::info!("Stopped cqs-watch via SIGTERM");
+                true
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to stop daemon via SIGTERM on macOS");
+                // Still report `true` so the caller restarts what it stopped
+                // (or attempted to stop) — the alternative is silently
+                // proceeding against a live daemon, which is the bug this
+                // branch exists to fix.
+                true
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = cqs_dir; // silence unused warning on other platforms
+        tracing::debug!(
+            "Daemon control unsupported on this platform; skipping (systemctl=Linux, SIGTERM=macOS)"
+        );
         false
     }
 }
 
-/// Best-effort `systemctl --user start cqs-watch`. No-op when the daemon
-/// wasn't previously running.
+/// macOS-only: discover the daemon PID via `getsockopt(LOCAL_PEERPID)` on
+/// a fresh socket connection, send SIGTERM, then poll for the socket file
+/// to disappear.
+///
+/// P2 #71: factored out so `stop_daemon_best_effort` stays readable while the
+/// macOS-specific FFI lives in one place. Failure modes covered:
+/// - socket vanishes between `daemon_socket_alive` and our connect: returns
+///   Ok(()) — the daemon went away on its own and the caller's `was_running`
+///   bookkeeping still tells it to attempt a restart.
+/// - getsockopt failure: surfaces as Err. Caller logs and proceeds; the
+///   restart path will spawn a new daemon either way.
+/// - kill(SIGTERM) failure: surfaces as Err.
+/// - daemon ignores SIGTERM and the socket lingers: we wait up to ~3s, then
+///   give up. The reindex will still race the live daemon — that's a real
+///   loss of safety, but at least the operator sees the warning in the log.
+#[cfg(target_os = "macos")]
+fn stop_daemon_via_sigterm_macos(cqs_dir: &Path) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+    use std::time::Duration;
+
+    let sock_path = cqs::daemon_translate::daemon_socket_path(cqs_dir);
+    if !sock_path.exists() {
+        return Ok(());
+    }
+    let stream = std::os::unix::net::UnixStream::connect(&sock_path)
+        .with_context(|| format!("Failed to connect to daemon socket {}", sock_path.display()))?;
+
+    // SOL_LOCAL / LOCAL_PEERPID returns the PID of the daemon listening on
+    // the connected socket. Standard macOS API; available since 10.8.
+    // SAFETY: getsockopt is FFI but we pass valid pointer/length pairs and
+    // check the return value before dereferencing the result.
+    let mut pid: libc::pid_t = 0;
+    let mut len: libc::socklen_t = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast::<libc::c_void>(),
+            &mut len,
+        )
+    };
+    drop(stream); // close before signaling so the daemon's accept loop sees the disconnect.
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(anyhow::anyhow!("getsockopt(LOCAL_PEERPID) failed: {err}"));
+    }
+    if pid <= 0 {
+        return Err(anyhow::anyhow!(
+            "LOCAL_PEERPID returned non-positive pid {pid}; cannot signal"
+        ));
+    }
+    tracing::info!(
+        pid,
+        "Discovered daemon PID via LOCAL_PEERPID; sending SIGTERM"
+    );
+
+    // SAFETY: kill(2) FFI; pid validated > 0 above. SIGTERM is the documented
+    // graceful-shutdown signal for cqs watch --serve (the SocketCleanupGuard
+    // in watch.rs unlinks the socket on drop).
+    let kill_rc = unsafe { libc::kill(pid, libc::SIGTERM) };
+    if kill_rc != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(anyhow::anyhow!("kill({pid}, SIGTERM) failed: {err}"));
+    }
+
+    // Poll for the socket to disappear (the daemon's SocketCleanupGuard
+    // unlinks it on graceful shutdown). 3s budget is generous: the daemon's
+    // periodic GC tick is ~30s but the accept loop wakes every few hundred
+    // milliseconds, and SIGTERM is handled in the main shutdown path.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        if !sock_path.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    tracing::warn!(
+        pid,
+        socket = %sock_path.display(),
+        "Daemon did not unlink socket within 3s of SIGTERM; proceeding anyway (model swap may race)"
+    );
+    Ok(())
+}
+
+/// Best-effort daemon restart. No-op when the daemon wasn't previously running.
+///
+/// Linux: `systemctl --user start cqs-watch`.
+/// P2 #71: macOS — spawn `cqs watch --serve` directly (no systemctl); detached
+/// stdio so we don't block on the long-lived child.
 fn restart_daemon_if_needed(was_running: bool, quiet: bool) {
     if !was_running {
         return;
@@ -542,7 +698,49 @@ fn restart_daemon_if_needed(was_running: bool, quiet: bool) {
             }
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        // No systemctl on macOS — re-launch `cqs watch --serve` directly.
+        // SEC-V1.25-7: resolve our own binary path so a malicious `cqs`
+        // earlier in PATH can't hijack the restart.
+        match std::env::current_exe() {
+            Ok(cqs_path) => {
+                let spawn_result = std::process::Command::new(&cqs_path)
+                    .args(["watch", "--serve"])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                match spawn_result {
+                    Ok(child) => {
+                        tracing::info!(pid = child.id(), "Restarted cqs watch --serve on macOS");
+                        if !quiet {
+                            eprintln!("restarted cqs-watch daemon (pid {})", child.id());
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to spawn cqs watch --serve");
+                        if !quiet {
+                            eprintln!(
+                                "warning: failed to restart cqs-watch daemon ({e}). \
+                                 Run `cqs watch --serve &` manually."
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "current_exe() failed; cannot restart daemon");
+                if !quiet {
+                    eprintln!(
+                        "warning: failed to resolve cqs binary path ({e}). \
+                         Run `cqs watch --serve &` manually."
+                    );
+                }
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = quiet;
     }
@@ -689,5 +887,45 @@ mod tests {
     #[test]
     fn file_size_or_zero_missing_path() {
         assert_eq!(file_size_or_zero(Path::new("/nonexistent/file/path/x")), 0);
+    }
+
+    /// P2 #73: zero chunks (empty project) emits `0` with no `count_error`
+    /// field — agents see an unambiguous "really empty" signal.
+    #[test]
+    fn model_swap_output_zero_chunks_no_error() {
+        let out = ModelSwapOutput {
+            from: "bge-large".to_string(),
+            to: "v9-200k".to_string(),
+            chunks_indexed: 0,
+            count_error: None,
+            elapsed_secs: 1.5,
+            backup_path: None,
+        };
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(json["chunks_indexed"], 0);
+        assert!(
+            json.get("count_error").is_none(),
+            "skip_serializing_if must drop None count_error"
+        );
+        assert_eq!(json["from"], "bge-large");
+        assert_eq!(json["to"], "v9-200k");
+    }
+
+    /// P2 #73: when the post-swap chunk_count fails, agents see
+    /// `chunks_indexed: -1` and a populated `count_error` string.
+    #[test]
+    fn model_swap_output_sentinel_with_count_error() {
+        let out = ModelSwapOutput {
+            from: "<unrecorded>".to_string(),
+            to: "v9-200k".to_string(),
+            chunks_indexed: -1,
+            count_error: Some("chunk_count failed: I/O error".to_string()),
+            elapsed_secs: 0.1,
+            backup_path: Some("/tmp/x/.cqs.bak".to_string()),
+        };
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(json["chunks_indexed"], -1);
+        assert_eq!(json["count_error"], "chunk_count failed: I/O error");
+        assert_eq!(json["backup_path"], "/tmp/x/.cqs.bak");
     }
 }

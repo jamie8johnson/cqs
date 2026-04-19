@@ -304,6 +304,7 @@ mod tests {
                 parent_id: None,
                 window_idx: None,
                 parent_type_name: None,
+                parser_version: 0,
             };
             store.upsert_chunk(&chunk, &emb, Some(12345)).unwrap();
         }
@@ -347,6 +348,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
         store.upsert_chunk(&func_chunk, &emb, Some(12345)).unwrap();
 
@@ -365,6 +367,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
         store
             .upsert_chunk(&method_chunk, &emb, Some(12345))

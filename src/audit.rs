@@ -11,8 +11,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Audit mode state - excludes notes from search/read during audits
-#[derive(Default)]
+/// Audit mode state - excludes notes from search/read during audits.
+///
+/// `Clone` is derived so the daemon's `BatchContext` can return an owned
+/// snapshot of the cached state (P2 #69 — the cached reload pattern needs
+/// an owned `T` to return through the `RefCell<Option<CachedReload<T>>>`
+/// accessor).
+#[derive(Default, Clone)]
 pub struct AuditMode {
     pub enabled: bool,
     pub expires_at: Option<DateTime<Utc>>,

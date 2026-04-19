@@ -16,6 +16,7 @@ use cqs::reference;
 use cqs::{ModelInfo, Parser as CqParser, Store};
 
 use crate::cli::commands::index::build_hnsw_index;
+use crate::cli::definitions::TextJsonArgs;
 use crate::cli::{enumerate_files, find_project_root, run_index_pipeline, Cli};
 
 // ---------------------------------------------------------------------------
@@ -51,9 +52,9 @@ pub(crate) enum RefCommand {
     },
     /// List configured references
     List {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        /// API-V1.22-2: shared `--json` arg (was inline `json: bool`).
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Remove a reference index
     Remove {
@@ -75,7 +76,7 @@ pub(crate) fn cmd_ref(cli: &Cli, subcmd: &RefCommand) -> Result<()> {
             source,
             weight,
         } => cmd_ref_add(cli, name, source, *weight),
-        RefCommand::List { json } => cmd_ref_list(cli, *json),
+        RefCommand::List { output } => cmd_ref_list(cli, output.json),
         RefCommand::Remove { name } => cmd_ref_remove(name),
         RefCommand::Update { name } => cmd_ref_update(cli, name),
     }

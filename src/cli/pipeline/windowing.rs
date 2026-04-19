@@ -69,6 +69,7 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
                         parent_id: Some(parent_id.clone()),
                         window_idx: Some(window_idx),
                         parent_type_name: chunk.parent_type_name.clone(),
+                        parser_version: chunk.parser_version,
                     });
                 }
             }

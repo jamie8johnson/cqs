@@ -47,6 +47,7 @@ fn placement_chunk_with_lang(
         parent_id: None,
         window_idx: None,
         parent_type_name: None,
+        parser_version: 0,
     }
 }
 
