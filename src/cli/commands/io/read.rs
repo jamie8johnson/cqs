@@ -21,22 +21,30 @@ use cqs::{compute_hints, FunctionHints, COMMON_TYPES};
 
 /// Validate path (traversal, size) and read file contents.
 /// Returns `(file_path, content)` where `file_path` is root.join(path).
+///
+/// SEC-D.5: existence check is folded into the same "Invalid path" rejection
+/// as the traversal check so a daemon client can't use distinguishable
+/// error messages as a path-existence oracle for files outside the project
+/// root (e.g. `/home/other/.ssh/id_rsa`).
 pub(crate) fn validate_and_read_file(root: &Path, path: &str) -> Result<(PathBuf, String)> {
     let file_path = root.join(path);
 
-    if !file_path.exists() {
-        bail!("File not found: {}", path);
-    }
-
-    // Path traversal protection: canonicalize resolves to filesystem-stored case,
-    // so starts_with is correct even on case-insensitive filesystems (NTFS, APFS).
-    // dunce strips Windows UNC prefix automatically.
-    let canonical = dunce::canonicalize(&file_path)
-        .with_context(|| format!("Failed to canonicalize path: {}", path))?;
-    let project_canonical =
-        dunce::canonicalize(root).context("Failed to canonicalize project root")?;
+    // Path traversal protection FIRST so a missing file outside the root
+    // and a missing file inside the root produce identical error messages.
+    // dunce::canonicalize follows symlinks and resolves filesystem case,
+    // so starts_with is correct on NTFS / APFS. dunce strips the Windows
+    // UNC `\\?\` prefix automatically.
+    //
+    // Both `Failed to canonicalize` and `Path traversal not allowed`
+    // collapse into the same opaque "Invalid path" so the rejection
+    // paths are indistinguishable to the client.
+    let canonical = dunce::canonicalize(&file_path).map_err(|_| anyhow::anyhow!("Invalid path"))?;
+    let project_canonical = dunce::canonicalize(root).context("Invalid project root")?;
     if !canonical.starts_with(&project_canonical) {
-        bail!("Path traversal not allowed: {}", path);
+        bail!("Invalid path");
+    }
+    if !file_path.exists() {
+        bail!("Invalid path");
     }
 
     // File size limit (10MB)
@@ -432,5 +440,35 @@ mod tests {
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["focus"], "MyStruct");
         assert!(json.get("hints").is_none());
+    }
+
+    /// SEC-D.5: `validate_and_read_file` must produce identical error text
+    /// for "file outside project root" and "file not found" so a daemon
+    /// client can't probe filesystem layout via distinguishable messages.
+    /// Before the fix, missing-inside-root returned "File not found: X" and
+    /// outside-root returned "Path traversal not allowed: X" — agents (and
+    /// attackers) could distinguish.
+    #[test]
+    fn read_rejects_path_outside_root_with_same_message_as_nonexistent() {
+        let root_dir = tempfile::TempDir::new().unwrap();
+        // A path whose canonical resolution lands outside the project root.
+        // The traversal goes up enough levels to escape the temp dir.
+        let outside_err = super::validate_and_read_file(root_dir.path(), "../../../etc/hostname")
+            .unwrap_err()
+            .to_string();
+        // A path that simply doesn't exist within the root.
+        let nonexistent_err =
+            super::validate_and_read_file(root_dir.path(), "definitely_missing_xyz.rs")
+                .unwrap_err()
+                .to_string();
+        assert_eq!(
+            outside_err, nonexistent_err,
+            "outside-root and nonexistent paths must produce indistinguishable errors \
+             (no path-existence oracle), got outside={outside_err:?} nonexistent={nonexistent_err:?}"
+        );
+        assert_eq!(
+            outside_err, "Invalid path",
+            "expected opaque rejection text 'Invalid path', got: {outside_err:?}"
+        );
     }
 }

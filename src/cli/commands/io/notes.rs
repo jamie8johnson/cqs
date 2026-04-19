@@ -66,7 +66,12 @@ pub(crate) enum NotesCommand {
         /// Note text
         text: String,
         /// Sentiment (-1, -0.5, 0, 0.5, 1)
-        #[arg(long, default_value = "0", allow_negative_numbers = true)]
+        #[arg(
+            long,
+            default_value = "0",
+            allow_negative_numbers = true,
+            value_parser = crate::cli::definitions::parse_finite_f32,
+        )]
         sentiment: f32,
         /// File paths or concepts this note relates to (comma-separated)
         #[arg(long, value_delimiter = ',')]
@@ -83,7 +88,11 @@ pub(crate) enum NotesCommand {
         #[arg(long)]
         new_text: Option<String>,
         /// New sentiment (-1, -0.5, 0, 0.5, 1)
-        #[arg(long, allow_negative_numbers = true)]
+        #[arg(
+            long,
+            allow_negative_numbers = true,
+            value_parser = crate::cli::definitions::parse_finite_f32,
+        )]
         new_sentiment: Option<f32>,
         /// New mentions (replaces all, comma-separated)
         #[arg(long, value_delimiter = ',')]

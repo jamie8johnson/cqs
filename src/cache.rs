@@ -141,7 +141,13 @@ impl EmbeddingCache {
                         .unwrap_or_else(|| suffix.trim_start_matches('-').to_string()),
                 );
                 if db_file.exists() {
-                    let _ = std::fs::set_permissions(&db_file, perms.clone());
+                    if let Err(e) = std::fs::set_permissions(&db_file, perms.clone()) {
+                        tracing::warn!(
+                            path = %db_file.display(),
+                            error = %e,
+                            "Failed to set embedding cache permissions to 0o600"
+                        );
+                    }
                 }
             }
         }
@@ -498,6 +504,28 @@ mod tests {
         assert!(path.exists());
     }
 
+    /// SEC-D.4: `EmbeddingCache::open` must restrict the DB file to 0o600.
+    /// The fix replaced `let _ = set_permissions(...)` with an `if let Err`
+    /// arm that emits a `tracing::warn!`. The happy-path test verifies the
+    /// chmod actually applies — the warn arm is still reachable on a
+    /// platform where the call fails (NFS, read-only mount, etc.) but
+    /// can't be triggered in a portable test without root.
+    #[test]
+    #[cfg(unix)]
+    fn embedding_cache_open_logs_chmod_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("perm_check.db");
+        let _cache = EmbeddingCache::open(&path).unwrap();
+        let perms = std::fs::metadata(&path).unwrap().permissions();
+        // Mode bits low byte should be 0o600 = owner rw only.
+        assert_eq!(
+            perms.mode() & 0o777,
+            0o600,
+            "EmbeddingCache DB file must be chmodded to 0o600"
+        );
+    }
+
     #[test]
     fn test_roundtrip() {
         let (cache, _dir) = test_cache();
@@ -572,6 +600,28 @@ mod tests {
         let entries = vec![("hash_a".to_string(), vec![])];
         let written = cache.write_batch(&entries, "fp_1", 0).unwrap();
         assert_eq!(written, 0); // empty embeddings skipped
+    }
+
+    /// C.1 / OB-NEW-6: `QueryCache::get` builds a query preview for the
+    /// "DB read failed" warn log via byte slicing. Raw `query.len().min(40)`
+    /// panics when byte 40 lands inside a multi-byte codepoint (CJK, emoji,
+    /// accented Latin). Use `floor_char_boundary(40)` so the preview always
+    /// lands on a UTF-8 boundary and the soft DB error stays soft.
+    #[test]
+    fn query_preview_does_not_panic_on_multibyte_query() {
+        // Construct a query that places multi-byte CJK chars + an emoji
+        // straddling byte 40, so naive slicing would panic.
+        let q = format!(
+            "{}café 注釈 emoji 🎉 more text past forty bytes",
+            "x".repeat(35)
+        );
+        assert!(q.len() > 40);
+        // Exercise the exact slicing path used by QueryCache::get.
+        let preview_len = q.floor_char_boundary(40);
+        let preview = &q[..preview_len]; // must not panic
+        assert!(preview.len() <= 40);
+        // And the slice must itself be valid UTF-8 (it is, by construction).
+        assert!(std::str::from_utf8(preview.as_bytes()).is_ok());
     }
 
     #[test]
@@ -1018,7 +1068,11 @@ impl QueryCache {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let preview_len = query.len().min(40);
+                    // OB-NEW-6 / robustness: `query.len().min(40)` panics if
+                    // byte 40 lands inside a multi-byte codepoint. Use
+                    // `floor_char_boundary` so non-ASCII queries don't
+                    // convert a soft DB-error log into hard process death.
+                    let preview_len = query.floor_char_boundary(40);
                     tracing::warn!(
                         query_preview = %&query[..preview_len],
                         error = %e,

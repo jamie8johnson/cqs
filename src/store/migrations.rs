@@ -188,10 +188,19 @@ async fn run_migration_tx(pool: &SqlitePool, from: i32, to: i32) -> Result<(), S
             }
         }
     }
-    sqlx::query("UPDATE metadata SET value = ?1 WHERE key = 'schema_version'")
-        .bind(to.to_string())
-        .execute(&mut *tx)
-        .await?;
+    // E.1 (P1 #16): use UPSERT instead of UPDATE so a DB without an existing
+    // `schema_version` metadata row gets one stamped on first migration. The
+    // UPDATE form silently affected zero rows, leaving the version unstamped
+    // and causing the next open to re-run the same DDL ("duplicate column
+    // name" / "table already exists" errors). Mirrors the pattern used for
+    // `splade_generation` in `migrate_v18_to_v19` / `migrate_v19_to_v20`.
+    sqlx::query(
+        "INSERT INTO metadata (key, value) VALUES ('schema_version', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(to.to_string())
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     Ok(())
@@ -2366,5 +2375,91 @@ mod tests {
             bak_bytes.starts_with(b"SQLite format 3\0"),
             "backup should be a valid SQLite database file"
         );
+    }
+
+    /// E.1 (P1 #16): a DB without a `schema_version` metadata row must end up
+    /// with one stamped after `run_migration_tx` completes. The previous
+    /// `UPDATE metadata SET value = ?1 WHERE key = 'schema_version'` silently
+    /// affected zero rows in this case; the next open would re-run all the
+    /// migrations and crash on "duplicate column name" / "table already exists".
+    #[test]
+    fn test_migration_creates_schema_version_row_if_missing() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+
+            // Build a minimal v10 schema WITHOUT inserting a schema_version row.
+            // (We use v10 as the migration baseline because that's where the
+            // DDL chain starts in this codebase.)
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    language TEXT NOT NULL DEFAULT '',
+                    chunk_type TEXT NOT NULL DEFAULT '',
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL DEFAULT '',
+                    content TEXT NOT NULL,
+                    doc TEXT,
+                    line_start INTEGER NOT NULL DEFAULT 0,
+                    line_end INTEGER NOT NULL DEFAULT 0,
+                    parent_id TEXT
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Verify the metadata row is absent before migration.
+            let pre: Option<(String,)> =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_optional(&pool)
+                    .await
+                    .unwrap();
+            assert!(
+                pre.is_none(),
+                "precondition: schema_version row must be absent"
+            );
+
+            // Run a single-step migration (10 -> 11). The caller's `from`
+            // argument is what `run_migration_tx` falls back to when the
+            // metadata row is missing.
+            run_migration_tx(&pool, 10, 11).await.unwrap();
+
+            // The row must now exist with the new version stamped on it.
+            let post: Option<(String,)> =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_optional(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                post.map(|(v,)| v),
+                Some("11".to_string()),
+                "schema_version row must be created with the new version"
+            );
+        });
     }
 }

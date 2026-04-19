@@ -261,18 +261,38 @@ const FALLBACK_DOC_MAX_LINES: usize = 8;
 /// `#`, C/Java `/*`/`*`, HTML/XML/JSP `<!--`/`<%--`, F# `(*`).
 /// Trims the leading whitespace before checking; `*` alone is also accepted
 /// for the inner lines of a `/** ... */` block.
+///
+/// The bare-`#` and bare-`*` arms are tightened to require a separator so
+/// `#[derive]` (Rust attribute), `#include`/`#define`/`#pragma` (C
+/// preprocessor), `#region` (C# pragma), `*ptr = 0` (C deref), and
+/// `*x = y` are NOT classified as comment-like.
 fn line_looks_comment_like(line: &str) -> bool {
     let t = line.trim_start();
-    t.is_empty()
-        || t.starts_with("//")
+    if t.is_empty() {
+        return true;
+    }
+    // Multi-char comment introducers (unambiguous)
+    if t.starts_with("//")
         || t.starts_with("--")
-        || t.starts_with('#')
         || t.starts_with("/*")
         || t.starts_with("*/")
-        || t.starts_with('*')
         || t.starts_with("<!--")
         || t.starts_with("<%--")
         || t.starts_with("(*")
+    {
+        return true;
+    }
+    // Single-char `#` is comment in sh/python/ruby ONLY when followed by whitespace
+    // or alone. Reject `#[derive]`, `#include`, `#define`, `#pragma`, `#region`, `#!`.
+    if let Some(rest) = t.strip_prefix('#') {
+        return rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t');
+    }
+    // Single-char `*` is the inner-line marker of /** ... */ blocks ONLY when
+    // followed by whitespace or alone. Reject `*ptr = 0`, `*x * y`, etc.
+    if let Some(rest) = t.strip_prefix('*') {
+        return rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t');
+    }
+    false
 }
 
 /// Fallback `doc` enrichment for short chunks (`<5` lines) that have no
@@ -308,17 +328,30 @@ fn extract_doc_fallback_for_short_chunk(
         return None;
     }
 
-    // Walk back from the line immediately preceding the chunk, gathering
-    // contiguous comment-like lines. Stop at the first non-comment-like line.
+    // Walk back from the line immediately preceding the chunk. Spend the
+    // FALLBACK_DOC_MAX_LINES budget only on non-blank comment-like lines so
+    // a blank gap between the chunk and the leading comment block doesn't
+    // silently truncate the captured doc. Cap the run of consecutive blanks
+    // so a malformed file with kilobytes of empty siblings can't stall.
+    const MAX_CONSECUTIVE_BLANKS: usize = 16;
     let mut start = lines.len();
-    let mut taken = 0usize;
-    while start > 0 && taken < FALLBACK_DOC_MAX_LINES {
+    let mut comment_lines_taken = 0usize;
+    let mut consecutive_blanks = 0usize;
+    while start > 0 && comment_lines_taken < FALLBACK_DOC_MAX_LINES {
         let candidate = lines[start - 1];
         if !line_looks_comment_like(candidate) {
             break;
         }
+        if candidate.trim().is_empty() {
+            if consecutive_blanks >= MAX_CONSECUTIVE_BLANKS {
+                break;
+            }
+            consecutive_blanks += 1;
+        } else {
+            consecutive_blanks = 0;
+            comment_lines_taken += 1;
+        }
         start -= 1;
-        taken += 1;
     }
     // Strip leading blank lines from the selection so we don't return an
     // empty/whitespace-only `doc`.
@@ -1325,6 +1358,109 @@ type WithDoc = u8;
             assert!(
                 doc.contains("real doc"),
                 "expected explicit /// doc to reach chunk, got: {doc:?}"
+            );
+        }
+
+        // ─── A.1: tightened line_looks_comment_like (attribute / preprocessor) ─
+
+        #[test]
+        fn line_looks_comment_like_rejects_attribute_and_preprocessor_lines() {
+            for line in [
+                "#[derive(Debug, Clone)]",
+                "#[serde(rename = \"foo\")]",
+                "#[cfg(test)]",
+                "#[allow(dead_code)]",
+                "#include <stdio.h>",
+                "#define MAX 100",
+                "#pragma once",
+                "#region Helpers",
+                "#endregion",
+                "#![feature(let_chains)]",
+                "*ptr = 0;",
+                "*x = y * z;",
+            ] {
+                assert!(
+                    !line_looks_comment_like(line),
+                    "expected NOT comment-like: {line:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn line_looks_comment_like_still_accepts_real_comment_prefixes() {
+            for line in [
+                "# python comment",
+                "# ",
+                "#",
+                "// rust",
+                "/// outer doc",
+                "/* block",
+                " * inner of /** */ block",
+                "* ",
+                "*",
+            ] {
+                assert!(
+                    line_looks_comment_like(line),
+                    "expected comment-like: {line:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn rust_short_struct_after_derive_keeps_doc_none() {
+            let content = "#[derive(Debug)]\nstruct Tiny { a: u32 }\n";
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "Tiny")
+                .expect("Tiny chunk");
+            assert!(
+                chunk.doc.is_none(),
+                "fallback must not capture #[derive] line as doc, got: {:?}",
+                chunk.doc
+            );
+        }
+
+        #[test]
+        fn c_short_function_after_include_keeps_doc_none() {
+            let content = "#include <stdio.h>\n#define X 1\nint main(void) { return 0; }\n";
+            let file = write_temp_file(content, "c");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            if let Some(chunk) = chunks.iter().find(|c| c.name == "main") {
+                assert!(
+                    chunk.doc.is_none(),
+                    "fallback must not capture #include/#define as doc, got: {:?}",
+                    chunk.doc
+                );
+            }
+        }
+
+        // ─── A.2: walk-back blank-line budget ──────────────────────────────
+
+        #[test]
+        fn fallback_walks_past_blank_gap_to_capture_earlier_comments() {
+            let content = "\
+-- header comment 1
+-- header comment 2
+
+-- header comment 3
+CREATE TABLE x (id TEXT);
+";
+            let file = write_temp_file(content, "sql");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks.iter().find(|c| c.name == "x").expect("x chunk");
+            let doc = chunk.doc.as_deref().unwrap_or("");
+            assert!(
+                doc.contains("header comment 1"),
+                "expected header comment 1 to survive blank gap, got: {doc:?}"
+            );
+            assert!(
+                doc.contains("header comment 3"),
+                "expected header comment 3 to be captured, got: {doc:?}"
             );
         }
     }

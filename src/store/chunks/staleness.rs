@@ -124,6 +124,23 @@ impl Store<ReadWrite> {
                 }
                 let result = chunks_stmt.execute(&mut *tx).await?;
                 deleted += result.rows_affected() as u32;
+
+                // E.2 (P1 #17): `function_calls` has no FK to `chunks` (it is
+                // keyed by `file`, not chunk ID), so deleting chunks does not
+                // cascade. Without this DELETE, prune leaves orphan call-graph
+                // rows that surface as ghost callers in
+                // `cqs callers`/`callees`/`dead`. Use the same chunked-IN
+                // pattern over `file` values so we stay under the SQLite
+                // parameter limit.
+                let calls_query = format!(
+                    "DELETE FROM function_calls WHERE file IN ({})",
+                    placeholder_str
+                );
+                let mut calls_stmt = sqlx::query(&calls_query);
+                for origin in batch {
+                    calls_stmt = calls_stmt.bind(origin);
+                }
+                calls_stmt.execute(&mut *tx).await?;
             }
 
             // DS-1/DS-6: Delete orphan sparse_vectors inside the same transaction.

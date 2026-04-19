@@ -74,9 +74,16 @@ pub fn find_python() -> anyhow::Result<String> {
             _ => continue,
         }
     }
+    let install_hint = if cfg!(windows) {
+        "Install Python from https://python.org/downloads/ or `winget install Python.Python.3.12`"
+    } else if cfg!(target_os = "macos") {
+        "macOS: `brew install python`"
+    } else {
+        "Linux: `sudo apt install python3` (Debian/Ubuntu) or `sudo dnf install python3` (Fedora)"
+    };
     anyhow::bail!(
         "Python not found (or only available in a user-writable directory that cqs refuses to trust). \
-         Install `python3` (Linux: `sudo apt install python3`, macOS: `brew install python`)"
+         {install_hint}"
     )
 }
 

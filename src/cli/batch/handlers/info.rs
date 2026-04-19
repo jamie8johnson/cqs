@@ -248,6 +248,44 @@ pub(in crate::cli::batch) fn dispatch_stats(ctx: &BatchContext) -> Result<serde_
     let errors = ctx.error_count.load(std::sync::atomic::Ordering::Relaxed);
     let mut output = crate::cli::commands::build_stats(&ctx.store(), &ctx.cqs_dir)?;
     output.errors = Some(errors as usize);
+
+    // BUG-D.10: mirror cmd_stats:283-298 — the daemon previously emitted
+    // `stale_files: null` / `missing_files: null` while the CLI populated
+    // both, so agents auto-routed through the daemon silently treated
+    // every project as fresh. Filesystem walk + `count_stale_files` is
+    // cheap; the parser is constructed lazily and torn down.
+    match cqs::Parser::new() {
+        Ok(parser) => match crate::cli::enumerate_files(&ctx.root, &parser, false) {
+            Ok(files) => {
+                let file_set: std::collections::HashSet<_> = files.into_iter().collect();
+                match ctx.store().count_stale_files(&file_set, &ctx.root) {
+                    Ok((stale_count, missing_count)) => {
+                        output.stale_files = Some(stale_count as usize);
+                        output.missing_files = Some(missing_count as usize);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "dispatch_stats: count_stale_files failed; staleness fields omitted"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "dispatch_stats: enumerate_files failed; staleness fields omitted"
+                );
+            }
+        },
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "dispatch_stats: Parser::new failed; staleness fields omitted"
+            );
+        }
+    }
+
     Ok(serde_json::to_value(&output)?)
 }
 

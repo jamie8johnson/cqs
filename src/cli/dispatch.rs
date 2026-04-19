@@ -66,7 +66,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     // ── Group A: no-store commands (early return before CommandContext) ──────
     match cli.command {
         Some(Commands::Init) => return cmd_init(&cli),
-        Some(Commands::Cache { ref subcmd }) => return cmd_cache(subcmd),
+        Some(Commands::Cache { ref subcmd }) => return cmd_cache(&cli, subcmd),
         Some(Commands::Doctor { fix, verbose, json }) => {
             // Task #8: top-level `--json` cascades into doctor's `--json` so
             // `cqs --json doctor --verbose` emits JSON.
@@ -145,7 +145,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             }
         }
         Some(Commands::Project { ref subcmd }) => {
-            return cmd_project(subcmd, cli.try_model_config()?)
+            return cmd_project(&cli, subcmd, cli.try_model_config()?)
         }
         // Model: each subcommand opens its own Store at known paths
         // (`cqs model show/list` open readonly; `swap` orchestrates a backup
@@ -195,7 +195,23 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         // `cmd_notes` and `cmd_notes_mutate` (issue #959): one handler, with
         // the store lifecycle decided here instead of via a routing gate.
         Some(Commands::Notes { ref subcmd }) => {
-            let ctx = crate::cli::CommandContext::open_readonly(&cli).ok();
+            // SEC-D.9: don't silently collapse distinct store-open failures
+            // (schema corruption, dim mismatch, permission denied, missing
+            // index) into a single clueless "Index not found" downstream.
+            // Mutations (`add`/`update`/`remove`) work without an open store
+            // so we still fall through with `None`, but we leave a debug
+            // breadcrumb so an operator running with `RUST_LOG=cqs=debug`
+            // sees the underlying cause.
+            let ctx = match crate::cli::CommandContext::open_readonly(&cli) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "Notes: readonly store open failed; mutations will use write-only path"
+                    );
+                    None
+                }
+            };
             return cmd_notes(&cli, ctx.as_ref(), subcmd);
         }
         _ => {} // Fall through to Group B

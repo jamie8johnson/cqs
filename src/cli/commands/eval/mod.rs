@@ -74,6 +74,13 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
     )
     .entered();
 
+    // Top-level `--json` always wins (mirrors `cmd_model` at
+    // `src/cli/commands/infra/model.rs:113`). `cqs --json eval foo.json`
+    // must emit envelope JSON even if the user didn't repeat `--json` after
+    // the subcommand — otherwise agents calling the CLI with the global
+    // flag get text and a parse error.
+    let json = ctx.cli.json || args.json;
+
     if args.limit == 0 {
         anyhow::bail!("--limit must be at least 1");
     }
@@ -92,7 +99,7 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
     if args.baseline.is_none() {
         // Output (text or JSON) before --save so the user sees results even
         // if --save's directory is missing or unwritable.
-        if args.json {
+        if json {
             crate::cli::json_envelope::emit_json(&report)?;
         } else {
             print_text_report(&report);
@@ -109,17 +116,34 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
 
     if let Some(baseline_path) = &args.baseline {
         let diff = baseline::compare_against_baseline(&report, baseline_path, args.tolerance)?;
-        baseline::print_diff_report(&diff, args.json);
         if !diff.regressions.is_empty() {
             // Per-category regression past tolerance → CI-friendly exit 1.
-            // Stderr summary so a wrapping shell script can grep for it
-            // even when stdout is consumed by --json.
-            eprintln!(
-                "[eval] {} regression(s) past tolerance \u{00b1}{:.1}pp — exit 1",
+            // In JSON mode, emit a single error envelope (per PR #1038 contract:
+            // failure paths advertise `{data:null, error:{code,message}, version:1}`).
+            // Skip print_diff_report — emitting both a success diff envelope and an
+            // error envelope on the same stdout would produce two JSON documents
+            // back-to-back, breaking single-doc consumers. Users who want the
+            // structured diff on regression should re-run without --json or use --save.
+            let msg = format!(
+                "{} regression(s) past tolerance \u{00b1}{:.1}pp",
                 diff.regressions.len(),
                 diff.tolerance_pp
             );
+            if json {
+                // INVALID_INPUT fits the regression case: the eval ran fine, but the
+                // inputs (current run + baseline) failed the user-defined gate.
+                // INTERNAL would imply a cqs bug.
+                crate::cli::json_envelope::emit_json_error(
+                    crate::cli::json_envelope::error_codes::INVALID_INPUT,
+                    &msg,
+                )?;
+            } else {
+                baseline::print_diff_report(&diff, false);
+                eprintln!("[eval] {} \u{2014} exit 1", msg);
+            }
             std::process::exit(1);
+        } else {
+            baseline::print_diff_report(&diff, json);
         }
     }
 

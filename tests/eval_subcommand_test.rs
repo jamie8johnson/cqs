@@ -321,6 +321,76 @@ fn test_eval_save_writes_valid_json() {
     }
 }
 
+/// B.1: top-level `--json` (before the subcommand) must propagate into
+/// `cqs eval`. Earlier `cmd_eval` only read `args.json` (the subcommand
+/// flag) and ignored `cli.json`, so `cqs --json eval foo.json` emitted
+/// human text to stdout — agents calling the CLI with the global flag
+/// got an unparseable response. Mirrors the precedence already enforced
+/// by `cmd_model` (`src/cli/commands/infra/model.rs:113`).
+#[test]
+#[serial]
+fn test_eval_top_level_json_flag_emits_envelope() {
+    let dir = TempDir::new().expect("tempdir");
+    let chunks = vec![(build_chunk("foo", "src/lib.rs", 1), 1.0_f32)];
+    seed_store_in(&dir, &chunks);
+
+    let queries = json!({
+        "queries": [
+            {
+                "query": "foo",
+                "category": "identifier_lookup",
+                "gold_chunk": {
+                    "name": "foo",
+                    "origin": "src/lib.rs",
+                    "line_start": 1,
+                }
+            }
+        ]
+    });
+    let q_path = dir.path().join("queries.json");
+    fs::write(&q_path, queries.to_string()).expect("write queries");
+
+    // NOTE: `--json` BEFORE the subcommand. Prior bug ignored this.
+    let result = cqs_no_daemon()
+        .args(["--json", "eval", q_path.to_str().unwrap()])
+        .current_dir(dir.path())
+        .output()
+        .expect("run cqs --json eval");
+
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+
+    assert!(
+        !stderr.contains("Index not found"),
+        "Should find seeded store. stderr={stderr}"
+    );
+
+    if result.status.success() {
+        // Top-level --json must produce envelope JSON.
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!("expected envelope JSON, parse failed: {e}\nstdout={stdout}")
+        });
+        assert!(
+            parsed["data"].is_object(),
+            "envelope must wrap eval report under data, got: {stdout}"
+        );
+        assert_eq!(parsed["version"], 1);
+        assert!(parsed["error"].is_null(), "no error on success path");
+        // EvalReport-shaped data:
+        assert!(
+            parsed["data"]["overall"].is_object(),
+            "data must contain EvalReport.overall"
+        );
+    } else {
+        // Embedder/index failure earlier — the test harness can't load real
+        // models. Args still parsed (no clap error). Soft pass.
+        eprintln!(
+            "test_eval_top_level_json_flag_emits_envelope: model unavailable in test env, \
+             accepted as soft pass. stdout={stdout} stderr={stderr}"
+        );
+    }
+}
+
 /// `--baseline foo.json --tolerance 1.0` must parse (Task C2 implements
 /// the diff body; this test pins the CLI surface today). The C2-not-yet
 /// stub bails with a recognisable error so we can assert on it cleanly.

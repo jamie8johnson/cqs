@@ -141,18 +141,25 @@ fn run_git_log_line_range(
             return Ok(String::new());
         }
 
-        // SEC-9: Truncate git stderr to prevent user-controlled path content
-        // from leaking into error messages at arbitrary length.
-        const MAX_STDERR_LEN: usize = 256;
-        let sanitized = if stderr.len() > MAX_STDERR_LEN {
-            format!("{}... (truncated)", &stderr[..MAX_STDERR_LEN])
-        } else {
-            stderr.to_string()
-        };
+        let sanitized = truncate_git_stderr(stderr);
         anyhow::bail!("git log failed: {}", sanitized);
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// SEC-9 + robustness: truncate git stderr so user-controlled path content
+/// can't bloat error messages, and so a non-ASCII path in git's error
+/// doesn't straddle the byte cutoff and panic the process. Slices at a
+/// UTF-8 char boundary via `floor_char_boundary`.
+pub(crate) fn truncate_git_stderr(stderr: &str) -> String {
+    const MAX_STDERR_LEN: usize = 256;
+    if stderr.len() > MAX_STDERR_LEN {
+        let truncate_at = stderr.floor_char_boundary(MAX_STDERR_LEN);
+        format!("{}... (truncated)", &stderr[..truncate_at])
+    } else {
+        stderr.to_string()
+    }
 }
 
 /// Parse NUL-delimited git log output into BlameEntry list.
@@ -438,5 +445,43 @@ mod tests {
 
         assert!(json.get("callers").is_none());
         assert_eq!(json["total_commits"], 0);
+    }
+
+    /// C.2 / robustness: when a non-ASCII path appears in git's stderr (CJK
+    /// directory, emoji filename, accented Latin), the legacy code sliced
+    /// `&stderr[..MAX_STDERR_LEN]` directly. If byte 256 lands inside a
+    /// multi-byte codepoint, that panics the process. `truncate_git_stderr`
+    /// must use `floor_char_boundary` and produce valid UTF-8.
+    #[test]
+    fn git_log_stderr_truncate_handles_non_ascii_paths() {
+        // Build a stderr message that exceeds MAX_STDERR_LEN (256) and
+        // packs multi-byte codepoints near the cutoff.
+        // Pad with ASCII out to byte 250, then drop CJK + emoji so the
+        // byte-256 cutoff lands mid-codepoint.
+        let prefix = "fatal: pathspec '".to_string();
+        let pad = "x".repeat(250 - prefix.len());
+        // 注釈🎉 is a mix of 3-byte CJK and 4-byte emoji that will straddle
+        // byte 256 from offset 250.
+        let multibyte = "注釈🎉注釈🎉注釈🎉more padding past the end";
+        let stderr = format!("{prefix}{pad}{multibyte}");
+        assert!(
+            stderr.len() > 256,
+            "test fixture must exceed MAX_STDERR_LEN to exercise the truncation branch"
+        );
+        // The naive byte slice would panic here; the helper must not.
+        let truncated = truncate_git_stderr(&stderr);
+        // Result must be valid UTF-8 (it is, since it's a String, but
+        // confirm round-trip-via-bytes).
+        assert!(
+            std::str::from_utf8(truncated.as_bytes()).is_ok(),
+            "truncated stderr must be valid UTF-8"
+        );
+        assert!(
+            truncated.ends_with("... (truncated)"),
+            "truncated stderr should end with the truncation marker, got: {truncated:?}"
+        );
+        // ASCII inputs still round-trip identically.
+        let small = "fatal: short ascii error";
+        assert_eq!(truncate_git_stderr(small), small);
     }
 }

@@ -313,3 +313,67 @@ fn test_notes_add_rejects_empty_text() {
         "Empty-text add must not create notes.toml"
     );
 }
+
+/// B.4: `cqs notes add ... --sentiment NaN` must be rejected at clap parse
+/// time. Earlier `--sentiment` had no `value_parser`, so `NaN` slipped
+/// through, was clamped via `f32::clamp` (which propagates NaN → still NaN),
+/// and got written into `notes.toml` — poisoning every downstream consumer
+/// that reads sentiment as a sort key. The fix wires the existing
+/// `parse_finite_f32` parser onto the flag.
+#[test]
+#[serial]
+fn test_notes_add_rejects_nan_sentiment() {
+    let dir = setup_notes_project();
+    let output = cqs()
+        .args([
+            "notes",
+            "add",
+            "noise",
+            "--sentiment",
+            "NaN",
+            "--no-reindex",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("cqs notes add (NaN) failed to spawn");
+    assert!(
+        !output.status.success(),
+        "--sentiment NaN must exit non-zero. stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("finite") || stderr.contains("NaN") || stderr.contains("invalid"),
+        "stderr should explain why NaN was rejected, got: {stderr}"
+    );
+    assert!(
+        !notes_path(&dir).exists(),
+        "Rejected --sentiment NaN must not create notes.toml"
+    );
+}
+
+/// B.4 (companion): `cqs notes add ... --sentiment Infinity` must also be
+/// rejected — same parser path (`parse_finite_f32`).
+#[test]
+#[serial]
+fn test_notes_add_rejects_infinity_sentiment() {
+    let dir = setup_notes_project();
+    let output = cqs()
+        .args([
+            "notes",
+            "add",
+            "noise",
+            "--sentiment",
+            "Infinity",
+            "--no-reindex",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("cqs notes add (Infinity) failed to spawn");
+    assert!(
+        !output.status.success(),
+        "--sentiment Infinity must exit non-zero. stderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}

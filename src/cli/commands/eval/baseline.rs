@@ -25,11 +25,16 @@ use super::runner::EvalReport;
 /// A negative value means the current run is *worse* than baseline at
 /// that K. Stored as `f64` so 0.0 round-trips exactly through JSON and
 /// the diff math doesn't accumulate float noise on small deltas.
+///
+/// P1 #26: field names match the sibling `EvalReport` shape (`r_at_1`,
+/// `r_at_5`, `r_at_20` in `runner.rs`) so the same command emits one
+/// consistent JSON convention. The display labels stay `R@1` / `R@5` /
+/// `R@20` (those live in `Regression.metric`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub(crate) struct KDelta {
-    pub r1: f64,
-    pub r5: f64,
-    pub r20: f64,
+    pub r_at_1: f64,
+    pub r_at_5: f64,
+    pub r_at_20: f64,
 }
 
 /// One per-category R@K regression past tolerance.
@@ -137,9 +142,9 @@ pub(crate) fn compare_against_baseline(
     }
 
     let overall_delta = KDelta {
-        r1: to_pp(current.overall.r_at_1) - to_pp(baseline.overall.r_at_1),
-        r5: to_pp(current.overall.r_at_5) - to_pp(baseline.overall.r_at_5),
-        r20: to_pp(current.overall.r_at_20) - to_pp(baseline.overall.r_at_20),
+        r_at_1: to_pp(current.overall.r_at_1) - to_pp(baseline.overall.r_at_1),
+        r_at_5: to_pp(current.overall.r_at_5) - to_pp(baseline.overall.r_at_5),
+        r_at_20: to_pp(current.overall.r_at_20) - to_pp(baseline.overall.r_at_20),
     };
 
     // Union of category keys from both sides so a category present in only
@@ -167,9 +172,9 @@ pub(crate) fn compare_against_baseline(
             .unwrap_or((0.0, 0.0, 0.0));
 
         let delta = KDelta {
-            r1: c_r1 - b_r1,
-            r5: c_r5 - b_r5,
-            r20: c_r20 - b_r20,
+            r_at_1: c_r1 - b_r1,
+            r_at_5: c_r5 - b_r5,
+            r_at_20: c_r20 - b_r20,
         };
 
         // Only flag as regression if the category exists on the baseline side.
@@ -177,9 +182,9 @@ pub(crate) fn compare_against_baseline(
         // a regression — there's nothing to regress *from*.
         if b.is_some() {
             for (metric, delta_val, b_val, c_val) in [
-                ("R@1", delta.r1, b_r1, c_r1),
-                ("R@5", delta.r5, b_r5, c_r5),
-                ("R@20", delta.r20, b_r20, c_r20),
+                ("R@1", delta.r_at_1, b_r1, c_r1),
+                ("R@5", delta.r_at_5, b_r5, c_r5),
+                ("R@20", delta.r_at_20, b_r20, c_r20),
             ] {
                 // Strictly greater than tolerance is a regression. Allows
                 // `--tolerance 0` to mean "any drop fails".
@@ -285,9 +290,9 @@ pub(crate) fn print_diff_report(report: &DiffReport, json: bool) {
 
     println!(
         "OVERALL: R@1 {} R@5 {} R@20 {}",
-        format_delta(report.overall_delta.r1),
-        format_delta(report.overall_delta.r5),
-        format_delta(report.overall_delta.r20),
+        format_delta(report.overall_delta.r_at_1),
+        format_delta(report.overall_delta.r_at_5),
+        format_delta(report.overall_delta.r_at_20),
     );
     println!();
 
@@ -300,9 +305,9 @@ pub(crate) fn print_diff_report(report: &DiffReport, json: bool) {
             println!(
                 "{:<28} {:>12} {:>12} {:>12}",
                 cat,
-                format_delta(delta.r1),
-                format_delta(delta.r5),
-                format_delta(delta.r20),
+                format_delta(delta.r_at_1),
+                format_delta(delta.r_at_5),
+                format_delta(delta.r_at_20),
             );
         }
         println!();
@@ -399,9 +404,9 @@ mod tests {
         );
         let tmp = save_to_tmp(&r);
         let diff = compare_against_baseline(&r, tmp.path(), 0.5).unwrap();
-        assert_eq!(diff.overall_delta.r1, 0.0);
-        assert_eq!(diff.overall_delta.r5, 0.0);
-        assert_eq!(diff.overall_delta.r20, 0.0);
+        assert_eq!(diff.overall_delta.r_at_1, 0.0);
+        assert_eq!(diff.overall_delta.r_at_5, 0.0);
+        assert_eq!(diff.overall_delta.r_at_20, 0.0);
         assert!(diff.regressions.is_empty());
         assert!(diff.warnings.is_empty());
     }

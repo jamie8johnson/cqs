@@ -443,6 +443,16 @@ impl Store<ReadWrite> {
                 .execute(&mut *tx)
                 .await?;
 
+            // E.2 (P1 #17): `function_calls` has no FK to `chunks` (it stores
+            // `caller_name` strings, not chunk IDs), so deleting chunks does
+            // not cascade. Without this DELETE, every incremental delete path
+            // leaves orphan call-graph rows that surface as ghost callers in
+            // `cqs callers`/`callees`/`dead`.
+            sqlx::query("DELETE FROM function_calls WHERE file = ?1")
+                .bind(&origin_str)
+                .execute(&mut *tx)
+                .await?;
+
             tx.commit().await?;
             Ok(result.rows_affected() as u32)
         })
@@ -595,6 +605,14 @@ impl Store<ReadWrite> {
                 .execute(&mut *tx)
                 .await?;
 
+            // NOTE on `function_calls` cleanup: `delete_phantom_chunks` is
+            // called by `cli/watch.rs` AFTER `upsert_function_calls`
+            // (`watch.rs:2325`) for the same file, which already DELETE-then-
+            // INSERTs the current set. Adding a `DELETE FROM function_calls`
+            // here would wipe those just-written rows. The other two delete
+            // paths (`delete_by_origin`, `prune_missing`) — file removed
+            // entirely — DO have an explicit `function_calls` DELETE because
+            // no upsert follows; see those functions.
             tx.commit().await?;
             let deleted = result.rows_affected() as u32;
             if deleted > 0 {
