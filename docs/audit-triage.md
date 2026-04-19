@@ -176,9 +176,9 @@ Status column: `pending` → `in flight` → `✅ PR #N` (or `✅ inline` / `✅
 | 143 | `WINDOW_OVERHEAD = 32` tokens assumed-fits all model prefix configurations | `src/cli/pipeline/windowing.rs:8,12-18` | ✅ filed: #1042 |
 | 144 | `Store::is_slow_mmap_fs` is `#[cfg(unix)]`-only — Windows network drives silently take 256 MB mmap × 4 conns | `src/store/mod.rs:371-405` | ✅ filed: #1043 |
 | 145 | `ctrlc::set_handler` SIGINT-only — `cqs watch` on Windows cannot be cleanly stopped | `src/cli/signal.rs:27-37`, `src/cli/watch.rs:118-132` | ✅ filed: #1044 |
-| 146 | `ChunkType::human_name` `_ => other.to_string()` catch-all hides multi-word omissions | `src/language/mod.rs:683-690` | ✅ deferred (low impact) |
-| 147 | `dispatch::try_daemon_query` deserializes `output` strictly as string — future structured payloads silently fall back | `src/cli/dispatch.rs:739-741` | ✅ deferred (low impact / future-proofing) |
-| 148 | `fallback_does_not_mix_comment_styles` test expectation undocumented | `src/parser/chunk.rs:264-276,315-322` | ✅ obviated by P1 #3 (PR #1041) |
+| 146 | `ChunkType::human_name` `_ => other.to_string()` catch-all hides multi-word omissions | `src/language/mod.rs:683-690` | ✅ filed: #1047 |
+| 147 | `dispatch::try_daemon_query` deserializes `output` strictly as string — future structured payloads silently fall back | `src/cli/dispatch.rs:739-741` | ✅ filed: #1048 |
+| 148 | `fallback_does_not_mix_comment_styles` test expectation undocumented | `src/parser/chunk.rs:264-276,315-322` | ✅ filed: #1049 (security/correctness obviated by P1 #3 — issue tracks the missing test pin only) |
 
 ## Execution log
 
@@ -188,7 +188,7 @@ All 150 findings addressed across 4 PRs + 3 issues (2026-04-18 → 2026-04-19):
 - **P2** (47 items, medium effort + high impact) → **PR #1045** merged
 - **P3** (69 items, easy + low impact) → **PR #1046** (audit-complete PR)
 - **P4 hard** (3 items) → issues **#1042**, **#1043**, **#1044** filed for future Windows/model-flexibility work
-- **P4 trivial** (3 items) → covered inline in P3 PR or obviated by P1 fixes
+- **P4 trivial** (3 items) → issues **#1047**, **#1048**, **#1049** filed for tracking; #1049 is partially obviated by P1 #3 (security/correctness aspect closed) but the test-pin remains an open ask
 
 Wave logistics: 1 sequential P1 wave (mostly serial), 13 parallel P2 agents + 1 sweep agent for cross-cutting `parser_version` propagation, 5 parallel P3 agents.
 
