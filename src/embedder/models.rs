@@ -136,98 +136,188 @@ pub struct ModelConfig {
     pub pooling: PoolingStrategy,
 }
 
-/// Default model repo ID. Must match `ModelConfig::default_model().repo`.
-/// Kept as a const for use in store validation and metadata (which need compile-time strings).
-pub const DEFAULT_MODEL_REPO: &str = "BAAI/bge-large-en-v1.5";
+// ---------------------------------------------------------------------------
+// Macro: define_embedder_presets!
+//
+// Generates from a single declaration table, mirroring `define_languages!` /
+// `define_chunk_types!` / `define_query_categories!`:
+//   - One `pub fn <ctor>(&self) -> Self` constructor per preset on `ModelConfig`
+//   - `ModelConfig::PRESET_NAMES: &'static [&'static str]` (short names)
+//   - `ModelConfig::from_preset(name)` matching short-name OR repo ID
+//   - `ModelConfig::default_model()` returning the row marked `default = true`
+//
+// Adding a preset = one new line here. The standalone `DEFAULT_MODEL_REPO`
+// and `DEFAULT_DIM` constants disappear — `ModelInfo::default()` and
+// `with_dim()` derive from `default_model()` directly.
+// ---------------------------------------------------------------------------
+/// Defines the embedder-preset table.
+///
+/// Each row carries:
+/// - `$variant_fn`: snake_case constructor name on `ModelConfig` (e.g., `bge_large`)
+/// - `$name`: short name (e.g., `"bge-large"`) — also a `from_preset` key
+/// - `$repo`: HuggingFace repo ID (also a `from_preset` key)
+/// - `$onnx_path`, `$tokenizer_path`, `$dim`, `$max_seq_length`
+/// - `$query_prefix`, `$doc_prefix`
+/// - `$input_names`, `$output_name`, `$pooling` — architecture knobs
+/// - Optional `default` marker — exactly one row may set this
+macro_rules! define_embedder_presets {
+    (
+        $(
+            $(#[doc = $doc:expr])*
+            $variant_fn:ident => name = $name:literal, repo = $repo:literal, onnx_path = $onnx_path:literal,
+                tokenizer_path = $tokenizer_path:literal, dim = $dim:literal, max_seq_length = $max:literal,
+                query_prefix = $qp:literal, doc_prefix = $dp:literal,
+                input_names = $input_names:expr, output_name = $output_name:expr, pooling = $pooling:expr
+                $(, default = $default:tt)?
+                ;
+        )+
+    ) => {
+        impl ModelConfig {
+            $(
+                $(#[doc = $doc])*
+                pub fn $variant_fn() -> Self {
+                    Self {
+                        name: $name.to_string(),
+                        repo: $repo.to_string(),
+                        onnx_path: $onnx_path.to_string(),
+                        tokenizer_path: $tokenizer_path.to_string(),
+                        dim: $dim,
+                        max_seq_length: $max,
+                        query_prefix: $qp.to_string(),
+                        doc_prefix: $dp.to_string(),
+                        input_names: $input_names,
+                        output_name: $output_name,
+                        pooling: $pooling,
+                    }
+                }
+            )+
 
-/// Default embedding dimension. Must match `ModelConfig::default_model().dim`.
-/// Kept as a const for use in test helpers and compile-time array sizing.
-pub const DEFAULT_DIM: usize = 1024;
+            /// All preset short names, in declaration order.
+            pub const PRESET_NAMES: &'static [&'static str] = &[ $($name),+ ];
 
-impl ModelConfig {
-    /// The project default model. Single source of truth for all fallback paths.
-    ///
-    /// Change this ONE function to switch the default model for the entire project.
-    /// Everything else (DEFAULT_MODEL_REPO, EMBEDDING_DIM, ModelInfo::default(),
-    /// serde defaults, resolve() fallbacks) derives from this.
-    pub fn default_model() -> Self {
-        Self::bge_large()
-    }
+            /// All preset repo IDs, in declaration order.
+            #[allow(dead_code)]
+            pub const PRESET_REPOS: &'static [&'static str] = &[ $($repo),+ ];
 
+            /// Default model repo as a `&'static str` for compile-time
+            /// metadata. Sourced from the row marked `default = true` in
+            /// `define_embedder_presets!`. Use `default_model().repo` when
+            /// a `String` is acceptable.
+            pub const DEFAULT_REPO: &'static str = {
+                // Compile-time selector — only the default-marked row
+                // contributes a `Some(repo)`; all others contribute `None`.
+                // The trailing `match … None => panic!` is a compile-time
+                // guard against forgetting to mark a default in the table.
+                #[allow(unused_assignments)]
+                let mut r: Option<&'static str> = None;
+                $(
+                    r = define_embedder_presets!(@default_const r, $repo $(, $default)?);
+                )+
+                match r {
+                    Some(s) => s,
+                    None => panic!("define_embedder_presets!: no row marked `default = true`"),
+                }
+            };
+
+            /// Default embedding dimension as a `usize` for compile-time
+            /// array sizing and `pub const` consumers (e.g. `EMBEDDING_DIM`
+            /// in `lib.rs`). Sourced from the row marked `default = true`.
+            pub const DEFAULT_DIM: usize = {
+                #[allow(unused_assignments)]
+                let mut d: Option<usize> = None;
+                $(
+                    d = define_embedder_presets!(@default_const d, $dim $(, $default)?);
+                )+
+                match d {
+                    Some(v) => v,
+                    None => panic!("define_embedder_presets!: no row marked `default = true`"),
+                }
+            };
+
+            /// Look up a preset by short name OR HuggingFace repo ID.
+            ///
+            /// Returns `None` for unknown names.
+            pub fn from_preset(name: &str) -> Option<Self> {
+                match name {
+                    $(
+                        $name | $repo => Some(Self::$variant_fn()),
+                    )+
+                    _ => None,
+                }
+            }
+
+            /// The project default model. Single source of truth for all
+            /// fallback paths — change the `default = true` marker in the
+            /// table to switch the default for the entire project.
+            ///
+            /// Generated by `define_embedder_presets!`. Returns the row
+            /// marked `default = true` (exactly one).
+            pub fn default_model() -> Self {
+                // Each row expands to either a `return` statement (the row
+                // marked `default = true`) or to nothing. Compilation fails
+                // if no row is marked default — the function would have no
+                // return, triggering the "expected `Self`, found `()`"
+                // mismatch on the trailing expression below.
+                $(
+                    define_embedder_presets!(@default_arm $variant_fn $(, $default)?);
+                )+
+                // Unreachable when exactly one row is marked default; this
+                // line catches the all-`@nodefault` configuration at compile
+                // time as a type error rather than a panic at run time.
+                #[allow(unreachable_code)]
+                {
+                    panic!("define_embedder_presets!: no row marked `default = true`")
+                }
+            }
+        }
+    };
+
+    // Internal: emits the function body for the row marked `default = true`.
+    // Other rows expand to nothing.
+    (@default_arm $variant_fn:ident, true) => { return Self::$variant_fn() };
+    (@default_arm $variant_fn:ident) => { };
+
+    // Internal: pick the value of the default-marked row.
+    // The default-marked row replaces the previous binding with `Some(value)`;
+    // other rows pass through unchanged.
+    (@default_const $prev:ident, $value:literal, true) => { Some($value) };
+    (@default_const $prev:ident, $value:literal) => { $prev };
+}
+
+define_embedder_presets! {
     /// E5-base-v2: 768-dim, 512 tokens. Lightweight preset.
     ///
     /// Standard BERT I/O (`input_ids` / `attention_mask` / `token_type_ids`),
     /// output `last_hidden_state`, mean pooling over the attention mask.
-    pub fn e5_base() -> Self {
-        Self {
-            name: "e5-base".to_string(),
-            repo: "intfloat/e5-base-v2".to_string(),
-            onnx_path: "onnx/model.onnx".to_string(),
-            tokenizer_path: "tokenizer.json".to_string(),
-            dim: 768,
-            max_seq_length: 512,
-            query_prefix: "query: ".to_string(),
-            doc_prefix: "passage: ".to_string(),
-            input_names: InputNames::bert(),
-            output_name: default_output_name(),
-            pooling: PoolingStrategy::Mean,
-        }
-    }
+    e5_base => name = "e5-base", repo = "intfloat/e5-base-v2",
+        onnx_path = "onnx/model.onnx", tokenizer_path = "tokenizer.json",
+        dim = 768, max_seq_length = 512,
+        query_prefix = "query: ", doc_prefix = "passage: ",
+        input_names = InputNames::bert(), output_name = default_output_name(), pooling = PoolingStrategy::Mean;
 
     /// v9-200k LoRA: E5-base fine-tuned with call-graph false-negative filtering.
     /// 768-dim, 512 tokens. 90.5% R@1 on expanded eval (296 queries, 7 languages).
     ///
     /// Same architecture as E5-base: standard BERT I/O, mean pooling.
-    pub fn v9_200k() -> Self {
-        Self {
-            name: "v9-200k".to_string(),
-            repo: "jamie8johnson/e5-base-v2-code-search".to_string(),
-            onnx_path: "model.onnx".to_string(),
-            tokenizer_path: "tokenizer.json".to_string(),
-            dim: 768,
-            max_seq_length: 512,
-            query_prefix: "query: ".to_string(),
-            doc_prefix: "passage: ".to_string(),
-            input_names: InputNames::bert(),
-            output_name: default_output_name(),
-            pooling: PoolingStrategy::Mean,
-        }
-    }
+    v9_200k => name = "v9-200k", repo = "jamie8johnson/e5-base-v2-code-search",
+        onnx_path = "model.onnx", tokenizer_path = "tokenizer.json",
+        dim = 768, max_seq_length = 512,
+        query_prefix = "query: ", doc_prefix = "passage: ",
+        input_names = InputNames::bert(), output_name = default_output_name(), pooling = PoolingStrategy::Mean;
 
     /// BGE-large-en-v1.5: 1024-dim, 512 tokens. Higher quality, slower.
     ///
     /// Standard BERT I/O, mean pooling (matches the BGE-reference implementation
     /// used in HuggingFace `sentence-transformers`).
-    pub fn bge_large() -> Self {
-        Self {
-            name: "bge-large".to_string(),
-            repo: "BAAI/bge-large-en-v1.5".to_string(),
-            onnx_path: "onnx/model.onnx".to_string(),
-            tokenizer_path: "tokenizer.json".to_string(),
-            dim: 1024,
-            max_seq_length: 512,
-            query_prefix: "Represent this sentence for searching relevant passages: ".to_string(),
-            doc_prefix: String::new(),
-            input_names: InputNames::bert(),
-            output_name: default_output_name(),
-            pooling: PoolingStrategy::Mean,
-        }
-    }
+    bge_large => name = "bge-large", repo = "BAAI/bge-large-en-v1.5",
+        onnx_path = "onnx/model.onnx", tokenizer_path = "tokenizer.json",
+        dim = 1024, max_seq_length = 512,
+        query_prefix = "Represent this sentence for searching relevant passages: ", doc_prefix = "",
+        input_names = InputNames::bert(), output_name = default_output_name(), pooling = PoolingStrategy::Mean,
+        default = true;
+}
 
-    /// Look up a preset by short name ("e5-base") or repo ID ("intfloat/e5-base-v2").
-    ///
-    /// Returns `None` for unknown names.
-    pub const PRESET_NAMES: &'static [&'static str] = &["e5-base", "v9-200k", "bge-large"];
-
-    pub fn from_preset(name: &str) -> Option<Self> {
-        match name {
-            "e5-base" | "intfloat/e5-base-v2" => Some(Self::e5_base()),
-            "v9-200k" | "jamie8johnson/e5-base-v2-code-search" => Some(Self::v9_200k()),
-            "bge-large" | "BAAI/bge-large-en-v1.5" => Some(Self::bge_large()),
-            _ => None,
-        }
-    }
-
+impl ModelConfig {
     /// Resolve model config for a **query path** against an existing index.
     ///
     /// When the index records a model name (`Store::stored_model_name()`), that
@@ -519,18 +609,21 @@ impl ModelInfo {
     ///
     /// Convenience for callers that only vary dimension (e.g., `Embedder::embedding_dim()`).
     pub fn with_dim(dim: usize) -> Self {
-        Self::new(DEFAULT_MODEL_REPO, dim)
+        Self::new(ModelConfig::default_model().repo, dim)
     }
 }
 
 impl Default for ModelInfo {
-    /// Test-only default: BGE-large with default dim (1024).
+    /// Test-only default: project default model (currently BGE-large, 1024-dim).
     ///
     /// Production code should use `ModelInfo::new()` or `ModelInfo::with_dim()`.
+    /// All fields derive from `ModelConfig::default_model()` — change the
+    /// `default = true` marker in `define_embedder_presets!` to switch.
     fn default() -> Self {
+        let cfg = ModelConfig::default_model();
         ModelInfo {
-            name: DEFAULT_MODEL_REPO.to_string(),
-            dimensions: DEFAULT_DIM,
+            name: cfg.repo,
+            dimensions: cfg.dim,
             version: "2".to_string(),
         }
     }
@@ -1182,25 +1275,60 @@ mod tests {
         );
     }
 
-    /// Consistency check: DEFAULT_MODEL_REPO and DEFAULT_DIM must match default_model().
-    /// If you change default_model() to point at a different preset, update these consts too.
+    /// Consistency check: macro-generated constants must agree with `default_model()`.
+    /// All four sources (`ModelConfig::DEFAULT_REPO`, `ModelConfig::DEFAULT_DIM`,
+    /// `embedder::DEFAULT_MODEL_REPO`, `crate::EMBEDDING_DIM`) derive from the same
+    /// `default = true` row in `define_embedder_presets!` — this test pins the
+    /// invariant so a future preset table change is caught at test time.
     #[test]
     fn test_default_model_consts_consistent() {
         let dm = ModelConfig::default_model();
         assert_eq!(
             dm.repo,
-            super::DEFAULT_MODEL_REPO,
-            "DEFAULT_MODEL_REPO must match default_model().repo"
+            ModelConfig::DEFAULT_REPO,
+            "ModelConfig::DEFAULT_REPO must match default_model().repo"
         );
         assert_eq!(
             dm.dim,
-            super::DEFAULT_DIM,
-            "DEFAULT_DIM must match default_model().dim"
+            ModelConfig::DEFAULT_DIM,
+            "ModelConfig::DEFAULT_DIM must match default_model().dim"
+        );
+        assert_eq!(
+            dm.repo,
+            crate::embedder::DEFAULT_MODEL_REPO,
+            "embedder::DEFAULT_MODEL_REPO mirror must match default_model().repo"
         );
         assert_eq!(
             dm.dim,
             crate::EMBEDDING_DIM,
             "EMBEDDING_DIM must match default_model().dim"
+        );
+    }
+
+    /// Every preset in `define_embedder_presets!` must round-trip through
+    /// `from_preset` by both short name AND repo ID.
+    #[test]
+    fn test_all_presets_roundtrip_from_preset() {
+        for &name in ModelConfig::PRESET_NAMES {
+            let cfg = ModelConfig::from_preset(name)
+                .unwrap_or_else(|| panic!("PRESET_NAMES entry '{name}' must round-trip"));
+            assert_eq!(
+                cfg.name, name,
+                "from_preset('{name}') must return cfg with matching short name"
+            );
+            // Repo ID must also resolve.
+            let by_repo = ModelConfig::from_preset(&cfg.repo).unwrap_or_else(|| {
+                panic!(
+                    "from_preset('{}') (repo of {name}) must round-trip",
+                    cfg.repo
+                )
+            });
+            assert_eq!(by_repo.name, cfg.name);
+        }
+        assert_eq!(
+            ModelConfig::PRESET_NAMES.len(),
+            ModelConfig::PRESET_REPOS.len(),
+            "PRESET_NAMES and PRESET_REPOS must agree by length"
         );
     }
 }

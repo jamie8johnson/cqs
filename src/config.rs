@@ -133,7 +133,7 @@ pub struct ScoringOverrides {
 /// source = "/home/user/code/tokio"
 /// weight = 0.8
 /// ```
-#[derive(Default, Deserialize)]
+#[derive(Default, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Default result limit (overridden by -n)

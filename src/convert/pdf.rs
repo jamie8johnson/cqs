@@ -88,6 +88,19 @@ fn find_pdf_script() -> Result<String> {
 
     for candidate in &candidates {
         if candidate.exists() {
+            // Audit P2 #36: the CWD-relative and binary-relative candidates
+            // must clear the same ownership / permissions check as the
+            // CQS_PDF_SCRIPT env var. A user who runs `cqs convert` from
+            // any directory containing `scripts/pdf_to_md.py` would
+            // otherwise execute that script regardless of who owns it or
+            // whether it is group/world-writable.
+            #[cfg(unix)]
+            validate_script_safety(candidate).with_context(|| {
+                format!(
+                    "Refusing to execute PDF script {} (failed safety check)",
+                    candidate.display()
+                )
+            })?;
             return Ok(candidate.to_string_lossy().to_string());
         }
     }
@@ -229,6 +242,9 @@ mod tests {
     }
 
     /// CQS_PDF_SCRIPT not set and scripts/pdf_to_md.py exists relative to CWD → found.
+    /// After audit P2 #36 the CWD candidate must also clear the safety check,
+    /// so the script is created with a non-writable mode to make the test
+    /// deterministic regardless of the running user's umask.
     #[test]
     #[serial_test::serial]
     fn test_find_pdf_script_cwd_relative_path() {
@@ -236,7 +252,14 @@ mod tests {
         // Create scripts/pdf_to_md.py inside the temp dir
         let scripts_dir = dir.path().join("scripts");
         fs::create_dir_all(&scripts_dir).unwrap();
-        fs::write(scripts_dir.join("pdf_to_md.py"), "# placeholder").unwrap();
+        let script_path = scripts_dir.join("pdf_to_md.py");
+        fs::write(&script_path, "# placeholder").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // 0o644 — owner writable only; passes the audit P2 #36 check.
+            fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
 
         let prev_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
@@ -367,5 +390,42 @@ mod tests {
 
         let result = find_pdf_script();
         assert!(result.is_err(), "group-writable script must be rejected");
+    }
+
+    /// Audit P2 #36: a CWD-relative `scripts/pdf_to_md.py` that is
+    /// world-writable must be rejected by `find_pdf_script` — the prior
+    /// code only validated `CQS_PDF_SCRIPT` and would happily execute any
+    /// `scripts/pdf_to_md.py` it found relative to the CWD regardless of
+    /// ownership or permissions. An attacker who could drop a hostile
+    /// `scripts/pdf_to_md.py` into a shared workspace gained code
+    /// execution under the convert-running user's UID.
+    #[test]
+    #[serial_test::serial]
+    #[cfg(unix)]
+    fn test_find_pdf_script_cwd_world_writable_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let scripts_dir = dir.path().join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let script = scripts_dir.join("pdf_to_md.py");
+        fs::write(&script, "# attacker-controlled").unwrap();
+        // World-writable: mode 0o666 — same condition CQS_PDF_SCRIPT rejects.
+        fs::set_permissions(&script, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        let prev_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let _guard = EnvGuard::unset("CQS_PDF_SCRIPT");
+
+        let result = find_pdf_script();
+
+        // Restore CWD before asserting (so cleanup doesn't interfere).
+        std::env::set_current_dir(&prev_dir).unwrap();
+
+        let err = result.expect_err("CWD-relative world-writable script must be rejected");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("safety check") || msg.contains("writable") || msg.contains("mode"),
+            "error should mention the safety failure; got: {msg}"
+        );
     }
 }

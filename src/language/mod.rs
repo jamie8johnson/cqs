@@ -412,6 +412,25 @@ pub struct LanguageDef {
     /// `parse_file_relationships` to fall back to `custom_all_parser`, then
     /// to the markdown default.
     pub custom_call_parser: Option<CustomCallParserFn>,
+    /// Function-introducer keywords used by `extract_method_name_from_line`
+    /// to recognise method declarations. Each entry is matched as
+    /// `strip_prefix(format!("{kw} "))` against the modifier-stripped line.
+    /// Examples: Rust `&["fn"]`, Python `&["def"]`, Go `&["func"]`,
+    /// Kotlin `&["fun"]`. Empty `&[]` for languages without a fixed
+    /// function-introducer keyword (markup, config, SQL, JS/TS/Java/C#).
+    pub function_keywords: &'static [&'static str],
+    /// Optional language-specific transformer that strips a method receiver
+    /// from the line prefix before name extraction.
+    /// Used by Go: `func (r *T) Name(` → `Name(`.
+    /// `None` means no receiver-stripping applies.
+    pub receiver_strip: Option<fn(&str) -> &str>,
+    /// Per-language pattern definition consumed by `where_to_add::extract_patterns`.
+    /// `None` means either:
+    /// - the language has custom logic (Rust, TypeScript, JavaScript, Go), or
+    /// - the language has no meaningful local patterns (SQL, Markdown, JSON, …).
+    /// Adding `Some(&LANG_PATTERNS)` here exposes a new language to the
+    /// data-driven pattern extractor automatically.
+    pub patterns: Option<&'static crate::where_to_add::LanguagePatternDef>,
 }
 
 /// Helper: PascalCase test name from a base function name with a given prefix.
@@ -673,6 +692,19 @@ define_chunk_types! {
     Modifier => "modifier", hints = ["all modifiers", "every modifier"];
 }
 
+/// Coarse classification of a `ChunkType` for the call graph and the
+/// default search filter. Returned by `ChunkType::classify`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkClass {
+    /// Function-like — appears in the call graph and the default search filter.
+    Callable,
+    /// Type / value definition — appears in the default search filter only.
+    Code,
+    /// Markdown sections, modules, namespaces, config keys — excluded from
+    /// the default search filter and the call graph.
+    NonCode,
+}
+
 impl ChunkType {
     /// Human-readable display name for use in NL text generation.
     ///
@@ -689,43 +721,63 @@ impl ChunkType {
         }
     }
 
+    /// Coarse classification of a `ChunkType` used by the search filter and
+    /// the call graph.
+    ///
+    /// Single source of truth — `is_callable`, `is_code`, `code_types`, and
+    /// `callable_sql_list` all derive from `classify`. Adding a new variant
+    /// to `define_chunk_types!` produces a compile error at the exhaustive
+    /// match in `classify` instead of a silent `false` from a non-exhaustive
+    /// `matches!`.
+    pub fn classify(self) -> ChunkClass {
+        // Exhaustive over `ChunkType::ALL` — adding a variant to
+        // `define_chunk_types!` is a compile error here.
+        match self {
+            // Callable (in call graph + search)
+            ChunkType::Function
+            | ChunkType::Method
+            | ChunkType::Constructor
+            | ChunkType::Property
+            | ChunkType::Macro
+            | ChunkType::Extension
+            | ChunkType::Test
+            | ChunkType::Endpoint
+            | ChunkType::StoredProc
+            | ChunkType::Middleware
+            | ChunkType::Modifier => ChunkClass::Callable,
+            // Code but not callable (in search, not call graph)
+            ChunkType::Struct
+            | ChunkType::Enum
+            | ChunkType::Interface
+            | ChunkType::Trait
+            | ChunkType::TypeAlias
+            | ChunkType::Class
+            | ChunkType::Constant
+            | ChunkType::Impl
+            | ChunkType::Variable
+            | ChunkType::Service
+            | ChunkType::Extern => ChunkClass::Code,
+            // Not code (excluded from default search and call graph)
+            ChunkType::Section
+            | ChunkType::Module
+            | ChunkType::Object
+            | ChunkType::Delegate
+            | ChunkType::Event
+            | ChunkType::ConfigKey
+            | ChunkType::Namespace => ChunkClass::NonCode,
+        }
+    }
+
     /// Returns true for types that have call graph connections.
     pub fn is_callable(self) -> bool {
-        matches!(
-            self,
-            ChunkType::Function
-                | ChunkType::Method
-                | ChunkType::Constructor
-                | ChunkType::Property
-                | ChunkType::Macro
-                | ChunkType::Extension
-                | ChunkType::Test
-                | ChunkType::Endpoint
-                | ChunkType::StoredProc
-                | ChunkType::Middleware
-                | ChunkType::Modifier
-        )
+        matches!(self.classify(), ChunkClass::Callable)
     }
 
     /// Returns true if this is a code chunk type (callable + type definitions).
     /// Excludes Section (markdown), Module (file-level), Object (misc), ConfigKey (data), Namespace (container).
     /// Matches the CLI default search filter.
     pub fn is_code(self) -> bool {
-        self.is_callable()
-            || matches!(
-                self,
-                ChunkType::Struct
-                    | ChunkType::Enum
-                    | ChunkType::Interface
-                    | ChunkType::Trait
-                    | ChunkType::TypeAlias
-                    | ChunkType::Class
-                    | ChunkType::Constant
-                    | ChunkType::Impl
-                    | ChunkType::Variable
-                    | ChunkType::Service
-                    | ChunkType::Extern
-            )
+        matches!(self.classify(), ChunkClass::Callable | ChunkClass::Code)
     }
 
     /// Returns all code chunk types (for use in SearchFilter::include_types).
@@ -1066,6 +1118,75 @@ mod tests {
     /// EXT-1: Every ChunkType variant must be explicitly classified in is_code().
     /// This test fails with a compile error when a new variant is added to
     /// define_chunk_types! without updating is_callable() or is_code().
+    /// Every variant must round-trip through `classify` -> `is_callable` /
+    /// `is_code`. Mirrors EXT-1 against the new `ChunkClass` enum.
+    #[test]
+    fn test_chunk_class_round_trip() {
+        for &ct in ChunkType::ALL {
+            match ct.classify() {
+                ChunkClass::Callable => {
+                    assert!(
+                        ct.is_callable(),
+                        "{ct} classified Callable but is_callable=false"
+                    );
+                    assert!(ct.is_code(), "{ct} classified Callable but is_code=false");
+                }
+                ChunkClass::Code => {
+                    assert!(
+                        !ct.is_callable(),
+                        "{ct} classified Code but is_callable=true"
+                    );
+                    assert!(ct.is_code(), "{ct} classified Code but is_code=false");
+                }
+                ChunkClass::NonCode => {
+                    assert!(
+                        !ct.is_callable(),
+                        "{ct} classified NonCode but is_callable=true"
+                    );
+                    assert!(!ct.is_code(), "{ct} classified NonCode but is_code=true");
+                }
+            }
+        }
+    }
+
+    /// Every Language variant must have a `function_keywords` field accessible
+    /// through `def()`. Empty `&[]` is the sentinel for "no fixed introducer
+    /// keyword" (markup, config, JS/TS/Java/C# — all use the C-family
+    /// `name(` heuristic).
+    #[test]
+    fn test_function_keywords_accessible_for_all_languages() {
+        for lang in Language::all_variants() {
+            let def = lang.def();
+            // Just verify the field is reachable without panic; values are
+            // declared per-language in `languages.rs`.
+            let _kws: &[&str] = def.function_keywords;
+        }
+    }
+
+    /// Sanity: at least one language declares `function_keywords` and at
+    /// least one declares `receiver_strip`. Catches accidental clearing of
+    /// every per-language entry by a future macro refactor.
+    #[test]
+    fn test_at_least_one_language_has_function_keywords() {
+        let with_kw = Language::all_variants()
+            .iter()
+            .filter(|l| !l.def().function_keywords.is_empty())
+            .count();
+        assert!(
+            with_kw >= 5,
+            "Expected at least 5 languages with function_keywords, got {with_kw}"
+        );
+
+        let with_receiver = Language::all_variants()
+            .iter()
+            .filter(|l| l.def().receiver_strip.is_some())
+            .count();
+        assert!(
+            with_receiver >= 1,
+            "Expected at least 1 language with receiver_strip (Go), got {with_receiver}"
+        );
+    }
+
     #[test]
     fn test_all_chunk_types_classified() {
         // Exhaustive match — adding a variant without a branch is a compile error.

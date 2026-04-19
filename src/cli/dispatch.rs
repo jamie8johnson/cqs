@@ -103,13 +103,17 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             return cmd_train_data(cqs::train_data::TrainDataConfig {
                 repos,
                 output,
-                max_commits,
+                // API-V1.22-13: CLI surface uses `Option<usize>` (None =
+                // unlimited). The library's TrainDataConfig still uses `usize`
+                // with `0` as the "no cap" sentinel — translate at the
+                // dispatch boundary to keep the lib API stable.
+                max_commits: max_commits.unwrap_or(0),
                 min_msg_len,
                 max_files,
                 dedup_cap,
                 resume,
                 verbose,
-            })
+            });
         }
         Some(Commands::ExportModel {
             ref repo,
@@ -231,15 +235,16 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     match cli.command {
         Some(Commands::Affected {
             ref base,
+            stdin,
             ref output,
-        }) => cmd_affected(&ctx, base.as_deref(), cli.json || output.json),
+        }) => cmd_affected(&ctx, base.as_deref(), stdin, cli.json || output.json),
         Some(Commands::Blame {
             ref args,
             ref output,
         }) => cmd_blame(
             &ctx,
             &args.name,
-            args.depth,
+            args.commits,
             args.callers,
             cli.json || output.json,
         ),
@@ -507,7 +512,13 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             limit,
             ref language,
             contrastive,
-        }) => cmd_train_pairs(&ctx, output, limit, language.as_deref(), contrastive),
+        }) => cmd_train_pairs(
+            &ctx,
+            output.as_path(),
+            limit,
+            language.as_deref(),
+            contrastive,
+        ),
         Some(Commands::Eval { ref args }) => cmd_eval(&ctx, args),
         None => match &cli.query {
             Some(q) => cmd_query(&ctx, q),
@@ -626,7 +637,6 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
 
     use std::io::{BufRead, Write};
     use std::os::unix::net::UnixStream;
-    use std::time::Duration;
 
     let stream = match UnixStream::connect(&sock_path) {
         Ok(s) => s,
@@ -641,22 +651,11 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
         }
     };
 
-    // SHL-V1.25-1/SHL-V1.25-2: single knob for daemon timeouts on both sides.
-    // Previously `from_secs(ms / 1000)` collapsed sub-second values to zero
-    // (e.g. `CQS_DAEMON_TIMEOUT_MS=500` → `from_secs(0)` → unusable). Reuse
-    // the same env var for read and write so a slow rerank doesn't hit a
-    // silent 5s write cap after the user raised the read cap.
-    //
-    // TODO(cross-coordination): `src/cli/watch.rs::handle_socket_client`
-    // still hardcodes 5s read / 30s write. Route those through this same
-    // env var in wave 1A to make daemon and client timeouts symmetric.
-    let timeout = Duration::from_millis(
-        std::env::var("CQS_DAEMON_TIMEOUT_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .map(|ms| ms.max(1_000))
-            .unwrap_or(30_000),
-    );
+    // P2 #41 (post-v1.27.0 audit): single knob across client and daemon.
+    // The previous TODO(cross-coordination) noted that `handle_socket_client`
+    // hardcoded 5s/30s timeouts; both sides now resolve through the shared
+    // `cqs::daemon_translate::resolve_daemon_timeout_ms` helper.
+    let timeout = cqs::daemon_translate::resolve_daemon_timeout_ms();
     // EH-14: explicit warn on timeout failures rather than silent `.ok()` —
     // without a timeout the CLI could hang forever on a wedged daemon read.
     if let Err(e) = stream.set_read_timeout(Some(timeout)) {
@@ -753,7 +752,22 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
         }
     };
     if status == "ok" {
-        return Some(resp.get("output")?.as_str()?.to_string());
+        // P2 #62 (post-v1.27.0 audit, partial): the daemon now embeds the
+        // dispatch output as a real JSON value when the bytes parse as JSON
+        // (the common case), and falls back to the legacy string form for
+        // plaintext handlers. Accept both shapes:
+        //   - `Value::String(s)` — print verbatim (preserves original
+        //     whitespace from the dispatch handler).
+        //   - any other `Value` — re-serialize for the terminal print. Cost
+        //     is one re-encode but no escape inflation, replacing the prior
+        //     parse-of-escaped-string cost the client used to pay.
+        // `daemon_ping` already handled both shapes for the same reason.
+        let output = resp.get("output")?;
+        let text = match output {
+            serde_json::Value::String(s) => s.clone(),
+            other => serde_json::to_string(other).ok()?,
+        };
+        return Some(text);
     }
 
     // EH-13: daemon understood the request but surfaced an error. Transport-level

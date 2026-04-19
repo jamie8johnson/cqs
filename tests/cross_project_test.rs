@@ -45,6 +45,7 @@ fn insert_chunk_and_call(
         window_idx: None,
         parent_id: None,
         parent_type_name: None,
+        parser_version: 0,
     };
     let embedding = cqs::Embedding::new(vec![0.0f32; store.dim()]);
     store.upsert_chunks_batch(&[(chunk, embedding)], None)?;

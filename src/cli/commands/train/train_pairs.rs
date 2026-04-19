@@ -3,7 +3,7 @@
 //! Useful for fine-tuning embedding models on project-specific code.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
@@ -85,12 +85,13 @@ fn build_contrastive_prefix<Mode>(store: &Store<Mode>, chunk: &ChunkSummary) -> 
 
 pub(crate) fn cmd_train_pairs(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
-    output: &str,
+    output: &Path,
     limit: Option<usize>,
     language: Option<&str>,
     contrastive: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_train_pairs", output, contrastive).entered();
+    let _span =
+        tracing::info_span!("cmd_train_pairs", output = %output.display(), contrastive).entered();
     let store = &ctx.store;
     let root = &ctx.root;
 
@@ -130,9 +131,8 @@ pub(crate) fn cmd_train_pairs(
     };
 
     // Open output file
-    let output_path = PathBuf::from(output);
-    let mut file = std::fs::File::create(&output_path)
-        .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
+    let mut file = std::fs::File::create(output)
+        .with_context(|| format!("Failed to create output file: {}", output.display()))?;
 
     let mut written = 0;
     for chunk in chunks.iter().take(total) {
@@ -160,11 +160,7 @@ pub(crate) fn cmd_train_pairs(
         written += 1;
     }
 
-    println!(
-        "Wrote {} training pairs to {}",
-        written,
-        output_path.display()
-    );
+    println!("Wrote {} training pairs to {}", written, output.display());
     if contrastive {
         println!("  (with contrastive prefixes from call graph)");
     }

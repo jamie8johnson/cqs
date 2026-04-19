@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use cqs::{parse_notes, rewrite_notes_file, NoteEntry, NOTES_HEADER};
 
+use crate::cli::definitions::TextJsonArgs;
 use crate::cli::{find_project_root, Cli};
 
 // ---------------------------------------------------------------------------
@@ -54,9 +55,9 @@ pub(crate) enum NotesCommand {
         /// Show only patterns (positive sentiment)
         #[arg(long)]
         patterns: bool,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        /// API-V1.22-2: shared `--json` arg (was inline `json: bool`).
+        #[command(flatten)]
+        output: TextJsonArgs,
         /// Check mentions for staleness (verifies files exist and symbols are in index)
         #[arg(long)]
         check: bool,
@@ -133,13 +134,13 @@ pub(crate) fn cmd_notes(
         NotesCommand::List {
             warnings,
             patterns,
-            json,
+            output,
             check,
         } => {
             let ctx = ctx.ok_or_else(|| {
                 anyhow::anyhow!("Index not found. Run 'cqs init && cqs index' first to list notes.")
             })?;
-            cmd_notes_list(ctx, *warnings, *patterns, *json, *check)
+            cmd_notes_list(ctx, *warnings, *patterns, cli.json || output.json, *check)
         }
         NotesCommand::Add {
             text,
@@ -305,6 +306,10 @@ fn cmd_notes_add(
             println!("Indexed {} notes.", indexed);
         }
         if let Some(err) = index_error {
+            // P2 #72: surface reindex failure on stderr so an interactive
+            // user sees the same signal a `--json` consumer gets via the
+            // `index_error` field.
+            eprintln!("Warning: note saved but reindex failed: {}", err);
             tracing::warn!(error = %err, "Note operation warning");
         }
     }
@@ -406,6 +411,9 @@ fn cmd_notes_update(
             println!("Indexed {} notes.", indexed);
         }
         if let Some(err) = index_error {
+            // P2 #72: see cmd_notes_add — text users need an explicit signal
+            // when reindex fails, not just a tracing::warn buried in logs.
+            eprintln!("Warning: note saved but reindex failed: {}", err);
             tracing::warn!(error = %err, "Note operation warning");
         }
     }
@@ -478,6 +486,9 @@ fn cmd_notes_remove(
             println!("Indexed {} notes.", indexed);
         }
         if let Some(err) = index_error {
+            // P2 #72: see cmd_notes_add — text users need an explicit signal
+            // when reindex fails, not just a tracing::warn buried in logs.
+            eprintln!("Warning: note saved but reindex failed: {}", err);
             tracing::warn!(error = %err, "Note operation warning");
         }
     }

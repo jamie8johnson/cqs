@@ -52,12 +52,37 @@ macro_rules! define_query_categories {
         )+
     ) => {
         /// Query categories for adaptive routing.
+        ///
+        /// `Serialize` emits the canonical snake_case `Display` name.
+        /// `Deserialize` is implemented out-of-macro (immediately below) so
+        /// it routes through `from_snake_case` and honors the alias table —
+        /// required because the on-disk eval JSON carries both `"behavioral"`
+        /// and the historical `"behavioral_search"` for the same variant.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum QueryCategory {
             $(
                 $(#[doc = $doc])*
                 $variant,
             )+
+        }
+
+        impl serde::Serialize for QueryCategory {
+            fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+                ser.collect_str(self)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for QueryCategory {
+            fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+                let s = <std::borrow::Cow<'de, str> as serde::Deserialize<'de>>::deserialize(de)?;
+                Self::from_snake_case(&s).ok_or_else(|| {
+                    serde::de::Error::unknown_variant(
+                        &s,
+                        // Static slice of canonical names — kept in sync by the macro.
+                        &[ $( $name ),+ ],
+                    )
+                })
+            }
         }
 
         impl std::fmt::Display for QueryCategory {

@@ -464,12 +464,16 @@ fn cmd_query_project(ctx: &QueryContext<'_>) -> Result<()> {
     };
 
     // Parent context
-    let parents = if cli.expand {
+    let parents = if cli.expand_parent {
         resolve_parent_context(&results, store, root)
     } else {
         HashMap::new()
     };
-    let parents_ref = if cli.expand { Some(&parents) } else { None };
+    let parents_ref = if cli.expand_parent {
+        Some(&parents)
+    } else {
+        None
+    };
 
     // Staleness warning
     if !cli.quiet && !cli.no_stale_check {
@@ -646,12 +650,16 @@ fn cmd_query_name_only<Mode>(
     };
 
     // Resolve parent context if --expand requested
-    let parents = if cli.expand {
+    let parents = if cli.expand_parent {
         resolve_parent_context(&unified, store, root)
     } else {
         HashMap::new()
     };
-    let parents_ref = if cli.expand { Some(&parents) } else { None };
+    let parents_ref = if cli.expand_parent {
+        Some(&parents)
+    } else {
+        None
+    };
 
     if cli.json {
         display::display_unified_results_json(&unified, query, parents_ref, token_info)?;

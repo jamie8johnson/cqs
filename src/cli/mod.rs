@@ -243,12 +243,12 @@ mod tests {
                 commands::NotesCommand::List {
                     warnings,
                     patterns,
-                    json,
+                    output,
                     check,
                 } => {
                     assert!(!warnings);
                     assert!(!patterns);
-                    assert!(!json);
+                    assert!(!output.json);
                     assert!(!check);
                 }
                 _ => panic!("Expected List subcommand"),

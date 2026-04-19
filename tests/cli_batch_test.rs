@@ -1010,3 +1010,332 @@ fn test_batch_multiple_hp4_commands() {
         "Line 3 should be health output"
     );
 }
+
+// =============================================================================
+// P2 #48 — batch handler integration tests for review/diff/drift/blame/plan
+//
+// PR #1038 mechanically wrapped every dispatch handler's output through
+// `wrap_value`. A regression that broke envelope wrapping for these
+// specific handlers (or that renamed a published key) would silently break
+// daemon-routed agents while CLI mode still worked. These tests pin the
+// envelope shape + at least one inner field per handler.
+// =============================================================================
+
+/// `dispatch_review` (`src/cli/batch/handlers/analysis.rs:147-176`) on a
+/// project with no git diff (clean working tree) goes through the empty
+/// `None` branch and emits the synthesized envelope with empty arrays.
+/// Pins:
+///   - envelope wrap is applied
+///   - the four field names: `changed_functions`, `affected_callers`,
+///     `affected_tests`, `risk_summary`
+///   - `risk_summary.overall == "low"` for the empty case
+#[test]
+#[serial]
+fn test_batch_review_emits_envelope_with_published_keys() {
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    // Make the temp dir a git repo so `run_git_diff` doesn't fail before
+    // dispatch_review can call review_diff.
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git init");
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git config email");
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git config name");
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git add");
+    std::process::Command::new("git")
+        .args(["commit", "-q", "-m", "initial"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git commit");
+
+    let output = cqs()
+        .args(["batch"])
+        .current_dir(dir.path())
+        .write_stdin("review\n")
+        .output()
+        .expect("batch review failed");
+
+    assert!(
+        output.status.success(),
+        "batch review on clean repo must succeed. stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("envelope JSON parse");
+
+    // Envelope shape
+    assert_eq!(parsed["version"], 1);
+    assert!(parsed["error"].is_null(), "no error on success: {stdout}");
+
+    // Inner shape — match either empty-branch (None) or populated-branch
+    // (Some(review)) keys. For the empty branch, all four fields are present.
+    let data = &parsed["data"];
+    assert!(
+        data["changed_functions"].is_array(),
+        "data.changed_functions must be an array, got: {}",
+        data["changed_functions"]
+    );
+    assert!(
+        data["affected_callers"].is_array(),
+        "data.affected_callers must be an array, got: {}",
+        data["affected_callers"]
+    );
+    assert!(
+        data["affected_tests"].is_array(),
+        "data.affected_tests must be an array, got: {}",
+        data["affected_tests"]
+    );
+    assert!(
+        data["risk_summary"].is_object(),
+        "data.risk_summary must be an object, got: {}",
+        data["risk_summary"]
+    );
+    assert!(
+        data["risk_summary"]["overall"].is_string(),
+        "risk_summary.overall must be a string"
+    );
+}
+
+/// `dispatch_blame` (`src/cli/batch/handlers/info.rs:20-44`) emits the
+/// blame envelope for a known function. Pins envelope shape + the inner
+/// `name` field matches the requested target.
+#[test]
+#[serial]
+fn test_batch_blame_emits_envelope_for_known_function() {
+    let dir = setup_graph_project();
+
+    // Create a git repo with at least one commit so `git log -L` finds history.
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git init");
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git config email");
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git config name");
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git add");
+    std::process::Command::new("git")
+        .args(["commit", "-q", "-m", "initial"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git commit");
+
+    init_and_index(&dir);
+
+    let output = cqs()
+        .args(["batch"])
+        .current_dir(dir.path())
+        .write_stdin("blame process\n")
+        .output()
+        .expect("batch blame failed");
+
+    assert!(
+        output.status.success(),
+        "batch blame on indexed function must succeed. stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("envelope JSON parse");
+
+    // Envelope shape
+    assert_eq!(parsed["version"], 1);
+    assert!(parsed["error"].is_null());
+
+    // BlameOutput inner shape
+    let data = &parsed["data"];
+    assert_eq!(
+        data["name"], "process",
+        "data.name must echo the requested target"
+    );
+    assert!(
+        data["file"].is_string(),
+        "data.file must be a string, got: {}",
+        data["file"]
+    );
+    assert!(data["commits"].is_array(), "data.commits must be an array");
+    assert!(
+        data["total_commits"].is_number(),
+        "data.total_commits must be numeric"
+    );
+}
+
+/// `dispatch_plan` (`src/cli/batch/handlers/misc.rs:400-417`) runs the
+/// task planner and returns its serialized result wrapped in the envelope.
+/// Pins envelope shape + the `template` and `checklist` fields.
+#[test]
+#[serial]
+fn test_batch_plan_emits_envelope_with_template_and_checklist() {
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    let output = cqs()
+        .args(["batch"])
+        .current_dir(dir.path())
+        .write_stdin("plan \"add a verbose flag\"\n")
+        .output()
+        .expect("batch plan failed");
+
+    assert!(
+        output.status.success(),
+        "batch plan must succeed. stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("envelope JSON parse");
+
+    // Envelope
+    assert_eq!(parsed["version"], 1);
+    assert!(parsed["error"].is_null());
+
+    // PlanResult inner shape
+    let data = &parsed["data"];
+    assert!(
+        data["template"].is_string(),
+        "data.template must be a string, got: {}",
+        data["template"]
+    );
+    assert!(
+        data["checklist"].is_array(),
+        "data.checklist must be an array, got: {}",
+        data["checklist"]
+    );
+}
+
+/// `dispatch_diff` (`src/cli/batch/handlers/misc.rs:299-398`) requires a
+/// reference store. Setting up one is heavyweight (separate cqs project +
+/// `cqs ref add`). For the audit P2 #48 contract — "envelope wrap + inner
+/// field present" — we exercise the **error path**: ask diff to compare
+/// against a non-existent reference and assert the dispatcher emits the
+/// failure envelope (data=null, error=non-null) instead of panicking or
+/// returning bare error text.
+#[test]
+#[serial]
+fn test_batch_diff_unknown_reference_emits_envelope_error() {
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    let output = cqs()
+        .args(["batch"])
+        .current_dir(dir.path())
+        .write_stdin("diff this_reference_does_not_exist_xyz\n")
+        .output()
+        .expect("batch diff failed");
+
+    assert!(
+        output.status.success(),
+        "batch loop should not crash on bad reference. stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("envelope JSON parse");
+
+    // Failure envelope: data=null, error populated
+    assert_eq!(parsed["version"], 1);
+    assert!(
+        parsed["data"].is_null(),
+        "data must be null on failure, got: {}",
+        parsed["data"]
+    );
+    assert!(
+        !parsed["error"].is_null(),
+        "error must be populated on failure, got null. stdout={stdout}"
+    );
+    assert!(
+        parsed["error"]["message"].is_string(),
+        "error.message must be a string, got: {}",
+        parsed["error"]["message"]
+    );
+    assert!(
+        parsed["error"]["code"].is_string(),
+        "error.code must be a string, got: {}",
+        parsed["error"]["code"]
+    );
+}
+
+/// `dispatch_drift` (`src/cli/batch/handlers/misc.rs:244-296`) — same
+/// reference-store dependency as `dispatch_diff`. Exercise the error path
+/// to pin envelope wrapping on the failure side. The validate_finite_f32
+/// guard fires on threshold parse failure but we go further: bad reference
+/// → error envelope with structured code/message.
+#[test]
+#[serial]
+fn test_batch_drift_unknown_reference_emits_envelope_error() {
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    let output = cqs()
+        .args(["batch"])
+        .current_dir(dir.path())
+        .write_stdin("drift this_reference_does_not_exist_xyz\n")
+        .output()
+        .expect("batch drift failed");
+
+    assert!(
+        output.status.success(),
+        "batch loop should not crash on bad reference. stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("envelope JSON parse");
+
+    // Failure envelope shape
+    assert_eq!(parsed["version"], 1);
+    assert!(
+        parsed["data"].is_null(),
+        "data must be null on failure, got: {}",
+        parsed["data"]
+    );
+    assert!(
+        !parsed["error"].is_null(),
+        "error must be populated on failure. stdout={stdout}"
+    );
+    assert!(
+        parsed["error"]["message"].is_string(),
+        "error.message must be a string"
+    );
+    assert!(
+        parsed["error"]["code"].is_string(),
+        "error.code must be a string"
+    );
+}

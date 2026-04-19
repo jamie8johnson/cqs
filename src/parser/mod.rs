@@ -10,7 +10,7 @@
 
 pub mod aspx;
 mod calls;
-mod chunk;
+pub(crate) mod chunk;
 pub(crate) mod injection;
 pub mod l5x;
 pub mod markdown;
@@ -33,6 +33,21 @@ pub(crate) const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
 /// Returned by `parse_file_all()` and `parse_injected_all()` which extract
 /// everything in a single file read + tree-sitter parse.
 pub type ParseAllResult = (Vec<Chunk>, Vec<FunctionCalls>, Vec<ChunkTypeRefs>);
+
+/// Combined parse result PLUS per-chunk call sites.
+/// Returned by [`Parser::parse_file_all_with_chunk_calls`] and used by the
+/// indexing pipeline (`pipeline::parser_stage()`) to populate the per-chunk
+/// `calls` table without re-parsing each chunk's body. The fourth element
+/// pairs each extracted [`CallSite`] with the originating chunk's id (using
+/// the path-based id format produced by `extract_chunk`; the pipeline rewrites
+/// these to relative-path ids before persisting). See P2 #63 in
+/// `docs/audit-findings.md`.
+pub type ParseAllWithChunkCallsResult = (
+    Vec<Chunk>,
+    Vec<FunctionCalls>,
+    Vec<ChunkTypeRefs>,
+    Vec<(String, CallSite)>,
+);
 
 /// Maximum chunk content size (100 KB). Larger chunks are skipped.
 pub(crate) const MAX_CHUNK_BYTES: usize = 100_000;
@@ -358,9 +373,52 @@ impl Parser {
     /// file read + double tree-sitter parse. Single file read, single outer parse,
     /// two query cursor passes on the same tree, single injection parse.
     /// Returns `(chunks, function_calls, chunk_type_refs)`.
-    /// Used by `pipeline::parser_stage()` for single-pass indexing and
-    /// `watch::reindex_files()` for incremental updates.
+    /// Used by `watch::reindex_files()` for incremental updates. The indexing
+    /// pipeline calls [`Self::parse_file_all_with_chunk_calls`] instead so it
+    /// can populate the per-chunk `calls` table from the same Pass 2 walk.
     pub fn parse_file_all(&self, path: &Path) -> Result<ParseAllResult, ParserError> {
+        let (chunks, calls, types, _chunk_calls) = self.parse_file_all_inner(path, false)?;
+        Ok((chunks, calls, types))
+    }
+
+    /// Like [`Self::parse_file_all`], but also returns one
+    /// `(chunk_id, CallSite)` pair for every call extracted during Pass 2.
+    /// Eliminates the redundant `extract_calls_from_chunk(chunk)` loop the
+    /// indexing pipeline used to run after `parse_file_all` (one extra
+    /// tree-sitter parse per chunk; ~14k extra parses per cqs reindex). See
+    /// P2 #63 in `docs/audit-findings.md`.
+    ///
+    /// The chunk ids returned here use the absolute-path format produced by
+    /// `extract_chunk` (`{path}:{line_start}:{hash_prefix}`). The indexing
+    /// pipeline rewrites these to relative-path ids via the same id_map it
+    /// already builds for the chunks themselves, so the chunk_calls list and
+    /// the chunks list stay in sync.
+    ///
+    /// **Duplication note (P2 #63):** the body delegates to
+    /// `parse_file_all_inner` with `want_chunk_calls = true`, which also
+    /// powers `parse_file_all`. Watch (`src/cli/watch.rs`) still uses
+    /// `parse_file_all` and runs its own `extract_calls_from_chunk` per chunk;
+    /// collapsing that into this method is a separate refactor — Watch's
+    /// parser stage is rayon-parallel and changing its call shape requires
+    /// more work than the indexing-pipeline path.
+    pub fn parse_file_all_with_chunk_calls(
+        &self,
+        path: &Path,
+    ) -> Result<ParseAllWithChunkCallsResult, ParserError> {
+        self.parse_file_all_inner(path, true)
+    }
+
+    /// Shared implementation for [`Self::parse_file_all`] and
+    /// [`Self::parse_file_all_with_chunk_calls`]. The `want_chunk_calls` flag
+    /// guards the per-chunk-id bookkeeping (a `(start_byte, end_byte)` →
+    /// `chunk.id` map plus the per-call emit) so callers that only need the
+    /// existing 3-element shape pay nothing extra. When `want_chunk_calls` is
+    /// `false` the returned 4th element is always empty.
+    fn parse_file_all_inner(
+        &self,
+        path: &Path,
+        want_chunk_calls: bool,
+    ) -> Result<ParseAllWithChunkCallsResult, ParserError> {
         let _span = tracing::info_span!("parse_file_all", path = %path.display()).entered();
 
         // Check file size to prevent OOM on huge files
@@ -371,7 +429,7 @@ impl Parser {
                     path = %path.display(),
                     "Skipping large file (> 50MB limit)"
                 );
-                return Ok((vec![], vec![], vec![]));
+                return Ok((vec![], vec![], vec![], vec![]));
             }
             Ok(_) => {}
             Err(e) => return Err(e.into()),
@@ -382,7 +440,7 @@ impl Parser {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
                 tracing::warn!(path = %path.display(), "Skipping non-UTF8 file");
-                return Ok((vec![], vec![], vec![]));
+                return Ok((vec![], vec![], vec![], vec![]));
             }
             Err(e) => return Err(e.into()),
         };
@@ -398,9 +456,15 @@ impl Parser {
 
         // Grammar-less languages use custom parsers (issue #954):
         // routing is declarative via `custom_all_parser`, not a match arm.
+        // For these the chunk_calls path falls back to per-chunk
+        // `extract_calls_from_chunk` because Markdown's per-chunk reference
+        // scan is line-based (no tree-sitter cost) and custom parsers like
+        // ASPX delegate to inner-language tree-sitter parsers anyway —
+        // collapsing those into the chunked walk would require refactoring
+        // each custom parser. Same audit gap as Watch (`P2 #63`).
         if language.def().grammar.is_none() {
-            return match language.def().custom_all_parser {
-                Some(f) => f(&source, path, self),
+            let (chunks, calls, types) = match language.def().custom_all_parser {
+                Some(f) => f(&source, path, self)?,
                 None => {
                     // Markdown (and any future grammar-less language
                     // that opts into the default line-based parser)
@@ -408,9 +472,21 @@ impl Parser {
                     let calls = crate::parser::markdown::parse_markdown_references(&source, path)?;
                     let fenced = crate::parser::markdown::extract_fenced_blocks(&source);
                     chunks.extend(self.parse_fenced_blocks(&fenced, &source, path));
-                    Ok((chunks, calls, vec![]))
+                    (chunks, calls, vec![])
                 }
             };
+            let chunk_calls = if want_chunk_calls {
+                let mut sink: Vec<(String, CallSite)> = Vec::new();
+                for chunk in &chunks {
+                    for call in self.extract_calls_from_chunk(chunk) {
+                        sink.push((chunk.id.clone(), call));
+                    }
+                }
+                sink
+            } else {
+                Vec::new()
+            };
+            return Ok((chunks, calls, types, chunk_calls));
         }
 
         // Single tree-sitter parse
@@ -434,8 +510,26 @@ impl Parser {
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(chunk_query, tree.root_node(), source.as_bytes());
         let mut chunks = Vec::new();
+        // Map (start_byte, end_byte) -> chunk.id for non-discarded chunks.
+        // Built only when chunk_calls are requested so the no-chunk-calls
+        // path (Watch) pays nothing. Pass 2 looks up the chunk id by the
+        // func_node's byte_range and emits (chunk_id, CallSite) pairs
+        // without re-parsing the chunk body — eliminating the per-chunk
+        // tree-sitter re-parse the indexing pipeline used to run.
+        let mut byte_range_to_chunk_id: HashMap<(usize, usize), String> = HashMap::new();
 
         while let Some(m) = matches.next() {
+            // Capture the def node up-front so we can record its byte_range
+            // alongside the chunk id once we know the chunk survived the
+            // size + post_process filters. `extract_definition_node` is the
+            // same helper Pass 2 (and post_process below) use, so the
+            // byte_range we record is exactly what Pass 2's `func_node`
+            // produces — guaranteeing a hit on lookup.
+            let def_node = if want_chunk_calls {
+                extract_definition_node(m, chunk_query)
+            } else {
+                None
+            };
             match self.extract_chunk(&source, m, chunk_query, language, path) {
                 Ok(mut chunk) => {
                     if chunk.content.len() > MAX_CHUNK_BYTES {
@@ -460,6 +554,12 @@ impl Parser {
                             }
                         }
                     }
+                    if want_chunk_calls {
+                        if let Some(node) = def_node {
+                            let r = node.byte_range();
+                            byte_range_to_chunk_id.insert((r.start, r.end), chunk.id.clone());
+                        }
+                    }
                     chunks.push(chunk);
                 }
                 Err(e) => {
@@ -474,6 +574,10 @@ impl Parser {
 
         let mut call_results = Vec::new();
         let mut type_results = Vec::new();
+        // PERF P2 #63: emit (chunk_id, CallSite) pairs from the same Pass 2
+        // walk that builds `call_results`. The indexing pipeline used to
+        // re-parse every chunk body afterwards just to populate this list.
+        let mut chunk_calls: Vec<(String, CallSite)> = Vec::new();
         let mut call_cursor = tree_sitter::QueryCursor::new();
         let mut calls = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -537,6 +641,37 @@ impl Parser {
             calls.retain(|c| seen.insert(c.callee_name.clone()));
 
             if !calls.is_empty() {
+                if want_chunk_calls {
+                    if let Some(chunk_id) =
+                        byte_range_to_chunk_id.get(&(byte_range.start, byte_range.end))
+                    {
+                        // Match the legacy `extract_calls_from_chunk(chunk)`
+                        // behavior: per-chunk extraction passed line_offset=0
+                        // against the chunk content alone, so chunk_calls
+                        // line numbers were 1-indexed RELATIVE to the chunk.
+                        // Pass-2 here scans the whole file and produces
+                        // ABSOLUTE line numbers, so we subtract `line_start`
+                        // (saturating, .max(1)) to get the same relative
+                        // numbering downstream consumers (the `calls`
+                        // SQLite table) already expect.
+                        for call in &calls {
+                            let rel_line = call
+                                .line_number
+                                .saturating_sub(line_start.saturating_sub(1))
+                                .max(1);
+                            chunk_calls.push((
+                                chunk_id.clone(),
+                                CallSite {
+                                    callee_name: call.callee_name.clone(),
+                                    line_number: rel_line,
+                                },
+                            ));
+                        }
+                    }
+                    // No matching chunk id ⇒ Pass 1 discarded the chunk
+                    // (oversize / post_process). The previous pipeline loop
+                    // also skipped these because it iterated `&chunks`.
+                }
                 call_results.push(FunctionCalls {
                     name: name.clone(),
                     line_start,
@@ -582,6 +717,25 @@ impl Parser {
                     {
                         if !inner_chunks.is_empty() {
                             let before = chunks.len();
+                            // Identify outer chunk ids about to be dropped
+                            // so we can also drop their entries from
+                            // chunk_calls. Done before retain so we don't
+                            // iterate twice.
+                            let drop_ids: std::collections::HashSet<String> = if want_chunk_calls {
+                                chunks
+                                    .iter()
+                                    .filter(|c| {
+                                        injection::chunk_within_container(
+                                            c.line_start,
+                                            c.line_end,
+                                            &group.container_lines,
+                                        )
+                                    })
+                                    .map(|c| c.id.clone())
+                                    .collect()
+                            } else {
+                                std::collections::HashSet::new()
+                            };
                             chunks.retain(|c| {
                                 !injection::chunk_within_container(
                                     c.line_start,
@@ -596,6 +750,21 @@ impl Parser {
                                 added = inner_chunks.len(),
                                 "Replaced outer chunks with injection results"
                             );
+                            if want_chunk_calls {
+                                // Drop outer chunk_calls that lived inside
+                                // this injection container (their chunks are
+                                // gone) and emit per-inner-chunk calls.
+                                // Inner chunks are typically small (script
+                                // blocks inside HTML/ASPX) and few per file,
+                                // so the cost is negligible compared to the
+                                // outer hot-path saving.
+                                chunk_calls.retain(|(id, _)| !drop_ids.contains(id));
+                                for chunk in &inner_chunks {
+                                    for call in self.extract_calls_from_chunk(chunk) {
+                                        chunk_calls.push((chunk.id.clone(), call));
+                                    }
+                                }
+                            }
                             chunks.extend(inner_chunks);
                         }
                         if !inner_calls.is_empty() || !inner_types.is_empty() {
@@ -631,7 +800,7 @@ impl Parser {
             }
         }
 
-        Ok((chunks, call_results, type_results))
+        Ok((chunks, call_results, type_results, chunk_calls))
     }
 
     /// Retrieves the list of file extensions supported by the language registry.
@@ -903,5 +1072,94 @@ mod tests {
             result.is_err(),
             "parse_file should error on nonexistent file"
         );
+    }
+
+    /// P2 #63: property test pinning the equivalence between
+    /// `parse_file_all_with_chunk_calls` (Pass-2 emit) and the previous
+    /// per-chunk `extract_calls_from_chunk` loop the indexing pipeline used
+    /// to run. For every (chunk_id, callee_name, line_number) triple the new
+    /// method emits, the old per-chunk extractor must emit the same triple
+    /// against the same chunk — and vice versa. Run on a small Rust fixture
+    /// covering multiple chunks, dedup boundaries, and the
+    /// `should_skip_callee` filter.
+    #[test]
+    fn p2_63_chunk_calls_match_per_chunk_extraction() {
+        let parser = Parser::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("p2_63_fixture.rs");
+        // Three functions with: (a) plain calls, (b) duplicate callees that
+        // must dedup within a chunk, (c) self/this noise that should_skip
+        // strips, (d) qualified path calls.
+        let source = "\
+fn alpha() {
+    helper();
+    helper(); // dup — must collapse to one entry
+    util::compute();
+}
+
+fn beta() {
+    self.field();
+    other.method();
+    real_call();
+}
+
+struct Holder;
+
+impl Holder {
+    fn gamma(&self) {
+        Self::associated();
+        another_call();
+    }
+}
+";
+        std::fs::write(&path, source).unwrap();
+
+        // New path
+        let (chunks_new, _calls, _types, chunk_calls_new) =
+            parser.parse_file_all_with_chunk_calls(&path).unwrap();
+
+        // Old path: parse_file_all (no chunk_calls) + per-chunk extraction
+        let (chunks_old, _calls_old, _types_old) = parser.parse_file_all(&path).unwrap();
+
+        // Chunks themselves must match exactly (same Pass 1 walk)
+        assert_eq!(
+            chunks_new.len(),
+            chunks_old.len(),
+            "chunk count must match between parse_file_all and parse_file_all_with_chunk_calls"
+        );
+        for (n, o) in chunks_new.iter().zip(chunks_old.iter()) {
+            assert_eq!(n.id, o.id, "chunk id mismatch");
+        }
+
+        // Build the legacy per-chunk shape for comparison.
+        let mut chunk_calls_old: Vec<(String, String, u32)> = Vec::new();
+        for chunk in &chunks_old {
+            for call in parser.extract_calls_from_chunk(chunk) {
+                chunk_calls_old.push((chunk.id.clone(), call.callee_name, call.line_number));
+            }
+        }
+
+        let mut chunk_calls_new_shape: Vec<(String, String, u32)> = chunk_calls_new
+            .iter()
+            .map(|(id, c)| (id.clone(), c.callee_name.clone(), c.line_number))
+            .collect();
+
+        // Order may differ between the two paths (Pass-2 emits per-match,
+        // per-chunk extraction emits per-chunk), so compare as sets.
+        chunk_calls_old.sort();
+        chunk_calls_new_shape.sort();
+        assert_eq!(
+            chunk_calls_new_shape, chunk_calls_old,
+            "Pass-2 chunk_calls must equal per-chunk extract_calls_from_chunk loop\nnew: {:#?}\nold: {:#?}",
+            chunk_calls_new_shape, chunk_calls_old
+        );
+
+        // Sanity: skip filter actually fires (no `self`/`Self` callees).
+        for (_, name, _) in &chunk_calls_new_shape {
+            assert!(
+                !matches!(name.as_str(), "self" | "Self" | "this" | "super"),
+                "should_skip_callee leak: {name}"
+            );
+        }
     }
 }

@@ -100,6 +100,7 @@ pub(super) fn extract_table_chunks(ctx: &TableContext<'_>, chunks: &mut Vec<Chun
                 parent_id: Some(ctx.section_id.to_string()),
                 window_idx: None,
                 parent_type_name: None,
+                parser_version: super::super::chunk::PARSER_VERSION,
             });
         } else {
             // Split row-wise with headers preserved
@@ -176,6 +177,7 @@ fn emit_table_window(
         parent_id: Some(ctx.parent_id.to_string()),
         window_idx: Some(window_idx),
         parent_type_name: None,
+        parser_version: super::super::chunk::PARSER_VERSION,
     });
 }
 

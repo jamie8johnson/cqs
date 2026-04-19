@@ -136,7 +136,29 @@ pub(crate) fn try_acquire_index_lock(cqs_dir: &Path) -> Result<Option<std::fs::F
 }
 
 /// Acquire file lock to prevent concurrent indexing
-/// Writes PID to lock file for stale lock detection
+/// Writes PID to lock file for stale lock detection.
+///
+/// P2 #31 (post-v1.27.0 audit): does NOT remove the lock file inode on
+/// stale-PID detection. Removing the inode races with peers in three windows:
+///   1. PID lookup is approximate on Linux (zombies / PID namespaces /
+///      pid recycling). `process_exists(stale_pid)` can return false even
+///      though a freshly-spawned cqs process just claimed that PID. If we
+///      then unlink the lock file, both processes get fresh inodes and the
+///      kernel locks them independently — two writers, same DB.
+///   2. Between `process_exists` and `remove_file` the genuine owner could
+///      have crashed and been replaced by a new owner that legitimately
+///      acquired the lock. Deleting *their* file gives the next caller a
+///      fresh inode they can lock without contention. Two writers.
+///   3. On WSL `/mnt/c` (NTFS over 9P) `flock` is purely advisory and PID
+///      lookup is unreliable across Windows-side cqs invocations launched
+///      via `powershell.exe`.
+///
+/// Instead, on stale-PID detection we drop the failed lock_file (releasing
+/// the underlying fd) and re-attempt `try_lock` against a freshly-opened
+/// handle. The kernel locks per-inode, not per-path, so this picks up any
+/// transient release without ever unlinking the file. If the second attempt
+/// also fails we return a clearer error mentioning the PID and the manual
+/// remediation path.
 pub(crate) fn acquire_index_lock(cqs_dir: &Path) -> Result<std::fs::File> {
     let lock_path = cqs_dir.join("index.lock");
     let mut retried = false;
@@ -153,25 +175,37 @@ pub(crate) fn acquire_index_lock(cqs_dir: &Path) -> Result<std::fs::File> {
             Err(_) => {
                 // Lock is held - check if the owning process is still alive
                 if !retried {
-                    if let Ok(content) = std::fs::read_to_string(&lock_path) {
-                        if let Ok(pid) = content.trim().parse::<u32>() {
-                            if !process_exists(pid) {
-                                // Stale lock - process is dead, remove and retry once
-                                tracing::warn!(
-                                    "Removing stale lock (PID {} no longer exists)",
-                                    pid
-                                );
-                                drop(lock_file);
-                                std::fs::remove_file(&lock_path)?;
-                                retried = true;
-                                continue;
-                            }
+                    let stale_pid = std::fs::read_to_string(&lock_path)
+                        .ok()
+                        .and_then(|c| c.trim().parse::<u32>().ok());
+                    if let Some(pid) = stale_pid {
+                        if !process_exists(pid) {
+                            // Stale lock by best-effort PID check: drop the
+                            // failed handle and try once more against a
+                            // freshly-opened fd. NEVER unlink the file —
+                            // see the function-level doc comment.
+                            tracing::warn!(
+                                pid,
+                                "Lock file PID does not appear to exist; retrying lock without unlinking"
+                            );
+                            drop(lock_file);
+                            retried = true;
+                            continue;
                         }
                     }
                 }
+                let pid_msg = match std::fs::read_to_string(&lock_path)
+                    .ok()
+                    .and_then(|c| c.trim().parse::<u32>().ok())
+                {
+                    Some(pid) => format!(" (PID {pid} may be stale)"),
+                    None => String::new(),
+                };
                 bail!(
-                    "Another cqs process is indexing (see .cqs/index.lock). \
-                     Hint: Wait for it to finish, or delete .cqs/index.lock if the process crashed."
+                    "Another cqs process holds the index lock at {}{pid_msg}. \
+                     Hint: wait for it to finish, or manually delete the lock file \
+                     only if you are confident no other cqs process is running.",
+                    lock_path.display()
                 )
             }
         }

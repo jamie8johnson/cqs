@@ -72,6 +72,7 @@ pub mod store;
 pub mod train_data;
 
 pub mod ci;
+pub mod eval;
 pub mod health;
 pub mod reranker;
 pub mod suggest;

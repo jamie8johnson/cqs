@@ -161,6 +161,21 @@ pub(super) fn extract_member_method_names(content: &str, language: Language) -> 
 }
 
 /// Try to extract a method name from a single line of code.
+///
+/// Strategy:
+/// 1. Skip comments / decorators / empty lines.
+/// 2. Strip C-family visibility / modifier prefixes (`pub`, `public`, `static`, …).
+/// 3. Iterate `LanguageDef::function_keywords` and try `strip_prefix("kw ")`
+///    against the modifier-stripped line. Apply `LanguageDef::receiver_strip`
+///    after the keyword match for languages that interpose a receiver
+///    (Go: `func (r *T) Name(` → `Name(`).
+/// 4. Fall back to the generic `name(` heuristic for languages that have
+///    no fixed function-introducer keyword (`function_keywords: &[]`).
+///
+/// Adding a new language with a new function-introducer keyword (e.g.,
+/// Nim `proc`, VB.NET `sub`) is one edit at the language row in
+/// `src/language/languages.rs` — populate `function_keywords` and (if
+/// the language has a method receiver shape) `receiver_strip`.
 fn extract_method_name_from_line(line: &str, language: Language) -> Option<String> {
     // Skip comments, empty, decorators
     if line.is_empty()
@@ -175,7 +190,7 @@ fn extract_method_name_from_line(line: &str, language: Language) -> Option<Strin
 
     // EX-35: Visibility/modifier prefixes are hardcoded here rather than in LanguageDef
     // because: (1) the set is small and shared across most C-family languages,
-    // (2) LanguageDef is macro-generated for 51 languages — adding per-language
+    // (2) LanguageDef is macro-generated for 52 languages — adding per-language
     // prefix arrays would bloat the macro for negligible benefit, and (3) these
     // prefixes are only used in this one function. If a new language needs
     // language-specific modifiers not covered here, consider moving to LanguageDef then.
@@ -201,86 +216,64 @@ fn extract_method_name_from_line(line: &str, language: Language) -> Option<Strin
         .trim_start_matches("async ")
         .trim_start_matches("final ");
 
-    match language {
-        Language::Rust => {
-            if let Some(rest) = work.strip_prefix("fn ") {
-                return rest.split('(').next().map(|s| s.trim().to_string());
-            }
+    let lang_def = language.def();
+
+    // Try every function-introducer keyword for this language. Adding a new
+    // keyword (e.g., Nim `proc`, VB.NET `sub`) is now a one-line edit at
+    // the language row in `src/language/languages.rs` instead of a new arm
+    // here. The first match wins.
+    for kw in lang_def.function_keywords {
+        let prefix = format!("{kw} ");
+        if let Some(rest) = work.strip_prefix(prefix.as_str()) {
+            // Optional receiver strip (Go: `func (r *T) Name(` → `Name(`).
+            let rest = match lang_def.receiver_strip {
+                Some(strip) => strip(rest),
+                None => rest,
+            };
+            // Most languages: split on '(' or whitespace; take the head.
+            // Languages without an opening paren (Ruby `def name`, Perl
+            // `sub name {`) hit the whitespace split.
+            return rest
+                .split(['(', ' '])
+                .next()
+                .map(|s| s.trim().trim_end_matches(['{', ':']).to_string())
+                .filter(|s| !s.is_empty());
         }
-        Language::Python | Language::Ruby => {
-            if let Some(rest) = work.strip_prefix("def ") {
-                return rest
-                    .split('(')
-                    .next()
-                    .or_else(|| rest.split_whitespace().next())
-                    .map(|s| s.trim().to_string());
-            }
-        }
-        Language::Go => {
-            if let Some(rest) = work.strip_prefix("func ") {
-                // func (r *T) Name( or func Name(
-                let rest = if rest.starts_with('(') {
-                    // Skip receiver: func (r *T) Name(
-                    rest.find(") ").map(|i| &rest[i + 2..]).unwrap_or(rest)
-                } else {
-                    rest
-                };
-                return rest.split('(').next().map(|s| s.trim().to_string());
-            }
-        }
-        _ => {
-            // Generic: look for fn/def/func prefix, or name( pattern
-            if let Some(rest) = work.strip_prefix("fn ") {
-                return rest.split('(').next().map(|s| s.trim().to_string());
-            }
-            if let Some(rest) = work.strip_prefix("def ") {
-                return rest.split('(').next().map(|s| s.trim().to_string());
-            }
-            if let Some(rest) = work.strip_prefix("func ") {
-                return rest.split('(').next().map(|s| s.trim().to_string());
-            }
-            if let Some(rest) = work.strip_prefix("fun ") {
-                // Kotlin
-                return rest.split('(').next().map(|s| s.trim().to_string());
-            }
-            if let Some(rest) = work.strip_prefix("sub ") {
-                // Perl, VB.NET
-                return rest.split(['(', ' ']).next().map(|s| s.trim().to_string());
-            }
-            if let Some(rest) = work.strip_prefix("proc ") {
-                // Elixir (defp), Nim, Tcl
-                return rest.split('(').next().map(|s| s.trim().to_string());
-            }
-            if let Some(rest) = work.strip_prefix("method ") {
-                // Raku, some OOP
-                return rest.split('(').next().map(|s| s.trim().to_string());
-            }
-            // JS/TS/Java/C#: word( pattern after stripping modifiers
-            // But need to distinguish from field declarations, so require (
-            if let Some(paren_pos) = work.find('(') {
-                let before = work[..paren_pos].trim();
-                // Could be "returnType methodName" or just "methodName"
-                let name = before.split_whitespace().last().unwrap_or(before);
-                if !name.is_empty()
-                    && name.starts_with(|c: char| c.is_alphabetic() || c == '_')
-                    && !name.contains('{')
-                    && !name.contains('}')
-                    && !name.contains('=')
-                    && name != "if"
-                    && name != "for"
-                    && name != "while"
-                    && name != "switch"
-                    && name != "catch"
-                    && name != "return"
-                    && name != "new"
-                    && name != "class"
-                    && name != "interface"
-                    && name != "struct"
-                    && name != "enum"
-                {
-                    return Some(name.to_string());
-                }
-            }
+    }
+
+    // Languages without a function-introducer keyword (markup, config,
+    // SQL, Java/C#/JS/TS — `returnType name()` syntax): try the generic
+    // `name(` heuristic for C-family declarations. Languages with explicit
+    // keywords have already returned above; the fall-through here would
+    // otherwise mis-extract `if (cond)` as a method name on those.
+    if !lang_def.function_keywords.is_empty() {
+        return None;
+    }
+
+    // JS/TS/Java/C#: word( pattern after stripping modifiers.
+    // But need to distinguish from field declarations, so require '('.
+    if let Some(paren_pos) = work.find('(') {
+        let before = work[..paren_pos].trim();
+        // Could be "returnType methodName" or just "methodName"
+        let name = before.split_whitespace().last().unwrap_or(before);
+        if !name.is_empty()
+            && name.starts_with(|c: char| c.is_alphabetic() || c == '_')
+            && !name.contains('{')
+            && !name.contains('}')
+            && !name.contains('=')
+            && name != "if"
+            && name != "for"
+            && name != "while"
+            && name != "switch"
+            && name != "catch"
+            && name != "return"
+            && name != "new"
+            && name != "class"
+            && name != "interface"
+            && name != "struct"
+            && name != "enum"
+        {
+            return Some(name.to_string());
         }
     }
     None

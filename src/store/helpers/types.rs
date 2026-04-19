@@ -65,6 +65,12 @@ impl From<&ChunkSummary> for Chunk {
             parent_id: cs.parent_id.clone(),
             window_idx: cs.window_idx.map(|i| i as u32),
             parent_type_name: cs.parent_type_name.clone(),
+            // TODO(P2 #29 / Agent D): plumb `parser_version` through
+            // `ChunkSummary` and the store layer so this conversion preserves
+            // the original parser_version. Defaulting to 0 here means
+            // round-tripped chunks lose the version stamp; only the parser
+            // -emitted Chunks via `extract_chunk` carry the live value.
+            parser_version: 0,
         }
     }
 }

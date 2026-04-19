@@ -12,6 +12,7 @@ use cqs::normalize_path;
 use cqs::Embedder;
 use cqs::{search_across_projects, ProjectRegistry};
 
+use crate::cli::definitions::TextJsonArgs;
 use crate::cli::Cli;
 
 // ---------------------------------------------------------------------------
@@ -60,9 +61,9 @@ pub(crate) enum ProjectCommand {
         /// Min similarity threshold
         #[arg(short = 't', long, default_value = "0.3")]
         threshold: f32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        /// API-V1.22-2: shared `--json` arg (was inline `json: bool`).
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
 }
 
@@ -119,7 +120,7 @@ pub(crate) fn cmd_project(
             query,
             limit,
             threshold,
-            json,
+            output,
         } => {
             let embedder = Embedder::new(model_config.clone())?;
             let query_embedding = embedder.embed_query(query)?;
@@ -129,7 +130,7 @@ pub(crate) fn cmd_project(
             // Top-level `--json` always wins (mirrors `cmd_model` at
             // `src/cli/commands/infra/model.rs:113`). `cqs --json project search foo`
             // must emit envelope JSON without `--json` after the subcommand.
-            let json = cli.json || *json;
+            let json = cli.json || output.json;
             if json {
                 let json_results: Vec<_> = results
                     .iter()

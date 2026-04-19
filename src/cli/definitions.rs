@@ -225,9 +225,14 @@ pub struct Cli {
     #[arg(short = 'C', long)]
     pub context: Option<usize>,
 
-    /// Expand results with parent context (small-to-big retrieval)
-    #[arg(long)]
-    pub expand: bool,
+    /// Expand search results with their parent type/module context (small-to-big retrieval).
+    ///
+    /// API-V1.22-3: renamed from `--expand` to `--expand-parent` to disambiguate
+    /// from `gather --expand <N>` (graph depth, `usize`). Same flag name with two
+    /// incompatible types had bitten agents that batched both commands. The old
+    /// `--expand` form is no longer accepted; switch scripts to `--expand-parent`.
+    #[arg(long = "expand-parent")]
+    pub expand_parent: bool,
 
     /// Search only this reference index (skip project index)
     #[arg(long = "ref")]
@@ -301,9 +306,11 @@ pub(super) enum Commands {
         /// model/daemon state — `--verbose` surfaces the cause in one call.
         #[arg(long)]
         verbose: bool,
-        /// Emit `--verbose` output as JSON instead of text. Implies `--verbose`.
+        /// Emit a single JSON document on stdout containing both the check
+        /// results and the verbose introspection. Implies `--verbose`.
         ///
-        /// Ignored without `--verbose` (the default check format is text-only).
+        /// Colored human-readable check progress is routed to stderr in this
+        /// mode so `cqs doctor --json | jq` works.
         #[arg(long)]
         json: bool,
     },
@@ -340,6 +347,14 @@ pub(super) enum Commands {
         /// Git ref to diff against (default: unstaged changes)
         #[arg(long)]
         base: Option<String>,
+        /// Read diff from stdin instead of running git.
+        ///
+        /// API-V1.22-6: brings `affected` in line with `review`, `ci`, and
+        /// `impact-diff`, which already accept `--stdin`. Lets agents pipe a
+        /// captured diff (`git diff main | cqs affected --stdin --json`)
+        /// without re-shelling git.
+        #[arg(long)]
+        stdin: bool,
         #[command(flatten)]
         output: TextJsonArgs,
     },
@@ -614,7 +629,12 @@ pub(super) enum Commands {
         /// Overwrite existing .md files
         #[arg(long)]
         overwrite: bool,
-        /// Preview conversions without writing files
+        /// Preview conversions (default writes the .md files).
+        ///
+        /// Audit P2 #38: per the CONTRIBUTING "Dry-Run vs Apply" rule, side-effect
+        /// commands (`index`, `convert`) default to mutating; analyser commands
+        /// (`doctor`, `suggest`) default to read-only and require `--fix`/`--apply`
+        /// to mutate. TODO(docs-agent): document this rule in CONTRIBUTING.md.
         #[arg(long)]
         dry_run: bool,
         /// Cleaning rule tags (comma-separated, e.g. "aveva,generic") [default: all]
@@ -641,9 +661,12 @@ pub(super) enum Commands {
         /// Output JSONL file path
         #[arg(long)]
         output: std::path::PathBuf,
-        /// Maximum commits to process per repo (0 = unlimited)
-        #[arg(long, default_value = "0")]
-        max_commits: usize,
+        /// Maximum commits to process per repo (omit for unlimited).
+        ///
+        /// API-V1.22-13: `Option<usize>` (`None` = unlimited). Was `usize` with
+        /// `0` as a magic sentinel — now matches `TrainPairs::limit`.
+        #[arg(long)]
+        max_commits: Option<usize>,
         /// Minimum commit message length to include
         #[arg(long, default_value = "15")]
         min_msg_len: usize,
@@ -662,10 +685,13 @@ pub(super) enum Commands {
     },
     /// Extract (NL, code) training pairs from index as JSONL
     TrainPairs {
-        /// Output JSONL file path
+        /// Output JSONL file path.
+        ///
+        /// API-V1.22-13: `PathBuf` (was `String`) so the same file-path concept
+        /// uses one type across both training commands.
         #[arg(long)]
-        output: String,
-        /// Max pairs to extract
+        output: std::path::PathBuf,
+        /// Max pairs to extract (omit for unlimited)
         #[arg(long)]
         limit: Option<usize>,
         /// Filter by language (e.g., "Rust", "Python")
@@ -958,5 +984,46 @@ mod tests {
 
         let cli = Cli::try_parse_from(["cqs", "stale"]).unwrap();
         assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Daemon);
+    }
+
+    /// API-V1.22-3: top-level `--expand-parent` (bool, parent context) and
+    /// `gather --expand <N>` (usize, graph depth) must parse independently
+    /// without colliding. Pinning both spellings here so a future revert
+    /// can't silently re-introduce the same-name-different-type ambiguity.
+    #[test]
+    fn cli_expand_parent_distinct_from_gather_expand() {
+        use clap::Parser;
+        // Top-level flag is `--expand-parent`, no value.
+        let cli = Cli::try_parse_from(["cqs", "--expand-parent", "foo"]).unwrap();
+        assert!(cli.expand_parent);
+        assert_eq!(cli.query.as_deref(), Some("foo"));
+
+        // The bare `--expand` alone is rejected (would have been ambiguous
+        // with gather's `--expand <N>`).
+        let bare = Cli::try_parse_from(["cqs", "--expand", "foo"]);
+        assert!(
+            bare.is_err(),
+            "bare --expand on top-level Cli should be rejected — use --expand-parent"
+        );
+
+        // Gather still accepts `--expand <N>` (graph depth).
+        let cli = Cli::try_parse_from(["cqs", "gather", "alarm", "--expand", "2"]).unwrap();
+        match cli.command {
+            Some(Commands::Gather { ref args, .. }) => assert_eq!(args.expand, 2),
+            _ => panic!("expected Gather command"),
+        }
+    }
+
+    /// API-V1.22-6: `cqs affected --stdin` accepts a captured diff piped in.
+    /// Was a divergence from `review`/`ci`/`impact-diff`, all of which already
+    /// take `--stdin`. Pinning the parse here so the flag stays valid.
+    #[test]
+    fn cli_affected_accepts_stdin_flag() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["cqs", "affected", "--stdin"]).unwrap();
+        match cli.command {
+            Some(Commands::Affected { stdin, .. }) => assert!(stdin),
+            _ => panic!("expected Affected command"),
+        }
     }
 }

@@ -1035,6 +1035,7 @@ fn test_check_origins_stale_across_batch_boundary() {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         // Use a synthetic mtime: first half are old (stale), second half are current

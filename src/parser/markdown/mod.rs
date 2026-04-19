@@ -85,7 +85,70 @@ fn make_markdown_chunk(fields: ChunkFields<'_>) -> Chunk {
         parent_id: fields.parent_id,
         window_idx: None,
         parent_type_name: None,
+        parser_version: super::chunk::PARSER_VERSION,
     }
+}
+
+/// Compute the byte offset of the start of every line in `source`, plus a
+/// sentinel offset equal to `source.len()` for `lines.len()` itself.
+///
+/// `line_byte_offsets[i]` is the byte position where line `i` begins (0-
+/// indexed); `line_byte_offsets[lines.len()]` is `source.len()`. This lets
+/// callers slice an arbitrary `[line_start..line_end)` range out of `source`
+/// in O(1) per slice without re-allocating a `String` from `lines.join("\n")`.
+///
+/// Single forward pass through `source.bytes()`. Used to fix the O(N×M)
+/// per-section allocations flagged by P2 #66 in `docs/audit-findings.md`.
+fn compute_line_byte_offsets(source: &str) -> Vec<usize> {
+    // +1 sentinel so callers can use `offsets[line_count]` as the file end.
+    let mut offsets = Vec::with_capacity(source.len() / 32 + 2);
+    offsets.push(0);
+    for (i, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            offsets.push(i + 1);
+        }
+    }
+    // The final entry must equal source.len() so callers can slice the
+    // last section without bounds checks. If the file ends with a newline
+    // we already pushed one position == source.len(); otherwise add it now.
+    if offsets.last() != Some(&source.len()) {
+        offsets.push(source.len());
+    }
+    offsets
+}
+
+/// Slice the byte range `[line_start..line_end)` (0-indexed line numbers)
+/// out of `source` using the precomputed `line_byte_offsets` table.
+///
+/// `line_end` may equal `lines.len()` (one past the last line) to slice
+/// through end-of-file. The returned `&str` matches what
+/// `source.lines().collect::<Vec<_>>()[line_start..line_end].join("\n")`
+/// would produce: a trailing single `\n` is stripped so the slice has no
+/// trailing newline, matching the previous `lines[..].join("\n")` semantics.
+fn slice_section_by_lines<'a>(
+    source: &'a str,
+    line_byte_offsets: &[usize],
+    line_start: usize,
+    line_end: usize,
+) -> &'a str {
+    let byte_start = line_byte_offsets
+        .get(line_start)
+        .copied()
+        .unwrap_or(source.len());
+    let byte_end = line_byte_offsets
+        .get(line_end)
+        .copied()
+        .unwrap_or(source.len());
+    // Strip a single trailing `\n` so the slice matches the previous
+    // `lines[..].join("\n")` semantics (which produces no trailing newline)
+    // for sections that don't terminate at end-of-file.
+    let trimmed_end =
+        if byte_end > byte_start && source.as_bytes().get(byte_end - 1) == Some(&b'\n') {
+            byte_end - 1
+        } else {
+            byte_end
+        };
+    &source[byte_start..trimmed_end]
 }
 
 /// Parse markdown into chunks using heading-based splitting
@@ -191,12 +254,22 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
     // Build chunks from sections
     let title_text = title_idx.map(|i| headings[i].text.as_str()).unwrap_or("");
 
+    // Pre-compute line-start byte offsets once so per-section slicing is O(1)
+    // instead of O(N) per `lines[..].join("\n")` allocation. See P2 #66.
+    let line_byte_offsets = compute_line_byte_offsets(source);
+
     let mut chunks = Vec::with_capacity(sections.len());
     for section in &sections {
         let line_start = section.line_start as u32 + 1; // 1-indexed
         let line_end = section.line_end as u32; // 1-indexed (inclusive)
 
-        let content = lines[section.line_start..section.line_end].join("\n");
+        let content = slice_section_by_lines(
+            source,
+            &line_byte_offsets,
+            section.line_start,
+            section.line_end,
+        )
+        .to_string();
         let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
         let hash_prefix = content_hash.get(..8).unwrap_or(&content_hash);
         let id = format!("{}:{}:{}", path.display(), line_start, hash_prefix);
@@ -261,6 +334,10 @@ pub fn parse_markdown_references(
         }]);
     }
 
+    // Pre-compute line-start byte offsets once so per-section slicing is O(1)
+    // instead of O(N) per `lines[..].join("\n")` allocation. See P2 #66.
+    let line_byte_offsets = compute_line_byte_offsets(source);
+
     // Split at headings and extract references per section
     let mut results = Vec::new();
     for i in 0..headings.len() {
@@ -271,8 +348,12 @@ pub fn parse_markdown_references(
             lines.len()
         };
 
-        let section_text = lines[start..end].join("\n");
-        let calls = extract_references_from_text(&section_text);
+        let section_text = slice_section_by_lines(source, &line_byte_offsets, start, end);
+        // Pass the section's 1-indexed start line so the per-link line
+        // counter inside extract_references_from_text doesn't have to
+        // re-walk the whole prefix per match (replaces the old O(L)
+        // prefix scan with a single forward sweep).
+        let calls = extract_references_from_text_with_start_line(section_text, start as u32 + 1);
         if !calls.is_empty() {
             results.push(FunctionCalls {
                 name: headings[i].text.clone(),
@@ -580,24 +661,77 @@ fn extract_anchor(url: &str) -> Option<String> {
     Some(anchor.to_string())
 }
 
-/// Extract cross-references (links + backtick function patterns) from text
+/// Extract cross-references (links + backtick function patterns) from text.
+///
+/// Convenience wrapper for callers that don't need to offset line numbers
+/// by a containing section's start line. Equivalent to calling
+/// [`extract_references_from_text_with_start_line`] with `start_line = 1`.
 fn extract_references_from_text(text: &str) -> Vec<CallSite> {
+    extract_references_from_text_with_start_line(text, 1)
+}
+
+/// Forward-scanning helper: count how many `\n` bytes appear in `bytes` in
+/// the half-open interval `[cursor_byte..target_byte)`. Used to advance a
+/// running line-number counter across multiple regex-match positions
+/// without re-walking the whole prefix on every match.
+///
+/// Replaces the per-match `text[..match_start].matches('\n').count()` call
+/// (which was O(L) per match → O(L²) overall) with a single forward sweep.
+/// The caller maintains `(cursor_byte, line_number)` state across matches.
+#[inline]
+fn count_newlines_in_range(bytes: &[u8], cursor_byte: usize, target_byte: usize) -> u32 {
+    if target_byte <= cursor_byte {
+        return 0;
+    }
+    let end = target_byte.min(bytes.len());
+    let mut count = 0u32;
+    for &b in &bytes[cursor_byte..end] {
+        if b == b'\n' {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Extract cross-references (links + backtick function patterns) from text,
+/// offsetting reported line numbers by `start_line` (1-indexed).
+///
+/// `start_line` should be the 1-indexed line number where `text` begins in
+/// the containing source. Pass `1` if `text` IS the source. The per-link
+/// line counter advances forward through `text.as_bytes()` once total,
+/// instead of re-walking the prefix per match (P2 #66 in
+/// `docs/audit-findings.md`).
+fn extract_references_from_text_with_start_line(text: &str, start_line: u32) -> Vec<CallSite> {
     let mut calls = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
+    let bytes = text.as_bytes();
+
+    // Forward-scan link matches and backtick matches separately. For each
+    // pass we track a (byte_cursor, current_line) pair so that the line
+    // count for match N can be derived from the line count for match N-1
+    // plus the newlines in the gap between them — single sweep over `text`
+    // instead of an O(L) prefix scan per match.
+
     // Markdown links (not images): [text](url)
     // Rust regex doesn't support lookbehind, so match all links then filter images
+    let mut link_cursor: usize = 0;
+    let mut link_line: u32 = start_line;
     for cap in LINK_RE.captures_iter(text) {
         let Some(full_match) = cap.get(0) else {
             continue;
         };
         let match_start = full_match.start();
+        // Advance the line counter past any newlines between the previous
+        // match position and this one.
+        link_line += count_newlines_in_range(bytes, link_cursor, match_start);
+        link_cursor = match_start;
         // Skip image links: preceded by '!'
         if match_start > 0 && text.as_bytes()[match_start - 1] == b'!' {
             continue;
         }
         let link_text = cap[1].to_string();
-        let line_number = text[..match_start].matches('\n').count() as u32 + 1;
+        let line_number = link_line;
 
         // Use the link text as the callee name -- it's what the author chose to reference
         if !link_text.is_empty() && seen.insert(link_text.clone()) {
@@ -629,6 +763,8 @@ fn extract_references_from_text(text: &str) -> Vec<CallSite> {
     }
 
     // Backtick function references: `Name()`, `Module.func()`, `Class::method(args)`
+    let mut func_cursor: usize = 0;
+    let mut func_line: u32 = start_line;
     for cap in FUNC_RE.captures_iter(text) {
         // Extract the name before the parentheses
         let full_ref = &cap[1];
@@ -638,10 +774,11 @@ fn extract_references_from_text(text: &str) -> Vec<CallSite> {
                 continue;
             };
             let match_start = full_match.start();
-            let line_number = text[..match_start].matches('\n').count() as u32 + 1;
+            func_line += count_newlines_in_range(bytes, func_cursor, match_start);
+            func_cursor = match_start;
             calls.push(CallSite {
                 callee_name,
-                line_number,
+                line_number: func_line,
             });
         }
     }

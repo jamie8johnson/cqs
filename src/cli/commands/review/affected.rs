@@ -25,14 +25,21 @@ fn risk_label(level: &RiskLevel) -> colored::ColoredString {
 pub(crate) fn cmd_affected(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     base: Option<&str>,
+    from_stdin: bool,
     json: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_affected").entered();
+    let _span = tracing::info_span!("cmd_affected", from_stdin).entered();
     let store = &ctx.store;
     let root = &ctx.root;
 
-    // 1. Get diff text
-    let diff_text = crate::cli::commands::run_git_diff(base)?;
+    // 1. Get diff text — API-V1.22-6: `--stdin` lets agents pipe a captured
+    // diff (`git diff main | cqs affected --stdin --json`) without re-shelling
+    // git. Mirrors the path in `cmd_review`/`cmd_ci`/`cmd_impact_diff`.
+    let diff_text = if from_stdin {
+        crate::cli::commands::read_stdin()?
+    } else {
+        crate::cli::commands::run_git_diff(base)?
+    };
 
     // 2. Parse hunks
     let hunks = parse_unified_diff(&diff_text);

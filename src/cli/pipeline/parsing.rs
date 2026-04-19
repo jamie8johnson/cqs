@@ -60,8 +60,8 @@ pub(super) fn parser_stage(
                 || (Vec::new(), RelationshipData::default()),
                 |(mut all_chunks, mut all_rels), rel_path| {
                     let abs_path = root.join(rel_path);
-                    match parser.parse_file_all(&abs_path) {
-                        Ok((mut chunks, function_calls, chunk_type_refs)) => {
+                    match parser.parse_file_all_with_chunk_calls(&abs_path) {
+                        Ok((mut chunks, function_calls, chunk_type_refs, mut chunk_calls)) => {
                             // Rewrite paths to be relative for storage
                             // Normalize path separators to forward slashes for cross-platform consistency
                             let path_str = normalize_path(rel_path);
@@ -90,14 +90,19 @@ pub(super) fn parser_stage(
                                     }
                                 }
                             }
-                            // PERF-28: Extract per-chunk calls here (rayon parallel)
-                            // instead of sequentially in store_stage.
-                            for chunk in &chunks {
-                                let calls = parser.extract_calls_from_chunk(chunk);
-                                for call in calls {
-                                    all_rels.chunk_calls.push((chunk.id.clone(), call));
+                            // P2 #63: parse_file_all_with_chunk_calls already
+                            // emitted (chunk_id, CallSite) pairs from Pass 2 —
+                            // no per-chunk re-parse needed here. Chunk ids
+                            // came back in `path:line:hash` form (from
+                            // `extract_chunk` using the absolute path); apply
+                            // the same id_map we built above so they line up
+                            // with the rewritten chunk ids.
+                            for (id, _) in &mut chunk_calls {
+                                if let Some(new_id) = id_map.get(id) {
+                                    *id = new_id.clone();
                                 }
                             }
+                            all_rels.chunk_calls.extend(chunk_calls);
                             all_chunks.extend(chunks);
                             if !chunk_type_refs.is_empty() {
                                 all_rels

@@ -179,6 +179,7 @@ pub fn generate_nl_with_call_context_and_summary(
 ///     parent_id: None,
 ///     window_idx: None,
 ///     parent_type_name: None,
+///     parser_version: 0,
 /// };
 ///
 /// let nl = generate_nl_description(&chunk);
@@ -594,6 +595,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         let nl = generate_nl_description(&chunk);
@@ -628,6 +630,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
 
         let nl = generate_nl_description(&chunk);
@@ -665,6 +668,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         }
     }
 
@@ -715,6 +719,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: Some("CircuitBreaker".to_string()),
+            parser_version: 0,
         };
         let nl = generate_nl_description(&chunk);
         assert!(
@@ -742,6 +747,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
         let nl = generate_nl_description(&chunk);
         // Compact: no "A method named" prefix, just tokenized name
@@ -771,6 +777,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         };
         let nl = generate_nl_description(&chunk);
         assert!(nl.contains("standalone"));
@@ -793,6 +800,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: Some("CircuitBreaker".to_string()),
+            parser_version: 0,
         };
         let nl = generate_nl_with_template(&chunk, NlTemplate::DocFirst);
         // DocFirst returns early: doc + name only, no parent type context
@@ -845,6 +853,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
+            parser_version: 0,
         }
     }
 
