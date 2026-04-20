@@ -419,8 +419,7 @@ mod tests {
 
     #[test]
     fn notes_list_with_warnings_strips_only_list() {
-        let (cmd, args) =
-            translate_cli_args_to_batch(&v(&["notes", "list", "--warnings"]), true);
+        let (cmd, args) = translate_cli_args_to_batch(&v(&["notes", "list", "--warnings"]), true);
         assert_eq!(cmd, "notes");
         assert_eq!(args, v(&["--warnings"]));
     }
