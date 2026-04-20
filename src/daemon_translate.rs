@@ -102,7 +102,21 @@ pub fn translate_cli_args_to_batch(raw: &[String], has_subcommand: bool) -> (Str
     }
     // With a subcommand: the first surviving token is the subcommand name.
     if let Some((first, rest)) = args.split_first() {
-        (first.clone(), rest.to_vec())
+        let cmd = first.clone();
+        let mut tail = rest.to_vec();
+        // `cqs notes list ...` → daemon `notes ...`. The CLI's `Notes`
+        // command takes a NotesCommand subcommand enum (`list`/`add`/
+        // `update`/`remove`) but the batch dispatcher only ever receives
+        // `list` — `add`/`update`/`remove` route through `BatchSupport::Cli`
+        // and never hit the daemon. The batch parser's `BatchCmd::Notes`
+        // accepts `--warnings`/`--patterns` directly (no `list` token), so
+        // we strip the redundant subcommand name here. Without this strip
+        // every `cqs notes list` query through the daemon errors with
+        // `unexpected argument 'list' found`.
+        if cmd == "notes" && tail.first().map(|s| s.as_str()) == Some("list") {
+            tail.remove(0);
+        }
+        (cmd, tail)
     } else {
         // Unreachable in practice: if clap parsed a subcommand the argv
         // contained its name. Defensive empty fallback.
@@ -388,6 +402,43 @@ mod tests {
             stripped_model_value(&v(&["search", "q", "--model=bge-large"])),
             Some("bge-large".to_string())
         );
+    }
+
+    /// `cqs notes list` (the CLI form) must reach the daemon as `notes`,
+    /// not `notes list` — the batch parser's `BatchCmd::Notes` accepts
+    /// `--warnings`/`--patterns` directly without a `list` subcommand.
+    /// Without the strip, every `cqs notes list` through the daemon errors
+    /// `unexpected argument 'list' found`. Keep the explicit
+    /// `--warnings`/`--patterns` flags through unchanged.
+    #[test]
+    fn notes_list_subcommand_stripped() {
+        let (cmd, args) = translate_cli_args_to_batch(&v(&["notes", "list"]), true);
+        assert_eq!(cmd, "notes");
+        assert!(args.is_empty(), "got {args:?}");
+    }
+
+    #[test]
+    fn notes_list_with_warnings_strips_only_list() {
+        let (cmd, args) =
+            translate_cli_args_to_batch(&v(&["notes", "list", "--warnings"]), true);
+        assert_eq!(cmd, "notes");
+        assert_eq!(args, v(&["--warnings"]));
+    }
+
+    /// Bare `cqs notes` (no `list` token) is unaffected.
+    #[test]
+    fn notes_without_list_unchanged() {
+        let (cmd, args) = translate_cli_args_to_batch(&v(&["notes", "--patterns"]), true);
+        assert_eq!(cmd, "notes");
+        assert_eq!(args, v(&["--patterns"]));
+    }
+
+    /// Other commands with a `list` first-arg are NOT touched — only `notes`.
+    #[test]
+    fn list_arg_is_only_stripped_for_notes() {
+        let (cmd, args) = translate_cli_args_to_batch(&v(&["impact", "list"]), true);
+        assert_eq!(cmd, "impact");
+        assert_eq!(args, v(&["list"]));
     }
 
     /// Task B2: smoke-test PingResponse round-trips through serde without
