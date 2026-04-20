@@ -1,22 +1,28 @@
 # Roadmap
 
-## Current: v1.28.2 (windowing fix + classifier default-on)
+## Current: v1.28.3 (R@5-targeted alpha tweaks for behavioral + multi_step)
 
-54 languages. 29 chunk types. v3 eval canonical, regenerated to v2 fixture 2026-04-17/20 (109 test / 109 dev). Daemon mode (`cqs watch --serve`, 99ms graph p50 / 200ms search-warm p50). Per-category SPLADE alpha routing. **Centroid classifier active by default** (test R@5 +3.7pp from category-aware routing; opt-out via `CQS_CENTROID_CLASSIFIER=0`). GPU-native CAGRA bitset filtering (patched cuvs 26.4). MSRV 1.95.
+54 languages. 29 chunk types. v3 eval canonical, regenerated to v2 fixture 2026-04-17/20 (109 test / 109 dev). Daemon mode (`cqs watch --serve`, 99ms graph p50 / 200ms search-warm p50). Per-category SPLADE alpha routing — re-swept against R@5 in v1.28.3 (was R@1-tuned). **Centroid classifier active by default** (test R@5 +3.7pp from category-aware routing; opt-out via `CQS_CENTROID_CLASSIFIER=0`). GPU-native CAGRA bitset filtering (patched cuvs 26.4). MSRV 1.95.
+
+**v1.28.3** shipped 2026-04-20: per-category SPLADE α re-sweep targeting R@5 (the 2026-04-15 sweep optimized R@1 — different optima in many categories). Two alpha changes ship — `behavioral` 0.00 → 0.80, `multi_step` 1.00 → 0.10 — both essentially flipping a category from one extreme to the other. Production net: test R@5 +0.9pp, dev R@5 ±0, no regressions. The per-category sweep predicted +14pp held-out lift; ~8× dilution from classifier accuracy explains the gap (full analysis in `~/training-data/research/models.md`). Plus README cleanup (PR #1065).
 
 **v1.28.2** shipped 2026-04-20: four correctness fixes from the Reranker V2 retrain arc — windowing fix (`chunks.content` was lossy WordPiece-decoded text for 7228/15616 chunks; PR #1060), `cqs index --force` fail-fast vs running daemon (#1061), `cqs notes list` daemon dispatch (#1062), `cli_review_test` `--format` → `--json` migration miss (#1063, fixes 2-day-red slow-tests nightly). Plus: reranker pool cap default 100→20, centroid classifier flipped default-on after isolated A/B (test R@5 +3.7pp), `notes_boost_factor` measured (zero impact, default unchanged). Reindex required to refresh stored content from raw source.
 
-### Eval baselines on v3.v2 (post-windowing-fix, 2026-04-20)
+### Eval baselines on v3.v2 (post-v1.28.3, 2026-04-20)
 
 | Split | R@1 | R@5 | R@20 | Notes |
 |---|---|---|---|---|
-| **test (n=109), v1.28.2 stage-1 + classifier ON** | **42.2%** | **67.0%** | **83.5%** | reindex 2026-04-20, 15,675 chunks |
-| test (n=109), v1.28.2 stage-1, classifier OFF | 42.2% | 64.2% | 83.5% | classifier flip alone gives +3.7pp R@5 |
-| **dev (n=109), v1.28.2 stage-1 + classifier ON** | **42.2%** | **75.2%** | **89.9%** | dev higher baseline; classifier neutral here |
-| dev (n=109), v1.28.2 stage-1, classifier OFF | 45.0% | 75.2% | 89.9% | (classifier shifts a query off R@1) |
+| **test (n=109), v1.28.3 stage-1 + classifier ON** | 40.4% | **64.2%** | 82.6% | 16,026-chunk corpus, post-incremental-drift |
+| test (n=109), v1.28.2 reverted alphas (same corpus) | 40.4% | 63.3% | 82.6% | A/B baseline |
+| **dev (n=109), v1.28.3 stage-1 + classifier ON** | 40.4% | 73.4% | 87.2% | same corpus |
+| dev (n=109), v1.28.2 reverted alphas (same corpus) | 41.3% | 73.4% | 87.2% | A/B baseline |
 | canonical (v1.27.0 shipping) test / dev R@5 | – | 63.3% / 74.3% | 80.7% / 86.2% | for delta reference |
 
-Net Δ vs canonical: test R@5 **+3.7pp**, R@20 **+2.8pp**; dev R@5 +0.9pp, R@20 **+3.7pp**. Per-category R@5 with classifier (n shown, both splits combined): structural_search **+12.5pp**, cross_language **+9.1pp**, behavioral_search +3.1pp, conceptual_search **−4.0pp** (only regression, n=25 noise on 44% baseline), rest ±0. Notes A/B (`scoring.note_boost_factor` 0.0 vs 0.15) on same fixture: **zero impact** — note injection's value is read-time context, not retrieval ranking.
+Net v1.28.3 Δ vs canonical: test R@5 **+0.9pp** (smaller than v1.28.2 morning baseline of 67.0% because of incremental index drift; see "Per-Category SPLADE Alpha Re-Sweep — Target R@5" in `models.md`), dev R@5 −0.9pp (drift, not config). The v1.28.3 alpha changes are net-positive on test, neutral on dev when measured on the same drifted corpus.
+
+### Per-category R@5 sweep — what didn't ship and why
+
+The R@5 re-sweep also surfaced direction-stable but small-magnitude moves on `cross_language` (0.10 → 0.40, n=11 per held-out split — small N + the current 0.10 is already well-placed by the prior R@1 sweep). And inconsistent / noisy optima on `identifier_lookup`, `conceptual`, `negation`, `structural`, `type_filtered`. None of those clear the cross-split-agreement + magnitude bar that `behavioral` and `multi_step` did. The dilution analysis (sweep gain × classifier accuracy) suggests per-category α tuning is now bottlenecked by classifier accuracy, not the alpha grid — future R@5 work should target classifier accuracy first.
 
 ---
 

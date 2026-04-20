@@ -130,12 +130,24 @@ define_query_categories! {
     IdentifierLookup => "identifier_lookup", default_alpha = 1.00;
     /// Searching for code by structure ("functions that return Result", "structs with Display")
     Structural => "structural", default_alpha = 0.90, aliases = ["structural_search"];
-    /// Searching for code by behavior ("validates user input", "retries with backoff")
-    Behavioral => "behavioral", default_alpha = 0.00, aliases = ["behavioral_search"];
+    /// Searching for code by behavior ("validates user input", "retries with backoff").
+    /// Bumped 0.00 → 0.80 in v1.28.3 — original sweep optimized R@1 (where pure
+    /// SPLADE wins on action-verb exact matches), but R@5 wants heavy dense for
+    /// broader candidate recall. v3.v2 sweep direction was consistent across
+    /// train/test/dev (best ∈ [0.65, 0.90]). Production lift is bottlenecked
+    /// by `behavioral` classifier accuracy (~19% fire rate per the v3 audit);
+    /// only correctly-routed queries see the lift.
+    Behavioral => "behavioral", default_alpha = 0.80, aliases = ["behavioral_search"];
     /// Searching for abstract concepts ("dependency injection", "observer pattern")
     Conceptual => "conceptual", default_alpha = 0.70, aliases = ["conceptual_search"];
-    /// Queries requiring multiple signals ("find where errors are logged and retried")
-    MultiStep => "multi_step", default_alpha = 1.00;
+    /// Queries requiring multiple signals ("find where errors are logged and retried").
+    /// Dropped 1.00 → 0.10 in v1.28.3 — multi-clause queries have heavy keyword
+    /// overlap that SPLADE catches well at depth; pure dense was optimizing R@1
+    /// at the cost of R@5. v3.v2 sweep direction consistent across train/test/dev
+    /// (best ∈ [0.05, 0.10]). Same classifier-accuracy caveat as `behavioral`:
+    /// the rule-based classifier rarely fires `multi_step` correctly because
+    /// "X AND Y" patterns trip the structural rule first.
+    MultiStep => "multi_step", default_alpha = 0.10;
     /// Queries with negation ("sort without allocating", "parse but not validate")
     Negation => "negation", default_alpha = 0.80;
     /// Queries constrained by chunk type ("all test functions", "every enum")

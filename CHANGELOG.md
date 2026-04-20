@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.28.3] - 2026-04-20
+
+Patch release with two per-category SPLADE alpha changes derived from an R@5-targeted re-sweep, plus the cleaned-up README that landed via PR #1065 (now bundled into the published crate). Net effect on v3.v2 test R@5: +0.9pp; dev R@5 unchanged; no regressions.
+
+### Changed
+
+- **`behavioral` SPLADE alpha 0.00 → 0.80** (`src/search/router.rs`). The original sweep optimized R@1, where pure SPLADE wins on action-verb exact matches. R@5 wants heavy dense for broader candidate recall. v3.v2 sweep direction was consistent across train/test/dev (best ∈ [0.65, 0.90]).
+- **`multi_step` SPLADE alpha 1.00 → 0.10** (`src/search/router.rs`). Multi-clause queries have heavy keyword overlap that SPLADE catches well at depth; pure dense was optimizing R@1 at the cost of R@5. v3.v2 sweep direction consistent across train/test/dev (best ∈ [0.05, 0.10]).
+
+Both changes also lift R@1 in the per-category sweep — they're not precision-for-recall trades. Production lift is bottlenecked by classifier accuracy on those exact categories (per the v3 audit: behavioral fires correctly ~19% of the time, `multi_step` rule misses entirely because "X AND Y" patterns trip `structural` first), so the small held-out R@5 lift (+0.9pp test) is much smaller than the per-category sweep's +12.5 to +35.7pp suggests. Future R@5 work should target classifier accuracy first.
+
+### Tooling
+
+- New `evals/alpha_sweep_v3_r5.py` (sibling to `alpha_sweep_v3.py` which targets R@1). Supports `--split {train,test,dev}` and `--target {r1,r5,r20}` for repeat sweeps when the corpus or pipeline changes meaningfully. Outputs per-category R@1/R@5/R@20 at every α so the trade-off surface is visible, not just the chosen-target optimum.
+
+### Docs
+
+- README (PR #1065): stripped session-internal references ("post-#1040 reindex", "v1.27.0 shipping config baseline", "v1.26.0 re-fit on the clean 14,882-chunk index"), refreshed eval numbers to v1.28.2 baseline (42.2% R@1 / 67.0% R@5 / 83.5% R@20 on test), updated stale env-var entries (`RERANK_POOL_MAX` 100 → 20, `CQS_CENTROID_CLASSIFIER` default 0 → 1), added a one-line-per-domain index above the 107-row env-var table for faster scanning.
+- GitHub repo About description refreshed to match (was citing the stale "42% R@1 / 79% R@20").
+
+### What did NOT ship
+
+The R@5 re-sweep also flagged direction-stable moves on `cross_language` (0.10 → 0.40, modest magnitude, small N), and inconsistent / small-N optima on `identifier_lookup`, `conceptual`, `negation`, `structural`, `type_filtered`. None of those clear the cross-split-agreement + magnitude bar, and the production-vs-sweep dilution from classifier accuracy makes per-category retuning a low-leverage lane until the classifier is improved separately. Full sweep table and analysis in the maintainer's research notes.
+
 ## [1.28.2] - 2026-04-20
 
 Patch release — four correctness fixes from the Reranker V2 retrain arc, the centroid classifier flipped to default-on after isolated A/B (test R@5 +3.7pp), and dependency hygiene. The headline win is the windowing fix: 7228 of 15616 chunks were storing lossy WordPiece-decoded text as `chunks.content` (lowercased, space-separated subwords). Reindex required to refresh stored content; eval shows clean +R@5/+R@20 lifts on both v3.v2 splits.
