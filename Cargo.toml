@@ -45,7 +45,7 @@ tree-sitter-c = { version = "0.24", optional = true }
 tree-sitter-cpp = { version = "0.23", optional = true }
 tree-sitter-java = { version = "0.23", optional = true }
 tree-sitter-c-sharp = { version = "0.23", optional = true }
-tree-sitter-fsharp = { version = "0.2", optional = true }
+tree-sitter-fsharp = { version = "0.3", optional = true }
 tree-sitter-powershell = { version = "0.26", optional = true }
 tree-sitter-scala = { version = "0.25", optional = true }
 tree-sitter-ruby = { version = "0.23", optional = true }
