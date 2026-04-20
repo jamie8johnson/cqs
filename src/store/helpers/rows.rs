@@ -56,11 +56,15 @@ pub(crate) struct ChunkRow {
     pub window_idx: Option<i32>,
     pub parent_id: Option<String>,
     pub parent_type_name: Option<String>,
+    /// Parser logic stamp (P2 #29). 0 means either pre-v21 or never written;
+    /// `try_get` keeps existing SELECTs that omit the column working.
+    pub parser_version: u32,
 }
 
 impl ChunkRow {
     /// Construct from a SQLite row containing columns:
     /// id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id, parent_type_name
+    /// (parser_version is read via `try_get` so SELECTs that omit it still work).
     pub(crate) fn from_row(row: &sqlx::sqlite::SqliteRow) -> Self {
         use sqlx::Row;
         ChunkRow {
@@ -81,6 +85,12 @@ impl ChunkRow {
             window_idx: row.try_get("window_idx").unwrap_or(None),
             parent_id: row.get("parent_id"),
             parent_type_name: row.get("parent_type_name"),
+            // try_get so SELECT lists that don't pull parser_version still
+            // construct a valid row — most search/read paths don't need it.
+            parser_version: row
+                .try_get::<i64, _>("parser_version")
+                .map(|v| v.max(0).min(u32::MAX as i64) as u32)
+                .unwrap_or(0),
         }
     }
 
@@ -106,6 +116,7 @@ impl ChunkRow {
             window_idx: None,
             parent_id: row.get("parent_id"),
             parent_type_name: row.get("parent_type_name"),
+            parser_version: 0,
         }
     }
 
@@ -133,6 +144,7 @@ impl ChunkRow {
             window_idx: None,
             parent_id: None,
             parent_type_name: None,
+            parser_version: 0,
         }
     }
 }

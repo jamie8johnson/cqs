@@ -411,6 +411,7 @@ mod tests {
                 parent_type_name: None,
                 content_hash: String::new(),
                 window_idx: None,
+                parser_version: 0,
             },
             score,
         }
@@ -560,6 +561,7 @@ mod tests {
                 parent_type_name: None,
                 content_hash: String::new(),
                 window_idx: None,
+                parser_version: 0,
             },
             score: 0.9,
         })];
@@ -581,6 +583,7 @@ mod tests {
                     parent_type_name: None,
                     content_hash: String::new(),
                     window_idx: None,
+                    parser_version: 0,
                 },
                 score: 0.7,
             }],

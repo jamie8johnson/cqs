@@ -19,83 +19,19 @@ pub struct FencedBlock {
     pub line_end: u32,
 }
 
-/// Plain-text fenced-block alias map.
+/// Plain-text fenced-block alias map, derived from the language registry.
 ///
-/// TODO(P2 #55): Once Agent I adds `pub aliases: &'static [&'static str]` to
-/// `LanguageDef`, replace this static table with an iteration over
-/// `crate::language::REGISTRY.all()`, populating `(alias → canonical name)`
-/// from `def.name + def.aliases`. The current static table is the
-/// transitional shim — it duplicates the language registry and will drift
-/// from `define_languages!` until the registry conversion lands.
-///
-/// Note: Dart IS a `Language` variant (see `languages.rs`), so its alias is
-/// retained here. An earlier pass removed it on the assumption that it
-/// wasn't registered — `test_normalize_lang_covers_all_languages` catches
-/// that class of drift.
+/// Iterates `crate::language::REGISTRY.all()`, inserting `(canonical_name →
+/// canonical_name)` plus `(alias → canonical_name)` for each `def.aliases`
+/// entry. Adding a `Language` variant with an `aliases: &["foo"]` row in
+/// `languages.rs` propagates here automatically — no parallel table to keep
+/// in sync.
 static FENCED_LANG_ALIASES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     let mut m = HashMap::new();
-    let entries: &[(&str, &[&str])] = &[
-        ("rust", &["rust"]),
-        ("python", &["python", "py"]),
-        ("typescript", &["typescript", "ts"]),
-        ("javascript", &["javascript", "js"]),
-        ("go", &["go", "golang"]),
-        ("c", &["c"]),
-        ("cpp", &["cpp", "c++", "cxx"]),
-        ("java", &["java"]),
-        ("csharp", &["csharp", "cs", "c#"]),
-        ("fsharp", &["fsharp", "fs", "f#"]),
-        ("powershell", &["powershell", "ps1", "pwsh"]),
-        ("scala", &["scala"]),
-        ("ruby", &["ruby", "rb"]),
-        ("bash", &["bash", "sh", "shell", "zsh"]),
-        ("hcl", &["hcl", "terraform", "tf"]),
-        ("kotlin", &["kotlin", "kt"]),
-        ("swift", &["swift"]),
-        ("objc", &["objc", "objective-c", "objectivec"]),
-        ("sql", &["sql"]),
-        ("protobuf", &["protobuf", "proto"]),
-        ("graphql", &["graphql", "gql"]),
-        ("php", &["php"]),
-        ("lua", &["lua"]),
-        ("zig", &["zig"]),
-        ("r", &["r"]),
-        ("yaml", &["yaml", "yml"]),
-        ("toml", &["toml"]),
-        ("elixir", &["elixir", "ex"]),
-        ("elm", &["elm"]),
-        ("erlang", &["erlang", "erl"]),
-        ("haskell", &["haskell", "hs"]),
-        ("ocaml", &["ocaml", "ml"]),
-        ("julia", &["julia", "jl"]),
-        ("gleam", &["gleam"]),
-        ("css", &["css"]),
-        ("perl", &["perl", "pl"]),
-        ("html", &["html"]),
-        ("json", &["json", "jsonc"]),
-        ("xml", &["xml", "svg", "xsl"]),
-        ("nix", &["nix"]),
-        ("make", &["make", "makefile"]),
-        ("latex", &["latex", "tex"]),
-        ("solidity", &["solidity", "sol"]),
-        ("cuda", &["cuda", "cu"]),
-        ("glsl", &["glsl"]),
-        ("vue", &["vue"]),
-        ("svelte", &["svelte"]),
-        ("razor", &["razor", "cshtml"]),
-        ("vbnet", &["vb", "vbnet", "vb.net"]),
-        ("ini", &["ini"]),
-        ("markdown", &["markdown", "md"]),
-        ("aspx", &["aspx", "ascx", "asmx", "webforms"]),
-        (
-            "structured_text",
-            &["structured_text", "st", "stl", "iec61131", "iec-st"],
-        ),
-        ("dart", &["dart"]),
-    ];
-    for (canonical, aliases) in entries {
-        for alias in *aliases {
-            m.insert(*alias, *canonical);
+    for def in crate::language::REGISTRY.all() {
+        m.insert(def.name, def.name);
+        for alias in def.aliases {
+            m.insert(*alias, def.name);
         }
     }
     m
@@ -228,6 +164,60 @@ mod tests {
                 "normalize_lang({:?}) returned None -- add a mapping for Language::{}",
                 name_lower,
                 lang
+            );
+        }
+    }
+
+    /// Pin that the registry-driven alias list is populated for the languages
+    /// most likely to appear as fence tags. Without this, an alias regression
+    /// in `languages.rs` would only be caught if it dropped the canonical
+    /// name itself.
+    #[test]
+    fn aliases_populated_for_common_languages() {
+        use crate::parser::Language;
+        assert!(
+            Language::Python.def().aliases.contains(&"py"),
+            "Python must register the `py` alias",
+        );
+        assert!(
+            Language::Go.def().aliases.contains(&"golang"),
+            "Go must register the `golang` alias",
+        );
+        assert!(
+            Language::TypeScript.def().aliases.contains(&"ts"),
+            "TypeScript must register the `ts` alias",
+        );
+    }
+
+    /// Regression pin: `normalize_lang` resolves a representative alias subset
+    /// to the correct canonical name. If the registry conversion drifts (a
+    /// language drops an alias, or `normalize_lang` is rewired wrong), this
+    /// surfaces immediately.
+    #[test]
+    fn fenced_lang_aliases_match_legacy_table() {
+        for (alias, canonical) in [
+            ("py", "python"),
+            ("ts", "typescript"),
+            ("js", "javascript"),
+            ("golang", "go"),
+            ("c++", "cpp"),
+            ("cs", "csharp"),
+            ("kt", "kotlin"),
+            ("ml", "ocaml"),
+            ("rb", "ruby"),
+            ("yml", "yaml"),
+            ("md", "markdown"),
+            ("tf", "hcl"),
+            ("proto", "protobuf"),
+            ("gql", "graphql"),
+            ("hs", "haskell"),
+            ("sol", "solidity"),
+            ("cu", "cuda"),
+        ] {
+            assert_eq!(
+                normalize_lang(alias),
+                Some(canonical),
+                "alias `{alias}` must resolve to `{canonical}`",
             );
         }
     }

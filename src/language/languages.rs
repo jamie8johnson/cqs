@@ -62,6 +62,8 @@ const DEFAULTS: LanguageDef = LanguageDef {
     function_keywords: &[],
     receiver_strip: None,
     patterns: None,
+    line_comment_prefixes: &[],
+    aliases: &[],
 };
 
 /// Strip a Go method receiver from the line tail after `func ` has been consumed.
@@ -97,6 +99,8 @@ static LANG_BASH: LanguageDef = LanguageDef {
     post_process_chunk: Some(post_process_bash_bash as PostProcessChunkFn),
     function_keywords: &["function"],
     patterns: Some(&patterns_data::BASH),
+    line_comment_prefixes: &["#"],
+    aliases: &["sh", "shell", "zsh"],
     ..DEFAULTS
 };
 
@@ -199,6 +203,7 @@ static LANG_C: LanguageDef = LanguageDef {
     unsafe_markers: &["memcpy", "strcpy", "sprintf", "gets("],
     // C uses `returnType name()` syntax — no fixed function-introducer keyword.
     patterns: Some(&patterns_data::C),
+    line_comment_prefixes: &["//", "/*"],
     ..DEFAULTS
 };
 
@@ -495,6 +500,8 @@ static LANG_CPP: LanguageDef = LanguageDef {
     skip_line_prefixes: &["class ", "struct ", "union ", "enum ", "template"],
     // C++ uses `returnType name()` syntax — no fixed function-introducer keyword.
     patterns: Some(&patterns_data::CPP_LIKE),
+    line_comment_prefixes: &["//", "/*"],
+    aliases: &["c++", "cxx"],
     ..DEFAULTS
 };
 
@@ -745,6 +752,8 @@ static LANG_CSHARP: LanguageDef = LanguageDef {
     skip_line_prefixes: &["class ", "struct ", "interface ", "enum ", "record "],
     // C# uses `returnType name()` syntax — no fixed function-introducer keyword.
     patterns: Some(&patterns_data::DOTNET),
+    line_comment_prefixes: &["//", "/*"],
+    aliases: &["cs", "c#"],
     ..DEFAULTS
 };
 
@@ -844,6 +853,7 @@ static LANG_CSS: LanguageDef = LanguageDef {
     ],
     extract_return_nl: extract_return_css,
     post_process_chunk: Some(post_process_css_css as PostProcessChunkFn),
+    line_comment_prefixes: &["/*"],
     ..DEFAULTS
 };
 
@@ -1043,6 +1053,8 @@ static LANG_CUDA: LanguageDef = LanguageDef {
     post_process_chunk: Some(post_process_cuda_cuda as PostProcessChunkFn),
     // CUDA uses C++ syntax — no fixed function-introducer keyword.
     patterns: Some(&patterns_data::CPP_LIKE),
+    line_comment_prefixes: &["//", "/*"],
+    aliases: &["cu"],
     ..DEFAULTS
 };
 
@@ -1154,6 +1166,7 @@ static LANG_DART: LanguageDef = LanguageDef {
     },
     extract_return_nl: extract_return_dart,
     post_process_chunk: Some(post_process_dart_dart as PostProcessChunkFn),
+    line_comment_prefixes: &["//", "/*"],
     ..DEFAULTS
 };
 
@@ -1403,6 +1416,8 @@ static LANG_ELIXIR: LanguageDef = LanguageDef {
     skip_line_prefixes: &["defmodule", "defstruct"],
     function_keywords: &["def", "defp", "defmacro", "defmacrop"],
     patterns: Some(&patterns_data::ELIXIR),
+    line_comment_prefixes: &["#"],
+    aliases: &["ex"],
     ..DEFAULTS
 };
 
@@ -1425,6 +1440,7 @@ static LANG_ELM: LanguageDef = LanguageDef {
         "module", "import", "exposing", "type", "alias", "port", "let", "in", "case", "of", "if",
         "then", "else", "as", "where",
     ],
+    line_comment_prefixes: &["--"],
     ..DEFAULTS
 };
 
@@ -1559,6 +1575,8 @@ static LANG_ERLANG: LanguageDef = LanguageDef {
     skip_line_prefixes: &["-record"],
     // Erlang functions: `name(Args) -> ...` — no introducer keyword.
     patterns: Some(&patterns_data::ERLANG),
+    line_comment_prefixes: &["%"],
+    aliases: &["erl"],
     ..DEFAULTS
 };
 
@@ -1737,6 +1755,8 @@ static LANG_FSHARP: LanguageDef = LanguageDef {
     post_process_chunk: Some(post_process_fsharp_fsharp as PostProcessChunkFn),
     function_keywords: &["let", "member"],
     patterns: Some(&patterns_data::DOTNET),
+    line_comment_prefixes: &["//", "(*"],
+    aliases: &["fs", "f#"],
     ..DEFAULTS
 };
 
@@ -1868,6 +1888,7 @@ static LANG_GLEAM: LanguageDef = LanguageDef {
     skip_line_prefixes: &["type ", "pub type"],
     function_keywords: &["fn"],
     patterns: Some(&patterns_data::GLEAM),
+    line_comment_prefixes: &["//"],
     ..DEFAULTS
 };
 
@@ -2034,6 +2055,7 @@ static LANG_GLSL: LanguageDef = LanguageDef {
     skip_line_prefixes: &["struct "],
     // GLSL uses C-style `returnType name()` syntax — no introducer keyword.
     patterns: Some(&patterns_data::CPP_LIKE),
+    line_comment_prefixes: &["//", "/*"],
     ..DEFAULTS
 };
 
@@ -2214,6 +2236,8 @@ static LANG_GO: LanguageDef = LanguageDef {
     receiver_strip: Some(strip_go_receiver),
     // Go has custom logic in `where_to_add::extract_patterns`
     // (uppercase-name = exported), so `patterns` is None.
+    line_comment_prefixes: &["//", "/*"],
+    aliases: &["golang"],
     ..DEFAULTS
 };
 
@@ -2259,6 +2283,8 @@ static LANG_GRAPHQL: LanguageDef = LanguageDef {
         strip_prefixes: "",
     },
     skip_line_prefixes: &["type ", "input ", "interface ", "enum "],
+    line_comment_prefixes: &["#"],
+    aliases: &["gql"],
     ..DEFAULTS
 };
 
@@ -2427,6 +2453,8 @@ static LANG_HASKELL: LanguageDef = LanguageDef {
     // the line prefix. The C-family heuristic also doesn't fit (no parens
     // for nullary), but a `where` block can have indented function defs.
     patterns: Some(&patterns_data::HASKELL),
+    line_comment_prefixes: &["--"],
+    aliases: &["hs"],
     ..DEFAULTS
 };
 
@@ -2632,6 +2660,8 @@ static LANG_HCL: LanguageDef = LanguageDef {
             content_scoped_lines: false,
         },
     ],
+    line_comment_prefixes: &["#", "//", "/*"],
+    aliases: &["terraform", "tf"],
     ..DEFAULTS
 };
 
@@ -2947,6 +2977,7 @@ static LANG_HTML: LanguageDef = LanguageDef {
             content_scoped_lines: false,
         },
     ],
+    line_comment_prefixes: &["<!--"],
     ..DEFAULTS
 };
 
@@ -2977,6 +3008,7 @@ static LANG_INI: LanguageDef = LanguageDef {
     doc_nodes: &["comment"],
     stopwords: &["true", "false", "yes", "no", "on", "off"],
     extract_return_nl: extract_return_ini,
+    line_comment_prefixes: &[";", "#"],
     ..DEFAULTS
 };
 
@@ -3193,6 +3225,7 @@ static LANG_JAVA: LanguageDef = LanguageDef {
     ],
     // Java uses `returnType name()` syntax — no introducer keyword.
     patterns: Some(&patterns_data::JAVA),
+    line_comment_prefixes: &["//", "/*"],
     ..DEFAULTS
 };
 
@@ -3337,6 +3370,8 @@ static LANG_JAVASCRIPT: LanguageDef = LanguageDef {
     // both use the same surface syntax for async / catch / await.
     error_swallow_patterns: &["catch (e) {}", "catch {}", "// ignore"],
     async_markers: &["async ", "await "],
+    line_comment_prefixes: &["//", "/*"],
+    aliases: &["js"],
     ..DEFAULTS
 };
 
@@ -3387,6 +3422,8 @@ static LANG_JSON: LanguageDef = LanguageDef {
     stopwords: &["true", "false", "null"],
     extract_return_nl: extract_return_json,
     post_process_chunk: Some(post_process_json_json),
+    line_comment_prefixes: &["//", "/*"],
+    aliases: &["jsonc"],
     ..DEFAULTS
 };
 
@@ -3555,6 +3592,8 @@ static LANG_JULIA: LanguageDef = LanguageDef {
     skip_line_prefixes: &["struct ", "mutable struct"],
     function_keywords: &["function"],
     patterns: Some(&patterns_data::JULIA),
+    line_comment_prefixes: &["#"],
+    aliases: &["jl"],
     ..DEFAULTS
 };
 
@@ -3795,6 +3834,8 @@ static LANG_KOTLIN: LanguageDef = LanguageDef {
     ],
     function_keywords: &["fun"],
     patterns: Some(&patterns_data::JVM),
+    line_comment_prefixes: &["//", "/*"],
+    aliases: &["kt"],
     ..DEFAULTS
 };
 
@@ -3974,6 +4015,8 @@ static LANG_LATEX: LanguageDef = LanguageDef {
             content_scoped_lines: false,
         },
     ],
+    line_comment_prefixes: &["%"],
+    aliases: &["tex"],
     ..DEFAULTS
 };
 
@@ -4139,6 +4182,7 @@ static LANG_LUA: LanguageDef = LanguageDef {
     },
     function_keywords: &["function"],
     patterns: Some(&patterns_data::LUA),
+    line_comment_prefixes: &["--"],
     ..DEFAULTS
 };
 
@@ -4204,6 +4248,8 @@ static LANG_MAKE: LanguageDef = LanguageDef {
         detect_language: None,
         content_scoped_lines: false,
     }],
+    line_comment_prefixes: &["#"],
+    aliases: &["makefile"],
     ..DEFAULTS
 };
 
@@ -4291,6 +4337,8 @@ static LANG_MARKDOWN: LanguageDef = LanguageDef {
         "figure",
         "table",
     ],
+    line_comment_prefixes: &["<!--"],
+    aliases: &["md"],
     ..DEFAULTS
 };
 
@@ -4401,6 +4449,7 @@ static LANG_NIX: LanguageDef = LanguageDef {
             content_scoped_lines: false,
         },
     ],
+    line_comment_prefixes: &["#", "/*"],
     ..DEFAULTS
 };
 
@@ -4553,6 +4602,8 @@ static LANG_OBJC: LanguageDef = LanguageDef {
     // Objective-C method declarations use `- (Type)name:`. The C-family
     // `name(` heuristic doesn't fit cleanly; leave function_keywords empty.
     patterns: Some(&patterns_data::CPP_LIKE),
+    line_comment_prefixes: &["//", "/*"],
+    aliases: &["objective-c", "objectivec"],
     ..DEFAULTS
 };
 
@@ -4715,6 +4766,8 @@ static LANG_OCAML: LanguageDef = LanguageDef {
     skip_line_prefixes: &["type "],
     function_keywords: &["let"],
     patterns: Some(&patterns_data::OCAML),
+    line_comment_prefixes: &["(*"],
+    aliases: &["ml"],
     ..DEFAULTS
 };
 
@@ -4802,6 +4855,8 @@ static LANG_PERL: LanguageDef = LanguageDef {
     },
     function_keywords: &["sub"],
     patterns: Some(&patterns_data::PERL),
+    line_comment_prefixes: &["#"],
+    aliases: &["pl"],
     ..DEFAULTS
 };
 
@@ -5012,6 +5067,7 @@ static LANG_PHP: LanguageDef = LanguageDef {
     skip_line_prefixes: &["class ", "interface ", "trait ", "enum "],
     function_keywords: &["function"],
     patterns: Some(&patterns_data::PHP),
+    line_comment_prefixes: &["//", "#", "/*"],
     ..DEFAULTS
 };
 
@@ -5122,6 +5178,8 @@ static LANG_POWERSHELL: LanguageDef = LanguageDef {
     post_process_chunk: Some(post_process_powershell_powershell as PostProcessChunkFn),
     function_keywords: &["function"],
     patterns: Some(&patterns_data::POWERSHELL),
+    line_comment_prefixes: &["#", "<#"],
+    aliases: &["ps1", "pwsh"],
     ..DEFAULTS
 };
 
@@ -5182,6 +5240,8 @@ static LANG_PROTOBUF: LanguageDef = LanguageDef {
         strip_prefixes: "optional repeated required",
     },
     skip_line_prefixes: &["message ", "enum ", "service "],
+    line_comment_prefixes: &["//", "/*"],
+    aliases: &["proto"],
     ..DEFAULTS
 };
 
@@ -5399,6 +5459,8 @@ static LANG_PYTHON: LanguageDef = LanguageDef {
     mutex_markers: &["Lock()", "threading.Lock"],
     function_keywords: &["def"],
     patterns: Some(&patterns_data::PYTHON),
+    line_comment_prefixes: &["#"],
+    aliases: &["py"],
     ..DEFAULTS
 };
 
@@ -5609,6 +5671,7 @@ static LANG_R: LanguageDef = LanguageDef {
     // line prefix. Method names are extracted via the C-family heuristic
     // (which is loose for R) — leave function_keywords empty.
     patterns: Some(&patterns_data::R_LANG),
+    line_comment_prefixes: &["#"],
     ..DEFAULTS
 };
 
@@ -5981,6 +6044,8 @@ static LANG_RAZOR: LanguageDef = LanguageDef {
     ],
     // Razor uses C# syntax — no introducer keyword.
     patterns: Some(&patterns_data::DOTNET),
+    line_comment_prefixes: &["@*", "<!--", "//"],
+    aliases: &["cshtml"],
     ..DEFAULTS
 };
 
@@ -6070,6 +6135,8 @@ static LANG_RUBY: LanguageDef = LanguageDef {
     post_process_chunk: Some(post_process_ruby_ruby as PostProcessChunkFn),
     function_keywords: &["def"],
     patterns: Some(&patterns_data::RUBY),
+    line_comment_prefixes: &["#"],
+    aliases: &["rb"],
     ..DEFAULTS
 };
 
@@ -6357,6 +6424,7 @@ static LANG_RUST: LanguageDef = LanguageDef {
     function_keywords: &["fn"],
     // Rust has custom logic in `where_to_add::extract_patterns`
     // (3-way pub(crate)/pub/private + anyhow vs thiserror), so `patterns: None`.
+    line_comment_prefixes: &["//", "/*"],
     ..DEFAULTS
 };
 
@@ -6464,6 +6532,7 @@ static LANG_SCALA: LanguageDef = LanguageDef {
     post_process_chunk: Some(post_process_scala_scala as PostProcessChunkFn),
     function_keywords: &["def"],
     patterns: Some(&patterns_data::JVM),
+    line_comment_prefixes: &["//", "/*"],
     ..DEFAULTS
 };
 
@@ -6584,6 +6653,8 @@ static LANG_SOLIDITY: LanguageDef = LanguageDef {
     post_process_chunk: Some(post_process_solidity_solidity as PostProcessChunkFn),
     function_keywords: &["function"],
     patterns: Some(&patterns_data::SOLIDITY),
+    line_comment_prefixes: &["//", "/*"],
+    aliases: &["sol"],
     ..DEFAULTS
 };
 
@@ -6704,6 +6775,7 @@ static LANG_SQL: LanguageDef = LanguageDef {
         "replace",
     ],
     extract_return_nl: extract_return_sql,
+    line_comment_prefixes: &["--", "/*"],
     ..DEFAULTS
 };
 
@@ -6835,6 +6907,8 @@ static LANG_STRUCTURED_TEXT: LanguageDef = LanguageDef {
         "END_PROGRAM",
     ],
     function_keywords: &["FUNCTION", "FUNCTION_BLOCK", "METHOD"],
+    line_comment_prefixes: &["(*", "//"],
+    aliases: &["st", "stl", "iec61131", "iec-st"],
     ..DEFAULTS
 };
 
@@ -7054,6 +7128,7 @@ static LANG_SVELTE: LanguageDef = LanguageDef {
             content_scoped_lines: false,
         },
     ],
+    line_comment_prefixes: &["<!--"],
     ..DEFAULTS
 };
 
@@ -7283,6 +7358,7 @@ static LANG_SWIFT: LanguageDef = LanguageDef {
     skip_line_prefixes: &["class ", "struct ", "enum ", "protocol "],
     function_keywords: &["func"],
     patterns: Some(&patterns_data::SWIFT),
+    line_comment_prefixes: &["//", "/*"],
     ..DEFAULTS
 };
 
@@ -7338,6 +7414,7 @@ static LANG_TOML: LanguageDef = LanguageDef {
     stopwords: &["true", "false"],
     extract_return_nl: extract_return_toml,
     post_process_chunk: Some(post_process_toml_toml),
+    line_comment_prefixes: &["#"],
     ..DEFAULTS
 };
 
@@ -7523,6 +7600,8 @@ static LANG_TYPESCRIPT: LanguageDef = LanguageDef {
     // TS has custom logic in `where_to_add::extract_patterns` (require()
     // import match + module-private vs export). Methods are bare `name(`
     // — no introducer keyword.
+    line_comment_prefixes: &["//", "/*"],
+    aliases: &["ts"],
     ..DEFAULTS
 };
 
@@ -7798,6 +7877,8 @@ static LANG_VBNET: LanguageDef = LanguageDef {
     skip_line_prefixes: &["Class ", "Structure ", "Interface ", "Enum "],
     function_keywords: &["Sub", "Function"],
     patterns: Some(&patterns_data::DOTNET),
+    line_comment_prefixes: &["'", "REM "],
+    aliases: &["vb", "vb.net"],
     ..DEFAULTS
 };
 
@@ -8032,6 +8113,7 @@ static LANG_VUE: LanguageDef = LanguageDef {
             content_scoped_lines: false,
         },
     ],
+    line_comment_prefixes: &["<!--"],
     ..DEFAULTS
 };
 
@@ -8107,6 +8189,8 @@ static LANG_XML: LanguageDef = LanguageDef {
     ],
     extract_return_nl: extract_return_xml,
     post_process_chunk: Some(post_process_xml_xml),
+    line_comment_prefixes: &["<!--"],
+    aliases: &["svg", "xsl"],
     ..DEFAULTS
 };
 
@@ -8162,6 +8246,8 @@ static LANG_YAML: LanguageDef = LanguageDef {
     stopwords: &["true", "false", "null", "yes", "no", "on", "off"],
     extract_return_nl: extract_return_yaml,
     post_process_chunk: Some(post_process_yaml_yaml),
+    line_comment_prefixes: &["#"],
+    aliases: &["yml"],
     ..DEFAULTS
 };
 
@@ -8366,6 +8452,7 @@ static LANG_ZIG: LanguageDef = LanguageDef {
     skip_line_prefixes: &["const ", "pub const"],
     function_keywords: &["fn"],
     patterns: Some(&patterns_data::ZIG),
+    line_comment_prefixes: &["//"],
     ..DEFAULTS
 };
 
@@ -8410,6 +8497,8 @@ static LANG_ASPX: LanguageDef = LanguageDef {
     custom_all_parser: Some(crate::parser::aspx::parse_aspx_all),
     // ASPX wraps C# / VB.NET — dispatch to .NET pattern defaults.
     patterns: Some(&patterns_data::DOTNET),
+    line_comment_prefixes: &["<%--", "<!--", "//"],
+    aliases: &["ascx", "asmx", "webforms"],
     ..DEFAULTS
 };
 

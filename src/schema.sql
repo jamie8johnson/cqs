@@ -1,4 +1,11 @@
--- cq index schema v20
+-- cq index schema v21
+-- v21: parser_version column on chunks so incremental UPSERT can refresh rows
+--      whose content_hash hasn't changed but whose parser-emitted fields (e.g.
+--      `doc` from extract_doc_fallback_for_short_chunk) would now differ. The
+--      WHERE clause in batch_insert_chunks's ON CONFLICT path additionally
+--      checks `OR parser_version != excluded.parser_version`, and
+--      upsert_fts_conditional uses the same OR filter when comparing the
+--      pre-INSERT snapshot.
 -- v20: AFTER DELETE trigger on chunks bumps splade_generation so any persisted
 --      splade.index.bin is invalidated when underlying chunks are removed
 --      (catches the race `delete_by_origin` left behind when CASCADE alone
@@ -41,7 +48,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     window_idx INTEGER,       -- if windowed: 0, 1, 2... for each window
     parent_type_name TEXT,    -- for methods: name of enclosing class/struct/impl
     enrichment_hash TEXT,     -- blake3 hash of call context used for enrichment (NULL = not enriched)
-    enrichment_version INTEGER NOT NULL DEFAULT 0  -- RT-DATA-2: idempotency marker for enrichment passes
+    enrichment_version INTEGER NOT NULL DEFAULT 0,  -- RT-DATA-2: idempotency marker for enrichment passes
+    parser_version INTEGER NOT NULL DEFAULT 0  -- v21: parser stamp for content-hash-stable doc enrichment refresh (P2 #29)
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_origin ON chunks(origin);

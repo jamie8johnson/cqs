@@ -210,31 +210,53 @@ impl<Mode> Store<Mode> {
 
 // ── Shared async helpers for chunk upsert (PERF-3) ──────────────────────────
 
-/// Snapshot existing content hashes before INSERT overwrites them.
-/// Batched in groups of 500 to stay within SQLite's 999-param limit.
+/// Pre-INSERT snapshot of fields used by the `ON CONFLICT DO UPDATE WHERE`
+/// short-circuit and by `upsert_fts_conditional`'s "did anything actually
+/// change?" filter.
+///
+/// `content_hash` is the original PERF-3 / FTS skip key. `parser_version` was
+/// added in v1.28.0 audit P2 #29 so chunks whose source bytes are unchanged
+/// but whose parser logic moved on (e.g. `extract_doc_fallback_for_short_chunk`
+/// in PR #1040) still trigger a refresh.
+#[derive(Clone)]
+pub(super) struct ChunkSnapshot {
+    pub content_hash: String,
+    pub parser_version: u32,
+}
+
+/// Snapshot existing content_hash + parser_version before INSERT overwrites
+/// them. Batched in groups of 500 to stay within SQLite's 999-param limit.
 pub(super) async fn snapshot_content_hashes(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     chunks: &[(Chunk, Embedding)],
-) -> Result<HashMap<String, String>, StoreError> {
+) -> Result<HashMap<String, ChunkSnapshot>, StoreError> {
     const HASH_BATCH: usize = 500;
-    let mut old_hashes = HashMap::new();
+    let mut old: HashMap<String, ChunkSnapshot> = HashMap::new();
     let chunk_ids: Vec<&str> = chunks.iter().map(|(c, _)| c.id.as_str()).collect();
     for id_batch in chunk_ids.chunks(HASH_BATCH) {
         let placeholders = crate::store::helpers::make_placeholders(id_batch.len());
         let sql = format!(
-            "SELECT id, content_hash FROM chunks WHERE id IN ({})",
+            "SELECT id, content_hash, parser_version FROM chunks WHERE id IN ({})",
             placeholders
         );
-        let mut q = sqlx::query_as::<_, (String, String)>(&sql);
+        let mut q = sqlx::query_as::<_, (String, String, i64)>(&sql);
         for id in id_batch {
             q = q.bind(*id);
         }
         let rows = q.fetch_all(&mut **tx).await?;
-        for (id, hash) in rows {
-            old_hashes.insert(id, hash);
+        for (id, hash, pv) in rows {
+            old.insert(
+                id,
+                ChunkSnapshot {
+                    content_hash: hash,
+                    // Stored as INTEGER NOT NULL DEFAULT 0; cast back to u32.
+                    // Negative values shouldn't occur but clamp defensively.
+                    parser_version: pv.max(0).min(u32::MAX as i64) as u32,
+                },
+            );
         }
     }
-    Ok(old_hashes)
+    Ok(old)
 }
 
 /// Batch INSERT chunks — derived from the modern SQLite variable limit.
@@ -266,11 +288,12 @@ pub(super) async fn batch_insert_chunks(
     now: &str,
 ) -> Result<(), StoreError> {
     use crate::store::helpers::sql::max_rows_per_statement;
-    const CHUNK_INSERT_BATCH: usize = max_rows_per_statement(20);
+    // 21 binds per row (P2 #29: parser_version added).
+    const CHUNK_INSERT_BATCH: usize = max_rows_per_statement(21);
     for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
         let emb_offset = batch_idx * CHUNK_INSERT_BATCH;
         let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-            "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, embedding_base, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name)",
+            "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, embedding_base, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name, parser_version)",
         );
         qb.push_values(batch.iter().enumerate(), |mut b, (i, (chunk, _))| {
             b.push_bind(&chunk.id)
@@ -296,10 +319,17 @@ pub(super) async fn batch_insert_chunks(
                 .push_bind(now)
                 .push_bind(&chunk.parent_id)
                 .push_bind(chunk.window_idx.map(|i| i as i64))
-                .push_bind(&chunk.parent_type_name);
+                .push_bind(&chunk.parent_type_name)
+                // P2 #29: stamp the parser version emitted with this chunk so
+                // a parser-logic bump (without source change) still refreshes.
+                .push_bind(chunk.parser_version as i64);
         });
         // DS-2: ON CONFLICT upsert preserves enrichment_hash and enrichment_version.
-        // Only update when content_hash changed (avoids write amplification for unchanged chunks).
+        //
+        // Skip the UPDATE only when BOTH content_hash and parser_version are
+        // identical to the existing row. P2 #29: a parser-logic bump (e.g.
+        // PR #1040's doc fallback) needs to refresh `doc` even though
+        // `content_hash` is unchanged. The OR clause handles that case.
         //
         // Phase 5: on content change, refresh embedding_base too — new content
         // means new NL text means new base embedding. Reindex sets both columns.
@@ -322,30 +352,43 @@ pub(super) async fn batch_insert_chunks(
              updated_at=excluded.updated_at, \
              parent_id=excluded.parent_id, \
              window_idx=excluded.window_idx, \
-             parent_type_name=excluded.parent_type_name \
-             WHERE chunks.content_hash != excluded.content_hash",
+             parent_type_name=excluded.parent_type_name, \
+             parser_version=excluded.parser_version \
+             WHERE chunks.content_hash != excluded.content_hash \
+                OR chunks.parser_version != excluded.parser_version",
         );
         qb.build().execute(&mut **tx).await?;
     }
     Ok(())
 }
 
-/// Conditional FTS upsert: skip if content_hash unchanged (compared to pre-INSERT snapshot).
+/// Conditional FTS upsert: skip if content_hash AND parser_version are
+/// unchanged (compared to pre-INSERT snapshot).
+///
+/// P2 #29: the parser_version OR mirrors the UPSERT WHERE filter in
+/// `batch_insert_chunks`. A parser bump that updates `doc` without touching
+/// source bytes still needs the FTS row refreshed — `normalize_for_fts` is
+/// applied to `doc` and the FTS would otherwise serve stale text.
+///
 /// Batches DELETE and INSERT for efficiency (PERF-2: was 2 SQL per chunk, now batched).
 pub(super) async fn upsert_fts_conditional(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     chunks: &[(Chunk, Embedding)],
-    old_hashes: &HashMap<String, String>,
+    old: &HashMap<String, ChunkSnapshot>,
 ) -> Result<(), StoreError> {
-    // Collect changed chunks
+    // Collect changed chunks (content OR parser_version differs vs. snapshot)
     let changed: Vec<&Chunk> = chunks
         .iter()
         .filter_map(|(chunk, _)| {
-            let content_changed = old_hashes
+            let chunk_changed = old
                 .get(&chunk.id)
-                .map(|old_hash| old_hash != &chunk.content_hash)
+                .map(|snap| {
+                    snap.content_hash != chunk.content_hash
+                        || snap.parser_version != chunk.parser_version
+                })
+                // No snapshot → row is brand-new → always insert.
                 .unwrap_or(true);
-            if content_changed {
+            if chunk_changed {
                 Some(chunk)
             } else {
                 None

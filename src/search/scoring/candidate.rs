@@ -435,6 +435,7 @@ mod tests {
                 parent_type_name: parent_type_name.map(|s| s.to_string()),
                 content_hash: String::new(),
                 window_idx: None,
+                parser_version: 0,
             },
             score,
         }

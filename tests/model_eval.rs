@@ -1481,6 +1481,7 @@ fn test_hard_reranker_comparison() {
                             window_idx: None,
                             parent_id: None,
                             parent_type_name: None,
+                            parser_version: 0,
                         },
                         score: *score,
                     }

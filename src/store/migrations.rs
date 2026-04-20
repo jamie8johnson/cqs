@@ -224,6 +224,7 @@ async fn run_migration(
         (17, 18) => migrate_v17_to_v18(conn).await,
         (18, 19) => migrate_v18_to_v19(conn).await,
         (19, 20) => migrate_v19_to_v20(conn).await,
+        (20, 21) => migrate_v20_to_v21(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -619,6 +620,32 @@ async fn migrate_v19_to_v20(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// Migrate from v20 to v21: add `parser_version` column to chunks
+///
+/// v1.28.0 audit P2 #29 (recovery wave): the watch path UPSERTs chunks with an
+/// `ON CONFLICT(id) DO UPDATE ... WHERE chunks.content_hash != excluded.content_hash`
+/// short-circuit, which is correct when the only thing that ever changes is the
+/// source bytes. But `extract_doc_fallback_for_short_chunk` (PR #1040) can
+/// change `doc` for a chunk whose source bytes are byte-identical to a
+/// previously-indexed version — and that change was being silently discarded
+/// on every incremental update. A `parser_version` stamp lets the UPSERT
+/// invalidate rows whose parser logic moved on, mirroring `splade_generation`.
+///
+/// Defaults to 0 for existing rows so the next `cqs index` (or watch reindex)
+/// will write the live PARSER_VERSION value and refresh the affected fields.
+async fn migrate_v20_to_v21(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v20_to_v21").entered();
+
+    sqlx::query("ALTER TABLE chunks ADD COLUMN parser_version INTEGER NOT NULL DEFAULT 0")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Migrated to v21: parser_version column on chunks (P2 #29 — content-hash-stable doc refresh)"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -651,7 +678,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 20);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 21);
     }
 
     #[test]
@@ -2459,6 +2486,127 @@ mod tests {
                 post.map(|(v,)| v),
                 Some("11".to_string()),
                 "schema_version row must be created with the new version"
+            );
+        });
+    }
+
+    /// v1.28.0 audit P2 #29: v20→v21 adds a `parser_version` column that
+    /// defaults to 0 for existing rows. New rows can write any u32 value;
+    /// the UPSERT path uses `OR parser_version != excluded.parser_version`
+    /// to refresh chunks whose source bytes are unchanged but whose parser
+    /// emitted a different `doc` (or other non-content field).
+    ///
+    /// Round-trip:
+    /// - Pre-migration v20 chunk gets `parser_version = 0` after ALTER.
+    /// - Post-migration v21 INSERT can stamp any value (e.g. 5) and read it back.
+    #[test]
+    fn test_migrate_v20_to_v21_adds_parser_version_column() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true)
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+
+            // Minimal v20 schema: chunks with the v20 column set, metadata.
+            // Notably no `parser_version` column — that's what v20→v21 adds.
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    embedding_base BLOB,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    enrichment_version INTEGER NOT NULL DEFAULT 0
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '20')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // Seed a pre-migration v20 chunk.
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 created_at, updated_at) \
+                 VALUES ('pre_v21', 'file:lib.rs', 'file', 'rust', 'function', 'pre_v21', \
+                 '', '', 'h', 1, 10, X'00', '2026-04-12', '2026-04-12')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Run v20 → v21 migration.
+            migrate(&pool, &db_path, 20, 21).await.unwrap();
+
+            // Schema version bumped.
+            let (v,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(v, "21");
+
+            // Pre-migration row has parser_version = 0 (default).
+            let (pre_pv,): (i64,) =
+                sqlx::query_as("SELECT parser_version FROM chunks WHERE id = 'pre_v21'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                pre_pv, 0,
+                "v20 chunk after migration must default to parser_version = 0"
+            );
+
+            // New row written with parser_version = 5 round-trips correctly.
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 created_at, updated_at, parser_version) \
+                 VALUES ('post_v21', 'file:lib.rs', 'file', 'rust', 'function', 'post_v21', \
+                 '', '', 'h', 1, 10, X'00', '2026-04-12', '2026-04-12', 5)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let (post_pv,): (i64,) =
+                sqlx::query_as("SELECT parser_version FROM chunks WHERE id = 'post_v21'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                post_pv, 5,
+                "v21 INSERT with parser_version = 5 must round-trip"
             );
         });
     }

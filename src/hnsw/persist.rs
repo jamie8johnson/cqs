@@ -403,18 +403,26 @@ impl HnswIndex {
         let mut moved_exts: Vec<&str> = Vec::new();
 
         let rename_result: Result<(), HnswError> = (|| {
-            // Back up existing files before overwriting so rollback can restore them
+            // Back up existing files before overwriting so rollback can restore them.
+            //
+            // P2 #30: propagate the rename error instead of warning-and-continuing.
+            // If the backup never landed, the rollback path further down can't
+            // restore the original file when atomic_replace later fails — we'd
+            // delete the (newly promoted) file in `moved_exts` then look for a
+            // `.bak` that was never created and silently lose the prior index.
+            // Better to bail BEFORE the atomic_replace pass touches anything.
             for ext in &all_exts {
                 let final_path = dir.join(format!("{}.{}", basename, ext));
                 let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
                 if final_path.exists() {
-                    if let Err(e) = std::fs::rename(&final_path, &bak_path) {
-                        tracing::warn!(
-                            path = %final_path.display(),
-                            error = %e,
-                            "Failed to back up existing HNSW file before save"
-                        );
-                    }
+                    std::fs::rename(&final_path, &bak_path).map_err(|e| {
+                        HnswError::Internal(format!(
+                            "Failed to back up {} -> {} before save: {}",
+                            final_path.display(),
+                            bak_path.display(),
+                            e
+                        ))
+                    })?;
                 }
             }
 
@@ -1200,6 +1208,69 @@ mod tests {
         assert!(
             enriched.is_none(),
             "enriched should return None when only index_base files exist"
+        );
+    }
+
+    /// P2 #30 (recovery wave): a backup-rename failure during save MUST bubble
+    /// up rather than being warning-and-continued. The previous behaviour swallowed
+    /// the error, then the rollback path couldn't restore the original file because
+    /// no `.bak` had ever been created — silently losing the prior index.
+    ///
+    /// Force the failure by pre-creating a `.bak` path as a non-empty directory
+    /// (Linux `rename(file, dir)` returns EISDIR / ENOTDIR depending on kernel,
+    /// either way an error). The save must surface that error and leave the
+    /// original `index.hnsw.*` files untouched.
+    #[cfg(unix)]
+    #[test]
+    fn test_save_propagates_backup_rename_failure() {
+        let tmp = TempDir::new().unwrap();
+
+        // Build + save a valid index so the directory has the v1 files.
+        let embeddings: Vec<(String, crate::embedder::Embedding)> = (1..=5)
+            .map(|i| (format!("vec{}", i), make_embedding(i)))
+            .collect();
+        let v1 = HnswIndex::build_with_dim(embeddings.clone(), crate::EMBEDDING_DIM).unwrap();
+        v1.save(tmp.path(), "index").unwrap();
+
+        // Snapshot the v1 graph file size so we can detect post-failure damage.
+        let graph_path = tmp.path().join("index.hnsw.graph");
+        let v1_graph_size = std::fs::metadata(&graph_path).unwrap().len();
+        assert!(
+            v1_graph_size > 0,
+            "v1 graph file should be non-empty after first save"
+        );
+
+        // Pre-create a non-empty directory at the `.bak` path for one of the
+        // extensions. `std::fs::rename(file, non_empty_dir)` fails with
+        // ENOTDIR/EISDIR on Linux, exercising the backup-rename error branch.
+        let bak_blocker = tmp.path().join("index.hnsw.graph.bak");
+        std::fs::create_dir(&bak_blocker).unwrap();
+        // Put a file inside so the rename can't succeed by replacing an empty dir.
+        std::fs::write(bak_blocker.join("blocker"), b"x").unwrap();
+
+        // Attempt a second save with a different (still valid) embeddings set.
+        let v2_embeddings: Vec<(String, crate::embedder::Embedding)> = (1..=8)
+            .map(|i| (format!("vec{}", i + 100), make_embedding(i + 100)))
+            .collect();
+        let v2 = HnswIndex::build_with_dim(v2_embeddings, crate::EMBEDDING_DIM).unwrap();
+
+        let result = v2.save(tmp.path(), "index");
+        assert!(
+            result.is_err(),
+            "save MUST surface the backup-rename failure (P2 #30)"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("back up") || err_msg.contains("backup"),
+            "error should mention backup failure, got: {}",
+            err_msg
+        );
+
+        // Original v1 graph file MUST still be intact and the same size.
+        let post_size = std::fs::metadata(&graph_path).unwrap().len();
+        assert_eq!(
+            post_size, v1_graph_size,
+            "original index file must not be touched when save bails on backup failure"
         );
     }
 }

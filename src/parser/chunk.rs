@@ -292,13 +292,11 @@ const MAX_TOLERATED_BLANK_SIBLINGS: usize = 4;
 /// Returns true if a single source line looks like the start of a
 /// comment in the given language.
 ///
-/// TODO(P2 #53): This currently uses a hardcoded global union of comment
-/// sigils for backward compatibility. Once Agent I lands `pub
-/// line_comment_prefixes: &'static [&'static str]` on `LanguageDef`, switch
-/// to `lang.def().line_comment_prefixes` so adding a language with new
-/// comment syntax (Lisp `;`, Erlang/MATLAB `%`, Smalltalk `"..."`) wires the
-/// fallback automatically. The `lang` argument is wired through now so the
-/// signature is stable for the registry switchover.
+/// Consults `lang.def().line_comment_prefixes` first (per-language precision
+/// for languages with non-default comment syntax — Erlang `%`, Lua `--`, etc.).
+/// If the language declares no prefixes (default `&[]`), falls back to the
+/// conservative global union of common comment sigils so unknown / grammar-less
+/// languages still get reasonable behaviour.
 ///
 /// Trims the leading whitespace before checking; `*` alone is also accepted
 /// for the inner lines of a `/** ... */` block.
@@ -306,15 +304,52 @@ const MAX_TOLERATED_BLANK_SIBLINGS: usize = 4;
 /// The bare-`#` and bare-`*` arms are tightened to require a separator so
 /// `#[derive]` (Rust attribute), `#include`/`#define`/`#pragma` (C
 /// preprocessor), `#region` (C# pragma), `*ptr = 0` (C deref), and
-/// `*x = y` are NOT classified as comment-like.
-fn line_looks_comment_like(line: &str, _lang: Language) -> bool {
+/// `*x = y` are NOT classified as comment-like. This separator rule applies
+/// to ambiguous single-char prefixes regardless of whether they came from
+/// the per-language list or the global fallback (P1 #3 hardening).
+fn line_looks_comment_like(line: &str, lang: Language) -> bool {
     let t = line.trim_start();
     if t.is_empty() {
         return true;
     }
-    // TODO(P2 #53): replace fallback list with `lang.def().line_comment_prefixes`
-    // once Agent I lands the LanguageDef field.
-    // Multi-char comment introducers (unambiguous)
+
+    // Per-language prefixes take precedence. Empty `&[]` means "no
+    // language-specific list registered" — fall through to the global fallback.
+    let prefixes = lang.def().line_comment_prefixes;
+    if !prefixes.is_empty() {
+        for prefix in prefixes {
+            if !t.starts_with(prefix) {
+                continue;
+            }
+            // Apply separator rule for ambiguous single-char prefixes so
+            // attribute / preprocessor / pointer-deref lines stay rejected.
+            if matches!(*prefix, "#" | "*" | "'") {
+                let rest = &t[prefix.len()..];
+                if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+                    return true;
+                }
+                continue;
+            }
+            return true;
+        }
+        // Block-comment continuation markers — accept if any per-language
+        // prefix included `/*`. Inner-`*` lines (` * doc`) and the closing
+        // `*/` line are part of a `/** ... */` block.
+        if prefixes.contains(&"/*") {
+            if t.starts_with("*/") {
+                return true;
+            }
+            if let Some(rest) = t.strip_prefix('*') {
+                if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Global fallback: conservative union for unknown languages and the
+    // grammar-less default routing path.
     if t.starts_with("//")
         || t.starts_with("--")
         || t.starts_with("/*")
@@ -325,13 +360,9 @@ fn line_looks_comment_like(line: &str, _lang: Language) -> bool {
     {
         return true;
     }
-    // Single-char `#` is comment in sh/python/ruby ONLY when followed by whitespace
-    // or alone. Reject `#[derive]`, `#include`, `#define`, `#pragma`, `#region`, `#!`.
     if let Some(rest) = t.strip_prefix('#') {
         return rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t');
     }
-    // Single-char `*` is the inner-line marker of /** ... */ blocks ONLY when
-    // followed by whitespace or alone. Reject `*ptr = 0`, `*x * y`, etc.
     if let Some(rest) = t.strip_prefix('*') {
         return rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t');
     }
@@ -1250,22 +1281,25 @@ public class Calculator {
 
         #[test]
         fn comment_like_accepts_common_prefixes() {
-            for line in [
-                "// rust",
-                "/// outer doc",
-                "//! inner doc",
-                "-- sql",
-                "# python",
-                "/* block",
-                " * inner of /** */ block",
-                "*/ block end",
-                "<!-- html -->",
-                "<%-- jsp --%>",
-                "(* fsharp",
+            // Each sigil tested under a language that legitimately uses it
+            // (per `lang.def().line_comment_prefixes`). Per-language precision
+            // means `--` belongs to SQL/Lua/Haskell, `#` to Python/Bash, etc.
+            for (line, lang) in [
+                ("// rust", Language::Rust),
+                ("/// outer doc", Language::Rust),
+                ("//! inner doc", Language::Rust),
+                ("-- sql", Language::Sql),
+                ("# python", Language::Python),
+                ("/* block", Language::Rust),
+                (" * inner of /** */ block", Language::Rust),
+                ("*/ block end", Language::Rust),
+                ("<!-- html -->", Language::Html),
+                ("<%-- jsp --%>", Language::Aspx),
+                ("(* fsharp", Language::FSharp),
             ] {
                 assert!(
-                    line_looks_comment_like(line, Language::Rust),
-                    "expected comment-like: {line:?}"
+                    line_looks_comment_like(line, lang),
+                    "expected comment-like: {line:?} (lang={lang})"
                 );
             }
         }
@@ -1487,10 +1521,9 @@ type WithDoc = u8;
 
         #[test]
         fn line_looks_comment_like_still_accepts_real_comment_prefixes() {
+            // Rust-specific real comment prefixes — per-language list is
+            // `&["//", "/*"]` plus inner-`*` of `/** */` blocks.
             for line in [
-                "# python comment",
-                "# ",
-                "#",
                 "// rust",
                 "/// outer doc",
                 "/* block",
@@ -1501,6 +1534,13 @@ type WithDoc = u8;
                 assert!(
                     line_looks_comment_like(line, Language::Rust),
                     "expected comment-like: {line:?}"
+                );
+            }
+            // `#` belongs to Python/Bash/Ruby, not Rust.
+            for line in ["# python comment", "# ", "#"] {
+                assert!(
+                    line_looks_comment_like(line, Language::Python),
+                    "expected comment-like in Python: {line:?}"
                 );
             }
         }
@@ -1535,6 +1575,46 @@ type WithDoc = u8;
                     chunk.doc
                 );
             }
+        }
+
+        // ─── P2 #53: per-language line_comment_prefixes ────────────────────
+
+        /// Pin that the registry-driven prefix list is populated for the
+        /// languages most likely to surface in eval data. A language landing
+        /// without prefixes silently falls back to the global heuristic; the
+        /// audit's intent is that common languages get precision.
+        #[test]
+        fn line_comment_prefixes_populated_for_common_languages() {
+            for lang in [
+                Language::Rust,
+                Language::Python,
+                Language::Sql,
+                Language::Java,
+                Language::Go,
+                Language::Bash,
+                Language::Yaml,
+            ] {
+                assert!(
+                    !lang.def().line_comment_prefixes.is_empty(),
+                    "expected {lang} to populate line_comment_prefixes",
+                );
+            }
+        }
+
+        /// Pinned decision: `#` is NOT comment-like in Rust. The audit's
+        /// per-language precision intent overrides the previous global
+        /// fallback. `#` belongs to Python/Bash/Ruby/Yaml; in Rust it is an
+        /// attribute (`#[derive]`) or shebang prefix.
+        #[test]
+        fn python_line_comment_does_not_match_in_rust_context() {
+            assert!(
+                !line_looks_comment_like("# python comment", Language::Rust),
+                "`#` must not classify as comment-like in Rust",
+            );
+            assert!(
+                line_looks_comment_like("# python comment", Language::Python),
+                "`#` must classify as comment-like in Python",
+            );
         }
 
         // ─── A.2: walk-back blank-line budget ──────────────────────────────
@@ -1694,19 +1774,17 @@ CREATE TABLE five_line (
             );
         }
 
-        /// Mixed-prefix walk: the current `line_looks_comment_like` accepts
-        /// `//`, `--`, `#`, etc. globally, so a chunk preceded by mixed
-        /// comment styles will see all of them concatenated. Pin the
-        /// chosen behavior — if a future tightening requires same-prefix-
-        /// family continuity (or per-language filtering once Agent I lands
-        /// the LanguageDef field), this test will fail loudly so the change
-        /// is deliberate.
+        /// Mixed-prefix walk: P2 #53 made `line_looks_comment_like` consult
+        /// `lang.def().line_comment_prefixes` instead of a global union, so
+        /// a Rust chunk preceded by SQL-style `--` comments no longer walks
+        /// past the `--` line. Pin this deliberate tightening so a future
+        /// regression (or a permissive rewrite) surfaces as a loud diff.
         #[test]
         fn fallback_does_not_mix_comment_styles() {
-            // `//` and `--` both pass the current global predicate. Today
-            // the walk-back collects both; we pin "current behavior is
-            // mixing styles is permitted" so that any future deliberate
-            // tightening shows up as a deliberate test diff.
+            // Under Rust (`line_comment_prefixes: &["//", "/*"]`), the `--`
+            // line is NOT comment-like — the walk stops there. The `//`
+            // sibling gap between the `//` header and `type` is not surfaced
+            // because the walk's contiguous comment run is broken.
             let content = "// rust-style header\n-- sql-style header\ntype Mixed = u8;\n";
             let file = write_temp_file(content, "rs");
             let parser = Parser::new().unwrap();
@@ -1717,12 +1795,8 @@ CREATE TABLE five_line (
                 .expect("Mixed chunk");
             let doc = chunk.doc.as_deref().unwrap_or("");
             assert!(
-                doc.contains("rust-style header"),
-                "expected `//` prefix to be captured, got: {doc:?}"
-            );
-            assert!(
-                doc.contains("sql-style header"),
-                "expected `--` prefix to be captured (current mixed-style behavior), got: {doc:?}"
+                !doc.contains("sql-style header"),
+                "per-language walk must NOT capture `--` line in Rust context, got: {doc:?}"
             );
         }
 

@@ -46,6 +46,15 @@ pub struct ChunkSummary {
     pub parent_id: Option<String>,
     /// For methods: name of enclosing class/struct/impl
     pub parent_type_name: Option<String>,
+    /// Parser logic stamp (P2 #29). Defaults to 0 when the loading SELECT
+    /// didn't include the column or when the row predates v21.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub parser_version: u32,
+}
+
+#[inline]
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 impl From<&ChunkSummary> for Chunk {
@@ -65,12 +74,10 @@ impl From<&ChunkSummary> for Chunk {
             parent_id: cs.parent_id.clone(),
             window_idx: cs.window_idx.map(|i| i as u32),
             parent_type_name: cs.parent_type_name.clone(),
-            // TODO(P2 #29 / Agent D): plumb `parser_version` through
-            // `ChunkSummary` and the store layer so this conversion preserves
-            // the original parser_version. Defaulting to 0 here means
-            // round-tripped chunks lose the version stamp; only the parser
-            // -emitted Chunks via `extract_chunk` carry the live value.
-            parser_version: 0,
+            // P2 #29: preserve the version stamp on round-trip. Falls back to
+            // 0 only when the source row was loaded by a SELECT that omitted
+            // `parser_version`, in which case the next reindex will rewrite it.
+            parser_version: cs.parser_version,
         }
     }
 }
@@ -108,6 +115,7 @@ impl From<ChunkRow> for ChunkSummary {
             window_idx: row.window_idx,
             parent_id: row.parent_id,
             parent_type_name: row.parent_type_name,
+            parser_version: row.parser_version,
         }
     }
 }
@@ -429,6 +437,7 @@ mod tests {
             parent_type_name: None,
             content_hash: String::new(),
             window_idx: None,
+            parser_version: 0,
         }
     }
 
@@ -494,6 +503,7 @@ mod tests {
                 parent_type_name: Some("SearchEngine".to_string()),
                 content_hash: "abc123".to_string(),
                 window_idx: None,
+                parser_version: 0,
             },
             score: 0.9375,
         }

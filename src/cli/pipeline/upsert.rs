@@ -148,16 +148,27 @@ pub(super) fn store_stage(
             }
         }
 
-        // Store function calls extracted during parsing (for the `function_calls` table)
-        for (file, function_calls) in &batch.relationships.function_calls {
-            for fc in function_calls {
+        // Store function calls extracted during parsing (for the `function_calls` table).
+        //
+        // P2 #64 (recovery wave): defer-and-batch like type edges. The previous
+        // per-file `upsert_function_calls` opened one transaction per file —
+        // 2,500 BEGIN/COMMIT round-trips on a typical wire. Collect every
+        // (file, calls) tuple first, then a single batched call writes them
+        // all in one transaction.
+        let mut function_call_entries: Vec<(PathBuf, Vec<cqs::parser::FunctionCalls>)> =
+            Vec::with_capacity(batch.relationships.function_calls.len());
+        for (file, function_calls) in batch.relationships.function_calls {
+            for fc in &function_calls {
                 total_calls += fc.calls.len();
             }
-            if let Err(e) = store.upsert_function_calls(file, function_calls) {
+            function_call_entries.push((file, function_calls));
+        }
+        if !function_call_entries.is_empty() {
+            if let Err(e) = store.upsert_function_calls_for_files(&function_call_entries) {
                 tracing::warn!(
-                    file = %file.display(),
+                    files = function_call_entries.len(),
                     error = %e,
-                    "Failed to store function calls"
+                    "Failed to store batched function calls"
                 );
             }
         }

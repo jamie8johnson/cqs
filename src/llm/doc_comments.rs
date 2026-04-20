@@ -356,6 +356,7 @@ mod tests {
             window_idx,
             parent_id: None,
             parent_type_name: None,
+            parser_version: 0,
         }
     }
 
@@ -375,6 +376,7 @@ mod tests {
             window_idx: None,
             parent_id: None,
             parent_type_name: None,
+            parser_version: 0,
         }
     }
 

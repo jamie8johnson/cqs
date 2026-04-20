@@ -172,9 +172,15 @@ impl Store<ReadWrite> {
     /// are deleted but orphan call graph / type edge / summary entries remain.
     /// Without this, the window between `prune_missing` and `prune_stale_calls`
     /// exposes stale `function_calls` rows referencing deleted chunks.
-    // Note: This has a theoretical TOCTOU race between the Phase 1 file-existence
-    // check and the Phase 2 transaction, but acquire_index_lock in cmd_index
-    // prevents concurrent writers in practice.
+    //
+    // P2 #32 (recovery wave): the previous Phase 1 ran the SELECT DISTINCT
+    // outside the write transaction. If `cqs watch` (which only takes
+    // `try_acquire_index_lock`) interleaved an `upsert_chunks_and_calls` call
+    // for a freshly-added file between Phase 1 and Phase 2, that file's origin
+    // was missing from `existing_files` (caller-passed snapshot) yet present in
+    // `chunks` — the Phase 2 DELETE would wipe the just-added rows. Closed by
+    // snapshotting inside the write transaction so we observe a post-watch-
+    // reindex-consistent view.
     pub fn prune_all(
         &self,
         existing_files: &HashSet<PathBuf>,
@@ -182,11 +188,20 @@ impl Store<ReadWrite> {
     ) -> Result<PruneAllResult, StoreError> {
         let _span = tracing::info_span!("prune_all", existing = existing_files.len()).entered();
         self.rt.block_on(async {
-            // Phase 1: identify missing origins (Rust-side HashSet check, outside tx)
+            // Phase 2 begins immediately: take the write lock first so the
+            // distinct-origin scan happens against the same snapshot the
+            // DELETEs will operate on (P2 #32 TOCTOU close).
+            let (_guard, mut tx) = self.begin_write().await?;
+
+            // Phase 1 (now inside the tx): identify missing origins via the
+            // tx's read snapshot. Any concurrent watch reindex that committed
+            // *before* our begin_write is reflected here; any reindex that
+            // committed *after* will be queued behind our write lock. Either
+            // way the missing-set lines up with what's actually deletable.
             let rows: Vec<(String,)> = sqlx::query_as(
                 "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
             )
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
 
             // Same filesystem-existence reconciliation as `prune_missing`.
@@ -195,9 +210,6 @@ impl Store<ReadWrite> {
                 .filter(|(origin,)| !origin_exists(origin, existing_files, root))
                 .map(|(origin,)| origin)
                 .collect();
-
-            // Phase 2: single transaction for ALL mutations
-            let (_guard, mut tx) = self.begin_write().await?;
 
             // 2a. Delete chunks for missing files (batched for SQLite param limit)
             const BATCH_SIZE: usize = 100;
