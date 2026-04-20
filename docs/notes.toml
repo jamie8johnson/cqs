@@ -1447,3 +1447,11 @@ mentions = [
     "evals/label_reranker_v3.py",
     "reranker",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Reranker V2 retrain pairwise (margin=0.3) matched class-weighted BCE (-5.5 test / -9.2 dev R@5). Three loss regimens (pointwise BCE / weighted BCE / pairwise margin) on the same 9k cqs-domain graded corpus converged on the same numbers. Train pair_acc hit 98% but test/dev didn't generalize → fundamentally limited by corpus size (326 queries × ~6 pairs each), not loss choice. R@20 unchanged across all three → all gold IS in pool=20, the cross-encoder consistently demotes it. To break out: 10x more queries (Gemma-augmented synthetic) OR 5x bigger base (bge-reranker-large at ~3x latency). Park the arc; v1.28.1 stage-1 is the current ceiling."
+mentions = [
+    "evals/train_reranker_v2_pairwise.py",
+    "reranker",
+]

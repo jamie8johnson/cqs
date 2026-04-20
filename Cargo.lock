@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "cqs"
-version = "1.28.1"
+version = "1.28.2"
 dependencies = [
  "aho-corasick",
  "anyhow",

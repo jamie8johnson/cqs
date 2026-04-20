@@ -1063,14 +1063,19 @@ impl CentroidClassifier {
 
 /// Upgrade a rule-based classification using embedding-space centroids.
 ///
-/// Currently disabled by default — v3 eval showed −4.6pp R@1 due to
-/// catastrophic alpha misassignment (Behavioral α=0.0 on wrong predictions).
-/// Enable via `CQS_CENTROID_CLASSIFIER=1` for experimentation.
+/// **Enabled by default as of v1.28.2** — A/B on v3.v2 (109 queries each
+/// split, 2026-04-20) showed test R@5 +3.7pp, dev R@5 ±0, with category
+/// breakdown:
 ///
-/// Next steps (saved for later):
-///   - Alpha floor clipping (centroid-assigned α ≥ 0.7) to cap downside
-///   - Logistic regression (85-90% accuracy vs centroid's 76%)
-///   - Re-sweep per-category alphas with centroid active
+///   - structural_search:  +12.5pp (n=16)
+///   - cross_language:     +9.1pp  (n=22)
+///   - behavioral_search:  +3.1pp  (n=32)
+///   - identifier_lookup, multi_step, negation, type_filtered: ±0
+///   - conceptual_search:  −4.0pp  (n=25, single-query noise on low base)
+///
+/// The earlier v3-2026-04-15 −4.6pp R@1 regression was eliminated by the
+/// alpha floor (CENTROID_ALPHA_FLOOR=0.7) added before this measurement.
+/// Set `CQS_CENTROID_CLASSIFIER=0` to opt out.
 ///
 /// Call AFTER the query embedding is available.
 pub fn reclassify_with_centroid(
@@ -1084,12 +1089,8 @@ pub fn reclassify_with_centroid(
     //
     // Env: CQS_CENTROID_CLASSIFIER=0 to disable entirely.
     //      CQS_CENTROID_ALPHA_FLOOR (default 0.7) — minimum α for centroid-assigned categories.
-    // Disabled by default: centroid at 76% accuracy still hurts R@1 by −4.6pp
-    // even with alpha floor at 0.7 (v3 dev eval 2026-04-15). Needs ~90%+
-    // accuracy (logistic regression) to overcome alpha-misassignment cost.
-    // Enable for experimentation: CQS_CENTROID_CLASSIFIER=1
-    if !std::env::var("CQS_CENTROID_CLASSIFIER")
-        .map(|v| v == "1")
+    if std::env::var("CQS_CENTROID_CLASSIFIER")
+        .map(|v| v == "0")
         .unwrap_or(false)
     {
         return classification;

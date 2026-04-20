@@ -2,37 +2,26 @@
 
 ## Right Now
 
-**v1.28.1 shipped (2026-04-20) — recovery patch on top of v1.28.0; fresh-fixture eval shows chunker fix delivers consistent +R@5 across both splits.**
+**v1.28.2 staging for release (2026-04-20).** Patch release bundles four production-side wins from the Reranker V2 retrain arc: windowing fix (PR #1060), `cqs index --force` daemon-detection (PR #1061), `cqs notes list` daemon dispatch (PR #1062), `cli_review_test` slow-test fix (PR #1063), plus centroid classifier flipped default-on after measured A/B win, plus reranker pool cap default lowered 100→20, plus 5 Dependabot bumps (#1055-#1059).
 
-v1.28.0 shipped 2026-04-19 (post-audit release, 150 findings closed across PRs #1041 / #1045 / #1046; 6 issues filed #1042-#1044, #1047-#1049). Audit-mode follow-up caught 8 P2 items silently lost in the wave (Agent D's full scope of 6 + Agent A/I coordination gap of 2). v1.28.1 recovered them: schema v21 + parser_version migration, HNSW backup `?`-propagation, prune_all TOCTOU, default_readonly_pooled_config, upsert_function_calls_for_files batched, get_type_users SQL LIMIT, LanguageDef::line_comment_prefixes, LanguageDef::aliases. Live on crates.io 2026-04-20.
+### v1.28.2 net eval (post-windowing-fix reindex + classifier ON, v3.v2 109q each split)
 
-**Fresh-fixture eval (post-v1.28.1, against regenerated v3.v2):**
-
-| Split | Metric | Canonical (v1.27.0) | Post-v1.28.1 | Δ |
+| Split | Metric | v1.27.0 canonical | v1.28.2 stage-1 + classifier | Δ |
 |---|---|---|---|---|
-| test | R@5 | 63.3% | **66.1%** | **+2.8pp** |
-| test | R@20 | 80.7% | **85.3%** | **+4.6pp** |
-| dev | R@5 | 74.3% | **75.2%** | **+0.9pp** |
-| dev | R@20 | 86.2% | **89.0%** | **+2.8pp** |
+| test | R@5 | 63.3% | **67.0%** | **+3.7pp** |
+| test | R@20 | 80.7% | **83.5%** | **+2.8pp** |
+| dev | R@5 | 74.3% | 75.2% | +0.9pp |
+| dev | R@20 | 86.2% | **89.9%** | **+3.7pp** |
 
-Both splits show consistent positive lifts. The asymmetry from the v1.28.0 wave (test gain didn't replicate on dev) was fixture drift — `evals/regenerate_v3_test.py` had a bug reading the post-#1038 envelope shape (`out["data"]["results"]` instead of `out["results"]`) so it returned 100% unresolved on first attempt; fixed in `evals/regenerate_v3_test.py:155-159` (kept inline, not yet PR'd).
+Per-category R@5 from classifier flip (combined splits): structural_search **+12.5pp** (n=16), cross_language **+9.1pp** (n=22), behavioral_search +3.1pp (n=32), conceptual_search **−4.0pp** (n=25, single-query noise on 44% baseline), rest ±0.
 
-**Right Now:** **Reranker V2 retrain done (2026-04-20) — net negative again, weights stay local. Two related cqs fixes ARE shippable.**
+### Reranker V2 retrain — PARKED
 
-### A/B results on v3.v2 (post-windowing-fix reindex, pool cap 20, UniXcoder graded weights)
+Three loss regimens (BCE / weighted BCE / pairwise margin) on 9k cqs-domain graded rows from Gemma 4 31B labeling. **All three converged on −5 to −9pp R@5** with R@20 unchanged. Pairwise hit 98% train accuracy → fits train pairs perfectly, doesn't generalize. Bottleneck is corpus size (326 queries × ~30 candidates is too thin for a 125M cross-encoder against hard stage-1 negatives), not loss choice. Weights stay local at `~/training-data/reranker-v2-cqs-graded/` and `~/training-data/reranker-v2-cqs-pairwise/`. Daemon override removed; default reranker is the off-the-shelf ms-marco MiniLM. To break out: 10x more queries (Gemma-augmented synthetic) OR 5x bigger base (`bge-reranker-large` at ~3x latency).
 
-| Split | Metric | Baseline (stage-1) | Rerank | Δ |
-|---|---|---|---|---|
-| test | R@1 | 42.2% | 28.4% | **−13.8pp** |
-| test | R@5 | 63.3% | 56.9% | **−6.4pp** |
-| test | R@20 | 81.7% | 81.7% | ±0 |
-| dev | R@1 | 41.3% | 32.1% | **−9.2pp** |
-| dev | R@5 | 75.2% | 67.9% | **−7.3pp** |
-| dev | R@20 | 88.1% | 88.1% | ±0 |
+### Notes A/B — ZERO IMPACT on retrieval
 
-**Diagnosis:** R@20 unchanged on both splits → gold IS in pool=20 → reranker just demotes it within the top 20. ~17pp R@5 improvement over Phase 3 (Stack v2 + binary) but ship gate (R@5 ≥ 0) still fails. Likely cause: severe class imbalance in training data (77% label=0.0, 14% A, 10% TIE) compresses score-head range. Future fix: class-weighted BCE or pairwise margin loss; possibly bigger base model (bge-reranker-large).
-
-**Weights:** `~/training-data/reranker-v2-cqs-graded/` (504MB safetensors + ONNX via optimum-cli in fresh `onnx-export` conda env). Daemon override at `~/.config/systemd/user/cqs-watch.service.d/override.conf` points `CQS_RERANKER_MODEL` here — disable to revert.
+`scoring.note_boost_factor = 0.0` vs `0.15` on v3.v2: identical numbers. Note injection's value is read-time context for `cqs read --focus`, not retrieval ranking. Default left at 0.15.
 
 ### Shippable wins from this arc
 

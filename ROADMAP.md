@@ -1,21 +1,22 @@
 # Roadmap
 
-## Current: v1.28.0 (post-audit release)
+## Current: v1.28.2 (windowing fix + classifier default-on)
 
-54 languages. 29 chunk types. v3 eval canonical, regenerated to v2 fixture 2026-04-17 (109 test / 109 dev). Daemon mode (`cqs watch --serve`, 99ms graph p50 / 200ms search-warm p50). Per-category SPLADE alpha routing via compile-enforced `define_query_categories!` macro. GPU-native CAGRA bitset filtering (patched cuvs 26.4). MSRV 1.95.
+54 languages. 29 chunk types. v3 eval canonical, regenerated to v2 fixture 2026-04-17/20 (109 test / 109 dev). Daemon mode (`cqs watch --serve`, 99ms graph p50 / 200ms search-warm p50). Per-category SPLADE alpha routing. **Centroid classifier active by default** (test R@5 +3.7pp from category-aware routing; opt-out via `CQS_CENTROID_CLASSIFIER=0`). GPU-native CAGRA bitset filtering (patched cuvs 26.4). MSRV 1.95.
 
-**v1.28.0** shipped 2026-04-19: closes the post-v1.27.0 16-category audit (150 findings landed across PRs #1041 / #1045 / #1046; 6 deferred items filed as issues #1042-#1044 + #1047-#1049). **BREAKING:** uniform JSON envelope across all CLI/batch/daemon-socket commands (PR #1038, Task #17). Schema v21 adds `parser_version` column on chunks (PR #1040 + P2 #29). 17 new env-var knobs. Daemon defaults tuned (max clients 64→16, audit_state/config TTL'd reload). Test R@5 lifted 63.3% → 67.0% via PR #1040 chunker doc fallback for short chunks. See `CHANGELOG.md` v1.28.0 entry for the full list.
+**v1.28.2** shipped 2026-04-20: four correctness fixes from the Reranker V2 retrain arc — windowing fix (`chunks.content` was lossy WordPiece-decoded text for 7228/15616 chunks; PR #1060), `cqs index --force` fail-fast vs running daemon (#1061), `cqs notes list` daemon dispatch (#1062), `cli_review_test` `--format` → `--json` migration miss (#1063, fixes 2-day-red slow-tests nightly). Plus: reranker pool cap default 100→20, centroid classifier flipped default-on after isolated A/B (test R@5 +3.7pp), `notes_boost_factor` measured (zero impact, default unchanged). Reindex required to refresh stored content from raw source.
 
-### Eval baselines on v3.v2 (canonical, 2026-04-17/18)
+### Eval baselines on v3.v2 (post-windowing-fix, 2026-04-20)
 
 | Split | R@1 | R@5 | R@20 | Notes |
 |---|---|---|---|---|
-| **test (n=109), post-#1040 (chunker doc fallback + LLM regen)** | **41.3%** | **67.0%** | 75.2% | reindex 2026-04-18, 14,734 chunks, 47.7% LLM coverage |
-| test (n=109), v1.27.0 shipping config | 41.3% | 63.3% | 80.7% | 2026-04-17 regen, 16,095 chunks |
-| dev (n=109), post-#1040 | 40.4% | 71.6% | 79.8% | same reindex |
-| dev (n=109), v1.27.0 shipping config | 41.3% | 74.3% | 86.2% | 2026-04-17 regen |
+| **test (n=109), v1.28.2 stage-1 + classifier ON** | **42.2%** | **67.0%** | **83.5%** | reindex 2026-04-20, 15,675 chunks |
+| test (n=109), v1.28.2 stage-1, classifier OFF | 42.2% | 64.2% | 83.5% | classifier flip alone gives +3.7pp R@5 |
+| **dev (n=109), v1.28.2 stage-1 + classifier ON** | **42.2%** | **75.2%** | **89.9%** | dev higher baseline; classifier neutral here |
+| dev (n=109), v1.28.2 stage-1, classifier OFF | 45.0% | 75.2% | 89.9% | (classifier shifts a query off R@1) |
+| canonical (v1.27.0 shipping) test / dev R@5 | – | 63.3% / 74.3% | 80.7% / 86.2% | for delta reference |
 
-#1040 (chunker doc fallback for short chunks) plus an LLM summary regen lifts test R@5 to 67.0% (+3.7pp vs canonical) but drops dev R@5 to 71.6% (−2.7pp) and both R@20 by 5-6pp. Part of the dev / R@20 movement is corpus-pruning in the reindex (16,095 → 14,734 chunks) rather than the fix itself; a third reindex would help isolate. **R@5 ceiling moved up — the "cheap-lever well dry" claim from earlier in the session arc was wrong.** Subsequent A/B should always quote both test AND dev; N=109 per split is noisy at ±2-3pp single-trial.
+Net Δ vs canonical: test R@5 **+3.7pp**, R@20 **+2.8pp**; dev R@5 +0.9pp, R@20 **+3.7pp**. Per-category R@5 with classifier (n shown, both splits combined): structural_search **+12.5pp**, cross_language **+9.1pp**, behavioral_search +3.1pp, conceptual_search **−4.0pp** (only regression, n=25 noise on 44% baseline), rest ±0. Notes A/B (`scoring.note_boost_factor` 0.0 vs 0.15) on same fixture: **zero impact** — note injection's value is read-time context, not retrieval ranking.
 
 ---
 
@@ -36,7 +37,7 @@
 
 - [x] **Chunker doc fallback for short chunks — landed 2026-04-18 (PR #1040).** `extract_doc_fallback_for_short_chunk` in `src/parser/chunk.rs` plus blank-line tolerance in `extract_doc_comment` close the `truncated_gold` failure mode (chunks <5 lines that ship without leading comment context). 10 happy/sad-path tests; reindex required. **Test R@5 +3.7pp vs canonical (63.3% → 67.0%); dev R@5 −2.7pp** (74.3% → 71.6%) — interlocked with LLM summary regen (5,486 → 7,018 cached, 47.7% coverage). The dev regression and R@20 movement on both splits are partly corpus-pruning artifact (16,095 → 14,734 chunks during reindex); follow-up A/B with a third reindex would isolate.
 
-- [ ] **Reranker V2 retrain with post-mortem fixes — open path.** Mine hard negatives against cqs's *own* index (~16k chunks) for domain match, keep TIE labels in pointwise as 0.5, cap reranker pool at 20. ~1-2 weeks. Plausibly lands where the Stack-v2-trained version didn't.
+- [x] **Reranker V2 retrain with post-mortem fixes — tested 2026-04-20, PARKED.** Executed all three fixes: hard-negatives mined from cqs's own v3_pools (9175 cqs-domain graded training rows), TIE labels preserved as 0.5, pool cap lowered default 100→20. Trained UniXcoder three ways: pointwise BCE unweighted, pointwise BCE with auto `pos_weight=3.28`, pairwise `MarginRankingLoss(margin=0.3)`. **All three converged on −5 to −9pp R@5** (unweighted: −6.4 test / −7.3 dev; weighted: −5.5 / −9.2; pairwise: −5.5 / −9.2). R@20 unchanged across all three — gold IS in pool, weak score head consistently demotes it. Pairwise hit 98% train accuracy → fits train pairs perfectly, doesn't generalize. Conclusion: 326 queries × ~30 candidates is too thin to fine-tune a 125M cross-encoder against hard stage-1 negatives. Bottleneck is corpus size + base strength, not loss choice. Shippable wins (windowing + pool cap default + eval tooling) landed in v1.28.2 (PR #1060). Tooling kept: `evals/label_reranker_v3.py`, `evals/rerank_ab_eval.py`, `evals/train_reranker_v2_pairwise.py`. Next attempt would need 10x more queries (Gemma-augmented synthetic) or 5x bigger base (bge-reranker-large at ~3x latency).
 
 ### CPU Lane
 

@@ -105,6 +105,14 @@ def parse_args():
     p.add_argument("--limit", type=int, default=None,
                    help="Truncate dataset to first N rows (smoke test)")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--pos-weight", type=float, default=None,
+                   help=("BCEWithLogitsLoss `pos_weight` to counter class imbalance. "
+                         "Set to `auto` (or compute manually as N_label0 / N_label>0) "
+                         "when training on naturally pool-skewed corpora — "
+                         "the cqs-domain reranker_v3 graded data is ~77 percent label=0.0, "
+                         "which collapses the score head's range without weighting."))
+    p.add_argument("--auto-pos-weight", action="store_true",
+                   help="Compute pos_weight = N_label0 / N_label>0 from the loaded data")
     return p.parse_args()
 
 
@@ -332,7 +340,19 @@ def main():
     # Loss: torch BCEWithLogitsLoss with the cross-encoder's single-label
     # sigmoid head. CrossEncoder.fit applies the loss to (logits, labels)
     # where labels are the graded relevance in [0.0, 0.5, 1.0] per BiXSE.
-    loss = BCEWithLogitsLoss()
+    pos_weight = args.pos_weight
+    if args.auto_pos_weight and pos_weight is None:
+        n_zero = label_meta["counts"]["B"]
+        n_pos = label_meta["counts"]["A"] + label_meta["counts"]["TIE"]
+        pos_weight = max(1.0, n_zero / max(1, n_pos))
+        print(f"[loss] auto pos_weight = {pos_weight:.2f} (N_zero={n_zero}, N_pos={n_pos})",
+              file=sys.stderr)
+        events.emit("auto_pos_weight", pos_weight=pos_weight, n_zero=n_zero, n_pos=n_pos)
+    if pos_weight is not None and pos_weight != 1.0:
+        loss = BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight]))
+        events.emit("loss_config", pos_weight=pos_weight)
+    else:
+        loss = BCEWithLogitsLoss()
 
     # Shared state for callback + heartbeat
     state = {

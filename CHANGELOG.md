@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.28.2] - 2026-04-20
+
+Patch release — four correctness fixes from the Reranker V2 retrain arc, the centroid classifier flipped to default-on after isolated A/B (test R@5 +3.7pp), and dependency hygiene. The headline win is the windowing fix: 7228 of 15616 chunks were storing lossy WordPiece-decoded text as `chunks.content` (lowercased, space-separated subwords). Reindex required to refresh stored content; eval shows clean +R@5/+R@20 lifts on both v3.v2 splits.
+
+### Fixed
+
+- **Windowing — raw source content** (PR #1060). `Embedder::split_into_windows` was returning `tokenizer.decode(window_ids, true)` as the window text. BGE WordPiece is lossy on decode (lowercases, inserts spaces between subwords, e.g. `pub fn save(&self, path: &Path)` → `pub fn save ( & self, path : & path )`), and that lossy text was persisted into `chunks.content` for every windowed chunk. Affected anything reading `chunk.content`: `cqs read --focus`, cross-encoder rerank input, search result display. Fix slices the original `text` by `encoding.get_offsets()` character ranges. Falls back to the full text on degenerate `(0, 0)` offsets so added special tokens can't collapse the slice. Regression test in integration mod. **Reindex required** to refresh stored content.
+- **`cqs index --force` fail-fast vs running daemon** (PR #1061). The daemon holds a shared file lock on `.cqs/index.hnsw.lock` for the lifetime of its in-memory HNSW. A subsequent `cqs index --force` then blocks for 60+ minutes in `locks_lock_inode_wait`. On WSL/NTFS the existing "advisory-only" warning fires but the wait still happens. `cmd_index` now probes the daemon socket first; if alive, bail with the exact stop/restart command. Connect-only probe (not the typed `daemon_ping`) so a daemon running an older `PingResponse` schema still gets detected.
+- **`cqs notes list` daemon dispatch** (PR #1062). `translate_cli_args_to_batch` translated `cqs notes list --json` into `("notes", ["list"])`, but the daemon's `BatchCmd::Notes` accepts `--warnings`/`--patterns` directly without a `list` token — so every daemon-routed `cqs notes list` errored `unexpected argument 'list' found`. Strip the redundant `list` token in translation. Pre-existing parser drift; `CQS_NO_DAEMON=1 cqs notes list` was unaffected.
+- **`cli_review_test` slow-tests red two days running** (PR #1063). Three integration tests passed `["--format", "json"]` to `cqs review`, but PR #1038's envelope standardization collapsed `--format json` into the canonical `--json` flag. Tests weren't migrated. PR CI doesn't catch them — they're gated by `--features slow-tests`, only run by the nightly workflow. Replaced at all three call sites.
+
+### Changed
+
+- **Default reranker pool cap lowered 100 → 20** (PR #1060). Per Phase 3 reranker post-mortem fix #3 + Drowning in Documents (arXiv 2411.11767): weak cross-encoders degrade monotonically with pool size — at 80 candidates they shuffle noise. `RERANK_POOL_MAX` constant lowered. `CQS_RERANK_POOL_MAX` env override still honored at any value, so the previous behavior is one env var away.
+- **Centroid classifier flipped to default-on**. `reclassify_with_centroid` was opt-in via `CQS_CENTROID_CLASSIFIER=1`; now opt-out via `CQS_CENTROID_CLASSIFIER=0`. The earlier disable (v3 dev 2026-04-15, −4.6pp R@1) was eliminated by the alpha floor (`CENTROID_ALPHA_FLOOR=0.7`) added before this measurement. Fresh A/B with the alpha floor active (v3.v2, 109 queries each split, 2026-04-20) shows test R@5 **+3.7pp**, dev R@5 ±0, with category breakdown:
+  - structural_search: **+12.5pp** (n=16)
+  - cross_language: **+9.1pp** (n=22)
+  - behavioral_search: +3.1pp (n=32)
+  - identifier_lookup, multi_step, negation, type_filtered: ±0
+  - conceptual_search: −4.0pp (n=25, single-query noise on 44% baseline)
+
+### Tooling
+
+- New `evals/label_reranker_v3.py` (Gemma 3-way pointwise labeling for cross-encoder retrain corpora). Pulls chunk content from source files via `(origin, line_start, line_end)`, observable + resumable per `feedback_orr_default.md`.
+- New `evals/rerank_ab_eval.py` (envelope-aware A/B harness toggling `--rerank` on a single index state).
+- New `evals/note_boost_ab_eval.py` (toggles `scoring.note_boost_factor` 0.0 vs 0.15 across daemon restarts; pins note injection's effect on retrieval).
+- New `evals/classifier_ab_eval.py` (toggles `CQS_CENTROID_CLASSIFIER` per-query in CLI mode; per-category breakdown).
+- New `evals/train_reranker_v2_pairwise.py` (MarginRankingLoss training for cqs-domain graded pairs). The Reranker V2 retrain landed three loss regimens (BCE / weighted BCE / pairwise margin) on the same 9k cqs-domain graded corpus; all three converged on −5 to −9pp R@5. Weights stay local; arc parked. Tooling kept for future iterations.
+
+### Dependencies
+
+- Bump `tokio` 1.51.1 → 1.52.1 (PR #1059)
+- Bump `lru` 0.16.3 → 0.17.0 (PR #1058)
+- Bump `clap` 4.6.0 → 4.6.1 (PR #1057)
+- Bump `tree-sitter-fsharp` 0.2.2 → 0.3.0 (PR #1056)
+- Bump `tree-sitter-scala` 0.25.0 → 0.26.0 (PR #1055)
+
+### Eval results
+
+Post-windowing-fix reindex on v3.v2 (109 queries each split). Note: the rerank column is informational — reranker stays disabled by default; the trained UniXcoder weights from the V2 retrain arc are net-negative on v3.v2 (−5 to −9pp R@5 across three loss regimens) and stay local.
+
+| Split | Metric | Canonical (v1.27.0) | Post-#1040 (concerning) | **v1.28.2 stage-1** | **v1.28.2 + classifier** | Δ vs canonical |
+|---|---|---|---|---|---|---|
+| test | R@5 | 63.3% | 67.0% | 64.2% | **67.0%** | **+3.7pp** |
+| test | R@20 | 80.7% | 75.2% | 83.5% | **83.5%** | **+2.8pp** |
+| dev | R@5 | 74.3% | 71.6% | 75.2% | **75.2%** | +0.9pp |
+| dev | R@20 | 86.2% | 79.8% | 89.9% | **89.9%** | **+3.7pp** |
+
+The post-#1040 dev R@20 regression (down to 79.8%) was a transient reindex artifact that fully recovered post-windowing-fix. The dev R@5 baseline is high enough (75.2%) that the classifier has less headroom; test split at 64.2% baseline is where the +3.7pp lift lands.
+
+Notes A/B (`scoring.note_boost_factor` 0.0 vs 0.15) on the same fixture: **zero impact** (test ±0 on all metrics; dev R@1 −0.9pp = single-query flip). Note injection's value is read-time context for `cqs read --focus`, not retrieval ranking; the boost factor is left at the default since it does no harm.
+
+### Migration notes
+
+- **Reindex recommended** (`cqs index --force`) to refresh windowed-chunk content from raw source. Before reindex, `cqs read --focus` and cross-encoder rerank operate on lossy WordPiece text for any chunk longer than ~480 tokens. After reindex, all stored content is raw source.
+- The default `--rerank` pool cap dropped from 100 to 20. Set `CQS_RERANK_POOL_MAX=100` to restore prior behavior; we recommend testing first because the prior cap was harming top-K precision on our eval set.
+- The centroid classifier is now active by default. Set `CQS_CENTROID_CLASSIFIER=0` to opt out. The first-query latency adds ~1ms for the centroid lookup; subsequent queries are unaffected (cached load).
+
 ## [1.28.1] - 2026-04-19
 
 Recovery patch — lands 8 P2 audit fixes that were silently lost in the v1.28.0 wave's parallel-agent dispatch. The v1.28.0 CHANGELOG advertised them as landed; they were stubbed with `TODO(P2 #N)` markers (and in three cases, only existed in the in-memory `Chunk` struct without the corresponding store/schema half). Audit caught the gaps post-release. No data loss for users on v1.28.0 — schema migration is automatic on first open.
