@@ -153,7 +153,10 @@ def run_batch(queries: list[str], k: int = 50) -> list[list[dict]]:
 
             try:
                 out = json.loads(line)
-                results.append(out.get("results", []))
+                # PR #1038 envelope: {"data": ..., "error": null, "version": 1}.
+                # Pre-envelope shape was {"results": [...]} at top level.
+                payload = out.get("data") if isinstance(out.get("data"), dict) else out
+                results.append(payload.get("results", []))
             except json.JSONDecodeError:
                 results.append([])
 

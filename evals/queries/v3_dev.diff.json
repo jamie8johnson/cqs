@@ -1,23 +1,39 @@
 {
-  "generated_at": "2026-04-17T03:21:38",
+  "generated_at": "2026-04-19T21:58:39",
   "source": "v3_dev.json",
   "k": 50,
   "counts": {
-    "strict": 85,
-    "basename": 5,
-    "name": 13,
-    "none": 6
+    "strict": 49,
+    "basename": 1,
+    "name": 52,
+    "none": 7
   },
   "records": [
     {
       "query": "function that embeds a batch of text documents using ONNX",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/embedder/mod.rs",
+        "line_start": 751
+      },
+      "new": {
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
+        "line_start": 821
+      }
     },
     {
       "query": "tables with a not null text column",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 17
+      },
+      "new": {
+        "origin": "src/schema.sql",
+        "line_start": 24
+      }
     },
     {
       "query": "Rust implementation of VectorIndex for CagraIndex compared to Java",
@@ -26,8 +42,16 @@
     },
     {
       "query": "methods on EmbeddingCache that take a slice of tuples",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cache.rs",
+        "line_start": 49
+      },
+      "new": {
+        "origin": "src/cache.rs",
+        "line_start": 51
+      }
     },
     {
       "query": "functions that use argparse AND define a --config argument",
@@ -44,13 +68,29 @@
     },
     {
       "query": "struct definitions in src/impact",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cli/args.rs",
+        "line_start": 462
+      },
+      "new": {
+        "origin": "src/cli/args.rs",
+        "line_start": 518
+      }
     },
     {
       "query": "create llm_summaries table that is not using an auto-incrementing id",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 167
+      },
+      "new": {
+        "origin": "src/schema.sql",
+        "line_start": 175
+      }
     },
     {
       "query": "how to implement a search result validation function in Python vs Bash",
@@ -102,8 +142,16 @@
     },
     {
       "query": "check if a file needs reindexing based on modification time",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/store/chunks/crud.rs",
+        "line_start": 399
+      },
+      "new": {
+        "origin": "src/store/chunks/crud.rs",
+        "line_start": 179
+      }
     },
     {
       "query": "ChunkSummary",
@@ -149,7 +197,7 @@
       },
       "new": {
         "origin": "src/language/languages.rs",
-        "line_start": 4550
+        "line_start": 4655
       }
     },
     {
@@ -172,7 +220,7 @@
       },
       "new": {
         "origin": "src/splade/index.rs",
-        "line_start": 168
+        "line_start": 161
       }
     },
     {
@@ -190,7 +238,7 @@
     },
     {
       "query": "application data storage path",
-      "match_kind": "basename",
+      "match_kind": "name",
       "action": "updated",
       "old": {
         "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
@@ -198,17 +246,25 @@
       },
       "new": {
         "origin": "src/cache.rs",
-        "line_start": 51
+        "line_start": 982
       }
     },
     {
       "query": "sqlite virtual table for text indexing",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 123
+      },
+      "new": {
+        "origin": "src/schema.sql",
+        "line_start": 131
+      }
     },
     {
       "query": "EmbeddingCache",
-      "match_kind": "basename",
+      "match_kind": "name",
       "action": "updated",
       "old": {
         "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
@@ -216,13 +272,21 @@
       },
       "new": {
         "origin": "src/cache.rs",
-        "line_start": 40
+        "line_start": 42
       }
     },
     {
       "query": "table named chunks_fts AND tokenize='unicode61'",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 56
+      },
+      "new": {
+        "origin": "src/schema.sql",
+        "line_start": 64
+      }
     },
     {
       "query": "DiffOutput",
@@ -241,13 +305,29 @@
     },
     {
       "query": "shared context struct that holds store embedder and paths for commands",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cli/store.rs",
+        "line_start": 63
+      },
+      "new": {
+        "origin": "docs/superpowers/plans/2026-04-02-command-context-refactor.md",
+        "line_start": 25
+      }
     },
     {
       "query": "how does the enrichment pass add call graph context to embeddings",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/nl/mod.rs",
+        "line_start": 983
+      },
+      "new": {
+        "origin": "src/nl/mod.rs",
+        "line_start": 992
+      }
     },
     {
       "query": "function named reindex AND takes optional model argument",
@@ -275,13 +355,29 @@
     },
     {
       "query": "how does the embedding pipeline handle GPU failures by requeueing to CPU",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cli/pipeline/embedding.rs",
+        "line_start": 336
+      },
+      "new": {
+        "origin": "src/cli/pipeline/embedding.rs",
+        "line_start": 349
+      }
     },
     {
       "query": "embed a single query string not a batch of documents",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/embedder/mod.rs",
+        "line_start": 615
+      },
+      "new": {
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
+        "line_start": 811
+      }
     },
     {
       "query": "crossbeam channel usage for pipeline message passing",
@@ -305,8 +401,17 @@
     },
     {
       "query": "how to implement an async LLM client with caching in Python vs Go",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "evals/llm_client.py:111:b21042fa:w1",
+        "name": "LLMClient",
+        "origin": "evals/llm_client.py",
+        "language": "python",
+        "chunk_type": "class",
+        "line_start": 111,
+        "line_end": 286
+      }
     },
     {
       "query": "llm based query classification",
@@ -328,7 +433,7 @@
       },
       "new": {
         "origin": "src/language/languages.rs",
-        "line_start": 4000
+        "line_start": 4092
       }
     },
     {
@@ -338,22 +443,21 @@
     },
     {
       "query": "how to translate a GPU evaluation loop from Python to bash",
-      "match_kind": "none",
-      "action": "unresolved",
-      "gold_chunk": {
-        "id": "scripts/full_model_matrix_eval.sh:28:2cd03818",
-        "name": "run_hard_eval",
-        "origin": "scripts/full_model_matrix_eval.sh",
-        "language": "bash",
-        "chunk_type": "function",
-        "line_start": 28,
-        "line_end": 41
-      }
+      "match_kind": "strict",
+      "action": "no_change"
     },
     {
       "query": "how to implement a full text search table in SQLite vs PostgreSQL",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 56
+      },
+      "new": {
+        "origin": "src/schema.sql",
+        "line_start": 64
+      }
     },
     {
       "query": "structs representing call graph relationships",
@@ -375,13 +479,21 @@
       },
       "new": {
         "origin": "src/cli/watch.rs",
-        "line_start": 1902
+        "line_start": 2022
       }
     },
     {
       "query": "tables with an unindexed column",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 56
+      },
+      "new": {
+        "origin": "src/schema.sql",
+        "line_start": 64
+      }
     },
     {
       "query": "Default implementation for PlacementOptions struct",
@@ -390,18 +502,42 @@
     },
     {
       "query": "SQLite FTS5 virtual table definition",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 56
+      },
+      "new": {
+        "origin": "src/schema.sql",
+        "line_start": 64
+      }
     },
     {
       "query": "compute the blake3 hash of file contents for change detection",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/embedder/mod.rs",
+        "line_start": 970
+      },
+      "new": {
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
+        "line_start": 767
+      }
     },
     {
       "query": "parse a source code file and extract all chunks from it",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/parser/mod.rs",
+        "line_start": 224
+      },
+      "new": {
+        "origin": "src/parser/mod.rs",
+        "line_start": 257
+      }
     },
     {
       "query": "classify_query",
@@ -413,7 +549,7 @@
       },
       "new": {
         "origin": "src/search/router.rs",
-        "line_start": 524
+        "line_start": 549
       }
     },
     {
@@ -423,65 +559,104 @@
     },
     {
       "query": "def main function",
-      "match_kind": "name",
-      "action": "updated",
-      "old": {
-        "origin": "evals/generate_queries.py",
-        "line_start": 319
-      },
-      "new": {
-        "origin": "evals/calibrate_reranker_labels.py",
-        "line_start": 873
-      }
+      "match_kind": "strict",
+      "action": "no_change"
     },
     {
       "query": "Python equivalent of removing markdown chapter headings using regex",
-      "match_kind": "none",
-      "action": "unresolved",
-      "gold_chunk": {
-        "id": "scripts/clean_md.py:173:100f5458",
-        "name": "remove_chapter_headings",
-        "origin": "scripts/clean_md.py",
-        "language": "python",
-        "chunk_type": "function",
-        "line_start": 173,
-        "line_end": 189
-      }
+      "match_kind": "strict",
+      "action": "no_change"
     },
     {
       "query": "how does the doctor command check model index and hardware",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cli/commands/infra/doctor.rs",
+        "line_start": 88
+      },
+      "new": {
+        "origin": "src/cli/commands/infra/doctor.rs",
+        "line_start": 112
+      }
     },
     {
       "query": "parse L5X PLC export files into structured text chunks",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/parser/l5x.rs",
+        "line_start": 272
+      },
+      "new": {
+        "origin": "src/parser/l5x.rs",
+        "line_start": 274
+      }
     },
     {
       "query": "Display trait implementation for human-readable output",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/embedder/mod.rs",
+        "line_start": 87
+      },
+      "new": {
+        "origin": "src/language/mod.rs",
+        "line_start": 862
+      }
     },
     {
       "query": "table for type edges without a target_type_id foreign key",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 95
+      },
+      "new": {
+        "origin": "src/schema.sql",
+        "line_start": 103
+      }
     },
     {
       "query": "database schema migration system for version upgrades",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/store/migrations.rs",
+        "line_start": 281
+      },
+      "new": {
+        "origin": "src/store/migrations.rs",
+        "line_start": 291
+      }
     },
     {
       "query": "methods for finding neighbors in Store",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cli/commands/search/neighbors.rs",
+        "line_start": 73
+      },
+      "new": {
+        "origin": "src/cli/commands/search/neighbors.rs",
+        "line_start": 86
+      }
     },
     {
       "query": "create virtual table for notes without indexing the id column",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 123
+      },
+      "new": {
+        "origin": "src/schema.sql",
+        "line_start": 131
+      }
     },
     {
       "query": "impl blocks for CagraIndex",
@@ -493,7 +668,7 @@
       },
       "new": {
         "origin": "src/cagra.rs",
-        "line_start": 588
+        "line_start": 471
       }
     },
     {
@@ -506,7 +681,7 @@
       },
       "new": {
         "origin": "src/language/languages.rs",
-        "line_start": 8046
+        "line_start": 8217
       }
     },
     {
@@ -521,8 +696,16 @@
     },
     {
       "query": "extract references from text without using a full parser",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/parser/markdown/mod.rs",
+        "line_start": 584
+      },
+      "new": {
+        "origin": "src/parser/markdown/mod.rs",
+        "line_start": 669
+      }
     },
     {
       "query": "markdown cleaner that is not recursive",
@@ -531,8 +714,16 @@
     },
     {
       "query": "CacheStats struct",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cache.rs",
+        "line_start": 28
+      },
+      "new": {
+        "origin": "src/cache.rs",
+        "line_start": 30
+      }
     },
     {
       "query": "focused read showing only a function and its type dependencies",
@@ -551,15 +742,16 @@
     },
     {
       "query": "tables with a TEXT primary key and BLOB columns",
-      "match_kind": "name",
-      "action": "updated",
-      "old": {
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "src/schema.sql:22:ea43482c",
+        "name": "chunks",
         "origin": "src/schema.sql",
-        "line_start": 22
-      },
-      "new": {
-        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
-        "line_start": 942
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 22,
+        "line_end": 45
       }
     },
     {
@@ -569,8 +761,16 @@
     },
     {
       "query": "methods that call chunk_splade_texts_query AND return a Vec of String pairs",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/store/sparse.rs",
+        "line_start": 319
+      },
+      "new": {
+        "origin": "src/store/sparse.rs",
+        "line_start": 321
+      }
     },
     {
       "query": "find functions similar to a given function by embedding distance",
@@ -579,13 +779,29 @@
     },
     {
       "query": "functions named find_reference AND defined as pub(crate)",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cli/commands/resolve.rs",
+        "line_start": 27
+      },
+      "new": {
+        "origin": "src/cli/commands/resolve.rs",
+        "line_start": 28
+      }
     },
     {
       "query": "sqlite schema for function call graph",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 66
+      },
+      "new": {
+        "origin": "src/schema.sql",
+        "line_start": 74
+      }
     },
     {
       "query": "functions that return a static slice of static strings",
@@ -597,7 +813,7 @@
       },
       "new": {
         "origin": "src/search/router.rs",
-        "line_start": 342
+        "line_start": 367
       }
     },
     {
@@ -607,8 +823,16 @@
     },
     {
       "query": "Section",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/nl/mod.rs",
+        "line_start": 652
+      },
+      "new": {
+        "origin": "src/nl/mod.rs",
+        "line_start": 655
+      }
     },
     {
       "query": "implementations of VectorIndex AND CagraIndex",
@@ -630,7 +854,7 @@
       },
       "new": {
         "origin": "src/cli/watch.rs",
-        "line_start": 896
+        "line_start": 1170
       }
     },
     {
@@ -648,7 +872,7 @@
       },
       "new": {
         "origin": "src/cli/watch.rs",
-        "line_start": 1998
+        "line_start": 2118
       }
     },
     {
@@ -658,13 +882,30 @@
     },
     {
       "query": "content based fingerprinting",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "none",
+      "action": "unresolved",
+      "gold_chunk": {
+        "id": "src/embedder/mod.rs:349:3a5cb4fc:w1",
+        "name": "model_fingerprint",
+        "origin": "src/embedder/mod.rs",
+        "language": "rust",
+        "chunk_type": "method",
+        "line_start": 349,
+        "line_end": 423
+      }
     },
     {
       "query": "onnx session",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/embedder/mod.rs",
+        "line_start": 432
+      },
+      "new": {
+        "origin": "src/reranker.rs",
+        "line_start": 487
+      }
     },
     {
       "query": "methods in NameMatcher impl",
@@ -673,18 +914,42 @@
     },
     {
       "query": "IndexStats",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/store/helpers/types.rs",
+        "line_start": 385
+      },
+      "new": {
+        "origin": "src/store/helpers/types.rs",
+        "line_start": 399
+      }
     },
     {
       "query": "create sparse_vectors table without a single primary key column",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 134
+      },
+      "new": {
+        "origin": "src/schema.sql",
+        "line_start": 142
+      }
     },
     {
       "query": "markdown section chunks not code function chunks",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/nl/mod.rs",
+        "line_start": 652
+      },
+      "new": {
+        "origin": "src/nl/mod.rs",
+        "line_start": 655
+      }
     },
     {
       "query": "functions that remove TOC section AND take a list of strings",
@@ -698,7 +963,7 @@
     },
     {
       "query": "statistics about the embedding cache entries and size",
-      "match_kind": "basename",
+      "match_kind": "name",
       "action": "updated",
       "old": {
         "origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
@@ -706,12 +971,12 @@
       },
       "new": {
         "origin": "src/cache.rs",
-        "line_start": 373
+        "line_start": 404
       }
     },
     {
       "query": "lazy model loading to avoid startup overhead for simple commands",
-      "match_kind": "basename",
+      "match_kind": "name",
       "action": "updated",
       "old": {
         "origin": ".claude/worktrees/agent-a7cedd3c/src/cli/batch/mod.rs",
@@ -719,7 +984,7 @@
       },
       "new": {
         "origin": "src/cli/batch/mod.rs",
-        "line_start": 170
+        "line_start": 222
       }
     },
     {
@@ -729,18 +994,42 @@
     },
     {
       "query": "verify if tokens contain pipe not using a for loop",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cli/batch/pipeline.rs",
+        "line_start": 350
+      },
+      "new": {
+        "origin": "src/cli/batch/pipeline.rs",
+        "line_start": 398
+      }
     },
     {
       "query": "how to define a function call schema in SQLite vs PostgreSQL",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/schema.sql",
+        "line_start": 78
+      },
+      "new": {
+        "origin": "src/schema.sql",
+        "line_start": 86
+      }
     },
     {
       "query": "format search results as JSON for CLI output",
-      "match_kind": "strict",
-      "action": "no_change"
+      "match_kind": "name",
+      "action": "updated",
+      "old": {
+        "origin": "src/cli/display.rs",
+        "line_start": 390
+      },
+      "new": {
+        "origin": "src/cli/display.rs",
+        "line_start": 397
+      }
     },
     {
       "query": "assign_splits function AND takes held_out_ratio as argument",

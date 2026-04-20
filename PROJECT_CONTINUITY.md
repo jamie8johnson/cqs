@@ -2,11 +2,26 @@
 
 ## Right Now
 
-**v1.28.0 shipped (2026-04-19) — post-audit release closes the post-v1.27.0 16-category audit.** All 150 findings landed across PRs #1041 (P1, 26), #1045 (P2, 47), #1046 (P3, 69); 6 deferred items filed as issues #1042-#1044 (hard P4) + #1047-#1049 (trivial P4). Plus chunker doc fallback (PR #1040, +3.7pp test R@5), uniform JSON envelope (PR #1038, BREAKING), schema v21 migration, 17 new env vars, daemon defaults tuned. Live on crates.io + GitHub Releases.
+**v1.28.1 shipped (2026-04-20) — recovery patch on top of v1.28.0; fresh-fixture eval shows chunker fix delivers consistent +R@5 across both splits.**
 
-**Right Now:** v1.28.0 binary installed at `~/.cargo/bin/cqs`, daemon restarted on it. Audit dossier at `docs/audit-{findings,triage}.md` (renamed v1.27.0 archives still in `docs/`). Next strategic question is open: chunker fix lifted test R@5 to 67.0% (above canonical 63.3%) but dev R@5 sits at 71.6% (still below canonical 74.3%) — partly corpus-pruning artifact (16,095 → 14,734 chunks during reindex). Worth a third reindex + re-eval to isolate the chunker contribution from the pruning noise.
+v1.28.0 shipped 2026-04-19 (post-audit release, 150 findings closed across PRs #1041 / #1045 / #1046; 6 issues filed #1042-#1044, #1047-#1049). Audit-mode follow-up caught 8 P2 items silently lost in the wave (Agent D's full scope of 6 + Agent A/I coordination gap of 2). v1.28.1 recovered them: schema v21 + parser_version migration, HNSW backup `?`-propagation, prune_all TOCTOU, default_readonly_pooled_config, upsert_function_calls_for_files batched, get_type_users SQL LIMIT, LanguageDef::line_comment_prefixes, LanguageDef::aliases. Live on crates.io 2026-04-20.
+
+**Fresh-fixture eval (post-v1.28.1, against regenerated v3.v2):**
+
+| Split | Metric | Canonical (v1.27.0) | Post-v1.28.1 | Δ |
+|---|---|---|---|---|
+| test | R@5 | 63.3% | **66.1%** | **+2.8pp** |
+| test | R@20 | 80.7% | **85.3%** | **+4.6pp** |
+| dev | R@5 | 74.3% | **75.2%** | **+0.9pp** |
+| dev | R@20 | 86.2% | **89.0%** | **+2.8pp** |
+
+Both splits show consistent positive lifts. The asymmetry from the v1.28.0 wave (test gain didn't replicate on dev) was fixture drift — `evals/regenerate_v3_test.py` had a bug reading the post-#1038 envelope shape (`out["data"]["results"]` instead of `out["results"]`) so it returned 100% unresolved on first attempt; fixed in `evals/regenerate_v3_test.py:155-159` (kept inline, not yet PR'd).
+
+**Right Now:** v1.28.1 binary installed; daemon restarted; index at 15,603 chunks / schema v21 / 7,675 LLM summaries (49% coverage). v3.v2 fixture regenerated against current corpus (test: 41 strict / 1 basename / 57 name-fallback / 10 unresolved; dev: 49 / 1 / 52 / 7). Audit dossier at `docs/audit-{findings,triage}.md`; next strategic step is **Reranker V2 retrain with post-mortem fixes** per the user's chained direction.
 
 **Branch:** main.
+
+**Pending uncommitted:** `evals/regenerate_v3_test.py` (envelope-aware fix), `evals/queries/v3_{test,dev}.{v2,diff}.json` (fresh fixture from current corpus). Worth one PR.
 
 ### Lever-by-lever results
 
@@ -17,7 +32,7 @@
 | Tier 1.3 — chunk-type aware boost | within ±1pp noise of default 1.2 | default stays |
 | Tier 2 — Reranker V2 (Phase 3 cross-encoder) | −24pp R@5 (domain shift + binary-label loss) | weights stay local at `~/training-data/reranker-v2-unixcoder/`; not shipped |
 | Tier 2 — ColBERT 2-stage (mxbai-edge-colbert-v0-32m) | marginal/inconsistent: test α=0.9 +2.8pp R@5, dev α=0.9 +0.9pp | eval tool shipped; default OFF; PR #1037 |
-| **Tier 3 — chunker doc fallback for short chunks** | **+3.7pp R@5 test vs canonical** (interlocked with LLM summary regen; dev ambiguous due to corpus-pruning artifact) | shipped in #1040 + #1041 P1 #3-#4 hardening |
+| **Tier 3 — chunker doc fallback for short chunks** | **+2.8pp R@5 test, +0.9pp R@5 dev, +4.6pp R@20 test, +2.8pp R@20 dev** (fresh-fixture comparison post-v1.28.1) | shipped in #1040 + #1041 P1 #3-#4 hardening + v1.28.1 LanguageDef wiring (P2 #53/#55 recovery) |
 
 ### What landed this session arc (post-v1.27.0)
 
@@ -45,6 +60,9 @@
 | #1045 | chore(audit): land 47 P2 fixes from post-v1.27.0 audit (wave 1) |
 | #1046 | chore(audit): land 69 P3 fixes from post-v1.27.0 audit (audit complete) |
 | #1050 | chore: Release v1.28.0 |
+| #1051 | docs(tears): refresh for v1.28.0 release |
+| #1052 | docs(roadmap): refresh header for v1.28.0 |
+| #1053 | chore: Release v1.28.1 — recover 8 P2 audit fixes lost in v1.28.0 wave |
 
 Reranker V2 work also produced commits in the private `cqs-training` repo (research/reranker.md updated with Phase 1/2/3 + ColBERT results + post-mortem).
 
@@ -73,12 +91,12 @@ The Tier 3 chunker fix unlocked R@5 lift; remaining options — pick by appetite
 
 ## Architecture state
 
-- **Version:** v1.28.0 (live on crates.io 2026-04-19; GitHub Release workflow building binaries)
+- **Version:** v1.28.1 (live on crates.io 2026-04-20; GitHub Release with binaries)
 - **MSRV:** 1.95
 - **Local binary:** built from main; reinstall after merge with `cargo build --release --features gpu-index && systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch`
-- **Index:** 14,734 chunks (BGE-large; reindexed 2026-04-18 with chunker doc fallback). 7,018 LLM summaries cached (47.7% coverage; remainder are non-callable chunks not eligible for SQ-6).
-- **Production R@5 on v3.v2 test (post-#1040):** **67.0%** (was 63.3% at v1.27.0 shipping)
-- **Open PRs:** none (audit + release queue cleared)
+- **Index:** 15,603 chunks (BGE-large; reindexed 2026-04-20 on v1.28.1 with v20→v21 migration applied). 7,675 LLM summaries cached (49% coverage).
+- **Production R@5 on v3.v2 test (post-#1053, fresh fixture):** **66.1%** (+2.8pp vs v1.27.0 canonical 63.3%). Dev R@5 **75.2%** (+0.9pp). R@20: +4.6pp test / +2.8pp dev.
+- **Open PRs:** none committed yet; one tiny one queued for the regenerate_v3_test envelope fix + fresh fixture
 - **Open issues:** 5 pre-audit (tier-3 deferred / external-blocked: #106, #255, #717, #916, #956) plus 6 newly-filed audit deferrals (#1042-#1044 hard P4, #1047-#1049 trivial P4)
 - **cqs-watch daemon:** running latest binary (post-#1040 chunker fix installed at `~/.cargo/bin/cqs`, daemon restarted 2026-04-18)
 - **Pending uncommitted:** 4 files in `evals/queries/colbert_rerank_{test,dev}.{json,events.jsonl}` — eval artifacts from PR #1037 work; intentionally not staged (reproducible from script)

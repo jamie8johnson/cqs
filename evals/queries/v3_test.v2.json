@@ -23,7 +23,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "multi_step",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 108,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 116
+        }
       },
       "judges": {
         "claude": {
@@ -68,13 +75,13 @@
       "pool_size": 34,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:108:744fc0db",
+        "id": "src/schema.sql:116:regen",
         "name": "notes",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 108,
-        "line_end": 118
+        "line_start": 116,
+        "line_end": 126
       },
       "gold_chunk_source": "consensus"
     },
@@ -90,7 +97,7 @@
           "old_origin": "src/reranker.rs",
           "old_line_start": 105,
           "new_origin": "src/reranker.rs",
-          "new_line_start": 120
+          "new_line_start": 125
         }
       },
       "judges": {
@@ -136,13 +143,13 @@
       "pool_size": 20,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/reranker.rs:120:regen",
+        "id": "src/reranker.rs:125:regen",
         "name": "Reranker",
         "origin": "src/reranker.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 120,
-        "line_end": 520
+        "line_start": 125,
+        "line_end": 561
       },
       "gold_chunk_source": "consensus"
     },
@@ -152,7 +159,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "structural_search",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 134,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 142
+        }
       },
       "judges": {
         "claude": {
@@ -197,13 +211,13 @@
       "pool_size": 38,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:134:4c8a74a1",
+        "id": "src/schema.sql:142:regen",
         "name": "sparse_vectors",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 134,
-        "line_end": 140
+        "line_start": 142,
+        "line_end": 148
       },
       "gold_chunk_source": "consensus"
     },
@@ -213,7 +227,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "negation",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/hnsw/persist.rs",
+          "old_line_start": 525,
+          "new_origin": "src/hnsw/persist.rs",
+          "new_line_start": 533
+        }
       },
       "judges": {
         "claude": {
@@ -254,13 +275,13 @@
       "pool_size": 32,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/hnsw/persist.rs:525:1b47b8a7:w5",
+        "id": "src/hnsw/persist.rs:533:regen",
         "name": "load_with_dim",
         "origin": "src/hnsw/persist.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 525,
-        "line_end": 690
+        "line_start": 533,
+        "line_end": 698
       },
       "gold_chunk_source": "consensus"
     },
@@ -321,8 +342,7 @@
         "line_start": 15,
         "line_end": 20
       },
-      "gold_chunk_source": "consensus",
-      "_unresolved": true
+      "gold_chunk_source": "consensus"
     },
     {
       "query": "async functions taking a semaphore and an LLMClient",
@@ -388,7 +408,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "cross_language",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 134,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 142
+        }
       },
       "judges": {
         "claude": {
@@ -429,13 +456,13 @@
       "pool_size": 36,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:134:4c8a74a1",
+        "id": "src/schema.sql:142:regen",
         "name": "sparse_vectors",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 134,
-        "line_end": 140
+        "line_start": 142,
+        "line_end": 148
       },
       "gold_chunk_source": "consensus"
     },
@@ -451,7 +478,7 @@
           "old_origin": ".claude/worktrees/agent-a7cedd3c/src/cli/watch.rs",
           "old_line_start": 458,
           "new_origin": "src/cli/watch.rs",
-          "new_line_start": 512
+          "new_line_start": 601
         }
       },
       "judges": {
@@ -497,13 +524,13 @@
       "pool_size": 29,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:512:regen",
+        "id": "src/cli/watch.rs:601:regen",
         "name": "record_failure",
         "origin": "src/cli/watch.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 512,
-        "line_end": 521
+        "line_start": 601,
+        "line_end": 610
       },
       "gold_chunk_source": "consensus"
     },
@@ -574,7 +601,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "multi_step",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 134,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 142
+        }
       },
       "judges": {
         "claude": {
@@ -619,13 +653,13 @@
       "pool_size": 33,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:134:4c8a74a1",
+        "id": "src/schema.sql:142:regen",
         "name": "sparse_vectors",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 134,
-        "line_end": 140
+        "line_start": 142,
+        "line_end": 148
       },
       "gold_chunk_source": "consensus"
     },
@@ -754,7 +788,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776031211,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/store/helpers/types.rs",
+          "old_line_start": 240,
+          "new_origin": "src/store/helpers/types.rs",
+          "new_line_start": 254
+        }
       },
       "judges": {
         "claude": {
@@ -797,13 +838,13 @@
       "pool_size": 39,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/store/helpers/types.rs:254:regen",
         "name": "ChunkIdentity",
         "origin": "src/store/helpers/types.rs",
         "language": "rust",
         "chunk_type": "struct",
-        "line_start": 240,
-        "line_end": 258
+        "line_start": 254,
+        "line_end": 272
       },
       "gold_chunk_source": "consensus"
     },
@@ -813,7 +854,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "negation",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 66,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 74
+        }
       },
       "judges": {
         "claude": {
@@ -858,13 +906,13 @@
       "pool_size": 43,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:66:d6b770de",
+        "id": "src/schema.sql:74:regen",
         "name": "calls",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 66,
-        "line_end": 72
+        "line_start": 74,
+        "line_end": 80
       },
       "gold_chunk_source": "consensus"
     },
@@ -940,7 +988,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776031079,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/cli/batch/handlers/info.rs",
+          "old_line_start": 161,
+          "new_origin": "src/cli/batch/handlers/info.rs",
+          "new_line_start": 168
+        }
       },
       "judges": {
         "claude": {
@@ -985,13 +1040,13 @@
       "pool_size": 22,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/cli/batch/handlers/info.rs:168:regen",
         "name": "dispatch_context",
         "origin": "src/cli/batch/handlers/info.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 161,
-        "line_end": 229
+        "line_start": 168,
+        "line_end": 236
       },
       "gold_chunk_source": "consensus"
     },
@@ -1062,7 +1117,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776031658,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/cli/batch/handlers/graph.rs",
+          "old_line_start": 346,
+          "new_origin": "src/cli/batch/handlers/graph.rs",
+          "new_line_start": 392
+        }
       },
       "judges": {
         "claude": {
@@ -1107,13 +1169,13 @@
       "pool_size": 26,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/cli/batch/handlers/graph.rs:392:regen",
         "name": "dispatch_impact_diff",
         "origin": "src/cli/batch/handlers/graph.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 346,
-        "line_end": 376
+        "line_start": 392,
+        "line_end": 422
       },
       "gold_chunk_source": "consensus"
     },
@@ -1184,7 +1246,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776132099,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/parser/chunk.rs",
+          "old_line_start": 135,
+          "new_origin": "src/parser/chunk.rs",
+          "new_line_start": 160
+        }
       },
       "judges": {
         "claude": {
@@ -1227,13 +1296,13 @@
       "pool_size": 36,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/parser/chunk.rs:160:regen",
         "name": "extract_signature",
         "origin": "src/parser/chunk.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 135,
-        "line_end": 167
+        "line_start": 160,
+        "line_end": 192
       },
       "gold_chunk_source": "consensus"
     },
@@ -1418,7 +1487,7 @@
         "language": "rust",
         "chunk_type": "struct",
         "line_start": 277,
-        "line_end": 415
+        "line_end": 449
       },
       "gold_chunk_source": "consensus"
     },
@@ -1595,8 +1664,7 @@
         "line_start": 261,
         "line_end": 267
       },
-      "gold_chunk_source": "consensus",
-      "_unresolved": true
+      "gold_chunk_source": "consensus"
     },
     {
       "query": "table definition for chunks that is not a view",
@@ -1604,7 +1672,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "negation",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 22,
+          "new_origin": "docs/DESIGN_SPEC_27k_tokens.md",
+          "new_line_start": 942
+        }
       },
       "judges": {
         "claude": {
@@ -1647,13 +1722,13 @@
       "pool_size": 37,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:22:ea43482c",
+        "id": "docs/DESIGN_SPEC_27k_tokens.md:942:regen",
         "name": "chunks",
-        "origin": "src/schema.sql",
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 22,
-        "line_end": 45
+        "line_start": 942,
+        "line_end": 958
       },
       "gold_chunk_source": "consensus"
     },
@@ -1735,7 +1810,7 @@
           "old_origin": "src/language/mod.rs",
           "old_line_start": 679,
           "new_origin": "src/language/mod.rs",
-          "new_line_start": 785
+          "new_line_start": 875
         }
       },
       "judges": {
@@ -1779,13 +1854,13 @@
       "pool_size": 37,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/language/mod.rs:785:regen",
+        "id": "src/language/mod.rs:875:regen",
         "name": "LanguageRegistry",
         "origin": "src/language/mod.rs",
         "language": "rust",
         "chunk_type": "struct",
-        "line_start": 785,
-        "line_end": 790
+        "line_start": 875,
+        "line_end": 880
       },
       "gold_chunk_source": "consensus"
     },
@@ -1854,7 +1929,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "negation",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 134,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 142
+        }
       },
       "judges": {
         "claude": {
@@ -1899,13 +1981,13 @@
       "pool_size": 22,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:134:4c8a74a1",
+        "id": "src/schema.sql:142:regen",
         "name": "sparse_vectors",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 134,
-        "line_end": 140
+        "line_start": 142,
+        "line_end": 148
       },
       "gold_chunk_source": "consensus"
     },
@@ -1915,7 +1997,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "structural_search",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 17,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 24
+        }
       },
       "judges": {
         "claude": {
@@ -1960,13 +2049,13 @@
       "pool_size": 36,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:17:88ae0c75",
+        "id": "src/schema.sql:24:regen",
         "name": "metadata",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 17,
-        "line_end": 20
+        "line_start": 24,
+        "line_end": 27
       },
       "gold_chunk_source": "consensus"
     },
@@ -2025,7 +2114,8 @@
         "line_start": 95,
         "line_end": 102
       },
-      "gold_chunk_source": "consensus"
+      "gold_chunk_source": "consensus",
+      "_unresolved": true
     },
     {
       "query": "QueryCache",
@@ -2035,11 +2125,11 @@
         "first_seen_ts": 1776195055,
         "source_cmd": "search",
         "regenerated_2026_04_17": {
-          "match_kind": "basename",
+          "match_kind": "name",
           "old_origin": ".claude/worktrees/agent-a7cedd3c/src/cache.rs",
           "old_line_start": 901,
           "new_origin": "src/cache.rs",
-          "new_line_start": 901
+          "new_line_start": 980
         }
       },
       "judges": {
@@ -2085,13 +2175,13 @@
       "pool_size": 10,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/cache.rs:901:regen",
+        "id": "src/cache.rs:980:regen",
         "name": "QueryCache",
         "origin": "src/cache.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 901,
-        "line_end": 1099
+        "line_start": 980,
+        "line_end": 1265
       },
       "gold_chunk_source": "consensus"
     },
@@ -2162,7 +2252,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776031453,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_line_start": 373,
+          "new_origin": "src/cli/batch/mod.rs",
+          "new_line_start": 475
+        }
       },
       "judges": {
         "claude": {
@@ -2207,13 +2304,13 @@
       "pool_size": 36,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/cli/batch/mod.rs:475:regen",
         "name": "invalidate_mutable_caches",
         "origin": "src/cli/batch/mod.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 373,
-        "line_end": 383
+        "line_start": 475,
+        "line_end": 518
       },
       "gold_chunk_source": "consensus"
     },
@@ -2282,7 +2379,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776031334,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 17,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 24
+        }
       },
       "judges": {
         "claude": {
@@ -2327,13 +2431,13 @@
       "pool_size": 37,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/schema.sql:24:regen",
         "name": "metadata",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 17,
-        "line_end": 20
+        "line_start": 24,
+        "line_end": 27
       },
       "gold_chunk_source": "consensus"
     },
@@ -2453,8 +2557,7 @@
         "line_start": 349,
         "line_end": 393
       },
-      "gold_chunk_source": "consensus",
-      "_unresolved": true
+      "gold_chunk_source": "consensus"
     },
     {
       "query": "database migration functions for schema upgrades",
@@ -2462,7 +2565,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776031774,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/store/migrations.rs",
+          "old_line_start": 429,
+          "new_origin": "src/store/migrations.rs",
+          "new_line_start": 439
+        }
       },
       "judges": {
         "claude": {
@@ -2507,13 +2617,13 @@
       "pool_size": 21,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/store/migrations.rs:439:regen",
         "name": "migrate_v17_to_v18",
         "origin": "src/store/migrations.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 429,
-        "line_end": 438
+        "line_start": 439,
+        "line_end": 448
       },
       "gold_chunk_source": "consensus"
     },
@@ -2582,7 +2692,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "type_filtered",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/embedder/models.rs",
+          "old_line_start": 147,
+          "new_origin": "src/embedder/models.rs",
+          "new_line_start": 320
+        }
       },
       "judges": {
         "claude": {
@@ -2627,13 +2744,13 @@
       "pool_size": 13,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/embedder/models.rs:147:b71f6ce6:w1",
+        "id": "src/embedder/models.rs:320:regen",
         "name": "ModelConfig",
         "origin": "src/embedder/models.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 147,
-        "line_end": 383
+        "line_start": 320,
+        "line_end": 518
       },
       "gold_chunk_source": "consensus"
     },
@@ -2643,7 +2760,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "negation",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 17,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 24
+        }
       },
       "judges": {
         "claude": {
@@ -2688,13 +2812,13 @@
       "pool_size": 39,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:17:88ae0c75",
+        "id": "src/schema.sql:24:regen",
         "name": "metadata",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 17,
-        "line_end": 20
+        "line_start": 24,
+        "line_end": 27
       },
       "gold_chunk_source": "consensus"
     },
@@ -2826,7 +2950,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "negation",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 123,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 131
+        }
       },
       "judges": {
         "claude": {
@@ -2871,13 +3002,13 @@
       "pool_size": 37,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:123:6ce763e1",
+        "id": "src/schema.sql:131:regen",
         "name": "notes_fts",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 123,
-        "line_end": 127
+        "line_start": 131,
+        "line_end": 135
       },
       "gold_chunk_source": "consensus"
     },
@@ -2946,7 +3077,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776195043,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/search/scoring/candidate.rs",
+          "old_line_start": 167,
+          "new_origin": "src/search/scoring/candidate.rs",
+          "new_line_start": 175
+        }
       },
       "judges": {
         "claude": {
@@ -2991,13 +3129,13 @@
       "pool_size": 36,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/search/scoring/candidate.rs:175:regen",
         "name": "BoundedScoreHeap",
         "origin": "src/search/scoring/candidate.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 167,
-        "line_end": 234
+        "line_start": 175,
+        "line_end": 254
       },
       "gold_chunk_source": "consensus"
     },
@@ -3241,7 +3379,8 @@
         "line_start": 217,
         "line_end": 249
       },
-      "gold_chunk_source": "consensus"
+      "gold_chunk_source": "consensus",
+      "_unresolved": true
     },
     {
       "query": "dead code detection and unused function analysis",
@@ -3308,7 +3447,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "negation",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 108,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 116
+        }
       },
       "judges": {
         "claude": {
@@ -3353,13 +3499,13 @@
       "pool_size": 34,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:108:744fc0db",
+        "id": "src/schema.sql:116:regen",
         "name": "notes",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 108,
-        "line_end": 118
+        "line_start": 116,
+        "line_end": 126
       },
       "gold_chunk_source": "consensus"
     },
@@ -3374,8 +3520,8 @@
           "match_kind": "name",
           "old_origin": "src/schema.sql",
           "old_line_start": 108,
-          "new_origin": "src/cli/batch/mod.rs",
-          "new_line_start": 805
+          "new_origin": "src/schema.sql",
+          "new_line_start": 116
         }
       },
       "judges": {
@@ -3417,13 +3563,13 @@
       "pool_size": 36,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:805:regen",
+        "id": "src/schema.sql:116:regen",
         "name": "notes",
-        "origin": "src/cli/batch/mod.rs",
-        "language": "rust",
-        "chunk_type": "method",
-        "line_start": 805,
-        "line_end": 828
+        "origin": "src/schema.sql",
+        "language": "sql",
+        "chunk_type": "struct",
+        "line_start": 116,
+        "line_end": 126
       },
       "gold_chunk_source": "consensus"
     },
@@ -3500,7 +3646,7 @@
           "old_origin": "src/language/languages.rs",
           "old_line_start": 5896,
           "new_origin": "src/language/languages.rs",
-          "new_line_start": 5925
+          "new_line_start": 6060
         }
       },
       "judges": {
@@ -3544,13 +3690,13 @@
       "pool_size": 29,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/language/languages.rs:5925:regen",
+        "id": "src/language/languages.rs:6060:regen",
         "name": "LANG_RUBY",
         "origin": "src/language/languages.rs",
         "language": "rust",
         "chunk_type": "constant",
-        "line_start": 5925,
-        "line_end": 6002
+        "line_start": 6060,
+        "line_end": 6141
       },
       "gold_chunk_source": "consensus"
     },
@@ -3560,7 +3706,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "cross_language",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 95,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 103
+        }
       },
       "judges": {
         "claude": {
@@ -3605,13 +3758,13 @@
       "pool_size": 32,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:95:e074eb40",
+        "id": "src/schema.sql:103:regen",
         "name": "type_edges",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 95,
-        "line_end": 102
+        "line_start": 103,
+        "line_end": 110
       },
       "gold_chunk_source": "consensus"
     },
@@ -3807,7 +3960,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776031279,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/cli/commands/infra/project.rs",
+          "old_line_start": 20,
+          "new_origin": "src/cli/commands/infra/project.rs",
+          "new_line_start": 23
+        }
       },
       "judges": {
         "claude": {
@@ -3850,13 +4010,13 @@
       "pool_size": 30,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/cli/commands/infra/project.rs:23:regen",
         "name": "ProjectSearchResult",
         "origin": "src/cli/commands/infra/project.rs",
         "language": "rust",
         "chunk_type": "struct",
-        "line_start": 20,
-        "line_end": 28
+        "line_start": 23,
+        "line_end": 31
       },
       "gold_chunk_source": "consensus"
     },
@@ -3872,7 +4032,7 @@
           "old_origin": "src/search/router.rs",
           "old_line_start": 851,
           "new_origin": "src/search/router.rs",
-          "new_line_start": 886
+          "new_line_start": 911
         }
       },
       "judges": {
@@ -3918,13 +4078,13 @@
       "pool_size": 19,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/search/router.rs:886:regen",
+        "id": "src/search/router.rs:911:regen",
         "name": "extract_type_hints",
         "origin": "src/search/router.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 886,
-        "line_end": 906
+        "line_start": 911,
+        "line_end": 931
       },
       "gold_chunk_source": "consensus"
     },
@@ -3940,7 +4100,7 @@
           "old_origin": "src/language/mod.rs",
           "old_line_start": 666,
           "new_origin": "src/language/mod.rs",
-          "new_line_start": 772
+          "new_line_start": 862
         }
       },
       "judges": {
@@ -3984,13 +4144,13 @@
       "pool_size": 25,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/language/mod.rs:772:regen",
+        "id": "src/language/mod.rs:862:regen",
         "name": "fmt",
         "origin": "src/language/mod.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 772,
-        "line_end": 779
+        "line_start": 862,
+        "line_end": 869
       },
       "gold_chunk_source": "consensus"
     },
@@ -4000,7 +4160,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "conceptual_search",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 167,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 175
+        }
       },
       "judges": {
         "claude": {
@@ -4045,13 +4212,13 @@
       "pool_size": 35,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:167:51399f69",
+        "id": "src/schema.sql:175:regen",
         "name": "llm_summaries",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 167,
-        "line_end": 174
+        "line_start": 175,
+        "line_end": 182
       },
       "gold_chunk_source": "consensus"
     },
@@ -4061,7 +4228,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776031409,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/cache.rs",
+          "old_line_start": 321,
+          "new_origin": "src/cache.rs",
+          "new_line_start": 1103
+        }
       },
       "judges": {
         "claude": {
@@ -4106,13 +4280,13 @@
       "pool_size": 30,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/cache.rs:1103:regen",
         "name": "evict",
         "origin": "src/cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 321,
-        "line_end": 370
+        "line_start": 1103,
+        "line_end": 1151
       },
       "gold_chunk_source": "consensus"
     },
@@ -4179,7 +4353,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "negation",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 95,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 103
+        }
       },
       "judges": {
         "claude": {
@@ -4224,13 +4405,13 @@
       "pool_size": 32,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:95:e074eb40",
+        "id": "src/schema.sql:103:regen",
         "name": "type_edges",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 95,
-        "line_end": 102
+        "line_start": 103,
+        "line_end": 110
       },
       "gold_chunk_source": "consensus"
     },
@@ -4365,7 +4546,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776279219,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/cli/batch/commands.rs",
+          "old_line_start": 281,
+          "new_origin": "src/cli/batch/commands.rs",
+          "new_line_start": 406
+        }
       },
       "judges": {
         "claude": {
@@ -4410,13 +4598,13 @@
       "pool_size": 21,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/cli/batch/commands.rs:406:regen",
         "name": "dispatch",
         "origin": "src/cli/batch/commands.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 281,
-        "line_end": 384
+        "line_start": 406,
+        "line_end": 537
       },
       "gold_chunk_source": "consensus"
     },
@@ -4426,7 +4614,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "multi_step",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 123,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 131
+        }
       },
       "judges": {
         "claude": {
@@ -4471,13 +4666,13 @@
       "pool_size": 33,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:123:6ce763e1",
+        "id": "src/schema.sql:131:regen",
         "name": "notes_fts",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 123,
-        "line_end": 127
+        "line_start": 131,
+        "line_end": 135
       },
       "gold_chunk_source": "consensus"
     },
@@ -4548,7 +4743,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "conceptual_search",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 78,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 86
+        }
       },
       "judges": {
         "claude": {
@@ -4591,13 +4793,13 @@
       "pool_size": 38,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:78:af948656",
+        "id": "src/schema.sql:86:regen",
         "name": "function_calls",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 78,
-        "line_end": 85
+        "line_start": 86,
+        "line_end": 93
       },
       "gold_chunk_source": "consensus"
     },
@@ -4666,7 +4868,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776031074,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/store/search.rs",
+          "old_line_start": 159,
+          "new_origin": "src/store/search.rs",
+          "new_line_start": 182
+        }
       },
       "judges": {
         "claude": {
@@ -4711,13 +4920,13 @@
       "pool_size": 32,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/store/search.rs:182:regen",
         "name": "rrf_fuse",
         "origin": "src/store/search.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 159,
-        "line_end": 206
+        "line_start": 182,
+        "line_end": 229
       },
       "gold_chunk_source": "consensus"
     },
@@ -4727,7 +4936,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "multi_step",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/nl/mod.rs",
+          "old_line_start": 652,
+          "new_origin": "src/nl/mod.rs",
+          "new_line_start": 655
+        }
       },
       "judges": {
         "claude": {
@@ -4770,13 +4986,13 @@
       "pool_size": 34,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/nl/mod.rs:652:209e5f50",
+        "id": "src/nl/mod.rs:655:regen",
         "name": "make_section_chunk",
         "origin": "src/nl/mod.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 652,
-        "line_end": 669
+        "line_start": 655,
+        "line_end": 673
       },
       "gold_chunk_source": "consensus"
     },
@@ -4839,7 +5055,8 @@
         "line_start": 37,
         "line_end": 218
       },
-      "gold_chunk_source": "consensus"
+      "gold_chunk_source": "consensus",
+      "_unresolved": true
     },
     {
       "query": "save HNSW index to disk with checksum verification",
@@ -4908,7 +5125,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "cross_language",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 22,
+          "new_origin": "docs/DESIGN_SPEC_27k_tokens.md",
+          "new_line_start": 942
+        }
       },
       "judges": {
         "claude": {
@@ -4949,13 +5173,13 @@
       "pool_size": 36,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:22:ea43482c",
+        "id": "docs/DESIGN_SPEC_27k_tokens.md:942:regen",
         "name": "chunks",
-        "origin": "src/schema.sql",
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 22,
-        "line_end": 45
+        "line_start": 942,
+        "line_end": 958
       },
       "gold_chunk_source": "consensus"
     },
@@ -5075,8 +5299,7 @@
         "line_start": 30,
         "line_end": 53
       },
-      "gold_chunk_source": "consensus",
-      "_unresolved": true
+      "gold_chunk_source": "consensus"
     },
     {
       "query": "dispatch_search",
@@ -5323,8 +5546,7 @@
         "line_start": 43,
         "line_end": 57
       },
-      "gold_chunk_source": "consensus",
-      "_unresolved": true
+      "gold_chunk_source": "consensus"
     },
     {
       "query": "how to parse OCaml function return types in Rust vs OCaml",
@@ -5338,7 +5560,7 @@
           "old_origin": "src/language/languages.rs",
           "old_line_start": 4529,
           "new_origin": "src/language/languages.rs",
-          "new_line_start": 4550
+          "new_line_start": 4655
         }
       },
       "judges": {
@@ -5382,13 +5604,13 @@
       "pool_size": 36,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/language/languages.rs:4550:regen",
+        "id": "src/language/languages.rs:4655:regen",
         "name": "extract_return_ocaml",
         "origin": "src/language/languages.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 4550,
-        "line_end": 4569
+        "line_start": 4655,
+        "line_end": 4674
       },
       "gold_chunk_source": "consensus"
     },
@@ -5404,7 +5626,7 @@
           "old_origin": "src/language/languages.rs",
           "old_line_start": 6471,
           "new_origin": "src/language/languages.rs",
-          "new_line_start": 6512
+          "new_line_start": 6662
         }
       },
       "judges": {
@@ -5448,13 +5670,13 @@
       "pool_size": 40,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/language/languages.rs:6512:regen",
+        "id": "src/language/languages.rs:6662:regen",
         "name": "post_process_solidity_solidity",
         "origin": "src/language/languages.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 6512,
-        "line_end": 6530
+        "line_start": 6662,
+        "line_end": 6680
       },
       "gold_chunk_source": "consensus"
     },
@@ -5464,7 +5686,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776031354,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/cli/batch/commands.rs",
+          "old_line_start": 25,
+          "new_origin": "src/cli/batch/commands.rs",
+          "new_line_start": 26
+        }
       },
       "judges": {
         "claude": {
@@ -5507,13 +5736,13 @@
       "pool_size": 36,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/cli/batch/commands.rs:26:regen",
         "name": "BatchInput",
         "origin": "src/cli/batch/commands.rs",
         "language": "rust",
         "chunk_type": "struct",
-        "line_start": 25,
-        "line_end": 28
+        "line_start": 26,
+        "line_end": 29
       },
       "gold_chunk_source": "consensus"
     },
@@ -5523,7 +5752,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "multi_step",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 22,
+          "new_origin": "docs/DESIGN_SPEC_27k_tokens.md",
+          "new_line_start": 942
+        }
       },
       "judges": {
         "claude": {
@@ -5564,16 +5800,15 @@
       "pool_size": 40,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:22:ea43482c",
+        "id": "docs/DESIGN_SPEC_27k_tokens.md:942:regen",
         "name": "chunks",
-        "origin": "src/schema.sql",
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 22,
-        "line_end": 45
+        "line_start": 942,
+        "line_end": 958
       },
-      "gold_chunk_source": "consensus",
-      "_unresolved": true
+      "gold_chunk_source": "consensus"
     },
     {
       "query": "build_query_set function AND generated parameter",
@@ -5640,7 +5875,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776031213,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/search/scoring/candidate.rs",
+          "old_line_start": 240,
+          "new_origin": "src/search/scoring/candidate.rs",
+          "new_line_start": 260
+        }
       },
       "judges": {
         "claude": {
@@ -5685,13 +5927,13 @@
       "pool_size": 18,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/search/scoring/candidate.rs:260:regen",
         "name": "ScoringContext",
         "origin": "src/search/scoring/candidate.rs",
         "language": "rust",
         "chunk_type": "struct",
-        "line_start": 240,
-        "line_end": 250
+        "line_start": 260,
+        "line_end": 270
       },
       "gold_chunk_source": "consensus"
     },
@@ -5701,7 +5943,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "cross_language",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 17,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 24
+        }
       },
       "judges": {
         "claude": {
@@ -5744,16 +5993,15 @@
       "pool_size": 38,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:17:88ae0c75",
+        "id": "src/schema.sql:24:regen",
         "name": "metadata",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 17,
-        "line_end": 20
+        "line_start": 24,
+        "line_end": 27
       },
-      "gold_chunk_source": "consensus",
-      "_unresolved": true
+      "gold_chunk_source": "consensus"
     },
     {
       "query": "enrichment_pass",
@@ -5878,7 +6126,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "multi_step",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 66,
+          "new_origin": "src/schema.sql",
+          "new_line_start": 74
+        }
       },
       "judges": {
         "claude": {
@@ -5923,13 +6178,13 @@
       "pool_size": 34,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:66:d6b770de",
+        "id": "src/schema.sql:74:regen",
         "name": "calls",
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 66,
-        "line_end": 72
+        "line_start": 74,
+        "line_end": 80
       },
       "gold_chunk_source": "consensus"
     },
@@ -5945,7 +6200,7 @@
           "old_origin": "src/language/languages.rs",
           "old_line_start": 6366,
           "new_origin": "src/language/languages.rs",
-          "new_line_start": 6407
+          "new_line_start": 6553
         }
       },
       "judges": {
@@ -5989,13 +6244,13 @@
       "pool_size": 36,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/language/languages.rs:6407:regen",
+        "id": "src/language/languages.rs:6553:regen",
         "name": "extract_return_solidity",
         "origin": "src/language/languages.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 6407,
-        "line_end": 6424
+        "line_start": 6553,
+        "line_end": 6570
       },
       "gold_chunk_source": "consensus"
     },
@@ -6005,7 +6260,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "negation",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/cli/pipeline/embedding.rs",
+          "old_line_start": 189,
+          "new_origin": "src/cli/pipeline/embedding.rs",
+          "new_line_start": 197
+        }
       },
       "judges": {
         "claude": {
@@ -6046,13 +6308,13 @@
       "pool_size": 40,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/cli/pipeline/embedding.rs:189:cbf64db2:w2",
+        "id": "src/cli/pipeline/embedding.rs:197:regen",
         "name": "gpu_embed_stage",
         "origin": "src/cli/pipeline/embedding.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 189,
-        "line_end": 331
+        "line_start": 197,
+        "line_end": 344
       },
       "gold_chunk_source": "consensus"
     },
@@ -6181,7 +6443,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "negation",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/store/helpers/types.rs",
+          "old_line_start": 410,
+          "new_origin": "src/store/helpers/types.rs",
+          "new_line_start": 424
+        }
       },
       "judges": {
         "claude": {
@@ -6224,13 +6493,13 @@
       "pool_size": 35,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/store/helpers/types.rs:410:cc967576",
+        "id": "src/store/helpers/types.rs:424:regen",
         "name": "make_chunk",
         "origin": "src/store/helpers/types.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 410,
-        "line_end": 427
+        "line_start": 424,
+        "line_end": 442
       },
       "gold_chunk_source": "consensus"
     },
@@ -6359,7 +6628,14 @@
       "source": "generated",
       "metadata": {
         "target_category": "conceptual_search",
-        "matched": true
+        "matched": true,
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/schema.sql",
+          "old_line_start": 17,
+          "new_origin": "docs/DESIGN_SPEC_27k_tokens.md",
+          "new_line_start": 937
+        }
       },
       "judges": {
         "claude": {
@@ -6404,13 +6680,13 @@
       "pool_size": 37,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": "src/schema.sql:17:88ae0c75",
+        "id": "docs/DESIGN_SPEC_27k_tokens.md:937:regen",
         "name": "metadata",
-        "origin": "src/schema.sql",
+        "origin": "docs/DESIGN_SPEC_27k_tokens.md",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 17,
-        "line_end": 20
+        "line_start": 937,
+        "line_end": 940
       },
       "gold_chunk_source": "consensus"
     },
@@ -6420,7 +6696,14 @@
       "source": "telemetry",
       "metadata": {
         "first_seen_ts": 1776031458,
-        "source_cmd": "search"
+        "source_cmd": "search",
+        "regenerated_2026_04_17": {
+          "match_kind": "name",
+          "old_origin": "src/hnsw/persist.rs",
+          "old_line_start": 798,
+          "new_origin": "src/hnsw/persist.rs",
+          "new_line_start": 806
+        }
       },
       "judges": {
         "claude": {
@@ -6465,13 +6748,13 @@
       "pool_size": 28,
       "tier": "high_confidence",
       "gold_chunk": {
-        "id": null,
+        "id": "src/hnsw/persist.rs:806:regen",
         "name": "try_load_with_ef",
         "origin": "src/hnsw/persist.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 798,
-        "line_end": 804
+        "line_start": 806,
+        "line_end": 812
       },
       "gold_chunk_source": "consensus"
     },
@@ -6656,12 +6939,12 @@
       "gold_chunk_source": "consensus"
     }
   ],
-  "regenerated_at": "2026-04-17",
+  "regenerated_at": "2026-04-19",
   "regenerated_against": "current index (k=50)",
   "regenerated_counts": {
-    "strict": 78,
-    "basename": 2,
-    "name": 15,
-    "none": 14
+    "strict": 41,
+    "basename": 1,
+    "name": 57,
+    "none": 10
   }
 }
