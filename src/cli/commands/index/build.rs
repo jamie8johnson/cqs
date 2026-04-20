@@ -81,6 +81,54 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         }
     }
 
+    // Detect a running cqs-watch --serve daemon BEFORE we touch anything.
+    // The daemon holds a shared file lock on `index.hnsw.lock` for the
+    // lifetime of its in-memory HNSW. A subsequent `cqs index --force` then
+    // blocks indefinitely in `locks_lock_inode_wait` waiting for an
+    // exclusive write lock the daemon will never release. On WSL/NTFS the
+    // "advisory-only" warning fires but the wait still happens. Fail-fast
+    // here with clear instructions instead of hanging for 60+ minutes.
+    //
+    // We use a connect-only probe (not the typed `daemon_ping`) so a daemon
+    // running an older `PingResponse` schema still gets detected — schema
+    // drift would otherwise let the deserialize error fall through and
+    // silently restore the old hang behavior on version mismatches.
+    #[cfg(unix)]
+    if !dry_run {
+        let sock_path = cqs::daemon_translate::daemon_socket_path(&cqs_dir);
+        if sock_path.exists() {
+            use std::os::unix::net::UnixStream;
+            use std::time::Duration;
+            match UnixStream::connect(&sock_path) {
+                Ok(stream) => {
+                    // Connected — daemon is alive enough to hold the HNSW
+                    // lock. Drop the stream immediately and bail.
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+                    drop(stream);
+                    anyhow::bail!(
+                        "A cqs-watch --serve daemon is currently running ({}). It holds a shared lock on \
+                         the HNSW index, so this reindex would block indefinitely in locks_lock_inode_wait. \
+                         Stop the daemon before reindexing:\n\n  \
+                         systemctl --user stop cqs-watch && cqs index{} && systemctl --user start cqs-watch\n\n\
+                         (If you launched the daemon manually, kill that process instead.)",
+                        sock_path.display(),
+                        if force { " --force" } else { "" }
+                    );
+                }
+                Err(e) => {
+                    // Socket file exists but connect failed → stale socket
+                    // (kill -9, OOM, power loss left the file behind). Safe
+                    // to proceed; the next daemon start will replace it.
+                    tracing::debug!(
+                        path = %sock_path.display(),
+                        error = %e,
+                        "stale daemon socket present; proceeding with reindex"
+                    );
+                }
+            }
+        }
+    }
+
     // Acquire lock (unless dry run)
     let _lock = if !dry_run {
         Some(acquire_index_lock(&cqs_dir)?)
