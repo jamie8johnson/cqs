@@ -80,6 +80,18 @@ The R@5 re-sweep also surfaced direction-stable but small-magnitude moves on `cr
 
   **Estimated effort:** 1-2 days (Gemma 31B already up via vLLM; labeling pipeline already proven from Reranker V2 calibration; training head is ~50 LOC of PyTorch; eval harness in place via `evals/classifier_ab_eval.py`).
 
+- [ ] **Per-query α regression — skip the taxonomy entirely.** Alternative or companion to the distilled classifier above. The 9-way category taxonomy is a lossy compression of an underlying continuous α surface — categories were a human-designed clustering of query types, but the model doesn't actually need them. Train a tiny MLP (BGE 1024-dim query embedding → α ∈ [0, 1]) directly. Prediction: one matmul + sigmoid, <0.1ms additional latency. Same runtime cost as the distilled head, but skips the categorical bottleneck.
+
+  **Training data already exists.** The v1.28.3 R@5 sweep produced 11,424 labeled examples (544 queries × 21 alphas, R@5 outcome per (query, α) pair) sitting in `evals/queries/v3_alpha_sweep_r5{,_test,_dev}.json`. Per-query "best α" is `argmax_α R@5(query, α)`. For queries where multiple alphas tie at the optimum, regress against the centroid of the tied range to bias toward stable predictions.
+
+  **Why this might beat the distilled head:** category boundaries are fuzzy. A query that's 60% behavioral / 30% structural / 10% multi_step gets routed to one bucket and gets that bucket's α — which is wrong for queries near the boundary. Direct α regression sees the query and picks the right point on the [0, 1] surface without intermediate quantization.
+
+  **Why it might not:** single-query R@5 outcomes are noisy (per-query R@5 ∈ {0/n, 1/n, ..., n/n} for tiny per-query sample size). The category abstraction provides natural smoothing across a population. The regression target may need windowing or smoothing to be learnable.
+
+  **Combine with the distilled head?** Possibly — train both on the same Gemma-labeled dataset, ensemble. Distilled head gives interpretable category routing for telemetry/debugging; α regression captures fine-grained tuning. Or use the regression as a tie-breaker when the distilled head's top-1 vs top-2 confidence margin is small.
+
+  **Estimated effort:** 1-2 days, shares infrastructure with the distilled head (same labeling pass would label both targets simultaneously). ~75 LOC of PyTorch.
+
 **Testing infrastructure:**
 - [ ] **Rewrite slow CLI test binaries to in-process fixtures** ([#980](https://github.com/jamie8johnson/cqs/issues/980)). `cli_batch_test`, `cli_graph_test`, `cli_commands_test`, `cli_test`, `cli_health_test` gated behind `slow-tests` feature (PR #988) because each shells out to `cqs` and cold-loads the ONNX/HNSW/SPLADE stack per test case (~118 min combined on PR CI). Follow the `cli_notes_test` + `router_test` pattern: one `Store` + `CommandContext` per binary, call `cmd_*` handlers directly. Un-gates the feature and retires the nightly `slow-tests.yml` workflow.
 
