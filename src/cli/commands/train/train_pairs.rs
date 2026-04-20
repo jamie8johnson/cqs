@@ -191,6 +191,7 @@ mod tests {
             parent_type_name: None,
             content_hash: format!("hash_{}", name),
             window_idx: None,
+            parser_version: 0,
         }
     }
 

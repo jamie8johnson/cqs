@@ -89,10 +89,11 @@ pub(crate) fn cmd_deps(
     let limit = limit.clamp(1, 100);
 
     if reverse {
-        let mut types = store
-            .get_types_used_by(name)
+        // P2 #65: limit at SQL time so we don't fetch every edge of a popular
+        // function just to drop the tail.
+        let types = store
+            .get_types_used_by(name, limit)
             .context("Failed to load type dependencies")?;
-        types.truncate(limit);
         if json {
             let output = build_deps_reverse(name, &types);
             crate::cli::json_envelope::emit_json(&output)?;
@@ -112,10 +113,10 @@ pub(crate) fn cmd_deps(
             println!("Total: {} type(s)", types.len());
         }
     } else {
-        let mut users = store
-            .get_type_users(name)
+        // P2 #65: limit at SQL time. Same shape as the reverse branch above.
+        let users = store
+            .get_type_users(name, limit)
             .context("Failed to load type users")?;
-        users.truncate(limit);
         if json {
             let output = build_deps_forward(&users, root);
             crate::cli::json_envelope::emit_json(&output)?;

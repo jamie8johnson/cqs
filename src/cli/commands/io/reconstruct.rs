@@ -109,6 +109,7 @@ mod tests {
             parent_type_name: None,
             content_hash: String::new(),
             window_idx: None,
+            parser_version: 0,
         }
     }
 

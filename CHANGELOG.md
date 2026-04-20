@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.28.1] - 2026-04-19
+
+Recovery patch — lands 8 P2 audit fixes that were silently lost in the v1.28.0 wave's parallel-agent dispatch. The v1.28.0 CHANGELOG advertised them as landed; they were stubbed with `TODO(P2 #N)` markers (and in three cases, only existed in the in-memory `Chunk` struct without the corresponding store/schema half). Audit caught the gaps post-release. No data loss for users on v1.28.0 — schema migration is automatic on first open.
+
+### Fixed
+
+- **Schema v21 migration** with `parser_version` column on chunks (P2 #29). Closes the silent-skip-on-incremental-reindex regression class — chunks with new parser-version output now refresh on `cqs index` instead of being passed-through by the content-hash UPSERT filter. `batch_insert_chunks` and `upsert_fts_conditional` UPDATE-WHERE clauses now refresh on either `content_hash != excluded` OR `parser_version != excluded`.
+- **HNSW backup `?` propagation** (P2 #30). `std::fs::rename` failure during the backup pass no longer warn-and-continues — the atomic_replace pass never starts on a missing-backup file, so the rollback path can always restore the original.
+- **`prune_all` Phase 1 TOCTOU** (P2 #32). The distinct-origin scan moved INSIDE the Phase 2 write transaction. Closes the race against concurrent `cqs watch` reindex.
+- **`default_readonly_pooled_config` helper** (P2 #42). Both `Store::open_readonly_pooled` variants now delegate to one shared config builder — no more drift on `mmap_size` / `cache_size` / `max_connections` defaults.
+- **`Store::upsert_function_calls_for_files`** batched writes (P2 #64). Indexing pipeline now batches all per-file `function_calls` writes into one transaction (was N transactions for N files).
+- **`get_type_users` / `get_types_used_by` SQL `LIMIT`** (P2 #65). Both queries now `LIMIT ?` at SQL instead of fetching all rows and truncating at the CLI. CLI consumers in `cli/commands/graph/deps.rs` pass the user limit through.
+- **`LanguageDef::line_comment_prefixes`** field (P2 #53). `line_looks_comment_like` now consults the per-language prefix list (was a hardcoded global union with `lang` arg ignored). Adding a language with new comment syntax now wires up the chunker doc fallback automatically.
+- **`LanguageDef::aliases`** field (P2 #55). `parser/markdown/code_blocks.rs::FENCED_LANG_ALIASES` now derives from `REGISTRY.all()` (was a 75-line hand-maintained static table). Adding a new fenced-block alias is one row in `languages.rs` instead of two.
+
+### Migration notes
+
+- Users on v1.28.0 will see schema migrate v20 → v21 on first open. Migration is in-place, adds `parser_version INTEGER NOT NULL DEFAULT 0` to the `chunks` table. No reindex required, but a follow-up `cqs index --force` will let the chunker doc-fallback fix from PR #1040 / v1.28.0 actually take effect on previously-indexed short chunks (since their `parser_version` is now 0 and any future bump would force re-extraction).
+
 ## [1.28.0] - 2026-04-19
 
 The "post-audit" release — closes the post-v1.27.0 16-category audit (150 findings landed across PRs #1041 / #1045 / #1046; 6 hard-deferred items filed as issues #1042-#1044, #1047-#1049). Plus the chunker doc-fallback retrieval lift, uniform JSON envelope across all CLI/batch/daemon-socket commands, and a v21 schema migration.

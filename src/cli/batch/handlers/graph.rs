@@ -37,13 +37,12 @@ pub(in crate::cli::batch) fn dispatch_deps(
     let limit = limit.clamp(1, 100);
 
     if reverse {
-        let mut types = ctx.store().get_types_used_by(name)?;
-        types.truncate(limit);
+        // P2 #65: bind the limit at SQL time.
+        let types = ctx.store().get_types_used_by(name, limit)?;
         let output = crate::cli::commands::build_deps_reverse(name, &types);
         Ok(serde_json::to_value(&output)?)
     } else {
-        let mut users = ctx.store().get_type_users(name)?;
-        users.truncate(limit);
+        let users = ctx.store().get_type_users(name, limit)?;
         let output = crate::cli::commands::build_deps_forward(&users, &ctx.root);
         Ok(serde_json::to_value(&output)?)
     }

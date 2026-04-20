@@ -212,7 +212,13 @@ pub fn onboard<Mode>(
     let callers: Vec<OnboardEntry> = caller_chunks.into_iter().map(gathered_to_onboard).collect();
 
     // 7. Type dependencies — filter common types
-    let key_types = match store.get_types_used_by(&entry_name) {
+    // P2 #65: pass usize::MAX to preserve existing "all rows" behaviour. The
+    // post-filter `filter_common_types` discards most of these anyway; if a
+    // future tightening wants to limit the entry-point's edges the value
+    // should land here.
+    // TODO: consider a sane cap (e.g. 100) once we've measured the typical
+    // edge count for entry-point chunks.
+    let key_types = match store.get_types_used_by(&entry_name, usize::MAX) {
         Ok(types) => filter_common_types(types),
         Err(e) => {
             tracing::warn!(error = %e, "Type dependency lookup failed, skipping key_types");

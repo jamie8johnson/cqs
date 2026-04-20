@@ -56,7 +56,15 @@ pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};
 /// against the stored version and returns StoreError::SchemaMismatch if different.
 ///
 /// History:
-/// - v18: embedding_base column for dual embeddings (adaptive retrieval Phase 5)
+/// - v21: parser_version column on chunks (v1.28.0 audit P2 #29 — incremental
+///   UPSERT now refreshes rows whose `content_hash` is unchanged but whose
+///   `parser_version` bumped, e.g. when `extract_doc_fallback_for_short_chunk`
+///   logic changes the value of `doc` for a previously-indexed chunk. Without
+///   this column the watch path's content-hash short-circuit silently
+///   discards the new `doc`. See `parser::chunk::PARSER_VERSION` for the
+///   in-memory value and `chunks/async_helpers.rs::batch_insert_chunks` for
+///   the corresponding `OR parser_version != excluded.parser_version` UPSERT
+///   filter.)
 /// - v20: AFTER DELETE trigger on chunks bumps splade_generation in metadata
 ///   (v1.22.0 audit DS-W2 / OB-22 / PB-NEW-6 — `cqs watch` never touched
 ///   SPLADE, so deletes that cascade to sparse_vectors left the persisted
@@ -75,7 +83,7 @@ pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};
 /// - v12: parent_type_name column for method->class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 20;
+pub const CURRENT_SCHEMA_VERSION: i32 = 21;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.

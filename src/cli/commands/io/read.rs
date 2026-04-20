@@ -200,8 +200,11 @@ pub(crate) fn build_focused_output<Mode>(
     output.push_str(&chunk.content);
     output.push('\n');
 
-    // Type dependencies
-    let type_deps = match store.get_types_used_by(&chunk.name) {
+    // Type dependencies.
+    // P2 #65: usize::MAX preserves existing "all rows" behaviour. The display
+    // path filters by COMMON_TYPES then truncates inline downstream.
+    // TODO: cap at e.g. 50 once we measure typical edge count per chunk.
+    let type_deps = match store.get_types_used_by(&chunk.name, usize::MAX) {
         Ok(pairs) => pairs,
         Err(e) => {
             tracing::warn!(function = %chunk.name, error = %e, "Failed to query type deps");

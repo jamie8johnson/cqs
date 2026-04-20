@@ -682,6 +682,25 @@ impl Store<ReadWrite> {
 }
 
 impl Store<ReadOnly> {
+    /// Shared config builder for `open_readonly_pooled` /
+    /// `open_readonly_pooled_with_runtime`. Mirrors `default_open_config` on
+    /// the read-write side so the runtime-sharing variant stays in lockstep
+    /// with the standalone version as pool / mmap / cache defaults evolve
+    /// (P2 #42).
+    fn default_readonly_pooled_config(
+        path: &Path,
+        runtime: Option<Arc<Runtime>>,
+    ) -> StoreOpenConfig {
+        StoreOpenConfig {
+            read_only: true,
+            use_current_thread: true,
+            max_connections: 1,
+            mmap_size: resolve_mmap_size("268435456", path), // 256MB default
+            cache_size: cache_size_from_env("-16384"),       // 16MB
+            runtime,
+        }
+    }
+
     /// Open an existing index in read-only mode with single-threaded runtime
     /// but full memory. Uses `current_thread` tokio runtime (1 OS thread
     /// instead of 4) while keeping the full 256MB mmap and 16MB cache of
@@ -692,17 +711,7 @@ impl Store<ReadOnly> {
     /// AD-1: Renamed from `open_light` to clarify semantics — this is a
     /// read-only pooled connection, not a "light" store.
     pub fn open_readonly_pooled(path: &Path) -> Result<Self, StoreError> {
-        open_with_config_impl::<ReadOnly>(
-            path,
-            StoreOpenConfig {
-                read_only: true,
-                use_current_thread: true,
-                max_connections: 1,
-                mmap_size: resolve_mmap_size("268435456", path),
-                cache_size: cache_size_from_env("-16384"),
-                runtime: None,
-            },
-        )
+        open_with_config_impl::<ReadOnly>(path, Self::default_readonly_pooled_config(path, None))
     }
 
     /// Open an existing index in read-only mode with reduced resources.
@@ -736,14 +745,7 @@ impl Store<ReadOnly> {
     ) -> Result<Self, StoreError> {
         open_with_config_impl::<ReadOnly>(
             path,
-            StoreOpenConfig {
-                read_only: true,
-                use_current_thread: true,
-                max_connections: 1,
-                mmap_size: resolve_mmap_size("268435456", path),
-                cache_size: cache_size_from_env("-16384"),
-                runtime: Some(runtime),
-            },
+            Self::default_readonly_pooled_config(path, Some(runtime)),
         )
     }
 

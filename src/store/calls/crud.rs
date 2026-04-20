@@ -3,7 +3,7 @@
 #![allow(clippy::await_holding_lock)]
 //! Call graph upsert, delete, batch operations, and basic stats.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::CallStats;
 use crate::store::helpers::StoreError;
@@ -238,6 +238,103 @@ impl Store<ReadWrite> {
             }
 
             tx.commit().await?;
+            Ok(())
+        })
+    }
+
+    /// Insert function calls for multiple files in a single transaction.
+    ///
+    /// P2 #64 (recovery wave): mirrors the existing `upsert_type_edges_for_files`
+    /// pattern. The previous CLI hot path (`pipeline/upsert.rs:152-163`) called
+    /// `upsert_function_calls(file, calls)` once per file, opening one
+    /// transaction per file. On a 2,500-file project this was 2,500 separate
+    /// `BEGIN ... COMMIT` round-trips; batching to one transaction is the same
+    /// shape we already use for type edges.
+    ///
+    /// Inside the single transaction:
+    /// - Batched DELETE WHERE file IN (?, ?, ?) for all files in the batch
+    ///   (chunked under the SQLite parameter limit).
+    /// - Batched multi-row INSERT for all rows from all files (5 binds per row,
+    ///   chunked under the same parameter limit).
+    pub fn upsert_function_calls_for_files(
+        &self,
+        entries: &[(PathBuf, Vec<crate::parser::FunctionCalls>)],
+    ) -> Result<(), StoreError> {
+        let total_files = entries.len();
+        let _span =
+            tracing::info_span!("upsert_function_calls_for_files", files = total_files).entered();
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        // Pre-normalize file paths so the borrow lives for the whole tx.
+        let file_strs: Vec<String> = entries
+            .iter()
+            .map(|(file, _)| crate::normalize_path(file))
+            .collect();
+
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+
+            use crate::store::helpers::sql::max_rows_per_statement;
+
+            // Phase 1: batched DELETE WHERE file IN (?, ?, ?) — one bind per
+            // file, chunked under the SQLite param limit.
+            const DELETE_PER_STMT: usize = max_rows_per_statement(1);
+            for chunk in file_strs.chunks(DELETE_PER_STMT) {
+                let placeholders = crate::store::helpers::make_placeholders(chunk.len());
+                let sql =
+                    format!("DELETE FROM function_calls WHERE file IN ({})", placeholders);
+                let mut q = sqlx::query(&sql);
+                for fs in chunk {
+                    q = q.bind(fs);
+                }
+                q.execute(&mut *tx).await?;
+            }
+
+            // Phase 2: collect all rows tagged with their file string, then
+            // batched multi-row INSERT.
+            let mut all_rows: Vec<(&str, &str, u32, &str, u32)> = Vec::new();
+            for ((_file, function_calls), file_str) in entries.iter().zip(file_strs.iter()) {
+                for fc in function_calls {
+                    for call in &fc.calls {
+                        all_rows.push((
+                            file_str.as_str(),
+                            fc.name.as_str(),
+                            fc.line_start,
+                            call.callee_name.as_str(),
+                            call.line_number,
+                        ));
+                    }
+                }
+            }
+
+            if !all_rows.is_empty() {
+                const INSERT_BATCH: usize = max_rows_per_statement(5);
+                for batch in all_rows.chunks(INSERT_BATCH) {
+                    let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                        "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line) ",
+                    );
+                    qb.push_values(
+                        batch.iter(),
+                        |mut b, (file, caller_name, caller_line, callee_name, call_line)| {
+                            b.push_bind(*file)
+                                .push_bind(*caller_name)
+                                .push_bind(*caller_line as i64)
+                                .push_bind(*callee_name)
+                                .push_bind(*call_line as i64);
+                        },
+                    );
+                    qb.build().execute(&mut *tx).await?;
+                }
+            }
+
+            tx.commit().await?;
+            tracing::info!(
+                files = total_files,
+                rows = all_rows.len(),
+                "Batch-indexed function calls"
+            );
             Ok(())
         })
     }

@@ -431,6 +431,21 @@ pub struct LanguageDef {
     /// Adding `Some(&LANG_PATTERNS)` here exposes a new language to the
     /// data-driven pattern extractor automatically.
     pub patterns: Option<&'static crate::where_to_add::LanguagePatternDef>,
+    /// Per-language line-comment prefixes consumed by
+    /// `parser::chunk::line_looks_comment_like`. The first matching prefix
+    /// classifies a line as comment-like for the doc-fallback walk.
+    /// Empty `&[]` falls back to a conservative global union of common comment
+    /// sigils (`//`, `--`, `/*`, `*/`, `<!--`, `<%--`, `(*` plus `#` and `*`
+    /// when followed by a separator). Populate per-language to give precision
+    /// to languages with non-default comment syntax (Lisp `;`, Erlang `%`, …).
+    pub line_comment_prefixes: &'static [&'static str],
+    /// Markdown fenced code block aliases. Used by
+    /// `parser::markdown::code_blocks::normalize_lang` to map fence tags
+    /// (e.g., `py`, `golang`, `c++`) to canonical language names. Empty `&[]`
+    /// means the language is recognised only under its canonical `name`.
+    /// Populate per-language to teach the markdown parser which tags resolve
+    /// to this language.
+    pub aliases: &'static [&'static str],
 }
 
 /// Helper: PascalCase test name from a base function name with a given prefix.

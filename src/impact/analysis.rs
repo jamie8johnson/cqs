@@ -423,7 +423,12 @@ fn find_type_impacted<Mode>(
 ) -> Result<Vec<TypeImpacted>, StoreError> {
     let _span = tracing::info_span!("find_type_impacted", target = target_name).entered();
 
-    let type_pairs = store.get_types_used_by(target_name)?;
+    // P2 #65: usize::MAX to preserve existing semantics. The type set is
+    // filtered by COMMON_TYPES + deduped, then drives a fan-out type-users
+    // query — capping here would silently truncate the impact graph.
+    // TODO: consider a per-target ceiling (~200) once we measure typical
+    // edge counts at the impact-target level.
+    let type_pairs = store.get_types_used_by(target_name, usize::MAX)?;
     let type_names: Vec<String> = type_pairs
         .into_iter()
         .map(|t| t.type_name)
@@ -566,6 +571,7 @@ mod tests {
                 parent_type_name: None,
                 content_hash: String::new(),
                 window_idx: None,
+                parser_version: 0,
             },
             ChunkSummary {
                 id: "2".into(),
@@ -582,6 +588,7 @@ mod tests {
                 parent_type_name: None,
                 content_hash: String::new(),
                 window_idx: None,
+                parser_version: 0,
             },
         ];
 

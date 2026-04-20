@@ -20,6 +20,21 @@ use super::helpers::{clamp_line_number, ChunkRow, StoreError};
 use super::{ReadWrite, Store};
 use crate::store::helpers::ChunkSummary;
 
+/// Convert a Rust `usize` limit into a SQLite-bindable `i64`.
+///
+/// P2 #65: callers that genuinely want all rows pass `usize::MAX`. SQLite
+/// caps `LIMIT ?` at i64::MAX (`LIMIT -1` is "unlimited" but doesn't
+/// round-trip through bind), so saturate to that. On 32-bit `usize` is
+/// already u32 → i64 round-trips losslessly.
+#[inline]
+fn limit_to_sql(limit: usize) -> i64 {
+    if limit > i64::MAX as usize {
+        i64::MAX
+    } else {
+        limit as i64
+    }
+}
+
 /// Statistics about type dependency edges
 #[derive(Debug, Clone, Default)]
 pub struct TypeEdgeStats {
@@ -281,8 +296,19 @@ impl<Mode> Store<Mode> {
     /// Get chunks that reference a given type name.
     /// Forward query: "who uses Config?" Returns chunks that have type edges
     /// pointing to the given type name.
-    pub fn get_type_users(&self, type_name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
-        let _span = tracing::debug_span!("get_type_users", type_name).entered();
+    ///
+    /// P2 #65 (recovery wave): `limit` is now bound at SQL time so we don't
+    /// fetch every row of a popular type just to drop the tail in Rust. CLI
+    /// callers that previously called `users.truncate(limit)` after the fact
+    /// pass the same value here; loaders that genuinely want all rows pass
+    /// `usize::MAX` (SQLite caps `LIMIT ?` at i64::MAX, so usize::MAX -> i64
+    /// saturates to no-op).
+    pub fn get_type_users(
+        &self,
+        type_name: &str,
+        limit: usize,
+    ) -> Result<Vec<ChunkSummary>, StoreError> {
+        let _span = tracing::debug_span!("get_type_users", type_name, limit).entered();
         tracing::debug!("querying type users");
 
         self.rt.block_on(async {
@@ -292,9 +318,11 @@ impl<Mode> Store<Mode> {
                  FROM type_edges te
                  JOIN chunks c ON te.source_chunk_id = c.id
                  WHERE te.target_type_name = ?1
-                 ORDER BY c.origin, c.line_start",
+                 ORDER BY c.origin, c.line_start
+                 LIMIT ?2",
             )
             .bind(type_name)
+            .bind(limit_to_sql(limit))
             .fetch_all(&self.pool)
             .await?
             .iter()
@@ -308,8 +336,16 @@ impl<Mode> Store<Mode> {
     /// Get types used by a given chunk (by function name).
     /// Reverse query: "what types does parse_config use?" Returns [`TypeUsage`] structs
     /// where edge_kind is "" for catch-all types.
-    pub fn get_types_used_by(&self, chunk_name: &str) -> Result<Vec<TypeUsage>, StoreError> {
-        let _span = tracing::debug_span!("get_types_used_by", chunk_name).entered();
+    ///
+    /// P2 #65: `limit` mirrors `get_type_users`. Pass `usize::MAX` to disable
+    /// the cap (the SQL `LIMIT ?` will receive i64::MAX, which is effectively
+    /// no limit).
+    pub fn get_types_used_by(
+        &self,
+        chunk_name: &str,
+        limit: usize,
+    ) -> Result<Vec<TypeUsage>, StoreError> {
+        let _span = tracing::debug_span!("get_types_used_by", chunk_name, limit).entered();
         tracing::debug!("querying types used by chunk");
 
         self.rt.block_on(async {
@@ -318,9 +354,11 @@ impl<Mode> Store<Mode> {
                  FROM type_edges te
                  JOIN chunks c ON te.source_chunk_id = c.id
                  WHERE c.name = ?1
-                 ORDER BY te.edge_kind, te.target_type_name",
+                 ORDER BY te.edge_kind, te.target_type_name
+                 LIMIT ?2",
             )
             .bind(chunk_name)
+            .bind(limit_to_sql(limit))
             .fetch_all(&self.pool)
             .await?;
 
@@ -648,14 +686,14 @@ mod tests {
             .unwrap();
 
         // Query: who uses Config?
-        let users = store.get_type_users("Config").unwrap();
+        let users = store.get_type_users("Config", usize::MAX).unwrap();
         assert_eq!(users.len(), 2);
         let names: Vec<&str> = users.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"func_a"));
         assert!(names.contains(&"func_b"));
 
         // Query: who uses Store?
-        let users = store.get_type_users("Store").unwrap();
+        let users = store.get_type_users("Store", usize::MAX).unwrap();
         assert_eq!(users.len(), 1);
         assert_eq!(users[0].name, "func_a");
     }
@@ -669,7 +707,7 @@ mod tests {
             .upsert_type_edges("chunk-a", &make_type_refs())
             .unwrap();
 
-        let types = store.get_types_used_by("func_a").unwrap();
+        let types = store.get_types_used_by("func_a", usize::MAX).unwrap();
         assert_eq!(types.len(), 3);
         let type_names: Vec<&str> = types.iter().map(|t| t.type_name.as_str()).collect();
         assert!(type_names.contains(&"Config"));
@@ -686,7 +724,7 @@ mod tests {
         store
             .upsert_type_edges("chunk-a", &make_type_refs())
             .unwrap();
-        let types = store.get_types_used_by("func_a").unwrap();
+        let types = store.get_types_used_by("func_a", usize::MAX).unwrap();
         assert_eq!(types.len(), 3);
 
         // Second upsert: only HashMap
@@ -700,7 +738,7 @@ mod tests {
                 }],
             )
             .unwrap();
-        let types = store.get_types_used_by("func_a").unwrap();
+        let types = store.get_types_used_by("func_a", usize::MAX).unwrap();
         assert_eq!(types.len(), 1);
         assert_eq!(types[0].type_name, "HashMap");
     }
@@ -708,14 +746,16 @@ mod tests {
     #[test]
     fn test_get_type_users_empty() {
         let (store, _dir) = setup_store();
-        let users = store.get_type_users("NonexistentType").unwrap();
+        let users = store.get_type_users("NonexistentType", usize::MAX).unwrap();
         assert!(users.is_empty());
     }
 
     #[test]
     fn test_get_types_used_by_empty() {
         let (store, _dir) = setup_store();
-        let types = store.get_types_used_by("nonexistent_func").unwrap();
+        let types = store
+            .get_types_used_by("nonexistent_func", usize::MAX)
+            .unwrap();
         assert!(types.is_empty());
     }
 
@@ -948,7 +988,7 @@ mod tests {
             )
             .unwrap();
 
-        let types = store.get_types_used_by("func_a").unwrap();
+        let types = store.get_types_used_by("func_a", usize::MAX).unwrap();
         let config = types.iter().find(|t| t.type_name == "Config").unwrap();
         assert_eq!(config.edge_kind, "Param");
 
@@ -988,11 +1028,11 @@ mod tests {
             .upsert_type_edges_for_file(Path::new("src/test.rs"), &chunk_type_refs)
             .unwrap();
 
-        let users = store.get_type_users("Config").unwrap();
+        let users = store.get_type_users("Config", usize::MAX).unwrap();
         assert_eq!(users.len(), 1);
         assert_eq!(users[0].name, "func_a");
 
-        let users = store.get_type_users("Store").unwrap();
+        let users = store.get_type_users("Store", usize::MAX).unwrap();
         assert_eq!(users.len(), 1);
         assert_eq!(users[0].name, "func_b");
     }
@@ -1029,10 +1069,10 @@ mod tests {
             .upsert_type_edges_for_file(Path::new("src/test.rs"), &chunk_type_refs)
             .unwrap();
 
-        let users = store.get_type_users("Config").unwrap();
+        let users = store.get_type_users("Config", usize::MAX).unwrap();
         assert_eq!(users.len(), 1);
         // Store type edge was NOT inserted (chunk not found)
-        let users = store.get_type_users("Store").unwrap();
+        let users = store.get_type_users("Store", usize::MAX).unwrap();
         assert!(users.is_empty());
     }
 

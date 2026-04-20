@@ -49,8 +49,13 @@ pub fn find_related<Mode>(
     let shared_callee_pairs = store.find_shared_callees(&target, limit)?;
     let shared_callees = resolve_to_related(store, &shared_callee_pairs);
 
-    // 3. Shared types — query type_edges for target's types, find other functions using them
-    let type_pairs = store.get_types_used_by(&target)?;
+    // 3. Shared types — query type_edges for target's types, find other functions using them.
+    // P2 #65: pass usize::MAX to preserve existing "all rows" behaviour. This
+    // path filters down via COMMON_TYPES + dedupe, and downstream uses each
+    // type to drive a fan-out query, so capping here would change semantics.
+    // TODO: revisit if this becomes a hot path (currently O(types-per-target)
+    // which is bounded in practice by the chunk's surface area).
+    let type_pairs = store.get_types_used_by(&target, usize::MAX)?;
     let type_names: Vec<String> = type_pairs
         .into_iter()
         .map(|t| t.type_name)
