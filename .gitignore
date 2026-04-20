@@ -51,3 +51,9 @@ cuvs-fork-push
 # directory. Their `.git` is a file, not a directory; the file walker also
 # skips them at runtime to prevent indexing duplicated source trees.
 .claude/worktrees/
+
+# Reranker V2 retrain artifacts (large jsonl, train weights live in ~/training-data/)
+evals/reranker_v3/
+evals/reranker_v2_train.jsonl
+evals/reranker_v2_dev.jsonl
+evals/reranker_v2_test.jsonl

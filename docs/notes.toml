@@ -1412,3 +1412,38 @@ mentions = ["evals/colbert_rerank_eval.py"]
 sentiment = -0.5
 text = "cqs gc had a latent bug: origin_exists fell through to Path::exists(), keeping any chunk whose file was on disk regardless of whether enumerate_files (worktree-skip + gitignore filter) actually owned it. Fix: drop the exists() fallback, canonicalize via dunce, require strict membership in existing_files. Pruned 522 worktree+gitignored chunks from production index. Watch for this pattern when adding new schema-prune logic."
 mentions = ["src/store/chunks/staleness.rs"]
+
+[[note]]
+sentiment = -1.0
+text = "Windowing bug in src/embedder/mod.rs:564 was storing lossy tokenizer.decode() output as chunks.content for windowed chunks (7228 of 15616). WordPiece decode lowercases + space-separates subwords so stored content looked like 'pub fn save ( & self )' instead of raw source. Fix: slice original text by encoding.get_offsets() character ranges. Regression test added in integration mod. Requires reindex."
+mentions = [
+    "src/embedder/mod.rs",
+    "src/cli/pipeline/windowing.rs",
+    "windowing",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Reranker V2 post-mortem fix #3 (pool cap at 20) landed by lowering RERANK_POOL_MAX default from 100 to 20 in src/cli/limits.rs. At --limit 5 --rerank, pool was already 20 (5*4=20, under 100 cap). At --limit 20 --rerank it was 80; now 20. Env override CQS_RERANK_POOL_MAX still honored. Per 'Drowning in Documents' arXiv 2411.11767 + Phase 3 brittleness analysis."
+mentions = [
+    "src/cli/limits.rs",
+    "reranker",
+]
+
+[[note]]
+sentiment = -1.0
+text = "cqs index --force blocks indefinitely if cqs-watch --serve is running. Both hold fd on .cqs/index.hnsw.lock (daemon: shared R, reindex: exclusive W). Reindex waits in locks_lock_inode_wait. On WSL/NTFS the 'advisory-only' warning fires but the wait still happens. Workaround: systemctl --user stop cqs-watch before reindex, start after. Proper fix: index --force should SIGTERM daemon or fail loudly with instructions."
+mentions = [
+    "src/hnsw/persist.rs",
+    "src/cli/watch.rs",
+    "index",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Reranker V2 retrain (graded labels + cqs domain) recovered ~17pp R@5 vs Phase 3 (Stack v2 + binary) but is still net negative: -6.4pp R@5 test, -7.3pp R@5 dev. R@20 unchanged on both splits — gold IS in the pool, reranker just demotes it. Root cause is likely severe class imbalance (77% label=0.0 vs 14% A vs 10% TIE) compressing the score head's range. Weights stay local at ~/training-data/reranker-v2-cqs-graded; ship gate (R@5 ≥ 0) failed. Future: class-weighted BCE or pairwise margin loss."
+mentions = [
+    "evals/train_reranker_v2.py",
+    "evals/label_reranker_v3.py",
+    "reranker",
+]
