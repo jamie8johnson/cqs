@@ -88,7 +88,7 @@ diff --git a/src/unrelated.txt b/src/unrelated.txt
 ";
 
     let output = cqs()
-        .args(["review", "--stdin", "--format", "json"])
+        .args(["review", "--stdin", "--json"])
         .current_dir(dir.path())
         .write_stdin(diff)
         .output()
@@ -160,7 +160,7 @@ diff --git a/src/lib.rs b/src/lib.rs
 ";
 
     let output = cqs()
-        .args(["review", "--stdin", "--format", "json"])
+        .args(["review", "--stdin", "--json"])
         .current_dir(dir.path())
         .write_stdin(diff)
         .output()
@@ -226,7 +226,7 @@ diff --git a/src/lib.rs b/src/lib.rs
 ";
 
     let output = cqs()
-        .args(["review", "--stdin", "--format", "json", "--tokens", "100"])
+        .args(["review", "--stdin", "--json", "--tokens", "100"])
         .current_dir(dir.path())
         .write_stdin(diff)
         .output()
