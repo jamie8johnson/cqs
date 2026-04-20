@@ -55,10 +55,12 @@ const V1_26_0_DEFAULTS: &[(QueryCategory, f32)] = &[
     (QueryCategory::IdentifierLookup, 1.00),
     (QueryCategory::Structural, 0.90),
     (QueryCategory::Conceptual, 0.70),
-    (QueryCategory::Behavioral, 0.00),
+    // v1.28.3 R@5 re-sweep change: 0.00 → 0.80. See router.rs for rationale.
+    (QueryCategory::Behavioral, 0.80),
     (QueryCategory::Negation, 0.80),
     (QueryCategory::TypeFiltered, 1.00),
-    (QueryCategory::MultiStep, 1.00),
+    // v1.28.3 R@5 re-sweep change: 1.00 → 0.10. See router.rs for rationale.
+    (QueryCategory::MultiStep, 0.10),
     // v3 sweep change (2026-04-16): 1.00 → 0.10. See router.rs for rationale.
     (QueryCategory::CrossLanguage, 0.10),
     (QueryCategory::Unknown, 1.00),
@@ -204,8 +206,8 @@ fn test_resolve_splade_alpha_invalid_string_falls_back() {
     std::env::set_var("CQS_SPLADE_ALPHA_BEHAVIORAL", "banana");
     let got = resolve_splade_alpha(&QueryCategory::Behavioral);
     assert!(
-        got.abs() < f32::EPSILON,
-        "Unparseable per-cat env must fall through to default (0.00); got {got}"
+        (got - 0.80).abs() < f32::EPSILON,
+        "Unparseable per-cat env must fall through to default (0.80, v1.28.3); got {got}"
     );
     clear_all_alpha_env();
 }
@@ -249,16 +251,17 @@ mod splade_routing {
         clear_all_alpha_env();
     }
 
-    /// Behavioral query → α=0.00 (dense-only, sparse fully suppressed).
+    /// Behavioral query → α=0.80 (heavy dense + small sparse contribution).
+    /// v1.28.3 R@5 re-sweep flipped this from the original R@1-tuned 0.00.
     #[test]
     #[serial]
-    fn test_routing_behavioral_lands_on_alpha_0_00() {
+    fn test_routing_behavioral_lands_on_alpha_0_80() {
         clear_all_alpha_env();
         let (cat, alpha) = route("validates user input");
         assert_eq!(cat, QueryCategory::Behavioral);
         assert!(
-            alpha.abs() < f32::EPSILON,
-            "Behavioral query should route to α=0.00, got {alpha}"
+            (alpha - 0.80).abs() < f32::EPSILON,
+            "Behavioral query should route to α=0.80 (v1.28.3), got {alpha}"
         );
         clear_all_alpha_env();
     }
