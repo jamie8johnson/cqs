@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **91% R@1 on 296-query fixtures, 42% R@1 / 64% R@5 / 79% R@20 on the v3 dual-judge eval (544 real-code queries, 14.9k-chunk codebase, BGE-large + per-category SPLADE α routing).** Forced-α ceiling on v3 is ~48% R@1 — further headroom needs representation changes (HyDE, code-trained reranker), not tuning. 54 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **42.2% R@1 / 67.0% R@5 / 83.5% R@20 on a 544-query dual-judge eval against the cqs codebase itself** (BGE-large dense + SPLADE sparse with per-category fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -32,9 +32,9 @@ cargo install cqs
 
 > **Note:** `cargo install` clones a patched `cuvs` fork from [github.com/jamie8johnson/cuvs-patched](https://github.com/jamie8johnson/cuvs-patched) even for CPU builds, because it is wired in via `[patch.crates-io]`. The patch exposes `search_with_filter` for GPU-native bitset filtering and will be dropped once upstream [rapidsai/cuvs#2019](https://github.com/rapidsai/cuvs/pull/2019) merges.
 
-**Upgrading?** Schema changes require rebuilding the index:
+**Upgrading?** A reindex is recommended after major version bumps:
 ```bash
-cqs index --force  # Run after upgrading from older versions (current schema: v20)
+cqs index --force
 ```
 
 ## Quick Start
@@ -448,7 +448,7 @@ Without cqs, Claude uses grep/glob to find code and reads entire files for conte
 
 - **Fewer tool calls**: `gather`, `impact`, `trace`, `context`, `explain` each replace 5-10 sequential file reads with a single call
 - **Less context burn**: `cqs read --focus` returns a function + its type dependencies — not the whole file. Token budgeting (`--tokens N`) caps output across all commands.
-- **Find code by concept**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`. 91.2% Recall@1 on fixtures, 50% R@1 on real code (100q lookup), 73% R@5.
+- **Find code by concept**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`. See the Retrieval Quality section for measured numbers.
 - **Understand dependencies**: Call graphs, type dependencies, impact analysis, and risk scoring answer "what breaks if I change X?" without manual tracing
 - **Navigate unfamiliar codebases**: Semantic search + `cqs scout` + `cqs where` provide instant orientation without knowing project structure
 
@@ -606,8 +606,8 @@ cqs index --llm-summaries --max-hyde 200  # Limit HyDE query generation to N fun
 **Parse → Describe → Embed → Enrich → Index → Search → Reason**
 
 1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, interfaces, constants, tests, endpoints, modules, and 19 other chunk types across 54 languages (plus L5X/L5K PLC exports). Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
-2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination (SQ-11). Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally. 91.2% Recall@1 on fixture eval (BGE-large, 296 queries across 7 languages). On the v3 live eval (109-query test split, real cqs codebase, post-#1040 reindex) the full router scores 41.3% R@1 / 67.0% R@5 / 75.2% R@20; the dev split scores 40.4% / 71.6% / 79.8%. See `ROADMAP.md` "Eval baselines on v3.v2" for the full table and the v1.27.0 shipping config baseline. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
+2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination. Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
+3. **Embed** — Configurable embedding model (BGE-large-en-v1.5 default, E5-base preset, or custom ONNX) generates embeddings locally on CPU or GPU. See Retrieval Quality below for measured recall.
 4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
@@ -635,9 +635,9 @@ For most codebases (<100k chunks), defaults work well. Large repos may benefit f
 
 ## Retrieval Quality
 
-Two eval suites measure different things:
+Two eval suites are run on every release:
 
-**Fixture eval** (296 queries, 7 languages — synthetic functions in test fixtures):
+**Fixture eval** — 296 hand-written queries across 7 languages with known gold-target functions. High ceiling; measures the embedder + RRF in isolation:
 
 | Model | Params | Recall@1 | Recall@5 | MRR |
 |-------|--------|----------|----------|-----|
@@ -645,22 +645,29 @@ Two eval suites measure different things:
 | v9-200k LoRA (preset) | 110M | 81.4% | 99.3% | 0.898 |
 | E5-base (preset) | 110M | 75.3% | 99.0% | 0.869 |
 
-**Live codebase eval** (v3 dual-judge consensus dataset, full router on the real cqs codebase). v3 is the canonical eval; the v2 / 11k-chunk framing from earlier releases is retired. v3 splits at 326 train / 109 dev / 109 test, every category N≥23. Two reference points:
+**Live codebase eval** — 218 queries (109 test + 109 dev) over the cqs source tree, each with a dual-judge (Gemma-4 + Claude) consensus gold chunk. Categories: `identifier_lookup`, `behavioral`, `conceptual`, `structural`, `negation`, `type_filtered`, `multi_step`, `cross_language` — every category N ≥ 16. Hard mode; measures the full production pipeline:
 
-| Split | R@1 | R@5 | R@20 | Notes |
-|-------|-----|-----|------|-------|
-| **test (n=109), post-#1040 (chunker doc fallback + LLM regen)** | **41.3%** | **67.0%** | **75.2%** | reindex 2026-04-18, 14,734 chunks, 47.7% LLM coverage |
-| test (n=109), v1.27.0 shipping config | 41.3% | 63.3% | 80.7% | 2026-04-17 regen, 16,095 chunks |
-| dev (n=109), post-#1040 | 40.4% | 71.6% | 79.8% | same reindex |
-| dev (n=109), v1.27.0 shipping config | 41.3% | 74.3% | 86.2% | 2026-04-17 regen |
+| Split | R@1 | R@5 | R@20 |
+|-------|-----|-----|------|
+| **test (n=109)** | 42.2% | **67.0%** | **83.5%** |
+| **dev (n=109)** | 42.2% | 75.2% | 89.9% |
 
-N=109 per split is noisy at ±2-3pp single-trial — always quote both test AND dev when comparing changes. ROADMAP.md keeps the canonical baseline up to date.
+Both splits are ±2-3pp noisy on a single trial; quote both when comparing config changes.
 
-The fixture eval measures retrieval from small synthetic fixtures (high ceiling). The live eval measures retrieval from the real cqs codebase across identifier lookup, behavioral, conceptual, structural, negation, type-filtered, multi-step, and cross-language queries. The gap reflects that real-world queries are harder than synthetic benchmarks.
-
-Best production config: **BGE-large** (`cqs index`). LLM summaries provide marginal R@5 improvement. Use `CQS_EMBEDDING_MODEL=v9-200k` for resource-constrained environments.
+**Default config:** BGE-large dense + SPLADE sparse, RRF-fused with per-category α (set via offline sweep), centroid query classifier active by default for category routing. `CQS_EMBEDDING_MODEL=v9-200k` is a 1/3-size alternative for resource-constrained environments.
 
 ## Environment Variables
+
+107 knobs total. Quick index by domain (everything is searchable in the table below):
+
+- **Retrieval & search** — `CQS_RRF_K`, `CQS_TYPE_BOOST`, `CQS_SPLADE_ALPHA*`, `CQS_RERANK*`, `CQS_RERANKER_*`, `CQS_CENTROID_*`, `CQS_MMR_LAMBDA`, `CQS_FORCE_BASE_INDEX`, `CQS_DISABLE_BASE_INDEX`, `CQS_QUERY_CACHE_*`
+- **Indexing & embedding** — `CQS_EMBEDDING_*`, `CQS_EMBED_*`, `CQS_ONNX_DIR`, `CQS_HNSW_*`, `CQS_CAGRA_*`, `CQS_SPLADE_BATCH/MAX_*/MODEL/THRESHOLD/RESET_EVERY`, `CQS_PARSER_MAX_*`, `CQS_PARSE_CHANNEL_DEPTH`, `CQS_FILE_BATCH_SIZE`, `CQS_DEFERRED_FLUSH_INTERVAL`, `CQS_FTS_NORMALIZE_MAX`, `CQS_MAX_FILE_SIZE`, `CQS_MAX_QUERY_BYTES`, `CQS_MAX_SEQ_LENGTH`, `CQS_MAX_CONTRASTIVE_CHUNKS`, `CQS_MD_*`, `CQS_SKIP_ENRICHMENT`, `CQS_HYDE_MAX_TOKENS`, `CQS_RAYON_THREADS`
+- **Daemon, watch, batch** — `CQS_NO_DAEMON`, `CQS_DAEMON_*`, `CQS_MAX_DAEMON_CLIENTS`, `CQS_BATCH_*IDLE_MINUTES`, `CQS_REFS_LRU_SIZE`, `CQS_WATCH_*`, `CQS_CHAT_HISTORY`
+- **Graph & impact** — `CQS_CALL_GRAPH_MAX_EDGES`, `CQS_TYPE_GRAPH_MAX_EDGES`, `CQS_GATHER_MAX_NODES`, `CQS_IMPACT_MAX_*`, `CQS_TRACE_MAX_NODES`, `CQS_TEST_MAP_MAX_NODES`
+- **SQLite storage** — `CQS_BUSY_TIMEOUT_MS`, `CQS_IDLE_TIMEOUT_SECS`, `CQS_MAX_CONNECTIONS`, `CQS_MMAP_SIZE`, `CQS_SQLITE_CACHE_SIZE`, `CQS_CACHE_MAX_SIZE`, `CQS_INTEGRITY_CHECK`, `CQS_SKIP_INTEGRITY_CHECK`, `CQS_MIGRATE_REQUIRE_BACKUP`
+- **CLI I/O caps** — `CQS_MAX_DIFF_BYTES`, `CQS_MAX_DISPLAY_FILE_SIZE`, `CQS_READ_MAX_FILE_SIZE`
+- **LLM & document conversion** — `CQS_LLM_*`, `CQS_API_BASE`, `CQS_LLM_ALLOW_INSECURE`, `CQS_PDF_SCRIPT`, `CQS_CONVERT_*`
+- **Telemetry & eval** — `CQS_TELEMETRY`, `CQS_TELEMETRY_REDACT_QUERY`, `CQS_EVAL_OUTPUT`, `CQS_EVAL_TIMEOUT_SECS`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -681,8 +688,8 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_CAGRA_MAX_BYTES` | (auto) | Max GPU memory for CAGRA index |
 | `CQS_CAGRA_PERSIST` | `1` | Persist the CAGRA graph to `{cqs_dir}/index.cagra` after build and reload it on restart. Set to `0` to disable (daemon rebuilds from scratch every startup). |
 | `CQS_CAGRA_THRESHOLD` | `50000` | Min chunks to trigger CAGRA over HNSW |
-| `CQS_CENTROID_ALPHA_FLOOR` | `0.7` | Minimum α when the centroid classifier overrides the rule-based classifier. Caps downside of wrong-category alpha routing. Only active when `CQS_CENTROID_CLASSIFIER=1`. |
-| `CQS_CENTROID_CLASSIFIER` | `0` | Set to `1` to enable the embedding-centroid query classifier (experimental; disabled because 76% accuracy still hurts R@1 by −4.6pp on v3 dev). Set to `0` to explicitly disable when a centroid file is present. |
+| `CQS_CENTROID_ALPHA_FLOOR` | `0.7` | Minimum α when the centroid classifier overrides the rule-based classifier. Caps downside of wrong-category alpha routing. |
+| `CQS_CENTROID_CLASSIFIER` | `1` | Embedding-centroid query classifier — fills `Unknown` gaps from the rule-based classifier with embedding-space matching. Enabled by default; set to `0` to opt out. |
 | `CQS_CENTROID_THRESHOLD` | `0.01` | Minimum cosine margin (top1 − top2) for the centroid classifier to commit to a category. Below this, falls back to the rule-based classifier. |
 | `CQS_CONVERT_MAX_PAGES` | `1000` | Max HTML pages processed from a single CHM archive or web-help directory by `cqs convert`. Excess pages are dropped with a warn. Bump for multi-thousand-page vendor docs. |
 | `CQS_CONVERT_MAX_WALK_DEPTH` | `50` | Max recursion depth for `cqs convert <dir>`'s walkdir. Entries deeper than this are silently dropped by walkdir; depth-cap-hit emits a warn so you can detect the truncation. |
@@ -692,7 +699,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_DAEMON_STARTUP_GC` | `1` | Set to `0` to skip the daemon's startup GC pass (#1024). The startup pass drops chunks for files no longer on disk and chunks whose path is now matched by `.gitignore`. Synchronous, runs once when `cqs watch --serve` starts. |
 | `CQS_DAEMON_TIMEOUT_MS` | `2000` | Daemon client connect/read timeout in milliseconds (CLI → daemon) |
 | `CQS_DEFERRED_FLUSH_INTERVAL` | `50` | Chunks between deferred flushes during indexing |
-| `CQS_DISABLE_BASE_INDEX` | (none) | Set to `1` to skip the base (non-enriched) HNSW at query time (eval A/B) |
+| `CQS_DISABLE_BASE_INDEX` | (none) | Set to `1` to force queries through the enriched HNSW only, skipping the base (non-enriched) HNSW. Used to A/B the dual-index router during config testing. |
 | `CQS_EMBED_BATCH_SIZE` | `64` | ONNX inference batch size (reduce if GPU OOM) |
 | `CQS_EMBED_CHANNEL_DEPTH` | `64` | Embedding pipeline channel depth (bounds memory) |
 | `CQS_EMBEDDING_DIM` | (auto) | Override embedding dimension for custom ONNX models |
@@ -746,7 +753,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_RERANKER_MAX_LENGTH` | `512` | Max input length for cross-encoder reranker |
 | `CQS_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder model for `--rerank` |
 | `CQS_RERANK_OVER_RETRIEVAL` | `4` | Multiplier on `--limit` for the reranker over-retrieval pool. At `--rerank --limit N`, stage-1 returns `N * MULTIPLIER` candidates so the cross-encoder has recall headroom. Bump for projects where the right answer routinely sits past rank-20 in stage-1. |
-| `CQS_RERANK_POOL_MAX` | `100` | Hard cap on the reranker pool regardless of multiplier. Caps ORT memory + per-batch latency on small GPUs. Bump on workstations with headroom for larger reranker batches. |
+| `CQS_RERANK_POOL_MAX` | `20` | Hard cap on the reranker pool regardless of multiplier. Caps ORT memory + per-batch latency, and avoids weak cross-encoders shuffling noise at deep ranks. Bump on workstations running a known-strong reranker. |
 | `CQS_RRF_K` | `60` | RRF fusion constant (higher = more weight to top results) |
 | `CQS_SKIP_ENRICHMENT` | (none) | Comma-separated enrichment layers to skip (e.g. `llm,hyde,callgraph`) |
 | `CQS_SKIP_INTEGRITY_CHECK` | (none) | Set to `1` to skip `PRAGMA quick_check` on write-mode store opens |
@@ -762,7 +769,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 | `CQS_SQLITE_CACHE_SIZE` | `-16384` (`-4096` for `open_readonly`) | SQLite `cache_size` PRAGMA. Negative = kibibytes, positive = page count. |
 | `CQS_TELEMETRY` | `0` | Set to `1` to enable command usage telemetry |
 | `CQS_TEST_MAP_MAX_NODES` | `10000` | Max BFS nodes in test-map traversal |
-| `CQS_MMR_LAMBDA` | unset (disabled) | Maximum Marginal Relevance λ ∈ `[0.0, 1.0]` for opt-in result diversification. `1.0` = pure relevance (no-op), `0.0` = pure diversity. **Note**: surface-feature MMR is currently inert under the default non-RRF pool size (no candidates to diversify across). The plumbing is in place for embedding-MMR experiments — see `src/search/mmr.rs`. |
+| `CQS_MMR_LAMBDA` | unset (disabled) | Maximum Marginal Relevance λ ∈ `[0.0, 1.0]` for opt-in result diversification. `1.0` = pure relevance (no-op), `0.0` = pure diversity. Disabled by default. |
 | `CQS_TRACE_MAX_NODES` | `10000` | Max nodes in call chain trace |
 | `CQS_TYPE_BOOST` | `1.2` | Multiplier applied to chunks whose type matches the query filter (e.g. `--include-type function`) |
 | `CQS_TYPE_GRAPH_MAX_EDGES` | `500000` | Max `type_edges` rows loaded into the in-memory type graph. Sibling of `CQS_CALL_GRAPH_MAX_EDGES` for type-dependency analysis. |
@@ -776,7 +783,7 @@ Best production config: **BGE-large** (`cqs index`). LLM summaries provide margi
 
 Hybrid retrieval fuses a dense (BGE-large) and sparse (SPLADE) candidate pool. The fusion weight `alpha` controls how much each side contributes to the final score: `alpha = 1.0` means pure dense, `alpha = 0.0` means pure sparse, and values in between interpolate ranks via RRF.
 
-SPLADE is always generating candidates; `alpha` only weights the scoring. Values below are the current shipping defaults. Identifier/structural/conceptual/behavioral/negation were set by the v1.26.0 re-fit on the clean 14,882-chunk index; cross_language was dropped from `1.00` → `0.10` by the 2026-04-16 v3 sweep (+1.8pp R@1 on v3 test). Type_filtered, multi_step, and unknown retain the pure-dense default. Full provenance in `~/training-data/research/models.md`.
+SPLADE is always generating candidates; `alpha` only weights the scoring. The defaults below are derived from a per-category sweep on the live eval set:
 
 | Category | Default alpha | Rationale |
 |----------|---------------|-----------|
