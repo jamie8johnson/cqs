@@ -17,7 +17,7 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 20); // v20: AFTER DELETE trigger on chunks (DS-W2)
+    assert_eq!(stats.schema_version, 21); // v21: parser_version column on chunks (P2 #29 / v1.28.1)
     assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 
@@ -1107,7 +1107,7 @@ fn test_open_readonly_on_initialized_store() {
     let ro = cqs::store::Store::open_readonly(&db_path).unwrap();
     let stats = ro.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
-    assert_eq!(stats.schema_version, 20);
+    assert_eq!(stats.schema_version, 21);
     assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 
