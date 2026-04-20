@@ -47,8 +47,15 @@ pub(crate) const RERANK_OVER_RETRIEVAL_MULTIPLIER: usize = 4;
 /// Default hard cap on the reranker pool, regardless of multiplier.
 /// At `--limit 50 --rerank` the multiplier alone would yield 200 — the
 /// cap keeps ORT memory and per-batch latency bounded on small GPUs.
+///
+/// The Reranker V2 post-mortem (2026-04-17) found that weak cross-encoders
+/// degrade monotonically with pool size — at 80 candidates they're just
+/// shuffling noise. "Drowning in Documents" (arXiv 2411.11767) reports
+/// similar behavior for off-the-shelf cross-encoders; small pools
+/// (~20) consistently beat large ones on recall@k. We cap here.
+///
 /// Honored by [`rerank_pool_size`].
-pub(crate) const RERANK_POOL_MAX: usize = 100;
+pub(crate) const RERANK_POOL_MAX: usize = 20;
 
 /// Resolve the over-retrieval multiplier honoring `CQS_RERANK_OVER_RETRIEVAL`.
 /// Falls back to [`RERANK_OVER_RETRIEVAL_MULTIPLIER`] when the env var is
@@ -155,10 +162,12 @@ mod tests {
         // default. We unset before/after to keep tests independent.
         std::env::remove_var("CQS_RERANK_OVER_RETRIEVAL");
         std::env::remove_var("CQS_RERANK_POOL_MAX");
-        // limit=5, default mult=4, default cap=100 → 20
+        // limit=5, default mult=4, default cap=20 → min(20, 20) = 20
         assert_eq!(rerank_pool_size(5), 20);
+        // limit=10 would be 40, but cap=20 holds
+        assert_eq!(rerank_pool_size(10), 20);
         // limit=50 hits the cap
-        assert_eq!(rerank_pool_size(50), 100);
+        assert_eq!(rerank_pool_size(50), 20);
 
         std::env::set_var("CQS_RERANK_OVER_RETRIEVAL", "8");
         std::env::set_var("CQS_RERANK_POOL_MAX", "200");

@@ -17,11 +17,45 @@ v1.28.0 shipped 2026-04-19 (post-audit release, 150 findings closed across PRs #
 
 Both splits show consistent positive lifts. The asymmetry from the v1.28.0 wave (test gain didn't replicate on dev) was fixture drift — `evals/regenerate_v3_test.py` had a bug reading the post-#1038 envelope shape (`out["data"]["results"]` instead of `out["results"]`) so it returned 100% unresolved on first attempt; fixed in `evals/regenerate_v3_test.py:155-159` (kept inline, not yet PR'd).
 
-**Right Now:** v1.28.1 binary installed; daemon restarted; index at 15,603 chunks / schema v21 / 7,675 LLM summaries (49% coverage). v3.v2 fixture regenerated against current corpus (test: 41 strict / 1 basename / 57 name-fallback / 10 unresolved; dev: 49 / 1 / 52 / 7). Audit dossier at `docs/audit-{findings,triage}.md`; next strategic step is **Reranker V2 retrain with post-mortem fixes** per the user's chained direction.
+**Right Now:** **Reranker V2 retrain done (2026-04-20) — net negative again, weights stay local. Two related cqs fixes ARE shippable.**
 
-**Branch:** main.
+### A/B results on v3.v2 (post-windowing-fix reindex, pool cap 20, UniXcoder graded weights)
 
-**Pending uncommitted:** `evals/regenerate_v3_test.py` (envelope-aware fix), `evals/queries/v3_{test,dev}.{v2,diff}.json` (fresh fixture from current corpus). Worth one PR.
+| Split | Metric | Baseline (stage-1) | Rerank | Δ |
+|---|---|---|---|---|
+| test | R@1 | 42.2% | 28.4% | **−13.8pp** |
+| test | R@5 | 63.3% | 56.9% | **−6.4pp** |
+| test | R@20 | 81.7% | 81.7% | ±0 |
+| dev | R@1 | 41.3% | 32.1% | **−9.2pp** |
+| dev | R@5 | 75.2% | 67.9% | **−7.3pp** |
+| dev | R@20 | 88.1% | 88.1% | ±0 |
+
+**Diagnosis:** R@20 unchanged on both splits → gold IS in pool=20 → reranker just demotes it within the top 20. ~17pp R@5 improvement over Phase 3 (Stack v2 + binary) but ship gate (R@5 ≥ 0) still fails. Likely cause: severe class imbalance in training data (77% label=0.0, 14% A, 10% TIE) compresses score-head range. Future fix: class-weighted BCE or pairwise margin loss; possibly bigger base model (bge-reranker-large).
+
+**Weights:** `~/training-data/reranker-v2-cqs-graded/` (504MB safetensors + ONNX via optimum-cli in fresh `onnx-export` conda env). Daemon override at `~/.config/systemd/user/cqs-watch.service.d/override.conf` points `CQS_RERANKER_MODEL` here — disable to revert.
+
+### Shippable wins from this arc
+
+1. **Windowing-fix** at `src/embedder/mod.rs:564`. Windowed chunks (7228/15616) were being stored with lossy WordPiece `tokenizer.decode()` output as `chunks.content` (lowercased, space-separated subwords like "pub fn save ( & self )"). Fix uses `encoding.get_offsets()` to slice raw source text. Regression test in integration mod. Requires reindex (already done).
+
+2. **Pool cap default lowered** in `src/cli/limits.rs`: `RERANK_POOL_MAX 100 → 20` per post-mortem #3 + Drowning-in-Documents (arXiv 2411.11767). Env override `CQS_RERANK_POOL_MAX` still honored. Test updated.
+
+3. **Eval tooling**: `evals/label_reranker_v3.py` (Gemma 3-way pointwise labeling, observable+resumable), `evals/rerank_ab_eval.py` (envelope-aware A/B harness for `--rerank` toggle).
+
+### Pending uncommitted
+
+- `src/embedder/mod.rs` (windowing fix + regression test in integration mod)
+- `src/cli/limits.rs` (pool cap default 100→20 + test update)
+- `evals/label_reranker_v3.py` (new)
+- `evals/rerank_ab_eval.py` (new)
+- `evals/regenerate_v3_test.py` (envelope-aware payload, already in)
+- `evals/queries/v3_{test,dev}.{v2,diff}.json` (fresh fixtures)
+
+**Branch:** main. Worth one PR for the windowing fix + pool cap + eval tooling. The trained weights are deferred (stay local).
+
+### Daemon/reindex lock conflict
+
+Found while running `cqs index --force` with `cqs-watch --serve` active: both hold fd on `.cqs/index.hnsw.lock`, reindex blocks for 60+ minutes in `locks_lock_inode_wait`. WSL/NTFS shows "advisory-only" warning but the wait still happens. Workaround: stop daemon before reindex. Proper fix: `cqs index --force` should SIGTERM daemon or fail loudly. Note saved.
 
 ### Lever-by-lever results
 

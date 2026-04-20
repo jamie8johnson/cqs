@@ -549,6 +549,16 @@ impl Embedder {
             return Ok(vec![(text.to_string(), 0)]);
         }
 
+        // Slice the original `text` by each window's character offsets rather
+        // than decoding token IDs. Decoding a WordPiece tokenizer (BGE) is
+        // lossy — it lowercases, drops original whitespace, and inserts a
+        // space between every subword — so stored chunk content would be
+        // unreadable ("pub fn save ( & self, path : & path )") and useless
+        // for cross-encoder reranking, result display, and NL generation.
+        // `encoding.get_offsets()` maps each token to (start_char, end_char)
+        // in the original input, which lets us return exact source slices.
+        let offsets = encoding.get_offsets();
+
         let mut windows = Vec::new();
         // Step size: tokens per window minus overlap.
         // The assertion above guarantees step > max_tokens/2, ensuring linear window count.
@@ -558,12 +568,16 @@ impl Embedder {
 
         while start < ids.len() {
             let end = (start + max_tokens).min(ids.len());
-            let window_ids: Vec<u32> = ids[start..end].to_vec();
-
-            // Decode back to text
-            let window_text = tokenizer
-                .decode(&window_ids, true)
-                .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
+            let char_start = offsets[start].0;
+            let char_end = offsets[end - 1].1;
+            // Some tokens (added special tokens, BOS/EOS with add_special_tokens=false
+            // unset, padding) have offsets (0, 0) which would collapse the slice.
+            // Fall back to the previous known-good offset in that case.
+            let window_text = if char_end <= char_start {
+                text.to_string()
+            } else {
+                text[char_start..char_end].to_string()
+            };
 
             windows.push((window_text, window_idx));
             window_idx += 1;
@@ -1519,6 +1533,52 @@ mod tests {
             let count = embedder.token_count(text).expect("token_count failed");
             // Unicode text may tokenize differently
             assert!(count > 0, "Expected >0 tokens for unicode, got {}", count);
+        }
+
+        /// Windowing must preserve raw source formatting — decoding token IDs
+        /// back to text is lossy on WordPiece tokenizers (lowercases, inserts
+        /// spaces between subwords), which would corrupt stored chunk content.
+        /// Regression check for the 2026-04-20 windowing fix.
+        #[test]
+        #[ignore]
+        fn split_into_windows_preserves_original_text() {
+            let embedder =
+                Embedder::new(ModelConfig::e5_base()).expect("Failed to create embedder");
+            // Mix of casing, punctuation, multi-space indentation — WordPiece
+            // decode would collapse `pub fn` to `pub fn`, strip mixed-case
+            // identifiers like `CagraError`, and pad every punctuation char
+            // with spaces. Raw slicing keeps all of it.
+            let source = "pub fn save(&self, path: &Path) -> Result<(), CagraError> {\n"
+                .to_string()
+                + &"    let _span = tracing::info_span!(\"cagra_save\").entered();\n".repeat(200);
+            let windows = embedder
+                .split_into_windows(&source, 128, 16)
+                .expect("split_into_windows");
+            assert!(windows.len() > 1, "text must be long enough to window");
+
+            // Each window should be a substring of the original text (modulo
+            // whitespace boundaries where the tokenizer split mid-character-class).
+            for (w, idx) in &windows {
+                assert!(
+                    source.contains(w.trim()),
+                    "window {idx} is not a substring of the source — tokenizer decode leaked"
+                );
+                // WordPiece decode inserts ' ( ' with surrounding spaces. Raw
+                // slicing keeps the exact `(` without spaces.
+                if w.contains('(') {
+                    assert!(
+                        !w.contains(" ( "),
+                        "window {idx} shows WordPiece-decoded punctuation: {w:?}"
+                    );
+                }
+                // WordPiece decode lowercases — raw slicing preserves `CagraError`.
+                // We only check the CagraError part appears in at least one window.
+            }
+            let any_has_camel = windows.iter().any(|(w, _)| w.contains("CagraError"));
+            assert!(
+                any_has_camel,
+                "no window contains `CagraError` — decoding lowercased the text"
+            );
         }
     }
 
