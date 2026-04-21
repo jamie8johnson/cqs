@@ -2,49 +2,105 @@
 
 ## Right Now
 
-**v1.28.2 staging for release (2026-04-20).** Patch release bundles four production-side wins from the Reranker V2 retrain arc: windowing fix (PR #1060), `cqs index --force` daemon-detection (PR #1061), `cqs notes list` daemon dispatch (PR #1062), `cli_review_test` slow-test fix (PR #1063), plus centroid classifier flipped default-on after measured A/B win, plus reranker pool cap default lowered 100→20, plus 5 Dependabot bumps (#1055-#1059).
+**Alpha-routing arc + HyDE definitively closed at proper N (v4, 14x v3). Research PR #1069 open. Awaiting next lever pick.** 2026-04-21.
 
-### v1.28.2 net eval (post-windowing-fix reindex + classifier ON, v3.v2 109q each split)
+### Open PR
 
-| Split | Metric | v1.27.0 canonical | v1.28.2 stage-1 + classifier | Δ |
-|---|---|---|---|---|
-| test | R@5 | 63.3% | **67.0%** | **+3.7pp** |
-| test | R@20 | 80.7% | **83.5%** | **+2.8pp** |
-| dev | R@5 | 74.3% | 75.2% | +0.9pp |
-| dev | R@20 | 86.2% | **89.9%** | **+3.7pp** |
+- **#1069** research: v4 eval fixture (10x N) + arc post-mortems for distilled head, fused head, HyDE — https://github.com/jamie8johnson/cqs/pull/1069
+  - Branch: `research/v3-v4-fixtures-and-eval-infra`
+  - Adds: 11 eval scripts + spec + v3/v4 synthetic fixtures (3052 + 3833 queries). Zero source-side changes.
+  - Awaiting your review.
 
-Per-category R@5 from classifier flip (combined splits): structural_search **+12.5pp** (n=16), cross_language **+9.1pp** (n=22), behavioral_search +3.1pp (n=32), conceptual_search **−4.0pp** (n=25, single-query noise on 44% baseline), rest ±0.
+### Lever verdicts (v3 + v4 both confirmed)
 
-### Reranker V2 retrain — PARKED
+| Lever | v3 R@5 (n=109) | v4 R@5 (n=1526) | Verdict |
+|---|---|---|---|
+| Distilled head (88.1% val acc, retrained on v3+synth) | test ±0 / dev +0.9 | test -0.3 / dev ±0 | parked |
+| Fused head (continuous α + corpus fingerprint, contrastive ranking) | test ±0 / dev -0.9 | test -0.4 / dev +0.2 | parked |
+| HyDE (query-time, Gemma synth code) | test -12.8 / dev -22.0 | test -10.7 / dev -9.8 | killed |
 
-Three loss regimens (BCE / weighted BCE / pairwise margin) on 9k cqs-domain graded rows from Gemma 4 31B labeling. **All three converged on −5 to −9pp R@5** with R@20 unchanged. Pairwise hit 98% train accuracy → fits train pairs perfectly, doesn't generalize. Bottleneck is corpus size (326 queries × ~30 candidates is too thin for a 125M cross-encoder against hard stage-1 negatives), not loss choice. Weights stay local at `~/training-data/reranker-v2-cqs-graded/` and `~/training-data/reranker-v2-cqs-pairwise/`. Daemon override removed; default reranker is the off-the-shelf ms-marco MiniLM. To break out: 10x more queries (Gemma-augmented synthetic) OR 5x bigger base (`bge-reranker-large` at ~3x latency).
+Core diagnosis: R@5 is α-insensitive on this corpus state in [0, 1] range. Continuous α can't break the convex hull AND the convex hull doesn't matter at top-5. The Oracle test's +9.2pp (Phase 1.1) came from category-driven per-category default flips, not continuous-α refinement within a category.
+
+### v4 fixture (3052 queries, 14x v3 N)
+
+- `v4_test.v2.json` (1526 queries) + `v4_dev.v2.json` (1526 queries), 50/50 stratified
+- Per-category 200 each except type_filtered=126 (validation pass rate structurally lower)
+- Held out from v3 gold + Phase 1.3 seeds (1643 chunks excluded)
+- Synthetic queries are ~20pp HARDER than v3.v2 hand-curated (gold-in-top-50 67% vs 91%)
+- Reusable for any future A/B — noise floor drops from ±5.6pp at n=18 to ±0.6pp at n=180
+
+### Local cleanup pending
+
+- **feat/distilled-query-classifier** branch — dead Rust code (classifier_head.rs, fused_head.rs, corpus_fingerprint.rs, all wiring). Has stash with notes/PROJECT_CONTINUITY edits. Spec + evals already on PR #1069. **Delete after PR #1069 merges.**
+
+### Architecture state
+
+- **Version:** v1.28.3 (latest GitHub Release; binary reinstalled clean of dead head code)
+- **Index:** 16,150 chunks (BGE-large; v21 schema)
+- **Production R@5 (v3.v2 test):** 68.8% — unchanged from v1.28.3 (no production code touched)
+- **v4 baseline R@5:** 48.9% test / 49.9% dev
+- **Open issues:** 5 pre-audit (#106, #255, #717, #916, #956) + 6 P4 audit deferrals (#1042-#1044, #1047-#1049)
+- **cqs-watch daemon:** running v1.28.3 release binary, no env overrides
+- **vLLM:** unloaded
+
+### Strategic spec: fused alpha + classifier head
+
+Path: `docs/plans/2026-04-20-fused-alpha-classifier-head.md` (~12KB).
+
+Key decisions baked in:
+- **Contrastive ranking loss** instead of regression-on-best-α — no α-label sweep needed, optimizes against the actual ranking objective
+- **Corpus fingerprint as trunk input** (1024-dim normalized mean of all chunk embeddings) — locks in the input contract from v1, even though MVP trains single-corpus on cqs only
+- **Linear-blend score in training** (`α·sparse + (1−α)·dense`) accepts a controlled mismatch with production RRF; differentiable RRF surrogate is future work
+- **Deprecate distilled head on green ship** — no parallel-head maintenance
+
+Three open questions, all addressable in follow-on work:
+1. Multi-corpus training data collection (4-5 corpora from a 6-row candidate table; need ~500 generated queries each)
+2. Cache-invalidation race — durable solution layered as push (socket message from `cqs index`) + pull (mtime stat every Nth query) + inotify (Linux-native bonus)
+3. Single-corpus training risk — fingerprint dropout p=0.2 + optional Gaussian jitter σ=0.01 as stopgaps
+
+Eight ablation knobs (τ, distractor sampling, score normalization, trunk hidden dim, λ_α, K, fingerprint dropout, fingerprint jitter) — sweep + report alongside headline result.
+
+### Implementation order (next session)
+
+1. `src/corpus_fingerprint.rs` (lazy compute + cache, invalidation hook in `cqs index`)
+2. `evals/build_contrastive_shards.py` (pre-compute per-query sparse + dense scores for top-50 candidates × 4376 queries)
+3. `evals/train_fused_head.py` (PyTorch trunk + 2 heads, CE + contrastive ranking loss, ablation sweeps)
+4. `src/fused_head.rs` (ORT inference, parallel to existing `src/classifier_head.rs`)
+5. `src/search/router.rs::reclassify_with_fused_head` + 3 call-site wirings
+6. `evals/fused_head_ab_eval.py` (3-cell A/B: baseline / distilled / fused)
+7. If green per decision matrix → v1.28.4 ship + distilled head cleanup
+
+### Pending uncommitted (feat branch — superseded code)
+
+- `src/classifier_head.rs` (220 LOC) — to be deleted post-fused-ship
+- `src/{lib.rs, search/router.rs, cli/...}` distilled head wiring — to be replaced with fused equivalents
+- `evals/{train_query_classifier, measure_gemma_classify_accuracy, rerank_ab_oracle_eval, distilled_head_ab_daemon, distilled_head_ab_eval, hyde_per_category_eval}.py`
+- `evals/classifier_head/{model.onnx, state_dict.pt, run_meta.json}` — superseded artifacts
+- `evals/queries/v3_generated_round1.json` (1.8MB, 3833 synthetic queries, 42% pass rate) — REUSE for fused head training corpus
+
+### Background processes
+
+- **cqs-watch daemon** clean (no env overrides; cleanup ran at end of A/B). Default config.
+- vLLM Gemma 4 31B AWQ still up on A6000:0 (47GB) — idle but loaded, ready for next generation pass.
+
+### Collaboration calibration (still load-bearing)
+
+1. **"Self-starter and self-orienter" is the favored mode.** Default toward action over consultation when the next move is clear.
+2. **"Little give-ups" are the failure pattern.** Verify artifacts; investigate silences; redo thin returns; don't tolerate Monitor timeouts as longer waits.
+3. **No time estimates in specs.** Wall-time predictions are unreliable; describe what/why/gate-criteria, not effort.
+4. **Knobs that are knobs, not blockers, go in an Ablations table** — not in Open Questions. (Updated this session per user feedback on the fused head spec.)
+
+### Reranker V2 — PARKED
+
+Three loss regimens (BCE / weighted BCE / pairwise margin) on 9k cqs-domain graded rows. All converged on −5 to −9pp R@5; pairwise hit 98% train accuracy without generalizing. Corpus too thin for 125M cross-encoder. Weights at `~/training-data/reranker-v2-cqs-{graded,pairwise}/`. Re-attempt only with 10x corpus + bge-reranker-large.
 
 ### Notes A/B — ZERO IMPACT on retrieval
 
-`scoring.note_boost_factor = 0.0` vs `0.15` on v3.v2: identical numbers. Note injection's value is read-time context for `cqs read --focus`, not retrieval ranking. Default left at 0.15.
+`scoring.note_boost_factor = 0.0` vs `0.15` on v3.v2: identical R@K. Default left at 0.15.
 
-### Shippable wins from this arc
+### Daemon/reindex lock conflict — FIXED in v1.28.2 (#1061)
 
-1. **Windowing-fix** at `src/embedder/mod.rs:564`. Windowed chunks (7228/15616) were being stored with lossy WordPiece `tokenizer.decode()` output as `chunks.content` (lowercased, space-separated subwords like "pub fn save ( & self )"). Fix uses `encoding.get_offsets()` to slice raw source text. Regression test in integration mod. Requires reindex (already done).
-
-2. **Pool cap default lowered** in `src/cli/limits.rs`: `RERANK_POOL_MAX 100 → 20` per post-mortem #3 + Drowning-in-Documents (arXiv 2411.11767). Env override `CQS_RERANK_POOL_MAX` still honored. Test updated.
-
-3. **Eval tooling**: `evals/label_reranker_v3.py` (Gemma 3-way pointwise labeling, observable+resumable), `evals/rerank_ab_eval.py` (envelope-aware A/B harness for `--rerank` toggle).
-
-### Pending uncommitted
-
-- `src/embedder/mod.rs` (windowing fix + regression test in integration mod)
-- `src/cli/limits.rs` (pool cap default 100→20 + test update)
-- `evals/label_reranker_v3.py` (new)
-- `evals/rerank_ab_eval.py` (new)
-- `evals/regenerate_v3_test.py` (envelope-aware payload, already in)
-- `evals/queries/v3_{test,dev}.{v2,diff}.json` (fresh fixtures)
-
-**Branch:** main. Worth one PR for the windowing fix + pool cap + eval tooling. The trained weights are deferred (stay local).
-
-### Daemon/reindex lock conflict
-
-Found while running `cqs index --force` with `cqs-watch --serve` active: both hold fd on `.cqs/index.hnsw.lock`, reindex blocks for 60+ minutes in `locks_lock_inode_wait`. WSL/NTFS shows "advisory-only" warning but the wait still happens. Workaround: stop daemon before reindex. Proper fix: `cqs index --force` should SIGTERM daemon or fail loudly. Note saved.
+`cqs index --force` now fails fast vs running daemon with the exact stop/restart command. Was hanging 60+ min in `locks_lock_inode_wait`.
 
 ### Lever-by-lever results
 
@@ -95,19 +151,19 @@ Reranker V2 work also produced commits in the private `cqs-training` repo (resea
 
 | Config | test R@1 | test R@5 | test R@20 | dev R@1 | dev R@5 | dev R@20 |
 |---|---|---|---|---|---|---|
-| **post-#1040 (chunker doc fallback + LLM regen)** | 41.3% | **67.0%** | 75.2% | 40.4% | **71.6%** | 79.8% |
+| **current (2026-04-20, post-fused-A/B)** | 41.3% | **68.8%** | **85.3%** | 45.0% | **78.0%** | **88.1%** |
 | canonical pre-#1040 (2026-04-17) | 41.3% | 63.3% | 80.7% | 41.3% | 74.3% | 86.2% |
-| Δ | 0.0 | **+3.7** | −5.5 | −0.9 | **−2.7** | −6.4 |
+| Δ | 0.0 | **+5.5** | **+4.6** | **+3.7** | **+3.7** | **+1.9** |
 
-Test R@5 surpasses canonical (+3.7pp). Dev R@5 still below canonical (−2.7pp). R@20 down on both — the chunker fix and the LLM regen sharpen short-chunk discrimination at the top, but the deep-rank tail seems noisier post-reindex (chunk count 14,734 vs prior 16,095 — pruning during reindex). Watch the dev R@5 gap; may require a follow-up. Subsequent A/B should always quote both test AND dev — wins on test alone don't generalize (saw this with ColBERT 2-stage; see also dev R@20 here).
+All metrics now above canonical. The earlier post-#1040 dip on R@20 (−5.5pp test, −6.4pp dev) self-resolved via successive reindexes restoring chunk count (14,734 → 16,150). Subsequent A/B should always quote both test AND dev — wins on test alone don't generalize (saw this with ColBERT 2-stage).
 
 ## What's queued
 
 The Tier 3 chunker fix unlocked R@5 lift; remaining options — pick by appetite:
 
 1. **Re-train Reranker V2 with post-mortem fixes** — re-mine hard negatives against cqs's own enriched index, keep TIE labels in pointwise, cap reranker pool at 20. ~1-2 weeks. Plausibly lands where the off-the-shelf attempts didn't.
-2. **Investigate dev R@20 regression from #1040** — test-only fixture has +3.7pp R@5 / −5.5pp R@20; dev has −2.7pp R@5 / −6.4pp R@20. Likely artifact of corpus pruning during reindex (16,095 → 14,734 chunks); confirm by reindexing a third time and re-evaluating. ~half day.
-3. **Per-category HyDE re-validation** — speculative, untested on v3. v2-era data showed +14pp structural / −22pp conceptual. Treat v2 numbers as motivation, not promise.
+2. ~~**Investigate dev R@20 regression from #1040**~~ — RESOLVED 2026-04-20. Successive reindexes restored chunk count (14,734 → 15,603 → 15,991 → 16,150). All metrics now ABOVE canonical: test R@5 +5.5pp, R@20 +4.6pp; dev R@5 +3.7pp, R@20 +1.9pp. Pruning-artifact theory confirmed.
+3. ~~**Per-category HyDE re-validation**~~ — KILLED 2026-04-20. test R@5 −12.8pp, dev R@5 −22.0pp. Every category regressed on dev. Multi_step's +7.1pp test win flipped to −14.3pp on dev (noise). Per-category routing can't save it — no category positive across both splits. v2-era predictions (structural/type_filtered helping) reversed completely. Eval at `/tmp/hyde-{test,dev}.json`.
 4. **ColBERT integration into cqs proper** with per-token index — multi-week architectural work; eval-tool gain didn't justify it yet.
 5. **Embedder swap (CodeBERT / CodeT5+ / CodeR)** — same risk profile as the v9-200k experiment that already failed.
 6. ~~**JSON output schema standardization (Task #17)**~~ — landed in #1038.
