@@ -7,7 +7,7 @@ argument-hint: "[batch-number|all]"
 
 # Audit
 
-Run the 16-category code audit. Full design: `docs/plans/2026-02-04-20-category-audit-design.md`
+Run the 16-category code audit.
 
 ## Arguments
 
