@@ -1,22 +1,28 @@
 # Roadmap
 
-## Current: v1.28.2 (windowing fix + classifier default-on)
+## Current: v1.28.3 (R@5-targeted alpha tweaks for behavioral + multi_step)
 
-54 languages. 29 chunk types. v3 eval canonical, regenerated to v2 fixture 2026-04-17/20 (109 test / 109 dev). Daemon mode (`cqs watch --serve`, 99ms graph p50 / 200ms search-warm p50). Per-category SPLADE alpha routing. **Centroid classifier active by default** (test R@5 +3.7pp from category-aware routing; opt-out via `CQS_CENTROID_CLASSIFIER=0`). GPU-native CAGRA bitset filtering (patched cuvs 26.4). MSRV 1.95.
+54 languages. 29 chunk types. v3 eval canonical, regenerated to v2 fixture 2026-04-17/20 (109 test / 109 dev). Daemon mode (`cqs watch --serve`, 99ms graph p50 / 200ms search-warm p50). Per-category SPLADE alpha routing — re-swept against R@5 in v1.28.3 (was R@1-tuned). **Centroid classifier active by default** (test R@5 +3.7pp from category-aware routing; opt-out via `CQS_CENTROID_CLASSIFIER=0`). GPU-native CAGRA bitset filtering (patched cuvs 26.4). MSRV 1.95.
+
+**v1.28.3** shipped 2026-04-20: per-category SPLADE α re-sweep targeting R@5 (the 2026-04-15 sweep optimized R@1 — different optima in many categories). Two alpha changes ship — `behavioral` 0.00 → 0.80, `multi_step` 1.00 → 0.10 — both essentially flipping a category from one extreme to the other. Production net: test R@5 +0.9pp, dev R@5 ±0, no regressions. The per-category sweep predicted +14pp held-out lift; ~8× dilution from classifier accuracy explains the gap (full analysis in `~/training-data/research/models.md`). Plus README cleanup (PR #1065).
 
 **v1.28.2** shipped 2026-04-20: four correctness fixes from the Reranker V2 retrain arc — windowing fix (`chunks.content` was lossy WordPiece-decoded text for 7228/15616 chunks; PR #1060), `cqs index --force` fail-fast vs running daemon (#1061), `cqs notes list` daemon dispatch (#1062), `cli_review_test` `--format` → `--json` migration miss (#1063, fixes 2-day-red slow-tests nightly). Plus: reranker pool cap default 100→20, centroid classifier flipped default-on after isolated A/B (test R@5 +3.7pp), `notes_boost_factor` measured (zero impact, default unchanged). Reindex required to refresh stored content from raw source.
 
-### Eval baselines on v3.v2 (post-windowing-fix, 2026-04-20)
+### Eval baselines on v3.v2 (post-v1.28.3, 2026-04-20)
 
 | Split | R@1 | R@5 | R@20 | Notes |
 |---|---|---|---|---|
-| **test (n=109), v1.28.2 stage-1 + classifier ON** | **42.2%** | **67.0%** | **83.5%** | reindex 2026-04-20, 15,675 chunks |
-| test (n=109), v1.28.2 stage-1, classifier OFF | 42.2% | 64.2% | 83.5% | classifier flip alone gives +3.7pp R@5 |
-| **dev (n=109), v1.28.2 stage-1 + classifier ON** | **42.2%** | **75.2%** | **89.9%** | dev higher baseline; classifier neutral here |
-| dev (n=109), v1.28.2 stage-1, classifier OFF | 45.0% | 75.2% | 89.9% | (classifier shifts a query off R@1) |
+| **test (n=109), v1.28.3 stage-1 + classifier ON** | 40.4% | **64.2%** | 82.6% | 16,026-chunk corpus, post-incremental-drift |
+| test (n=109), v1.28.2 reverted alphas (same corpus) | 40.4% | 63.3% | 82.6% | A/B baseline |
+| **dev (n=109), v1.28.3 stage-1 + classifier ON** | 40.4% | 73.4% | 87.2% | same corpus |
+| dev (n=109), v1.28.2 reverted alphas (same corpus) | 41.3% | 73.4% | 87.2% | A/B baseline |
 | canonical (v1.27.0 shipping) test / dev R@5 | – | 63.3% / 74.3% | 80.7% / 86.2% | for delta reference |
 
-Net Δ vs canonical: test R@5 **+3.7pp**, R@20 **+2.8pp**; dev R@5 +0.9pp, R@20 **+3.7pp**. Per-category R@5 with classifier (n shown, both splits combined): structural_search **+12.5pp**, cross_language **+9.1pp**, behavioral_search +3.1pp, conceptual_search **−4.0pp** (only regression, n=25 noise on 44% baseline), rest ±0. Notes A/B (`scoring.note_boost_factor` 0.0 vs 0.15) on same fixture: **zero impact** — note injection's value is read-time context, not retrieval ranking.
+Net v1.28.3 Δ vs canonical: test R@5 **+0.9pp** (smaller than v1.28.2 morning baseline of 67.0% because of incremental index drift; see "Per-Category SPLADE Alpha Re-Sweep — Target R@5" in `models.md`), dev R@5 −0.9pp (drift, not config). The v1.28.3 alpha changes are net-positive on test, neutral on dev when measured on the same drifted corpus.
+
+### Per-category R@5 sweep — what didn't ship and why
+
+The R@5 re-sweep also surfaced direction-stable but small-magnitude moves on `cross_language` (0.10 → 0.40, n=11 per held-out split — small N + the current 0.10 is already well-placed by the prior R@1 sweep). And inconsistent / noisy optima on `identifier_lookup`, `conceptual`, `negation`, `structural`, `type_filtered`. None of those clear the cross-split-agreement + magnitude bar that `behavioral` and `multi_step` did. The dilution analysis (sweep gain × classifier accuracy) suggests per-category α tuning is now bottlenecked by classifier accuracy, not the alpha grid — future R@5 work should target classifier accuracy first.
 
 ---
 
@@ -45,7 +51,7 @@ Net Δ vs canonical: test R@5 **+3.7pp**, R@20 **+2.8pp**; dev R@5 +0.9pp, R@20 
 - [ ] **HyDE for structural queries — most promising untested lever.** v2-era data: +14pp structural, +12pp type_filtered, −22pp conceptual, −15pp behavioral. Router → LLM generates synthetic code → embed → search, per-category by design. Treat v2 numbers as motivation, not promise: this session saw several wins vanish through the full router (centroid, reranker v2, full alpha sweep). Design the experiment to hold the production router fixed and vary only the query embedding source. Prereqs already built (Gemma 4 31B via vLLM, BGE embedder, v3 eval harness).
 - [ ] **BGE → E5 v9-200k.** Clean-index eval ties on R@1, slight edge on R@5/R@20, 1/3 the embedding dim (768 vs 1024). Gated on [#949](https://github.com/jamie8johnson/cqs/issues/949) (embedder abstraction) + v3 re-run to rule out noise.
 - [ ] **CAGRA filtering regression on enriched index.** Fully-routed v1.24.0: conceptual −5.5pp, structural −3.8pp, identifier −2pp vs pre-release. Hypothesis: CAGRA graph walk strands in filtered-out regions. Concrete proposal in [#962](https://github.com/jamie8johnson/cqs/issues/962).
-- [~] **Classifier accuracy — SCOPE REDUCED 2026-04-16.** The "4.5pp oracle gap" was an illusion. Breakeven simulation on v3 dev shows per-category α on Unknown queries is net-negative at *any* classifier accuracy (p=1.00 → −9.1pp). Root cause: alphas were tuned on queries the rule-based classifier was already confident about — a population with different retrieval characteristics than Unknown queries, which want α=1.0 (pure SPLADE weighting).
+- [~] **Classifier accuracy — SCOPE REOPENED 2026-04-20.** The earlier "SCOPE REDUCED" call was correct in a world where per-category α tuning was R@1-targeted (and gave small gains). The 2026-04-20 R@5 re-sweep changed the picture: per-category α has substantial latent R@5 signal (sweep predicted +14pp held-out lift) but ~8× of it dilutes through the rule-based + centroid classifier (production reality: +0.9pp test, ±0 dev). **Classifier accuracy is now the bottleneck on R@5, not the alpha grid.**
 
   **Audit data (v3 dev, 109 queries; `cargo test --test classifier_audit`):**
 
@@ -60,7 +66,31 @@ Net Δ vs canonical: test R@5 **+3.7pp**, R@20 **+2.8pp**; dev R@5 +0.9pp, R@20 
   | behavioral | 16 | 19% | 6% | 33% |
   | conceptual | 12 | 0% | 0% | 0% (abstract-noun patterns don't match v3) |
 
-  Overall: 38.5% accurate, 49.5% fall to Unknown, 13.8% fire wrong. Dead paths: centroid matching (−4.6pp, infra preserved), logistic regression / fine-tuned MiniLM / LLM classify (same failure mode), negation idiom rule-fix (measured no R@1 change). Low-risk/low-value remainder: rule expansion for multi_step (`X AND Y`) and conceptual (better abstract-noun coverage) — wait for a larger eval set where 1pp is above noise. Details in `~/training-data/research/models.md`.
+  Overall: 38.5% accurate, 49.5% fall to Unknown, 13.8% fire wrong. Dead paths from prior attempts: centroid matching (now active by default after alpha-floor fix in v1.28.2), logistic regression, fine-tuned MiniLM, runtime LLM classify (latency-prohibitive at 300-500ms/query), negation idiom rule-fix (no R@1 change). Details in `~/training-data/research/models.md`.
+
+  **Next attempt: distilled query classifier on the BGE query embedding.** Use Gemma 4 31B Dense (already deployed via vLLM for the Reranker V2 labeling pipeline) as a teacher to label ~5-10k v3 queries (mix of telemetry + synthetic). Train a tiny classifier head — a single linear layer + softmax mapping the 1024-dim BGE query embedding to 9 categories (~10K params). Inference: one matmul on the embedding cqs already computes for search, <0.1ms additional latency. No new runtime dependencies.
+
+  **Prerequisite measurement:** how well does Gemma 4 31B itself classify v3 queries? We've never measured it directly against v3 ground-truth labels. Run the 544 v3 queries through `evals/llm_client.py::classify`, compare to fixture labels, get per-category accuracy. This caps the distillation ceiling. ~5 min compute (cached).
+
+  **Plausible accuracy projection** — DistilBERT-canon shows distilled students retain ~97% of teacher accuracy on NLP classification ([source](https://www.geeksforgeeks.org/nlp/introduction-to-distilbert-model/)). If the Gemma 31B baseline lands at 85% on v3 (likely range 75-90% — the v3 taxonomy has hard boundaries between negation/structural and multi_step/structural), the distilled head should hit ~80-83%. Vs current production classifier at 38% accuracy.
+
+  **Estimated R@5 lift** — at ~80% classifier accuracy, the v1.28.3 alpha changes alone would compound from the current +0.9pp test R@5 to roughly **+8-10pp test R@5** (sweep-predicted +14pp × 0.6-0.7 dilution from 80% accuracy, vs current ~8× dilution from 38% accuracy). Plus opens the door for retuning the 5 categories whose sweep optima were noisy partly because of bad classifier-routed training data.
+
+  **Smaller Gemma 4 variants — E2B (Effective 2B), E4B, 26B MoE** — could be runtime classifiers if latency budget allows. E2B at ~30-60ms via vLLM is still 10-20× the daemon hot path. Distillation to a head on cqs's existing BGE embedding is the more aggressive path: <0.1ms and no new runtime dependency.
+
+  **Estimated effort:** 1-2 days (Gemma 31B already up via vLLM; labeling pipeline already proven from Reranker V2 calibration; training head is ~50 LOC of PyTorch; eval harness in place via `evals/classifier_ab_eval.py`).
+
+- [ ] **Per-query α regression — skip the taxonomy entirely.** Alternative or companion to the distilled classifier above. The 9-way category taxonomy is a lossy compression of an underlying continuous α surface — categories were a human-designed clustering of query types, but the model doesn't actually need them. Train a tiny MLP (BGE 1024-dim query embedding → α ∈ [0, 1]) directly. Prediction: one matmul + sigmoid, <0.1ms additional latency. Same runtime cost as the distilled head, but skips the categorical bottleneck.
+
+  **Training data already exists.** The v1.28.3 R@5 sweep produced 11,424 labeled examples (544 queries × 21 alphas, R@5 outcome per (query, α) pair) sitting in `evals/queries/v3_alpha_sweep_r5{,_test,_dev}.json`. Per-query "best α" is `argmax_α R@5(query, α)`. For queries where multiple alphas tie at the optimum, regress against the centroid of the tied range to bias toward stable predictions.
+
+  **Why this might beat the distilled head:** category boundaries are fuzzy. A query that's 60% behavioral / 30% structural / 10% multi_step gets routed to one bucket and gets that bucket's α — which is wrong for queries near the boundary. Direct α regression sees the query and picks the right point on the [0, 1] surface without intermediate quantization.
+
+  **Why it might not:** single-query R@5 outcomes are noisy (per-query R@5 ∈ {0/n, 1/n, ..., n/n} for tiny per-query sample size). The category abstraction provides natural smoothing across a population. The regression target may need windowing or smoothing to be learnable.
+
+  **Combine with the distilled head?** Possibly — train both on the same Gemma-labeled dataset, ensemble. Distilled head gives interpretable category routing for telemetry/debugging; α regression captures fine-grained tuning. Or use the regression as a tie-breaker when the distilled head's top-1 vs top-2 confidence margin is small.
+
+  **Estimated effort:** 1-2 days, shares infrastructure with the distilled head (same labeling pass would label both targets simultaneously). ~75 LOC of PyTorch.
 
 **Testing infrastructure:**
 - [ ] **Rewrite slow CLI test binaries to in-process fixtures** ([#980](https://github.com/jamie8johnson/cqs/issues/980)). `cli_batch_test`, `cli_graph_test`, `cli_commands_test`, `cli_test`, `cli_health_test` gated behind `slow-tests` feature (PR #988) because each shells out to `cqs` and cold-loads the ONNX/HNSW/SPLADE stack per test case (~118 min combined on PR CI). Follow the `cli_notes_test` + `router_test` pattern: one `Store` + `CommandContext` per binary, call `cmd_*` handlers directly. Un-gates the feature and retires the nightly `slow-tests.yml` workflow.
