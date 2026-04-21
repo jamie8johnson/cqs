@@ -1536,3 +1536,39 @@ mentions = [
     "python",
     "nohup",
 ]
+
+[[note]]
+sentiment = 0.0
+text = "Fused alpha head (continuous alpha + corpus fingerprint, contrastive ranking) still 0pp R@5 at v4 N=1526 per split. The convex-hull diagnosis was right about effect (continuous alpha beats discrete) but wrong about importance: R@5 on this corpus state is alpha-insensitive across [0, 1] entirely. Continuous alpha can't help when fine alpha tuning doesn't change top-5 ranks. Verified via cqs --splade-alpha 0.381 vs fused-head-determined alpha=0.381 producing byte-identical top-5."
+mentions = [
+    "fused_head_ab_eval.py",
+    "convex_hull",
+    "alpha_routing",
+]
+
+[[note]]
+sentiment = 0.0
+text = "v4 synthetic queries are ~20pp harder than v3.v2 hand-curated (R@5 baseline 49% vs 69%). Gold-in-top-50 retrieval rate drops 91% → 65% on v4. Synthetic = LLM-generated from chunks then Gemma-validated, never human-reviewed. Use both v3 (curated) AND v4 (large N) in any future A/B — agreement across both is required for ship/kill verdicts."
+mentions = [
+    "v4_generated.json",
+    "split_v4.py",
+    "build_contrastive_shards.py",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Contrastive ranking loss collapses alpha to ~0 without per-query z-score normalization on the score components. SPLADE scores are unbounded positive (~hundreds) while dense cosine is in [-1, 1]; combined = alpha*sparse + (1-alpha)*dense lets sparse dominate at any positive alpha, so the model learns to zero alpha. Fix: per-query z-score on both components before the linear blend in the loss. Documented in train_fused_head.py's contrastive_ranking_loss(normalize=True)."
+mentions = [
+    "train_fused_head.py",
+    "contrastive_ranking_loss",
+    "SPLADE",
+]
+
+[[note]]
+sentiment = -0.5
+text = '''cqs batch protocol parses one command per line. Multi-line queries (e.g. HyDE-generated synthetic code with newlines) shatter into junk tokens with 'unrecognized subcommand' warnings, returning empty results at high QPS. Always flatten newlines before piping into cqs batch: doc.replace('\n', ' ').replace('\r', ' ').strip(). Fix in hyde_per_category_eval.py:hyde_docs_flat.'''
+mentions = [
+    "hyde_per_category_eval.py",
+    "cqs_batch",
+    "multiline",
+]

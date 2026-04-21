@@ -2,44 +2,46 @@
 
 ## Right Now
 
-**Both α-routing arc and HyDE empirically dead. Building 10x N v4 eval fixture for definitive baseline before next lever.** Late-night 2026-04-20 → 2026-04-21.
+**Alpha-routing arc + HyDE definitively closed at proper N (v4, 14x v3). Research PR #1069 open. Awaiting next lever pick.** 2026-04-21.
 
-### Active task
+### Open PR
 
-**v4 fixture generation** (pid 78195) — Gemma-validated synthetic queries, 400 per category × 8 cats targeted, held out from v3 gold + Phase 1.3 seeds. Output: `evals/queries/v4_generated.json`. Will split 50/50 into `v4_test.v2.json` + `v4_dev.v2.json` via `evals/split_v4.py`. ~50 min ETA.
+- **#1069** research: v4 eval fixture (10x N) + arc post-mortems for distilled head, fused head, HyDE — https://github.com/jamie8johnson/cqs/pull/1069
+  - Branch: `research/v3-v4-fixtures-and-eval-infra`
+  - Adds: 11 eval scripts + spec + v3/v4 synthetic fixtures (3052 + 3833 queries). Zero source-side changes.
+  - Awaiting your review.
 
-Then re-run full lever sweep on v4 for final ship/kill on each previously-tested cell at proper N.
+### Lever verdicts (v3 + v4 both confirmed)
 
-### Just-parked levers (this session)
+| Lever | v3 R@5 (n=109) | v4 R@5 (n=1526) | Verdict |
+|---|---|---|---|
+| Distilled head (88.1% val acc, retrained on v3+synth) | test ±0 / dev +0.9 | test -0.3 / dev ±0 | parked |
+| Fused head (continuous α + corpus fingerprint, contrastive ranking) | test ±0 / dev -0.9 | test -0.4 / dev +0.2 | parked |
+| HyDE (query-time, Gemma synth code) | test -12.8 / dev -22.0 | test -10.7 / dev -9.8 | killed |
 
-| Lever | v3 result | Verdict |
-|---|---|---|
-| Distilled head (Phase 1.4b retrain, 88.1% val acc) | test ±0/dev +0.9 R@5 | parked — accuracy not the bottleneck |
-| **Fused head** (contrastive ranking, continuous α + corpus fingerprint) | test ±0/dev -0.9 R@5 | parked — α is α-insensitive on this corpus state |
-| **HyDE** (query-time, Gemma-generated synthetic code) | test -12.8/dev -22.0 R@5 | killed — every category negative on dev |
+Core diagnosis: R@5 is α-insensitive on this corpus state in [0, 1] range. Continuous α can't break the convex hull AND the convex hull doesn't matter at top-5. The Oracle test's +9.2pp (Phase 1.1) came from category-driven per-category default flips, not continuous-α refinement within a category.
 
-The α-routing diagnosis: oracle's +9.2pp came from category-driven per-category default flips, not continuous α refinement. R@5 is α-insensitive in [0.0, 1.0] range. Continuous α can't break the convex hull AND the convex hull doesn't matter for this metric on this corpus.
+### v4 fixture (3052 queries, 14x v3 N)
 
-### Phase 1.4b conclusion (this session)
+- `v4_test.v2.json` (1526 queries) + `v4_dev.v2.json` (1526 queries), 50/50 stratified
+- Per-category 200 each except type_filtered=126 (validation pass rate structurally lower)
+- Held out from v3 gold + Phase 1.3 seeds (1643 chunks excluded)
+- Synthetic queries are ~20pp HARDER than v3.v2 hand-curated (gold-in-top-50 67% vs 91%)
+- Reusable for any future A/B — noise floor drops from ±5.6pp at n=18 to ±0.6pp at n=180
 
-| Metric | Phase 1.4 (79.8% acc) | Phase 1.4b (88.1% acc, retrained) |
-|---|---|---|
-| test R@5 vs baseline | ±0pp | **±0pp** |
-| dev R@5 vs baseline | −0.9pp | +0.9pp |
-| Per-category test R@5 | mixed | identical OFF/ON across all 8 categories |
+### Local cleanup pending
 
-Asymmetric-error-cost theory was wrong (or at most a second-order effect). The true constraint is the **convex hull of 8 fixed α defaults** {1.0, 0.9, 0.8, 0.7, 0.1}. Head's category prediction → router-default α path can't break out of that hull regardless of accuracy. Oracle test (+9.2pp test R@5) measured a different thing — Oracle forced the *α value* per query, not just the *category*. Continuous α is the unlock; classifier accuracy was a red herring.
+- **feat/distilled-query-classifier** branch — dead Rust code (classifier_head.rs, fused_head.rs, corpus_fingerprint.rs, all wiring). Has stash with notes/PROJECT_CONTINUITY edits. Spec + evals already on PR #1069. **Delete after PR #1069 merges.**
 
-Decision: deprecate the distilled head (`CQS_DISTILLED_CLASSIFIER*` envs, `src/classifier_head.rs`, the v1 ONNX artifact) the moment the fused head ships green. Cleanup steps documented in the spec's "Decision: deprecate" section.
+### Architecture state
 
-### Open PRs
-
-- **PR #1067** — MERGED (docs/roadmap follow-up to v1.28.3).
-- **PR #1068** chore/scope-pre-edit-hook — clippy + fmt pass; test still pending. Merge when green.
-
-### Branch state
-
-- **feat/distilled-query-classifier** (local only) carries the now-superseded distilled head code. Will be reused for the fused head implementation OR rebranched to `feat/fused-alpha-head` — TBD.
+- **Version:** v1.28.3 (latest GitHub Release; binary reinstalled clean of dead head code)
+- **Index:** 16,150 chunks (BGE-large; v21 schema)
+- **Production R@5 (v3.v2 test):** 68.8% — unchanged from v1.28.3 (no production code touched)
+- **v4 baseline R@5:** 48.9% test / 49.9% dev
+- **Open issues:** 5 pre-audit (#106, #255, #717, #916, #956) + 6 P4 audit deferrals (#1042-#1044, #1047-#1049)
+- **cqs-watch daemon:** running v1.28.3 release binary, no env overrides
+- **vLLM:** unloaded
 
 ### Strategic spec: fused alpha + classifier head
 
