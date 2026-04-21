@@ -4,6 +4,14 @@
 Only fires when `old_string` contains a `fn foo` / `pub fn foo` declaration.
 Non-fn edits (schema, comments, match arms, string literals) produce no output,
 keeping context injection focused on risky function-targeted changes.
+
+Scope: ONLY fires for cqs's own `src/` and `tests/` trees. Vendored Rust
+subtrees (`cuvs-fork-push/rust/`, future bundled deps) are deliberately
+skipped — `cqs impact` runs against cqs's index, which doesn't contain
+foreign Cargo workspaces, so the lookup would be empty/wrong. Earlier
+versions of this script matched any path containing `/src/`, which fired
+on cuvs-fork-push edits and blocked them with a missing-file error
+during conflict resolution.
 """
 import json
 import os
@@ -15,8 +23,19 @@ inp = json.load(sys.stdin)
 file_path = inp.get("tool_input", {}).get("file_path", "")
 old_string = inp.get("tool_input", {}).get("old_string", "")
 
-# Only analyse Rust source files in src/
-if not file_path.endswith(".rs") or "/src/" not in file_path:
+if not file_path.endswith(".rs"):
+    sys.exit(0)
+
+# Derive cqs project root from the script's own location:
+# <cqs_root>/.claude/hooks/pre-edit-impact.py → ../../ = <cqs_root>
+CQS_ROOT = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+abs_path = os.path.realpath(file_path)
+allowed_roots = (
+    os.path.join(CQS_ROOT, "src") + os.sep,
+    os.path.join(CQS_ROOT, "tests") + os.sep,
+)
+if not abs_path.startswith(allowed_roots):
     sys.exit(0)
 
 # Look for a fn / pub fn / pub async fn / pub(crate) fn declaration in old_string.
