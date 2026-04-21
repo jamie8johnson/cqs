@@ -897,7 +897,7 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "RRF (keyword+semantic fusion) hurts recall at expanded eval scale: 74.7% vs 90.9% cosine-only on 296 queries. Keywords pull in irrelevant matches that dilute the semantic signal. Pure embedding search with name_boost is the sweet spot."
+text = "RRF behavior diverges by eval set: on the 296-query FIXTURE eval, RRF (keyword+semantic) hurt recall 74.7% vs 90.9% cosine-only — synthetic queries match by exact identifier so keyword noise dominates. On v3 real-code eval (109q test/dev with dual-judge gold), RRF + SPLADE per-category alpha is the production winner (test R@5 67.0% vs 63.3% cosine-only). The fixture lesson 'keywords dilute semantic signal' generalizes only when queries are name-shaped."
 mentions = [
     "query.rs",
     "pipeline_eval",
@@ -1010,26 +1010,10 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "semantic_only field on batch SearchParams was suppressed with #[allow(dead_code)] instead of removing. Should be refactored: rename to rrf and make it opt-in (--rrf flag) instead of opt-out. The field is still parsed from batch commands."
-mentions = [
-    "src/cli/batch/handlers/search.rs",
-    "SearchParams",
-]
-
-[[note]]
-sentiment = -0.5
 text = "ms-marco-MiniLM-L-6-v2 reranker is net negative for code search: -15pp (NL passages) to -49pp (raw code). Need code-trained cross-encoder."
 mentions = [
     "reranker.rs",
     "model_eval.rs",
-]
-
-[[note]]
-sentiment = 0.0
-text = "v2 eval harness baseline: R@1=56.2%, R@5=84.4%, R@20=100% on 32 train queries against 12k-chunk live index. Conceptual/negation/structural categories are weak."
-mentions = [
-    "eval_harness.rs",
-    "eval_common.rs",
 ]
 
 [[note]]
@@ -1152,7 +1136,7 @@ mentions = [
 
 [[note]]
 sentiment = 0.0
-text = "Per-category alpha routing caps at classifier accuracy, not alpha values. Oracle 49.4% on 2026-04-14 eval, deployed 44.9% — gap is entirely structural/conceptual/behavioral classifier missing 80%+ of queries (they fall to Unknown). Rule-list heuristics do not cover natural-language phrasings. Fix direction: broader rules / learned classifier / LLM-on-first-query cached."
+text = "Per-category alpha routing's production lift is bottlenecked by classifier accuracy, NOT by the alpha grid. Reaffirmed by v1.28.3 oracle test: rule+centroid (~38% accuracy) + R@5 sweep alphas → +0.9pp test R@5. Same alphas with Gemma-perfect routing (99% accuracy via Phase 1.1 measurement) → +9.2pp test R@5. The dilution math is sweep_lift × classifier_accuracy = production_lift, with asymmetric error cost making low-accuracy classifiers actively harmful (predicting multi_step on a behavioral query routes to α=0.10, catastrophic). Need ~90%+ classifier accuracy to overcome the asymmetry."
 mentions = [
     "src/search/router.rs",
     "classifier",
@@ -1251,7 +1235,7 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "centroid classifier at 76% accuracy hurts R@1 by -4.6pp due to asymmetric alpha error cost. Behavioral alpha=0.0 on misclassified queries is catastrophic. Alpha floor at 0.7 fixes R@20 but not R@1. Need 90%+ accuracy (logistic regression) before enabling."
+text = "Centroid classifier was disabled in 2026-04-15 because at 76% accuracy with no alpha floor it regressed R@1 by -4.6pp (behavioral α=0.0 on misclassified queries is catastrophic). v1.28.2 added CENTROID_ALPHA_FLOOR=0.7 — a centroid-assigned α is clamped to ≥0.7, capping the wrong-α downside. With the floor active, the classifier was flipped default-on and measured +3.7pp test R@5. Lesson: asymmetric error cost is fixable via alpha-floor before solving classifier accuracy."
 mentions = [
     "router",
     "centroid",
@@ -1260,7 +1244,7 @@ mentions = [
 
 [[note]]
 sentiment = -1.0
-text = "per-category alpha routing on Unknown queries is net-negative at ANY accuracy including 100%. Unknown queries want alpha=1.0 (pure SPLADE weight). The classifier-for-alpha architecture is a dead end for this population. Real levers: embedding quality, reranking, HyDE."
+text = "The earlier 'per-category alpha is net-negative on Unknown queries at ANY accuracy' claim was overdrawn. v1.28.2 centroid flip-on (with α-floor 0.7) AND v1.28.3 oracle test BOTH show real lifts when classifier accuracy is high enough. Updated framing: classifier accuracy is the bottleneck, not the architecture; need ~90%+ classifier accuracy to materialize the per-category α lift in production. Embedding quality / reranking / HyDE remain real levers but per-category routing is no longer dead."
 mentions = [
     "router",
     "classifier",
@@ -1431,15 +1415,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -1.0
-text = "cqs index --force blocks indefinitely if cqs-watch --serve is running. Both hold fd on .cqs/index.hnsw.lock (daemon: shared R, reindex: exclusive W). Reindex waits in locks_lock_inode_wait. On WSL/NTFS the 'advisory-only' warning fires but the wait still happens. Workaround: systemctl --user stop cqs-watch before reindex, start after. Proper fix: index --force should SIGTERM daemon or fail loudly with instructions."
-mentions = [
-    "src/hnsw/persist.rs",
-    "src/cli/watch.rs",
-    "index",
-]
-
-[[note]]
 sentiment = -0.5
 text = "Reranker V2 retrain (graded labels + cqs domain) recovered ~17pp R@5 vs Phase 3 (Stack v2 + binary) but is still net negative: -6.4pp R@5 test, -7.3pp R@5 dev. R@20 unchanged on both splits — gold IS in the pool, reranker just demotes it. Root cause is likely severe class imbalance (77% label=0.0 vs 14% A vs 10% TIE) compressing the score head's range. Weights stay local at ~/training-data/reranker-v2-cqs-graded; ship gate (R@5 ≥ 0) failed. Future: class-weighted BCE or pairwise margin loss."
 mentions = [
@@ -1454,4 +1429,110 @@ text = "Reranker V2 retrain pairwise (margin=0.3) matched class-weighted BCE (-5
 mentions = [
     "evals/train_reranker_v2_pairwise.py",
     "reranker",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Phase 1.4 distilled query classifier delivered 0pp R@5 lift in production despite 79.8% val accuracy and 99% Gemma teacher accuracy. Asymmetric error cost: false positives on multi_step (α=0.10, pure SPLADE) catastrophically harm queries that should have gone to behavioral (α=0.80) or other dense-leaning categories. At ~80% accuracy false-positive damage cancels true-positive lift exactly. Need ~90%+ accuracy to overcome. Oracle test (Gemma 99% as router) showed +9.2pp test R@5 sitting on the table — prize is real, classifier is the gate."
+mentions = [
+    "src/classifier_head.rs",
+    "src/search/router.rs",
+    "evals/train_query_classifier.py",
+]
+
+[[note]]
+sentiment = -0.5
+text = "ONNX classifier head OnceLock caches load decision on first daemon query — env var changes after that don't propagate. To A/B classifier ON vs OFF, must restart the daemon (systemctl --user restart cqs-watch) between cells, not just edit env. Same caveat applies to centroid classifier. Codify in eval scripts."
+mentions = [
+    "src/classifier_head.rs",
+    "src/search/router.rs",
+    "daemon",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Daemon tracing-subscriber default filters at WARN — INFO-level cqs:: logs (e.g., centroid/distilled classifier load messages) are silently dropped in journalctl. Set RUST_LOG=cqs=info or per-module to see them. Easy to think a feature isn't loading when it actually is + just not logging."
+mentions = [
+    "src/cli/watch.rs",
+    "daemon",
+    "tracing",
+]
+
+[[note]]
+sentiment = -0.5
+text = "auto-merge not enabled on jamie8johnson/cqs — gh pr merge --auto fails with 'Pull request Auto merge is not allowed for this repository (enablePullRequestAutoMerge)'. Have to poll-and-merge via Monitor. Worth enabling in repo settings to drop a footgun."
+mentions = [
+    "github",
+    "pr-merge",
+]
+
+[[note]]
+sentiment = 0.0
+text = "v3 alpha sweep predicts +14pp held-out R@5 lift but production produced 0.9pp. Oracle test (Gemma-perfect router) confirmed +9.2pp is achievable. The dilution math (sweep_lift × classifier_accuracy = production_lift) DOES hold but the multiplier is tiny because rule+centroid is at 38%. Fix is classifier accuracy, not alpha grid."
+mentions = [
+    "src/search/router.rs",
+    "evals/alpha_sweep_v3_r5.py",
+    "classifier",
+]
+
+[[note]]
+sentiment = 0.0
+text = "R@5 sweep predictions overstate production lift by ~8x. The sweep harness uses --splade-alpha per query (perfect routing assumption); production routes via classifier (~38% accuracy for rule+centroid). Rule of thumb: production_lift ≈ sweep_lift × classifier_accuracy. Always quote both numbers when projecting from a sweep — and run the oracle test (force alpha via Gemma-perfect prediction) to bound the achievable ceiling separately from classifier headroom."
+mentions = [
+    "evals/alpha_sweep_v3_r5.py",
+    "evals/rerank_ab_oracle_eval.py",
+    "classifier",
+]
+
+[[note]]
+sentiment = -0.5
+text = "cqs notes list --json envelope shape: {data: [{id, mentions, sentiment, text, type}], error, version}. data is a flat list, NOT a dict with 'notes' key. Python parsers that do data['data']['notes'] crash with AttributeError; use data['data'] directly when isinstance is list, else fall back to data['data']['notes']. Bit me twice in one session."
+mentions = [
+    "src/cli/commands/io/notes.rs",
+    "evals",
+]
+
+[[note]]
+sentiment = -0.5
+text = "PyTorch 2.9+ torch.onnx.export defaults to dynamo path which bakes in the dummy input seq length even when dynamic_axes is set. Symptom: ORT runtime error 'MatMul dimension mismatch node_MatMul_206' on inputs whose seq differs from the export sample. Fix: pass dynamo=False to use the legacy TorchScript tracer that respects dynamic_axes. Hit twice in this session — once during Reranker V2 ONNX export, once during the distilled-classifier-head export."
+mentions = [
+    "evals/train_query_classifier.py",
+    "evals/train_reranker_v2.py",
+    "onnx",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Python print() block-buffers when stdout is redirected to a file (nohup, &> /tmp/log). Long-running scripts appear to produce zero output for hours, even when working correctly. Defensive moves: run with 'python3 -u' for line buffering, OR have the script call sys.stdout.flush() at progress checkpoints. Diagnostic: don't trust an empty log to mean 'stuck' — verify activity at the work side (vLLM POSTs in journalctl, output file growth, sockets in /proc/PID/fd/) before declaring failure. Small give-up I almost made: nearly killed a 57-min Gemma generation run because the log was empty."
+mentions = [
+    "evals",
+    "debugging",
+    "python",
+]
+
+[[note]]
+sentiment = 0.0
+text = "Distilled query classifier head delivers 0pp R@5 even at 88.1% val accuracy. Phase 1.4 (79.8% acc) and Phase 1.4b (88.1%) both ±0pp on test, ±1pp on dev. The constraint is the convex hull of 8 fixed alpha defaults {1.0, 0.9, 0.8, 0.7, 0.1}, not classifier accuracy. Oracle test +9.2pp came from forcing alpha values directly. Continuous alpha (regression or contrastive) is the unlock — adding a more accurate categorical head cannot break the hull."
+mentions = [
+    "classifier_head.rs",
+    "router.rs",
+    "reclassify_with_distilled_head",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Daemon-mode A/B with systemctl override + restart between cells runs 80x faster than CLI A/B with CQS_NO_DAEMON=1. Pattern: write Environment= override to ~/.config/systemd/user/cqs-watch.service.d/ab-override.conf, daemon-reload, restart. Each cell uses cqs batch through the daemon (~5 qps vs 0.09 qps CLI). Cleanup unlinks the override file in finally block. Required because OnceLock caches head-load decision per daemon process — env changes don't propagate within a single daemon lifetime."
+mentions = [
+    "distilled_head_ab_daemon.py",
+    "classifier_head.rs",
+    "OnceLock",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Python print() block-buffers when stdout is redirected to a file. A long-running script with progress prints will appear stuck (0-byte log) for hours despite working correctly. Diagnose by checking the producer's downstream activity (vLLM POST counts, output file size). Always use python3 -u (or PYTHONUNBUFFERED=1) when launching long-runners with nohup or tee."
+mentions = [
+    "generate_from_chunks.py",
+    "python",
+    "nohup",
 ]

@@ -52,7 +52,7 @@ CODE_KINDS = {"function", "method", "class", "struct", "impl", "interface",
               "trait", "enum", "typealias", "macro", "constructor"}
 
 
-def load_candidate_chunks(db: Path) -> list[dict]:
+def load_candidate_chunks(db: Path, exclude_ids: set | None = None) -> list[dict]:
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
     placeholders_lang = ",".join("?" * len(CODE_LANGUAGES))
@@ -75,7 +75,13 @@ def load_candidate_chunks(db: Path) -> list[dict]:
         (*sorted(CODE_LANGUAGES), *sorted(CODE_KINDS)),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    if exclude_ids:
+        before = len(out)
+        out = [c for c in out if c["id"] not in exclude_ids]
+        print(f"[load] excluded {before - len(out)} previously-used chunks; "
+              f"{len(out)} held-out candidates remain", file=sys.stderr)
+    return out
 
 
 def stratify(chunks: list[dict], n: int, seed: int = 0) -> list[dict]:
@@ -219,6 +225,8 @@ async def main() -> int:
     p.add_argument("--n-per-chunk", type=int, default=2)
     p.add_argument("--db", type=Path, default=DB_PATH)
     p.add_argument("--out", type=Path, default=OUT_PATH)
+    p.add_argument("--exclude-chunks", type=Path, default=None,
+                   help="Newline-separated list of chunk IDs to exclude (held-out eval split)")
     args = p.parse_args()
 
     if not args.db.exists():
@@ -227,7 +235,11 @@ async def main() -> int:
 
     targets = args.target if isinstance(args.target, list) else parse_targets(args.target)
 
-    chunks = load_candidate_chunks(args.db)
+    exclude_ids = set()
+    if args.exclude_chunks and args.exclude_chunks.exists():
+        exclude_ids = {line.strip() for line in args.exclude_chunks.read_text().splitlines() if line.strip()}
+        print(f"[load] excluding {len(exclude_ids)} chunks from {args.exclude_chunks}", file=sys.stderr)
+    chunks = load_candidate_chunks(args.db, exclude_ids=exclude_ids)
     lang_counts = Counter(c["language"] for c in chunks)
     print(f"candidate chunks: {len(chunks)}")
     print("language distribution:")
