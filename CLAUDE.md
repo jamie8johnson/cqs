@@ -187,7 +187,7 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 
 ## Code Audit
 
-Use `/audit` skill. Full design: `docs/plans/2026-02-04-20-category-audit-design.md`.
+Use `/audit` skill.
 
 ## Completion Checklist
 
