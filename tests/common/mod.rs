@@ -285,19 +285,37 @@ impl InProcessFixture {
         let exts = self.parser.supported_extensions();
         let files = cqs::enumerate_files(&self.root, &exts, false)?;
         let mut total = 0usize;
+        let mut all_calls: Vec<(PathBuf, Vec<cqs::parser::FunctionCalls>)> = Vec::new();
+        let mut all_types: Vec<(PathBuf, Vec<cqs::parser::ChunkTypeRefs>)> = Vec::new();
         for rel_path in files {
             let abs_path = self.root.join(&rel_path);
-            let chunks = match self.parser.parse_file(&abs_path) {
-                Ok(c) => c,
+            // parse_file_all returns chunks + function_calls + type_refs in
+            // a single tree-sitter walk. Tests for cqs::health, cqs::suggest,
+            // deps, callers/callees etc. expect those tables to be populated
+            // when the source has the relationships, so we pay the small
+            // extra cost here instead of in each test.
+            let (chunks, calls, type_refs) = match self.parser.parse_file_all(&abs_path) {
+                Ok(parts) => parts,
                 Err(_) => continue,
             };
-            if chunks.is_empty() {
-                continue;
+            if !chunks.is_empty() {
+                let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+                let embeddings = self.embedder.embed_documents(&texts);
+                let pairs: Vec<(Chunk, Embedding)> = chunks.into_iter().zip(embeddings).collect();
+                total += self.store.upsert_chunks_batch(&pairs, None)?;
             }
-            let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-            let embeddings = self.embedder.embed_documents(&texts);
-            let pairs: Vec<(Chunk, Embedding)> = chunks.into_iter().zip(embeddings).collect();
-            total += self.store.upsert_chunks_batch(&pairs, None)?;
+            if !calls.is_empty() {
+                all_calls.push((abs_path.clone(), calls));
+            }
+            if !type_refs.is_empty() {
+                all_types.push((abs_path, type_refs));
+            }
+        }
+        if !all_calls.is_empty() {
+            self.store.upsert_function_calls_for_files(&all_calls)?;
+        }
+        if !all_types.is_empty() {
+            self.store.upsert_type_edges_for_files(&all_types)?;
         }
         Ok(total)
     }
