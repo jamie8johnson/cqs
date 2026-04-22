@@ -1,0 +1,21 @@
+# cqs-specific exclusions for the indexer.
+#
+# Same syntax as .gitignore. Layered on top of .gitignore — these files are
+# committed to git (binaries need them via include_str! / include_bytes!) but
+# contribute zero useful semantic search content.
+#
+# Respected by `cqs index` and `cqs watch`. Disable with `cqs index --no-ignore`.
+
+# Vendored minified bundles. Each is a single ~hundreds-of-KB line, well over
+# the parser's per-chunk byte cap; indexing them produces noise warnings and
+# meaningless embeddings (everything matches everything).
+src/serve/assets/vendor/*.min.js
+
+# Eval query fixtures — single-line JSON, hundreds of KB to multi-MB. Same
+# story as vendor bundles: too big to chunk usefully, no semantic signal.
+evals/queries/*.json
+evals/reranker_v3/**
+
+# Build artefact / pyc caches that occasionally slip past .gitignore.
+**/__pycache__/
+*.pyc

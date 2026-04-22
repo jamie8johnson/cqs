@@ -496,7 +496,17 @@ pub fn enumerate_files(
 
     let root = dunce::canonicalize(root).context("Failed to canonicalize root")?;
 
-    let walker = WalkBuilder::new(&root)
+    // `.cqsignore` layers on top of `.gitignore` for cqs-specific exclusions
+    // (vendored minified JS, large data fixtures, etc.) — files we want
+    // committed to git but don't want indexed. Same gitignore syntax,
+    // hierarchical (per-directory), and respected by both `cqs index` (here)
+    // and `cqs watch` (see `cli/watch.rs::build_gitignore_matcher`).
+    // `--no-ignore` disables it alongside .gitignore.
+    let mut wb = WalkBuilder::new(&root);
+    if !no_ignore {
+        wb.add_custom_ignore_filename(".cqsignore");
+    }
+    let walker = wb
         .git_ignore(!no_ignore)
         .git_global(!no_ignore)
         .git_exclude(!no_ignore)
@@ -894,6 +904,43 @@ mentions = ["store.rs"]
             .collect();
         assert!(names.contains(&"main.rs".to_string()));
         assert!(names.contains(&"lib.rs".to_string()));
+    }
+
+    #[test]
+    fn test_enumerate_files_respects_cqsignore() {
+        // .cqsignore should exclude matching paths from indexing, layered on
+        // top of .gitignore. Verifies the indexer respects the cqs-specific
+        // ignore mechanism added for vendored bundles + similar artefacts.
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        let vendor = src.join("assets").join("vendor");
+        std::fs::create_dir_all(&vendor).unwrap();
+
+        std::fs::write(src.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(vendor.join("three.min.js"), "/* huge minified */").unwrap();
+        std::fs::write(vendor.join("regular.js"), "console.log('ok');").unwrap();
+
+        // Without .cqsignore: both .js files are visible.
+        let before = enumerate_files(dir.path(), &["js"], false).unwrap();
+        assert_eq!(
+            before.len(),
+            2,
+            "expected both js files visible pre-cqsignore"
+        );
+
+        // With .cqsignore excluding *.min.js, only regular.js survives.
+        std::fs::write(dir.path().join(".cqsignore"), "**/*.min.js\n").unwrap();
+        let after = enumerate_files(dir.path(), &["js"], false).unwrap();
+        let names: Vec<String> = after
+            .iter()
+            .map(|f| f.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(after.len(), 1, "*.min.js should be filtered: got {names:?}");
+        assert!(names.contains(&"regular.js".to_string()));
+
+        // --no-ignore disables .cqsignore (same semantics as .gitignore).
+        let bypassed = enumerate_files(dir.path(), &["js"], true).unwrap();
+        assert_eq!(bypassed.len(), 2, "--no-ignore must also bypass .cqsignore");
     }
 
     #[test]
