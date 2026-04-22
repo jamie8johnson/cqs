@@ -84,6 +84,14 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             poll,
             serve,
         }) => return watch::cmd_watch(&cli, debounce, no_ignore, poll, serve),
+        #[cfg(feature = "serve")]
+        Some(Commands::Serve {
+            port,
+            ref bind,
+            open,
+        }) => {
+            return crate::cli::commands::serve::cmd_serve(port, bind.clone(), open);
+        }
         Some(Commands::Batch) => return batch::cmd_batch(),
         Some(Commands::Chat) => return chat::cmd_chat(),
         Some(Commands::Completions { shell }) => {
@@ -599,6 +607,8 @@ fn command_variant_name(cmd: &Commands) -> &'static str {
         Commands::Ping { .. } => "ping",
         Commands::Eval { .. } => "eval",
         Commands::Model { .. } => "model",
+        #[cfg(feature = "serve")]
+        Commands::Serve { .. } => "serve",
     }
 }
 

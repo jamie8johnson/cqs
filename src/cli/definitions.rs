@@ -727,6 +727,25 @@ pub(super) enum Commands {
         #[command(subcommand)]
         subcmd: ModelCommand,
     },
+    /// Start the cqs serve web UI (call graph + chunk detail).
+    ///
+    /// Binds to `127.0.0.1:8080` by default. Read-only — single-user
+    /// local exploration. Pair `--open` to launch a browser tab.
+    /// Spec: `docs/plans/2026-04-21-cqs-serve-v1.md`.
+    #[cfg(feature = "serve")]
+    Serve {
+        /// TCP port to bind. Default 8080.
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+        /// Bind address. Default 127.0.0.1 — anything else exposes the
+        /// (un-authenticated) server beyond localhost. Spec'd as a
+        /// deliberate decision, not an oversight.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        /// Open the system browser on start.
+        #[arg(long)]
+        open: bool,
+    },
 }
 
 // Re-export the subcommand types used in Commands variants
@@ -804,6 +823,10 @@ impl Commands {
             // Model swaps mutate `.cqs/`, restart the daemon, and may take
             // minutes to reindex — exclusively a CLI operation.
             | Commands::Model { .. } => BatchSupport::Cli,
+
+            // cqs serve is a long-running HTTP server — never daemon-dispatched.
+            #[cfg(feature = "serve")]
+            Commands::Serve { .. } => BatchSupport::Cli,
 
             #[cfg(feature = "convert")]
             Commands::Convert { .. } => BatchSupport::Cli,
