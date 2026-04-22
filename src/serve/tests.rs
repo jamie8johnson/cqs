@@ -176,8 +176,8 @@ async fn static_asset_serves_js() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn view_modules_serve() {
-    // Both view modules (callgraph-2d.js, callgraph-3d.js) must be
-    // reachable so the router in app.js can dispatch to them.
+    // All view modules must be reachable so the router in app.js can
+    // dispatch to them.
     let fixture = fixture_state();
     let state = fixture.state();
     let app = build_router(state);
@@ -185,6 +185,7 @@ async fn view_modules_serve() {
     for path in &[
         "/static/views/callgraph-2d.js",
         "/static/views/callgraph-3d.js",
+        "/static/views/hierarchy-3d.js",
     ] {
         let resp = app
             .clone()
@@ -268,11 +269,15 @@ async fn index_html_loads_view_modules() {
     for needle in &[
         "/static/views/callgraph-2d.js",
         "/static/views/callgraph-3d.js",
+        "/static/views/hierarchy-3d.js",
         "/static/vendor/three.min.js",
         "/static/vendor/3d-force-graph.min.js",
         "view-toggle",
         "view-2d",
         "view-3d",
+        "hierarchy-controls",
+        "hierarchy-direction",
+        "hierarchy-depth",
     ] {
         assert!(
             body.contains(needle),
@@ -403,6 +408,103 @@ async fn chunk_detail_unknown_id_returns_404() {
         .oneshot(
             Request::builder()
                 .uri("/api/chunk/no-such-id")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hierarchy_unknown_root_returns_404() {
+    // Empty fixture has no chunks, so any root id is unknown — we expect
+    // a 404 (not a 500 or empty 200) so the frontend can show a clear
+    // "no such root" message.
+    let fixture = fixture_state();
+    let state = fixture.state();
+    let app = build_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/hierarchy/no-such-id?direction=callees&depth=5")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hierarchy_invalid_direction_returns_400() {
+    let fixture = fixture_state();
+    let state = fixture.state();
+    let app = build_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/hierarchy/anything?direction=sideways&depth=5")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(json["error"], "bad_request");
+    assert!(
+        json["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("direction"),
+        "detail should mention 'direction', got {}",
+        json["detail"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hierarchy_default_direction_is_callees() {
+    // Omitting direction should default to callees (still 404 because
+    // no chunks, but the request should be accepted not 400'd).
+    let fixture = fixture_state();
+    let state = fixture.state();
+    let app = build_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/hierarchy/some-id")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    // Direction defaults to "callees" → not BAD_REQUEST, should be 404 (no chunk).
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hierarchy_extreme_depth_is_clamped() {
+    // depth=999 should be silently clamped to MAX_HIERARCHY_DEPTH (10),
+    // not error out. We can't observe the clamp directly without a
+    // populated store, but the request should still come back as 404
+    // (chunk not found) rather than 400 / 500.
+    let fixture = fixture_state();
+    let state = fixture.state();
+    let app = build_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/hierarchy/some-id?direction=callees&depth=999")
                 .body(Body::empty())
                 .unwrap(),
         )

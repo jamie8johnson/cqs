@@ -49,6 +49,62 @@ body { display: flex; flex-direction: column; }
   color: #fff;
 }
 
+.hierarchy-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.hierarchy-controls .btn-group {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.hierarchy-controls .btn-group-label {
+  font-size: 11px;
+  color: #888;
+  padding: 0 6px;
+  border-right: 1px solid #d0d0d0;
+  background: #f5f5f5;
+}
+.hierarchy-controls .btn-group button {
+  background: #fff;
+  border: none;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+  cursor: pointer;
+  border-right: 1px solid #d0d0d0;
+}
+.hierarchy-controls .btn-group button:last-child { border-right: none; }
+.hierarchy-controls .btn-group button:hover { background: #f5f5f5; }
+.hierarchy-controls .btn-group button.active {
+  background: #4a86e8;
+  color: #fff;
+}
+
+.sidebar-actions {
+  margin: 8px 0 12px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sidebar-actions .btn-link {
+  background: #eef3fb;
+  border: 1px solid #c5d4ed;
+  color: #2855a3;
+  padding: 4px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+}
+.sidebar-actions .btn-link:hover {
+  background: #dde7f7;
+}
+
 #search {
   width: 280px;
   padding: 6px 10px;

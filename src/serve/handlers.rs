@@ -13,7 +13,10 @@ use axum::{
 };
 use serde::Deserialize;
 
-use super::data::{ChunkDetail, GraphResponse, NodeRef, SearchResponse, StatsResponse};
+use super::data::{
+    ChunkDetail, GraphResponse, HierarchyDirection, HierarchyResponse, NodeRef, SearchResponse,
+    StatsResponse,
+};
 use super::error::ServeError;
 use super::AppState;
 
@@ -44,6 +47,19 @@ pub(crate) struct SearchQuery {
 fn default_search_limit() -> usize {
     20
 }
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct HierarchyQuery {
+    /// `callers` (BFS up) or `callees` (BFS down). Defaults to `callees`.
+    #[serde(default)]
+    pub direction: Option<String>,
+    /// BFS depth from root. Defaults to 5, clamped to 1..=10.
+    #[serde(default)]
+    pub depth: Option<u32>,
+}
+
+const DEFAULT_HIERARCHY_DEPTH: u32 = 5;
+const MAX_HIERARCHY_DEPTH: u32 = 10;
 
 /// `GET /health` — always returns 200. Used by orchestration / monitoring.
 pub(crate) async fn health() -> (StatusCode, &'static str) {
@@ -151,4 +167,47 @@ pub(crate) async fn search(
 
     tracing::info!(matches = matches.len(), "search returned");
     Ok(Json(SearchResponse { matches }))
+}
+
+/// `GET /api/hierarchy/{id}?direction={callers|callees}&depth=N`
+///
+/// BFS subgraph from a chunk. Returns nodes annotated with `bfs_depth`
+/// so the frontend can lock the Z axis to depth and render a tree-shaped
+/// 3D layout. Depth is clamped to 1..=10 to bound response size on
+/// densely-connected codebases.
+pub(crate) async fn hierarchy(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<HierarchyQuery>,
+) -> Result<Json<HierarchyResponse>, ServeError> {
+    let direction_str = params.direction.as_deref().unwrap_or("callees").to_string();
+    let direction = HierarchyDirection::parse(&direction_str).ok_or_else(|| {
+        ServeError::BadRequest(format!(
+            "direction must be 'callers' or 'callees', got '{direction_str}'"
+        ))
+    })?;
+    let depth = params
+        .depth
+        .unwrap_or(DEFAULT_HIERARCHY_DEPTH)
+        .clamp(1, MAX_HIERARCHY_DEPTH);
+
+    tracing::info!(
+        chunk_id = %id,
+        direction = direction.as_str(),
+        depth,
+        "serve::hierarchy"
+    );
+
+    let store = state.store.clone();
+    let id_clone = id.clone();
+    let response = tokio::task::spawn_blocking(move || {
+        super::data::build_hierarchy(&store, &id_clone, direction, depth)
+    })
+    .await
+    .map_err(|e| ServeError::Internal(format!("hierarchy join: {e}")))?
+    .map_err(ServeError::from)?;
+
+    response
+        .map(Json)
+        .ok_or_else(|| ServeError::NotFound(format!("chunk: {id}")))
 }
