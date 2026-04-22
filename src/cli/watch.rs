@@ -763,31 +763,45 @@ fn build_gitignore_matcher(root: &Path) -> Option<ignore::gitignore::Gitignore> 
     }
 
     let root_gitignore = root.join(".gitignore");
-    if !root_gitignore.exists() {
+    let root_cqsignore = root.join(".cqsignore");
+    if !root_gitignore.exists() && !root_cqsignore.exists() {
         tracing::info!(
             root = %root.display(),
-            "no .gitignore at project root — watch will not filter by gitignore"
+            "no .gitignore or .cqsignore at project root — watch will not filter"
         );
         return None;
     }
 
     let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
 
-    if let Some(err) = builder.add(&root_gitignore) {
-        tracing::warn!(
-            path = %root_gitignore.display(),
-            error = %err,
-            "root .gitignore unreadable or malformed — falling back to empty matcher"
-        );
-        return None;
+    // Order matters for negation: later `add()` calls win on conflict.
+    // .gitignore first, then .cqsignore so cqs-specific overrides apply last.
+    if root_gitignore.exists() {
+        if let Some(err) = builder.add(&root_gitignore) {
+            tracing::warn!(
+                path = %root_gitignore.display(),
+                error = %err,
+                "root .gitignore unreadable or malformed — falling back to empty matcher"
+            );
+            return None;
+        }
+    }
+    if root_cqsignore.exists() {
+        if let Some(err) = builder.add(&root_cqsignore) {
+            tracing::warn!(
+                path = %root_cqsignore.display(),
+                error = %err,
+                "root .cqsignore unreadable or malformed — skipping it"
+            );
+        }
     }
 
-    // Root-only .gitignore in v1. Nested .gitignore files are not yet
-    // discovered — tracked as follow-up. `cqs index` uses the full `ignore`
-    // crate walk which supports nesting; the watch loop uses a per-event
-    // point query against a pre-built matcher and compile-time nesting
-    // would require rebuilding on every subdir change. Root-level covers
-    // the worktree-pollution motivating case.
+    // Root-only .gitignore / .cqsignore in v1. Nested ignore files are not
+    // yet discovered — tracked as follow-up. `cqs index` uses the full
+    // `ignore` crate walk which supports nesting; the watch loop uses a
+    // per-event point query against a pre-built matcher and compile-time
+    // nesting would require rebuilding on every subdir change. Root-level
+    // covers the worktree-pollution + vendor-bundle motivating cases.
 
     match builder.build() {
         Ok(gi) => {
@@ -2975,12 +2989,12 @@ mod tests {
 
     #[test]
     fn build_gitignore_matcher_missing_returns_none() {
-        // A project with no .gitignore at the root should produce a
-        // `None` matcher — the watch loop indexes everything.
+        // A project with neither .gitignore nor .cqsignore should produce
+        // a `None` matcher — the watch loop indexes everything.
         let tmp = tempfile::TempDir::new().unwrap();
         assert!(
             build_gitignore_matcher(tmp.path()).is_none(),
-            "missing .gitignore should yield None matcher"
+            "missing .gitignore + .cqsignore should yield None matcher"
         );
     }
 
@@ -3025,6 +3039,50 @@ mod tests {
             .matched_path_or_any_parents(tmp.path().join("target/debug/foo.rs"), false)
             .is_ignore();
         assert!(hit, "target/ should match");
+    }
+
+    #[test]
+    fn build_gitignore_matcher_loads_cqsignore() {
+        // The watch matcher must layer .cqsignore on top of .gitignore so
+        // cqs-specific exclusions (vendor bundles etc.) are respected at
+        // event time, mirroring the indexer behaviour.
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(tmp.path().join(".cqsignore"), "**/*.min.js\n").unwrap();
+
+        let matcher =
+            build_gitignore_matcher(tmp.path()).expect("matcher should build with cqsignore");
+        assert!(matcher.num_ignores() >= 2, "expected rules from both files");
+
+        let vendor_hit = matcher
+            .matched_path_or_any_parents(
+                tmp.path().join("src/serve/assets/vendor/three.min.js"),
+                false,
+            )
+            .is_ignore();
+        assert!(
+            vendor_hit,
+            ".cqsignore *.min.js rule should match vendor JS"
+        );
+
+        let regular_miss = matcher
+            .matched_path_or_any_parents(tmp.path().join("src/main.rs"), false)
+            .is_ignore();
+        assert!(!regular_miss, "regular source files must not match");
+    }
+
+    #[test]
+    fn build_gitignore_matcher_cqsignore_only() {
+        // .cqsignore alone (no .gitignore) should still build the matcher.
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".cqsignore"), "secret.txt\n").unwrap();
+
+        let matcher =
+            build_gitignore_matcher(tmp.path()).expect("matcher should build with cqsignore alone");
+        let hit = matcher
+            .matched_path_or_any_parents(tmp.path().join("secret.txt"), false)
+            .is_ignore();
+        assert!(hit, "cqsignore-only rule should match");
     }
 
     // ===== #1004 SPLADE builder / batch-size tests =====
