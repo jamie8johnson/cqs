@@ -18,9 +18,11 @@ const APP_JS: &str = include_str!("assets/app.js");
 
 // View modules — one per renderer. The router (app.js) dispatches
 // between them based on the URL `?view=` parameter. See
-// `docs/plans/2026-04-22-cqs-serve-3d-progressive.md` step 1.
+// `docs/plans/2026-04-22-cqs-serve-3d-progressive.md` (step 1 added
+// the renderer abstraction; step 2 added the hierarchy view).
 const CALLGRAPH_2D_JS: &str = include_str!("assets/views/callgraph-2d.js");
 const CALLGRAPH_3D_JS: &str = include_str!("assets/views/callgraph-3d.js");
+const HIERARCHY_3D_JS: &str = include_str!("assets/views/hierarchy-3d.js");
 
 // Embedded vendor bundles. See assets/vendor/LICENSES.md for sources +
 // versions. Total ~2.4 MB — noise vs the ~150 MB cqs binary.
@@ -58,6 +60,7 @@ pub(crate) async fn static_asset(Path(path): Path<String>) -> Result<Response, S
         "app.js" => (APP_JS, "application/javascript; charset=utf-8"),
         "views/callgraph-2d.js" => (CALLGRAPH_2D_JS, "application/javascript; charset=utf-8"),
         "views/callgraph-3d.js" => (CALLGRAPH_3D_JS, "application/javascript; charset=utf-8"),
+        "views/hierarchy-3d.js" => (HIERARCHY_3D_JS, "application/javascript; charset=utf-8"),
         "vendor/cytoscape.min.js" => (CYTOSCAPE_JS, "application/javascript; charset=utf-8"),
         "vendor/dagre.min.js" => (DAGRE_JS, "application/javascript; charset=utf-8"),
         "vendor/cytoscape-dagre.min.js" => {

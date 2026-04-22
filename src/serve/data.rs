@@ -106,6 +106,51 @@ pub(crate) struct StatsResponse {
     pub type_edges: u64,
 }
 
+/// Direction of BFS expansion for the hierarchy view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HierarchyDirection {
+    /// BFS up the call graph (this function's transitive callers).
+    Callers,
+    /// BFS down the call graph (this function's transitive callees).
+    Callees,
+}
+
+impl HierarchyDirection {
+    pub(crate) fn parse(s: &str) -> Option<Self> {
+        match s {
+            "callers" => Some(Self::Callers),
+            "callees" => Some(Self::Callees),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Callers => "callers",
+            Self::Callees => "callees",
+        }
+    }
+}
+
+/// One node in the hierarchy view — same as a graph `Node` plus the
+/// BFS depth from the root (root itself is depth 0).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct HierarchyNode {
+    #[serde(flatten)]
+    pub base: Node,
+    pub bfs_depth: u32,
+}
+
+/// Top-level response for `GET /api/hierarchy/:id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct HierarchyResponse {
+    pub root: String,
+    pub direction: String,
+    pub max_depth: u32,
+    pub nodes: Vec<HierarchyNode>,
+    pub edges: Vec<Edge>,
+}
+
 /// Build the full graph response from the store.
 ///
 /// Pulls every chunk + every resolved call edge in two SQL queries, then
@@ -401,6 +446,252 @@ pub(crate) fn build_chunk_detail(
             tests,
         }))
     })
+}
+
+/// Build a BFS hierarchy rooted at `root_id` (a chunk_id), expanding
+/// either upward (callers) or downward (callees) up to `max_depth`.
+///
+/// Strategy:
+/// 1. Resolve `root_id` → root chunk row (must exist; 404 otherwise).
+/// 2. Borrow the cached `Store::get_call_graph()` (`Arc<CallGraph>`).
+/// 3. BFS by **name** (the call graph is name-keyed), tracking depth.
+/// 4. Resolve every visited name → chunk_id by `(file, name)` deterministic
+///    pick (same overload-disambiguation pattern as `build_graph`). When
+///    a name resolves to multiple chunks across files we keep the first
+///    (sorted by id) so renderings are stable.
+/// 5. Pull node metadata + per-node degree counts in one batched SQL query.
+/// 6. Emit only edges whose endpoints are both inside the BFS frontier.
+///
+/// `max_depth` is clamped to 1..=10 by the caller.
+pub(crate) fn build_hierarchy(
+    store: &Store<ReadOnly>,
+    root_id: &str,
+    direction: HierarchyDirection,
+    max_depth: u32,
+) -> Result<Option<HierarchyResponse>, StoreError> {
+    let _span = tracing::info_span!(
+        "build_hierarchy",
+        root_id = %root_id,
+        direction = direction.as_str(),
+        max_depth
+    )
+    .entered();
+
+    // 1. Resolve root chunk_id → name (and confirm it exists).
+    let root_name: Option<String> = store.rt.block_on(async {
+        let row = sqlx::query("SELECT name FROM chunks WHERE id = ?")
+            .bind(root_id)
+            .fetch_optional(&store.pool)
+            .await?;
+        Ok::<_, StoreError>(row.map(|r| r.get::<String, _>("name")))
+    })?;
+
+    let Some(root_name) = root_name else {
+        tracing::info!(root_id, "build_hierarchy: root chunk not found");
+        return Ok(None);
+    };
+
+    // 2. Cached call graph (Arc; cheap clone).
+    let call_graph = match store.get_call_graph() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!(error = %e, "build_hierarchy: get_call_graph failed");
+            return Err(e);
+        }
+    };
+
+    // 3. BFS by name with depth tracking. Visited holds the smallest
+    //    depth we've seen for each name (so a node visible at depth 2 via
+    //    one path stays at depth 2 even if also reachable at depth 4).
+    let mut depth_by_name: HashMap<std::sync::Arc<str>, u32> = HashMap::new();
+    let root_arc: std::sync::Arc<str> = std::sync::Arc::from(root_name.as_str());
+    depth_by_name.insert(root_arc.clone(), 0);
+    let mut frontier: Vec<std::sync::Arc<str>> = vec![root_arc.clone()];
+
+    for d in 0..max_depth {
+        let mut next: Vec<std::sync::Arc<str>> = Vec::new();
+        for name in &frontier {
+            let neighbors: Option<&Vec<std::sync::Arc<str>>> = match direction {
+                HierarchyDirection::Callees => call_graph.forward.get(name),
+                HierarchyDirection::Callers => call_graph.reverse.get(name),
+            };
+            let Some(neighbors) = neighbors else { continue };
+            for n in neighbors {
+                if !depth_by_name.contains_key(n) {
+                    depth_by_name.insert(n.clone(), d + 1);
+                    next.push(n.clone());
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+
+    let visited_names: Vec<String> = depth_by_name.keys().map(|s| s.to_string()).collect();
+    tracing::info!(
+        visited = visited_names.len(),
+        "build_hierarchy: BFS complete"
+    );
+
+    // 4 + 5. Pull chunk rows for every visited name. We need (file, name)
+    // tuples to disambiguate overloads. Use IN (?, ?, ...) with a sane cap.
+    if visited_names.is_empty() {
+        return Ok(Some(HierarchyResponse {
+            root: root_id.to_string(),
+            direction: direction.as_str().to_string(),
+            max_depth,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        }));
+    }
+
+    let response = store.rt.block_on(async {
+        let placeholders = vec!["?"; visited_names.len()].join(",");
+        let sql = format!(
+            "SELECT id, name, chunk_type, language, origin, line_start, line_end \
+             FROM chunks WHERE name IN ({placeholders}) ORDER BY id"
+        );
+        let mut q = sqlx::query(&sql);
+        for n in &visited_names {
+            q = q.bind(n);
+        }
+        let rows = q.fetch_all(&store.pool).await?;
+
+        // For each name, keep the deterministic-first chunk_id (sorted
+        // by id from the SQL ORDER BY). If a name has multiple chunks
+        // (overloads in different files), this is the first one.
+        let mut name_to_first_id: HashMap<String, String> = HashMap::new();
+        // Also keep all chunks so we can build node metadata for every
+        // unique chunk_id that we emit (we emit one per name).
+        let mut chunk_meta: HashMap<String, (String, String, String, String, i64, i64)> =
+            HashMap::new();
+
+        for row in rows {
+            let id: String = row.get("id");
+            let name: String = row.get("name");
+            let chunk_type: String = row.get("chunk_type");
+            let language: String = row.get("language");
+            let origin: String = row.get("origin");
+            let line_start: i64 = row.get("line_start");
+            let line_end: i64 = row.get("line_end");
+
+            // First-seen wins (rows already sorted by id).
+            name_to_first_id.entry(name.clone()).or_insert(id.clone());
+            chunk_meta.insert(
+                id,
+                (name, chunk_type, language, origin, line_start, line_end),
+            );
+        }
+
+        // Build the node set. For names that didn't resolve to a chunk
+        // (e.g. external std-lib calls), they're silently skipped — same
+        // behavior as build_graph.
+        let mut nodes: Vec<HierarchyNode> = Vec::new();
+        let mut emitted_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (name_arc, depth) in &depth_by_name {
+            let name = name_arc.as_ref();
+            let Some(chunk_id) = name_to_first_id.get(name) else {
+                continue;
+            };
+            let Some((cname, ckind, lang, origin, l_start, l_end)) = chunk_meta.get(chunk_id)
+            else {
+                continue;
+            };
+            emitted_ids.insert(chunk_id.clone());
+            nodes.push(HierarchyNode {
+                base: Node {
+                    id: chunk_id.clone(),
+                    name: cname.clone(),
+                    kind: ckind.clone(),
+                    language: lang.clone(),
+                    file: origin.clone(),
+                    line_start: (*l_start).max(0) as u32,
+                    line_end: (*l_end).max(0) as u32,
+                    n_callers: 0,
+                    n_callees: 0,
+                    dead: false,
+                },
+                bfs_depth: *depth,
+            });
+        }
+
+        // 6. Pull all edges where both endpoints are inside the visited
+        //    name set, then resolve each (caller, callee) name pair to
+        //    chunk IDs using the same name_to_first_id map.
+        let edge_sql = format!(
+            "SELECT DISTINCT caller_name, callee_name FROM function_calls \
+             WHERE caller_name IN ({placeholders}) AND callee_name IN ({placeholders})"
+        );
+        let mut eq = sqlx::query(&edge_sql);
+        for n in &visited_names {
+            eq = eq.bind(n);
+        }
+        for n in &visited_names {
+            eq = eq.bind(n);
+        }
+        let edge_rows = eq.fetch_all(&store.pool).await?;
+
+        let mut caller_count: HashMap<String, u32> = HashMap::new();
+        let mut callee_count: HashMap<String, u32> = HashMap::new();
+        let mut edges: Vec<Edge> = Vec::with_capacity(edge_rows.len());
+        for row in edge_rows {
+            let caller_name: String = row.get("caller_name");
+            let callee_name: String = row.get("callee_name");
+            let Some(caller_id) = name_to_first_id.get(&caller_name) else {
+                continue;
+            };
+            let Some(callee_id) = name_to_first_id.get(&callee_name) else {
+                continue;
+            };
+            // Skip self-loops; 3d-force-graph is not happy with them.
+            if caller_id == callee_id {
+                continue;
+            }
+            *caller_count.entry(callee_id.clone()).or_insert(0) += 1;
+            *callee_count.entry(caller_id.clone()).or_insert(0) += 1;
+            edges.push(Edge {
+                source: caller_id.clone(),
+                target: callee_id.clone(),
+                kind: "call".to_string(),
+            });
+        }
+
+        // Backfill per-node degrees + dead flags using only the edges
+        // visible inside this hierarchy. (Dead is uninteresting in a
+        // hierarchy view since the root is by definition reached, so we
+        // mostly just want the degree counts to drive node sizing.)
+        for node in nodes.iter_mut() {
+            node.base.n_callers = *caller_count.get(&node.base.id).unwrap_or(&0);
+            node.base.n_callees = *callee_count.get(&node.base.id).unwrap_or(&0);
+            node.base.dead = node.base.n_callers == 0 && node.base.kind != "test";
+        }
+
+        // Stable order: by depth then id, so frontend rendering is
+        // deterministic and reload-friendly.
+        nodes.sort_unstable_by(|a, b| {
+            a.bfs_depth
+                .cmp(&b.bfs_depth)
+                .then_with(|| a.base.id.cmp(&b.base.id))
+        });
+
+        tracing::info!(
+            nodes = nodes.len(),
+            edges = edges.len(),
+            "build_hierarchy: built response"
+        );
+
+        Ok::<_, StoreError>(HierarchyResponse {
+            root: root_id.to_string(),
+            direction: direction.as_str().to_string(),
+            max_depth,
+            nodes,
+            edges,
+        })
+    })?;
+
+    Ok(Some(response))
 }
 
 /// Pull richer stats than the `Store::base_embedding_count` shortcut.

@@ -15,6 +15,19 @@
       <button id="view-2d" class="active" type="button" title="2D Cytoscape (default)">2D</button>
       <button id="view-3d" type="button" title="3D force-directed (Three.js)">3D</button>
     </div>
+    <div id="hierarchy-controls" class="hierarchy-controls" style="display:none;" aria-label="hierarchy controls">
+      <div id="hierarchy-direction" class="btn-group" role="group" aria-label="direction">
+        <button type="button" data-direction="callers" title="show transitive callers (BFS up)">↑ callers</button>
+        <button type="button" data-direction="callees" class="active" title="show transitive callees (BFS down)">↓ callees</button>
+      </div>
+      <div id="hierarchy-depth" class="btn-group" role="group" aria-label="depth">
+        <span class="btn-group-label">depth</span>
+        <button type="button" data-depth="3">3</button>
+        <button type="button" data-depth="5" class="active">5</button>
+        <button type="button" data-depth="7">7</button>
+        <button type="button" data-depth="10">10</button>
+      </div>
+    </div>
     <input id="search" type="text" placeholder="search by name…" autocomplete="off">
     <span id="status" class="status"></span>
   </header>
@@ -38,6 +51,7 @@
   <!-- View modules -->
   <script src="/static/views/callgraph-2d.js"></script>
   <script src="/static/views/callgraph-3d.js"></script>
+  <script src="/static/views/hierarchy-3d.js"></script>
 
   <!-- Router (must load last; depends on all view modules being registered on window) -->
   <script src="/static/app.js"></script>

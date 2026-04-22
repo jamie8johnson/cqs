@@ -18,11 +18,15 @@
   const $cy = document.getElementById("cy");
   const $toggle2D = document.getElementById("view-2d");
   const $toggle3D = document.getElementById("view-3d");
+  const $hierarchyControls = document.getElementById("hierarchy-controls");
+  const $directionGroup = document.getElementById("hierarchy-direction");
+  const $depthGroup = document.getElementById("hierarchy-depth");
 
   // --- View registry ---
   const VIEWS = {
     "2d": () => window.CqsCallgraph2D,
     "3d": () => window.CqsCallgraph3D,
+    hierarchy: () => window.CqsHierarchy3D,
   };
 
   let currentView = null;
@@ -34,8 +38,12 @@
   // browser responsive. User can broaden via URL ?max=NNN.
   const url = new URL(window.location.href);
   const MAX_NODES = parseInt(url.searchParams.get("max") || "1500", 10);
-  const INITIAL_VIEW =
-    url.searchParams.get("view") === "3d" ? "3d" : "2d";
+  function pickInitialView() {
+    const v = url.searchParams.get("view");
+    if (v === "3d" || v === "hierarchy") return v;
+    return "2d";
+  }
+  const INITIAL_VIEW = pickInitialView();
 
   function setStatus(s) {
     $status.textContent = s || "";
@@ -56,14 +64,52 @@
     $toggle3D.classList.toggle("active", viewName === "3d");
   }
 
+  function showHierarchyControls(show) {
+    if (!$hierarchyControls) return;
+    $hierarchyControls.style.display = show ? "inline-flex" : "none";
+  }
+
   function syncUrlView(viewName) {
     const u = new URL(window.location.href);
     if (viewName === "2d") {
       u.searchParams.delete("view");
+      // Hierarchy-only params are stale once we leave the view.
+      u.searchParams.delete("root");
+      u.searchParams.delete("direction");
+      u.searchParams.delete("depth");
+    } else if (viewName === "3d") {
+      u.searchParams.set("view", "3d");
+      u.searchParams.delete("root");
+      u.searchParams.delete("direction");
+      u.searchParams.delete("depth");
     } else {
       u.searchParams.set("view", viewName);
     }
     window.history.replaceState({}, "", u.toString());
+  }
+
+  function syncHierarchyControls() {
+    if (!$directionGroup || !$depthGroup) return;
+    const u = new URL(window.location.href);
+    const dir = u.searchParams.get("direction") || "callees";
+    const depth = u.searchParams.get("depth") || "5";
+    $directionGroup.querySelectorAll("button").forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute("data-direction") === dir);
+    });
+    $depthGroup.querySelectorAll("button").forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute("data-depth") === depth);
+    });
+  }
+
+  function setHierarchyParam(key, value) {
+    const u = new URL(window.location.href);
+    u.searchParams.set("view", "hierarchy");
+    u.searchParams.set(key, value);
+    window.history.replaceState({}, "", u.toString());
+    syncHierarchyControls();
+    // Force re-fetch of hierarchy data on re-activate.
+    currentGraphData = null;
+    activateView("hierarchy");
   }
 
   // --- Shared callbacks the view modules dispatch into ---
@@ -131,6 +177,8 @@
     currentView = newView;
     currentViewName = viewName;
     setActiveToggle(viewName);
+    showHierarchyControls(viewName === "hierarchy");
+    if (viewName === "hierarchy") syncHierarchyControls();
     syncUrlView(viewName);
 
     setStatus(`booting ${viewName}…`);
@@ -142,19 +190,43 @@
       return;
     }
 
-    if (!currentGraphData) {
-      currentGraphData = await loadGraph();
-      if (!currentGraphData) return;
+    // Two data-loading paths:
+    //   1. Views with their own loadData() (hierarchy, future cluster) —
+    //      router calls it with the URL context and renders the result.
+    //   2. Default views (2D/3D callgraph) — share /api/graph payload.
+    let dataForRender;
+    if (typeof currentView.loadData === "function") {
+      setStatus(`loading data for ${viewName}…`);
+      try {
+        dataForRender = await currentView.loadData({
+          url: new URL(window.location.href),
+          maxNodes: MAX_NODES,
+        });
+      } catch (e) {
+        setStatus(`loadData error: ${e.message}`);
+        console.error("view loadData failed:", e);
+        return;
+      }
+      if (!dataForRender) {
+        setStatus(`${viewName}: no data`);
+        return;
+      }
+    } else {
+      if (!currentGraphData) {
+        currentGraphData = await loadGraph();
+        if (!currentGraphData) return;
+      }
+      dataForRender = currentGraphData;
     }
 
     setStatus(
-      `rendering ${currentGraphData.nodes.length.toLocaleString()} nodes / ` +
-        `${currentGraphData.edges.length.toLocaleString()} edges…`,
+      `rendering ${dataForRender.nodes.length.toLocaleString()} nodes / ` +
+        `${dataForRender.edges.length.toLocaleString()} edges…`,
     );
     try {
-      await currentView.render(currentGraphData);
+      await currentView.render(dataForRender);
       setStatus(
-        `${currentGraphData.nodes.length.toLocaleString()} nodes · ${viewName} · click any`,
+        `${dataForRender.nodes.length.toLocaleString()} nodes · ${viewName} · click any`,
       );
     } catch (e) {
       setStatus(`render error: ${e.message}`);
@@ -196,6 +268,10 @@
           <code>${escapeHtml(c.file)}:${c.line_start}</code>
         </div>
         ${c.signature ? `<div><code>${escapeHtml(c.signature)}</code></div>` : ""}
+        <div class="sidebar-actions">
+          <button type="button" class="btn-link" data-action="hierarchy-callees" data-id="${escapeHtml(c.id)}">view callees as hierarchy ↓</button>
+          <button type="button" class="btn-link" data-action="hierarchy-callers" data-id="${escapeHtml(c.id)}">view callers as hierarchy ↑</button>
+        </div>
         ${c.doc ? `<h4>doc</h4><pre>${escapeHtml(c.doc)}</pre>` : ""}
         <h4>source preview</h4>
         <pre>${escapeHtml(c.content_preview)}</pre>
@@ -210,6 +286,14 @@
             currentView.onNodeFocus(targetId);
           }
           loadChunkDetail(targetId);
+        });
+      });
+      $sidebar.querySelectorAll("button[data-action^='hierarchy-']").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const action = btn.getAttribute("data-action");
+          const targetId = btn.getAttribute("data-id");
+          const direction = action === "hierarchy-callers" ? "callers" : "callees";
+          openHierarchy(targetId, direction);
         });
       });
     } catch (e) {
@@ -248,12 +332,43 @@
     }
   }
 
+  function openHierarchy(rootId, direction) {
+    const u = new URL(window.location.href);
+    u.searchParams.set("view", "hierarchy");
+    u.searchParams.set("root", rootId);
+    u.searchParams.set("direction", direction || "callees");
+    if (!u.searchParams.get("depth")) {
+      u.searchParams.set("depth", "5");
+    }
+    window.history.replaceState({}, "", u.toString());
+    currentGraphData = null; // hierarchy uses its own loadData
+    activateView("hierarchy");
+  }
+
   // Wire toggle buttons + search input
   if ($toggle2D) {
     $toggle2D.addEventListener("click", () => activateView("2d"));
   }
   if ($toggle3D) {
     $toggle3D.addEventListener("click", () => activateView("3d"));
+  }
+  // Hierarchy controls (depth + direction). Buttons carry data-attrs
+  // that map to URL params; clicking re-activates the view to refetch.
+  if ($directionGroup) {
+    $directionGroup.querySelectorAll("button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const v = btn.getAttribute("data-direction");
+        if (v) setHierarchyParam("direction", v);
+      });
+    });
+  }
+  if ($depthGroup) {
+    $depthGroup.querySelectorAll("button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const v = btn.getAttribute("data-depth");
+        if (v) setHierarchyParam("depth", v);
+      });
+    });
   }
   $search.addEventListener("input", onSearchInput);
 
