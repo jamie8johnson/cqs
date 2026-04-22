@@ -16,11 +16,19 @@ const INDEX_HTML: &str = include_str!("assets/index.html");
 const APP_CSS: &str = include_str!("assets/app.css");
 const APP_JS: &str = include_str!("assets/app.js");
 
+// View modules — one per renderer. The router (app.js) dispatches
+// between them based on the URL `?view=` parameter. See
+// `docs/plans/2026-04-22-cqs-serve-3d-progressive.md` step 1.
+const CALLGRAPH_2D_JS: &str = include_str!("assets/views/callgraph-2d.js");
+const CALLGRAPH_3D_JS: &str = include_str!("assets/views/callgraph-3d.js");
+
 // Embedded vendor bundles. See assets/vendor/LICENSES.md for sources +
-// versions. ~670 KB total — noise vs the ~150 MB cqs binary.
+// versions. Total ~2.4 MB — noise vs the ~150 MB cqs binary.
 const CYTOSCAPE_JS: &str = include_str!("assets/vendor/cytoscape.min.js");
 const DAGRE_JS: &str = include_str!("assets/vendor/dagre.min.js");
 const CYTOSCAPE_DAGRE_JS: &str = include_str!("assets/vendor/cytoscape-dagre.min.js");
+const THREE_JS: &str = include_str!("assets/vendor/three.min.js");
+const FORCE_GRAPH_3D_JS: &str = include_str!("assets/vendor/3d-force-graph.min.js");
 
 /// Build the HTML/CSS/JS response. Helper used by both
 /// the `/` route and `/static/*` paths.
@@ -48,10 +56,16 @@ pub(crate) async fn static_asset(Path(path): Path<String>) -> Result<Response, S
     let (body, content_type) = match path.as_str() {
         "app.css" => (APP_CSS, "text/css; charset=utf-8"),
         "app.js" => (APP_JS, "application/javascript; charset=utf-8"),
+        "views/callgraph-2d.js" => (CALLGRAPH_2D_JS, "application/javascript; charset=utf-8"),
+        "views/callgraph-3d.js" => (CALLGRAPH_3D_JS, "application/javascript; charset=utf-8"),
         "vendor/cytoscape.min.js" => (CYTOSCAPE_JS, "application/javascript; charset=utf-8"),
         "vendor/dagre.min.js" => (DAGRE_JS, "application/javascript; charset=utf-8"),
         "vendor/cytoscape-dagre.min.js" => {
             (CYTOSCAPE_DAGRE_JS, "application/javascript; charset=utf-8")
+        }
+        "vendor/three.min.js" => (THREE_JS, "application/javascript; charset=utf-8"),
+        "vendor/3d-force-graph.min.js" => {
+            (FORCE_GRAPH_3D_JS, "application/javascript; charset=utf-8")
         }
         _ => return Err(ServeError::NotFound(format!("static asset: {path}"))),
     };

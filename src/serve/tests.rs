@@ -175,6 +175,113 @@ async fn static_asset_serves_js() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn view_modules_serve() {
+    // Both view modules (callgraph-2d.js, callgraph-3d.js) must be
+    // reachable so the router in app.js can dispatch to them.
+    let fixture = fixture_state();
+    let state = fixture.state();
+    let app = build_router(state);
+
+    for path in &[
+        "/static/views/callgraph-2d.js",
+        "/static/views/callgraph-3d.js",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri(*path).body(Body::empty()).unwrap())
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK, "view module {path} missing");
+        let ctype = resp
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap_or("").to_string())
+            .unwrap_or_default();
+        assert!(
+            ctype.starts_with("application/javascript"),
+            "{path} has wrong content-type: {ctype}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vendor_3d_bundles_serve() {
+    // Three.js + 3d-force-graph must be reachable for the 3D view to
+    // boot — the JS module checks for the `ForceGraph3D` global before
+    // proceeding, but if the bundle is 404 the global never registers.
+    let fixture = fixture_state();
+    let state = fixture.state();
+    let app = build_router(state);
+
+    for path in &[
+        "/static/vendor/three.min.js",
+        "/static/vendor/3d-force-graph.min.js",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri(*path).body(Body::empty()).unwrap())
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK, "vendor {path} missing");
+        let bytes_count = resp
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+        // axum may not always set content-length, so fall back to body len.
+        if bytes_count == 0 {
+            let bytes = axum::body::to_bytes(resp.into_body(), 4 * 1024 * 1024)
+                .await
+                .unwrap();
+            assert!(
+                bytes.len() > 50_000,
+                "{path} suspiciously small: {} bytes (vendor bundles are 100s of KB)",
+                bytes.len()
+            );
+        } else {
+            assert!(
+                bytes_count > 50_000,
+                "{path} suspiciously small: {bytes_count} bytes"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn index_html_loads_view_modules() {
+    // index.html must reference both view modules and both 3D vendor
+    // bundles, otherwise the router can't switch views.
+    let fixture = fixture_state();
+    let state = fixture.state();
+    let app = build_router(state);
+
+    let resp = app
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .expect("oneshot");
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let body = std::str::from_utf8(&bytes).expect("utf8");
+
+    for needle in &[
+        "/static/views/callgraph-2d.js",
+        "/static/views/callgraph-3d.js",
+        "/static/vendor/three.min.js",
+        "/static/vendor/3d-force-graph.min.js",
+        "view-toggle",
+        "view-2d",
+        "view-3d",
+    ] {
+        assert!(
+            body.contains(needle),
+            "index.html missing reference to {needle}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unknown_static_asset_returns_404() {
     let fixture = fixture_state();
     let state = fixture.state();

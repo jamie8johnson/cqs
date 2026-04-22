@@ -11,6 +11,10 @@
     <span class="brand">cqs serve</span>
     <span id="stats-badge" class="stats">…</span>
     <span class="spacer"></span>
+    <div class="view-toggle" role="group" aria-label="view mode">
+      <button id="view-2d" class="active" type="button" title="2D Cytoscape (default)">2D</button>
+      <button id="view-3d" type="button" title="3D force-directed (Three.js)">3D</button>
+    </div>
     <input id="search" type="text" placeholder="search by name…" autocomplete="off">
     <span id="status" class="status"></span>
   </header>
@@ -22,9 +26,20 @@
     </aside>
   </main>
 
+  <!-- 2D renderer (Cytoscape + dagre) -->
   <script src="/static/vendor/dagre.min.js"></script>
   <script src="/static/vendor/cytoscape.min.js"></script>
   <script src="/static/vendor/cytoscape-dagre.min.js"></script>
+
+  <!-- 3D renderer (Three.js + 3d-force-graph) -->
+  <script src="/static/vendor/three.min.js"></script>
+  <script src="/static/vendor/3d-force-graph.min.js"></script>
+
+  <!-- View modules -->
+  <script src="/static/views/callgraph-2d.js"></script>
+  <script src="/static/views/callgraph-3d.js"></script>
+
+  <!-- Router (must load last; depends on all view modules being registered on window) -->
   <script src="/static/app.js"></script>
 </body>
 </html>
