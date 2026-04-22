@@ -22,6 +22,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use axum::{routing::get, Router};
 use tokio::net::TcpListener;
+use tower_http::compression::CompressionLayer;
 
 use crate::store::{ReadOnly, Store};
 
@@ -105,6 +106,11 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/", get(assets::index_html))
         .route("/static/{*path}", get(assets::static_asset))
         .with_state(state)
+        // Gzip every response axum sends. The graph + cluster JSON
+        // payloads compress ~5-10× (1-2 MB → 150-300 KB on the cqs
+        // corpus); vendor JS bundles compress ~3×. Negligible CPU on
+        // the server side, big win on parse/transfer time at the browser.
+        .layer(CompressionLayer::new())
 }
 
 /// Listen for Ctrl-C to trigger axum's graceful shutdown.

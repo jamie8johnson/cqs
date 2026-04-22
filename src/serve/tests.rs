@@ -252,13 +252,18 @@ async fn vendor_3d_bundles_serve() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn index_html_loads_view_modules() {
-    // index.html must reference both view modules and both 3D vendor
-    // bundles, otherwise the router can't switch views.
+    // index.html must reference all view modules + all UI control IDs.
+    // The 3D vendor bundles are NOT eagerly loaded — they're injected by
+    // app.js's ensureThreeBundle() on first 3D-view activation, so the
+    // <script> tags don't appear in the HTML. The vendor paths are still
+    // tested separately in `vendor_3d_bundles_serve` to confirm they're
+    // reachable when the lazy loader fires.
     let fixture = fixture_state();
     let state = fixture.state();
     let app = build_router(state);
 
     let resp = app
+        .clone()
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
         .await
         .expect("oneshot");
@@ -272,8 +277,6 @@ async fn index_html_loads_view_modules() {
         "/static/views/callgraph-3d.js",
         "/static/views/hierarchy-3d.js",
         "/static/views/cluster-3d.js",
-        "/static/vendor/three.min.js",
-        "/static/vendor/3d-force-graph.min.js",
         "view-toggle",
         "view-2d",
         "view-3d",
@@ -289,6 +292,81 @@ async fn index_html_loads_view_modules() {
             "index.html missing reference to {needle}"
         );
     }
+
+    // Anti-test: the 3D vendor bundles MUST NOT be referenced eagerly in
+    // index.html (perf step 4-3 — lazy load via cqsEnsureThreeBundle).
+    // Catching a regression here would mean we re-introduced ~1.2 MB of
+    // unconditional download on first paint.
+    for forbidden in &[
+        "<script src=\"/static/vendor/three.min.js\"",
+        "<script src=\"/static/vendor/3d-force-graph.min.js\"",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "index.html eagerly references {forbidden} — should be lazy-loaded"
+        );
+    }
+    // app.js IS expected to contain the lazy-loader plumbing.
+    let app_js_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/static/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    let app_js_bytes = axum::body::to_bytes(app_js_resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let app_js = std::str::from_utf8(&app_js_bytes).expect("utf8");
+    assert!(
+        app_js.contains("cqsEnsureThreeBundle"),
+        "app.js missing cqsEnsureThreeBundle helper"
+    );
+    assert!(
+        app_js.contains("/static/vendor/three.min.js"),
+        "app.js missing three.min.js URL inside lazy loader"
+    );
+    assert!(
+        app_js.contains("/static/vendor/3d-force-graph.min.js"),
+        "app.js missing 3d-force-graph.min.js URL inside lazy loader"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gzip_compression_applied_to_json() {
+    // Perf step 4-4: CompressionLayer must gzip JSON responses when the
+    // client advertises gzip in Accept-Encoding. Without it, the graph
+    // payload ships uncompressed (~1-2 MB on the cqs corpus). axum's
+    // ServeIcon path doesn't go through CompressionLayer when there's
+    // no encoding header, so we explicitly request gzip.
+    let fixture = fixture_state();
+    let state = fixture.state();
+    let app = build_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/stats")
+                .header("accept-encoding", "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let encoding = resp
+        .headers()
+        .get("content-encoding")
+        .map(|v| v.to_str().unwrap_or("").to_string())
+        .unwrap_or_default();
+    assert_eq!(
+        encoding, "gzip",
+        "expected gzip-encoded response when client advertises gzip"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

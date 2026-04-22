@@ -37,11 +37,14 @@
   let currentViewName = null;
   let currentGraphData = null;
 
-  // Default cap on initial render. Spec gates the corpus at 16k nodes;
-  // for first paint we limit to top-N by caller count to keep the
-  // browser responsive. User can broaden via URL ?max=NNN.
+  // Default cap on initial render. The full corpus is ~16k nodes; on a
+  // graph that big the layout solver is the dominant cost (tens of
+  // seconds for dagre, several for cose). 300 nodes lays out in ~1s,
+  // which is what makes "type cqs serve and start clicking around"
+  // actually feel responsive. Users who want more can pass ?max=N up
+  // to the corpus size; the SQL layer handles the higher cap fine.
   const url = new URL(window.location.href);
-  const MAX_NODES = parseInt(url.searchParams.get("max") || "1500", 10);
+  const MAX_NODES = parseInt(url.searchParams.get("max") || "300", 10);
   function pickInitialView() {
     const v = url.searchParams.get("view");
     if (v === "3d" || v === "hierarchy" || v === "cluster") return v;
@@ -52,6 +55,38 @@
   function setStatus(s) {
     $status.textContent = s || "";
   }
+
+  // Lazy script loader. Returns a Promise that resolves when the script
+  // tag finishes loading, or rejects if it errors. Idempotent: caches by
+  // URL so repeated calls reuse the same promise.
+  const scriptCache = new Map();
+  function loadScript(url) {
+    if (scriptCache.has(url)) return scriptCache.get(url);
+    const p = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = url;
+      s.async = false; // preserve dependency order between consecutive loads
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error(`failed to load ${url}`));
+      document.head.appendChild(s);
+    });
+    scriptCache.set(url, p);
+    return p;
+  }
+
+  // Ensure the 3D vendor bundles (Three.js + 3d-force-graph, ~1.2 MB)
+  // are loaded. Called by 3D view modules' init() before they touch the
+  // ForceGraph3D global. Sequence matters — three.js must register
+  // before 3d-force-graph evaluates.
+  let threeBundlePromise = null;
+  window.cqsEnsureThreeBundle = function ensureThreeBundle() {
+    if (threeBundlePromise) return threeBundlePromise;
+    threeBundlePromise = (async () => {
+      await loadScript("/static/vendor/three.min.js");
+      await loadScript("/static/vendor/3d-force-graph.min.js");
+    })();
+    return threeBundlePromise;
+  };
 
   function escapeHtml(s) {
     return String(s)
