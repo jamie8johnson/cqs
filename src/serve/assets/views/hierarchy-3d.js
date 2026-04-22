@@ -54,8 +54,19 @@
     async init(container, options) {
       this.container = container;
       this.cb = options.callbacks || {};
-      container.innerHTML = "";
+      container.innerHTML =
+        '<div style="margin:24px;color:#666">loading 3D renderer…</div>';
 
+      if (typeof window.cqsEnsureThreeBundle === "function") {
+        try {
+          await window.cqsEnsureThreeBundle();
+        } catch (e) {
+          container.innerHTML = `<div class="error" style="margin:24px">3D bundle failed to load: ${e.message}</div>`;
+          throw e;
+        }
+      }
+
+      container.innerHTML = "";
       if (typeof ForceGraph3D === "undefined") {
         container.innerHTML =
           '<div class="error" style="margin:24px">3D renderer not loaded — check that ' +

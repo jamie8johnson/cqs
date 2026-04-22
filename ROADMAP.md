@@ -159,6 +159,10 @@ Re-audited 2026-04-21 against actual GitHub state. **All Tier 1 + Tier 2 issues 
 
 ## Parked
 
+- **Code-specific embedder A/B — `nomic-ai/CodeRankEmbed` + `nomic-ai/nomic-embed-code`.** Two open-weight code-specialized embedders from nomic-ai. Both use the same query prefix (`"Represent this query for searching relevant code: "`) and no document prefix; same training corpus (CoRNStack, ~21M pairs). cqs already has separate `embed_query` / `embed_documents` paths so wiring is a model preset + prefix metadata.
+  - **CodeRankEmbed** — 137M params, MIT, base = Snowflake Arctic Embed M Long, 768-dim (matches v9-200k schema, no migration), 8192-token context (long-chunk win for free). Released late 2024. Headline: 77.9 MRR on CSN, 60.1 NDCG@10 on CoIR — best at 137M class. Right-shape default candidate; ~2-hr A/B against v9-200k on the v3 fixture.
+  - **nomic-embed-code** — 7B params, Apache 2.0, base = Qwen2.5-Coder-7B, GGUF quantizations available. Released March 2025. Beats Voyage Code 3 + OpenAI Embed 3 Large on CodeSearchNet. ~14 GB VRAM at FP16 (fine on A6000, painful on consumer cards); embedding is probably 3584-dim (Qwen2.5-Coder hidden size = 4.5× our current storage). Right shape for an opt-in "best quality, big GPU" preset, not the default.
+  - Pre-req: nothing (wiring is independent of perf / slow-tests work). Run after current GPU/CPU lane items + perf + slow-tests are clear.
 - **Graph visualization** (`cqs serve`) — interactive web UI for call graphs, chunk types, impact radius. Spec: `docs/plans/graph-visualization.md`.
 - **OpenRCT2 → Rust dual-trail experiment** — spec: `docs/plans/2026-04-10-openrct2-rust-port-dual-trail.md`.
 - Wiki system (agent-first), MCP server (re-add when CLI solid), pre-built reference packages (#255), Blackwell RTX 6000 (96GB), L5X files from plant, KD-LoRA distillation (CodeSage→E5), ColBERT late interaction, enrichment-mismatch mining (Exp #4), lock/fork-aware training weights (Exp #5), ladder logic (RLL) parser, DXF/Openclaw PLC, SSD fine-tuning experiments.

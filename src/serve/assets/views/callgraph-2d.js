@@ -1,4 +1,8 @@
-// 2D call graph view — Cytoscape.js + dagre layout.
+// 2D call graph view — Cytoscape.js with selectable layout.
+//
+// Default layout: `cose` (built-in force-directed). dagre is available
+// behind `?layout=dagre` for users who want strict hierarchical reading,
+// at the cost of much slower layout time on large graphs.
 //
 // Conforms to the renderer abstraction interface: { init, render,
 // onSearchHighlight, onNodeFocus, dispose }. The main `app.js` router
@@ -33,6 +37,37 @@
     return Math.max(8, Math.min(48, 8 + Math.sqrt(callers) * 4));
   }
 
+  // Cytoscape layout factory. `cose` (built-in force-directed) is the
+  // default — runs in 1-2s on ~300 nodes and animates into place.
+  // `dagre` is the historical hierarchical layout — much slower (tens
+  // of seconds on >500 nodes) but produces strict left-to-right reading
+  // order; available via ?layout=dagre.
+  function layoutConfig(name) {
+    if (name === "dagre") {
+      return {
+        name: "dagre",
+        rankDir: "LR",
+        nodeSep: 30,
+        rankSep: 80,
+        animate: false,
+      };
+    }
+    // Default: cose. Tuned to give a usable layout fast on the ~300-node
+    // default cap. nodeOverlap + idealEdgeLength keep clusters legible
+    // without taking forever to settle.
+    return {
+      name: "cose",
+      animate: false,
+      nodeOverlap: 20,
+      idealEdgeLength: 80,
+      gravity: 0.25,
+      numIter: 1000,
+      randomize: true,
+      fit: true,
+      padding: 30,
+    };
+  }
+
   // View module — closure-scoped state lives here so dispose() can
   // tear it all down without leaking globals.
   window.CqsCallgraph2D = {
@@ -44,6 +79,8 @@
     async init(container, options) {
       this.container = container;
       this.cb = options.callbacks || {};
+      this.layoutName =
+        new URL(window.location.href).searchParams.get("layout") || "cose";
       // Cytoscape needs a non-empty container; ensure it.
       container.innerHTML = "";
     },
@@ -120,13 +157,7 @@
             },
           },
         ],
-        layout: {
-          name: "dagre",
-          rankDir: "LR",
-          nodeSep: 30,
-          rankSep: 80,
-          animate: false,
-        },
+        layout: layoutConfig(this.layoutName),
         hideEdgesOnViewport: true,
         textureOnViewport: true,
         minZoom: 0.05,

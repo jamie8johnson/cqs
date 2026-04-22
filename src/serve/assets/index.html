@@ -52,9 +52,10 @@
   <script src="/static/vendor/cytoscape.min.js"></script>
   <script src="/static/vendor/cytoscape-dagre.min.js"></script>
 
-  <!-- 3D renderer (Three.js + 3d-force-graph) -->
-  <script src="/static/vendor/three.min.js"></script>
-  <script src="/static/vendor/3d-force-graph.min.js"></script>
+  <!-- 3D renderer bundles (Three.js + 3d-force-graph, ~1.2 MB combined)
+       are NOT loaded eagerly. app.js injects them on first use of any
+       3D view, so a 2D-only session never pays for them. See
+       ensureThreeBundle() in app.js. -->
 
   <!-- View modules -->
   <script src="/static/views/callgraph-2d.js"></script>
