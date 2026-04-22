@@ -98,7 +98,13 @@ ndarray = "0.17"
 ndarray_015 = { package = "ndarray", version = "0.15", optional = true }
 
 # Async
-tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "signal"] }
+
+# HTTP server (cqs serve — graph visualization UI, optional via `serve` feature).
+# Kept behind a feature so the dep doesn't bloat default builds.
+axum = { version = "0.8", default-features = false, features = ["http1", "query", "tokio", "json", "macros"], optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = ["trace"], optional = true }
 
 # Storage (sqlx async SQLite)
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
@@ -163,7 +169,7 @@ libc = "0.2"
 ort = { version = "2.0.0-rc.12", features = ["cuda", "tensorrt"] }
 
 [features]
-default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-elm", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "lang-aspx", "lang-st", "lang-dart", "convert", "llm-summaries"]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-elm", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "lang-aspx", "lang-st", "lang-dart", "convert", "llm-summaries", "serve"]
 
 # Language support (opt-in, all enabled by default)
 lang-rust = ["dep:tree-sitter-rust"]
@@ -232,6 +238,11 @@ encrypt = ["keyring"]
 gpu-index = ["cuvs", "ndarray_015"]
 llm-summaries = ["dep:reqwest"]
 tree-sitter-elm = ["dep:tree-sitter-elm"]
+
+# `cqs serve` — graph visualization web UI. Adds axum + tower + tower-http.
+# Bundled separately so the default binary stays lean for users who only
+# need the CLI.
+serve = ["dep:axum", "dep:tower", "dep:tower-http"]
 
 # Opt-in for the cold-load-per-invocation CLI integration tests
 # (cli_batch_test, cli_graph_test, cli_commands_test, cli_test,

@@ -75,6 +75,8 @@ pub mod ci;
 pub mod eval;
 pub mod health;
 pub mod reranker;
+#[cfg(feature = "serve")]
+pub mod serve;
 pub mod suggest;
 
 // Internal modules - not part of public library API

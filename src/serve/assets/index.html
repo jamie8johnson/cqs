@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cqs serve</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">cqs serve</span>
+    <span id="stats-badge" class="stats">…</span>
+    <input id="search" type="text" placeholder="search by name…" autocomplete="off">
+  </header>
+
+  <main>
+    <section id="cy-container" aria-label="call graph">
+      <div class="placeholder">
+        <h2>v1 stub</h2>
+        <p>This is the v1 stub — call graph rendering lands in the next implementation step.</p>
+        <p>The HTTP stack, embedded asset pipeline, and stats endpoint are wired and live.</p>
+        <p>Next: <code>/api/graph</code> wires the Cytoscape canvas here.</p>
+      </div>
+    </section>
+    <aside id="sidebar" aria-label="chunk detail">
+      <p class="hint">Click a node to see its source, callers, callees, and tests.</p>
+    </aside>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

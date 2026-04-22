@@ -17,6 +17,8 @@ mod io;
 pub(crate) mod resolve;
 pub(crate) mod review;
 mod search;
+#[cfg(feature = "serve")]
+pub(crate) mod serve;
 mod train;
 
 // Re-export inner modules accessed directly by batch handlers via
