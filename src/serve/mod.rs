@@ -101,7 +101,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/api/chunk/{id}", get(handlers::chunk_detail))
         .route("/api/search", get(handlers::search))
         .route("/", get(assets::index_html))
-        .route("/static/{path}", get(assets::static_asset))
+        .route("/static/{*path}", get(assets::static_asset))
         .with_state(state)
 }
 

@@ -216,7 +216,12 @@ async fn stats_endpoint_returns_chunks_count() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn graph_stub_returns_empty_graph() {
+async fn graph_returns_empty_for_fresh_store() {
+    // Fresh store has no chunks → /api/graph returns the shape but with
+    // empty arrays. Real graph rendering is exercised by manual smoke
+    // against the cqs corpus; an in-process test would need a populated
+    // fixture (~few hundred LOC of chunk inserts) which is more setup
+    // than the shape-check is worth at this stage.
     let fixture = fixture_state();
     let state = fixture.state();
     let app = build_router(state);
@@ -236,6 +241,27 @@ async fn graph_stub_returns_empty_graph() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(json["nodes"].as_array().map(Vec::len), Some(0));
     assert_eq!(json["edges"].as_array().map(Vec::len), Some(0));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graph_accepts_query_filters_without_crash() {
+    // Query-param parsing path: fresh store + filters → shape-valid
+    // empty response, no 5xx.
+    let fixture = fixture_state();
+    let state = fixture.state();
+    let app = build_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/graph?file=src/serve/&type=function&max_nodes=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test(flavor = "multi_thread")]

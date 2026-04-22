@@ -18,15 +18,16 @@ body { display: flex; flex-direction: column; }
   padding: 10px 16px;
   border-bottom: 1px solid #e0e0e0;
   background: #fff;
+  flex-shrink: 0;
 }
 
 .brand { font-weight: 600; font-size: 15px; }
 .stats { color: #666; font-size: 12px; }
+.status { color: #888; font-size: 12px; min-width: 80px; text-align: right; }
+.spacer { flex: 1; }
 
 #search {
-  flex: 1;
-  max-width: 320px;
-  margin-left: auto;
+  width: 280px;
   padding: 6px 10px;
   border: 1px solid #d0d0d0;
   border-radius: 4px;
@@ -39,7 +40,7 @@ main {
   min-height: 0;
 }
 
-#cy-container {
+#cy {
   flex: 1;
   position: relative;
   background: #fff;
@@ -47,24 +48,36 @@ main {
 }
 
 #sidebar {
-  width: 360px;
+  width: 380px;
   padding: 16px;
   overflow-y: auto;
   background: #fafafa;
+  flex-shrink: 0;
 }
 
-.placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  text-align: center;
-  color: #555;
-  padding: 32px;
+#sidebar h3 { margin: 0 0 4px 0; font-size: 15px; font-weight: 600; }
+#sidebar .meta { color: #666; font-size: 12px; margin-bottom: 12px; }
+#sidebar code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+#sidebar pre {
+  background: #f4f4f4;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  overflow-x: auto;
+  max-height: 280px;
+  margin: 8px 0 16px 0;
 }
-
-.placeholder h2 { margin-top: 0; color: #333; }
-.placeholder code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
+#sidebar h4 { margin: 16px 0 4px 0; font-size: 13px; color: #444; text-transform: uppercase; letter-spacing: 0.5px; }
+#sidebar ul { padding: 0; margin: 0 0 12px 0; list-style: none; }
+#sidebar li {
+  padding: 4px 6px;
+  margin: 2px 0;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+}
+#sidebar li:hover { background: #eef; }
+#sidebar li small { color: #888; display: block; }
 
 .hint { color: #888; font-size: 13px; }
+.error { color: #c33; font-size: 13px; padding: 8px; background: #fee; border-radius: 4px; }
