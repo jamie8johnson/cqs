@@ -14,8 +14,8 @@ use axum::{
 use serde::Deserialize;
 
 use super::data::{
-    ChunkDetail, GraphResponse, HierarchyDirection, HierarchyResponse, NodeRef, SearchResponse,
-    StatsResponse,
+    ChunkDetail, ClusterResponse, GraphResponse, HierarchyDirection, HierarchyResponse, NodeRef,
+    SearchResponse, StatsResponse,
 };
 use super::error::ServeError;
 use super::AppState;
@@ -60,6 +60,13 @@ pub(crate) struct HierarchyQuery {
 
 const DEFAULT_HIERARCHY_DEPTH: u32 = 5;
 const MAX_HIERARCHY_DEPTH: u32 = 10;
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ClusterQuery {
+    /// Optional cap on returned nodes — same convention as `/api/graph`.
+    #[serde(default)]
+    pub max_nodes: Option<usize>,
+}
 
 /// `GET /health` — always returns 200. Used by orchestration / monitoring.
 pub(crate) async fn health() -> (StatusCode, &'static str) {
@@ -210,4 +217,26 @@ pub(crate) async fn hierarchy(
     response
         .map(Json)
         .ok_or_else(|| ServeError::NotFound(format!("chunk: {id}")))
+}
+
+/// `GET /api/embed/2d?max_nodes=N` — every chunk that has a UMAP projection
+/// stored in `umap_x` / `umap_y`, with degree counts attached. The cluster
+/// view consumes this directly. Returns an empty `nodes` list (and
+/// `skipped > 0`) when the corpus has chunks but no projection has been
+/// computed yet — frontend renders a "run `cqs index --umap`" hint.
+pub(crate) async fn cluster_2d(
+    State(state): State<AppState>,
+    Query(params): Query<ClusterQuery>,
+) -> Result<Json<ClusterResponse>, ServeError> {
+    tracing::info!(max_nodes = ?params.max_nodes, "serve::cluster_2d");
+
+    let store = state.store.clone();
+    let max_nodes = params.max_nodes;
+    let cluster =
+        tokio::task::spawn_blocking(move || super::data::build_cluster(&store, max_nodes))
+            .await
+            .map_err(|e| ServeError::Internal(format!("cluster join: {e}")))?
+            .map_err(ServeError::from)?;
+
+    Ok(Json(cluster))
 }

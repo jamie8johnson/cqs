@@ -1,4 +1,7 @@
--- cq index schema v21
+-- cq index schema v22
+-- v22: umap_x / umap_y REAL columns on chunks for the cqs serve cluster view.
+--      Both nullable; populated only when `cqs index --umap` runs the
+--      umap-learn projection. /api/embed/2d skips chunks where coords are NULL.
 -- v21: parser_version column on chunks so incremental UPSERT can refresh rows
 --      whose content_hash hasn't changed but whose parser-emitted fields (e.g.
 --      `doc` from extract_doc_fallback_for_short_chunk) would now differ. The
@@ -49,7 +52,9 @@ CREATE TABLE IF NOT EXISTS chunks (
     parent_type_name TEXT,    -- for methods: name of enclosing class/struct/impl
     enrichment_hash TEXT,     -- blake3 hash of call context used for enrichment (NULL = not enriched)
     enrichment_version INTEGER NOT NULL DEFAULT 0,  -- RT-DATA-2: idempotency marker for enrichment passes
-    parser_version INTEGER NOT NULL DEFAULT 0  -- v21: parser stamp for content-hash-stable doc enrichment refresh (P2 #29)
+    parser_version INTEGER NOT NULL DEFAULT 0,  -- v21: parser stamp for content-hash-stable doc enrichment refresh (P2 #29)
+    umap_x REAL,                              -- v22: 2D projection X coord (NULL until `cqs index --umap` runs)
+    umap_y REAL                               -- v22: 2D projection Y coord (NULL until `cqs index --umap` runs)
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_origin ON chunks(origin);

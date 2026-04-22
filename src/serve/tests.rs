@@ -186,6 +186,7 @@ async fn view_modules_serve() {
         "/static/views/callgraph-2d.js",
         "/static/views/callgraph-3d.js",
         "/static/views/hierarchy-3d.js",
+        "/static/views/cluster-3d.js",
     ] {
         let resp = app
             .clone()
@@ -270,14 +271,18 @@ async fn index_html_loads_view_modules() {
         "/static/views/callgraph-2d.js",
         "/static/views/callgraph-3d.js",
         "/static/views/hierarchy-3d.js",
+        "/static/views/cluster-3d.js",
         "/static/vendor/three.min.js",
         "/static/vendor/3d-force-graph.min.js",
         "view-toggle",
         "view-2d",
         "view-3d",
+        "view-cluster",
         "hierarchy-controls",
         "hierarchy-direction",
         "hierarchy-depth",
+        "cluster-controls",
+        "cluster-color",
     ] {
         assert!(
             body.contains(needle),
@@ -512,4 +517,50 @@ async fn hierarchy_extreme_depth_is_clamped() {
         .expect("oneshot");
 
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cluster_returns_empty_for_fresh_store() {
+    // Fresh store has no chunks (and therefore no UMAP coords).
+    // The shape should still be valid: nodes:[] and skipped:0.
+    let fixture = fixture_state();
+    let state = fixture.state();
+    let app = build_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/embed/2d")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(json["nodes"].as_array().map(Vec::len), Some(0));
+    assert_eq!(json["skipped"].as_u64(), Some(0));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cluster_accepts_max_nodes_filter() {
+    // Query-param parsing path: fresh store + max_nodes → shape-valid
+    // empty response, no 5xx.
+    let fixture = fixture_state();
+    let state = fixture.state();
+    let app = build_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/embed/2d?max_nodes=100")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
 }

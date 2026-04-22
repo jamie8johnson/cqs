@@ -151,6 +151,29 @@ pub(crate) struct HierarchyResponse {
     pub edges: Vec<Edge>,
 }
 
+/// One node in the embedding cluster view — same metadata as a graph
+/// `Node` plus the 2D UMAP coordinates. The frontend places the node at
+/// `(umap_x × scale, n_callers × z_scale, umap_y × scale)` so semantically
+/// similar chunks cluster together in the X/Z plane and high-degree
+/// functions float visibly above.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ClusterNode {
+    #[serde(flatten)]
+    pub base: Node,
+    pub umap_x: f64,
+    pub umap_y: f64,
+}
+
+/// Response for `GET /api/embed/2d`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ClusterResponse {
+    pub nodes: Vec<ClusterNode>,
+    /// Chunks that exist but lack UMAP coords (NULL `umap_x` / `umap_y`).
+    /// Frontend uses this to surface a "run `cqs index --umap`" hint when
+    /// the cluster view boots against a corpus that hasn't been projected.
+    pub skipped: u64,
+}
+
 /// Build the full graph response from the store.
 ///
 /// Pulls every chunk + every resolved call edge in two SQL queries, then
@@ -692,6 +715,120 @@ pub(crate) fn build_hierarchy(
     })?;
 
     Ok(Some(response))
+}
+
+/// Build the embedding cluster response — every chunk that has UMAP coords,
+/// annotated with caller/callee degree counts so the frontend can size and
+/// elevate nodes by importance.
+///
+/// Skips chunks whose `umap_x` / `umap_y` are NULL (UMAP hasn't been run
+/// on those rows yet; the frontend shows a "run `cqs index --umap`" hint
+/// when the entire corpus is empty). `max_nodes` caps the response by
+/// descending caller count, same convention as `/api/graph?max_nodes=N`.
+pub(crate) fn build_cluster(
+    store: &Store<ReadOnly>,
+    max_nodes: Option<usize>,
+) -> Result<ClusterResponse, StoreError> {
+    let _span = tracing::info_span!("build_cluster", max_nodes = ?max_nodes).entered();
+
+    store.rt.block_on(async {
+        // Chunks that have coords already projected.
+        let rows = sqlx::query(
+            "SELECT id, name, chunk_type, language, origin, line_start, line_end, umap_x, umap_y \
+             FROM chunks WHERE umap_x IS NOT NULL AND umap_y IS NOT NULL ORDER BY id",
+        )
+        .fetch_all(&store.pool)
+        .await?;
+
+        let skipped_row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM chunks WHERE umap_x IS NULL OR umap_y IS NULL")
+                .fetch_one(&store.pool)
+                .await?;
+        let skipped = skipped_row.0.max(0) as u64;
+
+        // Per-chunk caller/callee counts. Same name-based join as
+        // build_graph; counts only edges whose endpoints both resolve
+        // inside the projected set so the n_callers/n_callees on a node
+        // accurately describe what the cluster view shows.
+        let mut caller_count: HashMap<String, u32> = HashMap::new();
+        let mut callee_count: HashMap<String, u32> = HashMap::new();
+        let mut name_to_first_id: HashMap<String, String> = HashMap::new();
+        for row in &rows {
+            let id: String = row.get("id");
+            let name: String = row.get("name");
+            name_to_first_id.entry(name).or_insert(id);
+        }
+
+        let edge_rows = sqlx::query("SELECT caller_name, callee_name FROM function_calls")
+            .fetch_all(&store.pool)
+            .await?;
+        for row in edge_rows {
+            let caller_name: String = row.get("caller_name");
+            let callee_name: String = row.get("callee_name");
+            let (Some(caller_id), Some(callee_id)) = (
+                name_to_first_id.get(&caller_name),
+                name_to_first_id.get(&callee_name),
+            ) else {
+                continue;
+            };
+            *caller_count.entry(callee_id.clone()).or_insert(0) += 1;
+            *callee_count.entry(caller_id.clone()).or_insert(0) += 1;
+        }
+
+        let mut nodes: Vec<ClusterNode> = rows
+            .into_iter()
+            .map(|row| {
+                let id: String = row.get("id");
+                let name: String = row.get("name");
+                let chunk_type: String = row.get("chunk_type");
+                let language: String = row.get("language");
+                let origin: String = row.get("origin");
+                let line_start: i64 = row.get("line_start");
+                let line_end: i64 = row.get("line_end");
+                let umap_x: f64 = row.get("umap_x");
+                let umap_y: f64 = row.get("umap_y");
+                let n_callers = *caller_count.get(&id).unwrap_or(&0);
+                let n_callees = *callee_count.get(&id).unwrap_or(&0);
+                let dead = n_callers == 0 && chunk_type != "test";
+                ClusterNode {
+                    base: Node {
+                        id: id.clone(),
+                        name,
+                        kind: chunk_type,
+                        language,
+                        file: origin,
+                        line_start: line_start.max(0) as u32,
+                        line_end: line_end.max(0) as u32,
+                        n_callers,
+                        n_callees,
+                        dead,
+                    },
+                    umap_x,
+                    umap_y,
+                }
+            })
+            .collect();
+
+        if let Some(cap) = max_nodes {
+            if nodes.len() > cap {
+                nodes.sort_unstable_by(|a, b| {
+                    b.base
+                        .n_callers
+                        .cmp(&a.base.n_callers)
+                        .then_with(|| a.base.id.cmp(&b.base.id))
+                });
+                nodes.truncate(cap);
+            }
+        }
+
+        tracing::info!(
+            nodes = nodes.len(),
+            skipped,
+            "build_cluster: built response"
+        );
+
+        Ok(ClusterResponse { nodes, skipped })
+    })
 }
 
 /// Pull richer stats than the `Store::base_embedding_count` shortcut.

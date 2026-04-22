@@ -49,26 +49,31 @@ body { display: flex; flex-direction: column; }
   color: #fff;
 }
 
-.hierarchy-controls {
+/* Shared control-group layout used by hierarchy + cluster header controls. */
+.hierarchy-controls,
+.cluster-controls {
   display: inline-flex;
   align-items: center;
   gap: 8px;
 }
-.hierarchy-controls .btn-group {
+.hierarchy-controls .btn-group,
+.cluster-controls .btn-group {
   display: inline-flex;
   align-items: center;
   border: 1px solid #d0d0d0;
   border-radius: 4px;
   overflow: hidden;
 }
-.hierarchy-controls .btn-group-label {
+.hierarchy-controls .btn-group-label,
+.cluster-controls .btn-group-label {
   font-size: 11px;
   color: #888;
   padding: 0 6px;
   border-right: 1px solid #d0d0d0;
   background: #f5f5f5;
 }
-.hierarchy-controls .btn-group button {
+.hierarchy-controls .btn-group button,
+.cluster-controls .btn-group button {
   background: #fff;
   border: none;
   padding: 5px 10px;
@@ -78,9 +83,12 @@ body { display: flex; flex-direction: column; }
   cursor: pointer;
   border-right: 1px solid #d0d0d0;
 }
-.hierarchy-controls .btn-group button:last-child { border-right: none; }
-.hierarchy-controls .btn-group button:hover { background: #f5f5f5; }
-.hierarchy-controls .btn-group button.active {
+.hierarchy-controls .btn-group button:last-child,
+.cluster-controls .btn-group button:last-child { border-right: none; }
+.hierarchy-controls .btn-group button:hover,
+.cluster-controls .btn-group button:hover { background: #f5f5f5; }
+.hierarchy-controls .btn-group button.active,
+.cluster-controls .btn-group button.active {
   background: #4a86e8;
   color: #fff;
 }

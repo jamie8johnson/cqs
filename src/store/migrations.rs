@@ -225,6 +225,7 @@ async fn run_migration(
         (18, 19) => migrate_v18_to_v19(conn).await,
         (19, 20) => migrate_v19_to_v20(conn).await,
         (20, 21) => migrate_v20_to_v21(conn).await,
+        (21, 22) => migrate_v21_to_v22(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -646,6 +647,31 @@ async fn migrate_v20_to_v21(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// Migrate from v21 to v22: add umap_x and umap_y REAL columns to chunks.
+///
+/// Both columns are nullable (REAL is nullable by default in SQLite). They
+/// stay NULL until `cqs index --umap` runs the umap-learn projection
+/// (`scripts/run_umap.py`) over the persisted chunk embeddings and writes
+/// the 2D coordinates back. The /api/embed/2d endpoint in `cqs serve`
+/// filters to `umap_x IS NOT NULL`, so the cluster view is dark until the
+/// projection has been computed at least once but the rest of cqs is
+/// unaffected.
+async fn migrate_v21_to_v22(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v21_to_v22").entered();
+
+    sqlx::query("ALTER TABLE chunks ADD COLUMN umap_x REAL")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("ALTER TABLE chunks ADD COLUMN umap_y REAL")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Migrated to v22: umap_x/umap_y columns on chunks (cqs serve cluster view, opt-in via `cqs index --umap`)"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -678,7 +704,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 21);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 22);
     }
 
     #[test]
@@ -2608,6 +2634,129 @@ mod tests {
                 post_pv, 5,
                 "v21 INSERT with parser_version = 5 must round-trip"
             );
+        });
+    }
+
+    /// v21 → v22: ALTER TABLE chunks ADD umap_x/umap_y REAL (both nullable).
+    /// Round-trip: pre-migration v21 chunk gets NULL coords; post-migration
+    /// v22 INSERT can stamp arbitrary floats and read them back. Negative,
+    /// large-magnitude, and zero values all preserve round-trip.
+    #[test]
+    fn test_migrate_v21_to_v22_adds_umap_columns() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true)
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+
+            // Minimal v21 schema — same shape as v20 plus parser_version.
+            // Notably no umap_x/umap_y columns — that's what v22 adds.
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    embedding_base BLOB,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    enrichment_version INTEGER NOT NULL DEFAULT 0,
+                    parser_version INTEGER NOT NULL DEFAULT 0
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '21')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // Seed a pre-migration v21 chunk.
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 created_at, updated_at) \
+                 VALUES ('pre_v22', 'file:lib.rs', 'file', 'rust', 'function', 'pre_v22', \
+                 '', '', 'h', 1, 10, X'00', '2026-04-21', '2026-04-21')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Run v21 → v22 migration.
+            migrate(&pool, &db_path, 21, 22).await.unwrap();
+
+            // Schema version bumped.
+            let (v,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(v, "22");
+
+            // Pre-migration row has NULL coords (no DEFAULT — UMAP is opt-in).
+            let (pre_x, pre_y): (Option<f64>, Option<f64>) =
+                sqlx::query_as("SELECT umap_x, umap_y FROM chunks WHERE id = 'pre_v22'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert!(pre_x.is_none(), "pre-migration umap_x must be NULL");
+            assert!(pre_y.is_none(), "pre-migration umap_y must be NULL");
+
+            // Round-trip a few representative values: positive, negative, zero.
+            for (id, x, y) in [
+                ("post_v22_a", 1.5_f64, -2.25_f64),
+                ("post_v22_b", 0.0_f64, 0.0_f64),
+                ("post_v22_c", 1234.567_f64, -9876.54321_f64),
+            ] {
+                sqlx::query(
+                    "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                     signature, content, content_hash, line_start, line_end, embedding, \
+                     created_at, updated_at, umap_x, umap_y) \
+                     VALUES (?, 'file:lib.rs', 'file', 'rust', 'function', 'post_v22', \
+                     '', '', 'h', 1, 10, X'00', '2026-04-21', '2026-04-21', ?, ?)",
+                )
+                .bind(id)
+                .bind(x)
+                .bind(y)
+                .execute(&pool)
+                .await
+                .unwrap();
+                let (rx, ry): (f64, f64) =
+                    sqlx::query_as("SELECT umap_x, umap_y FROM chunks WHERE id = ?")
+                        .bind(id)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                assert_eq!(rx, x, "umap_x round-trip for {id}");
+                assert_eq!(ry, y, "umap_y round-trip for {id}");
+            }
         });
     }
 }

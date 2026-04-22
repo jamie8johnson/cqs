@@ -14,6 +14,14 @@
     <div class="view-toggle" role="group" aria-label="view mode">
       <button id="view-2d" class="active" type="button" title="2D Cytoscape (default)">2D</button>
       <button id="view-3d" type="button" title="3D force-directed (Three.js)">3D</button>
+      <button id="view-cluster" type="button" title="Embedding cluster — chunks placed by UMAP semantic similarity">cluster</button>
+    </div>
+    <div id="cluster-controls" class="cluster-controls" style="display:none;" aria-label="cluster controls">
+      <div id="cluster-color" class="btn-group" role="group" aria-label="color by">
+        <span class="btn-group-label">color</span>
+        <button type="button" data-color="type" class="active">type</button>
+        <button type="button" data-color="language">language</button>
+      </div>
     </div>
     <div id="hierarchy-controls" class="hierarchy-controls" style="display:none;" aria-label="hierarchy controls">
       <div id="hierarchy-direction" class="btn-group" role="group" aria-label="direction">
@@ -52,6 +60,7 @@
   <script src="/static/views/callgraph-2d.js"></script>
   <script src="/static/views/callgraph-3d.js"></script>
   <script src="/static/views/hierarchy-3d.js"></script>
+  <script src="/static/views/cluster-3d.js"></script>
 
   <!-- Router (must load last; depends on all view modules being registered on window) -->
   <script src="/static/app.js"></script>

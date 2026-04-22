@@ -371,6 +371,85 @@ impl Store<ReadWrite> {
         })
     }
 
+    /// Write UMAP 2D coordinates back to chunk rows in batch.
+    ///
+    /// Used by the `cqs index --umap` pass after `scripts/run_umap.py`
+    /// projects the dense embeddings into 2D. Same temp-table + UPDATE...FROM
+    /// pattern as `update_embeddings_with_hashes_batch`.
+    ///
+    /// Returns the number of rows actually updated. IDs that don't exist in
+    /// `chunks` are silently skipped (the projection script may have been
+    /// fed a stale embedding dump after a delete).
+    pub fn update_umap_coords_batch(
+        &self,
+        coords: &[(String, f64, f64)],
+    ) -> Result<usize, StoreError> {
+        let _span = tracing::info_span!("update_umap_coords_batch", count = coords.len()).entered();
+        if coords.is_empty() {
+            return Ok(0);
+        }
+
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+
+            sqlx::query(
+                "CREATE TEMP TABLE IF NOT EXISTS _update_umap \
+                 (id TEXT PRIMARY KEY, umap_x REAL NOT NULL, umap_y REAL NOT NULL)",
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("DELETE FROM _update_umap")
+                .execute(&mut *tx)
+                .await?;
+
+            use crate::store::helpers::sql::max_rows_per_statement;
+            const BATCH_SIZE: usize = max_rows_per_statement(3);
+            for batch_start in (0..coords.len()).step_by(BATCH_SIZE) {
+                let batch_end = (batch_start + BATCH_SIZE).min(coords.len());
+                let batch = &coords[batch_start..batch_end];
+
+                let mut placeholders = Vec::with_capacity(batch.len());
+                for i in 0..batch.len() {
+                    let base = i * 3;
+                    placeholders.push(format!("(?{}, ?{}, ?{})", base + 1, base + 2, base + 3));
+                }
+                let sql = format!(
+                    "INSERT INTO _update_umap (id, umap_x, umap_y) VALUES {}",
+                    placeholders.join(", ")
+                );
+                let mut query = sqlx::query(&sql);
+                for (id, x, y) in batch {
+                    query = query.bind(id).bind(*x).bind(*y);
+                }
+                query.execute(&mut *tx).await?;
+            }
+
+            let result = sqlx::query(
+                "UPDATE chunks SET umap_x = t.umap_x, umap_y = t.umap_y \
+                 FROM _update_umap t WHERE chunks.id = t.id",
+            )
+            .execute(&mut *tx)
+            .await?;
+            let updated = result.rows_affected() as usize;
+
+            sqlx::query("DROP TABLE IF EXISTS _update_umap")
+                .execute(&mut *tx)
+                .await?;
+
+            tx.commit().await?;
+
+            if updated < coords.len() {
+                let missing = coords.len() - updated;
+                tracing::warn!(
+                    missing,
+                    total = coords.len(),
+                    "UMAP update: some chunk IDs no longer exist (deleted between projection and write)"
+                );
+            }
+            Ok(updated)
+        })
+    }
+
     /// Insert or update LLM summaries in batch.
     ///
     /// Each entry is (content_hash, summary, model, purpose).

@@ -24,6 +24,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     let force = args.force;
     let dry_run = args.dry_run;
     let no_ignore = args.no_ignore;
+    let umap_flag = args.umap;
 
     #[cfg(feature = "llm-summaries")]
     let llm_summaries = args.llm_summaries;
@@ -643,6 +644,30 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "SPLADE encoder unavailable, skipping sparse encoding");
+                }
+            }
+        }
+    }
+
+    // Optional UMAP projection — runs once per `cqs index --umap` invocation.
+    // Lives between SPLADE and HNSW build because all final embeddings are
+    // settled by this point and HNSW only depends on the dense vectors. The
+    // projection itself is opt-in; failures are logged but never fatal so the
+    // rest of the index build still succeeds.
+    if umap_flag && !check_interrupted() {
+        if !cli.quiet {
+            println!("Running UMAP projection...");
+        }
+        match super::umap::run_umap_projection(&store, cli.quiet) {
+            Ok(updated) => {
+                if !cli.quiet && updated > 0 {
+                    println!("  UMAP: {updated} chunks projected to 2D");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "UMAP projection failed — cluster view will be unavailable");
+                if !cli.quiet {
+                    eprintln!("  Warning: UMAP projection failed ({e}); cluster view skipped");
                 }
             }
         }
