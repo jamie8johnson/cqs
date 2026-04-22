@@ -16,6 +16,12 @@ const INDEX_HTML: &str = include_str!("assets/index.html");
 const APP_CSS: &str = include_str!("assets/app.css");
 const APP_JS: &str = include_str!("assets/app.js");
 
+// Embedded vendor bundles. See assets/vendor/LICENSES.md for sources +
+// versions. ~670 KB total — noise vs the ~150 MB cqs binary.
+const CYTOSCAPE_JS: &str = include_str!("assets/vendor/cytoscape.min.js");
+const DAGRE_JS: &str = include_str!("assets/vendor/dagre.min.js");
+const CYTOSCAPE_DAGRE_JS: &str = include_str!("assets/vendor/cytoscape-dagre.min.js");
+
 /// Build the HTML/CSS/JS response. Helper used by both
 /// the `/` route and `/static/*` paths.
 fn asset_response(body: &'static str, content_type: &'static str) -> Result<Response, ServeError> {
@@ -42,6 +48,11 @@ pub(crate) async fn static_asset(Path(path): Path<String>) -> Result<Response, S
     let (body, content_type) = match path.as_str() {
         "app.css" => (APP_CSS, "text/css; charset=utf-8"),
         "app.js" => (APP_JS, "application/javascript; charset=utf-8"),
+        "vendor/cytoscape.min.js" => (CYTOSCAPE_JS, "application/javascript; charset=utf-8"),
+        "vendor/dagre.min.js" => (DAGRE_JS, "application/javascript; charset=utf-8"),
+        "vendor/cytoscape-dagre.min.js" => {
+            (CYTOSCAPE_DAGRE_JS, "application/javascript; charset=utf-8")
+        }
         _ => return Err(ServeError::NotFound(format!("static asset: {path}"))),
     };
 

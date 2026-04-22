@@ -10,23 +10,21 @@
   <header class="topbar">
     <span class="brand">cqs serve</span>
     <span id="stats-badge" class="stats">…</span>
+    <span class="spacer"></span>
     <input id="search" type="text" placeholder="search by name…" autocomplete="off">
+    <span id="status" class="status"></span>
   </header>
 
   <main>
-    <section id="cy-container" aria-label="call graph">
-      <div class="placeholder">
-        <h2>v1 stub</h2>
-        <p>This is the v1 stub — call graph rendering lands in the next implementation step.</p>
-        <p>The HTTP stack, embedded asset pipeline, and stats endpoint are wired and live.</p>
-        <p>Next: <code>/api/graph</code> wires the Cytoscape canvas here.</p>
-      </div>
-    </section>
+    <section id="cy" aria-label="call graph"></section>
     <aside id="sidebar" aria-label="chunk detail">
       <p class="hint">Click a node to see its source, callers, callees, and tests.</p>
     </aside>
   </main>
 
+  <script src="/static/vendor/dagre.min.js"></script>
+  <script src="/static/vendor/cytoscape.min.js"></script>
+  <script src="/static/vendor/cytoscape-dagre.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
