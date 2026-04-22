@@ -4,6 +4,7 @@ mod build;
 mod gc;
 mod stale;
 mod stats;
+mod umap;
 
 pub(crate) use build::{
     build_hnsw_base_index, build_hnsw_index, build_hnsw_index_owned, cmd_index,

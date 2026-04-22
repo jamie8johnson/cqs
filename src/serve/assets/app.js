@@ -18,15 +18,19 @@
   const $cy = document.getElementById("cy");
   const $toggle2D = document.getElementById("view-2d");
   const $toggle3D = document.getElementById("view-3d");
+  const $toggleCluster = document.getElementById("view-cluster");
   const $hierarchyControls = document.getElementById("hierarchy-controls");
   const $directionGroup = document.getElementById("hierarchy-direction");
   const $depthGroup = document.getElementById("hierarchy-depth");
+  const $clusterControls = document.getElementById("cluster-controls");
+  const $colorGroup = document.getElementById("cluster-color");
 
   // --- View registry ---
   const VIEWS = {
     "2d": () => window.CqsCallgraph2D,
     "3d": () => window.CqsCallgraph3D,
     hierarchy: () => window.CqsHierarchy3D,
+    cluster: () => window.CqsCluster3D,
   };
 
   let currentView = null;
@@ -40,7 +44,7 @@
   const MAX_NODES = parseInt(url.searchParams.get("max") || "1500", 10);
   function pickInitialView() {
     const v = url.searchParams.get("view");
-    if (v === "3d" || v === "hierarchy") return v;
+    if (v === "3d" || v === "hierarchy" || v === "cluster") return v;
     return "2d";
   }
   const INITIAL_VIEW = pickInitialView();
@@ -59,9 +63,15 @@
   }
 
   function setActiveToggle(viewName) {
-    if (!$toggle2D || !$toggle3D) return;
-    $toggle2D.classList.toggle("active", viewName === "2d");
-    $toggle3D.classList.toggle("active", viewName === "3d");
+    if ($toggle2D) $toggle2D.classList.toggle("active", viewName === "2d");
+    if ($toggle3D) $toggle3D.classList.toggle("active", viewName === "3d");
+    if ($toggleCluster)
+      $toggleCluster.classList.toggle("active", viewName === "cluster");
+  }
+
+  function showClusterControls(show) {
+    if (!$clusterControls) return;
+    $clusterControls.style.display = show ? "inline-flex" : "none";
   }
 
   function showHierarchyControls(show) {
@@ -71,17 +81,18 @@
 
   function syncUrlView(viewName) {
     const u = new URL(window.location.href);
+    // Always strip view-specific params when switching views — re-set
+    // below if the new view owns one of them.
+    const stripIfNotInView = (key, owners) => {
+      if (!owners.includes(viewName)) u.searchParams.delete(key);
+    };
+    stripIfNotInView("root", ["hierarchy"]);
+    stripIfNotInView("direction", ["hierarchy"]);
+    stripIfNotInView("depth", ["hierarchy"]);
+    stripIfNotInView("color", ["cluster"]);
+
     if (viewName === "2d") {
       u.searchParams.delete("view");
-      // Hierarchy-only params are stale once we leave the view.
-      u.searchParams.delete("root");
-      u.searchParams.delete("direction");
-      u.searchParams.delete("depth");
-    } else if (viewName === "3d") {
-      u.searchParams.set("view", "3d");
-      u.searchParams.delete("root");
-      u.searchParams.delete("direction");
-      u.searchParams.delete("depth");
     } else {
       u.searchParams.set("view", viewName);
     }
@@ -111,6 +122,16 @@
     currentGraphData = null;
     activateView("hierarchy");
   }
+
+  function syncClusterControls() {
+    if (!$colorGroup) return;
+    const u = new URL(window.location.href);
+    const color = u.searchParams.get("color") || "type";
+    $colorGroup.querySelectorAll("button").forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute("data-color") === color);
+    });
+  }
+
 
   // --- Shared callbacks the view modules dispatch into ---
   const callbacks = {
@@ -178,7 +199,9 @@
     currentViewName = viewName;
     setActiveToggle(viewName);
     showHierarchyControls(viewName === "hierarchy");
+    showClusterControls(viewName === "cluster");
     if (viewName === "hierarchy") syncHierarchyControls();
+    if (viewName === "cluster") syncClusterControls();
     syncUrlView(viewName);
 
     setStatus(`booting ${viewName}…`);
@@ -191,8 +214,8 @@
     }
 
     // Two data-loading paths:
-    //   1. Views with their own loadData() (hierarchy, future cluster) —
-    //      router calls it with the URL context and renders the result.
+    //   1. Views with their own loadData() (hierarchy, cluster) — router
+    //      calls it with the URL context and renders the result.
     //   2. Default views (2D/3D callgraph) — share /api/graph payload.
     let dataForRender;
     if (typeof currentView.loadData === "function") {
@@ -220,8 +243,11 @@
     }
 
     setStatus(
-      `rendering ${dataForRender.nodes.length.toLocaleString()} nodes / ` +
-        `${dataForRender.edges.length.toLocaleString()} edges…`,
+      `rendering ${dataForRender.nodes.length.toLocaleString()} nodes` +
+        (dataForRender.edges
+          ? ` / ${dataForRender.edges.length.toLocaleString()} edges`
+          : "") +
+        "…",
     );
     try {
       await currentView.render(dataForRender);
@@ -231,6 +257,17 @@
     } catch (e) {
       setStatus(`render error: ${e.message}`);
       console.error("view render failed:", e);
+    }
+  }
+
+  function setClusterColor(color) {
+    const u = new URL(window.location.href);
+    u.searchParams.set("view", "cluster");
+    u.searchParams.set("color", color);
+    window.history.replaceState({}, "", u.toString());
+    syncClusterControls();
+    if (currentView && typeof currentView.setColorMode === "function") {
+      currentView.setColorMode(color);
     }
   }
 
@@ -352,8 +389,11 @@
   if ($toggle3D) {
     $toggle3D.addEventListener("click", () => activateView("3d"));
   }
-  // Hierarchy controls (depth + direction). Buttons carry data-attrs
-  // that map to URL params; clicking re-activates the view to refetch.
+  if ($toggleCluster) {
+    $toggleCluster.addEventListener("click", () => activateView("cluster"));
+  }
+  // Hierarchy controls (depth + direction). Buttons carry data-attrs that
+  // map to URL params; clicking re-activates the view to refetch.
   if ($directionGroup) {
     $directionGroup.querySelectorAll("button").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -367,6 +407,15 @@
       btn.addEventListener("click", () => {
         const v = btn.getAttribute("data-depth");
         if (v) setHierarchyParam("depth", v);
+      });
+    });
+  }
+  // Cluster colour mode (type/language). Same pattern.
+  if ($colorGroup) {
+    $colorGroup.querySelectorAll("button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const v = btn.getAttribute("data-color");
+        if (v) setClusterColor(v);
       });
     });
   }

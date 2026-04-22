@@ -483,6 +483,7 @@ fn reindex_with_new_model(cli: &Cli, new_cfg: ModelConfig) -> Result<()> {
         hyde_queries: false,
         #[cfg(feature = "llm-summaries")]
         max_hyde: None,
+        umap: false,
     };
 
     cmd_index(&new_cli, &args)

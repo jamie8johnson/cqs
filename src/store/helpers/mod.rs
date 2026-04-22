@@ -56,6 +56,12 @@ pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};
 /// against the stored version and returns StoreError::SchemaMismatch if different.
 ///
 /// History:
+/// - v22: umap_x / umap_y REAL columns on chunks for the `cqs serve` cluster
+///   view (step 3 of `docs/plans/2026-04-22-cqs-serve-3d-progressive.md`).
+///   Both nullable — the columns stay NULL until `cqs index --umap` runs and
+///   writes 2D projections from the chunk embeddings via the umap-learn
+///   Python script (`scripts/run_umap.py`). The /api/embed/2d endpoint
+///   skips chunks whose coords are NULL, so the feature is fully optional.
 /// - v21: parser_version column on chunks (v1.28.0 audit P2 #29 — incremental
 ///   UPSERT now refreshes rows whose `content_hash` is unchanged but whose
 ///   `parser_version` bumped, e.g. when `extract_doc_fallback_for_short_chunk`
@@ -83,7 +89,7 @@ pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};
 /// - v12: parent_type_name column for method->class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 21;
+pub const CURRENT_SCHEMA_VERSION: i32 = 22;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.

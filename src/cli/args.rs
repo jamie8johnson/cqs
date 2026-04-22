@@ -580,4 +580,12 @@ pub(crate) struct IndexArgs {
     #[cfg(feature = "llm-summaries")]
     #[arg(long)]
     pub max_hyde: Option<usize>,
+    /// Project chunk embeddings into 2D via UMAP and write to `chunks.umap_x/umap_y`.
+    ///
+    /// Enables the `cqs serve` cluster view (`?view=cluster`). Requires
+    /// `umap-learn` Python package (`pip install umap-learn`). Skipped with
+    /// a warning if Python or umap-learn is missing. Runs once per `cqs index`
+    /// invocation; on large corpora (50k+ chunks) can take ~2 minutes CPU.
+    #[arg(long)]
+    pub umap: bool,
 }
