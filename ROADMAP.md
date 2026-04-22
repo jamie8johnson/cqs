@@ -65,51 +65,21 @@ The R@5 re-sweep also surfaced direction-stable but small-magnitude moves on `cr
   **Risk**: mixing alphas may attenuate their effect — if behavioral wants 0.80 and structural wants 0.90, mixing gives 0.85, which might be in the "neither helps much" middle ground. Worth measuring with a synthetic test where we know the true category from fixture metadata.
 
   **Pairs particularly well with the per-query α regression**: train on a soft target (R@5-weighted distribution over categories) instead of a hard one-hot, which gives the model nuanced training signal.
-- [ ] **BGE → E5 v9-200k.** Clean-index eval ties on R@1, slight edge on R@5/R@20, 1/3 the embedding dim (768 vs 1024). Gated on [#949](https://github.com/jamie8johnson/cqs/issues/949) (embedder abstraction) + v3 re-run to rule out noise.
-- [ ] **CAGRA filtering regression on enriched index.** Fully-routed v1.24.0: conceptual −5.5pp, structural −3.8pp, identifier −2pp vs pre-release. Hypothesis: CAGRA graph walk strands in filtered-out regions. Concrete proposal in [#962](https://github.com/jamie8johnson/cqs/issues/962).
-- [~] **Classifier accuracy — SCOPE REOPENED 2026-04-20.** The earlier "SCOPE REDUCED" call was correct in a world where per-category α tuning was R@1-targeted (and gave small gains). The 2026-04-20 R@5 re-sweep changed the picture: per-category α has substantial latent R@5 signal (sweep predicted +14pp held-out lift) but ~8× of it dilutes through the rule-based + centroid classifier (production reality: +0.9pp test, ±0 dev). **Classifier accuracy is now the bottleneck on R@5, not the alpha grid.**
+- [ ] **BGE → E5 v9-200k.** Clean-index eval ties on R@1, slight edge on R@5/R@20, 1/3 the embedding dim (768 vs 1024). Gated on [#949](https://github.com/jamie8johnson/cqs/issues/949) (embedder abstraction) + v3 re-run to rule out noise. **Note (2026-04-21):** PR #1071 measured HNSW reconstruction noise at ~4pp R@5 on v4 N=1526. Any future embedder swap A/B must use paired-reindex baselines or fixed-seed HNSW to isolate signal — without that protocol, embedder-swap deltas under 5pp are noise.
+- [ ] **Index-time HyDE re-eval** — never tested at proper N. v2-era single-config measurement showed +14pp structural / +12pp type_filtered / −22pp conceptual / −15pp behavioral. Per-category routing (only enable hyde-augmented chunks for categories where sweep says it helps) was never tried. Properly testing requires (1) regenerate HyDE for all chunks via Claude Batches pipeline, (2) reindex with `--hyde-queries`, (3) per-category A/B harness toggling the hyde-augmented embedding column. Lower expected lift than the now-exhausted classifier work; cheap if revisited.
 
-  **Audit data (v3 dev, 109 queries; `cargo test --test classifier_audit`):**
+### Empirically closed: alpha-routing arc (2026-04-20 → 2026-04-21)
 
-  | v3 label | N | Fire% | Correct% | Prec-when-fires |
-  |---|---|---|---|---|
-  | negation | 17 | 100% | 100% | 100% ✓ |
-  | cross_language | 11 | 82% | 82% | 100% ✓ |
-  | identifier_lookup | 18 | 61% | 61% | 100% (recall gap, α=1.0 already optimal) |
-  | structural | 8 | 50% | 38% | 75% |
-  | type_filtered | 13 | 46% | 8% | 17% (misfires into structural/conceptual) |
-  | multi_step | 14 | 43% | 0% | 0% ("AND" caught by structural first) |
-  | behavioral | 16 | 19% | 6% | 33% |
-  | conceptual | 12 | 0% | 0% | 0% (abstract-noun patterns don't match v3) |
+The classifier-accuracy / per-query-α-regression / soft-routing / fused-head family was systematically tested at proper N (v3 + v4, v4 = 1526 per split). Definitive null result across all variants. Documented in PR #1069 (research artifacts + post-mortems) and PR #1071 (long-chunk doc-aware windowing post-mortem with HNSW-noise meta-finding). Highlights:
 
-  Overall: 38.5% accurate, 49.5% fall to Unknown, 13.8% fire wrong. Dead paths from prior attempts: centroid matching (now active by default after alpha-floor fix in v1.28.2), logistic regression, fine-tuned MiniLM, runtime LLM classify (latency-prohibitive at 300-500ms/query), negation idiom rule-fix (no R@1 change). Details in `~/training-data/research/models.md`.
+| Lever | v3 R@5 (n=109) | v4 R@5 (n=1526) | Verdict |
+|---|---|---|---|
+| Distilled head (88.1% val acc, retrained on v3+synth) | test ±0 / dev +0.9 | test -0.3 / dev ±0 | parked |
+| Fused head (continuous α + corpus fingerprint, contrastive ranking) | test ±0 / dev -0.9 | test -0.4 / dev +0.2 | parked |
+| HyDE query-time | test -12.8 / dev -22.0 | test -10.7 / dev -9.8 | killed |
+| Long-chunk doc-aware windowing | n/a | test +0.2 / dev +0.1 | neutral (within noise) |
 
-  **Next attempt: distilled query classifier on the BGE query embedding.** Use Gemma 4 31B Dense (already deployed via vLLM for the Reranker V2 labeling pipeline) as a teacher to label ~5-10k v3 queries (mix of telemetry + synthetic). Train a tiny classifier head — a single linear layer + softmax mapping the 1024-dim BGE query embedding to 9 categories (~10K params). Inference: one matmul on the embedding cqs already computes for search, <0.1ms additional latency. No new runtime dependencies.
-
-  **Prerequisite measurement:** how well does Gemma 4 31B itself classify v3 queries? We've never measured it directly against v3 ground-truth labels. Run the 544 v3 queries through `evals/llm_client.py::classify`, compare to fixture labels, get per-category accuracy. This caps the distillation ceiling. ~5 min compute (cached).
-
-  **Plausible accuracy projection** — DistilBERT-canon shows distilled students retain ~97% of teacher accuracy on NLP classification ([source](https://www.geeksforgeeks.org/nlp/introduction-to-distilbert-model/)). If the Gemma 31B baseline lands at 85% on v3 (likely range 75-90% — the v3 taxonomy has hard boundaries between negation/structural and multi_step/structural), the distilled head should hit ~80-83%. Vs current production classifier at 38% accuracy.
-
-  **Estimated R@5 lift** — at ~80% classifier accuracy, the v1.28.3 alpha changes alone would compound from the current +0.9pp test R@5 to roughly **+8-10pp test R@5** (sweep-predicted +14pp × 0.6-0.7 dilution from 80% accuracy, vs current ~8× dilution from 38% accuracy). Plus opens the door for retuning the 5 categories whose sweep optima were noisy partly because of bad classifier-routed training data.
-
-  **Smaller Gemma 4 variants — E2B (Effective 2B), E4B, 26B MoE** — could be runtime classifiers if latency budget allows. E2B at ~30-60ms via vLLM is still 10-20× the daemon hot path. Distillation to a head on cqs's existing BGE embedding is the more aggressive path: <0.1ms and no new runtime dependency.
-
-  **Estimated effort:** 1-2 days (Gemma 31B already up via vLLM; labeling pipeline already proven from Reranker V2 calibration; training head is ~50 LOC of PyTorch; eval harness in place via `evals/classifier_ab_eval.py`).
-
-- [ ] **Per-query α regression — skip the taxonomy entirely.** Alternative or companion to the distilled classifier above. The 9-way category taxonomy is a lossy compression of an underlying continuous α surface — categories were a human-designed clustering of query types, but the model doesn't actually need them. Train a tiny MLP (BGE 1024-dim query embedding → α ∈ [0, 1]) directly. Prediction: one matmul + sigmoid, <0.1ms additional latency. Same runtime cost as the distilled head, but skips the categorical bottleneck.
-
-  **Training data already exists.** The v1.28.3 R@5 sweep produced 11,424 labeled examples (544 queries × 21 alphas, R@5 outcome per (query, α) pair) sitting in `evals/queries/v3_alpha_sweep_r5{,_test,_dev}.json`. Per-query "best α" is `argmax_α R@5(query, α)`. For queries where multiple alphas tie at the optimum, regress against the centroid of the tied range to bias toward stable predictions.
-
-  **Why this might beat the distilled head:** category boundaries are fuzzy. A query that's 60% behavioral / 30% structural / 10% multi_step gets routed to one bucket and gets that bucket's α — which is wrong for queries near the boundary. Direct α regression sees the query and picks the right point on the [0, 1] surface without intermediate quantization.
-
-  **Why it might not:** single-query R@5 outcomes are noisy (per-query R@5 ∈ {0/n, 1/n, ..., n/n} for tiny per-query sample size). The category abstraction provides natural smoothing across a population. The regression target may need windowing or smoothing to be learnable.
-
-  **Combine with the distilled head?** Possibly — train both on the same Gemma-labeled dataset, ensemble. Distilled head gives interpretable category routing for telemetry/debugging; α regression captures fine-grained tuning. Or use the regression as a tie-breaker when the distilled head's top-1 vs top-2 confidence margin is small.
-
-  **Estimated effort:** 1-2 days, shares infrastructure with the distilled head (same labeling pass would label both targets simultaneously). ~75 LOC of PyTorch.
-
-**Testing infrastructure:**
-- [ ] **Rewrite slow CLI test binaries to in-process fixtures** ([#980](https://github.com/jamie8johnson/cqs/issues/980)). `cli_batch_test`, `cli_graph_test`, `cli_commands_test`, `cli_test`, `cli_health_test` gated behind `slow-tests` feature (PR #988) because each shells out to `cqs` and cold-loads the ONNX/HNSW/SPLADE stack per test case (~118 min combined on PR CI). Follow the `cli_notes_test` + `router_test` pattern: one `Store` + `CommandContext` per binary, call `cmd_*` handlers directly. Un-gates the feature and retires the nightly `slow-tests.yml` workflow.
+Core finding: R@5 is alpha-insensitive on this corpus state across [0, 1]. The Oracle test's +9.2pp ceiling came from category-driven per-category default flips, not continuous-α refinement. **Routing-side levers (which α, which category, which routing weight) are exhausted.** Future R@5 work should target signal-side levers (chunking, embedder, multi-granularity index) under paired-reindex protocol.
 
 **Embedder swap workflow (repeatable model A/B):**
 - [ ] **Content-keyed embeddings cache.** New SQLite table `embeddings_cache(chunk_hash BLOB, model_id TEXT, embedding BLOB, PRIMARY KEY (chunk_hash, model_id))`. Index time: check cache before invoking the embedder. Re-embedding the same corpus with a different model only pays for cache misses. Disk cost: ~4KB × #chunks × #cached_models (~150MB for 2 models on cqs-sized projects). Turns "swap embedder + re-eval" from 20 min into ~30s on second/subsequent swaps.
@@ -153,42 +123,28 @@ Historical split (2026-04-09, 16,731 invocations): **main conversation** uses `s
 
 ## Open Issues
 
-Audited 2026-04-16 post-v1.26.1 — see [`docs/audit-open-issues-2026-04-16.md`](docs/audit-open-issues-2026-04-16.md) for full findings + fix prompts amended onto each issue body.
+Re-audited 2026-04-21 against actual GitHub state. **All Tier 1 + Tier 2 issues from the 2026-04-16 audit have shipped** (across PRs #1041, #1045, #1046 in the v1.27 → v1.28 audit-fix waves). Remaining work is the 6 P4 deferrals from the post-v1.27.0 audit + 5 hard-blocked Tier 3 items.
 
-**Tier 1 (ship next, HIGH or MEDIUM/EASY):**
+**P4 deferrals (small effort, low impact — opportunistic):**
 
-| # | Finding | Impact | Difficulty |
-|---|---------|--------|-----------|
-| [#917](https://github.com/jamie8johnson/cqs/issues/917) | Streaming SPLADE serialize (~60-100MB peak drop) | HIGH | MEDIUM |
-| [#974](https://github.com/jamie8johnson/cqs/issues/974) | onboard + where: assert retrieval content | HIGH | MEDIUM |
-| [#975](https://github.com/jamie8johnson/cqs/issues/975) | Always-on recall + staleness mtime semantics | HIGH | MEDIUM |
-| [#954](https://github.com/jamie8johnson/cqs/issues/954) | Grammar-less parser dispatch via LanguageDef | MEDIUM | EASY |
-| [#959](https://github.com/jamie8johnson/cqs/issues/959) | Collapse notes dispatch into single handler | MEDIUM | EASY |
-| [#966](https://github.com/jamie8johnson/cqs/issues/966) | Stream-hash enrichment (blake3) | MEDIUM | EASY |
-| [#969](https://github.com/jamie8johnson/cqs/issues/969) | Recency-based `last_indexed_mtime` prune | MEDIUM | EASY |
-| [#971](https://github.com/jamie8johnson/cqs/issues/971) | HNSW self-heal dirty-flag integration test | MEDIUM | EASY |
-| [#951](https://github.com/jamie8johnson/cqs/issues/951) | Re-benchmark README Performance table | MEDIUM | EASY |
+| # | Finding | Notes |
+|---|---------|-------|
+| [#1042](https://github.com/jamie8johnson/cqs/issues/1042) | `WINDOW_OVERHEAD` doesn't scale with embedder prefix length | constant tuning |
+| [#1047](https://github.com/jamie8johnson/cqs/issues/1047) | `ChunkType::human_name` catch-all hides multi-word variant omissions | compile-time enforcement |
+| [#1048](https://github.com/jamie8johnson/cqs/issues/1048) | `try_daemon_query` strict-string output parsing | future-proof refactor |
+| [#1049](https://github.com/jamie8johnson/cqs/issues/1049) | Pin `fallback_does_not_mix_comment_styles` with explicit test | tiny test pin |
+| [#1043](https://github.com/jamie8johnson/cqs/issues/1043) | `is_slow_mmap_fs` ignores Windows network drives + reparse points | Windows-specific edge case |
+| [#1044](https://github.com/jamie8johnson/cqs/issues/1044) | Native Windows `cqs watch` cannot stop cleanly — DB corruption risk | Windows-specific signal handling |
 
-**Tier 2 (bundle into audit-v1.26.0 wave, MEDIUM/MEDIUM):**
-
-| # | Finding |
-|---|---------|
-| [#955](https://github.com/jamie8johnson/cqs/issues/955) | Compile-enforced ChunkType type-hint patterns |
-| [#958](https://github.com/jamie8johnson/cqs/issues/958) | `define_query_categories!` macro — single source of truth |
-| [#960](https://github.com/jamie8johnson/cqs/issues/960) | Per-LanguageDef structural pattern matchers |
-| [#957](https://github.com/jamie8johnson/cqs/issues/957) | SPLADE/reranker preset registry |
-
-**Tier 3 (deferred / blocked):**
+**Tier 3 (blocked on external factors):**
 
 | # | Finding | Blocker |
 |---|---------|---------|
 | [#956](https://github.com/jamie8johnson/cqs/issues/956) | ExecutionProvider: CoreML/ROCm decouple | needs non-Linux CI |
 | [#255](https://github.com/jamie8johnson/cqs/issues/255) | Pre-built reference packages | signing/registry design |
-| [#717](https://github.com/jamie8johnson/cqs/issues/717) | HNSW mmap | needs lib swap |
-| [#916](https://github.com/jamie8johnson/cqs/issues/916) | mmap SPLADE body | smaller win than claimed; depriorotized behind #917 |
+| [#717](https://github.com/jamie8johnson/cqs/issues/717) | HNSW mmap | needs lib swap to hnswlib-rs (nightly-only) |
+| [#916](https://github.com/jamie8johnson/cqs/issues/916) | mmap SPLADE body | smaller win than originally claimed |
 | [#106](https://github.com/jamie8johnson/cqs/issues/106) | ort 2.0-rc.12 stable release | upstream (pykeio) |
-
-**Closed during this audit:** #63 (audit.toml ignore already in place), #921 (watch-loop claim invalid; subsumed by #917).
 
 ---
 
