@@ -244,14 +244,14 @@ tree-sitter-elm = ["dep:tree-sitter-elm"]
 # need the CLI.
 serve = ["dep:axum", "dep:tower", "dep:tower-http"]
 
-# Opt-in for the cold-load-per-invocation CLI integration tests
-# (cli_batch_test, cli_graph_test, cli_commands_test, cli_test,
-# cli_health_test). They shell out to the `cqs` binary and each
-# test cold-loads the full model stack, adding ~2h to CI. Gated
-# here so PR CI skips them; a nightly job runs
-# `cargo test --features "gpu-index slow-tests"` for coverage.
-# See issue #980.
-slow-tests = []
+# (`slow-tests` feature was removed 2026-04-23. The five subprocess-
+# spawning CLI integration test binaries it gated have been converted
+# to in-process tests using `tests/common::InProcessFixture` —
+# specifically `health_test.rs`, `index_search_test.rs`, `graph_test.rs`,
+# `related_impact_test.rs`, plus a small `cli_surface_test.rs` for
+# things that genuinely need a binary spawn. The nightly
+# slow-tests.yml workflow is gone in the same PR. See
+# `docs/plans/2026-04-22-cqs-slow-tests-elimination.md`.)
 
 [dev-dependencies]
 insta = "1"

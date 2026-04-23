@@ -231,6 +231,24 @@ fn related_nonexistent_function_fails_with_message() {
         );
 }
 
+// `cqs batch` REPL surface (pipe parsing, comments/blanks/quit, error
+// envelopes) is intentionally NOT covered here. The batch dispatcher
+// requires an indexed store at startup, so any subprocess test would
+// need init+index → ~5+ seconds of model load per test, exactly what
+// this whole effort is trying to delete.
+//
+// What it would cover is:
+//   - pipe parsing → src/cli/batch/parse.rs has its own unit tests
+//   - line filtering (comments/blanks) → trivial, also unit-tested
+//   - per-command dispatch → covered behaviourally by the in-process
+//     test files (each subcommand has its own `tests/<cmd>_test.rs`)
+//   - error envelope → exercised by the json_envelope unit tests
+//
+// If batch ever grows a bug that's not caught by either of those, the
+// fix is to land a proper subprocess test alongside the bug fix —
+// not to pre-emptively add an integration smoke that costs minutes
+// per CI run.
+
 #[test]
 fn project_remove_nonexistent_succeeds_quietly() {
     let cfg_dir = TempDir::new().unwrap();
