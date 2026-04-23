@@ -2,14 +2,31 @@
 
 ## Right Now
 
-**Quiet: serve perf + slow-tests elimination shipped, dependabot security alerts cleared.** 2026-04-23.
+**v1.29.0 shipped 2026-04-23 (PR #1092 squashed at 22:57 UTC).** crates.io published, GitHub Release workflow building binaries (~13 min), local binary at 1.29.0. No active PRs.
 
-### Open PR
+### Open PRs
 
-- **#1089** chore(deps): bump locked rand 0.8.5 → 0.8.6 (security alert #9) — https://github.com/jamie8johnson/cqs/pull/1089
-  - Branch: `chore/rand-0.8.6`
-  - Cargo.lock-only bump. `rand 0.8.5` was a transitive build helper via `phf_generator → fast_html2md`. CI green expected.
-  - Closes the last open Dependabot alert.
+None.
+
+### v1.29.0 contents
+
+Feature release bundling three arcs (23 commits since v1.28.3):
+- **`cqs serve`** with 4 views (2D / 3D / hierarchy / embedding cluster) + perf pass (~60s → ~3-4s first paint). Schema v22 (umap_x/umap_y); opt-in via `cqs index --umap`.
+- **`.cqsignore`** mechanism for cqs-only exclusions.
+- **Slow-tests cron killed**: 5 of 16 subprocess CLI test binaries converted to in-process; `slow-tests.yml` workflow deleted.
+- 2 Dependabot security bumps (openssl 0.10.78, rand 0.8.6).
+
+Spec docs:
+- `docs/plans/2026-04-22-cqs-serve-3d-progressive.md`
+- `docs/plans/2026-04-22-cqs-serve-perf.md`
+- `docs/plans/2026-04-22-cqs-slow-tests-elimination.md`
+
+### Pre-flight cleanups that landed alongside the release
+
+Things clippy 1.95 caught when running with `-D warnings`:
+- **Restored `slow-tests` Cargo feature gate** — 11 subprocess test files still reference `#![cfg(feature = "slow-tests")]` (not in original conversion scope): `cli_blame_test`, `cli_brief_test`, `cli_chat_completer_test`, `cli_chat_format_test`, `cli_doctor_fix_test`, `cli_drift_diff_test`, `cli_envelope_test`, `cli_neighbors_test`, `cli_reconstruct_test`, `cli_review_test`, `cli_train_review_test`. Feature kept alive (gate without an executor — the cron is gone). Convert opportunistically when re-touching their code.
+- **`tests/common/mod.rs`** — file-level `#![allow(dead_code, clippy::type_complexity)]` since harness items used by different test-binary subsets.
+- **`src/search/scoring/candidate.rs`** — `SearchFilter::default()` + field reassignment → struct literal.
 
 ### Just-shipped arcs (2026-04-22 → 2026-04-23)
 
@@ -35,11 +52,12 @@
 
 ### Architecture state
 
-- **Version:** v1.28.3 (latest GitHub Release; binary in `~/.cargo/bin/cqs` rebuilt 2026-04-23 with openssl 0.10.78 + serve perf + everything merged)
+- **Version:** v1.29.0 (crates.io published 2026-04-23 22:58 UTC; GitHub Release workflow #24863038721 building binaries; tag `v1.29.0` at commit `21b5f6e6`)
+- **Local binary:** `~/.cargo/bin/cqs` at 1.29.0; daemon restarted post-install
 - **Index:** 15,488 chunks across 598 files, **schema v22** (umap_x/umap_y columns, opt-in via `cqs index --umap`)
-- **Tests:** library + integration suite all in regular CI in <2 min added (was ~130 min nightly)
-- **Production R@5 on v3.v2 test:** 68.8% (from v1.28.3 baseline; no retrieval changes since)
-- **cqs-watch daemon:** running v1.28.3 release binary; CUDA context warm in P2 (2-3 GB VRAM, that's expected idle floor with model resident)
+- **Tests:** ~2963 pass + 51 ignored locally without `gpu-index` (matches CI invocation). Library + integration suite all in regular CI in ~2 min added (was ~130 min nightly cron)
+- **Production R@5 on v3.v2 test:** 68.8% (from v1.28.3 baseline; no retrieval changes in v1.29.0)
+- **cqs-watch daemon:** running v1.29.0 release binary; CUDA context warm in P2 (~2-3 GB VRAM, expected idle floor with model resident)
 - **`cqs serve`:** 4 views available — `2d` / `3d` / `hierarchy` / `cluster`. Run `cqs index --umap` first to populate the cluster view's coords.
 
 ### Roadmap parked (highest-value)
@@ -48,7 +66,13 @@
 
 ### Local cleanup pending
 
-None this session. Dirty working tree: clean (only the committed Cargo.lock bump on `chore/rand-0.8.6`).
+None. Working tree clean post-release.
+
+### Roadmap follow-ups added during the release
+
+- **11 slow-test-binary stragglers** (cli_blame, cli_brief, cli_chat_completer, cli_chat_format, cli_doctor_fix, cli_drift_diff, cli_envelope, cli_neighbors, cli_reconstruct, cli_review, cli_train_review) still gated by `slow-tests` feature with no executor (cron is dead). Convert opportunistically when re-touching the code paths they cover. Pattern documented in `docs/plans/2026-04-22-cqs-slow-tests-elimination.md`.
+- **Issue #1090** — HNSW full rebuild on every save (15-30s CUDA churn per file change in `cqs watch`)
+- **Issue #1091** — WSL poll-watcher 8% sustained CPU (1500ms interval, walks entire tree over 9P)
 
 ## What's parked
 
