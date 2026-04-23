@@ -141,3 +141,78 @@ fn dead_without_index_fails() {
         .failure()
         .stderr(predicate::str::contains("not found").or(predicate::str::contains("Index")));
 }
+
+// ---------------------------------------------------------------------
+// audit-mode argv validation. The state-management tests are in-process
+// in graph_test.rs; this one stays subprocess because it asserts on
+// clap's "possible values" error message format.
+// ---------------------------------------------------------------------
+
+#[test]
+fn audit_mode_invalid_state_fails_with_possible_values() {
+    let dir = TempDir::new().unwrap();
+    let cqs_dir = dir.path().join(".cqs");
+    std::fs::create_dir_all(&cqs_dir).unwrap();
+    cqs()
+        .args(["audit-mode", "maybe"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("possible values: on, off"));
+}
+
+// ---------------------------------------------------------------------
+// project subcommand. Mutates the global registry at
+// `~/.config/cqs/projects.toml`, so we point XDG_CONFIG_HOME at a
+// tempdir per test to keep the user's real registry untouched.
+// ---------------------------------------------------------------------
+
+#[test]
+fn project_register_list_remove_round_trips() {
+    let cfg_dir = TempDir::new().unwrap();
+    let proj_dir = TempDir::new().unwrap();
+    // Create the .cqs/index.db marker the registry's `register` validates.
+    let cqs_subdir = proj_dir.path().join(".cqs");
+    std::fs::create_dir_all(&cqs_subdir).unwrap();
+    std::fs::write(cqs_subdir.join("index.db"), "").unwrap();
+
+    cqs()
+        .args([
+            "project",
+            "register",
+            "testproj",
+            proj_dir.path().to_str().unwrap(),
+        ])
+        .env("XDG_CONFIG_HOME", cfg_dir.path())
+        .env("HOME", cfg_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("testproj"));
+
+    cqs()
+        .args(["project", "list"])
+        .env("XDG_CONFIG_HOME", cfg_dir.path())
+        .env("HOME", cfg_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("testproj"));
+
+    cqs()
+        .args(["project", "remove", "testproj"])
+        .env("XDG_CONFIG_HOME", cfg_dir.path())
+        .env("HOME", cfg_dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn project_remove_nonexistent_succeeds_quietly() {
+    let cfg_dir = TempDir::new().unwrap();
+    cqs()
+        .args(["project", "remove", "nosuchproject"])
+        .env("XDG_CONFIG_HOME", cfg_dir.path())
+        .env("HOME", cfg_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not found"));
+}
