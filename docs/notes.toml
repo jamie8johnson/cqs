@@ -1572,3 +1572,40 @@ mentions = [
     "cqs_batch",
     "multiline",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "InProcessFixture::index() must join cqs::enumerate_files's relative paths with self.root before parser.parse_file() — otherwise the parser opens src/lib.rs against cargo's CWD (the cqs project root) and silently parses the wrong tree. Caught only because the test got back chunks with names like test_normalize_path_strips_windows_unc_verbatim_prefix. Documented inline in tests/common/mod.rs::index()."
+mentions = [
+    "tests/common/mod.rs",
+    "InProcessFixture",
+    "enumerate_files",
+]
+
+[[note]]
+sentiment = 0.0
+text = "type_edges parser tracks signature-level type uses (params, returns, fields), NOT expression-level uses. validate(input: i32, config: &Config) shows up as a Config user; process which only does let cfg = Config::default() does NOT. Test assertions on store.get_type_users('T') must check signature users only."
+mentions = [
+    "src/parser",
+    "store/types.rs",
+    "get_type_users",
+]
+
+[[note]]
+sentiment = 0.0
+text = "DiffImpactResult flattens callers across all changed functions into one all_callers list with provenance, unlike ImpactResult's per-target callers vec. Old subprocess test asserted only on JSON envelope keys which obscured this. ChangedFunction has no change_type field; presence-in-the-list is the change signal."
+mentions = [
+    "src/impact/diff.rs",
+    "src/impact/types.rs",
+    "DiffImpactResult",
+    "ChangedFunction",
+]
+
+[[note]]
+sentiment = 0.0
+text = "cqs daemon GPU activity readout is misleading: ORT keeps the CUDA context warm so A6000 sits at P2/1800MHz/84W with 0 actual compute. nvidia-smi shows 2% util but it's just CUDA driver bookkeeping. True idle (P8/30W) requires stopping cqs-watch — there's no way to release the context without unloading the model."
+mentions = [
+    "cqs-watch",
+    "ort",
+    "cuda",
+]

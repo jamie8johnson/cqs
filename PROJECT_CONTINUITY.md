@@ -2,209 +2,112 @@
 
 ## Right Now
 
-**Alpha-routing arc + HyDE definitively closed at proper N (v4, 14x v3). Research PR #1069 open. Awaiting next lever pick.** 2026-04-21.
+**Quiet: serve perf + slow-tests elimination shipped, dependabot security alerts cleared.** 2026-04-23.
 
 ### Open PR
 
-- **#1069** research: v4 eval fixture (10x N) + arc post-mortems for distilled head, fused head, HyDE — https://github.com/jamie8johnson/cqs/pull/1069
-  - Branch: `research/v3-v4-fixtures-and-eval-infra`
-  - Adds: 11 eval scripts + spec + v3/v4 synthetic fixtures (3052 + 3833 queries). Zero source-side changes.
-  - Awaiting your review.
+- **#1089** chore(deps): bump locked rand 0.8.5 → 0.8.6 (security alert #9) — https://github.com/jamie8johnson/cqs/pull/1089
+  - Branch: `chore/rand-0.8.6`
+  - Cargo.lock-only bump. `rand 0.8.5` was a transitive build helper via `phf_generator → fast_html2md`. CI green expected.
+  - Closes the last open Dependabot alert.
 
-### Lever verdicts (v3 + v4 both confirmed)
+### Just-shipped arcs (2026-04-22 → 2026-04-23)
 
-| Lever | v3 R@5 (n=109) | v4 R@5 (n=1526) | Verdict |
-|---|---|---|---|
-| Distilled head (88.1% val acc, retrained on v3+synth) | test ±0 / dev +0.9 | test -0.3 / dev ±0 | parked |
-| Fused head (continuous α + corpus fingerprint, contrastive ranking) | test ±0 / dev -0.9 | test -0.4 / dev +0.2 | parked |
-| HyDE (query-time, Gemma synth code) | test -12.8 / dev -22.0 | test -10.7 / dev -9.8 | killed |
+**`cqs serve` 3D progressive rollout (#1077, #1078, #1079, #1081):**
+- Step 1: renderer abstraction + 2D/3D toggle (Three.js + 3d-force-graph, lazy-loaded)
+- Step 2: hierarchy view (Y axis = BFS depth from selected root)
+- Step 3: embedding cluster view (X/Z = UMAP, Y = caller count) — adds `cqs index --umap` flag, schema v22 (umap_x/umap_y columns), Python `scripts/run_umap.py` embedded in binary
+- Perf pass: SQL-side `max_nodes` cap, default 300 (was 1500), `cose` layout (was dagre), gzip middleware, lazy 3D bundle. **First paint ~60s → ~3-4s on cqs corpus.**
+- Spec: `docs/plans/2026-04-22-cqs-serve-3d-progressive.md` + `2026-04-22-cqs-serve-perf.md`
 
-Core diagnosis: R@5 is α-insensitive on this corpus state in [0, 1] range. Continuous α can't break the convex hull AND the convex hull doesn't matter at top-5. The Oracle test's +9.2pp (Phase 1.1) came from category-driven per-category default flips, not continuous-α refinement within a category.
+**`.cqsignore` mechanism (#1080):** Layered on top of `.gitignore`. Excludes vendor minified JS + eval JSON fixtures. Index 18,954 → 15,488 chunks. Zero "Dropped oversized" parser warnings.
 
-### v4 fixture (3052 queries, 14x v3 N)
+**Slow-tests elimination (#1082-#1088, full sweep):** All 5 subprocess CLI test binaries (cli_health, cli_test, cli_graph, cli_commands, cli_batch — 113 tests, ~130 min nightly cron) converted to in-process `InProcessFixture`-based tests (60 tests across 4 binaries) + 15-test `cli_surface_test.rs` for things that genuinely need a binary. **`slow-tests.yml` workflow deleted, `slow-tests` Cargo feature removed.** Now ~2 min added to every PR instead of ~130 min nightly. Spec: `docs/plans/2026-04-22-cqs-slow-tests-elimination.md`. Issue #980 closed.
 
-- `v4_test.v2.json` (1526 queries) + `v4_dev.v2.json` (1526 queries), 50/50 stratified
-- Per-category 200 each except type_filtered=126 (validation pass rate structurally lower)
-- Held out from v3 gold + Phase 1.3 seeds (1643 chunks excluded)
-- Synthetic queries are ~20pp HARDER than v3.v2 hand-curated (gold-in-top-50 67% vs 91%)
-- Reusable for any future A/B — noise floor drops from ±5.6pp at n=18 to ±0.6pp at n=180
+**Dependabot security alerts: 12 → 0 open.**
+- #1086: openssl 0.10.75 → 0.10.78 (medium, several CVE-adjacent fixes) — merged
+- #1089: rand 0.8.5 → 0.8.6 (low, custom-logger soundness) — open, awaiting CI
 
-### Local cleanup pending
+### Newly-filed issues (2026-04-23)
 
-- **feat/distilled-query-classifier** branch — dead Rust code (classifier_head.rs, fused_head.rs, corpus_fingerprint.rs, all wiring). Has stash with notes/PROJECT_CONTINUITY edits. Spec + evals already on PR #1069. **Delete after PR #1069 merges.**
+- **#1090** — `cqs watch` does a full HNSW rebuild on every file change (~15-30s of CUDA churn per save). `hnsw_rs` doesn't support incremental insert into a loaded index. Four candidate fixes ranked.
+- **#1091** — WSL `cqs watch` poll-watcher walks entire tree at 1500ms intervals over the 9P bridge → 8% sustained CPU. Easy win: configurable `CQS_WATCH_POLL_MS` with longer default.
 
 ### Architecture state
 
-- **Version:** v1.28.3 (latest GitHub Release; binary reinstalled clean of dead head code)
-- **Index:** 16,150 chunks (BGE-large; v21 schema)
-- **Production R@5 (v3.v2 test):** 68.8% — unchanged from v1.28.3 (no production code touched)
-- **v4 baseline R@5:** 48.9% test / 49.9% dev
-- **Open issues:** 5 pre-audit (#106, #255, #717, #916, #956) + 6 P4 audit deferrals (#1042-#1044, #1047-#1049)
-- **cqs-watch daemon:** running v1.28.3 release binary, no env overrides
-- **vLLM:** unloaded
+- **Version:** v1.28.3 (latest GitHub Release; binary in `~/.cargo/bin/cqs` rebuilt 2026-04-23 with openssl 0.10.78 + serve perf + everything merged)
+- **Index:** 15,488 chunks across 598 files, **schema v22** (umap_x/umap_y columns, opt-in via `cqs index --umap`)
+- **Tests:** library + integration suite all in regular CI in <2 min added (was ~130 min nightly)
+- **Production R@5 on v3.v2 test:** 68.8% (from v1.28.3 baseline; no retrieval changes since)
+- **cqs-watch daemon:** running v1.28.3 release binary; CUDA context warm in P2 (2-3 GB VRAM, that's expected idle floor with model resident)
+- **`cqs serve`:** 4 views available — `2d` / `3d` / `hierarchy` / `cluster`. Run `cqs index --umap` first to populate the cluster view's coords.
 
-### Strategic spec: fused alpha + classifier head
+### Roadmap parked (highest-value)
 
-Path: `docs/plans/2026-04-20-fused-alpha-classifier-head.md` (~12KB).
+- **`nomic-ai/CodeRankEmbed` + `nomic-ai/nomic-embed-code` A/B** — open-weight code-specialized embedders. CodeRankEmbed is 137M (smaller than BGE-large), MIT, 768-dim, 8192-token context, asymmetric prefix. nomic-embed-code is 7B (Apache, Qwen2.5-Coder-based), GGUF quantizations available. ~2-hour A/B against v9-200k on the v3 fixture would tell us if CodeRankEmbed earns the default slot.
 
-Key decisions baked in:
-- **Contrastive ranking loss** instead of regression-on-best-α — no α-label sweep needed, optimizes against the actual ranking objective
-- **Corpus fingerprint as trunk input** (1024-dim normalized mean of all chunk embeddings) — locks in the input contract from v1, even though MVP trains single-corpus on cqs only
-- **Linear-blend score in training** (`α·sparse + (1−α)·dense`) accepts a controlled mismatch with production RRF; differentiable RRF surrogate is future work
-- **Deprecate distilled head on green ship** — no parallel-head maintenance
+### Local cleanup pending
 
-Three open questions, all addressable in follow-on work:
-1. Multi-corpus training data collection (4-5 corpora from a 6-row candidate table; need ~500 generated queries each)
-2. Cache-invalidation race — durable solution layered as push (socket message from `cqs index`) + pull (mtime stat every Nth query) + inotify (Linux-native bonus)
-3. Single-corpus training risk — fingerprint dropout p=0.2 + optional Gaussian jitter σ=0.01 as stopgaps
+None this session. Dirty working tree: clean (only the committed Cargo.lock bump on `chore/rand-0.8.6`).
 
-Eight ablation knobs (τ, distractor sampling, score normalization, trunk hidden dim, λ_α, K, fingerprint dropout, fingerprint jitter) — sweep + report alongside headline result.
+## What's parked
 
-### Implementation order (next session)
+- **HyDE on v3 dev** — most promising untested representation lever. Per-category routing required. Killed at v1.28.3 attempt.
+- **Reranker V2 properly retrained** — Phase 3 attempt failed (-24pp R@5 full pool). Three fixes in post-mortem (TIE labels, domain-shifted hard negatives, pool cap), ~1-2 weeks work. Re-attempt only with 10x more queries OR bge-reranker-large.
+- **ColBERT integration with per-token index** — eval tool exists, default off; full integration multi-week.
+- **Knowledge-augmented retrieval** — call/type graph as structured filter. Multi_step queries weakest at 28-43% R@1.
+- **Code-aware embedder switch (older candidates)** — CodeBERT, CodeT5+-110M, UniXcoder all untested on v3. v9-200k didn't help. CodeRankEmbed (above) is the better bet now.
 
-1. `src/corpus_fingerprint.rs` (lazy compute + cache, invalidation hook in `cqs index`)
-2. `evals/build_contrastive_shards.py` (pre-compute per-query sparse + dense scores for top-50 candidates × 4376 queries)
-3. `evals/train_fused_head.py` (PyTorch trunk + 2 heads, CE + contrastive ranking loss, ablation sweeps)
-4. `src/fused_head.rs` (ORT inference, parallel to existing `src/classifier_head.rs`)
-5. `src/search/router.rs::reclassify_with_fused_head` + 3 call-site wirings
-6. `evals/fused_head_ab_eval.py` (3-cell A/B: baseline / distilled / fused)
-7. If green per decision matrix → v1.28.4 ship + distilled head cleanup
+## Operational pitfalls (rolling forward)
 
-### Pending uncommitted (feat branch — superseded code)
+- **WSL git credential helper** — out-of-the-box, `git push` from `~/training-data` fails with "could not read Username." Fix: `git config --global credential.helper '/mnt/c/Program\ Files/Git/mingw64/bin/git-credential-manager.exe'`. Already configured globally.
+- **Squash-merge + rebase trap** — when a PR is squash-merged and a follow-up branch was based off it, rebase fails because individual commits ≠ squash. Fix: cherry-pick the follow-up's commits onto a fresh branch from main. Hit this 4 times during the cqs serve arc.
+- **Auto-merge disabled on this repo** — `gh pr merge --auto` returns "auto merge is not allowed". Watch CI manually + merge when green.
+- **`gh pr create` requires `--head` + `--base`** when branch name on local differs from origin (rebased branches).
+- **Always use `--body-file` for PR/issue bodies** — never inline heredocs (PowerShell mangles + Claude Code captures whole multiline as a permission entry).
+- **Cargo publish 413 = "exclude" list missing** — `evals/` etc. now in `Cargo.toml` exclude list.
+- **Always confirm test wins on dev before declaring** — single-split A/B is noisy at N=109. ColBERT 2-stage taught this.
+- **Smoke-test against real producer output** — synthetic fixtures only catch what you anticipate.
+- **No time estimates in specs** — wall-time predictions are unreliable. Use compute units / step counts / size anchors instead.
+- **`enumerate_files` returns relative paths** — joining with project root before `parse_file()` is mandatory; otherwise the parser resolves against cargo's CWD and parses the wrong tree. Caught during InProcessFixture phase 1.
+- **`type_edges` parser tracks signature-level uses only** — params, returns, fields. Not expression-level (`let x = T::new()`). Test assertions on "who uses type T?" must check signature users.
+- **Audit-mode tests must `mkdir .cqs/` first** — `TestStore::new()` puts `index.db` in the tempdir root, not in a `.cqs/` subdirectory; `cqs::audit::save_audit_state` writes to `cqs_dir.join(...)` which 404s without the dir.
+- **Daemon GPU "activity" is misleading** — ORT keeps the CUDA context warm; A6000 sits at P2/1800MHz/84W with 0 actual compute work. True idle (P8) requires stopping the daemon.
 
-- `src/classifier_head.rs` (220 LOC) — to be deleted post-fused-ship
-- `src/{lib.rs, search/router.rs, cli/...}` distilled head wiring — to be replaced with fused equivalents
-- `evals/{train_query_classifier, measure_gemma_classify_accuracy, rerank_ab_oracle_eval, distilled_head_ab_daemon, distilled_head_ab_eval, hyde_per_category_eval}.py`
-- `evals/classifier_head/{model.onnx, state_dict.pt, run_meta.json}` — superseded artifacts
-- `evals/queries/v3_generated_round1.json` (1.8MB, 3833 synthetic queries, 42% pass rate) — REUSE for fused head training corpus
-
-### Background processes
-
-- **cqs-watch daemon** clean (no env overrides; cleanup ran at end of A/B). Default config.
-- vLLM Gemma 4 31B AWQ still up on A6000:0 (47GB) — idle but loaded, ready for next generation pass.
-
-### Collaboration calibration (still load-bearing)
+## Collaboration calibration (still load-bearing)
 
 1. **"Self-starter and self-orienter" is the favored mode.** Default toward action over consultation when the next move is clear.
 2. **"Little give-ups" are the failure pattern.** Verify artifacts; investigate silences; redo thin returns; don't tolerate Monitor timeouts as longer waits.
 3. **No time estimates in specs.** Wall-time predictions are unreliable; describe what/why/gate-criteria, not effort.
-4. **Knobs that are knobs, not blockers, go in an Ablations table** — not in Open Questions. (Updated this session per user feedback on the fused head spec.)
+4. **Knobs that are knobs, not blockers, go in an Ablations table** — not in Open Questions.
+5. **Don't suggest ending a session.** 1M context, plenty of headroom, user works continuously.
 
-### Reranker V2 — PARKED
+## Eval baselines (for regression comparison)
 
-Three loss regimens (BCE / weighted BCE / pairwise margin) on 9k cqs-domain graded rows. All converged on −5 to −9pp R@5; pairwise hit 98% train accuracy without generalizing. Corpus too thin for 125M cross-encoder. Weights at `~/training-data/reranker-v2-cqs-{graded,pairwise}/`. Re-attempt only with 10x corpus + bge-reranker-large.
-
-### Notes A/B — ZERO IMPACT on retrieval
-
-`scoring.note_boost_factor = 0.0` vs `0.15` on v3.v2: identical R@K. Default left at 0.15.
-
-### Daemon/reindex lock conflict — FIXED in v1.28.2 (#1061)
-
-`cqs index --force` now fails fast vs running daemon with the exact stop/restart command. Was hanging 60+ min in `locks_lock_inode_wait`.
-
-### Lever-by-lever results
-
-| Lever | Result | Status |
-|---|---|---|
-| Tier 1.1 — eval-data hygiene | strict==permissive after `regenerate_v3_test.py` | done; canonical baseline R@5=63.3% on `v3_test.v2.json` |
-| Tier 1.2 — MMR re-rank (surface-feature) | regressed at every λ < 1.0 | shipped inert opt-in via `CQS_MMR_LAMBDA`; embedding-MMR is the obvious follow-up |
-| Tier 1.3 — chunk-type aware boost | within ±1pp noise of default 1.2 | default stays |
-| Tier 2 — Reranker V2 (Phase 3 cross-encoder) | −24pp R@5 (domain shift + binary-label loss) | weights stay local at `~/training-data/reranker-v2-unixcoder/`; not shipped |
-| Tier 2 — ColBERT 2-stage (mxbai-edge-colbert-v0-32m) | marginal/inconsistent: test α=0.9 +2.8pp R@5, dev α=0.9 +0.9pp | eval tool shipped; default OFF; PR #1037 |
-| **Tier 3 — chunker doc fallback for short chunks** | **+2.8pp R@5 test, +0.9pp R@5 dev, +4.6pp R@20 test, +2.8pp R@20 dev** (fresh-fixture comparison post-v1.28.1) | shipped in #1040 + #1041 P1 #3-#4 hardening + v1.28.1 LanguageDef wiring (P2 #53/#55 recovery) |
-
-### What landed this session arc (post-v1.27.0)
-
-| PR | Highlight |
-|---|---|
-| #1023 | release v1.27.0 (audit-wave + MSRV bump 1.93→1.95) |
-| #1024 | post-v1.27.0 ROADMAP refresh + embedder swap workflow plan |
-| #1025 | publish 413 fix (excluded `evals/`, `samples/`, `tools/`, `cuvs-fork-push/` from package) |
-| #1026 | embedder hygiene (index-aware resolution + dim-mismatch error) + proactive GC (startup + retroactive gitignore + idle-time periodic) |
-| #1027 | `cqs stats` field expansion + `cqs doctor --verbose` + `cqs ping` + `cqs eval` subcommand |
-| #1028 | `--limit` standardization + `--json` propagation through batch |
-| #1029 | `.gitattributes` + LF renormalize (closed CRLF tax) |
-| #1030 | `cqs model swap` + `cqs eval --baseline` regression gate |
-| #1031 | Reranker V2 Phase 1 calibration → GEMMA_ONLY (98.3% inter-rater, kappa 0.97) |
-| #1032 | docs(plans): Phase 3 cross-encoder + sequenced ColBERT-XM |
-| #1033 | docs(plans): research recheck 2026-04-17 + Phase 3 training script |
-| #1034 | chore(agents): tune `.claude/agents/` prompts for Opus 4.7 |
-| #1035 | fix(train): accept `content` field in pointwise rows |
-| #1036 | fix(reranker): detect ONNX input shape, skip token_type_ids for RoBERTa-family |
-| #1037 | feat(evals): ColBERT 2-stage + RRF fusion eval tool |
-| #1038 | feat(cli): uniform JSON output envelope across all commands (Task #17, BREAKING) |
-| #1039 | chore(deps): bump rustls-webpki 0.103.10 → 0.103.12 (Dependabot #7, #8) |
-| #1040 | fix(parser): doc enrichment for short chunks (truncated_gold lever) |
-| #1041 | chore(audit): land 26 P1 fixes from post-v1.27.0 audit |
-| #1045 | chore(audit): land 47 P2 fixes from post-v1.27.0 audit (wave 1) |
-| #1046 | chore(audit): land 69 P3 fixes from post-v1.27.0 audit (audit complete) |
-| #1050 | chore: Release v1.28.0 |
-| #1051 | docs(tears): refresh for v1.28.0 release |
-| #1052 | docs(roadmap): refresh header for v1.28.0 |
-| #1053 | chore: Release v1.28.1 — recover 8 P2 audit fixes lost in v1.28.0 wave |
-
-Reranker V2 work also produced commits in the private `cqs-training` repo (research/reranker.md updated with Phase 1/2/3 + ColBERT results + post-mortem).
-
-### v3 baselines (current, after #1040 reindex 2026-04-18)
-
-`evals/queries/v3_test.v2.json` (109 queries) and `v3_dev.v2.json` (109 queries):
+`v3_test.v2.json` (109q) and `v3_dev.v2.json` (109q):
 
 | Config | test R@1 | test R@5 | test R@20 | dev R@1 | dev R@5 | dev R@20 |
 |---|---|---|---|---|---|---|
-| **current (2026-04-20, post-fused-A/B)** | 41.3% | **68.8%** | **85.3%** | 45.0% | **78.0%** | **88.1%** |
-| canonical pre-#1040 (2026-04-17) | 41.3% | 63.3% | 80.7% | 41.3% | 74.3% | 86.2% |
+| **current (post-v1.28.3, 2026-04-20)** | 41.3% | **68.8%** | **85.3%** | 45.0% | **78.0%** | **88.1%** |
+| canonical pre-v1.28.0 | 41.3% | 63.3% | 80.7% | 41.3% | 74.3% | 86.2% |
 | Δ | 0.0 | **+5.5** | **+4.6** | **+3.7** | **+3.7** | **+1.9** |
 
-All metrics now above canonical. The earlier post-#1040 dip on R@20 (−5.5pp test, −6.4pp dev) self-resolved via successive reindexes restoring chunk count (14,734 → 16,150). Subsequent A/B should always quote both test AND dev — wins on test alone don't generalize (saw this with ColBERT 2-stage).
+The v3.v2 fixture is the canonical eval slate. v4 fixtures (1526/split, 14× v3 N) exist for any future A/B that needs tighter noise floors.
 
-## What's queued
+## Open issues (13 open)
 
-The Tier 3 chunker fix unlocked R@5 lift; remaining options — pick by appetite:
-
-1. **Re-train Reranker V2 with post-mortem fixes** — re-mine hard negatives against cqs's own enriched index, keep TIE labels in pointwise, cap reranker pool at 20. ~1-2 weeks. Plausibly lands where the off-the-shelf attempts didn't.
-2. ~~**Investigate dev R@20 regression from #1040**~~ — RESOLVED 2026-04-20. Successive reindexes restored chunk count (14,734 → 15,603 → 15,991 → 16,150). All metrics now ABOVE canonical: test R@5 +5.5pp, R@20 +4.6pp; dev R@5 +3.7pp, R@20 +1.9pp. Pruning-artifact theory confirmed.
-3. ~~**Per-category HyDE re-validation**~~ — KILLED 2026-04-20. test R@5 −12.8pp, dev R@5 −22.0pp. Every category regressed on dev. Multi_step's +7.1pp test win flipped to −14.3pp on dev (noise). Per-category routing can't save it — no category positive across both splits. v2-era predictions (structural/type_filtered helping) reversed completely. Eval at `/tmp/hyde-{test,dev}.json`.
-4. **ColBERT integration into cqs proper** with per-token index — multi-week architectural work; eval-tool gain didn't justify it yet.
-5. **Embedder swap (CodeBERT / CodeT5+ / CodeR)** — same risk profile as the v9-200k experiment that already failed.
-6. ~~**JSON output schema standardization (Task #17)**~~ — landed in #1038.
-
-## Architecture state
-
-- **Version:** v1.28.1 (live on crates.io 2026-04-20; GitHub Release with binaries)
-- **MSRV:** 1.95
-- **Local binary:** built from main; reinstall after merge with `cargo build --release --features gpu-index && systemctl --user stop cqs-watch && cp ~/.cargo-target/cqs/release/cqs ~/.cargo/bin/cqs && systemctl --user start cqs-watch`
-- **Index:** 15,603 chunks (BGE-large; reindexed 2026-04-20 on v1.28.1 with v20→v21 migration applied). 7,675 LLM summaries cached (49% coverage).
-- **Production R@5 on v3.v2 test (post-#1053, fresh fixture):** **66.1%** (+2.8pp vs v1.27.0 canonical 63.3%). Dev R@5 **75.2%** (+0.9pp). R@20: +4.6pp test / +2.8pp dev.
-- **Open PRs:** none committed yet; one tiny one queued for the regenerate_v3_test envelope fix + fresh fixture
-- **Open issues:** 5 pre-audit (tier-3 deferred / external-blocked: #106, #255, #717, #916, #956) plus 6 newly-filed audit deferrals (#1042-#1044 hard P4, #1047-#1049 trivial P4)
-- **cqs-watch daemon:** running latest binary (post-#1040 chunker fix installed at `~/.cargo/bin/cqs`, daemon restarted 2026-04-18)
-- **Pending uncommitted:** 4 files in `evals/queries/colbert_rerank_{test,dev}.{json,events.jsonl}` — eval artifacts from PR #1037 work; intentionally not staged (reproducible from script)
-
-## Reranker V2 post-mortem (recorded for future revisit)
-
-Phase 3 trained `microsoft/unixcoder-base` on the 382k pointwise corpus. Result: −24pp R@5 (full pool), still −4.6pp at smallest pool. Three causes, all fixable but combined ~1-2 weeks:
-
-1. **TIE labels were dropped from pointwise.** Phase 2's `pairwise_to_pointwise.py` filtered 8641 TIE pairs entirely — model trained on binary labels, weaker ordering signal than BiXSE assumes. Fix: keep TIE as label=0.5, OR use original pairwise data with margin loss.
-2. **Domain shift Stack v2 → cqs index.** Trained on raw Stack v2 chunks; cqs serves *enriched* chunks (NL desc + signature + content + doc). Fix: re-mine hard negatives from cqs's actual index; smaller corpus (~16k chunks) but domain-matched.
-3. **Pool-size brittleness.** `(limit * 4).min(100)` over-retrieves; weak rerankers get amplified by large pools. Fix: cap reranker pool at ~20.
-
-Full detail in `~/training-data/research/reranker.md`.
-
-## Operational pitfalls (rolling forward)
-
-- **Agent worktree leak via absolute paths** — `isolation: "worktree"` is *soft* isolation; agents using absolute paths in tool calls write to parent tree. Add explicit path-discipline text to every parallel-agent prompt. Filed as Anthropic feedback.
-- **WSL git credential helper** — out-of-the-box, `git push` from `~/training-data` (and any WSL-native path) fails with "could not read Username." Fix: `git config --global credential.helper '/mnt/c/Program\ Files/Git/mingw64/bin/git-credential-manager.exe'`. Saved as memory `reference_wsl_git_creds.md`. Already configured globally; future repos work without setup.
-- **Cargo publish 413 = "exclude" list missing** — `evals/queries/v3_*.json` pushed package over 10MB. `Cargo.toml` exclude list now blocks `evals/`, `samples/`, `tools/`, `cuvs-fork-push/`. Re-check after adding any new heavy dir.
-- **Always run `cqs eval --baseline` after retrieval changes** — the regression gate from #1030 catches per-category R@K drops automatically. Save baselines per release: `evals/baseline-v1.27.0.json` etc.
-- **Single-split A/B is noisy at N=109** — always confirm test wins on dev before declaring. ColBERT 2-stage taught this by showing +5.5pp R@5 on test that dropped to +0.9pp on dev.
-- **Smoke-test against real producer output** — synthetic fixtures only catch what you anticipate. Phase 3 training failed first launch because synthetic smoke used `passage` field; real Phase 2 output used `content`. Saved as memory `feedback_smoke_real_shape.md`.
-- **No time estimates in specs** — they're systemically too long. Frame in compute units / GPU hours / step counts. Wall-time predictions get better when anchored on concrete reference frames (size, count, throughput).
-
-## What's parked
-
-- **HyDE on v3 dev** — most promising untested representation lever. Per-category routing required.
-- **ColBERT integration with per-token index** — eval tool exists, default off; full integration multi-week.
-- **Code-aware embedder switch** — CodeBERT, CodeT5+-110M-embedding, UniXcoder all untested on v3. v9-200k didn't help.
-- **Knowledge-augmented retrieval** — call/type graph as structured filter. Multi_step queries weakest at 28-43% R@1.
-- **Meta-routing** — current router commits to one strategy; ensemble with learned weights could stop the wins-vanishing pattern.
-- **Properly-retrained Reranker V2** — see post-mortem; gated on appetite for the 1-2 week re-mine + retrain.
+| # | Title | Tier |
+|---|---|---|
+| 1091 | WSL poll-watcher 8% CPU | performance |
+| 1090 | HNSW rebuild every save (15-30s CUDA) | performance |
+| 1049 | Pin fallback_does_not_mix_comment_styles test | testing, tier-3 |
+| 1048 | try_daemon_query strict-string parsing | enhancement, tier-3 |
+| 1047 | ChunkType::human_name catch-all hides variants | enhancement, tier-3 |
+| 1044 | Windows cqs watch can't stop cleanly | bug, data-integrity, tier-3 |
+| 1043 | is_slow_mmap_fs ignores Windows network drives | performance, tier-3 |
+| 1042 | WINDOW_OVERHEAD doesn't scale with prefix length | enhancement, tier-3 |
+| 956 | ExecutionProvider — decouple gpu-index from CUDA | refactor, tier-2 |
+| 916 | mmap SPLADE index | tier-2 |
+| 717 | HNSW fully in RAM, no mmap | tier-3 |
+| 255 | Pre-built reference packages | enhancement, tier-3 |
+| 106 | ort dependency is pre-release RC | tier-3 |
