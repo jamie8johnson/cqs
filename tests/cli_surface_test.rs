@@ -206,6 +206,32 @@ fn project_register_list_remove_round_trips() {
 }
 
 #[test]
+fn related_nonexistent_function_fails_with_message() {
+    // The library API (`cqs::find_related`) returns an AnalysisError on
+    // unresolved targets; the CLI surface translates that to "No
+    // function found" stderr. We assert the surface message here
+    // because the in-process call would just propagate Err, which
+    // doesn't tell us about the user-visible diagnostic.
+    //
+    // This test does spawn a binary that opens a populated index, so it
+    // pays a model load (~2-5s). Single test, acceptable; if it grows,
+    // promote the in-process variant and drop this one.
+    let dir = TempDir::new().unwrap();
+    let cqs_subdir = dir.path().join(".cqs");
+    std::fs::create_dir_all(&cqs_subdir).unwrap();
+    cqs()
+        .args(["related", "nonexistent_fn_xyz_12345"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("No function found")
+                .or(predicate::str::contains("not found"))
+                .or(predicate::str::contains("Index")),
+        );
+}
+
+#[test]
 fn project_remove_nonexistent_succeeds_quietly() {
     let cfg_dir = TempDir::new().unwrap();
     cqs()
