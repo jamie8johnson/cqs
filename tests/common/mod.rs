@@ -1,3 +1,9 @@
+// Helpers in this module are used by different subsets of test binaries.
+// Each binary that does `mod common;` only references some of the items,
+// so per-item `#[allow(dead_code)]` becomes a maintenance treadmill.
+// File-level allow is the right call.
+#![allow(dead_code, clippy::type_complexity)]
+
 //! Common test fixtures and helpers
 //!
 //! Two fixture tiers:

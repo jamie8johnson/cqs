@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-04-23
+
+Feature release. Three things land together: a new interactive web UI (`cqs serve`) with four call-graph / hierarchy / embedding-cluster views, a new opt-in cqs-specific ignore mechanism (`.cqsignore`), and the elimination of the ~130-minute nightly slow-tests cron (5 subprocess CLI test binaries → 4 in-process binaries running in regular PR CI in <2 min). Schema bumps v21 → v22 for the cluster view's UMAP coordinates; auto-applied on first daemon/CLI startup.
+
+### Added
+
+- **`cqs serve` web UI** (PRs #1074, #1075). Interactive call-graph browser bound to `127.0.0.1:8080` by default. Read-only, single-user, no auth. Spec: `docs/plans/2026-04-21-cqs-serve-v1.md`.
+- **`cqs serve` 2D/3D toggle** (PR #1077). Renderer abstraction layer; Cytoscape.js (2D) and 3d-force-graph + Three.js (3D) as pluggable view modules. Vendor bundles embedded via `include_str!`.
+- **`cqs serve` hierarchy view** (PR #1078). `?view=hierarchy&root=<chunk_id>&direction=callees|callers&depth=N` — BFS from a chosen root with the Y axis locked to depth, rendering as a 3D tree. New `/api/hierarchy/{id}` endpoint.
+- **`cqs serve` embedding cluster view** (PR #1079). `?view=cluster` — places each chunk at `(umap_x, n_callers, umap_y)` so semantic neighbours sit close in the X/Z plane and high-degree functions stand up vertically. New `/api/embed/2d` endpoint.
+- **`cqs index --umap` flag** (PR #1079). Opt-in pass that projects every chunk embedding into 2D via umap-learn (Python, embedded `scripts/run_umap.py`) and writes the coordinates to the new `chunks.umap_x` / `chunks.umap_y` columns. Failure modes (Python missing, umap-learn missing, empty corpus) are non-fatal; the rest of `cqs index` always succeeds.
+- **`.cqsignore` mechanism** (PR #1080). Layered on top of `.gitignore` for cqs-specific exclusions — files committed to git but never indexed (vendored minified JS, eval JSON fixtures, etc.). Same gitignore syntax, hierarchical, respected by both `cqs index` and `cqs watch`. New root-level `.cqsignore` excludes the vendored serve bundles + `evals/queries/*.json`. Index drops 18,954 → 15,488 chunks on the cqs corpus, all noise.
+- **`tests/common::InProcessFixture`** (PR #1082). Test harness wrapping `Store` + `Parser` + a pluggable embedder so integration tests can exercise the full library pipeline (parse → embed → upsert chunks + function_calls + type_edges) without spawning the binary or cold-loading the ML model. Default `MockEmbedder` hashes content via blake3 into deterministic vectors. Optional `with_real_embedder()` for tests that need true semantic similarity.
+
+### Changed
+
+- **Schema v21 → v22** (PR #1079). Adds nullable `umap_x` / `umap_y` REAL columns to `chunks`. Auto-applied on first open by the existing migration system. No reindex needed; the columns stay NULL until `cqs index --umap` runs.
+- **`cqs serve` first paint: ~60s → ~3-4s on the cqs corpus** (PR #1081). Four perf items:
+  - SQL-side `max_nodes` cap with correlated-subquery prerank by global caller count (was: pull all 16k chunks + all 53k edges + Rust-side truncate). Backend `/api/graph` ~5-15s → ~700ms.
+  - Default `max_nodes` 1500 → 300; default 2D layout `dagre` → `cose` (built-in, ~30-45s → ~1-2s of layout time on the main thread). Dagre still available via `?layout=dagre`.
+  - 3D vendor bundles (Three.js + 3d-force-graph, ~1.2 MB) lazy-loaded on first 3D view activation. Pure 2D sessions never download them.
+  - `tower-http::CompressionLayer` gzips JSON responses ~5-10× (1-2 MB → 150-300 KB).
+- **CLI integration test architecture** (PRs #1082–#1088). All 5 subprocess-spawning slow-test binaries (cli_health, cli_test, cli_graph, cli_commands, cli_batch — 113 tests, ~130 min nightly cron) converted to in-process `InProcessFixture`-based tests (60 tests across 4 binaries) plus a small 15-test `cli_surface_test.rs` for things that genuinely need a binary spawn (`--help`, `--version`, `cqs doctor`, exit codes, project-registry mutation). Net: ~2 min added to every PR instead of ~130 min nightly.
+
+### Removed
+
+- **`slow-tests` Cargo feature** (PR #1088). All `#![cfg(feature = "slow-tests")]` markers gone with their host files.
+- **`.github/workflows/slow-tests.yml`** (PR #1088). The nightly cron is dead. Closes issue #980.
+- **5 slow-test binaries** (PRs #1083–#1088): `tests/cli_health_test.rs`, `tests/cli_test.rs`, `tests/cli_graph_test.rs`, `tests/cli_commands_test.rs`, `tests/cli_batch_test.rs`. Replaced by in-process equivalents under `tests/health_test.rs`, `tests/index_search_test.rs`, `tests/graph_test.rs`, `tests/related_impact_test.rs`.
+
+### Fixed
+
+- **Spurious "Dropped oversized chunks" warnings on `cqs index`** (PR #1080). Vendored minified JS bundles and eval JSON fixtures (each a single hundreds-of-KB line) tripped the parser's per-chunk byte cap and emitted noise warnings. The new `.cqsignore` excludes them.
+
+### Dependencies
+
+- Bump `openssl` 0.10.75 → 0.10.78 (PR #1086, Dependabot security: several CVE-adjacent fixes including AES key unwrap bounds, password callback length validation, oversized OID panic).
+- Bump `rand` 0.8.5 → 0.8.6 (PR #1089, Dependabot security: custom-logger soundness in `rand::rng()`). Lockfile-only; vulnerable rand was a transitive build helper via `phf_generator → fast_html2md`.
+
+### Tooling
+
+- **Pre-edit-impact hook** scoped to cqs's own `src/` and `tests/` (PR #1068) — was firing on agent edits to unrelated trees.
+- **v4 eval fixtures shipped** (PR #1069) — 3052 + 3833 synthetic queries, 14× v3 N, available for any future A/B that needs tighter noise floors. Spec + 11 eval scripts. Zero source-side changes.
+
+### Research / Docs
+
+- **Alpha-routing arc closed** (PR #1069). Distilled head, fused head, and HyDE all confirmed parked or killed at proper N (v4 fixture, n=1526/split). Continuous α can't break the convex hull AND the convex hull doesn't matter at top-5 on this corpus state.
+- **Long-chunk doc-aware windowing tested** (PR #1071) — neutral on retrieval; meta-finding documented: **HNSW reconstruction noise is ~4pp R@5 at v4 N**, which sets the floor for what a single A/B can claim.
+- **Roadmap refreshes** (PRs #1067, #1072): drop dead alpha-routing detail, sync issue tiers, queue distilled-classifier + per-query α regression + soft routing as future work.
+- **11 shipped/landed plans pruned** from `docs/plans/` (PR #1070).
+- **`cqs serve` 3D progressive spec** (PR #1076) — the 4-step rollout that became #1077..#1079 + #1081.
+- **`cqs serve` perf spec** (PR #1081) — 5 items, item 5 (Web Worker) decision-gated and skipped after items 1-4 hit target.
+- **Slow-tests elimination spec** (PR #1082) — 3 phases, executed across PRs #1082-#1088.
+- **`nomic-ai/CodeRankEmbed` + `nomic-ai/nomic-embed-code` evaluation** added to roadmap parked (PR #1081). Open-weight code-specialized embedders worth a 2-hour A/B against v9-200k on the v3 fixture.
+
+### Migration notes
+
+- **No reindex required** for the schema v22 bump. The migration adds nullable columns; existing chunks keep functioning unchanged. Run `cqs index --umap` opt-in only if you want the cluster view to render coordinates.
+- The `.cqsignore` is opt-in per-project. Add patterns to a root-level `.cqsignore` file using gitignore syntax. Disable globally with `cqs index --no-ignore` (same flag that disables `.gitignore`).
+- Nothing in `tests/cli_*_test.rs` removal affects users of the published crate; this is internal test infrastructure.
+
 ## [1.28.3] - 2026-04-20
 
 Patch release with two per-category SPLADE alpha changes derived from an R@5-targeted re-sweep, plus the cleaned-up README that landed via PR #1065 (now bundled into the published crate). Net effect on v3.v2 test R@5: +0.9pp; dev R@5 unchanged; no regressions.

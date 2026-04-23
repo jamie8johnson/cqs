@@ -1,6 +1,6 @@
 [package]
 name = "cqs"
-version = "1.28.3"
+version = "1.29.0"
 edition = "2021"
 rust-version = "1.95"
 description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 54 languages + L5X/L5K PLC exports. 91% R@1 on 296-query fixtures, 42% R@1 / 64% R@5 / 79% R@20 on v3 real code-search (544 dual-judge queries). Daemon mode (3-19ms queries). Local-first, GPU-accelerated."
@@ -244,14 +244,22 @@ tree-sitter-elm = ["dep:tree-sitter-elm"]
 # need the CLI.
 serve = ["dep:axum", "dep:tower", "dep:tower-http"]
 
-# (`slow-tests` feature was removed 2026-04-23. The five subprocess-
-# spawning CLI integration test binaries it gated have been converted
-# to in-process tests using `tests/common::InProcessFixture` —
-# specifically `health_test.rs`, `index_search_test.rs`, `graph_test.rs`,
-# `related_impact_test.rs`, plus a small `cli_surface_test.rs` for
-# things that genuinely need a binary spawn. The nightly
-# slow-tests.yml workflow is gone in the same PR. See
-# `docs/plans/2026-04-22-cqs-slow-tests-elimination.md`.)
+# Slow CLI integration tests that haven't yet been converted to the
+# in-process `InProcessFixture` harness. Five binaries were converted
+# in 2026-04-23 (`health_test.rs`, `index_search_test.rs`, `graph_test.rs`,
+# `related_impact_test.rs`, plus `cli_surface_test.rs` for genuine
+# binary-surface checks) and the nightly `.github/workflows/slow-tests.yml`
+# cron was deleted alongside. The `slow-tests` feature flag itself is
+# kept alive for the 11 remaining subprocess-spawning files
+# (cli_blame_test, cli_brief_test, cli_chat_completer_test,
+# cli_chat_format_test, cli_doctor_fix_test, cli_drift_diff_test,
+# cli_envelope_test, cli_neighbors_test, cli_reconstruct_test,
+# cli_review_test, cli_train_review_test) — they cold-load the
+# embedder per invocation, so they're skipped in regular CI. Tracked
+# as a follow-up to issue #980; convert when re-touching the code
+# they test. See docs/plans/2026-04-22-cqs-slow-tests-elimination.md
+# for the conversion pattern.
+slow-tests = []
 
 [dev-dependencies]
 insta = "1"

@@ -1040,8 +1040,10 @@ mod tests {
 
     #[test]
     fn apply_scoring_pipeline_applies_demotion_to_fused() {
-        let mut filter = SearchFilter::default();
-        filter.enable_demotion = true;
+        let filter = SearchFilter {
+            enable_demotion: true,
+            ..Default::default()
+        };
         let query = test_embedding(1.0);
         let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
         let ctx = ScoringContext {
