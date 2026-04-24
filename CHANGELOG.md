@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.29.1] - 2026-04-24
+
+Patch release: v1.29.0 audit close-out. 147 findings triaged; 142 fixed across #1093 and #1094. Remaining 5 items are architectural / micro-perf and live in #1095, #1096, #1097, #1098. No new commands, no behaviour changes by default; env-var additions are additive, JSON field additions are non-breaking.
+
+### Fixed
+
+- **Cagra GPU index SIGSEGV on drop** (`src/cagra.rs`). `impl Drop for GpuState` now calls `resources.sync_stream()` before fields drop; prior async CUDA kernels could be in-flight when `cuvsResourcesDestroy` fired, producing a segfault during test teardown. All 22 cagra tests now pass serially.
+- **HNSW persistence fsync gap** — parent-directory fsync after `persist()` write (DS2-6).
+- **Staleness + metadata writes honour `begin_write`** — `SELECT DISTINCT origin` and `touch_updated_at` / `set_metadata_opt` now land inside a transaction so concurrent readers see consistent state (DS2-1, DS2-2, DS2-3).
+- **Cache eviction single-tx + WAL checkpoint on drop** — `evict_lock` taken once, eviction runs under one transaction, `Cache::drop` runs `PRAGMA wal_checkpoint(TRUNCATE)` (DS2-5, RM-V1.29-7).
+- **RwLock poison recovery in `cqs watch`** — daemon recovers from a poisoned inner lock rather than aborting the dispatcher (EH-V1.29-8).
+- **`clear_hnsw_dirty` retries under SQLite contention** (DS2-7).
+- **`upsert_chunks_calls_and_prune` single tx** — prior implementation pruned in a second tx, briefly exposing partial graphs to readers (DS2-4).
+- **Migration backup required by default** — `CQS_MIGRATE_REQUIRE_BACKUP=1` is now default; orphan drop > 10% errors instead of silently landing (DS2-8).
+- **L5X parser panics on malformed regex match** — 4 `unwrap` sites replaced with `let-else` + `tracing::warn!+continue` (RB-V1.29-5).
+- **`is_wsl()` false positives** — detection now requires `WSL_INTEROP` env or `/proc/sys/fs/binfmt_misc/WSLInterop`, not just `microsoft` / `wsl` in `/proc/version` (PB-V1.29-10).
+
+### Security
+
+- **`cqs serve` host-header allowlist middleware** — rejects requests with a `Host` header outside the bind address (SEC-1).
+- **`cqs serve` SQL LIMIT caps** — `build_graph` / `build_cluster` bounded at 50k nodes + 500k edges and 50k cluster nodes; user-supplied `max_nodes` is clamped, not trusted (SEC-3).
+- **`cqs serve` asset HTML escaping** — `escapeHtml` helper wraps every `innerHTML` interpolation in `hierarchy-3d.js` and `cluster-3d.js` (SEC-2).
+- **`cqs serve --open` forces loopback** — `loopback_open_url` helper replaces user-supplied `bind_addr` with `127.0.0.1` / `::1` for the launched browser URL regardless of what `--bind` set the server to (SEC-6).
+- **`rustls-webpki` 0.103.12 → 0.103.13** (Dependabot #15, GHSA high — DoS via panic on malformed CRL BIT STRING).
+
+### Added
+
+- **Degraded / warnings signalling** — `ImpactResult` + `DiffImpactSummary` gain a `degraded` flag; context outputs gain `warnings: Vec<String>`. Callers surface partial-result state instead of silently short-circuiting (EH-V1.29-9).
+- **Env-var knobs for thresholds** — `CQS_HOTSPOT_MIN_CALLERS`, `CQS_DEAD_CLUSTER_MIN_SIZE`, `CQS_HEALTH_HOTSPOT_COUNT`, `CQS_SUGGEST_HOTSPOT_POOL`, `CQS_RISK_HIGH`, `CQS_RISK_MEDIUM`, `CQS_BLAST_LOW_MAX`, `CQS_BLAST_HIGH_MIN`, `CQS_CONVERT_MAX_FILE_SIZE`, `CQS_CONVERT_WEBHELP_BYTES`, `CQS_DAEMON_PERIODIC_GC_INTERVAL_SECS`, `CQS_DAEMON_PERIODIC_GC_IDLE_SECS`, `CQS_BATCH_MAX_LINE_LEN` (SHL-V1.29-7, SHL-V1.29-8, SHL-V1.29-9). Defaults preserved; these are escape hatches for users on corpora / projects with different thresholds.
+- **Startup self-test** — `test_every_language_has_nonempty_chunk_query` iterates `REGISTRY.all()` and asserts every language's chunk query is non-empty. Catches empty `queries/*.scm` files at build time (EX-V1.29-7).
+- **`trait ConfigSection`** — `.cqs.toml` sections now implement a common trait; `apply_config_defaults` uses clap's `ArgSource::DefaultValue` rather than `DEFAULT_*` const comparison to detect "user set it explicitly" (EX-V1.29-8).
+- **`define_aux_presets!` macro** — collapses 5 parallel matches in `AuxModelKind` preset registration into a single preset table (EX-V1.29-4).
+- **`VisibilityRule` variants** — `SigStartsTriage`, `RegexImportSet`, `NameCase` added to `where_to_add::VisibilityRule`; `LanguagePatternDef` gains `inline_test_markers`. Moves three custom Rust/TS-JS/Go arms into the pattern table (EX-V1.29-2).
+- **Daemon socket thread stack size** — `std::thread::Builder::new().stack_size(256 * 1024)` on spawned handlers; worst-case memory at `CQS_MAX_DAEMON_CLIENTS=128` drops from ~128 MB (default 1 MB stacks) to ~32 MB (RM-V1.29-9).
+- **Reranker happy-path tests** — `test_rerank_empty_input_returns_empty` (always runs) and `test_rerank_reorders_by_relevance` (`#[ignore]`-gated, requires model on disk). Pins the `rerank` / `rerank_with_passages` contract that was previously exercised only via the black-box eval loop (TC-HAP-1.29-3).
+- **`cqs project search` CLI integration test** — two registered projects, indexed separately, cross-project search asserts per-project tagging (TC-HAP-1.29-4).
+- **`cqs ref {add,list,remove,update}` CLI integration tests** — end-to-end happy paths, `slow-tests` gated (TC-HAP-1.29-5).
+- **Daemon socket happy-path round-trip test** — `{"command":"stats","args":[]}` through `handle_socket_client` via std `UnixStream::pair()`; asserts envelope shape + payload (TC-HAP-1.29-6).
+
+### Changed
+
+- **`is_wsl()` gating** — tightened to require `WSL_INTEROP` or WSLInterop binfmt as well as the `/proc/version` substring (PB-V1.29-10). Affects rendering heuristics only, not correctness.
+- **HNSW persist chunk size** — bumped from 100 MB to 1 GB (SHL-V1.29-3).
+
+### Internal
+
+- **`normalize_path` helper + `dispatch_tokens`** in `src/cli/watch.rs` (PB-V1.29-2, PF-V1.29-1).
+- **`LazyLock` migration** for daemon static state (RM-V1.29-8).
+- **`hf_cache_dir()` helper** centralizes the HF cache path resolution (PB-V1.29-8).
+
+### Migration notes
+
+- No schema bump; no reindex required.
+- JSON output on `cqs impact` / `cqs ci` / `cqs context` now carries `degraded: bool` and / or `warnings: Vec<String>` fields. Additive only — missing fields still deserialize as empty / false for prior consumers.
+- If you were relying on default hotspot / risk / blast thresholds and want them restored after editing `~/.config/cqs/cqs.toml`, clear the relevant `CQS_*` env vars.
+
 ## [1.29.0] - 2026-04-23
 
 Feature release. Three things land together: a new interactive web UI (`cqs serve`) with four call-graph / hierarchy / embedding-cluster views, a new opt-in cqs-specific ignore mechanism (`.cqsignore`), and the elimination of the ~130-minute nightly slow-tests cron (5 subprocess CLI test binaries → 4 in-process binaries running in regular PR CI in <2 min). Schema bumps v21 → v22 for the cluster view's UMAP coordinates; auto-applied on first daemon/CLI startup.

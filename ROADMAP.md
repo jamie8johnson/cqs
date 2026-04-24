@@ -1,8 +1,10 @@
 # Roadmap
 
-## Current: v1.29.0 (cqs serve + .cqsignore + slow-tests cron eliminated)
+## Current: v1.29.1 (v1.29.0 audit close-out)
 
 54 languages. 29 chunk types. v3 eval canonical, regenerated to v2 fixture 2026-04-17/20 (109 test / 109 dev). Daemon mode (`cqs watch --serve`, 99ms graph p50 / 200ms search-warm p50). Per-category SPLADE alpha routing — re-swept against R@5 in v1.28.3 (was R@1-tuned). **Centroid classifier active by default** (test R@5 +3.7pp from category-aware routing; opt-out via `CQS_CENTROID_CLASSIFIER=0`). GPU-native CAGRA bitset filtering (patched cuvs 26.4). Schema v22 (umap_x/umap_y, opt-in via `cqs index --umap`). MSRV 1.95.
+
+**v1.29.1** shipped 2026-04-24: patch release — v1.29.0 audit close-out. 147 findings triaged; 142 fixed. No new commands, no schema bump, no reindex. Cagra SIGSEGV root-caused (missing `Drop` on `GpuState`) + fixed; `cqs serve` security hardened (host allowlist, SQL caps, HTML escape, loopback `--open`); transaction integrity fixes (staleness / metadata / cache / HNSW persist); 13 new `CQS_*` env var knobs for thresholds (additive); `rustls-webpki` GHSA-high patch; reranker + daemon-socket + cross-project test coverage. Remaining 5 audit items (SEC-7 serve auth, EX-1 Commands trait, EX-3 LlmProvider trait, PF-9 suggest_tests BFS, RM-10 socket BufReader) split to issues #1096/#1097/#1098 + umbrella #1095. Full detail in `CHANGELOG.md`.
 
 **v1.29.0** shipped 2026-04-23: feature release bundling three arcs.
 

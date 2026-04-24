@@ -2,13 +2,30 @@
 
 ## Right Now
 
-**v1.29.0 shipped 2026-04-23 (PR #1092 squashed at 22:57 UTC).** crates.io published, GitHub Release workflow building binaries (~13 min), local binary at 1.29.0. No active PRs.
+**v1.29.1 prepared 2026-04-24.** Audit close-out patch release. Working tree: CHANGELOG / PROJECT_CONTINUITY / ROADMAP updated, release build in progress, release via `/release` skill pending. Main is at `1a9215c7` (post-audit merge).
 
 ### Open PRs
 
-None.
+None. PR #1094 (91 P1-P3 fixes, cagra segfault root-caused, TC-HAP coverage) merged at 2026-04-24T19:55 UTC. PR #1093 (docs refresh for v1.29.0) merged at 2026-04-24T19:17 UTC.
 
-### v1.29.0 contents
+### v1.29.1 contents
+
+Patch release — audit close-out. 147 findings from the v1.29.0 audit triaged; 142 fixed across 3 commits to #1094 + #1093. No new commands, no schema bump, no reindex. Full list in `CHANGELOG.md`.
+
+Highlights:
+- **Cagra SIGSEGV root-caused + fixed** — `impl Drop for GpuState` now calls `resources.sync_stream()` before fields drop. Async CUDA kernels from prior tests were in-flight when `cuvsResourcesDestroy` fired, producing a teardown segfault. All 22 cagra tests pass serially post-fix.
+- **`cqs serve` security hardening** — Host header allowlist (SEC-1), SQL LIMIT caps on graph + cluster (SEC-3), HTML escaping on 3D asset innerHTML (SEC-2), `--open` forced to loopback (SEC-6).
+- **Transaction integrity** — staleness / metadata writes honour `begin_write`, cache eviction single-tx, HNSW persist parent-dir fsync, migration backup default-on with orphan-drop guard.
+- **Env-var knobs** — 13 new `CQS_*` vars for thresholds (hotspot/risk/blast/GC/etc). Additive; defaults preserved.
+- **Test coverage** — reranker happy paths, `cqs project search` / `cqs ref {add,list,remove,update}` CLI end-to-end, daemon socket round-trip.
+- **Security bump** — `rustls-webpki` 0.103.12 → 0.103.13 (Dependabot #15, GHSA high, DoS via malformed CRL).
+
+### Audit close-out remaining
+
+- **Umbrella**: issue #1095 (rewritten post-#1094; 2 micro-perf items kept: PF-V1.29-9 suggest_tests BFS, RM-V1.29-10 socket BufReader scratch).
+- **Split into tracking issues**: #1096 (SEC-7 serve auth), #1097 (EX-V1.29-1 Commands→trait), #1098 (EX-V1.29-3 LlmProvider trait + Local provider).
+
+### v1.29.0 contents (shipped 2026-04-23)
 
 Feature release bundling three arcs (23 commits since v1.28.3):
 - **`cqs serve`** with 4 views (2D / 3D / hierarchy / embedding cluster) + perf pass (~60s → ~3-4s first paint). Schema v22 (umap_x/umap_y); opt-in via `cqs index --umap`.
