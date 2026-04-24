@@ -222,8 +222,27 @@ pub struct CagraIndex {
 
 #[cfg(feature = "gpu-index")]
 struct GpuState {
-    resources: cuvs::Resources,
+    // Drop order is declaration order: `index` must drop before `resources`
+    // because the cuVS Index holds handles into the Resources' CUDA context
+    // and stream.
     index: cuvs::cagra::Index,
+    resources: cuvs::Resources,
+}
+
+#[cfg(feature = "gpu-index")]
+impl Drop for GpuState {
+    fn drop(&mut self) {
+        // Block until any pending CUDA work on this stream completes
+        // before the Index + Resources fields drop. Without this, async
+        // kernels launched by a prior search/deserialize can still be in
+        // flight when cuvsResourcesDestroy fires, causing SIGSEGV on the
+        // next test's cuvsResourcesCreate / kernel launch. Observed
+        // deterministically when `test_save_load_round_trip` was followed
+        // by `test_search_dimension_mismatch_query`.
+        if let Err(e) = self.resources.sync_stream() {
+            tracing::warn!(error = ?e, "cuvsStreamSync failed during GpuState drop");
+        }
+    }
 }
 
 // Debug impl needed because cuvs types don't implement Debug
@@ -1097,8 +1116,17 @@ impl CagraIndex {
     pub fn delete_persisted(path: &Path) {
         let _span =
             tracing::debug_span!("cagra_delete_persisted", path = %path.display()).entered();
-        let _ = std::fs::remove_file(path);
-        let _ = std::fs::remove_file(meta_path_for(path));
+        for p in [path.to_path_buf(), meta_path_for(path)] {
+            match std::fs::remove_file(&p) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => tracing::warn!(
+                    path = %p.display(),
+                    error = %e,
+                    "CAGRA cleanup failed — next rebuild may re-hit the same corrupt blob"
+                ),
+            }
+        }
     }
 }
 

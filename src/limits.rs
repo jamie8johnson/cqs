@@ -74,6 +74,12 @@ pub(crate) const DEFAULT_DOC_MAX_PAGES: usize = 1000;
 /// See P3 #108.
 pub(crate) const DEFAULT_DOC_MAX_WALK_DEPTH: usize = 50;
 
+/// RM-V1.29-5: per-page byte cap for multi-page converters (CHM, WebHelp).
+/// A malicious or pathological archive can ship a single 500MB "page"; the
+/// outer `MAX_FILE_SIZE` check only gates the archive, not the extracted
+/// pages. Default 10 MiB covers every real-world help page with margin.
+pub(crate) const DEFAULT_CONVERT_PAGE_BYTES: u64 = 10 * 1024 * 1024;
+
 /// Resolve the doc page cap honoring `CQS_CONVERT_MAX_PAGES`.
 pub(crate) fn doc_max_pages() -> usize {
     parse_env_usize("CQS_CONVERT_MAX_PAGES", DEFAULT_DOC_MAX_PAGES)
@@ -82,6 +88,19 @@ pub(crate) fn doc_max_pages() -> usize {
 /// Resolve the walkdir depth cap honoring `CQS_CONVERT_MAX_WALK_DEPTH`.
 pub(crate) fn doc_max_walk_depth() -> usize {
     parse_env_usize("CQS_CONVERT_MAX_WALK_DEPTH", DEFAULT_DOC_MAX_WALK_DEPTH)
+}
+
+/// RM-V1.29-5: per-page byte cap for CHM / WebHelp page readers, honoring
+/// `CQS_CONVERT_PAGE_BYTES`.
+pub(crate) fn convert_page_bytes() -> u64 {
+    parse_env_u64("CQS_CONVERT_PAGE_BYTES", DEFAULT_CONVERT_PAGE_BYTES)
+}
+
+/// SHL-V1.29-10: per-file byte cap for HTML / Markdown converters, honoring
+/// `CQS_CONVERT_MAX_FILE_SIZE`. Defaults to 100 MB.
+pub(crate) fn convert_file_size() -> u64 {
+    const DEFAULT_CONVERT_MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
+    parse_env_u64("CQS_CONVERT_MAX_FILE_SIZE", DEFAULT_CONVERT_MAX_FILE_SIZE)
 }
 
 // ============ shared parsing helpers ============

@@ -3,20 +3,9 @@
 use anyhow::Result;
 
 use cqs::parse_unified_diff;
-use cqs::{analyze_diff_impact, diff_impact_to_json, map_hunks_to_functions};
-
-/// Creates an empty impact analysis JSON structure.
-/// Constructs and returns a JSON value representing an impact analysis report with no changed functions, callers, or tests. This serves as a default or template response when there are no code changes to analyze.
-/// # Returns
-/// A `serde_json::Value` containing an empty impact analysis object with zero counts for changed functions, callers, and tests.
-fn empty_impact_json() -> serde_json::Value {
-    serde_json::json!({
-        "changed_functions": [],
-        "callers": [],
-        "tests": [],
-        "summary": { "changed_count": 0, "caller_count": 0, "test_count": 0 }
-    })
-}
+use cqs::{
+    analyze_diff_impact, diff_impact_empty_json, diff_impact_to_json, map_hunks_to_functions,
+};
 
 pub(crate) fn cmd_impact_diff(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
@@ -39,7 +28,7 @@ pub(crate) fn cmd_impact_diff(
     let hunks = parse_unified_diff(&diff_text);
     if hunks.is_empty() {
         if json {
-            crate::cli::json_envelope::emit_json(&empty_impact_json())?;
+            crate::cli::json_envelope::emit_json(&diff_impact_empty_json())?;
         } else {
             println!("No changes detected.");
         }
@@ -51,7 +40,7 @@ pub(crate) fn cmd_impact_diff(
 
     if changed.is_empty() {
         if json {
-            crate::cli::json_envelope::emit_json(&empty_impact_json())?;
+            crate::cli::json_envelope::emit_json(&diff_impact_empty_json())?;
         } else {
             println!("No indexed functions affected by this diff.");
         }

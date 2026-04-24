@@ -116,10 +116,27 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
     let mut page_count = 0usize;
     const MAX_WEBHELP_BYTES: usize = 50 * 1024 * 1024; // 50MB
 
+    // RM-V1.29-5: cap per-page reads so a pathological site with a single
+    // huge HTML page can't OOM the process. The outer MAX_WEBHELP_BYTES
+    // caps the merged output but doesn't bound each file read.
+    let max_page_bytes = crate::limits::convert_page_bytes();
+
     for entry in &pages {
-        let bytes = match std::fs::read(entry.path()) {
-            Ok(b) => b,
-            Err(e) => {
+        let bytes = {
+            use std::io::Read;
+            let file = match std::fs::File::open(entry.path()) {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %entry.path().display(),
+                        error = %e,
+                        "Failed to open web help page"
+                    );
+                    continue;
+                }
+            };
+            let mut buf = Vec::new();
+            if let Err(e) = file.take(max_page_bytes).read_to_end(&mut buf) {
                 tracing::warn!(
                     path = %entry.path().display(),
                     error = %e,
@@ -127,6 +144,15 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
                 );
                 continue;
             }
+            if buf.len() as u64 == max_page_bytes {
+                tracing::warn!(
+                    path = %entry.path().display(),
+                    cap_bytes = max_page_bytes,
+                    "Web help page hit per-page byte cap, content may be truncated; \
+                     bump CQS_CONVERT_PAGE_BYTES if needed"
+                );
+            }
+            buf
         };
         let html = String::from_utf8_lossy(&bytes);
 

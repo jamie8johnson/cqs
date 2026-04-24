@@ -240,8 +240,20 @@ pub(crate) fn build_graph(
             .to_string();
         let mut binds: Vec<String> = Vec::new();
         if let Some(file) = file_filter {
-            node_query.push_str(" AND c.origin LIKE ?");
-            binds.push(format!("{file}%"));
+            // SEC-5: escape LIKE metacharacters so `%` / `_` in the
+            // query string stay literal. Without this, a hostile (or
+            // accidental) `%` in `?file=` turns the prefix filter into
+            // a full-text contains — changing the semantic contract
+            // and potentially widening the matched row set far beyond
+            // what the user sees in the URL. The `ESCAPE '\\'` clause
+            // tells SQLite the backslash below should be treated as
+            // the escape byte.
+            let escaped = file
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            node_query.push_str(" AND c.origin LIKE ? ESCAPE '\\'");
+            binds.push(format!("{escaped}%"));
         }
         if let Some(kind) = kind_filter {
             node_query.push_str(" AND c.chunk_type = ?");
@@ -451,6 +463,8 @@ pub(crate) fn build_chunk_detail(
     store: &Store<ReadOnly>,
     chunk_id: &str,
 ) -> Result<Option<ChunkDetail>, StoreError> {
+    let _span = tracing::info_span!("build_chunk_detail", chunk_id = %chunk_id).entered();
+
     store.rt.block_on(async {
         // Fetch the chunk row.
         let row = sqlx::query(
@@ -493,15 +507,30 @@ pub(crate) fn build_chunk_detail(
         .bind(&name)
         .fetch_all(&store.pool)
         .await?;
-        let callers: Vec<NodeRef> = callers_rows
-            .into_iter()
-            .map(|r| NodeRef {
-                id: r.get("id"),
+        // RB-V1.29-3: surface out-of-range `line_start` (negative or
+        // overflows u32) as a `StoreError::Corruption` rather than
+        // silently clamping to 0. A corrupted row here manifests in
+        // the UI as a mis-scrolled sidebar; without the explicit
+        // error the regression has no diagnostic at all. The error
+        // propagates through the axum handler as a 500.
+        let to_noderef = |r: sqlx::sqlite::SqliteRow| -> Result<NodeRef, StoreError> {
+            let raw: i64 = r.get("line_start");
+            let id: String = r.get("id");
+            let line_start = u32::try_from(raw).map_err(|_| {
+                StoreError::Corruption(format!("chunk {id} has out-of-range line_start {raw}"))
+            })?;
+            Ok(NodeRef {
                 name: r.get("name"),
                 file: r.get("origin"),
-                line_start: r.get::<i64, _>("line_start").max(0) as u32,
+                id,
+                line_start,
             })
-            .collect();
+        };
+
+        let callers: Vec<NodeRef> = callers_rows
+            .into_iter()
+            .map(&to_noderef)
+            .collect::<Result<_, _>>()?;
 
         // Callee chunks: function_calls WHERE caller_name = this.name AND file = this.origin
         let callees_rows = sqlx::query(
@@ -518,35 +547,36 @@ pub(crate) fn build_chunk_detail(
         .await?;
         let callees: Vec<NodeRef> = callees_rows
             .into_iter()
-            .map(|r| NodeRef {
-                id: r.get("id"),
-                name: r.get("name"),
-                file: r.get("origin"),
-                line_start: r.get::<i64, _>("line_start").max(0) as u32,
-            })
-            .collect();
+            .map(&to_noderef)
+            .collect::<Result<_, _>>()?;
 
         // Tests-that-cover: heuristic — chunks whose chunk_type = 'test'
         // and whose content references this name. Cheap LIKE search.
+        //
+        // SEC-8: escape LIKE metacharacters in `name` so a chunk named
+        // e.g. `%` or `foo_bar` doesn't turn the substring contains
+        // into a wildcard that matches every test. Names come from the
+        // chunks table, not user input, but parser-produced names can
+        // legitimately contain underscores — `foo_bar` would otherwise
+        // match `fooXbar` in test content and over-report coverage.
+        let escaped_name = name
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
         let tests_rows = sqlx::query(
             "SELECT id, name, origin, line_start \
              FROM chunks \
-             WHERE chunk_type = 'test' AND content LIKE ? \
+             WHERE chunk_type = 'test' AND content LIKE ? ESCAPE '\\' \
              ORDER BY origin, line_start \
              LIMIT 20",
         )
-        .bind(format!("%{name}%"))
+        .bind(format!("%{escaped_name}%"))
         .fetch_all(&store.pool)
         .await?;
         let tests: Vec<NodeRef> = tests_rows
             .into_iter()
-            .map(|r| NodeRef {
-                id: r.get("id"),
-                name: r.get("name"),
-                file: r.get("origin"),
-                line_start: r.get::<i64, _>("line_start").max(0) as u32,
-            })
-            .collect();
+            .map(&to_noderef)
+            .collect::<Result<_, _>>()?;
 
         Ok(Some(ChunkDetail {
             id,
@@ -1000,6 +1030,8 @@ pub(crate) fn build_cluster(
 /// Pull richer stats than the `Store::base_embedding_count` shortcut.
 /// One query for total chunks + files + call edges + type edges.
 pub(crate) fn build_stats(store: &Store<ReadOnly>) -> Result<StatsResponse, StoreError> {
+    let _span = tracing::info_span!("build_stats").entered();
+
     store.rt.block_on(async {
         let chunks_row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM chunks")
             .fetch_one(&store.pool)

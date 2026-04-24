@@ -35,7 +35,7 @@ pub(in crate::cli::batch) fn dispatch_search(
     // `_` avoids clippy unused-field warnings while preserving forwards
     // compat: when the batch path wires these up, removing the `_ =` line
     // makes the compiler surface remaining call-sites.
-    let _ = (args.context, args.expand, args.no_stale_check);
+    let _ = (args.context, args.expand_parent, args.no_stale_check);
     let _ = (args.include_docs, args.pattern.as_ref());
 
     if args.name_only {

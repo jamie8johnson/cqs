@@ -59,10 +59,7 @@ pub fn suggest_notes<Mode>(
     }
 
     // Deduplicate against existing notes
-    let existing = store.list_notes_summaries().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to load existing notes for dedup");
-        Vec::new()
-    });
+    let existing = store.list_notes_summaries()?;
 
     let existing_texts: Vec<&str> = existing.iter().map(|n| n.text.as_str()).collect();
     suggestions.retain(|s| {

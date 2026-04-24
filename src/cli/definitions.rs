@@ -707,7 +707,10 @@ pub(super) enum Commands {
         #[arg(long)]
         output: std::path::PathBuf,
         /// Max pairs to extract (omit for unlimited)
-        #[arg(long)]
+        ///
+        /// API-V1.29-7: `-n` short flag added for parity with other result-cap
+        /// knobs across the CLI surface.
+        #[arg(short = 'n', long)]
         limit: Option<usize>,
         /// Filter by language (e.g., "Rust", "Python")
         #[arg(long)]
@@ -732,6 +735,14 @@ pub(super) enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Invalidate daemon caches and re-open the Store
+    ///
+    /// API-V1.29-6: exposes the existing `BatchCmd::Refresh` handler at the
+    /// top-level CLI so agents can trigger `ctx.invalidate()` without the
+    /// `cqs batch` JSON dance. No-op when no daemon is running — a fresh CLI
+    /// process has no caches to invalidate.
+    #[command(visible_alias = "invalidate")]
+    Refresh,
     /// First-class eval harness: run query set against current index, print R@K
     Eval {
         #[command(flatten)]
@@ -881,7 +892,12 @@ impl Commands {
             | Commands::Where { .. }
             | Commands::Scout { .. }
             | Commands::Plan { .. }
-            | Commands::Task { .. } => BatchSupport::Daemon,
+            | Commands::Task { .. }
+            // API-V1.29-6: forward to the existing `BatchCmd::Refresh` handler.
+            // When no daemon is running the top-level dispatch in `dispatch.rs`
+            // bails with "nothing to refresh" — classifying as Daemon here is
+            // still correct because the handler lives on the batch side.
+            | Commands::Refresh => BatchSupport::Daemon,
 
             // #946 typestate: Gc mutates the DB (prune_all + HNSW rebuild).
             // Daemon holds `Store<ReadOnly>`, so `prune_all` is literally

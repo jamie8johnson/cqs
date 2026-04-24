@@ -399,22 +399,13 @@ pub(in crate::cli::batch) fn dispatch_impact_diff(
     let hunks = cqs::parse_unified_diff(&diff_text);
 
     if hunks.is_empty() {
-        return Ok(serde_json::json!({
-            "changed_functions": [],
-            "callers": [],
-            "tests": [],
-            "summary": { "changed_count": 0, "caller_count": 0, "test_count": 0 }
-        }));
+        // CQ-V1.29-5: shared shape with impact_diff / affected.
+        return Ok(cqs::diff_impact_empty_json());
     }
 
     let changed = cqs::map_hunks_to_functions(&ctx.store(), &hunks);
     if changed.is_empty() {
-        return Ok(serde_json::json!({
-            "changed_functions": [],
-            "callers": [],
-            "tests": [],
-            "summary": { "changed_count": 0, "caller_count": 0, "test_count": 0 }
-        }));
+        return Ok(cqs::diff_impact_empty_json());
     }
 
     let result = cqs::analyze_diff_impact(&ctx.store(), changed, &ctx.root)?;

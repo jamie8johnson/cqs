@@ -50,10 +50,9 @@ pub(crate) fn build_blame_data<Mode>(
     let commits = parse_git_log_output(&output);
 
     let callers = if show_callers {
-        store.get_callers_full(&chunk.name).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, name = %chunk.name, "Failed to fetch callers");
-            Vec::new()
-        })
+        store
+            .get_callers_full(&chunk.name)
+            .with_context(|| format!("Failed to fetch callers for '{}'", chunk.name))?
     } else {
         Vec::new()
     };

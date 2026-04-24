@@ -31,6 +31,7 @@ use axum::{
 };
 use tokio::net::TcpListener;
 use tower_http::compression::CompressionLayer;
+use tower_http::trace::TraceLayer;
 
 use crate::store::{ReadOnly, Store};
 
@@ -132,6 +133,12 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts) -> Rout
         // corpus); vendor JS bundles compress ~3×. Negligible CPU on
         // the server side, big win on parse/transfer time at the browser.
         .layer(CompressionLayer::new())
+        // OB-V1.29-5: TraceLayer emits a span per request plus
+        // on-response events with latency + status. Handlers already
+        // log entry via `tracing::info!`; this layer closes the loop
+        // by logging completion, giving per-endpoint latency in the
+        // journal without hand-wrapping every handler body.
+        .layer(TraceLayer::new_for_http())
 }
 
 /// Build the allowed-`Host` set for DNS-rebinding protection.

@@ -163,7 +163,7 @@ pub(super) fn parser_stage(
                         .and_then(|m| m.modified())
                         .ok()
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_millis() as i64)
+                        .map(cqs::duration_to_mtime_millis)
                         .unwrap_or(0);
                     file_mtimes.insert(c.file.clone(), mtime);
                 }

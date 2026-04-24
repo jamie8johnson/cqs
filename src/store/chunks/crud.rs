@@ -178,12 +178,12 @@ impl<Mode> Store<Mode> {
     /// or `Ok(None)` if no reindex needed. This avoids reading file metadata twice.
     pub fn needs_reindex(&self, path: &Path) -> Result<Option<i64>, StoreError> {
         let _span = tracing::debug_span!("needs_reindex", path = %path.display()).entered();
-        let current_mtime = path
-            .metadata()?
-            .modified()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| StoreError::SystemTime)?
-            .as_millis() as i64;
+        let current_mtime = crate::duration_to_mtime_millis(
+            path.metadata()?
+                .modified()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| StoreError::SystemTime)?,
+        );
 
         self.rt.block_on(async {
             let row: Option<(Option<i64>,)> =

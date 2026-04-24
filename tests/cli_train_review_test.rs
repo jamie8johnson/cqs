@@ -419,3 +419,117 @@ fn test_ci_token_budget_adds_token_fields() {
         "data.token_budget must echo the requested budget"
     );
 }
+
+// ============================================================================
+// TC-HAP-1.29-8 — `cmd_ci` happy path
+//
+// The existing `cmd_ci` tests cover:
+//   * clean diff → exit 0 + low risk
+//   * gate off → always exit 0
+//   * --tokens N → token fields in JSON
+//
+// What was NOT covered: a *non-empty* diff that represents real code
+// changes, going through the full library-level `review_diff` + dead-code
+// scan + gate evaluation, with the happy-path JSON shape asserted
+// end-to-end.
+// ============================================================================
+
+/// Modify a real function body (not just whitespace), then run `cqs ci`.
+/// The ci report must include the expected top-level fields: `review`,
+/// `gate`, and `dead_in_diff` — that's the contract documented in the
+/// library-level `ci::run_ci_analysis` tests, but never pinned at the
+/// CLI boundary.
+#[test]
+#[serial]
+fn test_ci_happy_path_non_empty_diff_emits_full_report() {
+    let dir = setup_git_project();
+
+    // Rewrite validate() with real behavioral changes. Not guarding the
+    // risk level — the point is to exercise the populated-review path.
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        r#"
+/// Entry point.
+pub fn main() {
+    process(42);
+}
+
+/// Process input with a transform now.
+pub fn process(input: i32) -> i32 {
+    let base = validate(input);
+    base.saturating_mul(2)
+}
+
+/// Check input — now returns the input unchanged.
+fn validate(input: i32) -> i32 {
+    input
+}
+"#,
+    )
+    .expect("rewrite lib.rs");
+
+    // Use --gate off so risk level doesn't drive exit code — we just want
+    // the JSON envelope to populate.
+    let output = cqs()
+        .args(["ci", "--format", "json", "--gate", "off"])
+        .current_dir(dir.path())
+        .output()
+        .expect("Failed to run cqs ci");
+
+    assert!(
+        output.status.success(),
+        "ci should exit 0 with --gate off. stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("envelope JSON parse");
+
+    // Envelope shape
+    assert_eq!(parsed["version"], 1, "envelope version should be 1");
+    assert!(
+        parsed["error"].is_null(),
+        "ci happy path should produce no envelope error"
+    );
+    assert!(
+        parsed["data"].is_object(),
+        "data must be an object, got {}",
+        parsed["data"]
+    );
+
+    // CiReport shape — three top-level fields. Presence matters more than
+    // exact counts (which depend on how the parser chunks the diff).
+    let data = &parsed["data"];
+    assert!(
+        data["review"].is_object(),
+        "data.review must be an object, got {}",
+        data["review"]
+    );
+    assert!(
+        data["gate"].is_object(),
+        "data.gate must be an object, got {}",
+        data["gate"]
+    );
+    assert!(
+        data["dead_in_diff"].is_array() || data["dead_in_diff"].is_object(),
+        "data.dead_in_diff must be present, got {}",
+        data["dead_in_diff"]
+    );
+
+    // Review subtree: risk_summary and reviewed sections must be there.
+    let review = &data["review"];
+    assert!(
+        review["risk_summary"].is_object(),
+        "review.risk_summary must be an object, got {}",
+        review["risk_summary"]
+    );
+
+    // Gate subtree: `passed` must be true (we set --gate off explicitly).
+    assert_eq!(
+        data["gate"]["passed"],
+        serde_json::json!(true),
+        "--gate off must report gate.passed=true even with risky changes"
+    );
+}

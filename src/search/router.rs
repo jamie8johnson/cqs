@@ -559,6 +559,26 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
 /// Priority order: Negation > Identifier > CrossLanguage > TypeFiltered >
 /// Structural > Behavioral > Conceptual > MultiStep > Unknown.
 pub fn classify_query(query: &str) -> Classification {
+    // OB-V1.29-6: entry span so trace captures show the classifier running
+    // on every search query, plus a debug log at exit that records which
+    // category / strategy was picked. `classify_query` is pure but sits on
+    // the hot path for every search, so callers often want to confirm the
+    // category assignment after the fact without recomputing it.
+    let _span = tracing::info_span!("classify_query", query_len = query.len()).entered();
+    let classification = classify_query_inner(query);
+    tracing::debug!(
+        category = %classification.category,
+        confidence = ?classification.confidence,
+        strategy = ?classification.strategy,
+        "Query classified"
+    );
+    classification
+}
+
+/// Inner body of [`classify_query`] — split so the outer function can log the
+/// chosen category once regardless of which branch fires. Keeps the early
+/// `return` chain intact so the priority order reads top-to-bottom.
+fn classify_query_inner(query: &str) -> Classification {
     let query_lower = query.to_lowercase();
     let words: Vec<&str> = query_lower.split_whitespace().collect();
 
@@ -1101,6 +1121,9 @@ pub fn reclassify_with_centroid(
     mut classification: Classification,
     embedding: &[f32],
 ) -> Classification {
+    // OB-V1.29-6: entry span so the centroid-upgrade step is visible in
+    // traces separately from the outer rule-based classify.
+    let _span = tracing::info_span!("reclassify_with_centroid").entered();
     // Centroid classifier: fills Unknown gaps with embedding-space classification.
     // Alpha-clipped: centroid-assigned α is clamped to ≥ CENTROID_ALPHA_FLOOR
     // so misclassifications can't catastrophically zero out SPLADE (the −4.6pp

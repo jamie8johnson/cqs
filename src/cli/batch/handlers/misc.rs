@@ -217,18 +217,22 @@ pub(in crate::cli::batch) fn dispatch_scout(
     let limit = limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
     let result = cqs::scout(&ctx.store(), embedder, query, &ctx.root, limit)?;
 
-    let Some(budget) = tokens else {
-        return Ok(serde_json::to_value(&result)?);
+    let (content_map, token_info) = if let Some(budget) = tokens {
+        let named_items = crate::cli::commands::scout_scored_names(&result);
+        let (cmap, used) = crate::cli::commands::fetch_and_pack_content(
+            &ctx.store(),
+            embedder,
+            &named_items,
+            budget,
+        );
+        (Some(cmap), Some((used, budget)))
+    } else {
+        (None, None)
     };
 
-    let named_items = crate::cli::commands::scout_scored_names(&result);
-    let (content_map, used) =
-        crate::cli::commands::fetch_and_pack_content(&ctx.store(), embedder, &named_items, budget);
-
-    let mut json = serde_json::to_value(&result)?;
-    crate::cli::commands::inject_content_into_scout_json(&mut json, &content_map);
-    crate::cli::commands::inject_token_info(&mut json, Some((used, budget)));
-    Ok(json)
+    // CQ-V1.29-2: shared with CLI's cmd_scout — same JSON shape across both
+    // dispatch paths.
+    crate::cli::commands::build_scout_output(&result, content_map.as_ref(), token_info)
 }
 
 /// Suggests optimal file placements for code based on a natural language description.

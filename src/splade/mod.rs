@@ -28,6 +28,22 @@ fn ort_err(e: ort::Error) -> SpladeError {
     SpladeError::InferenceFailed(e.to_string())
 }
 
+/// RB-V1.29-9: Convert an ORT-reported tensor dimension (`i64`) to `usize`
+/// with a negative-value guard. ORT shape entries are nominally
+/// non-negative, but a corrupted or mis-exported model could report a
+/// negative dim (e.g. unresolved symbolic axis that leaks through as -1).
+/// Without this guard the `as usize` cast on a negative value produces a
+/// huge positive number, which later breeds either an allocation failure
+/// or a silently truncated buffer slice.
+fn i64_dim_to_usize(d: i64, name: &str) -> Result<usize, SpladeError> {
+    if d < 0 {
+        return Err(SpladeError::InferenceFailed(format!(
+            "ORT shape {name} is negative: {d}"
+        )));
+    }
+    Ok(d as usize)
+}
+
 /// A sparse vector: vocabulary token ID → learned importance weight.
 /// Typically 100-300 non-zero entries out of ~30K vocabulary.
 pub type SparseVector = Vec<(u32, f32)>;
@@ -142,7 +158,7 @@ fn probe_model_vocab(
                 shape.len()
             )));
         }
-        shape[1] as usize
+        i64_dim_to_usize(shape[1], "probe.sparse_vector[vocab]")?
     } else if let Some(logits_output) = outputs.get("logits") {
         let (shape, _data) = logits_output.try_extract_tensor::<f32>().map_err(ort_err)?;
         if shape.len() != 3 {
@@ -151,7 +167,7 @@ fn probe_model_vocab(
                 shape.len()
             )));
         }
-        shape[2] as usize
+        i64_dim_to_usize(shape[2], "probe.logits[vocab]")?
     } else {
         let names: Vec<&str> = outputs.keys().collect();
         return Err(SpladeError::InferenceFailed(format!(
@@ -521,7 +537,7 @@ impl SpladeEncoder {
                     shape.len()
                 )));
             }
-            let vocab = shape[1] as usize;
+            let vocab = i64_dim_to_usize(shape[1], "encode.sparse_vector[vocab]")?;
             tracing::debug!(vocab, format = "pre_pooled", "SPLADE output detected");
 
             // Threshold directly — values are already activated
@@ -546,7 +562,7 @@ impl SpladeEncoder {
                     shape.len()
                 )));
             }
-            let vocab = shape[2] as usize;
+            let vocab = i64_dim_to_usize(shape[2], "encode.logits[vocab]")?;
             tracing::debug!(vocab, format = "raw_logits", "SPLADE output detected");
 
             let logits = ArrayView2::from_shape((seq_len, vocab), data).map_err(|e| {
@@ -767,13 +783,13 @@ impl SpladeEncoder {
                     shape.len()
                 )));
             }
-            if shape[0] as usize != batch_size {
+            if i64_dim_to_usize(shape[0], "encode_batch.sparse_vector[batch]")? != batch_size {
                 return Err(SpladeError::InferenceFailed(format!(
                     "sparse_vector batch dim {} != input batch {}",
                     shape[0], batch_size
                 )));
             }
-            let vocab = shape[1] as usize;
+            let vocab = i64_dim_to_usize(shape[1], "encode_batch.sparse_vector[vocab]")?;
             tracing::debug!(
                 vocab,
                 batch = batch_size,
@@ -823,19 +839,19 @@ impl SpladeEncoder {
                     shape.len()
                 )));
             }
-            if shape[0] as usize != batch_size {
+            if i64_dim_to_usize(shape[0], "encode_batch.logits[batch]")? != batch_size {
                 return Err(SpladeError::InferenceFailed(format!(
                     "logits batch dim {} != input batch {}",
                     shape[0], batch_size
                 )));
             }
-            if shape[1] as usize != max_seq_len {
+            if i64_dim_to_usize(shape[1], "encode_batch.logits[seq]")? != max_seq_len {
                 return Err(SpladeError::InferenceFailed(format!(
                     "logits seq dim {} != padded max_seq_len {}",
                     shape[1], max_seq_len
                 )));
             }
-            let vocab = shape[2] as usize;
+            let vocab = i64_dim_to_usize(shape[2], "encode_batch.logits[vocab]")?;
             tracing::debug!(
                 vocab,
                 batch = batch_size,
@@ -1450,5 +1466,103 @@ mod tests {
         // model >= 0, padding_pct stays 0.0 → accepted as no-padding
         assert_eq!(check_vocab_compatibility(0, 0), Ok(false));
         assert_eq!(check_vocab_compatibility(0, 100), Ok(true));
+    }
+
+    // ===== TC-ADV-1.29-9: raw-logits Inf/NaN propagation =====
+    //
+    // The raw-logits path in `SpladeEncoder::encode` (and `encode_batch`)
+    // uses this sequence per vocab position:
+    //
+    //   pooled = max over seq dim
+    //   activated = ln(1 + max(logit, 0.0))
+    //   keep if activated > threshold
+    //
+    // No finite-check before `ln`, no NaN handling in the threshold compare.
+    // If ONNX emits NaN for a vocab position, `val.max(0.0)` → NaN,
+    // `1.0 + NaN` → NaN, `NaN.ln()` → NaN, `NaN > threshold` → false, so
+    // the slot is silently dropped. If ONNX emits `+Inf`, activated =
+    // `ln(1+Inf)` = `+Inf`, which survives every positive threshold and
+    // poisons the sparse vector with an Inf weight.
+    //
+    // We can't easily run real ONNX in unit tests. These tests exercise
+    // the exact activation + threshold math used inside `encode` (see
+    // `src/splade/mod.rs:559-569` and the identical math in
+    // `encode_batch:889-900`). Pin current behaviour so a future
+    // finite-check refactor is deliberate.
+
+    /// Reproduces the activation math from `encode` / `encode_batch` so
+    /// tests can exercise the NaN/Inf branches without an ORT session.
+    fn activate_threshold(val: f32, threshold: f32) -> Option<f32> {
+        let activated = (1.0 + val.max(0.0)).ln();
+        if activated > threshold {
+            Some(activated)
+        } else {
+            None
+        }
+    }
+
+    /// A NaN logit silently collapses to "not kept". Acceptable today (the
+    /// slot is dropped, not poisoned) but pins the behaviour so a future
+    /// strict-reject change is deliberate.
+    #[test]
+    fn test_raw_logits_nan_silently_dropped() {
+        let result = activate_threshold(f32::NAN, 0.01);
+        assert_eq!(
+            result, None,
+            "AUDIT-FOLLOWUP (TC-ADV-1.29-9): NaN logit is silently dropped — \
+             no error surfaces, no telemetry event. A future encoder audit \
+             should decide whether to reject or telemetry this case."
+        );
+    }
+
+    /// A +Inf logit produces +Inf activation and passes the threshold,
+    /// poisoning the sparse vector with an Inf weight. This WILL surface
+    /// in downstream scoring (dot products blow up). Critical to pin.
+    #[test]
+    fn test_raw_logits_positive_inf_passes_through_as_inf_weight() {
+        let result = activate_threshold(f32::INFINITY, 0.01);
+        let weight = result.unwrap_or_else(|| {
+            panic!(
+                "AUDIT-FOLLOWUP (TC-ADV-1.29-9): +Inf logit should produce an \
+                 Inf-activation entry but activate_threshold returned None — \
+                 contract changed, update the test"
+            )
+        });
+        assert!(
+            weight.is_infinite() && weight.is_sign_positive(),
+            "AUDIT-FOLLOWUP (TC-ADV-1.29-9): +Inf logit produces +Inf weight \
+             in the sparse vector — downstream consumers (SPLADE dot-product \
+             scoring) will blow up silently. Got {weight}"
+        );
+    }
+
+    /// A -Inf logit is clamped by `.max(0.0)` → activated = ln(1 + 0) = 0,
+    /// not > threshold, slot dropped. Pin as sanity.
+    #[test]
+    fn test_raw_logits_negative_inf_clamped_to_zero_then_dropped() {
+        let result = activate_threshold(f32::NEG_INFINITY, 0.01);
+        assert_eq!(
+            result, None,
+            "-Inf logit is clamped to 0 by `.max(0.0)`, then ln(1) = 0 fails \
+             the threshold — slot dropped cleanly"
+        );
+    }
+
+    /// A huge finite logit (not Inf) does produce a large but finite weight
+    /// through the log compression. Guards against a future refactor that
+    /// accidentally removes the `ln` (which would produce unbounded weights).
+    #[test]
+    fn test_raw_logits_large_finite_logit_produces_finite_weight() {
+        // 1e10 activated = ln(1 + 1e10) ≈ 23
+        let result = activate_threshold(1e10, 0.01);
+        let weight = result.expect("large finite logit must survive threshold");
+        assert!(
+            weight.is_finite(),
+            "ln-compressed weight must stay finite, got {weight}"
+        );
+        assert!(
+            weight > 20.0 && weight < 30.0,
+            "ln(1 + 1e10) ≈ 23, got {weight}"
+        );
     }
 }

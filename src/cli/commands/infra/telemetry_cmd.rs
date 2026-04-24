@@ -517,12 +517,22 @@ fn print_telemetry_text(output: &TelemetryOutput) {
     }
 }
 
-pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>) -> Result<()> {
-    let _span = tracing::info_span!("cmd_telemetry_reset").entered();
+pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>, json: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_telemetry_reset", json).entered();
 
     let current = cqs_dir.join("telemetry.jsonl");
     if !current.exists() {
-        println!("No telemetry file to reset.");
+        if json {
+            // API-V1.29-3: emit an envelope even when there is nothing to
+            // archive so `--json` consumers always get a parseable document.
+            crate::cli::json_envelope::emit_json(&serde_json::json!({
+                "archived_events": 0,
+                "archive_path": serde_json::Value::Null,
+                "lock_path": cqs_dir.join("telemetry.lock").display().to_string(),
+            }))?;
+        } else {
+            println!("No telemetry file to reset.");
+        }
         return Ok(());
     }
 
@@ -566,11 +576,24 @@ pub(crate) fn cmd_telemetry_reset(cqs_dir: &Path, reason: Option<&str>) -> Resul
     });
     fs::write(&current, format!("{}\n", entry)).context("Failed to write reset event")?;
 
-    println!(
-        "Archived {} events to {}",
-        line_count,
-        archive.file_name().unwrap_or_default().to_string_lossy(),
-    );
+    if json {
+        // API-V1.29-3: `cqs telemetry --reset --json` used to silently drop
+        // the --json flag and print a human-readable line. Emit the envelope
+        // consumers expect: line count, the archive file actually written,
+        // and the advisory lock path so debugging concurrent-reset races is
+        // easy.
+        crate::cli::json_envelope::emit_json(&serde_json::json!({
+            "archived_events": line_count,
+            "archive_path": archive.display().to_string(),
+            "lock_path": lock_path.display().to_string(),
+        }))?;
+    } else {
+        println!(
+            "Archived {} events to {}",
+            line_count,
+            archive.file_name().unwrap_or_default().to_string_lossy(),
+        );
+    }
 
     // lock_file dropped here, releasing advisory lock
     drop(lock_file);
@@ -774,7 +797,7 @@ mod tests {
             ],
         );
 
-        cmd_telemetry_reset(dir.path(), Some("test reset")).unwrap();
+        cmd_telemetry_reset(dir.path(), Some("test reset"), false).unwrap();
 
         // Current file should have just the reset event
         let current = fs::read_to_string(dir.path().join("telemetry.jsonl")).unwrap();

@@ -103,10 +103,27 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
 
     let mut merged = String::new();
 
+    // RM-V1.29-5: cap per-page reads so a pathological archive with a single
+    // huge "page" can't OOM the process. The outer archive-size check in
+    // `convert/mod.rs` doesn't bound the per-file read.
+    let max_page_bytes = crate::limits::convert_page_bytes();
+
     for entry in &pages {
-        let bytes = match std::fs::read(entry.path()) {
-            Ok(b) => b,
-            Err(e) => {
+        let bytes = {
+            use std::io::Read;
+            let file = match std::fs::File::open(entry.path()) {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %entry.path().display(),
+                        error = %e,
+                        "Failed to open CHM page"
+                    );
+                    continue;
+                }
+            };
+            let mut buf = Vec::new();
+            if let Err(e) = file.take(max_page_bytes).read_to_end(&mut buf) {
                 tracing::warn!(
                     path = %entry.path().display(),
                     error = %e,
@@ -114,6 +131,16 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
                 );
                 continue;
             }
+            // Warn once if we hit the cap exactly — the page may have been truncated.
+            if buf.len() as u64 == max_page_bytes {
+                tracing::warn!(
+                    path = %entry.path().display(),
+                    cap_bytes = max_page_bytes,
+                    "CHM page hit per-page byte cap, content may be truncated; \
+                     bump CQS_CONVERT_PAGE_BYTES if needed"
+                );
+            }
+            buf
         };
         // Lossy UTF-8 for old Windows-1252 encoded files
         let html = String::from_utf8_lossy(&bytes);

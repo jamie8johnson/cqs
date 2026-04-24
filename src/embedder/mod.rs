@@ -254,6 +254,20 @@ pub struct Embedder {
     /// blake3 fingerprint of the ONNX model file, computed lazily on first access.
     /// Used as cache key to distinguish models with the same name but different weights.
     model_fingerprint: std::sync::OnceLock<String>,
+    /// SHL-V1.29-1: Pad token id resolved at tokenizer-init time.
+    ///
+    /// Cache set once per embedder lifetime on first call to [`Self::pad_id`].
+    /// Read order:
+    ///   1. `tokenizer.get_padding().map(|p| p.pad_id)` — the tokenizer's
+    ///      own declared pad id when `tokenizer.json` carries a padding
+    ///      section.
+    ///   2. `model_config.pad_id` — preset-declared fallback (`0` for every
+    ///      shipped model).
+    ///
+    /// Stored as `OnceLock<i64>` so every inference call after the first
+    /// pays the cheap load; the lookup goes through the tokenizer mutex
+    /// once and the result sticks.
+    pad_id: std::sync::OnceLock<i64>,
 }
 
 /// Default query cache size (entries). Each entry is roughly `4 * dim` bytes
@@ -341,6 +355,7 @@ impl Embedder {
             detected_dim: std::sync::OnceLock::new(),
             model_config,
             model_fingerprint: std::sync::OnceLock::new(),
+            pad_id: std::sync::OnceLock::new(),
         })
     }
 
@@ -475,6 +490,33 @@ impl Embedder {
         }
         *guard = Some(Arc::clone(&loaded));
         Ok(loaded)
+    }
+
+    /// SHL-V1.29-1: Resolve the pad token id once, caching on the embedder.
+    ///
+    /// Returns the id used to fill `input_ids` below `max_length` during
+    /// batched inference. Priority:
+    ///   1. `tokenizer.get_padding().map(|p| p.pad_id)` — the tokenizer's
+    ///      declared pad id from `tokenizer.json` when a padding section
+    ///      is present.
+    ///   2. `model_config.pad_id` — preset-declared fallback.
+    ///
+    /// Every call after the first short-circuits on the cached `OnceLock`
+    /// value so `embed_batch` pays tokenizer-mutex cost exactly once.
+    fn pad_id(&self) -> Result<i64, EmbedderError> {
+        if let Some(&cached) = self.pad_id.get() {
+            return Ok(cached);
+        }
+        let tokenizer = self.tokenizer()?;
+        let resolved: i64 = tokenizer
+            .get_padding()
+            .map(|p| p.pad_id as i64)
+            .unwrap_or(self.model_config.pad_id);
+        // Last-writer wins is acceptable — get_padding() is deterministic
+        // for the tokenizer, and `model_config.pad_id` is immutable, so
+        // every racer computes the same value.
+        let _ = self.pad_id.set(resolved);
+        Ok(resolved)
     }
 
     /// Counts the number of tokens in the given text using the configured tokenizer.
@@ -809,8 +851,13 @@ impl Embedder {
             .unwrap_or(0)
             .min(self.max_length);
 
-        // Create padded arrays
-        let input_ids_arr = pad_2d_i64(&input_ids, max_len, 0);
+        // SHL-V1.29-1: Read the pad id from the tokenizer (cached on first
+        // call). `input_ids` uses the model-declared pad token; the attention
+        // mask always pads with `0` regardless — a `0` mask entry zeroes the
+        // padded position at attention time, which is the whole point of the
+        // mask.
+        let input_pad_id = self.pad_id()?;
+        let input_ids_arr = pad_2d_i64(&input_ids, max_len, input_pad_id);
         let attention_mask_arr = pad_2d_i64(&attention_mask, max_len, 0);
 
         // Create tensors
@@ -1232,6 +1279,117 @@ mod tests {
         assert!(v.is_empty());
     }
 
+    // TC-ADV-1.29-1: normalize_l2 has no numeric validation. If the input
+    // contains NaN, norm_sq becomes NaN, `norm_sq > 0.0` is false, and the
+    // NaN passes through unchanged. If the input contains Inf, norm_sq is
+    // Inf, `inv_norm = 1/Inf = 0`, and every Inf × 0.0 = NaN.
+    //
+    // Pin the current behaviour so a future finite-check refactor is
+    // deliberate.
+
+    #[test]
+    fn test_normalize_l2_passes_nan_through() {
+        let v = normalize_l2(vec![1.0, f32::NAN, 3.0]);
+        assert_eq!(v.len(), 3);
+        // norm_sq = 1 + NaN + 9 = NaN, `NaN > 0.0` = false, fall through
+        // branch leaves v untouched.
+        assert_eq!(
+            v[0], 1.0,
+            "AUDIT-FOLLOWUP (TC-ADV-1.29-1): NaN in input short-circuits \
+             normalization — values passed through verbatim"
+        );
+        assert!(v[1].is_nan());
+        assert_eq!(v[2], 3.0);
+    }
+
+    #[test]
+    fn test_normalize_l2_pure_nan_input() {
+        let v = normalize_l2(vec![f32::NAN; 4]);
+        assert_eq!(v.len(), 4);
+        assert!(
+            v.iter().all(|x| x.is_nan()),
+            "AUDIT-FOLLOWUP (TC-ADV-1.29-1): all-NaN input stays all-NaN — \
+             no error, no sanitization"
+        );
+    }
+
+    #[test]
+    fn test_normalize_l2_inf_input_collapses_to_nan() {
+        // norm_sq = Inf + Inf + Inf = Inf, inv_norm = 1/Inf = 0, every
+        // multiply-by-zero on an Inf gives NaN (not 0). Pin that behaviour.
+        let v = normalize_l2(vec![f32::INFINITY, f32::INFINITY, f32::INFINITY]);
+        assert_eq!(v.len(), 3);
+        assert!(
+            v.iter().all(|x| x.is_nan()),
+            "AUDIT-FOLLOWUP (TC-ADV-1.29-1): Inf input × (1/Inf=0) = NaN — \
+             the output is corrupted silently, got {:?}",
+            v
+        );
+    }
+
+    #[test]
+    fn test_normalize_l2_neg_inf_input_collapses_to_nan() {
+        let v = normalize_l2(vec![f32::NEG_INFINITY, 0.0, 0.0]);
+        // norm_sq = Inf (squaring NEG_INFINITY), same short-circuit as above.
+        assert!(
+            v[0].is_nan(),
+            "AUDIT-FOLLOWUP (TC-ADV-1.29-1): -Inf in input yields NaN after \
+             normalization — got {}",
+            v[0]
+        );
+    }
+
+    // TC-ADV-1.29-2: embed_batch does not validate ORT output before
+    // Embedding::new. The load-bearing contract test we can land without
+    // a real ORT session is that Embedding::new accepts non-finite values
+    // (NaN, Inf). Since embed_batch eventually passes pooled rows through
+    // Embedding::new, a NaN-poisoned ORT output would become a NaN-poisoned
+    // Embedding and propagate into search scoring. Embedding::try_new DOES
+    // reject non-finite — but `embed_batch` calls `Embedding::new` (the
+    // infallible path) instead. This test pins that mismatch.
+
+    #[test]
+    fn test_embedding_new_accepts_nan_unlike_try_new() {
+        // Embedding::new is the path embed_batch uses — no validation.
+        let v = vec![f32::NAN; EMBEDDING_DIM];
+        let emb = Embedding::new(v);
+        assert_eq!(emb.len(), EMBEDDING_DIM);
+        // The resulting Embedding carries NaN — anything that downstream
+        // consumer uses for scoring will be corrupted.
+        assert!(
+            emb.as_slice().iter().all(|x| x.is_nan()),
+            "AUDIT-FOLLOWUP (TC-ADV-1.29-2): Embedding::new accepts NaN \
+             (unlike try_new) — embed_batch uses this path, so a NaN-poisoned \
+             ORT output silently propagates"
+        );
+        // Contrast with try_new (already tested at `tc33_try_new_nan_errors`)
+        // which would reject the same input.
+        let rejected = Embedding::try_new(vec![f32::NAN; EMBEDDING_DIM]);
+        assert!(
+            rejected.is_err(),
+            "try_new rejects NaN — embed_batch should switch to this path \
+             to catch poisoned ORT outputs"
+        );
+    }
+
+    #[test]
+    fn test_embedding_new_accepts_inf_unlike_try_new() {
+        let mut v = vec![0.0f32; EMBEDDING_DIM];
+        v[0] = f32::INFINITY;
+        v[1] = f32::NEG_INFINITY;
+        let emb = Embedding::new(v);
+        assert!(emb.as_slice()[0].is_infinite());
+        assert!(emb.as_slice()[1].is_infinite());
+
+        // try_new would reject this Inf-laden vector.
+        let mut v2 = vec![0.0f32; EMBEDDING_DIM];
+        v2[0] = f32::INFINITY;
+        assert!(
+            Embedding::try_new(v2).is_err(),
+            "try_new rejects +Inf — embed_batch should use it"
+        );
+    }
+
     // ===== Pooling strategy tests =====
     //
     // These exercise mean_pool / cls_pool / last_token_pool with synthetic
@@ -1604,6 +1762,8 @@ mod tests {
                 input_names: crate::embedder::models::InputNames::bert(),
                 output_name: "last_hidden_state".to_string(),
                 pooling: crate::embedder::models::PoolingStrategy::Mean,
+                approx_download_bytes: None,
+                pad_id: 0,
             }
         }
 
@@ -1709,6 +1869,8 @@ mod tests {
                 input_names: crate::embedder::models::InputNames::bert(),
                 output_name: "last_hidden_state".to_string(),
                 pooling: crate::embedder::models::PoolingStrategy::Mean,
+                approx_download_bytes: None,
+                pad_id: 0,
             };
 
             // Point CQS_ONNX_DIR at our incomplete dir (has tokenizer but no model)
@@ -1758,6 +1920,8 @@ mod tests {
                 input_names: crate::embedder::models::InputNames::bert(),
                 output_name: "last_hidden_state".to_string(),
                 pooling: crate::embedder::models::PoolingStrategy::Mean,
+                approx_download_bytes: None,
+                pad_id: 0,
             });
             std::env::remove_var("CQS_ONNX_DIR");
 

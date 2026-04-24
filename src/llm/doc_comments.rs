@@ -218,7 +218,11 @@ pub fn doc_comment_pass(
         "Cache check complete"
     );
 
-    // Sort: no doc first, then thin doc, by content length descending (meatier functions first)
+    // Sort: no doc first, then thin doc, by content length descending (meatier functions first).
+    // AC-V1.29-7: tail-tiebreak on chunk id (unique per chunk) so two candidates
+    // with identical doc-presence and content-length can't swap places across
+    // runs — the subsequent `uncached.truncate(uncached_cap)` would otherwise
+    // produce non-deterministic selection under the cap.
     uncached.sort_by(|a, b| {
         let a_no_doc = a.doc.as_ref().is_none_or(|d| d.trim().is_empty());
         let b_no_doc = b.doc.as_ref().is_none_or(|d| d.trim().is_empty());
@@ -226,6 +230,7 @@ pub fn doc_comment_pass(
         b_no_doc
             .cmp(&a_no_doc)
             .then_with(|| b.content.len().cmp(&a.content.len()))
+            .then_with(|| a.id.cmp(&b.id))
     });
 
     // Apply max_docs cap (across cached + uncached)

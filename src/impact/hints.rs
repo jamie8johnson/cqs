@@ -255,19 +255,50 @@ pub fn compute_risk_and_tests(
 
 /// Find the most-called functions in the codebase (hotspots).
 /// Returns [`Hotspot`] entries sorted by caller count descending.
+///
+/// PF-V1.29-4: previously allocated a `String` per callee (via `name.to_string()`)
+/// into a full `Vec<Hotspot>` before sorting and truncating to `top_n`. For a
+/// graph with 50k+ callees and `top_n = 5` this produced ~50k throwaway
+/// strings. Now uses a bounded min-heap keyed on `caller_count`: the heap
+/// never exceeds `top_n` entries, and `Arc::clone` on the name is a refcount
+/// bump (not an allocation). Only the surviving `top_n` names are converted
+/// to owned `String`s at the end.
 pub fn find_hotspots(graph: &CallGraph, top_n: usize) -> Vec<crate::health::Hotspot> {
     let _span = tracing::info_span!("find_hotspots", top_n).entered();
 
-    let mut hotspots: Vec<crate::health::Hotspot> = graph
-        .reverse
-        .iter()
-        .map(|(name, callers)| crate::health::Hotspot {
+    if top_n == 0 {
+        return Vec::new();
+    }
+
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    use std::sync::Arc;
+
+    // Min-heap on caller_count: smallest element sits at `peek()`, so the
+    // heap efficiently rejects entries that can't crack the top-N.
+    let mut heap: BinaryHeap<(Reverse<usize>, Arc<str>)> = BinaryHeap::with_capacity(top_n);
+    for (name, callers) in graph.reverse.iter() {
+        let count = callers.len();
+        if heap.len() < top_n {
+            heap.push((Reverse(count), Arc::clone(name)));
+        } else if let Some(&(Reverse(min_count), _)) = heap.peek() {
+            if count > min_count {
+                heap.pop();
+                heap.push((Reverse(count), Arc::clone(name)));
+            }
+        }
+    }
+
+    // Drain the heap (unordered) and sort descending by caller_count for
+    // the caller-facing contract. Only top_n `to_string()` calls here.
+    let mut hotspots: Vec<crate::health::Hotspot> = heap
+        .into_iter()
+        .map(|(Reverse(caller_count), name)| crate::health::Hotspot {
             name: name.to_string(),
-            caller_count: callers.len(),
+            caller_count,
         })
         .collect();
-    hotspots.sort_by_key(|h| std::cmp::Reverse(h.caller_count));
-    hotspots.truncate(top_n);
+    hotspots.sort_by_key(|h| Reverse(h.caller_count));
     hotspots
 }
 

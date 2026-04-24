@@ -125,6 +125,38 @@ pub(crate) fn max_daemon_response_bytes() -> u64 {
     parse_env_u64("CQS_DAEMON_MAX_RESPONSE_BYTES", MAX_DAEMON_RESPONSE_BYTES)
 }
 
+// ============ SHL-V1.29-9: daemon periodic GC cadence ============
+
+/// Default idle-time periodic GC interval (seconds). The daemon checks
+/// for a tick every loop iteration; the actual prune only fires once
+/// this many seconds have passed since the last periodic sweep.
+pub(crate) const DAEMON_PERIODIC_GC_INTERVAL_SECS_DEFAULT: u64 = 1800; // 30 minutes
+
+/// Default minimum idle gap (seconds) between the last file event and a
+/// periodic GC tick. Prevents GC mid-burst during a long run of file
+/// changes.
+pub(crate) const DAEMON_PERIODIC_GC_IDLE_SECS_DEFAULT: u64 = 60;
+
+/// Resolve the periodic-GC interval honoring `CQS_DAEMON_PERIODIC_GC_INTERVAL_SECS`.
+/// Falls back to [`DAEMON_PERIODIC_GC_INTERVAL_SECS_DEFAULT`] when unset,
+/// empty, unparseable, or zero.
+pub(crate) fn daemon_periodic_gc_interval_secs() -> u64 {
+    parse_env_u64(
+        "CQS_DAEMON_PERIODIC_GC_INTERVAL_SECS",
+        DAEMON_PERIODIC_GC_INTERVAL_SECS_DEFAULT,
+    )
+}
+
+/// Resolve the periodic-GC idle gap honoring `CQS_DAEMON_PERIODIC_GC_IDLE_SECS`.
+/// Falls back to [`DAEMON_PERIODIC_GC_IDLE_SECS_DEFAULT`] when unset,
+/// empty, unparseable, or zero.
+pub(crate) fn daemon_periodic_gc_idle_secs() -> u64 {
+    parse_env_u64(
+        "CQS_DAEMON_PERIODIC_GC_IDLE_SECS",
+        DAEMON_PERIODIC_GC_IDLE_SECS_DEFAULT,
+    )
+}
+
 // ============ SHL-V1.29-2: batch stdin line cap ============
 
 /// Default cap on a single batch stdin / daemon line. Matches

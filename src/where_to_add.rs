@@ -205,13 +205,7 @@ fn suggest_placement_with_options_core<Mode>(
         .map(|(f, _, _)| f.to_string_lossy().into_owned())
         .collect();
     let origin_refs: Vec<&str> = origin_strings.iter().map(|s| s.as_str()).collect();
-    let mut all_origins_chunks = match store.get_chunks_by_origins_batch(&origin_refs) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to batch-fetch file chunks for pattern extraction");
-            HashMap::new()
-        }
-    };
+    let mut all_origins_chunks = store.get_chunks_by_origins_batch(&origin_refs)?;
 
     // Build suggestions
     let mut suggestions = Vec::with_capacity(file_scores.len());

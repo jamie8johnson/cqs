@@ -93,15 +93,23 @@ pub enum AuxModelError {
     InvalidConfig(String),
 }
 
-/// Expand a leading `~/` against `$HOME`.
+/// Expand a leading `~/`, `~\`, or bare `~` against `$HOME`.
 ///
-/// Returns the path unchanged when the input is absolute, relative, or
-/// `$HOME` can't be resolved. Mirrors the existing expansion in
-/// `splade::resolve_splade_model_dir` so env-var semantics stay identical.
+/// Returns the path unchanged when the input is absolute (without a tilde
+/// prefix), relative, or `$HOME` can't be resolved. Mirrors the existing
+/// expansion in `splade::resolve_splade_model_dir` so env-var semantics
+/// stay identical.
+///
+/// PB-V1.29-9: Also accept bare `~` (which should resolve to `$HOME`)
+/// and the Windows separator `~\` so a TOML config authored on Windows
+/// survives the trip through `home_dir`.
 fn expand_tilde(raw: &str) -> PathBuf {
-    if let Some(stripped) = raw.strip_prefix("~/") {
+    if raw == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(raw));
+    }
+    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix(r"~\")) {
         if let Some(home) = dirs::home_dir() {
-            return home.join(stripped);
+            return home.join(rest);
         }
     }
     PathBuf::from(raw)
@@ -119,29 +127,67 @@ fn expand_tilde(raw: &str) -> PathBuf {
 /// `./relative/path` as a repo id, but we also don't want to guess about
 /// bare `foo/bar` which is a valid repo id.
 fn is_path_like(raw: &str) -> bool {
-    raw.starts_with('/')
+    // PB-V1.29-9: also catch bare `~` and the Windows-separator form `~\`
+    // so detection matches `expand_tilde`'s acceptance set.
+    raw == "~"
+        || raw.starts_with('/')
         || raw.starts_with("~/")
+        || raw.starts_with(r"~\")
         || raw.starts_with("\\\\")
         || std::path::Path::new(raw).is_absolute()
 }
 
-/// Build an [`AuxModelConfig`] from a concrete directory, using the
-/// layout convention for `kind`.
+/// EX-V1.29-9: On-disk layout template for an auxiliary model bundle.
 ///
-/// SPLADE: `{dir}/model.onnx`, `{dir}/tokenizer.json`.
-/// Reranker: `{dir}/onnx/model.onnx`, `{dir}/tokenizer.json`.
+/// The prior `config_from_dir(kind, ...)` hardcoded a layout per
+/// `AuxModelKind`, which meant every new preset had to match one of the
+/// two baked-in shapes (`model.onnx` at root for SPLADE, `onnx/model.onnx`
+/// for reranker). Newer HF repos and custom exports don't always fit; a
+/// preset now carries its own layout via [`AuxModelKind::default_layout`]
+/// with room for per-preset overrides.
+///
+/// Paths are joined directly without separator canonicalization — callers
+/// supply already-correct filenames for the target platform. Forward
+/// slashes work on all supported platforms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirLayout {
+    /// Filename of the ONNX model relative to the preset directory
+    /// (e.g. `"model.onnx"` for SPLADE, `"onnx/model.onnx"` for reranker).
+    pub onnx_rel_path: &'static str,
+    /// Filename of the tokenizer JSON relative to the preset directory
+    /// (e.g. `"tokenizer.json"`).
+    pub tokenizer_rel_path: &'static str,
+}
+
+impl AuxModelKind {
+    /// Default [`DirLayout`] for this kind, matching the HuggingFace
+    /// convention historically baked into `config_from_dir`.
+    fn default_layout(self) -> DirLayout {
+        match self {
+            AuxModelKind::Splade => DirLayout {
+                onnx_rel_path: "model.onnx",
+                tokenizer_rel_path: "tokenizer.json",
+            },
+            AuxModelKind::Reranker => DirLayout {
+                onnx_rel_path: "onnx/model.onnx",
+                tokenizer_rel_path: "tokenizer.json",
+            },
+        }
+    }
+}
+
+/// Build an [`AuxModelConfig`] from a concrete directory, using the
+/// layout supplied by the caller.
 ///
 /// Used by both the explicit-path branches (CLI/env/TOML) and the preset
-/// branch once the preset has been realized into a directory.
-fn config_from_dir(kind: AuxModelKind, dir: &Path, preset: Option<String>) -> AuxModelConfig {
-    let (model_path, tokenizer_path) = match kind {
-        AuxModelKind::Splade => (dir.join("model.onnx"), dir.join("tokenizer.json")),
-        AuxModelKind::Reranker => (dir.join("onnx/model.onnx"), dir.join("tokenizer.json")),
-    };
+/// branch once the preset has been realized into a directory. The explicit-
+/// path callers pass `kind.default_layout()`; preset callers may pass a
+/// preset-specific layout when the HF repo deviates from the default shape.
+fn config_from_dir(dir: &Path, layout: &DirLayout, preset: Option<String>) -> AuxModelConfig {
     AuxModelConfig {
         preset,
-        model_path,
-        tokenizer_path,
+        model_path: dir.join(layout.onnx_rel_path),
+        tokenizer_path: dir.join(layout.tokenizer_rel_path),
         repo: None,
     }
 }
@@ -176,20 +222,28 @@ pub fn preset(kind: AuxModelKind, name: &str) -> Option<AuxModelConfig> {
 /// expected cache path.
 fn splade_preset(name: &str) -> Option<AuxModelConfig> {
     let home = dirs::home_dir()?;
+    // EX-V1.29-9: presets carry an explicit layout. SPLADE's default is
+    // currently the same for every shipped preset, but wiring the layout
+    // through the preset registry means a future preset with a different
+    // on-disk shape (e.g. `onnx/model.onnx` from a newer HF repo layout)
+    // can override here without touching `config_from_dir`.
+    let layout = AuxModelKind::Splade.default_layout();
     match name {
         "ensembledistil" | "splade-ensembledistil" => {
             let dir = home.join(".cache/huggingface/splade-onnx");
-            Some(AuxModelConfig {
-                preset: Some("ensembledistil".into()),
-                ..config_from_dir(AuxModelKind::Splade, &dir, Some("ensembledistil".into()))
-            })
+            Some(config_from_dir(
+                &dir,
+                &layout,
+                Some("ensembledistil".into()),
+            ))
         }
         "splade-code-0.6b" | "splade-code" => {
             let dir = home.join(".cache/huggingface/splade-code-0.6B");
-            Some(AuxModelConfig {
-                preset: Some("splade-code-0.6b".into()),
-                ..config_from_dir(AuxModelKind::Splade, &dir, Some("splade-code-0.6b".into()))
-            })
+            Some(config_from_dir(
+                &dir,
+                &layout,
+                Some("splade-code-0.6b".into()),
+            ))
         }
         _ => None,
     }
@@ -367,7 +421,11 @@ fn resolve_raw(kind: AuxModelKind, raw: &str) -> Result<AuxModelConfig, AuxModel
                 expanded.display()
             )));
         }
-        return Ok(config_from_dir(kind, &expanded, None));
+        // EX-V1.29-9: explicit-path override uses the kind's default
+        // layout. An operator supplying a custom repo path is expected to
+        // lay it out in the canonical shape; if a future preset ships a
+        // deviating layout it owns the call to `config_from_dir` itself.
+        return Ok(config_from_dir(&expanded, &kind.default_layout(), None));
     }
     // Non-path-like input.
     match kind {

@@ -125,8 +125,13 @@ pub(crate) struct SearchArgs {
     pub context: Option<usize>,
 
     /// Expand results with parent context (small-to-big retrieval)
-    #[arg(long)]
-    pub expand: bool,
+    ///
+    /// API-V1.29-9: renamed from `--expand` to `--expand-parent` so it aligns
+    /// with the top-level `Cli::expand_parent` flag (`src/cli/definitions.rs`).
+    /// The old `--expand` spelling is kept as a visible alias for now so batch
+    /// scripts that still pass it don't break.
+    #[arg(long = "expand-parent", visible_alias = "expand")]
+    pub expand_parent: bool,
 
     /// Search only this reference index (skip project index)
     #[arg(long = "ref")]
@@ -177,7 +182,10 @@ pub(crate) struct ImpactArgs {
     /// Function name or file:function
     pub name: String,
     /// Caller depth (1=direct, 2+=transitive)
-    #[arg(long, default_value = "1")]
+    ///
+    /// API-V1.29-10: `-d` short flag added for parity with `OnboardArgs::depth`
+    /// which already accepts it.
+    #[arg(short = 'd', long, default_value = "1")]
     pub depth: usize,
     /// Suggest tests for untested callers
     #[arg(long)]
@@ -325,7 +333,10 @@ pub(crate) struct TestMapArgs {
     /// Function name or file:function
     pub name: String,
     /// Max call chain depth to search
-    #[arg(long, default_value = "5")]
+    ///
+    /// API-V1.29-10: `-d` short flag added for parity with `OnboardArgs::depth`
+    /// which already accepts it.
+    #[arg(short = 'd', long, default_value = "5")]
     pub depth: usize,
     /// Search for tests across all configured reference projects
     #[arg(long)]

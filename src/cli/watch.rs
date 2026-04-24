@@ -882,12 +882,11 @@ fn build_splade_encoder_for_watch() -> Option<cqs::splade::SpladeEncoder> {
 /// with `CQS_DAEMON_PERIODIC_GC_CAP` (parsed at first read).
 const DAEMON_PERIODIC_GC_CAP_DEFAULT: usize = 1000;
 
-/// #1024: Idle-time periodic GC interval. The daemon checks for a tick
-/// every loop iteration via `Instant::elapsed()`; the actual prune only
-/// fires when the last event was more than `DAEMON_PERIODIC_GC_IDLE_SECS`
-/// ago, so a long burst of file changes never triggers GC mid-burst.
-const DAEMON_PERIODIC_GC_INTERVAL_SECS: u64 = 1800; // 30 minutes
-const DAEMON_PERIODIC_GC_IDLE_SECS: u64 = 60;
+// #1024 / SHL-V1.29-9: Idle-time periodic GC interval and idle gap live
+// in `super::limits` behind `daemon_periodic_gc_interval_secs()` and
+// `daemon_periodic_gc_idle_secs()` so they honor
+// `CQS_DAEMON_PERIODIC_GC_INTERVAL_SECS` / `CQS_DAEMON_PERIODIC_GC_IDLE_SECS`,
+// matching the sibling `daemon_periodic_gc_cap()` resolver pattern below.
 
 /// #1024: Read `CQS_DAEMON_PERIODIC_GC_CAP` once and cache. Keeps the
 /// hot path free of repeated env lookups on every tick.
@@ -899,6 +898,33 @@ fn daemon_periodic_gc_cap() -> usize {
             .and_then(|v| v.parse().ok())
             .unwrap_or(DAEMON_PERIODIC_GC_CAP_DEFAULT)
     })
+}
+
+/// DS2-7: Clear the HNSW-dirty flag for `kind`, retrying once on a
+/// transient error (e.g. `SQLITE_BUSY` when a concurrent writer is
+/// finishing a transaction). If both attempts fail, emits a warn and
+/// returns — the caller keeps the in-memory HNSW but the persistent
+/// dirty flag stays `1`, forcing a full rebuild on the next daemon
+/// start. The single retry is enough to absorb the common lock-window
+/// race without extending the write-side lock hold time.
+fn clear_hnsw_dirty_with_retry(store: &Store, kind: cqs::HnswKind, context: &str) {
+    if let Err(e1) = store.set_hnsw_dirty(kind, false) {
+        tracing::debug!(
+            error = %e1,
+            kind = ?kind,
+            context,
+            "First clear-dirty attempt failed, retrying once"
+        );
+        if let Err(e2) = store.set_hnsw_dirty(kind, false) {
+            tracing::warn!(
+                first_error = %e1,
+                retry_error = %e2,
+                kind = ?kind,
+                context,
+                "Failed to clear HNSW dirty flag after retry — unnecessary rebuild on next daemon start"
+            );
+        }
+    }
 }
 
 /// #1024: Run the daemon's startup GC sweep — Pass 1 (drop chunks for
@@ -999,8 +1025,8 @@ fn run_daemon_startup_gc(
 }
 
 /// #1024: Run the periodic idle-time GC sweep. Called from the main loop
-/// when `last_event` is older than `DAEMON_PERIODIC_GC_IDLE_SECS` and
-/// the previous GC ran more than `DAEMON_PERIODIC_GC_INTERVAL_SECS` ago.
+/// when `last_event` is older than `daemon_periodic_gc_idle_secs()` and
+/// the previous GC ran more than `daemon_periodic_gc_interval_secs()` ago.
 ///
 /// Bounded: examines at most `daemon_periodic_gc_cap()` distinct origins
 /// per pass so a single tick never holds the write transaction longer
@@ -1822,8 +1848,9 @@ pub fn cmd_watch(
     let mut last_cache_evict = std::time::Instant::now();
 
     // #1024: Track last periodic GC tick. Initialised to "now" so the
-    // first periodic sweep doesn't fire until DAEMON_PERIODIC_GC_INTERVAL_SECS
-    // after startup — the startup pass already covered the initial state.
+    // first periodic sweep doesn't fire until the full interval
+    // (`daemon_periodic_gc_interval_secs()`) has elapsed after startup —
+    // the startup pass already covered the initial state.
     // Disabled when --serve is off (this is a daemon-only feature) or
     // when CQS_DAEMON_PERIODIC_GC=0.
     let periodic_gc_enabled =
@@ -1943,10 +1970,10 @@ pub fn cmd_watch(
                     // #1024: Idle-time periodic GC. Only fires when
                     //   (a) `--serve` is on AND `CQS_DAEMON_PERIODIC_GC` != "0",
                     //   (b) the last actual file event was more than
-                    //       DAEMON_PERIODIC_GC_IDLE_SECS ago (so a long burst
-                    //       of edits never triggers GC mid-burst), AND
+                    //       `daemon_periodic_gc_idle_secs()` ago (so a long
+                    //       burst of edits never triggers GC mid-burst), AND
                     //   (c) the previous tick was more than
-                    //       DAEMON_PERIODIC_GC_INTERVAL_SECS ago.
+                    //       `daemon_periodic_gc_interval_secs()` ago.
                     // The bounded sweep (cap = daemon_periodic_gc_cap()) keeps
                     // each tick's write transaction short.
                     //
@@ -1956,9 +1983,9 @@ pub fn cmd_watch(
                     // on the next interval.
                     if periodic_gc_enabled
                         && state.last_event.elapsed()
-                            >= Duration::from_secs(DAEMON_PERIODIC_GC_IDLE_SECS)
+                            >= Duration::from_secs(super::limits::daemon_periodic_gc_idle_secs())
                         && last_periodic_gc.elapsed()
-                            >= Duration::from_secs(DAEMON_PERIODIC_GC_INTERVAL_SECS)
+                            >= Duration::from_secs(super::limits::daemon_periodic_gc_interval_secs())
                     {
                         match try_acquire_index_lock(&cqs_dir) {
                             Ok(Some(gc_lock)) => {
@@ -2284,9 +2311,7 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                         let n = index.len();
                         state.hnsw_index = Some(index);
                         state.incremental_count = 0;
-                        if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Enriched, false) {
-                            tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag — unnecessary rebuild on next load");
-                        }
+                        clear_hnsw_dirty_with_retry(store, cqs::HnswKind::Enriched, "full_rebuild");
                         info!(vectors = n, "HNSW index rebuilt (full)");
                         if !cfg.quiet {
                             println!("  HNSW index: {} vectors (full rebuild)", n);
@@ -2330,9 +2355,11 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                 match super::commands::build_hnsw_base_index(store, cfg.cqs_dir) {
                     Ok(Some(n)) => {
                         info!(vectors = n, "Base HNSW index rebuilt");
-                        if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Base, false) {
-                            tracing::warn!(error = %e, "Failed to clear base HNSW dirty flag — unnecessary rebuild on next load");
-                        }
+                        clear_hnsw_dirty_with_retry(
+                            store,
+                            cqs::HnswKind::Base,
+                            "full_rebuild_base",
+                        );
                         if !cfg.quiet {
                             println!("  HNSW base index: {} vectors (full rebuild)", n);
                         }
@@ -2364,10 +2391,12 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                                     // Save updated index to disk for search processes
                                     if let Err(e) = index.save(cfg.cqs_dir, "index") {
                                         warn!(error = %e, "Failed to save HNSW after incremental insert");
-                                    } else if let Err(e) =
-                                        store.set_hnsw_dirty(cqs::HnswKind::Enriched, false)
-                                    {
-                                        tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag — unnecessary rebuild on next load");
+                                    } else {
+                                        clear_hnsw_dirty_with_retry(
+                                            store,
+                                            cqs::HnswKind::Enriched,
+                                            "incremental_insert",
+                                        );
                                     }
                                     info!(
                                         inserted = n,
@@ -2687,6 +2716,22 @@ mod tests {
     use notify::EventKind;
     use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
+    use std::sync::LazyLock;
+
+    // RM-V1.29-8: shared test fixtures. Previously each call to
+    // `test_watch_config*` leaked a fresh `Parser` / `OnceLock` /
+    // `ModelConfig` / `RwLock<None>` on the heap, which piled up across
+    // the ~two dozen watch tests. Every one of these is identical across
+    // calls, so we keep exactly one `&'static` copy per type. The
+    // `test_watch_config_with_gitignore` helper still has to leak its
+    // per-call matcher (each caller passes a distinct `Gitignore`) — but
+    // the shared four fields no longer leak on every call.
+    static TEST_PARSER: LazyLock<CqParser> = LazyLock::new(|| CqParser::new().unwrap());
+    static TEST_EMBEDDER: LazyLock<std::sync::OnceLock<std::sync::Arc<Embedder>>> =
+        LazyLock::new(std::sync::OnceLock::new);
+    static TEST_MODEL_CONFIG: LazyLock<ModelConfig> = LazyLock::new(ModelConfig::default_model);
+    static TEST_GITIGNORE_NONE: LazyLock<std::sync::RwLock<Option<ignore::gitignore::Gitignore>>> =
+        LazyLock::new(|| std::sync::RwLock::new(None));
 
     fn make_event(paths: Vec<PathBuf>, kind: EventKind) -> notify::Event {
         notify::Event {
@@ -2703,22 +2748,20 @@ mod tests {
         notes_path: &'a Path,
         supported_ext: &'a HashSet<&'a str>,
     ) -> WatchConfig<'a> {
-        // These fields are unused by collect_events but required by the struct.
-        // We leak a parser since tests don't call process_file_changes.
-        let parser = Box::leak(Box::new(CqParser::new().unwrap()));
-        let embedder = Box::leak(Box::new(std::sync::OnceLock::new()));
-        let model_config = Box::leak(Box::new(ModelConfig::default_model()));
-        let gitignore = Box::leak(Box::new(std::sync::RwLock::new(None)));
+        // These fields are unused by collect_events but required by the
+        // struct. The four fixtures are shared `LazyLock` statics so
+        // tests reference a single `&'static` copy instead of leaking a
+        // fresh heap allocation on every call.
         WatchConfig {
             root,
             cqs_dir,
             notes_path,
             supported_ext,
-            parser,
-            embedder,
+            parser: &TEST_PARSER,
+            embedder: &TEST_EMBEDDER,
             quiet: true,
-            model_config,
-            gitignore,
+            model_config: &TEST_MODEL_CONFIG,
+            gitignore: &TEST_GITIGNORE_NONE,
             splade_encoder: None,
         }
     }
@@ -2731,19 +2774,19 @@ mod tests {
         supported_ext: &'a HashSet<&'a str>,
         matcher: ignore::gitignore::Gitignore,
     ) -> WatchConfig<'a> {
-        let parser = Box::leak(Box::new(CqParser::new().unwrap()));
-        let embedder = Box::leak(Box::new(std::sync::OnceLock::new()));
-        let model_config = Box::leak(Box::new(ModelConfig::default_model()));
+        // `parser` / `embedder` / `model_config` are shared statics (see
+        // comment above); the per-call `matcher` still needs a distinct
+        // `&'static RwLock`, so we leak that one field only.
         let gitignore = Box::leak(Box::new(std::sync::RwLock::new(Some(matcher))));
         WatchConfig {
             root,
             cqs_dir,
             notes_path,
             supported_ext,
-            parser,
-            embedder,
+            parser: &TEST_PARSER,
+            embedder: &TEST_EMBEDDER,
             quiet: true,
-            model_config,
+            model_config: &TEST_MODEL_CONFIG,
             gitignore,
             splade_encoder: None,
         }

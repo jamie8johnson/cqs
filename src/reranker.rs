@@ -163,6 +163,16 @@ impl Reranker {
         results: &mut Vec<SearchResult>,
         limit: usize,
     ) -> Result<(), RerankerError> {
+        // OB-V1.29-1: entry span parity with `rerank_with_passages` so the
+        // CLI `rerank` path shows up in `cqs trace`-style captures with the
+        // same tag and fields.
+        let _span = tracing::info_span!(
+            "rerank",
+            count = results.len(),
+            limit,
+            query_len = query.len()
+        )
+        .entered();
         // PF-V1.25-5: borrow passages from results directly instead of
         // cloning content strings. The previous impl did
         // `results.iter().map(|r| r.chunk.content.clone()).collect()`,

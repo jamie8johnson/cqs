@@ -91,7 +91,22 @@ pub(crate) fn cmd_project(
     subcmd: &ProjectCommand,
     model_config: &ModelConfig,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_project").entered();
+    // OB-V1.29-3: per-subcommand span so traces distinguish register / list /
+    // remove / search and carry the discriminating field (project name or
+    // query). The previous single `cmd_project` span collapsed four very
+    // different code paths into one trace entry.
+    let _span = match subcmd {
+        ProjectCommand::Register { name, .. } => {
+            tracing::info_span!("cmd_project_register", name = %name).entered()
+        }
+        ProjectCommand::List { .. } => tracing::info_span!("cmd_project_list").entered(),
+        ProjectCommand::Remove { name, .. } => {
+            tracing::info_span!("cmd_project_remove", name = %name).entered()
+        }
+        ProjectCommand::Search { query, limit, .. } => {
+            tracing::info_span!("cmd_project_search", query = %query, limit).entered()
+        }
+    };
     match subcmd {
         ProjectCommand::Register { name, path } => {
             let abs_path = if path.is_absolute() {

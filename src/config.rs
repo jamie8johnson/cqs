@@ -52,6 +52,30 @@ pub fn is_wsl() -> bool {
     false
 }
 
+/// Check whether a path lives under a WSL DrvFS automount
+/// (`/mnt/<letter>/...`), where advisory file locking is unreliable and
+/// NTFS reports permission bits as `0o777`.
+///
+/// PB-V1.29-6: Consolidates the three inline `"/mnt/"` prefix checks
+/// (`hnsw/persist.rs`, `project.rs`, and the per-path permission gate in
+/// this file) into a single helper. The `/mnt/[a-z]/` pattern avoids
+/// false-positives on plain Linux hosts that legitimately mount
+/// filesystems below `/mnt/` (e.g. `/mnt/data/` on a native Linux server
+/// was being treated as WSL DrvFS by the naive prefix check).
+///
+/// Returns `false` for non-UTF8 paths (WSL DrvFS paths are always UTF-8
+/// under the Linux view) and for anything shorter than `/mnt/c/`.
+pub fn is_wsl_drvfs_path(path: &Path) -> bool {
+    let s = match path.to_str() {
+        Some(s) => s,
+        None => return false,
+    };
+    s.len() >= 7
+        && s.starts_with("/mnt/")
+        && s.as_bytes()[5].is_ascii_lowercase()
+        && s.as_bytes()[6] == b'/'
+}
+
 /// Reference index configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReferenceConfig {
@@ -440,15 +464,9 @@ impl Config {
         {
             use std::os::unix::fs::PermissionsExt;
             // Skip permission check on WSL (NTFS always reports 777) or Windows drive mounts.
-            // SEC-13: Use `/mnt/[a-z]/` pattern to match WSL drive mounts specifically,
-            // not arbitrary /mnt/ subdirectories (e.g., /mnt/data/ on native Linux).
-            let is_wsl_mount = is_wsl()
-                || path.to_str().is_some_and(|p| {
-                    p.len() >= 7
-                        && p.starts_with("/mnt/")
-                        && p.as_bytes()[5].is_ascii_lowercase()
-                        && p.as_bytes()[6] == b'/'
-                });
+            // PB-V1.29-6: Shared `is_wsl_drvfs_path` keeps the `/mnt/[a-z]/`
+            // logic in one spot rather than duplicating it in every call site.
+            let is_wsl_mount = is_wsl() || is_wsl_drvfs_path(path);
             if !is_wsl_mount {
                 if let Ok(meta) = std::fs::metadata(path) {
                     let mode = meta.permissions().mode();

@@ -46,6 +46,12 @@ pub struct EmbeddingCache {
     /// constructor spinning up its own worker pool.
     rt: Arc<tokio::runtime::Runtime>,
     max_size_bytes: u64,
+    /// DS2-5: serializes `evict()` calls so two parallel invocations can't both
+    /// measure the same logical size and issue overlapping `LIMIT ?` DELETEs.
+    /// Size/AVG/DELETE inside `evict()` are further wrapped in a single
+    /// transaction so the snapshot is consistent against concurrent
+    /// `write_batch` traffic.
+    evict_lock: std::sync::Mutex<()>,
 }
 
 impl EmbeddingCache {
@@ -75,7 +81,20 @@ impl EmbeddingCache {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+                // PB-V1.29-7: best-effort parent chmod. On NFS / read-only
+                // mounts / filesystems without unix permissions this fails,
+                // but the cache itself is still usable — log and continue
+                // instead of refusing to open. Mirrors the DB-file chmod
+                // warn arm below.
+                if let Err(e) =
+                    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                {
+                    tracing::warn!(
+                        path = %parent.display(),
+                        error = %e,
+                        "Failed to set embedding cache parent dir permissions to 0o700"
+                    );
+                }
             }
         }
 
@@ -165,6 +184,7 @@ impl EmbeddingCache {
             pool,
             rt,
             max_size_bytes,
+            evict_lock: std::sync::Mutex::new(()),
         })
     }
 
@@ -349,15 +369,36 @@ impl EmbeddingCache {
     }
 
     /// Evict oldest entries if cache exceeds max size.
+    ///
+    /// DS2-5: the size / AVG / DELETE trio runs inside a single
+    /// `pool.begin()` transaction so concurrent `write_batch` traffic cannot
+    /// invalidate the measurement between steps. An in-process `evict_lock`
+    /// mutex further prevents two `evict()` callers from overlapping their
+    /// `LIMIT ?` prefixes and each over-counting `rows_affected()`.
     pub fn evict(&self) -> Result<usize, CacheError> {
         let _span = tracing::info_span!("cache_evict").entered();
 
+        // Serialize evicts across threads. Mutex poisoning is non-fatal here:
+        // if the previous holder panicked we still want to attempt an evict.
+        let _guard = self
+            .evict_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         self.rt.block_on(async {
+            let mut tx = match self.pool.begin().await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Cache evict begin-tx failed");
+                    return Ok(0);
+                }
+            };
+
             // Use logical data size, not physical pages (DS-49)
             let size: i64 = match sqlx::query_scalar(
                 "SELECT COALESCE(SUM(LENGTH(embedding)), 0) + COUNT(*) * 200 FROM embedding_cache",
             )
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *tx)
             .await
             {
                 Ok(v) => v,
@@ -374,15 +415,18 @@ impl EmbeddingCache {
 
             let excess = size as u64 - self.max_size_bytes;
             // Estimate per-entry size from actual data
-            let avg_entry: i64 = sqlx::query_scalar(
+            let avg_entry: i64 = match sqlx::query_scalar(
                 "SELECT COALESCE(AVG(LENGTH(embedding) + 200), 4200) FROM embedding_cache",
             )
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *tx)
             .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "Cache evict avg-entry query failed, using default");
-                4200
-            });
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Cache evict avg-entry query failed, using default");
+                    4200
+                }
+            };
             // AC-1: don't force minimum 100 deletions — delete only what's needed
             let entries_to_delete = (excess / avg_entry.max(1) as u64).max(1);
 
@@ -391,8 +435,10 @@ impl EmbeddingCache {
                  (SELECT rowid FROM embedding_cache ORDER BY created_at ASC LIMIT ?1)",
             )
             .bind(entries_to_delete as i64)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+
+            tx.commit().await?;
 
             let evicted = result.rows_affected() as usize;
             tracing::info!(evicted, "Cache eviction complete");
@@ -488,6 +534,39 @@ impl EmbeddingCache {
             tracing::info!(pruned, "Cache pruned");
             Ok(pruned)
         })
+    }
+}
+
+impl Drop for EmbeddingCache {
+    /// RM-V1.29-7: mirror `Store::drop`. Best-effort `PRAGMA wal_checkpoint(TRUNCATE)`
+    /// on daemon shutdown so the embedding cache's `-wal` sidecar doesn't
+    /// accumulate hundreds of MB across weeks of daemon restarts. Errors and
+    /// panics are swallowed (Drop can't fail). `catch_unwind` guards against
+    /// `block_on` panicking when the cache is dropped from inside a tokio
+    /// runtime.
+    fn drop(&mut self) {
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Err(e) = self.rt.block_on(async {
+                sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .execute(&self.pool)
+                    .await
+            }) {
+                tracing::warn!(
+                    error = %e,
+                    "EmbeddingCache WAL checkpoint on drop failed (non-fatal)"
+                );
+            }
+        })) {
+            let msg = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                .unwrap_or("unknown panic");
+            tracing::warn!(
+                panic = msg,
+                "WAL checkpoint panic caught in EmbeddingCache::drop (non-fatal)"
+            );
+        }
     }
 }
 
@@ -731,6 +810,7 @@ mod tests {
             pool,
             rt,
             max_size_bytes: 1, // 1 byte — everything should be evicted
+            evict_lock: std::sync::Mutex::new(()),
         };
 
         let entries: Vec<_> = (0..10)
@@ -961,6 +1041,10 @@ pub struct QueryCache {
     /// default 100 MB). Read at `open` time and used by [`Self::evict`] —
     /// no resize support, daemon restart picks up env changes.
     max_size_bytes: u64,
+    /// DS2-5: serializes `evict()` calls so two parallel invocations can't
+    /// both measure the same size and issue overlapping `LIMIT ?` DELETEs.
+    /// Size/AVG/DELETE inside `evict()` are wrapped in a single transaction.
+    evict_lock: std::sync::Mutex<()>,
 }
 
 impl QueryCache {
@@ -990,7 +1074,18 @@ impl QueryCache {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+                // PB-V1.29-7: best-effort parent chmod (same rationale as in
+                // `EmbeddingCache::open`). Log and continue on failure rather
+                // than refusing to open the query cache.
+                if let Err(e) =
+                    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                {
+                    tracing::warn!(
+                        path = %parent.display(),
+                        error = %e,
+                        "Failed to set query cache parent dir permissions to 0o700"
+                    );
+                }
             }
         }
 
@@ -1076,6 +1171,7 @@ impl QueryCache {
             pool,
             rt,
             max_size_bytes,
+            evict_lock: std::sync::Mutex::new(()),
         })
     }
 
@@ -1086,17 +1182,34 @@ impl QueryCache {
     /// P3 #124: mirrors [`EmbeddingCache::evict`]. Run from the same daemon
     /// periodic-eviction tick so disk usage stays bounded across long
     /// sessions.
+    ///
+    /// DS2-5: size / AVG / DELETE run in a single `pool.begin()` transaction
+    /// so concurrent `put()` traffic cannot invalidate the measurement
+    /// between steps. `evict_lock` serializes parallel evict callers.
     pub fn evict(&self) -> Result<usize, CacheError> {
         let _span = tracing::info_span!("query_cache_evict").entered();
 
+        let _guard = self
+            .evict_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         self.rt.block_on(async {
+            let mut tx = match self.pool.begin().await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Query cache evict begin-tx failed");
+                    return Ok(0);
+                }
+            };
+
             // Same logical-data measure as `EmbeddingCache::evict` (data + per-row
             // overhead). Page-count would over-report after deletions because the
             // SQLite file doesn't shrink without VACUUM.
             let size: i64 = match sqlx::query_scalar(
                 "SELECT COALESCE(SUM(LENGTH(embedding)), 0) + COUNT(*) * 200 FROM query_cache",
             )
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *tx)
             .await
             {
                 Ok(v) => v,
@@ -1111,15 +1224,18 @@ impl QueryCache {
             }
 
             let excess = size as u64 - self.max_size_bytes;
-            let avg_entry: i64 = sqlx::query_scalar(
+            let avg_entry: i64 = match sqlx::query_scalar(
                 "SELECT COALESCE(AVG(LENGTH(embedding) + 200), 4200) FROM query_cache",
             )
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *tx)
             .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "Query cache evict avg-entry query failed, using default");
-                4200
-            });
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Query cache evict avg-entry query failed, using default");
+                    4200
+                }
+            };
             let entries_to_delete = (excess / avg_entry.max(1) as u64).max(1);
 
             let result = sqlx::query(
@@ -1127,8 +1243,10 @@ impl QueryCache {
                  (SELECT rowid FROM query_cache ORDER BY ts ASC LIMIT ?1)",
             )
             .bind(entries_to_delete as i64)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+
+            tx.commit().await?;
 
             let evicted = result.rows_affected() as usize;
             tracing::info!(evicted, "Query cache eviction complete");
@@ -1247,6 +1365,37 @@ impl QueryCache {
             tracing::info!(pruned = rows, days, "Query cache pruned");
         }
         Ok(rows)
+    }
+}
+
+impl Drop for QueryCache {
+    /// RM-V1.29-7: mirror `Store::drop`. Best-effort `PRAGMA wal_checkpoint(TRUNCATE)`
+    /// on daemon shutdown so the query cache's `-wal` sidecar doesn't
+    /// accumulate over long-running daemon sessions. `catch_unwind` guards
+    /// against `block_on` panicking when dropped from inside a tokio runtime.
+    fn drop(&mut self) {
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Err(e) = self.rt.block_on(async {
+                sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .execute(&self.pool)
+                    .await
+            }) {
+                tracing::warn!(
+                    error = %e,
+                    "QueryCache WAL checkpoint on drop failed (non-fatal)"
+                );
+            }
+        })) {
+            let msg = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                .unwrap_or("unknown panic");
+            tracing::warn!(
+                panic = msg,
+                "WAL checkpoint panic caught in QueryCache::drop (non-fatal)"
+            );
+        }
     }
 }
 

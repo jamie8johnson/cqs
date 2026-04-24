@@ -373,7 +373,9 @@ impl<Mode> Store<Mode> {
     }
 
     /// Batch-fetch type users for multiple type names.
-    /// Returns type_name -> Vec<ChunkSummary>. Uses WHERE IN with 200 names per batch.
+    /// Returns type_name -> Vec<ChunkSummary>. PF-V1.29-3: batch size derives
+    /// from `max_rows_per_statement(1)` — the prior `200` was sized for the
+    /// pre-3.32 999-variable ceiling.
     pub fn get_type_users_batch(
         &self,
         type_names: &[&str],
@@ -389,7 +391,7 @@ impl<Mode> Store<Mode> {
         self.rt.block_on(async {
             let mut result: HashMap<String, Vec<ChunkSummary>> = HashMap::new();
 
-            const BATCH_SIZE: usize = 200;
+            const BATCH_SIZE: usize = max_rows_per_statement(1);
             for batch in type_names.chunks(BATCH_SIZE) {
                 let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
@@ -419,7 +421,9 @@ impl<Mode> Store<Mode> {
     }
 
     /// Batch-fetch types used by multiple chunk names.
-    /// Returns chunk_name -> Vec<(type_name, edge_kind)>. Uses WHERE IN with 200 names per batch.
+    /// Returns chunk_name -> Vec<(type_name, edge_kind)>. PF-V1.29-3: batch
+    /// size derives from `max_rows_per_statement(1)` — the prior `200` was
+    /// sized for the pre-3.32 999-variable ceiling.
     pub fn get_types_used_by_batch(
         &self,
         chunk_names: &[&str],
@@ -435,7 +439,7 @@ impl<Mode> Store<Mode> {
         self.rt.block_on(async {
             let mut result: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
-            const BATCH_SIZE: usize = 200;
+            const BATCH_SIZE: usize = max_rows_per_statement(1);
             for batch in chunk_names.chunks(BATCH_SIZE) {
                 let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
