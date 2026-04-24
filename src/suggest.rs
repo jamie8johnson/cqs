@@ -7,18 +7,15 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::impact::find_hotspots;
+use crate::limits::{dead_cluster_min_size, hotspot_min_callers, suggest_hotspot_pool};
 use crate::store::StoreError;
 use crate::{compute_risk_batch, normalize_slashes, RiskLevel, Store};
 
-/// Minimum dead functions in a single file to flag as a dead code cluster.
-const DEAD_CLUSTER_MIN_SIZE: usize = 5;
-
-/// Minimum caller count to consider a function an "untested hotspot."
-/// Shared with `health.rs` — keep in sync or extract to a shared constant.
-pub(crate) const HOTSPOT_MIN_CALLERS: usize = 5;
-
-/// Number of top hotspots to evaluate for risk patterns.
-const SUGGEST_HOTSPOT_POOL: usize = 20;
+// SHL-V1.29-7: the previous hardcoded thresholds (`5`/`5`/`20`) now scale
+// with corpus size via `crate::limits::*`. Env overrides —
+// `CQS_HOTSPOT_MIN_CALLERS`, `CQS_DEAD_CLUSTER_MIN_SIZE`,
+// `CQS_SUGGEST_HOTSPOT_POOL` — pin exact values when projects need
+// policy-stable thresholds across reindexes.
 
 /// A suggested note from pattern detection.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -44,11 +41,28 @@ pub fn suggest_notes<Mode>(
 ) -> Result<Vec<SuggestedNote>, StoreError> {
     let _span = tracing::info_span!("suggest_notes").entered();
 
+    // SHL-V1.29-7: fetch corpus size once; the detectors scale their
+    // thresholds off it. If stats fail (unlikely — tests still pass at 0)
+    // we degrade to chunk_count=0, which yields the minimum-floor defaults.
+    let chunk_count = match store.stats() {
+        Ok(s) => s.total_chunks as usize,
+        Err(e) => {
+            tracing::warn!(error = %e, "suggest_notes: stats() failed, using chunk_count=0");
+            0
+        }
+    };
+
     let mut suggestions = Vec::new();
 
     for (name, result) in [
-        ("detect_dead_clusters", detect_dead_clusters(store)),
-        ("detect_risk_patterns", detect_risk_patterns(store)),
+        (
+            "detect_dead_clusters",
+            detect_dead_clusters(store, chunk_count),
+        ),
+        (
+            "detect_risk_patterns",
+            detect_risk_patterns(store, chunk_count),
+        ),
         ("detect_stale_mentions", detect_stale_mentions(store, root)),
     ] {
         let _span = tracing::info_span!("detector", name).entered();
@@ -73,8 +87,12 @@ pub fn suggest_notes<Mode>(
     Ok(suggestions)
 }
 
-/// Detect files with 5+ dead (uncalled) functions.
-fn detect_dead_clusters<Mode>(store: &Store<Mode>) -> Result<Vec<SuggestedNote>, StoreError> {
+/// Detect files with many dead (uncalled) functions. Threshold scales with
+/// corpus size via `dead_cluster_min_size(chunk_count)`.
+fn detect_dead_clusters<Mode>(
+    store: &Store<Mode>,
+    chunk_count: usize,
+) -> Result<Vec<SuggestedNote>, StoreError> {
     let (confident, _) = store.find_dead_code(true)?;
 
     // Group by file
@@ -84,9 +102,10 @@ fn detect_dead_clusters<Mode>(store: &Store<Mode>) -> Result<Vec<SuggestedNote>,
         *by_file.entry(file).or_default() += 1;
     }
 
+    let min_size = dead_cluster_min_size(chunk_count);
     Ok(by_file
         .into_iter()
-        .filter(|(_, count)| *count >= DEAD_CLUSTER_MIN_SIZE)
+        .filter(|(_, count)| *count >= min_size)
         .map(|(file, count)| SuggestedNote {
             text: format!("{file} has {count} dead functions — consider cleanup"),
             sentiment: -0.5,
@@ -97,10 +116,14 @@ fn detect_dead_clusters<Mode>(store: &Store<Mode>) -> Result<Vec<SuggestedNote>,
 }
 
 /// Detect untested hotspots and high-risk functions.
-fn detect_risk_patterns<Mode>(store: &Store<Mode>) -> Result<Vec<SuggestedNote>, StoreError> {
+fn detect_risk_patterns<Mode>(
+    store: &Store<Mode>,
+    chunk_count: usize,
+) -> Result<Vec<SuggestedNote>, StoreError> {
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
-    let hotspots = find_hotspots(&graph, SUGGEST_HOTSPOT_POOL);
+    let pool = suggest_hotspot_pool(chunk_count);
+    let hotspots = find_hotspots(&graph, pool);
 
     if hotspots.is_empty() {
         return Ok(Vec::new());
@@ -110,14 +133,15 @@ fn detect_risk_patterns<Mode>(store: &Store<Mode>) -> Result<Vec<SuggestedNote>,
     let risks = compute_risk_batch(&names, &graph, &test_chunks);
 
     let mut suggestions = Vec::new();
+    let min_callers = hotspot_min_callers(chunk_count);
 
     for (risk, hotspot) in risks.iter().zip(hotspots.iter()) {
         let name = &hotspot.name;
         let caller_count = hotspot.caller_count;
         let mentions = vec![name.to_string()];
 
-        // Untested hotspot: HOTSPOT_MIN_CALLERS+ callers, 0 tests
-        if risk.caller_count >= HOTSPOT_MIN_CALLERS && risk.test_count == 0 {
+        // Untested hotspot: min_callers+ callers, 0 tests (SHL-V1.29-7)
+        if risk.caller_count >= min_callers && risk.test_count == 0 {
             suggestions.push(SuggestedNote {
                 text: format!("{name} has {caller_count} callers but no tests"),
                 sentiment: -0.5,

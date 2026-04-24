@@ -721,4 +721,114 @@ mod tests {
         assert!(result.is_ok());
         assert!(results.is_empty());
     }
+
+    // TC-HAP-1.29-3: happy-path + empty-input pins for `rerank` /
+    // `rerank_with_passages`.
+    //
+    // The `#[ignore]` test loads the ms-marco-MiniLM-L-6-v2 model on first
+    // use (~91 MB ONNX, one-time HF fetch), so it is opt-in. Run with:
+    //   cargo test --features gpu-index --lib reranker::tests -- --ignored
+    // The non-ignored counterpart exercises the empty-input shortcut for
+    // `rerank_with_passages` — no model load, runs on every PR.
+
+    use crate::parser::{ChunkType, Language};
+    use crate::store::ChunkSummary;
+    use std::path::PathBuf;
+
+    /// Build a minimal SearchResult whose `content` is the passage to score.
+    /// The rest of the ChunkSummary is filler — the reranker only looks at
+    /// `chunk.content` (for `rerank`) or the externally supplied passages
+    /// (for `rerank_with_passages`). `apply_rerank_scores` uses `chunk.id`
+    /// as the tie-break key, so give each stub a unique id.
+    fn stub_result(id: &str, content: &str) -> SearchResult {
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let chunk = ChunkSummary {
+            id: id.to_string(),
+            file: PathBuf::from("test.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: id.to_string(),
+            signature: format!("fn {id}()"),
+            content: content.to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash: hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        SearchResult { chunk, score: 0.0 }
+    }
+
+    /// TC-HAP-1.29-3a: seed three passages where the "baking sourdough" one
+    /// is clearly irrelevant to a Rust-async query. After rerank, the baking
+    /// passage must sort last. Gated `#[ignore]` because the first call
+    /// cold-loads the ms-marco MiniLM model (~91 MB ONNX).
+    #[test]
+    #[ignore = "loads cross-encoder model; run with --ignored"]
+    fn test_rerank_reorders_by_relevance() {
+        let reranker = Reranker::new().expect("reranker new");
+        // Order at input is intentionally NOT relevance order — we want to
+        // see that the reranker does the work, not that it preserves input
+        // ordering by accident.
+        let mut results = vec![
+            stub_result(
+                "bake",
+                "A step-by-step guide to bake sourdough bread at home.",
+            ),
+            stub_result(
+                "tokio",
+                "Tokio is an asynchronous runtime for Rust. It provides an \
+                 event loop and async APIs for network I/O.",
+            ),
+            stub_result(
+                "futures",
+                "The Future trait in Rust represents a value that may not be \
+                 ready yet. Use .await to drive it to completion on an async \
+                 runtime.",
+            ),
+        ];
+
+        reranker
+            .rerank("rust async await", &mut results, 3)
+            .expect("rerank");
+
+        assert_eq!(results.len(), 3, "rerank must preserve the full input set");
+        let last = results.last().expect("non-empty");
+        assert_eq!(
+            last.chunk.id,
+            "bake",
+            "baking-sourdough passage must rank last for a rust-async query. \
+             got order: {:?}",
+            results
+                .iter()
+                .map(|r| r.chunk.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        // Sanity: all three original chunk ids must still be present.
+        let ids: std::collections::HashSet<&str> =
+            results.iter().map(|r| r.chunk.id.as_str()).collect();
+        assert!(ids.contains("bake"));
+        assert!(ids.contains("tokio"));
+        assert!(ids.contains("futures"));
+    }
+
+    /// TC-HAP-1.29-3b: `rerank_with_passages` on empty input is a no-op —
+    /// the `results.len() <= 1` shortcut at line 214 fires before any model
+    /// load, so this test runs without the ONNX session.
+    #[test]
+    fn test_rerank_empty_input_returns_empty() {
+        let reranker = Reranker::new().expect("reranker new");
+        let mut results: Vec<SearchResult> = Vec::new();
+        let passages: Vec<&str> = Vec::new();
+        reranker
+            .rerank_with_passages("anything", &mut results, &passages, 10)
+            .expect("rerank_with_passages on empty input must be ok");
+        assert!(
+            results.is_empty(),
+            "empty input → empty output (no-op shortcut)"
+        );
+    }
 }

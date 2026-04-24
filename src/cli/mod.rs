@@ -881,11 +881,15 @@ mod tests {
     }
 
     // ===== apply_config_defaults tests =====
+    // EX-V1.29-8: tests inject argv via `apply_config_defaults_with_argv`
+    // so clap's `ValueSource::DefaultValue` resolves against the test's
+    // fake CLI, not the surrounding `cargo test ...` invocation.
 
     #[test]
     fn test_apply_config_defaults_respects_cli_flags() {
         // When CLI has non-default values, config should NOT override
-        let mut cli = Cli::try_parse_from(["cqs", "-n", "10", "-t", "0.6", "query"]).unwrap();
+        let argv = ["cqs", "-n", "10", "-t", "0.6", "query"];
+        let mut cli = Cli::try_parse_from(argv).unwrap();
         let config = cqs::config::Config {
             limit: Some(20),
             threshold: Some(0.9),
@@ -894,7 +898,7 @@ mod tests {
             verbose: Some(true),
             ..Default::default()
         };
-        config::apply_config_defaults(&mut cli, &config);
+        config::apply_config_defaults_with_argv(&mut cli, &config, argv);
 
         // CLI values should be preserved
         assert_eq!(cli.limit, 10);
@@ -905,7 +909,8 @@ mod tests {
 
     #[test]
     fn test_apply_config_defaults_applies_when_cli_has_defaults() {
-        let mut cli = Cli::try_parse_from(["cqs", "query"]).unwrap();
+        let argv = ["cqs", "query"];
+        let mut cli = Cli::try_parse_from(argv).unwrap();
         let config = cqs::config::Config {
             limit: Some(15),
             threshold: Some(0.7),
@@ -914,7 +919,7 @@ mod tests {
             verbose: Some(true),
             ..Default::default()
         };
-        config::apply_config_defaults(&mut cli, &config);
+        config::apply_config_defaults_with_argv(&mut cli, &config, argv);
 
         assert_eq!(cli.limit, 15);
         assert!((cli.threshold - 0.7).abs() < 0.001);
@@ -925,9 +930,10 @@ mod tests {
 
     #[test]
     fn test_apply_config_defaults_empty_config() {
-        let mut cli = Cli::try_parse_from(["cqs", "query"]).unwrap();
+        let argv = ["cqs", "query"];
+        let mut cli = Cli::try_parse_from(argv).unwrap();
         let config = cqs::config::Config::default();
-        config::apply_config_defaults(&mut cli, &config);
+        config::apply_config_defaults_with_argv(&mut cli, &config, argv);
 
         // Should keep CLI defaults
         assert_eq!(cli.limit, 5);
@@ -937,26 +943,51 @@ mod tests {
         assert!(!cli.verbose);
     }
 
+    /// EX-V1.29-8 regression: explicitly passing the clap default on the CLI
+    /// (e.g. `cqs -n 5 …` where 5 is the default) must be treated as
+    /// user-set. The pre-refactor code compared `cli.limit == DEFAULT_LIMIT`
+    /// and would let the config file's `limit = 20` win even though the user
+    /// typed `-n 5`. `ValueSource::CommandLine` now reports that case
+    /// correctly.
+    #[test]
+    fn test_apply_config_defaults_explicit_default_wins_over_config() {
+        let argv = ["cqs", "-n", "5", "query"];
+        let mut cli = Cli::try_parse_from(argv).unwrap();
+        let config = cqs::config::Config {
+            limit: Some(20),
+            ..Default::default()
+        };
+        config::apply_config_defaults_with_argv(&mut cli, &config, argv);
+        // User wrote "-n 5" on the command line. Config says 20. User wins.
+        assert_eq!(
+            cli.limit, 5,
+            "explicit --limit 5 on CLI must beat config limit=20"
+        );
+    }
+
     // ===== ExitCode tests =====
 
     #[test]
     fn test_cli_limit_clamped_to_valid_range() {
-        // Verify that extremely large limits get clamped to 100
-        let mut cli = Cli::try_parse_from(["cqs", "-n", "999", "query"]).unwrap();
         let config = cqs::config::Config::default();
-        config::apply_config_defaults(&mut cli, &config);
+        // Verify that extremely large limits get clamped to 100
+        let argv1 = ["cqs", "-n", "999", "query"];
+        let mut cli = Cli::try_parse_from(argv1).unwrap();
+        config::apply_config_defaults_with_argv(&mut cli, &config, argv1);
         cli.limit = cli.limit.clamp(1, 100);
         assert_eq!(cli.limit, 100);
 
         // Verify that limit 0 gets clamped to 1
-        let mut cli = Cli::try_parse_from(["cqs", "-n", "0", "query"]).unwrap();
-        config::apply_config_defaults(&mut cli, &config);
+        let argv2 = ["cqs", "-n", "0", "query"];
+        let mut cli = Cli::try_parse_from(argv2).unwrap();
+        config::apply_config_defaults_with_argv(&mut cli, &config, argv2);
         cli.limit = cli.limit.clamp(1, 100);
         assert_eq!(cli.limit, 1);
 
         // Verify normal limits pass through
-        let mut cli = Cli::try_parse_from(["cqs", "-n", "10", "query"]).unwrap();
-        config::apply_config_defaults(&mut cli, &config);
+        let argv3 = ["cqs", "-n", "10", "query"];
+        let mut cli = Cli::try_parse_from(argv3).unwrap();
+        config::apply_config_defaults_with_argv(&mut cli, &config, argv3);
         cli.limit = cli.limit.clamp(1, 100);
         assert_eq!(cli.limit, 10);
     }

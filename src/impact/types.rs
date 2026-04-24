@@ -141,6 +141,12 @@ pub struct DiffImpactSummary {
     /// when `truncated == false`.
     #[serde(skip_serializing_if = "is_zero_usize")]
     pub truncated_functions: usize,
+    /// EH-V1.29-9: true when a store batch query failed during diff-impact
+    /// assembly (callers or caller snippets). Callers/snippets may be
+    /// silently incomplete; distinguishes "no callers" from "batch fetch
+    /// failed".
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub degraded: bool,
 }
 
 fn is_zero_usize(n: &usize) -> bool {

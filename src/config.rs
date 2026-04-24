@@ -27,22 +27,46 @@ pub enum ConfigError {
     InvalidFormat(String),
 }
 
-/// Detect if running under Windows Subsystem for Linux (cached)
+/// Detect if running under Windows Subsystem for Linux (cached).
+///
+/// PB-V1.29-10: `/proc/version` alone is not conclusive — Mariner Linux,
+/// some Azure images, and custom kernels contain the substring
+/// "microsoft" or "wsl" without being a WSL guest. Requiring a second
+/// positive signal prevents those hosts from silently taking WSL-only
+/// code paths (DrvFS permission-check skips, debounce bumps, etc.).
+///
+/// Returns true iff **any** of:
+/// 1. `WSL_DISTRO_NAME` env var is set (WSL always sets this)
+/// 2. `/proc/sys/fs/binfmt_misc/WSLInterop` exists (kernel-registered
+///    interop entry; only present on real WSL)
+/// 3. `/proc/version` matches `microsoft`/`wsl` AND `WSL_INTEROP` env is
+///    set (the `WSL_INTEROP` env var points at the WSL interop socket,
+///    so its presence is a strong second signal)
 #[cfg(unix)]
 pub fn is_wsl() -> bool {
     static IS_WSL: OnceLock<bool> = OnceLock::new();
     *IS_WSL.get_or_init(|| {
-        // Fast path: WSL sets this env var
+        // Signal 1: WSL_DISTRO_NAME is set by WSL itself.
         if std::env::var_os("WSL_DISTRO_NAME").is_some() {
             return true;
         }
-        // Fallback: check /proc/version
-        std::fs::read_to_string("/proc/version")
+        // Signal 2: binfmt_misc WSLInterop entry is kernel-registered only
+        // on real WSL distros.
+        if Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists() {
+            return true;
+        }
+        // Signal 3: /proc/version substring match REQUIRES a second env-var
+        // corroboration (`WSL_INTEROP`). Neither is sufficient on its own:
+        // /proc/version can match on Mariner/Azure, and `WSL_INTEROP` could
+        // theoretically be user-set. The AND keeps the false-positive rate
+        // near zero.
+        let proc_version_matches = std::fs::read_to_string("/proc/version")
             .map(|v| {
                 let lower = v.to_lowercase();
                 lower.contains("microsoft") || lower.contains("wsl")
             })
-            .unwrap_or(false)
+            .unwrap_or(false);
+        proc_version_matches && std::env::var_os("WSL_INTEROP").is_some()
     })
 }
 

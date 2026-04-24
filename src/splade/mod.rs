@@ -970,7 +970,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn splade_model_dir() -> Option<PathBuf> {
-        let dir = dirs::home_dir()?.join(".cache/huggingface/splade-onnx");
+        // PB-V1.29-8: share the platform-aware HF parent resolution.
+        let dir = crate::aux_model::hf_cache_dir("splade-onnx");
         if dir.join("model.onnx").exists() {
             Some(dir)
         } else {
@@ -1281,9 +1282,9 @@ mod tests {
         // we only care that the empty-string env var didn't take precedence.
         // If it had, the resolver would have inspected an empty PathBuf and
         // returned None for "model.onnx not found at ".
-        let expected_default = dirs::home_dir()
-            .map(|h| h.join(".cache/huggingface/splade-onnx"))
-            .unwrap_or_default();
+        // PB-V1.29-8: expected path follows the platform-aware resolver so
+        // this test still picks up a real install on Windows.
+        let expected_default = crate::aux_model::hf_cache_dir("splade-onnx");
         if expected_default.join("model.onnx").exists()
             && expected_default.join("tokenizer.json").exists()
         {
@@ -1309,9 +1310,8 @@ mod tests {
 
         // Identical reasoning to the empty-string case — the result depends
         // on whether a default model is installed on the test machine.
-        let expected_default = dirs::home_dir()
-            .map(|h| h.join(".cache/huggingface/splade-onnx"))
-            .unwrap_or_default();
+        // PB-V1.29-8: expected path follows the platform-aware resolver.
+        let expected_default = crate::aux_model::hf_cache_dir("splade-onnx");
         if expected_default.join("model.onnx").exists()
             && expected_default.join("tokenizer.json").exists()
         {

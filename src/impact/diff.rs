@@ -141,6 +141,7 @@ pub fn analyze_diff_impact_with_graph<Mode>(
                 test_count: 0,
                 truncated: false,
                 truncated_functions: 0,
+                degraded: false,
             },
         });
     }
@@ -170,12 +171,16 @@ pub fn analyze_diff_impact_with_graph<Mode>(
     let mut seen_callers = HashSet::new();
     let mut seen_tests: HashMap<String, usize> = HashMap::new();
 
-    // Batch-fetch callers for all changed functions in a single query
+    // Batch-fetch callers for all changed functions in a single query.
+    // EH-V1.29-9: track batch-fetch failures so the JSON consumer can
+    // distinguish "no callers" from "batch query failed silently".
+    let mut degraded = false;
     let callee_names: Vec<&str> = changed.iter().map(|f| f.name.as_str()).collect();
     let callers_by_callee = store
         .get_callers_with_context_batch(&callee_names)
         .unwrap_or_else(|e| {
             tracing::warn!(error = %e, "Failed to batch-fetch callers for diff impact");
+            degraded = true;
             HashMap::new()
         });
 
@@ -197,6 +202,7 @@ pub fn analyze_diff_impact_with_graph<Mode>(
         .search_by_names_batch(&unique_names, 5)
         .unwrap_or_else(|e| {
             tracing::warn!(error = %e, "Failed to batch-fetch caller chunks for diff impact snippets");
+            degraded = true;
             HashMap::new()
         });
 
@@ -272,6 +278,7 @@ pub fn analyze_diff_impact_with_graph<Mode>(
         test_count: all_tests.len(),
         truncated,
         truncated_functions,
+        degraded,
     };
 
     Ok(DiffImpactResult {

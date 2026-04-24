@@ -722,6 +722,14 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_HNSW_MAX_DATA_BYTES` | `1073741824` (1 GB) | Max HNSW data file size |
 | `CQS_HNSW_MAX_GRAPH_BYTES` | `524288000` (500 MB) | Max HNSW graph file size |
 | `CQS_HNSW_MAX_ID_MAP_BYTES` | `524288000` (500 MB) | Max HNSW ID map file size |
+| `CQS_HEALTH_HOTSPOT_COUNT` | auto (log₂(n) clamped `[5, 50]`) | Number of top hotspots `cqs health` reports. Default scales with corpus size (1k→10, 100k→17, 1M→20). SHL-V1.29-7. |
+| `CQS_HOTSPOT_MIN_CALLERS` | auto (log₂(n)·0.7 clamped `[5, 50]`) | Minimum caller count for "untested hotspot" / "high risk" detectors. Default scales with corpus size (1k→5, 100k→11, 1M→14). SHL-V1.29-7. |
+| `CQS_DEAD_CLUSTER_MIN_SIZE` | auto (log₂(n)·0.7 clamped `[5, 50]`) | Minimum dead functions in a single file to flag as a "dead code cluster" in `cqs suggest`. Scales with corpus size. SHL-V1.29-7. |
+| `CQS_SUGGEST_HOTSPOT_POOL` | auto (4× hotspot count, clamped `[20, 200]`) | Pool size `cqs suggest` evaluates for risk patterns. SHL-V1.29-7. |
+| `CQS_RISK_HIGH` | `5.0` | Risk score threshold above which a function is "High" risk. Drives `cqs review` CI gating; override on monorepos where the default classifies too aggressively. SHL-V1.29-8. |
+| `CQS_RISK_MEDIUM` | `2.0` | Risk score threshold above which a function is "Medium" risk. SHL-V1.29-8. |
+| `CQS_BLAST_LOW_MAX` | `2` | Inclusive upper bound on caller count for "Low" blast radius (callers `0..=N`). SHL-V1.29-8. |
+| `CQS_BLAST_HIGH_MIN` | `11` | Inclusive lower bound on caller count for "High" blast radius (callers `N..`). Medium sits between `CQS_BLAST_LOW_MAX` and this. SHL-V1.29-8. |
 | `CQS_HYDE_MAX_TOKENS` | (config) | Max tokens for HyDE query prediction |
 | `CQS_IDLE_TIMEOUT_SECS` | `30` | SQLite connection idle timeout in seconds |
 | `CQS_INTEGRITY_CHECK` | `0` | Set to `1` to enable PRAGMA quick_check on write-mode store opens |

@@ -103,7 +103,140 @@ pub(crate) fn convert_file_size() -> u64 {
     parse_env_u64("CQS_CONVERT_MAX_FILE_SIZE", DEFAULT_CONVERT_MAX_FILE_SIZE)
 }
 
+// ============ SHL-V1.29-7: hotspot / dead-cluster thresholds ============
+//
+// `HOTSPOT_MIN_CALLERS`, `DEAD_CLUSTER_MIN_SIZE`, `SUGGEST_HOTSPOT_POOL`
+// (`suggest.rs`) and `HEALTH_HOTSPOT_COUNT` (`health.rs`) were hardcoded
+// to 5 / 5 / 20 / 5. The same threshold that sensibly flags a 2k-chunk
+// hobby project as a "hotspot" is noise on a 500k-chunk monorepo where
+// 5-caller functions are everywhere. These helpers scale the defaults
+// logarithmically on corpus size (matching the `cagra_itopk_max_default`
+// pattern) and accept env overrides that, when set, are taken verbatim.
+//
+// Formula (chosen so small projects see `5` and big ones see `~20-30`):
+//   caller_threshold  = (log₂(n) * 0.7).clamp(5, 50)
+//   dead_cluster_min  = (log₂(n) * 0.7).clamp(5, 50)
+//   hotspot_count     = (log₂(n) * 1.0).clamp(5, 50)
+//   suggest_pool      = 4 * hotspot_count (enough risk headroom)
+//
+// Rough anchor points:
+//   n=1k    → caller=5, hotspot=10, pool=40
+//   n=13k   → caller=9, hotspot=14, pool=56
+//   n=100k  → caller=11, hotspot=17, pool=68
+//   n=1M    → caller=14, hotspot=20, pool=80
+//
+// Override via env to pin exact values on policy-sensitive projects.
+
+/// Floor for both hotspot caller thresholds and display counts.
+const HOTSPOT_THRESHOLD_MIN: usize = 5;
+/// Ceiling for both (stops the log scale from running away past usable values).
+const HOTSPOT_THRESHOLD_MAX: usize = 50;
+
+/// Log-scale a caller threshold on `chunk_count`.
+/// 1k → 5, 13k → 9, 100k → 11, 1M → 14 — capped `[5, 50]`.
+fn log_scaled_caller_threshold(chunk_count: usize) -> usize {
+    let log2 = (chunk_count.max(1) as f64).log2();
+    let scaled = (log2 * 0.7) as usize;
+    scaled.clamp(HOTSPOT_THRESHOLD_MIN, HOTSPOT_THRESHOLD_MAX)
+}
+
+/// Log-scale a hotspot display count on `chunk_count`.
+/// 1k → 10, 13k → 14, 100k → 17, 1M → 20 — capped `[5, 50]`.
+fn log_scaled_hotspot_count(chunk_count: usize) -> usize {
+    let log2 = (chunk_count.max(1) as f64).log2();
+    let scaled = log2 as usize;
+    scaled.clamp(HOTSPOT_THRESHOLD_MIN, HOTSPOT_THRESHOLD_MAX)
+}
+
+/// Minimum caller count for "untested hotspot" / "high-risk" detectors.
+/// Honors `CQS_HOTSPOT_MIN_CALLERS` when set.
+pub fn hotspot_min_callers(chunk_count: usize) -> usize {
+    parse_env_usize(
+        "CQS_HOTSPOT_MIN_CALLERS",
+        log_scaled_caller_threshold(chunk_count),
+    )
+}
+
+/// Minimum dead functions in a single file to flag as a "dead code cluster".
+/// Honors `CQS_DEAD_CLUSTER_MIN_SIZE`.
+pub fn dead_cluster_min_size(chunk_count: usize) -> usize {
+    parse_env_usize(
+        "CQS_DEAD_CLUSTER_MIN_SIZE",
+        log_scaled_caller_threshold(chunk_count),
+    )
+}
+
+/// Number of hotspots `health` reports in its summary.
+/// Honors `CQS_HEALTH_HOTSPOT_COUNT`.
+pub fn health_hotspot_count(chunk_count: usize) -> usize {
+    parse_env_usize(
+        "CQS_HEALTH_HOTSPOT_COUNT",
+        log_scaled_hotspot_count(chunk_count),
+    )
+}
+
+/// Pool size `suggest` evaluates for risk patterns. Honors
+/// `CQS_SUGGEST_HOTSPOT_POOL`; default is 4× the hotspot display count so
+/// the risk pass has enough candidates after filtering.
+pub fn suggest_hotspot_pool(chunk_count: usize) -> usize {
+    let default = (log_scaled_hotspot_count(chunk_count) * 4).clamp(20, 200);
+    parse_env_usize("CQS_SUGGEST_HOTSPOT_POOL", default)
+}
+
+// ============ SHL-V1.29-8: risk score + blast-radius thresholds ============
+//
+// `RISK_THRESHOLD_HIGH=5.0`, `RISK_THRESHOLD_MEDIUM=2.0` (`impact/hints.rs`)
+// and the blast-radius buckets (`0..=2` Low, `3..=10` Medium, `11+` High)
+// drive `cqs review` CI gating. Wrong defaults silently alter classification
+// on monorepos, so each is env-overridable.
+
+/// Default risk score above which a function is "High" risk.
+pub(crate) const RISK_THRESHOLD_HIGH_DEFAULT: f32 = 5.0;
+/// Default risk score above which a function is "Medium" risk.
+pub(crate) const RISK_THRESHOLD_MEDIUM_DEFAULT: f32 = 2.0;
+/// Default upper bound on caller count for "Low" blast radius.
+pub(crate) const BLAST_LOW_MAX_DEFAULT: usize = 2;
+/// Default lower bound on caller count for "High" blast radius.
+pub(crate) const BLAST_HIGH_MIN_DEFAULT: usize = 11;
+
+/// Resolve the risk High threshold honoring `CQS_RISK_HIGH`.
+pub fn risk_threshold_high() -> f32 {
+    parse_env_f32("CQS_RISK_HIGH", RISK_THRESHOLD_HIGH_DEFAULT)
+}
+
+/// Resolve the risk Medium threshold honoring `CQS_RISK_MEDIUM`.
+pub fn risk_threshold_medium() -> f32 {
+    parse_env_f32("CQS_RISK_MEDIUM", RISK_THRESHOLD_MEDIUM_DEFAULT)
+}
+
+/// Inclusive upper bound for "Low" blast radius (callers `0..=N`).
+/// Honors `CQS_BLAST_LOW_MAX`.
+pub fn blast_low_max() -> usize {
+    parse_env_usize("CQS_BLAST_LOW_MAX", BLAST_LOW_MAX_DEFAULT)
+}
+
+/// Inclusive lower bound for "High" blast radius (callers `N..`).
+/// Honors `CQS_BLAST_HIGH_MIN`.
+pub fn blast_high_min() -> usize {
+    parse_env_usize("CQS_BLAST_HIGH_MIN", BLAST_HIGH_MIN_DEFAULT)
+}
+
 // ============ shared parsing helpers ============
+
+/// Parse a finite positive `f32`-shaped env var, falling back to
+/// `default` on missing/empty/garbage/non-finite/non-positive values.
+/// Mirrors `parse_env_usize`'s "reject zero" stance so env-driven risk
+/// thresholds can't silently collapse the classification by pinning 0.
+fn parse_env_f32(key: &str, default: f32) -> f32 {
+    match std::env::var(key) {
+        Ok(v) => v
+            .parse::<f32>()
+            .ok()
+            .filter(|n| n.is_finite() && *n > 0.0)
+            .unwrap_or(default),
+        Err(_) => default,
+    }
+}
 
 /// Parse a `usize`-shaped env var, falling back to `default` on
 /// missing/empty/garbage/zero values.

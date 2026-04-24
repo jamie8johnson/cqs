@@ -26,6 +26,49 @@
 
 use std::path::{Path, PathBuf};
 
+/// Resolve a HuggingFace-adjacent cache subdirectory with cross-platform
+/// fallbacks.
+///
+/// PB-V1.29-8: The six historical sites that hardcoded
+/// `~/.cache/huggingface/...` (doctor, splade preset registry, splade tests)
+/// now route through this helper so a Windows user with an older
+/// `huggingface_hub` install gets `%LOCALAPPDATA%\huggingface\<subdir>`
+/// instead of a non-existent `%USERPROFILE%\.cache\huggingface\<subdir>`.
+///
+/// Precedence (highest wins):
+/// 1. `HUGGINGFACE_HUB_CACHE` — only honored when `subdir == "hub"`; this
+///    env var is semantically the full path to the hub cache (not a parent).
+/// 2. `HF_HOME` — treated as the parent directory (matches HF's own
+///    convention where `HF_HOME/hub`, `HF_HOME/datasets`, etc. are siblings).
+/// 3. `dirs::cache_dir()` — resolves to the OS-native cache root
+///    (`~/.cache` on Linux/WSL/macOS, `%LOCALAPPDATA%` on Windows), joined
+///    with `huggingface/<subdir>`.
+/// 4. `dirs::home_dir()` — final fallback to `~/.cache/huggingface/<subdir>`
+///    for environments where `cache_dir()` is unavailable.
+/// 5. Relative `.cache/huggingface/<subdir>` as a last resort.
+///
+/// The `subdir` name is joined verbatim — callers supply already-correct
+/// relative paths for their target (`"hub"` for the HF Hub cache,
+/// `"splade-onnx"` / `"splade-code-0.6B"` for CQS-side SPLADE bundles).
+pub fn hf_cache_dir(subdir: &str) -> PathBuf {
+    if subdir == "hub" {
+        if let Ok(p) = std::env::var("HUGGINGFACE_HUB_CACHE") {
+            if !p.is_empty() {
+                return PathBuf::from(p);
+            }
+        }
+    }
+    if let Ok(p) = std::env::var("HF_HOME") {
+        if !p.is_empty() {
+            return PathBuf::from(p).join(subdir);
+        }
+    }
+    dirs::cache_dir()
+        .map(|c| c.join("huggingface").join(subdir))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache/huggingface").join(subdir)))
+        .unwrap_or_else(|| PathBuf::from(".cache/huggingface").join(subdir))
+}
+
 /// Which auxiliary model is being resolved.
 ///
 /// Selects the preset registry and the on-disk filename convention. SPLADE
@@ -159,23 +202,6 @@ pub struct DirLayout {
     pub tokenizer_rel_path: &'static str,
 }
 
-impl AuxModelKind {
-    /// Default [`DirLayout`] for this kind, matching the HuggingFace
-    /// convention historically baked into `config_from_dir`.
-    fn default_layout(self) -> DirLayout {
-        match self {
-            AuxModelKind::Splade => DirLayout {
-                onnx_rel_path: "model.onnx",
-                tokenizer_rel_path: "tokenizer.json",
-            },
-            AuxModelKind::Reranker => DirLayout {
-                onnx_rel_path: "onnx/model.onnx",
-                tokenizer_rel_path: "tokenizer.json",
-            },
-        }
-    }
-}
-
 /// Build an [`AuxModelConfig`] from a concrete directory, using the
 /// layout supplied by the caller.
 ///
@@ -192,90 +218,210 @@ fn config_from_dir(dir: &Path, layout: &DirLayout, preset: Option<String>) -> Au
     }
 }
 
-/// Preset registry — returns the config for a named preset of a given kind.
+// ---------------------------------------------------------------------------
+// EX-V1.29-4: table-driven kind + preset registry.
+//
+// `define_aux_presets!` consolidates what used to be five parallel
+// `AuxModelKind` matches (`default_layout`, `preset()` dispatcher,
+// `*_preset()` inner matches, `default_preset_name`, `section_name`)
+// into one declarative table. Adding a third aux kind (e.g. a
+// `Summarizer` ONNX preset pool) means one new `kind { ... }` block;
+// adding a preset inside an existing kind means one new `preset` row.
+//
+// Pattern mirrors `define_embedder_presets!` in `src/embedder/models.rs`
+// where a single preset-per-row table generates all the dispatch code
+// surrounding `ModelConfig`.
+// ---------------------------------------------------------------------------
+
+/// EX-V1.29-4: declarative table for auxiliary-model kinds and presets.
 ///
-/// Returns `None` when the name isn't registered for that kind. Preset
-/// entries resolve to repo ids (for reranker) or to a default local cache
-/// directory (for SPLADE, where there's no HF-side SPLADE model we ship
-/// out-of-the-box — operators download into `~/.cache/huggingface/...`).
+/// Grammar (one `kind` block per kind, one `preset` row per shipped preset):
 ///
-/// # Shipped presets
+/// ```text
+/// define_aux_presets! {
+///     kind <Variant> {
+///         section: "<toml-section>",
+///         default: "<preset-name>",
+///         layout: DirLayout { onnx_rel_path: "...", tokenizer_rel_path: "..." },
+///         presets: [
+///             preset "<canonical>" aliases ["<alt1>", "<alt2>"]
+///                 => local "<hf_cache_subdir>";
+///             preset "<canonical>" aliases ["<alt>"]
+///                 => repo "<org/model>";
+///         ],
+///     }
+/// }
+/// ```
 ///
-/// * [`AuxModelKind::Splade`]:
-///   - `"ensembledistil"` → `naver/splade-cocondenser-ensembledistil`
-///     (current default, expected at `~/.cache/huggingface/splade-onnx`).
-///   - `"splade-code-0.6b"` → `naver/splade-code-0.6B`
-///     (expected at `~/.cache/huggingface/splade-code-0.6B`).
-/// * [`AuxModelKind::Reranker`]:
-///   - `"ms-marco-minilm"` → `cross-encoder/ms-marco-MiniLM-L-6-v2`
-///     (current default).
-pub fn preset(kind: AuxModelKind, name: &str) -> Option<AuxModelConfig> {
-    let _span = tracing::debug_span!("aux_model_preset", ?kind, name).entered();
-    match kind {
-        AuxModelKind::Splade => splade_preset(name),
-        AuxModelKind::Reranker => reranker_preset(name),
-    }
+/// Emits:
+/// - `impl AuxModelKind { fn default_layout() }` with one arm per kind.
+/// - `pub fn default_preset_name(AuxModelKind) -> &'static str` derived
+///   from each kind's `default`.
+/// - `fn section_name(AuxModelKind) -> &'static str` derived from each
+///   kind's `section`.
+/// - `pub fn preset(AuxModelKind, &str) -> Option<AuxModelConfig>` with
+///   one flat match covering canonical names + aliases for every row.
+///
+/// Source kinds:
+/// - `local "<subdir>"` → resolves through [`hf_cache_dir`] (the
+///   cross-platform HuggingFace-adjacent cache parent) joined with the
+///   kind's default layout. Used by SPLADE bundles, which never go
+///   through HF Hub at runtime.
+/// - `repo "<org/model>"` → produces a config with `repo = Some(...)`
+///   and synthetic paths the HF fetcher rewrites. Used by reranker
+///   presets, which default to HF Hub downloads.
+macro_rules! define_aux_presets {
+    (
+        $(
+            kind $kind:ident {
+                section: $section:literal,
+                default: $default_preset:literal,
+                layout: DirLayout {
+                    onnx_rel_path: $onnx_rel:literal,
+                    tokenizer_rel_path: $tok_rel:literal $(,)?
+                },
+                presets: [
+                    $(
+                        preset $canonical:literal $(aliases [ $($alias:literal),* $(,)? ])?
+                            => $source:ident $source_value:literal
+                        ;
+                    )*
+                ] $(,)?
+            }
+        )+
+    ) => {
+        impl AuxModelKind {
+            /// Default [`DirLayout`] for this kind, matching the HuggingFace
+            /// convention historically baked into `config_from_dir`.
+            ///
+            /// Generated by [`define_aux_presets!`] from each kind's `layout`.
+            fn default_layout(self) -> DirLayout {
+                match self {
+                    $(
+                        AuxModelKind::$kind => DirLayout {
+                            onnx_rel_path: $onnx_rel,
+                            tokenizer_rel_path: $tok_rel,
+                        },
+                    )+
+                }
+            }
+        }
+
+        /// Hardcoded default preset name for a kind. Used as the last fallback
+        /// when nothing else is configured.
+        ///
+        /// Generated by [`define_aux_presets!`] from each kind's `default`.
+        pub fn default_preset_name(kind: AuxModelKind) -> &'static str {
+            match kind {
+                $( AuxModelKind::$kind => $default_preset, )+
+            }
+        }
+
+        /// TOML section name for a kind (used in error messages).
+        ///
+        /// Generated by [`define_aux_presets!`] from each kind's `section`.
+        fn section_name(kind: AuxModelKind) -> &'static str {
+            match kind {
+                $( AuxModelKind::$kind => $section, )+
+            }
+        }
+
+        /// Preset registry — returns the config for a named preset of a given kind.
+        ///
+        /// Returns `None` when the name isn't registered for that kind. Preset
+        /// entries resolve to repo ids (for reranker) or to a default local cache
+        /// directory (for SPLADE, where there's no HF-side SPLADE model we ship
+        /// out-of-the-box — operators download into a HuggingFace-adjacent cache
+        /// dir resolved by [`hf_cache_dir`]).
+        ///
+        /// Generated by [`define_aux_presets!`] from all `preset` rows
+        /// (canonical names and aliases). Source kind determines whether the
+        /// row resolves to a local directory or an HF repo fetch.
+        pub fn preset(kind: AuxModelKind, name: &str) -> Option<AuxModelConfig> {
+            let _span = tracing::debug_span!("aux_model_preset", ?kind, name).entered();
+            match (kind, name) {
+                $(
+                    $(
+                        (AuxModelKind::$kind, $canonical) $( $( | (AuxModelKind::$kind, $alias) )* )? => {
+                            Some(define_aux_presets!(
+                                @build_config
+                                AuxModelKind::$kind,
+                                $canonical,
+                                $source,
+                                $source_value
+                            ))
+                        }
+                    )*
+                )+
+                _ => None,
+            }
+        }
+    };
+
+    // --- Source dispatch: local subdir ---
+    // Build an `AuxModelConfig` pointing at a local directory under the
+    // HuggingFace-adjacent cache (`hf_cache_dir($subdir)` joined with the
+    // kind's default layout).
+    (@build_config $kind:path, $canonical:literal, local, $subdir:literal) => {{
+        let layout = <AuxModelKind>::default_layout($kind);
+        let dir = hf_cache_dir($subdir);
+        config_from_dir(&dir, &layout, Some($canonical.into()))
+    }};
+
+    // --- Source dispatch: HF repo ---
+    // Build an `AuxModelConfig` with `repo = Some(...)` and synthetic paths
+    // that the HF fetcher replaces with the real downloaded locations.
+    // Path shape mirrors the reranker's historical output (onnx/model.onnx
+    // + tokenizer.json) so existing callers still receive the same layout
+    // they've always observed.
+    (@build_config $kind:path, $canonical:literal, repo, $repo:literal) => {{
+        AuxModelConfig {
+            preset: Some($canonical.into()),
+            model_path: PathBuf::from($repo).join("onnx/model.onnx"),
+            tokenizer_path: PathBuf::from($repo).join("tokenizer.json"),
+            repo: Some($repo.to_string()),
+        }
+    }};
 }
 
-/// SPLADE preset lookup. SPLADE bundles are loaded from a local directory
-/// (the encoder never goes through HF Hub), so each preset points at an
-/// expected cache path.
-fn splade_preset(name: &str) -> Option<AuxModelConfig> {
-    let home = dirs::home_dir()?;
-    // EX-V1.29-9: presets carry an explicit layout. SPLADE's default is
-    // currently the same for every shipped preset, but wiring the layout
-    // through the preset registry means a future preset with a different
-    // on-disk shape (e.g. `onnx/model.onnx` from a newer HF repo layout)
-    // can override here without touching `config_from_dir`.
-    let layout = AuxModelKind::Splade.default_layout();
-    match name {
-        "ensembledistil" | "splade-ensembledistil" => {
-            let dir = home.join(".cache/huggingface/splade-onnx");
-            Some(config_from_dir(
-                &dir,
-                &layout,
-                Some("ensembledistil".into()),
-            ))
-        }
-        "splade-code-0.6b" | "splade-code" => {
-            let dir = home.join(".cache/huggingface/splade-code-0.6B");
-            Some(config_from_dir(
-                &dir,
-                &layout,
-                Some("splade-code-0.6b".into()),
-            ))
-        }
-        _ => None,
+define_aux_presets! {
+    kind Splade {
+        section: "splade",
+        default: "ensembledistil",
+        layout: DirLayout {
+            onnx_rel_path: "model.onnx",
+            tokenizer_rel_path: "tokenizer.json",
+        },
+        presets: [
+            // PB-V1.29-8: `local` rows route through `hf_cache_dir` so
+            // Windows users with HF installed under `%LOCALAPPDATA%`
+            // resolve correctly.
+            //
+            // Shipped SPLADE presets:
+            // * `"ensembledistil"` → `naver/splade-cocondenser-ensembledistil`
+            //   (current default, expected at `hf_cache_dir("splade-onnx")`).
+            // * `"splade-code-0.6b"` → `naver/splade-code-0.6B`
+            //   (expected at `hf_cache_dir("splade-code-0.6B")`).
+            preset "ensembledistil" aliases ["splade-ensembledistil"]
+                => local "splade-onnx";
+            preset "splade-code-0.6b" aliases ["splade-code"]
+                => local "splade-code-0.6B";
+        ],
     }
-}
-
-/// Reranker preset lookup. Reranker bundles default to HF Hub fetches, so
-/// the preset produces a config with `repo = Some(...)` and synthetic paths
-/// the Hub API rewrites later. If a concrete local dir was preferred,
-/// operators set `[reranker] model_path = ...` instead of a preset.
-fn reranker_preset(name: &str) -> Option<AuxModelConfig> {
-    match name {
-        "ms-marco-minilm" | "ms-marco-minilm-l-6" | "minilm" => {
-            let repo = "cross-encoder/ms-marco-MiniLM-L-6-v2".to_string();
-            Some(AuxModelConfig {
-                preset: Some("ms-marco-minilm".into()),
-                // model_path / tokenizer_path are placeholders — the HF fetch
-                // path replaces them with the real downloaded file locations.
-                model_path: PathBuf::from(&repo).join("onnx/model.onnx"),
-                tokenizer_path: PathBuf::from(&repo).join("tokenizer.json"),
-                repo: Some(repo),
-            })
-        }
-        _ => None,
-    }
-}
-
-/// Hardcoded default preset name for a kind. Used as the last fallback
-/// when nothing else is configured.
-pub fn default_preset_name(kind: AuxModelKind) -> &'static str {
-    match kind {
-        AuxModelKind::Splade => "ensembledistil",
-        AuxModelKind::Reranker => "ms-marco-minilm",
+    kind Reranker {
+        section: "reranker",
+        default: "ms-marco-minilm",
+        layout: DirLayout {
+            onnx_rel_path: "onnx/model.onnx",
+            tokenizer_rel_path: "tokenizer.json",
+        },
+        presets: [
+            // Shipped reranker presets:
+            // * `"ms-marco-minilm"` → `cross-encoder/ms-marco-MiniLM-L-6-v2`
+            //   (current default; fetched from HF Hub at load time).
+            preset "ms-marco-minilm" aliases ["ms-marco-minilm-l-6", "minilm"]
+                => repo "cross-encoder/ms-marco-MiniLM-L-6-v2";
+        ],
     }
 }
 
@@ -442,14 +588,6 @@ fn resolve_raw(kind: AuxModelKind, raw: &str) -> Result<AuxModelConfig, AuxModel
     }
 }
 
-/// TOML section name for a kind (used in error messages).
-fn section_name(kind: AuxModelKind) -> &'static str {
-    match kind {
-        AuxModelKind::Splade => "splade",
-        AuxModelKind::Reranker => "reranker",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,10 +636,10 @@ mod tests {
         .unwrap();
         assert_eq!(resolved.preset.as_deref(), Some("splade-code-0.6b"));
         // Paths point at the cache dir for the configured preset.
-        let home = dirs::home_dir().unwrap();
+        // PB-V1.29-8: helper returns the platform-specific HF parent.
         assert_eq!(
             resolved.model_path,
-            home.join(".cache/huggingface/splade-code-0.6B/model.onnx")
+            hf_cache_dir("splade-code-0.6B").join("model.onnx")
         );
     }
 
@@ -580,10 +718,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resolved.preset.as_deref(), Some("ensembledistil"));
-        let home = dirs::home_dir().unwrap();
+        // PB-V1.29-8: helper returns the platform-specific HF parent.
         assert_eq!(
             resolved.model_path,
-            home.join(".cache/huggingface/splade-onnx/model.onnx")
+            hf_cache_dir("splade-onnx").join("model.onnx")
         );
     }
 
@@ -772,6 +910,46 @@ mod tests {
             Some("cross-encoder/ms-marco-MiniLM-L-6-v2")
         );
         assert!(preset(AuxModelKind::Reranker, "nope").is_none());
+    }
+
+    /// EX-V1.29-4: every alias declared in the `define_aux_presets!` table
+    /// must resolve through `preset()` to the same canonical preset. Pins
+    /// the table-driven registry so adding a new alias to a row can't
+    /// silently drop existing aliases.
+    #[test]
+    fn test_preset_aliases_resolve() {
+        // SPLADE aliases
+        let cfg = preset(AuxModelKind::Splade, "splade-ensembledistil").unwrap();
+        assert_eq!(cfg.preset.as_deref(), Some("ensembledistil"));
+        let cfg = preset(AuxModelKind::Splade, "splade-code").unwrap();
+        assert_eq!(cfg.preset.as_deref(), Some("splade-code-0.6b"));
+        // Reranker aliases
+        let cfg = preset(AuxModelKind::Reranker, "ms-marco-minilm-l-6").unwrap();
+        assert_eq!(cfg.preset.as_deref(), Some("ms-marco-minilm"));
+        let cfg = preset(AuxModelKind::Reranker, "minilm").unwrap();
+        assert_eq!(cfg.preset.as_deref(), Some("ms-marco-minilm"));
+    }
+
+    /// EX-V1.29-4: kind-level metadata (section name, default preset,
+    /// default layout) must match the `define_aux_presets!` table. Guards
+    /// against future edits that forget to keep the table and the Rust
+    /// arms in sync — adding a kind must populate all four.
+    #[test]
+    fn test_kind_metadata_consistent() {
+        assert_eq!(section_name(AuxModelKind::Splade), "splade");
+        assert_eq!(section_name(AuxModelKind::Reranker), "reranker");
+        assert_eq!(default_preset_name(AuxModelKind::Splade), "ensembledistil");
+        assert_eq!(
+            default_preset_name(AuxModelKind::Reranker),
+            "ms-marco-minilm"
+        );
+        // Default layouts
+        let splade = AuxModelKind::Splade.default_layout();
+        assert_eq!(splade.onnx_rel_path, "model.onnx");
+        assert_eq!(splade.tokenizer_rel_path, "tokenizer.json");
+        let reranker = AuxModelKind::Reranker.default_layout();
+        assert_eq!(reranker.onnx_rel_path, "onnx/model.onnx");
+        assert_eq!(reranker.tokenizer_rel_path, "tokenizer.json");
     }
 
     #[test]

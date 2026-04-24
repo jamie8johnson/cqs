@@ -2234,8 +2234,10 @@ static LANG_GO: LanguageDef = LanguageDef {
     unsafe_markers: &["unsafe.Pointer"],
     function_keywords: &["func"],
     receiver_strip: Some(strip_go_receiver),
-    // Go has custom logic in `where_to_add::extract_patterns`
-    // (uppercase-name = exported), so `patterns` is None.
+    // Data-driven pattern rules (formerly a custom arm in
+    // `where_to_add::extract_patterns`). See `patterns_data::GO` for the
+    // uppercase-name-is-exported visibility convention.
+    patterns: Some(&patterns_data::GO),
     line_comment_prefixes: &["//", "/*"],
     aliases: &["golang"],
     ..DEFAULTS
@@ -3370,6 +3372,11 @@ static LANG_JAVASCRIPT: LanguageDef = LanguageDef {
     // both use the same surface syntax for async / catch / await.
     error_swallow_patterns: &["catch (e) {}", "catch {}", "// ignore"],
     async_markers: &["async ", "await "],
+    // Data-driven pattern rules (formerly a custom arm in
+    // `where_to_add::extract_patterns`). See `patterns_data::TS_JS` for the
+    // regex-based `import` + CJS `require` extraction and export-based
+    // visibility. Shared with TypeScript.
+    patterns: Some(&patterns_data::TS_JS),
     line_comment_prefixes: &["//", "/*"],
     aliases: &["js"],
     ..DEFAULTS
@@ -6422,8 +6429,11 @@ static LANG_RUST: LanguageDef = LanguageDef {
     mutex_markers: &["Mutex", "RwLock", ".lock()"],
     unsafe_markers: &["unsafe "],
     function_keywords: &["fn"],
-    // Rust has custom logic in `where_to_add::extract_patterns`
-    // (3-way pub(crate)/pub/private + anyhow vs thiserror), so `patterns: None`.
+    // Data-driven pattern rules (formerly a custom arm in
+    // `where_to_add::extract_patterns`). See `patterns_data::RUST` for the
+    // 3-way `pub(crate)` / `pub` / private triage and `#[cfg(test)]` inline
+    // test marker.
+    patterns: Some(&patterns_data::RUST),
     line_comment_prefixes: &["//", "/*"],
     ..DEFAULTS
 };
@@ -7597,9 +7607,12 @@ static LANG_TYPESCRIPT: LanguageDef = LanguageDef {
     // empty-body marker nor an `// ignore` comment.
     error_swallow_patterns: &["catch (e) {}", "catch {}", "// ignore"],
     async_markers: &["async ", "await "],
-    // TS has custom logic in `where_to_add::extract_patterns` (require()
-    // import match + module-private vs export). Methods are bare `name(`
-    // — no introducer keyword.
+    // Data-driven pattern rules (formerly a custom arm in
+    // `where_to_add::extract_patterns`). See `patterns_data::TS_JS` for the
+    // regex-based `import` + CJS `require` extraction and export-based
+    // visibility. Shared with JavaScript. Methods are bare `name(` — no
+    // introducer keyword.
+    patterns: Some(&patterns_data::TS_JS),
     line_comment_prefixes: &["//", "/*"],
     aliases: &["ts"],
     ..DEFAULTS

@@ -4038,4 +4038,120 @@ mod adversarial_socket_tests {
         );
         join_worker(client, handle);
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // TC-HAP-1.29-6: happy-path round-trip. Every existing socket test pins
+    // an *error* shape — trailing garbage, NUL bytes, missing command,
+    // oversized request. None pins the *success* path: agent sends a valid
+    // command, daemon runs it, envelope comes back with `status:"ok"` and a
+    // well-formed `output` payload.
+    //
+    // This is the complement to the 8 adversarial tests above. `stats` is
+    // the right happy-path probe because `dispatch_stats` touches
+    // store-schema reads, the error counter, the call-graph stats, and the
+    // language histogram — the four surfaces that would silently drift if a
+    // future refactor changed the wire envelope or the handler shape.
+    //
+    // Why `stats`: no embedder needed (read-only SQL + filesystem walk), so
+    // the test runs in ~ms. A pre-seeded chunk in the store makes the
+    // `total_chunks` assertion load-bearing — an empty store would hide
+    // regressions where the daemon returned `total_chunks=0` unconditionally.
+    // ─────────────────────────────────────────────────────────────────────
+    #[test]
+    fn daemon_stats_happy_path_roundtrip() {
+        use cqs::parser::{Chunk, ChunkType, Language};
+        use cqs::store::ModelInfo;
+        use std::path::PathBuf;
+
+        // Custom setup — seed one chunk before `create_test_context` opens
+        // the store read-only. `test_ctx` helper above opens an empty store;
+        // for the happy path we want `total_chunks >= 1` so the numeric
+        // assertion actually distinguishes "handler ran and counted" from
+        // "handler returned zero by accident".
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        {
+            let store = cqs::store::Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init store");
+            // One chunk so `total_chunks >= 1` on the other side.
+            let content = "pub fn roundtrip_probe() {}";
+            let chunk = Chunk {
+                id: "probe.rs:1:probe".to_string(),
+                file: PathBuf::from("probe.rs"),
+                language: Language::Rust,
+                chunk_type: ChunkType::Function,
+                name: "roundtrip_probe".to_string(),
+                signature: "pub fn roundtrip_probe()".to_string(),
+                content: content.to_string(),
+                doc: None,
+                line_start: 1,
+                line_end: 1,
+                content_hash: blake3::hash(content.as_bytes()).to_hex().to_string(),
+                parent_id: None,
+                window_idx: None,
+                parent_type_name: None,
+                parser_version: 0,
+            };
+            // Unit embedding — `upsert_chunk` validates dimension against the
+            // seeded ModelInfo. Value doesn't matter for the stats path.
+            let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+            emb_vec[0] = 1.0;
+            let embedding = cqs::embedder::Embedding::new(emb_vec);
+            store
+                .upsert_chunks_batch(&[(chunk, embedding)], Some(0))
+                .expect("seed chunk");
+        } // drop to flush WAL
+
+        let ctx = super::super::batch::create_test_context(&cqs_dir).expect("create ctx");
+        let ctx = Arc::new(Mutex::new(ctx));
+
+        let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+        client
+            .write_all(b"{\"command\":\"stats\",\"args\":[]}\n")
+            .expect("write stats request");
+
+        let line = read_line(&mut client);
+        let resp = parse_response(&line);
+
+        // Outer envelope shape: `{status: "ok", output: <json>}` — the
+        // branch at `handle_socket_client:378-391` that wraps successful
+        // dispatch output.
+        assert_eq!(
+            resp.get("status").and_then(|v| v.as_str()),
+            Some("ok"),
+            "happy-path response must carry status:ok. got: {line}"
+        );
+
+        // `output` is the parsed JSON from `dispatch_line`. The dispatcher's
+        // stats handler writes an envelope through `emit_json`, so
+        // `output` is itself `{data: {...}, error: null, version: 1}`.
+        let output = resp
+            .get("output")
+            .unwrap_or_else(|| panic!("happy-path response must carry an `output` field: {line}"));
+        assert!(
+            output.is_object(),
+            "output must be a JSON object (envelope): {line}"
+        );
+        let data = output
+            .get("data")
+            .unwrap_or_else(|| panic!("inner envelope must have a `data` field: {line}"));
+        let total_chunks = data
+            .get("total_chunks")
+            .unwrap_or_else(|| panic!("stats data must have `total_chunks`: {line}"));
+        assert!(
+            total_chunks.is_number(),
+            "total_chunks must be numeric: got {total_chunks}"
+        );
+        let n = total_chunks
+            .as_u64()
+            .unwrap_or_else(|| panic!("total_chunks must parse as u64: {total_chunks}"));
+        assert!(
+            n >= 1,
+            "total_chunks must reflect the seeded chunk (≥1), got {n}: {line}"
+        );
+
+        join_worker(client, handle);
+    }
 }

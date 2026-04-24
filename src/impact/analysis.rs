@@ -71,7 +71,15 @@ pub fn analyze_impact<Mode>(
     })
     .collect();
     let transitive_callers = if opts.depth > 1 {
-        find_transitive_callers(store, &graph, target_name, opts.depth, root)?
+        // EH-V1.29-9: thread degraded flag through — batch name fetch inside
+        // find_transitive_callers can silently truncate the list on store
+        // failure without propagating upward.
+        let (tc, tc_degraded) =
+            find_transitive_callers(store, &graph, target_name, opts.depth, root)?;
+        if tc_degraded {
+            degraded = true;
+        }
+        tc
     } else {
         Vec::new()
     };
@@ -218,13 +226,16 @@ pub(crate) fn find_affected_tests_with_chunks(
 /// Find transitive callers up to the given depth.
 /// Uses `reverse_bfs` to discover all ancestor names in a single graph traversal,
 /// then batch-fetches chunk locations with `search_by_names_batch` to avoid N+1 queries.
+///
+/// EH-V1.29-9: returns `(callers, degraded)` — `degraded` is true when the
+/// batch name lookup failed and the caller list may be silently truncated.
 fn find_transitive_callers<Mode>(
     store: &Store<Mode>,
     graph: &crate::store::CallGraph,
     target_name: &str,
     depth: usize,
     root: &Path,
-) -> Result<Vec<TransitiveCaller>, StoreError> {
+) -> Result<(Vec<TransitiveCaller>, bool), StoreError> {
     // Single graph traversal to collect all ancestors + depths
     let ancestors = reverse_bfs(graph, target_name, depth);
 
@@ -236,15 +247,18 @@ fn find_transitive_callers<Mode>(
         .collect();
 
     if caller_entries.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), false));
     }
 
     // Batch-fetch all chunk locations in one query (exact name match, not FTS)
     let names: Vec<&str> = caller_entries.iter().map(|(n, _)| *n).collect();
-    let chunks_by_name = store.get_chunks_by_names_batch(&names).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to batch-fetch transitive caller locations");
-        HashMap::new()
-    });
+    let (chunks_by_name, degraded) = match store.get_chunks_by_names_batch(&names) {
+        Ok(map) => (map, false),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to batch-fetch transitive caller locations");
+            (HashMap::new(), true)
+        }
+    };
 
     // Build results from batch data
     let mut result = Vec::with_capacity(caller_entries.len());
@@ -261,7 +275,7 @@ fn find_transitive_callers<Mode>(
         }
     }
 
-    Ok(result)
+    Ok((result, degraded))
 }
 
 /// Suggest tests for untested callers in an impact result.

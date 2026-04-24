@@ -887,16 +887,13 @@ fn collect_model_files(cfg: &ModelConfig) -> ModelFiles {
 
 /// Best-effort HF cache directory. Mirrors `huggingface_hub`'s default.
 /// Caller treats a missing file as "not yet downloaded" — never fatal.
+///
+/// PB-V1.29-8: delegates to the shared [`cqs::aux_model::hf_cache_dir`]
+/// helper so Windows resolution (`%LOCALAPPDATA%\huggingface\hub`) is
+/// consistent with the SPLADE preset registry and other HF-adjacent cache
+/// consumers.
 fn hf_cache_dir() -> PathBuf {
-    if let Ok(p) = std::env::var("HF_HOME") {
-        return PathBuf::from(p).join("hub");
-    }
-    if let Ok(p) = std::env::var("HUGGINGFACE_HUB_CACHE") {
-        return PathBuf::from(p);
-    }
-    dirs::home_dir()
-        .map(|h| h.join(".cache/huggingface/hub"))
-        .unwrap_or_else(|| PathBuf::from(".cache/huggingface/hub"))
+    cqs::aux_model::hf_cache_dir("hub")
 }
 
 /// Look up `relative_path` (e.g. `"onnx/model.onnx"`) under any snapshot of

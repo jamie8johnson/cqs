@@ -187,6 +187,7 @@ mod tests {
                 test_count: 0,
                 truncated: false,
                 truncated_functions: 0,
+                degraded: false,
             },
         };
         assert_eq!(overall_risk(&empty_result), RiskLevel::Low);
