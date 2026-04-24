@@ -259,12 +259,18 @@ fn find_contrastive_neighbors(
         candidates.clear();
         candidates.extend((0..n).filter(|&j| j != i).map(|j| (j, row[j])));
 
+        // AC-V1.29-4: tiebreak on the candidate index (`a.0`) so two entries
+        // with identical cosine similarity don't swap positions across runs
+        // — the `select_nth_unstable_by` path leaves the tail unspecified
+        // and the final `truncate` + `sort_unstable_by` is the only sorter
+        // the caller observes.
         if candidates.len() <= limit {
-            candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+            candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         } else {
-            candidates.select_nth_unstable_by(limit - 1, |a, b| b.1.total_cmp(&a.1));
+            candidates
+                .select_nth_unstable_by(limit - 1, |a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
             candidates.truncate(limit);
-            candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+            candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         }
 
         if !candidates.is_empty() {

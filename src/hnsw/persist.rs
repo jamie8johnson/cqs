@@ -82,9 +82,10 @@ fn hnsw_max_id_map_bytes() -> u64 {
 static WSL_LOCK_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Emit a one-time warning about advisory-only file locking on WSL/NTFS mounts.
+/// PB-V1.29-6: Delegates the `/mnt/<letter>/` detection to `config::is_wsl_drvfs_path`.
 fn warn_wsl_advisory_locking(dir: &Path) {
     if crate::config::is_wsl()
-        && dir.to_str().is_some_and(|p| p.starts_with("/mnt/"))
+        && crate::config::is_wsl_drvfs_path(dir)
         && !WSL_LOCK_WARNED.swap(true, Ordering::Relaxed)
     {
         tracing::warn!(
@@ -127,19 +128,31 @@ pub fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError
     }
 
     let checksum_content = std::fs::read_to_string(&checksum_path).map_err(|e| {
+        tracing::warn!(
+            error = %e,
+            path = %checksum_path.display(),
+            kind = ?e.kind(),
+            "verify_hnsw_checksums IO failure"
+        );
         HnswError::Internal(format!("Failed to read {}: {}", checksum_path.display(), e))
     })?;
     for line in checksum_content.lines() {
         if let Some((ext, expected)) = line.split_once(':') {
             // Only allow known extensions to prevent path traversal
             if !HNSW_EXTENSIONS.contains(&ext) {
-                tracing::warn!("Ignoring unknown extension in checksum file: {}", ext);
+                tracing::warn!(ext = %ext, "Ignoring unknown extension in checksum file");
                 continue;
             }
             let path = dir.join(format!("{}.{}", basename, ext));
             if path.exists() {
                 // Stream file through blake3 hasher to avoid loading entire file into memory
                 let file = std::fs::File::open(&path).map_err(|e| {
+                    tracing::warn!(
+                        error = %e,
+                        path = %path.display(),
+                        kind = ?e.kind(),
+                        "verify_hnsw_checksums IO failure"
+                    );
                     HnswError::Internal(format!(
                         "Failed to open {} for checksum: {}",
                         path.display(),
@@ -148,6 +161,12 @@ pub fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError
                 })?;
                 let mut hasher = blake3::Hasher::new();
                 std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(|e| {
+                    tracing::warn!(
+                        error = %e,
+                        path = %path.display(),
+                        kind = ?e.kind(),
+                        "verify_hnsw_checksums IO failure"
+                    );
                     HnswError::Internal(format!(
                         "Failed to read {} for checksum: {}",
                         path.display(),
@@ -426,6 +445,31 @@ impl HnswIndex {
                 }
             }
 
+            // DS2-6: fsync the parent directory so the `.bak` rename entries
+            // are durable before the atomic_replace pass proceeds. Without
+            // this, a power cut between the backup loop and atomic_replace
+            // can leave the directory in a state where the `.bak` file
+            // exists in the page cache but not on disk. Best-effort fsync:
+            // log at debug on platforms that don't support directory fsync.
+            match std::fs::File::open(dir) {
+                Ok(f) => {
+                    if let Err(e) = f.sync_all() {
+                        tracing::debug!(
+                            error = %e,
+                            dir = %dir.display(),
+                            "fsync of HNSW parent directory after backup loop failed (non-fatal)"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        dir = %dir.display(),
+                        "could not open HNSW parent directory for fsync after backup loop"
+                    );
+                }
+            }
+
             for ext in &all_exts {
                 let temp_path = temp_dir.join(format!("{}.{}", basename, ext));
                 let final_path = dir.join(format!("{}.{}", basename, ext));
@@ -479,6 +523,28 @@ impl HnswIndex {
                             "Failed to restore backup during HNSW save rollback"
                         );
                     }
+                }
+            }
+            // DS2-6: fsync the parent directory after restoring backups so
+            // the restore renames are durable. Without this, a second power
+            // cut during rollback can leave the index with missing files
+            // even though the `.bak` existed on disk.
+            match std::fs::File::open(dir) {
+                Ok(f) => {
+                    if let Err(sync_err) = f.sync_all() {
+                        tracing::debug!(
+                            error = %sync_err,
+                            dir = %dir.display(),
+                            "fsync of HNSW parent directory after rollback failed (non-fatal)"
+                        );
+                    }
+                }
+                Err(open_err) => {
+                    tracing::debug!(
+                        error = %open_err,
+                        dir = %dir.display(),
+                        "could not open HNSW parent directory for fsync after rollback"
+                    );
                 }
             }
             tracing::warn!(error = %e, "HNSW save failed mid-rename, rolled back to original files");
@@ -643,8 +709,24 @@ impl HnswIndex {
         // A crafted file could claim more vectors than the id_map supports, causing
         // unbounded allocation during deserialization. Each vector is `dim` f32s,
         // with 2x headroom for HNSW graph overhead (neighbor lists, metadata).
+        //
+        // RB-V1.29-10: use checked_mul so a pathological `dim` argument
+        // (future model_info with huge embedding dimensions) can't overflow
+        // usize silently on 32-bit targets. On 64-bit the product fits for
+        // any realistic corpus, but defense-in-depth is cheap here.
         if !id_map.is_empty() {
-            let expected_max_data = id_map.len() * dim * std::mem::size_of::<f32>() * 2;
+            let expected_max_data = id_map
+                .len()
+                .checked_mul(dim)
+                .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+                .and_then(|v| v.checked_mul(2))
+                .ok_or_else(|| {
+                    HnswError::Internal(format!(
+                        "expected_max_data overflow: id_map={} dim={}",
+                        id_map.len(),
+                        dim
+                    ))
+                })?;
             let data_meta = std::fs::metadata(&data_path).map_err(|e| {
                 HnswError::Internal(format!(
                     "Failed to stat data file {}: {}",
@@ -728,8 +810,14 @@ impl HnswIndex {
             tracing::debug!(error = %e, "Could not lock HNSW id map");
             return None;
         }
-        // Guard against oversized id map files
-        const MAX_ID_MAP_SIZE: u64 = 100 * 1024 * 1024; // 100MB
+        // Guard against oversized id map files.
+        //
+        // SHL-V1.29-3: bumped from 100 MB to 1 GB to align with the hard-load
+        // path's MAX_ID_MAP_ENTRIES = 10M × ~64 byte strings = ~640 MB. The
+        // previous 100 MB cap silently returned None for corpora above ~1.7M
+        // chunks, so `cqs stats` / health reported "unknown vector count"
+        // well below the project's 1M+ scaling target.
+        const MAX_ID_MAP_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
         match file.metadata() {
             Ok(meta) if meta.len() > MAX_ID_MAP_SIZE => {
                 tracing::warn!(
@@ -1272,5 +1360,132 @@ mod tests {
             post_size, v1_graph_size,
             "original index file must not be touched when save bails on backup failure"
         );
+    }
+
+    // ===== TC-ADV-1.29-6: id_map edge cases =====
+    //
+    // Three previously-untested id_map shapes exercise rare but reachable
+    // states after a corrupt save, a user-crafted index, or a bincode
+    // deserialisation glitch:
+    //
+    // * duplicate string entries — the id_map is not a set, so duplicates
+    //   were historically accepted. Pins that behaviour so a future "dedup
+    //   on load" refactor is deliberate.
+    // * empty string entries — the store uses non-empty chunk IDs, but the
+    //   loader has no minimum-length check, so `""` in the id_map is
+    //   accepted and eventually returned by `search()` as a bogus ID.
+    // * NUL-byte string entries — JSON preserves NUL (` `), serde_json
+    //   decodes it to a real NUL in the `String`. Pins that the loader
+    //   accepts such ids today.
+
+    /// Build a valid on-disk HNSW index, then rewrite its `.hnsw.ids` file
+    /// with a crafted id_map while keeping graph + data intact. The
+    /// checksum file must also be rewritten or `verify_hnsw_checksums`
+    /// rejects the index before the id_map is touched.
+    fn rewrite_id_map_and_checksums(dir: &Path, basename: &str, ids: &[&str]) {
+        let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
+        let json = serde_json::to_string(ids).unwrap();
+        std::fs::write(&id_map_path, json).unwrap();
+
+        // Re-write checksums so the load path accepts the mutated id_map.
+        let mut lines = Vec::new();
+        for ext in &["hnsw.graph", "hnsw.data", "hnsw.ids"] {
+            let path = dir.join(format!("{}.{}", basename, ext));
+            let mut hasher = blake3::Hasher::new();
+            let mut file = std::fs::File::open(&path).unwrap();
+            std::io::copy(&mut file, &mut hasher).unwrap();
+            let hash = hasher.finalize().to_hex().to_string();
+            lines.push(format!("{}:{}", ext, hash));
+        }
+        std::fs::write(
+            dir.join(format!("{}.hnsw.checksum", basename)),
+            lines.join("\n"),
+        )
+        .unwrap();
+    }
+
+    /// Duplicate id_map entries are NOT rejected. `load_with_dim` only
+    /// asserts `id_map.len() == hnsw_count`, not that the entries are
+    /// unique. This test pins the current behaviour — a duplicate id_map
+    /// survives load and is returned from search as-is.
+    #[test]
+    fn test_load_accepts_duplicate_id_map_entries() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "test_dup";
+
+        // Build an index with 3 unique vectors, so hnsw_count == 3.
+        let embeddings = vec![
+            ("a".to_string(), make_embedding(1)),
+            ("b".to_string(), make_embedding(2)),
+            ("c".to_string(), make_embedding(3)),
+        ];
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+        index.save(tmp.path(), basename).unwrap();
+
+        // Rewrite id_map so two slots point at the same chunk id. The
+        // hnsw_count still matches 3, so the mismatch check doesn't fire.
+        rewrite_id_map_and_checksums(tmp.path(), basename, &["a", "a", "c"]);
+
+        let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
+            .expect("duplicate id_map entries must not cause load failure");
+        assert_eq!(loaded.len(), 3);
+        // AUDIT-FOLLOWUP (TC-ADV-1.29-6): if a future dedup/validation pass
+        // rejects duplicates, update this assertion accordingly.
+    }
+
+    /// Empty-string id_map entries are accepted. The id_map carries
+    /// `Vec<String>` and there is no "must be non-empty" check. Search
+    /// eventually returns the bogus empty id to the caller.
+    #[test]
+    fn test_load_accepts_empty_string_id_map_entries() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "test_empty_id";
+
+        let embeddings = vec![
+            ("a".to_string(), make_embedding(1)),
+            ("b".to_string(), make_embedding(2)),
+        ];
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+        index.save(tmp.path(), basename).unwrap();
+
+        rewrite_id_map_and_checksums(tmp.path(), basename, &["", "b"]);
+
+        let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
+            .expect("empty-string id_map entries must not cause load failure");
+        assert_eq!(loaded.len(), 2);
+        // AUDIT-FOLLOWUP (TC-ADV-1.29-6): once a non-empty-string guard
+        // lands, change to `assert!(result.is_err())` with the rejection
+        // message.
+    }
+
+    /// NUL-byte id_map entries are preserved verbatim. JSON encodes NUL as
+    /// ` ` and serde_json decodes it to a real NUL in `String`. The
+    /// loader has no sanitation pass.
+    #[test]
+    fn test_load_accepts_nul_byte_id_map_entries() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "test_nul_id";
+
+        let embeddings = vec![
+            ("a".to_string(), make_embedding(1)),
+            ("b".to_string(), make_embedding(2)),
+        ];
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+        index.save(tmp.path(), basename).unwrap();
+
+        // A chunk id containing a NUL byte. Write via serde_json::to_string so
+        // the NUL gets its ` ` escape — we can't hand-hardcode a
+        // JSON-with-real-NUL byte sequence into the file.
+        let nul_id = String::from("has\0nul");
+        let normal_id = String::from("b");
+        let ids: Vec<&str> = vec![nul_id.as_str(), normal_id.as_str()];
+        rewrite_id_map_and_checksums(tmp.path(), basename, &ids);
+
+        let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
+            .expect("NUL-byte id_map entries must not cause load failure");
+        assert_eq!(loaded.len(), 2);
+        // AUDIT-FOLLOWUP (TC-ADV-1.29-6): accepting NUL in chunk ids is a
+        // downstream hazard (SQL queries, log lines). Once a reject-NUL
+        // guard lands, flip this to `result.is_err()`.
     }
 }

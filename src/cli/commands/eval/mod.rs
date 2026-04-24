@@ -44,7 +44,10 @@ pub(crate) struct EvalCmdArgs {
     pub json: bool,
 
     /// Max results retrieved per query (used for R@K denominator cap)
-    #[arg(long, default_value = "20")]
+    ///
+    /// API-V1.29-7: `-n` short flag added for parity with every other CLI
+    /// command that accepts a result cap (search, gather, related, etc.).
+    #[arg(short = 'n', long, default_value = "20")]
     pub limit: usize,
 
     /// Restrict the run to one category (e.g. `multi_step`)

@@ -99,10 +99,6 @@ impl DbFileIdentity {
     }
 }
 
-/// Maximum batch stdin line length (1MB). Lines exceeding this are rejected
-/// to prevent unbounded memory allocation from malicious input.
-const MAX_BATCH_LINE_LEN: usize = 1_048_576;
-
 /// Default idle timeout for ONNX sessions (embedder, reranker) in minutes.
 /// After this many minutes without a command, sessions are cleared to free
 /// memory. Matches watch mode's ~5-minute idle clear pattern. Override via
@@ -267,10 +263,15 @@ pub(crate) struct BatchContext {
     /// P3 #123: cache returns `Arc<HashSet<PathBuf>>` so callers don't clone
     /// the full set on every invocation. Mirrors `call_graph` / `test_chunks`.
     file_set: RefCell<Option<std::sync::Arc<HashSet<PathBuf>>>>,
-    notes_cache: RefCell<Option<Vec<cqs::note::Note>>>,
+    /// PF-V1.29-6: cached notes returned as `Arc<Vec<Note>>` so callers
+    /// don't clone the full Vec on every dispatch. Mirrors `call_graph` /
+    /// `test_chunks` / `file_set`.
+    notes_cache: RefCell<Option<std::sync::Arc<Vec<cqs::note::Note>>>>,
     // Single-threaded by design — RefCell is correct, no Mutex needed
     // RM-27: Reduced from 4 to 2 — each ReferenceIndex holds Store + HNSW (50-200MB)
-    refs: RefCell<lru::LruCache<String, ReferenceIndex>>,
+    // RM-V1.29-1: values are `Arc` so `get_all_refs` can fan out refs to
+    // parallel `--include-refs` searches without cloning the index bytes.
+    refs: RefCell<lru::LruCache<String, std::sync::Arc<ReferenceIndex>>>,
     splade_encoder: OnceLock<Option<cqs::splade::SpladeEncoder>>,
     splade_index: RefCell<Option<cqs::splade::index::SpladeIndex>>,
     pub root: PathBuf,
@@ -340,7 +341,10 @@ impl BatchContext {
         let timeout_minutes = idle_timeout_minutes();
         if timeout_minutes > 0 {
             let elapsed = self.last_command_time.get().elapsed();
-            let timeout = std::time::Duration::from_secs(timeout_minutes * 60);
+            // RB-V1.29-1: saturating_mul so an operator passing
+            // `CQS_BATCH_IDLE_MINUTES=u64::MAX` can't overflow into zero and
+            // instant-evict sessions they meant to pin forever.
+            let timeout = std::time::Duration::from_secs(timeout_minutes.saturating_mul(60));
             if elapsed >= timeout {
                 if let Some(emb) = self.embedder.get() {
                     emb.clear_session();
@@ -375,7 +379,8 @@ impl BatchContext {
             return;
         }
         let elapsed = self.last_command_time.get().elapsed();
-        let data_timeout = std::time::Duration::from_secs(data_timeout_minutes * 60);
+        // RB-V1.29-1: same overflow guard as the ONNX-session path above.
+        let data_timeout = std::time::Duration::from_secs(data_timeout_minutes.saturating_mul(60));
         if elapsed >= data_timeout {
             tracing::info!(
                 idle_minutes = elapsed.as_secs() / 60,
@@ -554,6 +559,12 @@ impl BatchContext {
     /// `cmd_batch` stdin loop and the daemon socket handler converge on
     /// the same counter — previously only `cmd_batch` bumped `error_count`,
     /// leaving socket queries invisible).
+    ///
+    /// PF-V1.29-1: Daemon socket path now calls [`Self::dispatch_tokens`]
+    /// directly (skipping shell round-trip), and the `cmd_batch` stdin loop
+    /// does its own tokenization. `dispatch_line` is retained for tests and
+    /// any future stdin-style surface that needs shell parsing.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn dispatch_line(&self, line: &str, out: &mut impl std::io::Write) {
         use crate::cli::json_envelope::error_codes;
         let trimmed = line.trim();
@@ -573,15 +584,49 @@ impl BatchContext {
         if tokens.is_empty() {
             return;
         }
+        self.dispatch_parsed_tokens(&tokens, out);
+    }
+
+    /// PF-V1.29-1: Dispatch pre-tokenized `(command, args)` directly, skipping
+    /// the `shell_words::join` / `shell_words::split` round-trip that
+    /// `dispatch_line` requires for the stdin surface.
+    ///
+    /// The daemon socket path already receives `{ "command": "...", "args":
+    /// [...] }` as parsed JSON — round-tripping that through a shell-quoted
+    /// string is wasted work on every daemon query and a latent correctness
+    /// bug on tokens containing shell metacharacters. This entry point takes
+    /// the tokens directly and still shares the NUL check, counter bumps,
+    /// and dispatch body with `dispatch_line`.
+    pub(crate) fn dispatch_tokens(
+        &self,
+        command: &str,
+        args: &[String],
+        out: &mut impl std::io::Write,
+    ) {
+        if command.is_empty() {
+            return;
+        }
+        let tokens: Vec<String> = std::iter::once(command.to_string())
+            .chain(args.iter().cloned())
+            .collect();
+        self.dispatch_parsed_tokens(&tokens, out);
+    }
+
+    /// Shared dispatch body for both `dispatch_line` (stdin surface) and
+    /// `dispatch_tokens` (daemon socket surface). The only difference between
+    /// the two callers is how they reached a non-empty `tokens` vec — NUL
+    /// check, counter bumps, clap parse, and handler dispatch are identical.
+    fn dispatch_parsed_tokens(&self, tokens: &[String], out: &mut impl std::io::Write) {
+        use crate::cli::json_envelope::error_codes;
         // D.2: NUL byte check parity with the daemon socket loop in cmd_batch.
         // Both surfaces share downstream handlers; they must share input
         // validation too. RT-INJ-2.
-        if let Err(msg) = reject_null_tokens(&tokens) {
+        if let Err(msg) = reject_null_tokens(tokens) {
             self.error_count.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(
                 code = error_codes::INVALID_INPUT,
                 error = msg,
-                "Batch dispatch_line: NUL byte in tokens"
+                "Batch dispatch: NUL byte in tokens"
             );
             let _ = write_envelope_error(out, error_codes::INVALID_INPUT, msg);
             return;
@@ -591,7 +636,7 @@ impl BatchContext {
         // not a query). Counts both successes and errors — symmetric with
         // how `total_queries` is described in PingResponse.
         self.query_count.fetch_add(1, Ordering::Relaxed);
-        match commands::BatchInput::try_parse_from(&tokens) {
+        match commands::BatchInput::try_parse_from(tokens) {
             Ok(input) => match commands::dispatch(self, input.cmd) {
                 Ok(value) => {
                     let _ = write_json_line(out, &value);
@@ -614,7 +659,7 @@ impl BatchContext {
                 // safe to surface verbatim and useful for the agent to
                 // correct its query. No redaction needed.
                 let msg = format!("{e:#}");
-                tracing::warn!(code = error_codes::PARSE_ERROR, error = %msg, "Batch dispatch_line: clap parse failed");
+                tracing::warn!(code = error_codes::PARSE_ERROR, error = %msg, "Batch dispatch: clap parse failed");
                 let _ = write_envelope_error(out, error_codes::PARSE_ERROR, &msg);
             }
         }
@@ -951,8 +996,77 @@ impl BatchContext {
                 name
             )
         })?;
-        self.refs.borrow_mut().put(name.to_string(), found);
+        self.refs
+            .borrow_mut()
+            .put(name.to_string(), std::sync::Arc::new(found));
         Ok(())
+    }
+
+    /// Return every configured reference as a shared `Arc`, populating the
+    /// LRU cache on miss. Amortizes Store+HNSW loads across a daemon
+    /// session — without this, each `--include-refs` query called
+    /// `cqs::reference::load_references(...)` which rebuilt every
+    /// reference from scratch (PERF regression RM-V1.29-1).
+    ///
+    /// Staleness is honored: a cached reference whose `index.db`
+    /// identity changed (concurrent `cqs ref update <name>`) is evicted
+    /// and reloaded.
+    ///
+    /// The LRU size cap still applies — references not in the cache at
+    /// the moment of the call are loaded; if total configured refs
+    /// exceed the cap, the oldest cached entries churn, but within a
+    /// single call the returned `Vec` holds strong `Arc`s so eviction
+    /// cannot race with in-flight searches.
+    pub fn get_all_refs(&self) -> Result<Vec<std::sync::Arc<ReferenceIndex>>> {
+        let _span = tracing::info_span!("batch_get_all_refs").entered();
+        let config = self.config();
+        if config.references.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Partition configured refs into cached-hits vs misses. Checking
+        // hit/miss first avoids calling `load_references` (which builds a
+        // rayon pool + reopens the store) on every entry — we only load
+        // those not present or stale.
+        let mut hits: Vec<std::sync::Arc<ReferenceIndex>> =
+            Vec::with_capacity(config.references.len());
+        let mut misses: Vec<cqs::config::ReferenceConfig> = Vec::new();
+        {
+            let mut cache = self.refs.borrow_mut();
+            for cfg in &config.references {
+                if let Some(existing) = cache.peek(&cfg.name) {
+                    if existing.is_stale() {
+                        tracing::info!(
+                            reference = %cfg.name,
+                            "Cached reference stale (index.db mtime/size changed) — evicting for reload"
+                        );
+                        cache.pop(&cfg.name);
+                        misses.push(cfg.clone());
+                    } else {
+                        // `get` to promote LRU order, then clone the Arc.
+                        let arc = cache
+                            .get(&cfg.name)
+                            .map(std::sync::Arc::clone)
+                            .expect("peek hit above");
+                        hits.push(arc);
+                    }
+                } else {
+                    misses.push(cfg.clone());
+                }
+            }
+        }
+
+        if !misses.is_empty() {
+            let loaded = cqs::reference::load_references(&misses);
+            let mut cache = self.refs.borrow_mut();
+            for ri in loaded {
+                let arc = std::sync::Arc::new(ri);
+                cache.put(arc.name.clone(), std::sync::Arc::clone(&arc));
+                hits.push(arc);
+            }
+        }
+
+        Ok(hits)
     }
 
     /// Get or build the file set for staleness checks (cached).
@@ -1013,12 +1127,14 @@ impl BatchContext {
     }
 
     /// Get cached notes (parsed once per session, invalidated on index change).
-    pub(super) fn notes(&self) -> Vec<cqs::note::Note> {
+    /// PF-V1.29-6: returns `Arc<Vec<Note>>` so repeat calls bump a refcount
+    /// instead of cloning the full Vec — mirrors `call_graph` / `test_chunks`.
+    pub(super) fn notes(&self) -> std::sync::Arc<Vec<cqs::note::Note>> {
         self.check_index_staleness();
         {
             let cached = self.notes_cache.borrow();
             if let Some(notes) = cached.as_ref() {
-                return notes.clone();
+                return std::sync::Arc::clone(notes);
             }
         }
         let notes_path = self.root.join("docs/notes.toml");
@@ -1058,9 +1174,9 @@ impl BatchContext {
         } else {
             vec![]
         };
-        let result = notes.clone();
-        *self.notes_cache.borrow_mut() = Some(notes);
-        result
+        let arc = std::sync::Arc::new(notes);
+        *self.notes_cache.borrow_mut() = Some(std::sync::Arc::clone(&arc));
+        arc
     }
 
     /// Borrow a reference index by name (must be loaded via `get_ref` first).
@@ -1068,15 +1184,9 @@ impl BatchContext {
     /// Returns `None` if the reference hasn't been loaded yet.
     /// Uses `borrow_mut` because `LruCache::get()` promotes the entry (marks
     /// as recently used), which requires `&mut self`.
-    pub fn borrow_ref(&self, name: &str) -> Option<std::cell::RefMut<'_, ReferenceIndex>> {
-        let cache = self.refs.borrow_mut();
-        if cache.contains(name) {
-            Some(std::cell::RefMut::map(cache, |m| {
-                m.get_mut(name).expect("checked contains above")
-            }))
-        } else {
-            None
-        }
+    pub fn borrow_ref(&self, name: &str) -> Option<std::sync::Arc<ReferenceIndex>> {
+        let mut cache = self.refs.borrow_mut();
+        cache.get(name).map(std::sync::Arc::clone)
     }
 
     /// Get or load the call graph (cached, invalidated on index change). (PERF-22)
@@ -1188,7 +1298,7 @@ pub(crate) fn evict_global_embedding_cache_with_runtime(
 ) {
     let _span = tracing::debug_span!("daemon_cache_evict", trigger).entered();
     let cache_path = cqs::cache::EmbeddingCache::default_path();
-    let cache = match cqs::cache::EmbeddingCache::open_with_runtime(&cache_path, runtime) {
+    let cache = match cqs::cache::EmbeddingCache::open_with_runtime(&cache_path, runtime.clone()) {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(
@@ -1222,7 +1332,9 @@ pub(crate) fn evict_global_embedding_cache_with_runtime(
     // without a second timer.
     let q_path = cqs::cache::QueryCache::default_path();
     if q_path.exists() {
-        match cqs::cache::QueryCache::open(&q_path) {
+        // RM-V1.29-2: reuse the shared daemon runtime instead of spinning up a
+        // fresh `current_thread` runtime every eviction tick.
+        match cqs::cache::QueryCache::open_with_runtime(&q_path, runtime) {
             Ok(qc) => match qc.evict() {
                 Ok(n) if n > 0 => {
                     tracing::info!(
@@ -1456,18 +1568,17 @@ pub(crate) fn create_context_with_runtime(
 
 /// Create a BatchContext for testing with a temporary store.
 ///
-/// Visibility: `pub(in crate::cli::batch)` under `#[cfg(test)]` so submodule
-/// tests (handlers/search.rs tests for issue #973) can reuse the same fixture
-/// wiring as the in-file `mod tests`.
+/// Visibility: `pub(in crate::cli)` under `#[cfg(test)]` so both
+/// `batch::handlers::*` tests (search.rs / dispatch_tests.rs) and
+/// `cli::watch` adversarial tests can reuse the same fixture wiring.
+/// Previously `pub(in crate::cli::batch)` — relaxed for TC-ADV-1.29-3.
 ///
 /// The store is opened RO at the SQLite connection level via
 /// [`Store::open_readonly_after_init`] (#986) — the DB is expected to be
 /// pre-initialized by `setup_test_store` so the closure is a no-op, but
 /// the constructor path matches production code that may need fixture setup.
 #[cfg(test)]
-pub(in crate::cli::batch) fn create_test_context(
-    cqs_dir: &std::path::Path,
-) -> Result<BatchContext> {
+pub(in crate::cli) fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
     let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
     // #986: open_readonly_after_init returns Store<ReadOnly> directly —
     // the unsafe into_readonly() type-erasure is gone.
@@ -1525,7 +1636,11 @@ pub(crate) fn cmd_batch() -> Result<()> {
     // SEC-1: read_line allocates incrementally (8KB chunks) until newline or EOF.
     // A multi-GB line without newlines could OOM before the post-hoc check below.
     // Accepted risk: batch input is from a controlling process (AI agent or pipe),
-    // not from untrusted network input. The 1MB check prevents processing, not allocation.
+    // not from untrusted network input. The post-hoc cap prevents processing, not
+    // allocation. SHL-V1.29-2: the cap matches `MAX_DIFF_BYTES` (50 MiB) so piped
+    // `--stdin` diffs that clear the CLI path aren't silently rejected by the
+    // batch/daemon path. Override via `CQS_BATCH_MAX_LINE_LEN`.
+    let max_line_len = crate::cli::limits::batch_max_line_len();
     let mut line = String::new();
     loop {
         line.clear();
@@ -1538,13 +1653,22 @@ pub(crate) fn cmd_batch() -> Result<()> {
             }
         };
 
-        // Reject lines exceeding 1MB to prevent further processing.
-        if line.len() > MAX_BATCH_LINE_LEN {
+        // Reject lines exceeding the configured cap to prevent further processing.
+        if line.len() > max_line_len {
             ctx.error_count.fetch_add(1, Ordering::Relaxed);
-            // Hardcoded JSON — no serialization needed, no NaN risk
-            if writeln!(stdout, r#"{{"error":"Line too long (max 1MB)"}}"#).is_err() {
-                break;
-            }
+            // Error is written as a JSON envelope so the agent can pick up the
+            // (code, message) pair. Mentioning the env var lets operators bump
+            // the cap without grepping source.
+            let msg = format!(
+                "Batch line exceeds CQS_BATCH_MAX_LINE_LEN ({} bytes); got {} bytes",
+                max_line_len,
+                line.len(),
+            );
+            let _ = write_envelope_error(
+                &mut stdout,
+                crate::cli::json_envelope::error_codes::INVALID_INPUT,
+                &msg,
+            );
             let _ = stdout.flush();
             continue;
         }
@@ -1713,7 +1837,7 @@ mod tests {
 
         // Populate mutable caches
         *ctx.file_set.borrow_mut() = Some(std::sync::Arc::new(HashSet::new()));
-        *ctx.notes_cache.borrow_mut() = Some(vec![]);
+        *ctx.notes_cache.borrow_mut() = Some(std::sync::Arc::new(vec![]));
         *ctx.call_graph.borrow_mut() = Some(std::sync::Arc::new(
             cqs::store::CallGraph::from_string_maps(Default::default(), Default::default()),
         ));
@@ -1742,7 +1866,7 @@ mod tests {
         let ctx = create_test_context(&cqs_dir).unwrap();
 
         // Populate a cache
-        *ctx.notes_cache.borrow_mut() = Some(vec![]);
+        *ctx.notes_cache.borrow_mut() = Some(std::sync::Arc::new(vec![]));
         assert!(ctx.notes_cache.borrow().is_some());
 
         // First staleness check — sets baseline mtime, no invalidation
@@ -1790,7 +1914,7 @@ mod tests {
         let ctx = create_test_context(&cqs_dir).unwrap();
 
         // Populate a cache and run the first check to capture baseline identity.
-        *ctx.notes_cache.borrow_mut() = Some(vec![]);
+        *ctx.notes_cache.borrow_mut() = Some(std::sync::Arc::new(vec![]));
         ctx.check_index_staleness();
         assert!(
             ctx.notes_cache.borrow().is_some(),
@@ -2226,5 +2350,183 @@ mod tests {
             0,
             "tokenization failure happens before query_count bump"
         );
+    }
+
+    // ===== TC-ADV-1.29-8: shell_words with control sequences =====
+    //
+    // `dispatch_line` runs the caller's raw line through `shell_words::split`
+    // which is a POSIX-sh tokenizer, NOT a sanitizer. ANSI escape sequences,
+    // BEL (0x07), and CR (0x0D) all survive tokenization and reach
+    // `dispatch_parsed_tokens`. The NUL path is already covered upstream;
+    // these pin the other control-byte classes that were previously untested.
+
+    /// An ANSI colour-escape sequence embedded in an argument survives
+    /// tokenization and reaches the parser. What shell_words does with it
+    /// depends on quoting — bare ESC passes through as a token character,
+    /// producing a single-token "search" followed by an argument containing
+    /// the escape bytes verbatim.
+    #[test]
+    fn test_dispatch_line_handles_ansi_escape_in_arg() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        let mut sink = Vec::new();
+
+        // CSI red: ESC[31m ... ESC[0m. Quote the whole arg so the ESC bytes
+        // stay inside one token.
+        ctx.dispatch_line("search \"\x1b[31mred-query\x1b[0m\"", &mut sink);
+        // (a) no panic — implicit by reaching here.
+        // (b) envelope JSON produced (some result — either a successful
+        //     empty search or an error envelope — not a panic-crashed pipe).
+        let output = String::from_utf8(sink).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.trim()).expect("must produce parseable envelope");
+        assert!(
+            parsed["version"].is_number(),
+            "envelope version field must be present, got {output}"
+        );
+        // (c) query_count bumped — ANSI-tainted input is a valid query
+        //     from dispatch_line's perspective; the handler runs.
+        assert_eq!(
+            ctx.query_count.load(Ordering::Relaxed),
+            1,
+            "ANSI-tainted arg should still count as a dispatch"
+        );
+    }
+
+    /// A BEL byte (0x07) in an arg is a non-control printable from the
+    /// shell's point of view. shell_words preserves it; dispatch reaches
+    /// the handler (which may or may not succeed depending on how the
+    /// handler handles the byte).
+    #[test]
+    fn test_dispatch_line_handles_bel_byte_in_arg() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        let mut sink = Vec::new();
+
+        ctx.dispatch_line("search \"ring\x07bell\"", &mut sink);
+        // No panic + parseable envelope.
+        let output = String::from_utf8(sink).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.trim()).expect("must produce parseable envelope");
+        assert!(
+            parsed["version"].is_number(),
+            "envelope version must be present, got {output}"
+        );
+    }
+
+    /// A bare CR inside a double-quoted arg is preserved as a literal byte.
+    /// shell_words does NOT treat CR as whitespace or a line terminator
+    /// inside quotes. The daemon must survive the byte without crashing
+    /// and without splitting the command into two lines.
+    #[test]
+    fn test_dispatch_line_handles_cr_in_quoted_arg() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        let mut sink = Vec::new();
+
+        // CR embedded inside a quoted arg. If the split happened at CR
+        // we'd get a partial command; instead we should get a single
+        // "search" dispatch with the CR-containing query.
+        ctx.dispatch_line("search \"foo\rbar\"", &mut sink);
+        let output = String::from_utf8(sink).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.trim()).expect("must produce parseable envelope");
+        assert!(
+            parsed["version"].is_number(),
+            "envelope must be present even with CR in arg, got {output}"
+        );
+        // Exactly one dispatch (not two from a CR-split).
+        assert_eq!(
+            ctx.query_count.load(Ordering::Relaxed),
+            1,
+            "CR inside a quoted arg must not split the dispatch"
+        );
+    }
+
+    // ===== TC-HAP-1.29-10: dispatch_line happy-path envelope =====
+    //
+    // The existing dispatch_line tests pin error shapes (NUL, unbalanced
+    // quote, bogus command, empty input). There was no positive test that
+    // a known-good command produces a parseable success envelope and
+    // bumps counters correctly.
+
+    /// `ping` is the cheapest handler that exercises the full dispatch
+    /// body — it needs no embedder, no index contents, no HNSW load. The
+    /// response must be a valid envelope with `data` populated.
+    #[test]
+    fn test_dispatch_line_ping_happy_path_envelope() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        let mut sink = Vec::new();
+
+        ctx.dispatch_line("ping", &mut sink);
+
+        let output = String::from_utf8(sink).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(output.trim())
+            .unwrap_or_else(|e| panic!("ping envelope must parse as JSON ({e}): {output}"));
+
+        // Envelope shape — `data` populated, `error` null, `version` set.
+        assert!(
+            parsed["error"].is_null(),
+            "ping success envelope must have error=null, got {output}"
+        );
+        assert!(
+            parsed["data"].is_object(),
+            "ping data must be an object (PingResponse), got {output}"
+        );
+        assert_eq!(
+            parsed["version"],
+            crate::cli::json_envelope::JSON_OUTPUT_VERSION
+        );
+
+        // PingResponse has `total_queries` and `error_count` fields; both
+        // should be numeric (0 at this point).
+        assert!(
+            parsed["data"]["total_queries"].is_number(),
+            "ping response must have total_queries, got {output}"
+        );
+        assert!(
+            parsed["data"]["error_count"].is_number(),
+            "ping response must have error_count, got {output}"
+        );
+
+        // Counters — success bumps query_count only, not error_count.
+        assert_eq!(
+            ctx.query_count.load(Ordering::Relaxed),
+            1,
+            "a successful dispatch_line call must bump query_count"
+        );
+        assert_eq!(
+            ctx.error_count.load(Ordering::Relaxed),
+            0,
+            "a successful dispatch_line call must NOT bump error_count"
+        );
+    }
+
+    /// `stats` against an init-only store — another handler with no model
+    /// dependency. Pins that the envelope `data` field is populated and
+    /// each dispatch bumps query_count exactly once even across multiple
+    /// calls.
+    #[test]
+    fn test_dispatch_line_stats_multiple_dispatches_bump_counter_monotonically() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        for expected in 1..=3u64 {
+            let mut sink = Vec::new();
+            ctx.dispatch_line("stats", &mut sink);
+            let output = String::from_utf8(sink).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(output.trim())
+                .unwrap_or_else(|e| panic!("stats envelope must parse ({e}): {output}"));
+            assert!(
+                parsed["data"].is_object() || parsed["error"].is_object(),
+                "each dispatch_line call must emit a valid envelope, got {output}"
+            );
+            assert_eq!(
+                ctx.query_count.load(Ordering::Relaxed),
+                expected,
+                "query_count must bump once per dispatch (expected {expected})"
+            );
+        }
     }
 }

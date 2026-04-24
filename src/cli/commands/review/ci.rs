@@ -219,8 +219,16 @@ fn display_ci_text(
         }
     }
 
-    // Dead code in diff
-    if !report.dead_in_diff.is_empty() {
+    // Dead code in diff — EH-V1.29-2: surface scan failures so operators
+    // can distinguish "no dead code found" from "scan never ran". The gate
+    // fails on scan failure; this message explains why.
+    if !report.dead_scan_ok {
+        println!();
+        println!(
+            "{} Dead-code scan failed — results not available. See logs for error.",
+            "Warning:".red().bold(),
+        );
+    } else if !report.dead_in_diff.is_empty() {
         println!();
         println!(
             "{} ({}):",

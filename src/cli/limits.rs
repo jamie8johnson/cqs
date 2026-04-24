@@ -125,6 +125,52 @@ pub(crate) fn max_daemon_response_bytes() -> u64 {
     parse_env_u64("CQS_DAEMON_MAX_RESPONSE_BYTES", MAX_DAEMON_RESPONSE_BYTES)
 }
 
+// ============ SHL-V1.29-9: daemon periodic GC cadence ============
+
+/// Default idle-time periodic GC interval (seconds). The daemon checks
+/// for a tick every loop iteration; the actual prune only fires once
+/// this many seconds have passed since the last periodic sweep.
+pub(crate) const DAEMON_PERIODIC_GC_INTERVAL_SECS_DEFAULT: u64 = 1800; // 30 minutes
+
+/// Default minimum idle gap (seconds) between the last file event and a
+/// periodic GC tick. Prevents GC mid-burst during a long run of file
+/// changes.
+pub(crate) const DAEMON_PERIODIC_GC_IDLE_SECS_DEFAULT: u64 = 60;
+
+/// Resolve the periodic-GC interval honoring `CQS_DAEMON_PERIODIC_GC_INTERVAL_SECS`.
+/// Falls back to [`DAEMON_PERIODIC_GC_INTERVAL_SECS_DEFAULT`] when unset,
+/// empty, unparseable, or zero.
+pub(crate) fn daemon_periodic_gc_interval_secs() -> u64 {
+    parse_env_u64(
+        "CQS_DAEMON_PERIODIC_GC_INTERVAL_SECS",
+        DAEMON_PERIODIC_GC_INTERVAL_SECS_DEFAULT,
+    )
+}
+
+/// Resolve the periodic-GC idle gap honoring `CQS_DAEMON_PERIODIC_GC_IDLE_SECS`.
+/// Falls back to [`DAEMON_PERIODIC_GC_IDLE_SECS_DEFAULT`] when unset,
+/// empty, unparseable, or zero.
+pub(crate) fn daemon_periodic_gc_idle_secs() -> u64 {
+    parse_env_u64(
+        "CQS_DAEMON_PERIODIC_GC_IDLE_SECS",
+        DAEMON_PERIODIC_GC_IDLE_SECS_DEFAULT,
+    )
+}
+
+// ============ SHL-V1.29-2: batch stdin line cap ============
+
+/// Default cap on a single batch stdin / daemon line. Matches
+/// [`MAX_DIFF_BYTES`] (50 MiB) so a piped `--stdin` diff that passes the
+/// CLI path is not silently rejected by the batch path. Historically this
+/// was 1 MiB, which blocked realistic unified diffs of large PRs from
+/// reaching the daemon.
+pub(crate) const DEFAULT_MAX_BATCH_LINE_LEN: usize = MAX_DIFF_BYTES;
+
+/// Resolve the batch-line cap honoring `CQS_BATCH_MAX_LINE_LEN`.
+pub(crate) fn batch_max_line_len() -> usize {
+    parse_env_usize("CQS_BATCH_MAX_LINE_LEN", DEFAULT_MAX_BATCH_LINE_LEN)
+}
+
 // ============ shared parsing helpers ============
 
 /// Parse a `usize`-shaped env var. Empty / unparseable / zero values fall

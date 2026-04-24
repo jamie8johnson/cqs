@@ -689,4 +689,106 @@ text = "first note"
             }
         }
     }
+
+    // ===== TC-ADV-1.29-5: adversarial content in note entries =====
+    //
+    // `parse_notes_str` trusts the TOML parser to sanitize, then blake3-hashes
+    // the raw text for stable IDs. These tests pin behaviour on three input
+    // shapes that were previously untested:
+    //
+    // * a huge `mentions` array (10k+ entries) — memory-bound, should not
+    //   panic or get silently truncated. Only the outer `MAX_NOTES` cap
+    //   bounds the note count; per-note mentions have no explicit cap.
+    // * an empty `text` field — the blake3 hash of "" is a fixed constant,
+    //   so two empty-text notes collide. Parsing succeeds; collision is a
+    //   known accepted trade-off documented at `parse_notes_str:322-324`.
+    // * a NUL byte embedded in `text` — the TOML parser accepts NUL in a
+    //   double-quoted string (encoded as ` `) and `parse_notes_str`
+    //   preserves it verbatim. This pins the current behaviour so a future
+    //   sanitation layer is deliberate.
+
+    /// 10k-entry `mentions` array round-trips without panic or truncation.
+    /// `MAX_NOTES = 10_000` caps the note count, not the per-note mentions,
+    /// so a single note can carry an arbitrary-length `mentions` vector
+    /// bounded only by the file-size guard.
+    #[test]
+    fn test_parse_notes_str_huge_mentions_array() {
+        let mut mentions = String::with_capacity(10_000 * 16);
+        mentions.push('[');
+        for i in 0..10_000 {
+            if i > 0 {
+                mentions.push(',');
+            }
+            mentions.push_str(&format!("\"file{i}.rs\""));
+        }
+        mentions.push(']');
+
+        let content = format!(
+            "[[note]]\ntext = \"huge mentions\"\nmentions = {}\n",
+            mentions
+        );
+        let notes = parse_notes_str(&content)
+            .expect("parse_notes_str must accept a 10k-entry mentions array");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            notes[0].mentions.len(),
+            10_000,
+            "all mentions preserved — no silent truncation"
+        );
+        assert_eq!(notes[0].mentions[0], "file0.rs");
+        assert_eq!(notes[0].mentions[9_999], "file9999.rs");
+    }
+
+    /// Empty `text` field parses cleanly. The hash-based ID is a fixed
+    /// constant for the empty string, so multiple empty-text notes collide
+    /// on a single ID — the 0.003% collision rate documented at `:322-324`
+    /// is accepted for the higher-priority "stable across reordering"
+    /// property. This test pins that empty text is NOT rejected.
+    #[test]
+    fn test_parse_notes_str_empty_text() {
+        let content = "[[note]]\ntext = \"\"\n";
+        let notes = parse_notes_str(content).expect("empty text must parse (not error)");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].text, "", "empty text preserved as empty string");
+        assert!(
+            notes[0].id.starts_with("note:"),
+            "ID should still be generated from blake3 hash of empty string"
+        );
+    }
+
+    /// A NUL byte embedded in `text` (via TOML ` `) is preserved
+    /// verbatim. AUDIT-FOLLOWUP (TC-ADV-1.29-5): if a future sanitation
+    /// layer rejects or strips NUL bytes, this test should be updated to
+    /// reflect the new contract.
+    #[test]
+    fn test_parse_notes_str_nul_byte_in_text_preserved_verbatim() {
+        let content = "[[note]]\ntext = \"has \\u0000 nul\"\n";
+        let notes =
+            parse_notes_str(content).expect("NUL in text must not error at parse time today");
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].text.contains('\0'),
+            "AUDIT-FOLLOWUP (TC-ADV-1.29-5): NUL byte preserved verbatim today — \
+             got {:?}",
+            notes[0].text
+        );
+        // The full text should retain its surrounding characters.
+        assert!(notes[0].text.starts_with("has "));
+        assert!(notes[0].text.ends_with(" nul"));
+    }
+
+    /// NUL-only text (`" "`) — boundary case for the preserve-verbatim
+    /// contract. After `.trim()` on `text` the NUL stays (trim only strips
+    /// ASCII whitespace). The ID derives from the unstripped raw text so
+    /// two "NUL-only" notes collide — the audit documents no guard here.
+    #[test]
+    fn test_parse_notes_str_nul_only_text() {
+        let content = "[[note]]\ntext = \"\\u0000\"\n";
+        let notes = parse_notes_str(content).expect("NUL-only text should not error");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            notes[0].text, "\0",
+            "NUL-only text survives trim — it is not ASCII whitespace"
+        );
+    }
 }

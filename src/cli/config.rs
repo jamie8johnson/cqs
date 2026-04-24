@@ -4,26 +4,112 @@
 
 use std::path::PathBuf;
 
+use clap::parser::ValueSource;
+use clap::CommandFactory;
+
 use super::Cli;
 
 // Default values for CLI options.
 //
-// SYNC REQUIREMENT: These constants MUST match the clap `default_value` attributes
-// in `Cli` (cli/mod.rs). If you change a default here, update the corresponding
-// `#[arg(default_value = "...")]` attribute too, and vice versa.
-//
-// These exist because clap doesn't expose whether a user explicitly passed the
-// default value, so apply_config_defaults compares against these to detect
-// "user didn't set this, apply config file value".
+// EX-V1.29-8: These constants are retained for tests that assert against the
+// default (see `cli::definitions::test_default_constants`), but the runtime
+// SYNC REQUIREMENT between them and clap's `default_value` attributes is
+// gone — `apply_config_defaults` now uses `ArgMatches::value_source()` to
+// detect "user didn't set this on the CLI". Changing a clap default no
+// longer silently breaks config-defaulting; you only need to update the
+// test expectation if you care about the compile-time assertion.
 pub(crate) const DEFAULT_LIMIT: usize = 5;
 /// Minimum cosine similarity threshold for search results.
 /// Tuned for BGE-large and E5-base with enrichment. Different embedding models
 /// produce different score distributions (BGE-large scores higher than E5-base
 /// for the same query-document pair). If using a custom model, you may need to
 /// adjust this via the config file `threshold` field or `--threshold` CLI flag.
+///
+/// EX-V1.29-8: only consumed by tests (`test_default_constants`) after the
+/// runtime sync with clap defaults moved to `ValueSource`. Gated on
+/// `#[cfg(test)]` so release builds don't warn on dead code.
+#[cfg(test)]
 pub(crate) const DEFAULT_THRESHOLD: f32 = 0.3;
 // DEFAULT_NAME_BOOST lives in cqs::store (single source of truth).
+// EX-V1.29-8: only tests reference this re-export after the ValueSource
+// refactor; gate on `#[cfg(test)]` to keep release builds warning-free.
+#[cfg(test)]
 pub(crate) use cqs::store::DEFAULT_NAME_BOOST;
+
+/// EX-V1.29-8: represents a single optional section of the loaded
+/// `cqs::config::Config` that can project its fields onto the parsed CLI.
+///
+/// Adding a new top-level config section becomes a single impl block: a
+/// newtype wrapper around the section and a single call to
+/// `<Wrapper as ConfigSection>::apply_to_cli(&section, cli, matches)`.
+/// Each impl is responsible for checking `ValueSource::DefaultValue` on
+/// its own fields so CLI flags always win over config file values.
+trait ConfigSection {
+    /// Apply this section's values to the parsed `Cli` when the
+    /// corresponding CLI argument was not explicitly set by the user.
+    /// `matches` carries the clap `ValueSource` for every argument, so
+    /// the impl can distinguish "clap default" from "user passed the
+    /// default value on the command line".
+    fn apply_to_cli(&self, cli: &mut Cli, matches: &clap::ArgMatches);
+}
+
+/// Returns `true` if the CLI argument with `id` was left at its clap
+/// default (not explicitly set by the user or the environment). Missing
+/// args (e.g., optional flags not present at all) also count as "default"
+/// so the config file is free to populate them.
+fn is_cli_default(matches: &clap::ArgMatches, id: &str) -> bool {
+    matches!(
+        matches.value_source(id),
+        Some(ValueSource::DefaultValue) | None
+    )
+}
+
+/// Top-level scalar fields on `cqs::config::Config`. Grouping them behind
+/// one `ConfigSection` keeps `apply_config_defaults` a single `for_each`
+/// at the call site even for the historical flat shape. Future section
+/// types (e.g. `[scoring]`, `[embedding]`) each become their own impl.
+struct TopLevelScalars<'a>(&'a cqs::config::Config);
+
+impl ConfigSection for TopLevelScalars<'_> {
+    fn apply_to_cli(&self, cli: &mut Cli, matches: &clap::ArgMatches) {
+        let cfg = self.0;
+        if is_cli_default(matches, "limit") {
+            if let Some(limit) = cfg.limit {
+                cli.limit = limit;
+            }
+        }
+        if is_cli_default(matches, "threshold") {
+            if let Some(threshold) = cfg.threshold {
+                cli.threshold = threshold;
+            }
+        }
+        if is_cli_default(matches, "name_boost") {
+            if let Some(name_boost) = cfg.name_boost {
+                cli.name_boost = name_boost;
+            }
+        }
+        // Boolean flags: `value_source == DefaultValue` when the flag is
+        // absent (clap stores `false` as its default). We only apply the
+        // config value when the user hasn't already flipped the flag.
+        if is_cli_default(matches, "quiet") && !cli.quiet {
+            if let Some(true) = cfg.quiet {
+                cli.quiet = true;
+            }
+        }
+        if is_cli_default(matches, "verbose") && !cli.verbose {
+            if let Some(true) = cfg.verbose {
+                cli.verbose = true;
+            }
+        }
+        // `stale_check = false` in config file → set `--no-stale-check` on CLI.
+        // (Semantics invert because the CLI flag is worded negatively.)
+        if is_cli_default(matches, "no_stale_check") && !cli.no_stale_check {
+            if let Some(false) = cfg.stale_check {
+                cli.no_stale_check = true;
+            }
+        }
+    }
+}
 /// Find project root by looking for common markers.
 /// For Cargo projects, detects workspace roots: if a `Cargo.toml` is found,
 /// continues walking up to check if it's inside a workspace. A parent directory
@@ -127,40 +213,62 @@ fn find_cargo_workspace_root(from: &std::path::Path) -> Option<PathBuf> {
     }
 }
 
-/// Apply config file defaults to CLI options
-/// CLI flags always override config values
+/// Apply config file defaults to CLI options. CLI flags always override
+/// config values.
+///
+/// EX-V1.29-8: dispatches through [`ConfigSection`] impls; adding a new
+/// top-level section is a single new `impl ConfigSection` + one line in
+/// the `sections` array below. The "did user set this explicitly" check
+/// uses clap's `ArgMatches::value_source()` rather than
+/// `cli.limit == DEFAULT_LIMIT`-style comparisons — the old pattern would
+/// treat `cqs -n 5 …` (user explicitly passed the default) as unset and
+/// silently override it with the config file, and it forced every
+/// `DEFAULT_*` constant to track the clap `default_value` attribute.
 pub(super) fn apply_config_defaults(cli: &mut Cli, config: &cqs::config::Config) {
-    // Only apply config if CLI has default values
-    // (we can't detect if user explicitly passed the default, so this is imperfect)
-    if cli.limit == DEFAULT_LIMIT {
-        if let Some(limit) = config.limit {
-            cli.limit = limit;
+    // Rebuild the `ArgMatches` from the process argv so we can ask clap
+    // "was this field user-supplied?" without threading matches through
+    // `main.rs -> run_with()` and every test helper. The extra parse is
+    // pure clap-side work (a few microseconds on our arg shape) and runs
+    // once per process.
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    apply_config_defaults_with_argv(cli, config, &argv);
+}
+
+/// Test-friendly variant of `apply_config_defaults` that accepts the argv
+/// explicitly. Production callers use `apply_config_defaults`, which reads
+/// `std::env::args_os()`; tests inject the same argv they passed to
+/// `Cli::try_parse_from` so `ValueSource::DefaultValue` resolves against
+/// the test's fake CLI, not the `cargo test ...` invocation.
+pub(super) fn apply_config_defaults_with_argv<I, T>(
+    cli: &mut Cli,
+    config: &cqs::config::Config,
+    argv: I,
+) where
+    I: IntoIterator<Item = T> + Clone,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let cmd = Cli::command();
+    let matches = match cmd.clone().try_get_matches_from(argv) {
+        Ok(m) => m,
+        Err(e) => {
+            // Should never fail — argv was already parsed successfully by
+            // `Cli::parse()` upstream. If it somehow does (e.g. racing
+            // env changes between the two parses), log and skip so the
+            // user sees clap defaults + CLI overrides, never a panic.
+            tracing::warn!(
+                error = %e,
+                "EX-V1.29-8: clap re-parse failed; skipping config defaults"
+            );
+            return;
         }
-    }
-    if (cli.threshold - DEFAULT_THRESHOLD).abs() < f32::EPSILON {
-        if let Some(threshold) = config.threshold {
-            cli.threshold = threshold;
-        }
-    }
-    if (cli.name_boost - DEFAULT_NAME_BOOST).abs() < f32::EPSILON {
-        if let Some(name_boost) = config.name_boost {
-            cli.name_boost = name_boost;
-        }
-    }
-    if !cli.quiet {
-        if let Some(true) = config.quiet {
-            cli.quiet = true;
-        }
-    }
-    if !cli.verbose {
-        if let Some(true) = config.verbose {
-            cli.verbose = true;
-        }
-    }
-    if !cli.no_stale_check {
-        if let Some(false) = config.stale_check {
-            cli.no_stale_check = true;
-        }
+    };
+
+    // Each section registers itself by being constructed and appearing in
+    // this slice. Order is irrelevant — sections touch disjoint CLI
+    // fields.
+    let sections: &[&dyn ConfigSection] = &[&TopLevelScalars(config)];
+    for section in sections {
+        section.apply_to_cli(cli, &matches);
     }
 }
 

@@ -174,18 +174,33 @@ pub(in crate::cli::batch) fn dispatch_context(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_context", path).entered();
 
+    // PB-V1.29-1: normalize backslash input from Windows / agent pipelines.
+    // `get_chunks_by_origin` matches on the stored `origin` column which is
+    // forward-slash-normalized; unnormalized `src\foo.rs` silently returns empty.
+    // `build_compact_data` / `build_full_data` also normalize internally, but
+    // we use the canonical form here for the fall-through full-context path
+    // below and the JSON `file:` field so cross-platform consumers see slashes.
+    let normalized = normalize_path(std::path::Path::new(path));
+
     if compact {
-        let data = crate::cli::commands::context::build_compact_data(&ctx.store(), path)?;
-        return Ok(crate::cli::commands::context::compact_to_json(&data, path));
+        let data = crate::cli::commands::context::build_compact_data(&ctx.store(), &normalized)?;
+        return Ok(crate::cli::commands::context::compact_to_json(
+            &data,
+            &normalized,
+        ));
     }
 
     if summary {
-        let data = crate::cli::commands::context::build_full_data(&ctx.store(), path, &ctx.root)?;
-        return Ok(crate::cli::commands::context::summary_to_json(&data, path));
+        let data =
+            crate::cli::commands::context::build_full_data(&ctx.store(), &normalized, &ctx.root)?;
+        return Ok(crate::cli::commands::context::summary_to_json(
+            &data,
+            &normalized,
+        ));
     }
 
     // Full context -- with optional token packing
-    let chunks = ctx.store().get_chunks_by_origin(path)?;
+    let chunks = ctx.store().get_chunks_by_origin(&normalized)?;
     if chunks.is_empty() {
         anyhow::bail!(
             "No indexed chunks found for '{}'. Is the file indexed?",
@@ -227,7 +242,7 @@ pub(in crate::cli::batch) fn dispatch_context(
         .collect();
 
     let mut response = serde_json::json!({
-        "file": path,
+        "file": normalized,
         "chunks": entries,
         "total": entries.len(),
     });

@@ -357,17 +357,21 @@ static FORMAT_TABLE: &[FormatEntry] = &[
 ];
 
 /// Passthrough converter for Markdown files — reads as-is, no transformation.
+///
+/// SHL-V1.29-10: size cap shared with `html::html_file_to_markdown` via
+/// `crate::limits::convert_file_size()` (env `CQS_CONVERT_MAX_FILE_SIZE`)
+/// instead of the prior local `MAX_FILE_SIZE = 100 MB` constant.
 #[cfg(feature = "convert")]
 fn markdown_passthrough(path: &Path) -> anyhow::Result<String> {
     let _span = tracing::info_span!("markdown_passthrough", path = %path.display()).entered();
-    const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
+    let max_bytes = crate::limits::convert_file_size();
     let meta = std::fs::metadata(path)
         .map_err(|e| anyhow::anyhow!("Failed to stat {}: {}", path.display(), e))?;
-    if meta.len() > MAX_FILE_SIZE {
+    if meta.len() > max_bytes {
         anyhow::bail!(
             "File {} exceeds {} MB size limit",
             path.display(),
-            MAX_FILE_SIZE / 1024 / 1024,
+            max_bytes / 1024 / 1024,
         );
     }
     std::fs::read_to_string(path)

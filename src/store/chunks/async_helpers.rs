@@ -15,7 +15,9 @@ impl<Mode> Store<Mode> {
     ///
     /// Returns a map of chunk ID → ChunkRow for the given IDs.
     /// Used by search to hydrate top-N results after scoring.
-    /// Batches in groups of 500 to stay under SQLite's 999-parameter limit.
+    /// PF-V1.29-2: batch size derives from the modern SQLite variable limit
+    /// (`max_rows_per_statement(1)`) — prior `500` was sized for the
+    /// pre-3.32 999-variable ceiling.
     pub(crate) async fn fetch_chunks_by_ids_async(
         &self,
         ids: &[&str],
@@ -24,7 +26,7 @@ impl<Mode> Store<Mode> {
             return Ok(HashMap::new());
         }
 
-        const BATCH_SIZE: usize = 500;
+        const BATCH_SIZE: usize = crate::store::helpers::sql::max_rows_per_statement(1);
         let mut result = HashMap::with_capacity(ids.len());
 
         for batch in ids.chunks(BATCH_SIZE) {
@@ -57,7 +59,8 @@ impl<Mode> Store<Mode> {
     /// Returns only `(CandidateRow, embedding_bytes)` — excludes heavy `content`,
     /// `doc`, `signature`, `line_start`, `line_end` columns. Full content is
     /// loaded only for top-k survivors via `fetch_chunks_by_ids_async`.
-    /// Batches in groups of 500 to stay under SQLite's 999-parameter limit.
+    /// PF-V1.29-2: batch size derives from `max_rows_per_statement(1)` —
+    /// prior `500` was sized for the pre-3.32 999-variable ceiling.
     pub(crate) async fn fetch_candidates_by_ids_async(
         &self,
         ids: &[&str],
@@ -66,7 +69,7 @@ impl<Mode> Store<Mode> {
             return Ok(vec![]);
         }
 
-        const BATCH_SIZE: usize = 500;
+        const BATCH_SIZE: usize = crate::store::helpers::sql::max_rows_per_statement(1);
 
         // PF-V1.25-6: previously built rows in DB order, then `sort_by_key`
         // (O(N log N)) using a HashMap<&str, usize> position index to

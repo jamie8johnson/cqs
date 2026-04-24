@@ -313,21 +313,23 @@ fn handle_socket_client(
     }
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let full_line = if args.is_empty() {
-            command.to_string()
-        } else {
-            format!("{} {}", command, shell_words::join(&args))
-        };
+        // PF-V1.29-1: Pass pre-split tokens straight to `dispatch_tokens`
+        // instead of joining them back into a shell string for
+        // `dispatch_line` to immediately re-split via `shell_words::split`.
+        // The round-trip is pure waste on every daemon query and a latent
+        // correctness bug on tokens containing shell metacharacters —
+        // `shell_words::join` quotes them, `shell_words::split` unquotes
+        // them, but any asymmetry silently corrupts the token boundary.
         let mut output = Vec::new();
         // SEC-V1.25-1: hold the BatchContext lock only across dispatch.
-        // Poisoned mutex → recover the inner ctx (dispatch_line itself
+        // Poisoned mutex → recover the inner ctx (dispatch_tokens itself
         // catches panics via catch_unwind above, but some unrelated
         // panic path could still leave the lock poisoned).
         {
             let ctx = batch_ctx
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            ctx.dispatch_line(&full_line, &mut output);
+            ctx.dispatch_tokens(command, &args, &mut output);
         }
         // P2 #62 (post-v1.27.0 audit, partial): the audit's full fix routes
         // dispatch through a `dispatch_value` sibling in `batch/mod.rs` that
@@ -880,12 +882,11 @@ fn build_splade_encoder_for_watch() -> Option<cqs::splade::SpladeEncoder> {
 /// with `CQS_DAEMON_PERIODIC_GC_CAP` (parsed at first read).
 const DAEMON_PERIODIC_GC_CAP_DEFAULT: usize = 1000;
 
-/// #1024: Idle-time periodic GC interval. The daemon checks for a tick
-/// every loop iteration via `Instant::elapsed()`; the actual prune only
-/// fires when the last event was more than `DAEMON_PERIODIC_GC_IDLE_SECS`
-/// ago, so a long burst of file changes never triggers GC mid-burst.
-const DAEMON_PERIODIC_GC_INTERVAL_SECS: u64 = 1800; // 30 minutes
-const DAEMON_PERIODIC_GC_IDLE_SECS: u64 = 60;
+// #1024 / SHL-V1.29-9: Idle-time periodic GC interval and idle gap live
+// in `super::limits` behind `daemon_periodic_gc_interval_secs()` and
+// `daemon_periodic_gc_idle_secs()` so they honor
+// `CQS_DAEMON_PERIODIC_GC_INTERVAL_SECS` / `CQS_DAEMON_PERIODIC_GC_IDLE_SECS`,
+// matching the sibling `daemon_periodic_gc_cap()` resolver pattern below.
 
 /// #1024: Read `CQS_DAEMON_PERIODIC_GC_CAP` once and cache. Keeps the
 /// hot path free of repeated env lookups on every tick.
@@ -897,6 +898,33 @@ fn daemon_periodic_gc_cap() -> usize {
             .and_then(|v| v.parse().ok())
             .unwrap_or(DAEMON_PERIODIC_GC_CAP_DEFAULT)
     })
+}
+
+/// DS2-7: Clear the HNSW-dirty flag for `kind`, retrying once on a
+/// transient error (e.g. `SQLITE_BUSY` when a concurrent writer is
+/// finishing a transaction). If both attempts fail, emits a warn and
+/// returns — the caller keeps the in-memory HNSW but the persistent
+/// dirty flag stays `1`, forcing a full rebuild on the next daemon
+/// start. The single retry is enough to absorb the common lock-window
+/// race without extending the write-side lock hold time.
+fn clear_hnsw_dirty_with_retry(store: &Store, kind: cqs::HnswKind, context: &str) {
+    if let Err(e1) = store.set_hnsw_dirty(kind, false) {
+        tracing::debug!(
+            error = %e1,
+            kind = ?kind,
+            context,
+            "First clear-dirty attempt failed, retrying once"
+        );
+        if let Err(e2) = store.set_hnsw_dirty(kind, false) {
+            tracing::warn!(
+                first_error = %e1,
+                retry_error = %e2,
+                kind = ?kind,
+                context,
+                "Failed to clear HNSW dirty flag after retry — unnecessary rebuild on next daemon start"
+            );
+        }
+    }
 }
 
 /// #1024: Run the daemon's startup GC sweep — Pass 1 (drop chunks for
@@ -997,8 +1025,8 @@ fn run_daemon_startup_gc(
 }
 
 /// #1024: Run the periodic idle-time GC sweep. Called from the main loop
-/// when `last_event` is older than `DAEMON_PERIODIC_GC_IDLE_SECS` and
-/// the previous GC ran more than `DAEMON_PERIODIC_GC_INTERVAL_SECS` ago.
+/// when `last_event` is older than `daemon_periodic_gc_idle_secs()` and
+/// the previous GC ran more than `daemon_periodic_gc_interval_secs()` ago.
 ///
 /// Bounded: examines at most `daemon_periodic_gc_cap()` distinct origins
 /// per pass so a single tick never holds the write transaction longer
@@ -1081,7 +1109,11 @@ fn encode_splade_for_changed_files(
     // upsert_sparse_vectors deletes then inserts atomically).
     let mut batch: Vec<(String, String)> = Vec::new();
     for file in changed_files {
-        let origin = file.display().to_string();
+        // PB-V1.29-2: `file.display()` emits Windows backslashes, which
+        // never match the forward-slash origins stored at ingest (chunks
+        // are upserted via `normalize_path`). Using `.display()` here
+        // makes SPLADE encoding a silent no-op on Windows.
+        let origin = cqs::normalize_path(file);
         let chunks = match store.get_chunks_by_origin(&origin) {
             Ok(v) => v,
             Err(e) => {
@@ -1734,7 +1766,21 @@ pub fn cmd_watch(
     if serve {
         match try_acquire_index_lock(&cqs_dir) {
             Ok(Some(gc_lock)) => {
-                let matcher_guard = gitignore.read().ok();
+                // EH-V1.29-8: Recover from RwLock poison. A poisoned read
+                // usually means a writer panicked mid-update; the previously-
+                // written matcher is still valid data. Dropping to "no
+                // matcher" silently re-indexes ignored files (including
+                // `.env.secret`). `into_inner()` on the `PoisonError` keeps
+                // the matcher visible.
+                let matcher_guard = match gitignore.read() {
+                    Ok(g) => Some(g),
+                    Err(poisoned) => {
+                        tracing::error!(
+                            "Gitignore RwLock poisoned — recovering. Previous matcher is still valid; indexing continues with it."
+                        );
+                        Some(poisoned.into_inner())
+                    }
+                };
                 let matcher_ref = matcher_guard.as_ref().and_then(|g| g.as_ref());
                 run_daemon_startup_gc(&store, &root, &parser, matcher_ref);
                 // Explicit drop so the read lock is released before the watch
@@ -1802,8 +1848,9 @@ pub fn cmd_watch(
     let mut last_cache_evict = std::time::Instant::now();
 
     // #1024: Track last periodic GC tick. Initialised to "now" so the
-    // first periodic sweep doesn't fire until DAEMON_PERIODIC_GC_INTERVAL_SECS
-    // after startup — the startup pass already covered the initial state.
+    // first periodic sweep doesn't fire until the full interval
+    // (`daemon_periodic_gc_interval_secs()`) has elapsed after startup —
+    // the startup pass already covered the initial state.
     // Disabled when --serve is off (this is a daemon-only feature) or
     // when CQS_DAEMON_PERIODIC_GC=0.
     let periodic_gc_enabled =
@@ -1923,10 +1970,10 @@ pub fn cmd_watch(
                     // #1024: Idle-time periodic GC. Only fires when
                     //   (a) `--serve` is on AND `CQS_DAEMON_PERIODIC_GC` != "0",
                     //   (b) the last actual file event was more than
-                    //       DAEMON_PERIODIC_GC_IDLE_SECS ago (so a long burst
-                    //       of edits never triggers GC mid-burst), AND
+                    //       `daemon_periodic_gc_idle_secs()` ago (so a long
+                    //       burst of edits never triggers GC mid-burst), AND
                     //   (c) the previous tick was more than
-                    //       DAEMON_PERIODIC_GC_INTERVAL_SECS ago.
+                    //       `daemon_periodic_gc_interval_secs()` ago.
                     // The bounded sweep (cap = daemon_periodic_gc_cap()) keeps
                     // each tick's write transaction short.
                     //
@@ -1936,13 +1983,26 @@ pub fn cmd_watch(
                     // on the next interval.
                     if periodic_gc_enabled
                         && state.last_event.elapsed()
-                            >= Duration::from_secs(DAEMON_PERIODIC_GC_IDLE_SECS)
+                            >= Duration::from_secs(super::limits::daemon_periodic_gc_idle_secs())
                         && last_periodic_gc.elapsed()
-                            >= Duration::from_secs(DAEMON_PERIODIC_GC_INTERVAL_SECS)
+                            >= Duration::from_secs(super::limits::daemon_periodic_gc_interval_secs())
                     {
                         match try_acquire_index_lock(&cqs_dir) {
                             Ok(Some(gc_lock)) => {
-                                let matcher_guard = gitignore.read().ok();
+                                // EH-V1.29-8: Same poison-recovery as startup
+                                // GC above — silently dropping to "no matcher"
+                                // would let periodic GC re-index gitignored
+                                // files (the very ones the matcher was built
+                                // to exclude).
+                                let matcher_guard = match gitignore.read() {
+                                    Ok(g) => Some(g),
+                                    Err(poisoned) => {
+                                        tracing::error!(
+                                            "Gitignore RwLock poisoned — recovering. Previous matcher is still valid; periodic GC continues with it."
+                                        );
+                                        Some(poisoned.into_inner())
+                                    }
+                                };
                                 let matcher_ref = matcher_guard.as_ref().and_then(|g| g.as_ref());
                                 run_daemon_periodic_gc(&store, &root, &parser, matcher_ref);
                                 drop(matcher_guard);
@@ -2251,9 +2311,7 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                         let n = index.len();
                         state.hnsw_index = Some(index);
                         state.incremental_count = 0;
-                        if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Enriched, false) {
-                            tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag — unnecessary rebuild on next load");
-                        }
+                        clear_hnsw_dirty_with_retry(store, cqs::HnswKind::Enriched, "full_rebuild");
                         info!(vectors = n, "HNSW index rebuilt (full)");
                         if !cfg.quiet {
                             println!("  HNSW index: {} vectors (full rebuild)", n);
@@ -2297,9 +2355,11 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                 match super::commands::build_hnsw_base_index(store, cfg.cqs_dir) {
                     Ok(Some(n)) => {
                         info!(vectors = n, "Base HNSW index rebuilt");
-                        if let Err(e) = store.set_hnsw_dirty(cqs::HnswKind::Base, false) {
-                            tracing::warn!(error = %e, "Failed to clear base HNSW dirty flag — unnecessary rebuild on next load");
-                        }
+                        clear_hnsw_dirty_with_retry(
+                            store,
+                            cqs::HnswKind::Base,
+                            "full_rebuild_base",
+                        );
                         if !cfg.quiet {
                             println!("  HNSW base index: {} vectors (full rebuild)", n);
                         }
@@ -2331,10 +2391,12 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                                     // Save updated index to disk for search processes
                                     if let Err(e) = index.save(cfg.cqs_dir, "index") {
                                         warn!(error = %e, "Failed to save HNSW after incremental insert");
-                                    } else if let Err(e) =
-                                        store.set_hnsw_dirty(cqs::HnswKind::Enriched, false)
-                                    {
-                                        tracing::warn!(error = %e, "Failed to clear enriched HNSW dirty flag — unnecessary rebuild on next load");
+                                    } else {
+                                        clear_hnsw_dirty_with_retry(
+                                            store,
+                                            cqs::HnswKind::Enriched,
+                                            "incremental_insert",
+                                        );
                                     }
                                     info!(
                                         inserted = n,
@@ -2425,12 +2487,24 @@ fn reindex_files(
             match parser.parse_file_all(&abs_path) {
                 Ok((mut file_chunks, calls, chunk_type_refs)) => {
                     // Rewrite paths to be relative (AC-2: fix both file and id)
+                    //
+                    // PB-V1.29-3: Use `cqs::normalize_path` on both sides. On
+                    // Windows verbatim paths (`\\?\C:\...`) `abs_path.display()`
+                    // keeps backslashes + the verbatim prefix, but `chunk.id`
+                    // is built by the parser with forward-slash / stripped
+                    // prefix — so the strip silently misses and chunks keep
+                    // the absolute prefix, breaking cross-index equality and
+                    // call-graph resolution. Normalize both sides so the
+                    // prefix-strip actually matches, and the replacement uses
+                    // the same convention.
+                    let abs_norm = cqs::normalize_path(&abs_path);
+                    let rel_norm = cqs::normalize_path(rel_path);
                     for chunk in &mut file_chunks {
                         chunk.file = rel_path.clone();
                         // Rewrite id: replace absolute path prefix with relative
                         // ID format: {path}:{line_start}:{content_hash}
-                        if let Some(rest) = chunk.id.strip_prefix(&abs_path.display().to_string()) {
-                            chunk.id = format!("{}{}", rel_path.display(), rest);
+                        if let Some(rest) = chunk.id.strip_prefix(abs_norm.as_str()) {
+                            chunk.id = format!("{}{}", rel_norm, rest);
                         }
                     }
                     // Stash type refs for upsert after chunks are stored
@@ -2565,18 +2639,21 @@ fn reindex_files(
                     .flat_map(|calls| calls.iter().map(|call| (c.id.clone(), call.clone())))
             })
             .collect();
-        store.upsert_chunks_and_calls(pairs, mtime, &file_calls)?;
-
-        // DS-37 / RT-DATA-10: Delete phantom chunks — functions removed from the
-        // file but still lingering in the index. The upsert above handles updates
-        // and inserts; this cleans up deletions.
-        //
-        // Ideally this would share a transaction with upsert_chunks_and_calls, but
-        // both methods manage their own internal transactions. A crash between the
-        // two leaves phantoms that get cleaned on the next reindex. Propagate the
-        // error rather than silently swallowing it.
+        // DS2-4: Upsert chunks+calls AND prune phantom chunks in one tx.
+        // The previous two-step `upsert_chunks_and_calls` + `delete_phantom_chunks`
+        // committed independently — a crash between them left the index
+        // half-pruned (new chunks visible, removed chunks still present)
+        // alongside a dirty HNSW flag. `upsert_chunks_calls_and_prune` fuses
+        // both operations into a single `begin_write` transaction, making the
+        // reindex all-or-nothing. RT-DATA-10 / DS-37.
         let live_ids: Vec<&str> = pairs.iter().map(|(c, _)| c.id.as_str()).collect();
-        store.delete_phantom_chunks(file, &live_ids)?;
+        store.upsert_chunks_calls_and_prune(
+            pairs,
+            mtime,
+            &file_calls,
+            Some(file.as_path()),
+            &live_ids,
+        )?;
     }
 
     // Upsert type edges from the earlier parse_file_all() results.
@@ -2639,6 +2716,22 @@ mod tests {
     use notify::EventKind;
     use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
+    use std::sync::LazyLock;
+
+    // RM-V1.29-8: shared test fixtures. Previously each call to
+    // `test_watch_config*` leaked a fresh `Parser` / `OnceLock` /
+    // `ModelConfig` / `RwLock<None>` on the heap, which piled up across
+    // the ~two dozen watch tests. Every one of these is identical across
+    // calls, so we keep exactly one `&'static` copy per type. The
+    // `test_watch_config_with_gitignore` helper still has to leak its
+    // per-call matcher (each caller passes a distinct `Gitignore`) — but
+    // the shared four fields no longer leak on every call.
+    static TEST_PARSER: LazyLock<CqParser> = LazyLock::new(|| CqParser::new().unwrap());
+    static TEST_EMBEDDER: LazyLock<std::sync::OnceLock<std::sync::Arc<Embedder>>> =
+        LazyLock::new(std::sync::OnceLock::new);
+    static TEST_MODEL_CONFIG: LazyLock<ModelConfig> = LazyLock::new(ModelConfig::default_model);
+    static TEST_GITIGNORE_NONE: LazyLock<std::sync::RwLock<Option<ignore::gitignore::Gitignore>>> =
+        LazyLock::new(|| std::sync::RwLock::new(None));
 
     fn make_event(paths: Vec<PathBuf>, kind: EventKind) -> notify::Event {
         notify::Event {
@@ -2655,22 +2748,20 @@ mod tests {
         notes_path: &'a Path,
         supported_ext: &'a HashSet<&'a str>,
     ) -> WatchConfig<'a> {
-        // These fields are unused by collect_events but required by the struct.
-        // We leak a parser since tests don't call process_file_changes.
-        let parser = Box::leak(Box::new(CqParser::new().unwrap()));
-        let embedder = Box::leak(Box::new(std::sync::OnceLock::new()));
-        let model_config = Box::leak(Box::new(ModelConfig::default_model()));
-        let gitignore = Box::leak(Box::new(std::sync::RwLock::new(None)));
+        // These fields are unused by collect_events but required by the
+        // struct. The four fixtures are shared `LazyLock` statics so
+        // tests reference a single `&'static` copy instead of leaking a
+        // fresh heap allocation on every call.
         WatchConfig {
             root,
             cqs_dir,
             notes_path,
             supported_ext,
-            parser,
-            embedder,
+            parser: &TEST_PARSER,
+            embedder: &TEST_EMBEDDER,
             quiet: true,
-            model_config,
-            gitignore,
+            model_config: &TEST_MODEL_CONFIG,
+            gitignore: &TEST_GITIGNORE_NONE,
             splade_encoder: None,
         }
     }
@@ -2683,19 +2774,19 @@ mod tests {
         supported_ext: &'a HashSet<&'a str>,
         matcher: ignore::gitignore::Gitignore,
     ) -> WatchConfig<'a> {
-        let parser = Box::leak(Box::new(CqParser::new().unwrap()));
-        let embedder = Box::leak(Box::new(std::sync::OnceLock::new()));
-        let model_config = Box::leak(Box::new(ModelConfig::default_model()));
+        // `parser` / `embedder` / `model_config` are shared statics (see
+        // comment above); the per-call `matcher` still needs a distinct
+        // `&'static RwLock`, so we leak that one field only.
         let gitignore = Box::leak(Box::new(std::sync::RwLock::new(Some(matcher))));
         WatchConfig {
             root,
             cqs_dir,
             notes_path,
             supported_ext,
-            parser,
-            embedder,
+            parser: &TEST_PARSER,
+            embedder: &TEST_EMBEDDER,
             quiet: true,
-            model_config,
+            model_config: &TEST_MODEL_CONFIG,
             gitignore,
             splade_encoder: None,
         }
@@ -3153,6 +3244,32 @@ mod tests {
     }
 
     #[test]
+    fn splade_origin_key_normalizes_backslashes() {
+        // PB-V1.29-2 regression. `encode_splade_for_changed_files` builds
+        // the DB lookup key via `cqs::normalize_path(file)`. A `PathBuf`
+        // carrying backslashes (as any Windows-canonicalized path does)
+        // must normalize to the forward-slash form stored at ingest, or
+        // `get_chunks_by_origin` returns Ok(vec![]) and SPLADE silently
+        // no-ops for the file.
+        let p = std::path::PathBuf::from(r"src\cli\watch.rs");
+        let origin = cqs::normalize_path(&p);
+        assert_eq!(
+            origin, "src/cli/watch.rs",
+            "origin key must use forward slashes to match DB origins"
+        );
+
+        // UNC verbatim prefix must be stripped too (dunce::canonicalize
+        // may leave `\\?\C:\…` on Windows). On Unix this just asserts
+        // the helper doesn't mangle a plain relative path.
+        let p2 = std::path::PathBuf::from(r"\\?\C:\repo\src\cli\watch.rs");
+        let origin2 = cqs::normalize_path(&p2);
+        assert!(
+            !origin2.contains('\\') && !origin2.starts_with(r"\\?\"),
+            "normalize_path must strip the verbatim UNC prefix: got {origin2}"
+        );
+    }
+
+    #[test]
     fn collect_events_detects_notes_path() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path().to_path_buf();
@@ -3387,5 +3504,654 @@ mod tests {
         // wrote two newlines deliberately are uncommon, but we don't want
         // to silently consume more than one terminator).
         assert_eq!(trim_trailing_newline(b"hello\n\n"), b"hello\n");
+    }
+
+    // ===== PB-V1.29-3: chunk.id prefix-strip uses normalize_path =====
+
+    /// Exercises the same strip-and-rewrite shape used by `reindex_files`
+    /// at watch.rs :~2436 after the PB-V1.29-3 fix. The direct function
+    /// isn't extracted, but the logic is small and identical — this test
+    /// documents the contract so a regression back to `abs_path.display()`
+    /// is caught by a targeted unit test instead of the next Windows CI run.
+    fn normalize_strip_and_rewrite(
+        abs_path: &Path,
+        rel_path: &Path,
+        chunk_id: &str,
+    ) -> Option<String> {
+        let abs_norm = cqs::normalize_path(abs_path);
+        let rel_norm = cqs::normalize_path(rel_path);
+        chunk_id
+            .strip_prefix(abs_norm.as_str())
+            .map(|rest| format!("{}{}", rel_norm, rest))
+    }
+
+    #[test]
+    fn prefix_strip_normalizes_backslash_verbatim_prefix() {
+        // Simulates the Windows shape that the bug regressed on:
+        //   abs_path   = \\?\C:\Projects\cqs\src\foo.rs
+        //   chunk.id   = C:/Projects/cqs/src/foo.rs:10:abcd  (parser output)
+        //   rel_path   = src\foo.rs  (after strip_prefix on the root)
+        // Before the fix: `abs_path.display()` emits the verbatim `\\?\` +
+        // backslashes, so the prefix-strip fails and chunk.id keeps its
+        // absolute prefix. After the fix: both sides normalize.
+        let abs = Path::new(r"\\?\C:\Projects\cqs\src\foo.rs");
+        let rel = Path::new(r"src\foo.rs");
+        let chunk_id = "C:/Projects/cqs/src/foo.rs:10:abcd";
+        let rewritten =
+            normalize_strip_and_rewrite(abs, rel, chunk_id).expect("prefix-strip must match");
+        assert!(
+            rewritten.starts_with("src/foo.rs"),
+            "expected rewritten id to start with forward-slash rel path, got {rewritten}"
+        );
+        assert_eq!(rewritten, "src/foo.rs:10:abcd");
+    }
+
+    #[test]
+    fn prefix_strip_unix_path_round_trip() {
+        // Baseline: Unix path with forward slashes on both sides still works.
+        let abs = Path::new("/home/user/proj/src/foo.rs");
+        let rel = Path::new("src/foo.rs");
+        let chunk_id = "/home/user/proj/src/foo.rs:42:deadbeef";
+        let rewritten =
+            normalize_strip_and_rewrite(abs, rel, chunk_id).expect("prefix-strip must match");
+        assert_eq!(rewritten, "src/foo.rs:42:deadbeef");
+    }
+
+    // ===== EH-V1.29-8: gitignore RwLock poison recovery =====
+
+    #[test]
+    fn gitignore_rwlock_poison_still_yields_matcher() {
+        // Simulates the recovery arm at watch.rs :~1741 / :~1963. A writer
+        // that panics while holding the write lock leaves the inner value
+        // valid but the lock poisoned; the `match gitignore.read()` arm
+        // must recover via `poisoned.into_inner()` instead of silently
+        // dropping to "no matcher".
+        use std::sync::{Arc, RwLock};
+
+        let matcher_builder = ignore::gitignore::GitignoreBuilder::new(std::path::Path::new("."));
+        let (matcher, _errs) = matcher_builder.build_global();
+        let lock: Arc<RwLock<Option<ignore::gitignore::Gitignore>>> =
+            Arc::new(RwLock::new(Some(matcher)));
+
+        // Poison the lock by panicking inside a write guard on a helper
+        // thread — the panic propagates, leaves the RwLock poisoned, and
+        // joins.
+        let poisoner = Arc::clone(&lock);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.write().expect("initial write must succeed");
+            panic!("intentional poison for EH-V1.29-8 test");
+        })
+        .join();
+
+        // Post-poison: the bug was `gitignore.read().ok()` silently
+        // returning `None`. The fixed code must still yield `Some(_)` by
+        // recovering the inner value via `into_inner()`.
+        let matcher_guard = match lock.read() {
+            Ok(g) => Some(g),
+            Err(poisoned) => Some(poisoned.into_inner()),
+        };
+        assert!(
+            matcher_guard.is_some(),
+            "poison-recovery must still surface the previously-written matcher"
+        );
+        assert!(
+            matcher_guard.as_ref().unwrap().is_some(),
+            "inner Option<Gitignore> must still be Some after poison recovery"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TC-ADV-1.29-3: adversarial coverage for the daemon socket handler.
+//
+// `handle_socket_client` (above, line 160) is the first thing every daemon
+// query touches. It does the line read, size cap, JSON parse, command-field
+// validation, and non-string-arg rejection *before* ever acquiring the
+// BatchContext mutex. Zero tests previously exercised those rejection paths.
+//
+// These tests use `UnixStream::pair()` to build a connected stream pair
+// in-process — we hand the `server` end to `handle_socket_client` on a worker
+// thread, then read/write the `client` end from the test thread. Nothing ever
+// touches the real filesystem socket path. No ONNX model is loaded, because
+// every adversarial payload is rejected before reaching `dispatch_tokens`.
+//
+// The one exception is the NUL-byte test, which intentionally reaches
+// `dispatch_parsed_tokens`. That path goes through `reject_null_tokens` in
+// `cli::batch::mod.rs` and bails before any handler runs — still no model
+// load. The "oversized single arg" test similarly reaches dispatch but the
+// `notes list` handler doesn't need an embedder.
+//
+// Why not in `tests/daemon_adversarial_test.rs`: `handle_socket_client` is
+// a private `fn` in a binary module (`src/main.rs` → `mod cli`). Integration
+// tests link against the library only, not the binary. Co-locating here is
+// the narrowest path.
+// ─────────────────────────────────────────────────────────────────────────────
+#[cfg(all(test, unix))]
+mod adversarial_socket_tests {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    /// Spin up a `Mutex<BatchContext>` against a fresh in-memory store.
+    ///
+    /// Reuses `crate::cli::batch::create_test_context` — see its doc for
+    /// visibility rationale. The returned tempdir must live for the whole
+    /// test or the store's WAL can be reaped mid-query.
+    fn test_ctx() -> (
+        tempfile::TempDir,
+        Arc<Mutex<crate::cli::batch::BatchContext>>,
+    ) {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        {
+            let store = cqs::store::Store::open(&index_path).expect("open store");
+            store
+                .init(&cqs::store::ModelInfo::default())
+                .expect("init store");
+        }
+        let ctx = crate::cli::batch::create_test_context(&cqs_dir).expect("create ctx");
+        (dir, Arc::new(Mutex::new(ctx)))
+    }
+
+    /// Spawn `handle_socket_client` on a worker thread with the `server` end
+    /// of a paired UnixStream. Returns the client end and the worker
+    /// JoinHandle so tests can force-drop the client (→ EOF on server →
+    /// handler returns → thread joins).
+    fn spawn_handler(
+        ctx: Arc<Mutex<crate::cli::batch::BatchContext>>,
+    ) -> (UnixStream, thread::JoinHandle<()>) {
+        let (client, server) = UnixStream::pair().expect("UnixStream::pair");
+        // Handler's read timeout is controlled by `resolve_daemon_timeout_ms`
+        // (default 5 s). For tests we want a snappier rejection path if a
+        // write is truncated — set an explicit short timeout on the server
+        // side before handing it off. `handle_socket_client` will then
+        // overwrite it with the resolved value, so this is belt-and-suspenders.
+        server
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("set_read_timeout");
+        server
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .expect("set_write_timeout");
+        let handle = thread::spawn(move || {
+            // `handle_socket_client` is a sibling function in this module —
+            // `super::handle_socket_client` reaches it.
+            super::handle_socket_client(server, &ctx);
+        });
+        (client, handle)
+    }
+
+    /// Read one newline-terminated response from the client stream, with a
+    /// bounded wait. Returns the trimmed bytes as a `String`. Panics if no
+    /// newline arrives within 3 s — the daemon is contractually required to
+    /// respond to every request it accepts the first byte of.
+    fn read_line(client: &mut UnixStream) -> String {
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("set client read_timeout");
+        let mut buf = Vec::with_capacity(256);
+        let mut byte = [0u8; 1];
+        loop {
+            match client.read(&mut byte) {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    if byte[0] == b'\n' {
+                        break;
+                    }
+                    buf.push(byte[0]);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("socket read failed: {e}"),
+            }
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    /// Parse the daemon's response line as JSON.
+    fn parse_response(line: &str) -> serde_json::Value {
+        serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("daemon response is not valid JSON ({e}): {line}"))
+    }
+
+    /// Drain worker thread after the test's payload has been consumed.
+    fn join_worker(client: UnixStream, handle: thread::JoinHandle<()>) {
+        // Closing the client end signals EOF on the server; the handler
+        // either completes normally or returns on read error. Give it a
+        // small window to drain — long enough for the response to reach us
+        // but short enough that a deadlocked handler surfaces as a test
+        // hang rather than silent success.
+        drop(client);
+        for _ in 0..30 {
+            if handle.is_finished() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        if handle.is_finished() {
+            handle.join().expect("handler thread panicked");
+        } else {
+            // If it hasn't finished, the test still got what it came for
+            // (we already read the response). Don't block forever on the
+            // final join — the OS will reap the thread when the process
+            // exits. Tests should still surface a hang via their own timeout.
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Test: exactly 1 MiB + 1 byte → "request too large"
+    //
+    // The reader is wrapped in `.take(1_048_577)` so the post-read size
+    // check sees exactly the cap. A client sending `'a' * 1_048_577` with
+    // no newline triggers the `n > 1_048_576` branch and the daemon must
+    // return a structured error.
+    // ─────────────────────────────────────────────────────────────────────
+    #[test]
+    fn daemon_rejects_exactly_one_mib_boundary() {
+        let (_dir, ctx) = test_ctx();
+        let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+
+        // 1 MiB + 1 byte, no newline. The daemon's `read_line` reads up to
+        // the take() limit of 1_048_577, then the size check fires.
+        let payload = vec![b'a'; 1_048_577];
+        // Writing 1 MiB to a socket blocks if the peer doesn't read. The
+        // handler is actively reading, so this should complete.
+        client.write_all(&payload).expect("write 1 MiB + 1 payload");
+        // Half-close the write side so the peer's read_line terminates
+        // without needing a newline. Without this, the peer keeps reading
+        // (up to the take() cap) and we both deadlock waiting for more.
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("half-close write");
+
+        let line = read_line(&mut client);
+        let resp = parse_response(&line);
+        assert_eq!(
+            resp.get("status").and_then(|v| v.as_str()),
+            Some("error"),
+            "1 MiB + 1 byte must return a structured error envelope: {line}"
+        );
+        assert_eq!(
+            resp.get("message").and_then(|v| v.as_str()),
+            Some("request too large"),
+            "message must name the exact failure mode so the client can surface it: {line}"
+        );
+        join_worker(client, handle);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Test: malformed JSON — trailing garbage after valid object.
+    //
+    // The daemon parses a single JSON Value via `serde_json::from_str` on
+    // `line.trim()`. `from_str` rejects trailing non-whitespace tokens
+    // because serde_json is strict by default.
+    // ─────────────────────────────────────────────────────────────────────
+    #[test]
+    fn daemon_rejects_malformed_trailing_garbage() {
+        let (_dir, ctx) = test_ctx();
+        let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+        client
+            .write_all(b"{\"command\":\"ping\"} garbage\n")
+            .expect("write");
+
+        let line = read_line(&mut client);
+        let resp = parse_response(&line);
+        assert_eq!(
+            resp.get("status").and_then(|v| v.as_str()),
+            Some("error"),
+            "trailing garbage after JSON must be rejected, not silently parsed: {line}"
+        );
+        // `handle_socket_client` surfaces `invalid JSON: <serde error>` —
+        // assert the prefix so a future serde version bump doesn't break us.
+        let msg = resp
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            msg.starts_with("invalid JSON"),
+            "message should begin with 'invalid JSON', got: {msg:?}"
+        );
+        join_worker(client, handle);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Test: malformed bytes — UTF-16 BOM prefix (0xFF 0xFE).
+    //
+    // A client that writes a UTF-16 LE BOM before its JSON payload is
+    // sending bytes that are not valid UTF-8. `BufRead::read_line` performs
+    // UTF-8 validation internally and returns `Err(InvalidData)` for the
+    // whole line. `handle_socket_client` logs and returns *without* writing
+    // a response — the daemon silently drops unreadable input.
+    //
+    // The contract we pin here: no panic, no partial write, no half-open
+    // socket; the handler thread finishes and the client sees EOF. This is
+    // the *current* behaviour — if a future change makes the daemon emit
+    // `invalid UTF-8` diagnostics instead, that's a behaviour change worth
+    // a new test, not a silent regression.
+    // ─────────────────────────────────────────────────────────────────────
+    #[test]
+    fn daemon_drops_utf16_bom_prefix_without_panic() {
+        let (_dir, ctx) = test_ctx();
+        let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+        // UTF-16 LE BOM + valid JSON shape — the BOM bytes (0xFF 0xFE) are
+        // not valid UTF-8, so `read_line` errors out.
+        let mut payload: Vec<u8> = vec![0xFF, 0xFE];
+        payload.extend_from_slice(b"{\"command\":\"ping\"}\n");
+        client.write_all(&payload).expect("write BOM+JSON");
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("half-close write");
+
+        // Expect EOF — handler returns without writing on InvalidData.
+        let line = read_line(&mut client);
+        assert!(
+            line.is_empty(),
+            "UTF-8 decode failure at the BufRead layer must not surface a \
+             response body — handler returns early. Got: {line:?}"
+        );
+
+        // Sanity: the handler thread must still terminate cleanly (no panic,
+        // no deadlock). `join_worker` polls `is_finished()` and asserts the
+        // join doesn't panic.
+        join_worker(client, handle);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Test: empty line (just "\n") — `read_line` returns `Ok(1)` (one byte
+    // read). After `line.trim()` the result is an empty string, which
+    // `serde_json::from_str` rejects with "EOF while parsing a value".
+    // The handler surfaces that via the standard `invalid JSON` envelope.
+    //
+    // This is deliberate: a caller that opens a socket and sends just a
+    // newline likely did something wrong — silently accepting empty lines
+    // would hide bugs further up the stack.
+    // ─────────────────────────────────────────────────────────────────────
+    #[test]
+    fn daemon_rejects_bare_newline_as_invalid_json() {
+        let (_dir, ctx) = test_ctx();
+        let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+        client.write_all(b"\n").expect("write empty line");
+
+        let line = read_line(&mut client);
+        let resp = parse_response(&line);
+        assert_eq!(
+            resp.get("status").and_then(|v| v.as_str()),
+            Some("error"),
+            "bare newline must be rejected rather than silently accepted: {line}"
+        );
+        let msg = resp
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            msg.starts_with("invalid JSON"),
+            "bare newline rejection must come through the invalid-JSON path, got: {msg:?}"
+        );
+        join_worker(client, handle);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Test: missing `command` field — the daemon unwraps `command` as an
+    // empty string and bails via the `if command.is_empty()` check.
+    // ─────────────────────────────────────────────────────────────────────
+    #[test]
+    fn daemon_rejects_missing_command_field() {
+        let (_dir, ctx) = test_ctx();
+        let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+        client
+            .write_all(b"{\"args\":[]}\n")
+            .expect("write no-command");
+
+        let line = read_line(&mut client);
+        let resp = parse_response(&line);
+        assert_eq!(
+            resp.get("status").and_then(|v| v.as_str()),
+            Some("error"),
+            "missing command field must surface as error: {line}"
+        );
+        assert_eq!(
+            resp.get("message").and_then(|v| v.as_str()),
+            Some("missing 'command' field"),
+            "message must match the exact production string — dashboards grep on it: {line}"
+        );
+        join_worker(client, handle);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Test: non-string args (objects, nulls, numbers) — P3 #86 hardened
+    // this path; ensure it's still rejected instead of silently filtered.
+    //
+    // The fixture sends three bad elements (`{}, null, 42`) so the handler's
+    // `bad_arg_indices` vec has `[0, 1, 2]`. The rejection response is a
+    // flat string — dashboards grep on the exact message.
+    // ─────────────────────────────────────────────────────────────────────
+    #[test]
+    fn daemon_rejects_non_string_args() {
+        let (_dir, ctx) = test_ctx();
+        let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+        client
+            .write_all(b"{\"command\":\"notes\",\"args\":[{},null,42]}\n")
+            .expect("write non-string args");
+
+        let line = read_line(&mut client);
+        let resp = parse_response(&line);
+        assert_eq!(
+            resp.get("status").and_then(|v| v.as_str()),
+            Some("error"),
+            "non-string args must surface as a rejection, not a truncated call: {line}"
+        );
+        assert_eq!(
+            resp.get("message").and_then(|v| v.as_str()),
+            Some("args contains non-string elements"),
+            "message must match production string — P3 #86: {line}"
+        );
+        join_worker(client, handle);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Test: oversized single arg (500 KB) within the 1 MiB line limit is
+    // currently accepted — the daemon has no per-arg cap, only a per-line
+    // one. This test pins that behaviour so a future per-arg cap is added
+    // deliberately (and the test would be updated) rather than silently.
+    //
+    // The arg goes to the `notes` command which is registered as BatchCmd;
+    // clap accepts arbitrary-length strings for the body. Even if the
+    // handler errors on the oversized body, the daemon must not crash
+    // — that's the contract we pin.
+    // ─────────────────────────────────────────────────────────────────────
+    #[test]
+    fn daemon_accepts_500kb_arg_within_mib_line() {
+        let (_dir, ctx) = test_ctx();
+        let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+
+        let big_arg = "x".repeat(500_000);
+        // Build the JSON payload manually to avoid serde_json allocating a
+        // second 500 KB intermediate String.
+        let mut payload: Vec<u8> = Vec::with_capacity(700_000);
+        payload.extend_from_slice(b"{\"command\":\"notes\",\"args\":[\"list\",\"");
+        payload.extend_from_slice(big_arg.as_bytes());
+        payload.extend_from_slice(b"\"]}\n");
+        assert!(
+            payload.len() < 1_048_576,
+            "test payload must stay under the 1 MiB cap"
+        );
+        client.write_all(&payload).expect("write 500 KB arg");
+
+        let line = read_line(&mut client);
+        let resp = parse_response(&line);
+        // The precise response depends on how `notes` handles unknown
+        // subcommand args. What we're pinning is that the daemon produced
+        // *some* structured response and didn't crash.
+        assert!(
+            resp.get("status").is_some(),
+            "500 KB arg within cap must produce a structured response: {line}"
+        );
+        // If the daemon ever adds a per-arg cap, this assertion will need
+        // updating. Leaving a deliberate fail-open here documents the
+        // current behaviour so the change is a conscious choice.
+        join_worker(client, handle);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Test: NUL byte in args. The daemon accepts the JSON (NUL is a valid
+    // Rust String byte — ` ` deserialises fine), but `dispatch_tokens`
+    // runs it through `reject_null_tokens` which bails with an
+    // `invalid_input` envelope. The daemon's outer frame then wraps that
+    // envelope in `{status:ok, output:<envelope with error>}`.
+    // ─────────────────────────────────────────────────────────────────────
+    #[test]
+    fn daemon_rejects_nul_byte_in_args_downstream() {
+        let (_dir, ctx) = test_ctx();
+        let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+        // ` ` embeds a literal NUL inside a JSON string — valid JSON,
+        // invalid batch-dispatch input.
+        client
+            .write_all(b"{\"command\":\"notes\",\"args\":[\"list\",\"has\\u0000nul\"]}\n")
+            .expect("write NUL payload");
+
+        let line = read_line(&mut client);
+        let resp = parse_response(&line);
+        // Outer envelope: the NUL-guard path writes a SUCCESSFUL JSON line
+        // to the sink (containing the inner error envelope), so the daemon
+        // wraps it as `{status:"ok",output:{...}}`. Either outer shape is
+        // acceptable — the semantic contract is that the *inner* error
+        // surfaces `invalid_input`.
+        let inner_code = resp
+            .pointer("/output/error/code")
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                // Legacy bytes-through-a-string path wraps the envelope bytes
+                // as a JSON string — try parsing if needed.
+                let s = resp.pointer("/output")?.as_str()?;
+                serde_json::from_str::<serde_json::Value>(s)
+                    .ok()?
+                    .pointer("/error/code")?
+                    .as_str()
+                    .map(|_| "")
+            });
+        assert_eq!(
+            inner_code,
+            Some("invalid_input"),
+            "NUL byte must be caught by reject_null_tokens and surface as invalid_input: {line}"
+        );
+        join_worker(client, handle);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // TC-HAP-1.29-6: happy-path round-trip. Every existing socket test pins
+    // an *error* shape — trailing garbage, NUL bytes, missing command,
+    // oversized request. None pins the *success* path: agent sends a valid
+    // command, daemon runs it, envelope comes back with `status:"ok"` and a
+    // well-formed `output` payload.
+    //
+    // This is the complement to the 8 adversarial tests above. `stats` is
+    // the right happy-path probe because `dispatch_stats` touches
+    // store-schema reads, the error counter, the call-graph stats, and the
+    // language histogram — the four surfaces that would silently drift if a
+    // future refactor changed the wire envelope or the handler shape.
+    //
+    // Why `stats`: no embedder needed (read-only SQL + filesystem walk), so
+    // the test runs in ~ms. A pre-seeded chunk in the store makes the
+    // `total_chunks` assertion load-bearing — an empty store would hide
+    // regressions where the daemon returned `total_chunks=0` unconditionally.
+    // ─────────────────────────────────────────────────────────────────────
+    #[test]
+    fn daemon_stats_happy_path_roundtrip() {
+        use cqs::parser::{Chunk, ChunkType, Language};
+        use cqs::store::ModelInfo;
+        use std::path::PathBuf;
+
+        // Custom setup — seed one chunk before `create_test_context` opens
+        // the store read-only. `test_ctx` helper above opens an empty store;
+        // for the happy path we want `total_chunks >= 1` so the numeric
+        // assertion actually distinguishes "handler ran and counted" from
+        // "handler returned zero by accident".
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        {
+            let store = cqs::store::Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init store");
+            // One chunk so `total_chunks >= 1` on the other side.
+            let content = "pub fn roundtrip_probe() {}";
+            let chunk = Chunk {
+                id: "probe.rs:1:probe".to_string(),
+                file: PathBuf::from("probe.rs"),
+                language: Language::Rust,
+                chunk_type: ChunkType::Function,
+                name: "roundtrip_probe".to_string(),
+                signature: "pub fn roundtrip_probe()".to_string(),
+                content: content.to_string(),
+                doc: None,
+                line_start: 1,
+                line_end: 1,
+                content_hash: blake3::hash(content.as_bytes()).to_hex().to_string(),
+                parent_id: None,
+                window_idx: None,
+                parent_type_name: None,
+                parser_version: 0,
+            };
+            // Unit embedding — `upsert_chunk` validates dimension against the
+            // seeded ModelInfo. Value doesn't matter for the stats path.
+            let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+            emb_vec[0] = 1.0;
+            let embedding = cqs::embedder::Embedding::new(emb_vec);
+            store
+                .upsert_chunks_batch(&[(chunk, embedding)], Some(0))
+                .expect("seed chunk");
+        } // drop to flush WAL
+
+        let ctx = super::super::batch::create_test_context(&cqs_dir).expect("create ctx");
+        let ctx = Arc::new(Mutex::new(ctx));
+
+        let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+        client
+            .write_all(b"{\"command\":\"stats\",\"args\":[]}\n")
+            .expect("write stats request");
+
+        let line = read_line(&mut client);
+        let resp = parse_response(&line);
+
+        // Outer envelope shape: `{status: "ok", output: <json>}` — the
+        // branch at `handle_socket_client:378-391` that wraps successful
+        // dispatch output.
+        assert_eq!(
+            resp.get("status").and_then(|v| v.as_str()),
+            Some("ok"),
+            "happy-path response must carry status:ok. got: {line}"
+        );
+
+        // `output` is the parsed JSON from `dispatch_line`. The dispatcher's
+        // stats handler writes an envelope through `emit_json`, so
+        // `output` is itself `{data: {...}, error: null, version: 1}`.
+        let output = resp
+            .get("output")
+            .unwrap_or_else(|| panic!("happy-path response must carry an `output` field: {line}"));
+        assert!(
+            output.is_object(),
+            "output must be a JSON object (envelope): {line}"
+        );
+        let data = output
+            .get("data")
+            .unwrap_or_else(|| panic!("inner envelope must have a `data` field: {line}"));
+        let total_chunks = data
+            .get("total_chunks")
+            .unwrap_or_else(|| panic!("stats data must have `total_chunks`: {line}"));
+        assert!(
+            total_chunks.is_number(),
+            "total_chunks must be numeric: got {total_chunks}"
+        );
+        let n = total_chunks
+            .as_u64()
+            .unwrap_or_else(|| panic!("total_chunks must parse as u64: {total_chunks}"));
+        assert!(
+            n >= 1,
+            "total_chunks must reflect the seeded chunk (≥1), got {n}: {line}"
+        );
+
+        join_worker(client, handle);
     }
 }

@@ -4,39 +4,11 @@
 //! module refactoring — similar results use display::display_similar_results_json
 //! which builds JSON inline. Blocked until display module has typed output structs.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
-use cqs::{HnswIndex, SearchFilter, Store};
+use cqs::{HnswIndex, SearchFilter};
 
 use crate::cli::display;
-
-use crate::cli::commands::resolve::parse_target;
-
-/// Resolve a name to a chunk ID by searching by name and optionally filtering by file
-fn resolve_target<Mode>(store: &Store<Mode>, name: &str) -> Result<(String, String)> {
-    let (file_filter, func_name) = parse_target(name);
-
-    let results = store.search_by_name(func_name, 20)?;
-    if results.is_empty() {
-        bail!(
-            "No function found matching '{}'. Check the name and try again.",
-            func_name
-        );
-    }
-
-    // Filter by file if specified
-    let matched = if let Some(file) = file_filter {
-        results.iter().find(|r| {
-            let path = r.chunk.file.to_string_lossy();
-            path.ends_with(file) || path.contains(file)
-        })
-    } else {
-        None
-    };
-
-    let result = matched.unwrap_or(&results[0]);
-    Ok((result.chunk.id.clone(), result.chunk.name.clone()))
-}
 
 pub(crate) fn cmd_similar(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
@@ -55,8 +27,14 @@ pub(crate) fn cmd_similar(
     // cascaded into unbounded allocation in search_filtered_with_index.
     let limit = limit.clamp(1, crate::cli::SIMILAR_LIMIT_MAX);
 
-    // Resolve name to chunk
-    let (chunk_id, chunk_name) = resolve_target(store, name)?;
+    // CQ-V1.29-3: resolve via the shared `cqs::resolve_target` helper (already
+    // used by `cmd_neighbors` and `dispatch_similar`). The previous local
+    // `resolve_target` picked `results[0]`, which surfaced test chunks first
+    // when names collided — CLI and batch/daemon returned different answers
+    // for the same target.
+    let resolved = cqs::resolve_target(store, name)?;
+    let chunk_id = resolved.chunk.id.clone();
+    let chunk_name = resolved.chunk.name.clone();
 
     // Fetch embedding for the target chunk
     let (source_chunk, embedding) =
@@ -142,7 +120,12 @@ pub(crate) fn cmd_similar(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // CQ-V1.29-3: `parse_target` is re-exported from the library via
+    // `cqs::parse_target`. These coverage tests stayed in this file with the
+    // removal of the CLI-local `resolve_target` helper — no equivalent direct
+    // `parse_target` tests exist in `src/search/mod.rs` yet (only
+    // `resolve_target` is covered).
+    use cqs::parse_target;
 
     #[test]
     fn test_parse_target_name_only() {

@@ -105,6 +105,23 @@ pub fn diff_impact_to_json(result: &DiffImpactResult) -> serde_json::Value {
     })
 }
 
+/// CQ-V1.29-5: shared empty-diff JSON envelope.
+///
+/// Returned by `impact_diff` / `affected` / batch graph handlers when the
+/// unified-diff input contains no hunks or no hunks map to indexed
+/// functions. Centralizing the shape prevents the four previous copies from
+/// drifting (e.g. one handler adding a `summary.truncated` field the others
+/// miss). Callers that need an extra field (e.g. `overall_risk: "none"` on
+/// the affected command) layer it on top of the returned object.
+pub fn diff_impact_empty_json() -> serde_json::Value {
+    serde_json::json!({
+        "changed_functions": [],
+        "callers": [],
+        "tests": [],
+        "summary": { "changed_count": 0, "caller_count": 0, "test_count": 0 }
+    })
+}
+
 /// Convert index to spreadsheet-style column label: A..Z, AA..AZ, BA..BZ, ...
 ///
 /// Unlike the previous `A1`, `B1` scheme, this produces valid mermaid node IDs
@@ -294,6 +311,7 @@ mod tests {
                 test_count: 1,
                 truncated: false,
                 truncated_functions: 0,
+                degraded: false,
             },
         };
         let json = diff_impact_to_json(&result);
@@ -331,6 +349,7 @@ mod tests {
                 test_count: 0,
                 truncated: false,
                 truncated_functions: 0,
+                degraded: false,
             },
         };
         let json = diff_impact_to_json(&result);

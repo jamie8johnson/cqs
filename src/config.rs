@@ -27,22 +27,46 @@ pub enum ConfigError {
     InvalidFormat(String),
 }
 
-/// Detect if running under Windows Subsystem for Linux (cached)
+/// Detect if running under Windows Subsystem for Linux (cached).
+///
+/// PB-V1.29-10: `/proc/version` alone is not conclusive — Mariner Linux,
+/// some Azure images, and custom kernels contain the substring
+/// "microsoft" or "wsl" without being a WSL guest. Requiring a second
+/// positive signal prevents those hosts from silently taking WSL-only
+/// code paths (DrvFS permission-check skips, debounce bumps, etc.).
+///
+/// Returns true iff **any** of:
+/// 1. `WSL_DISTRO_NAME` env var is set (WSL always sets this)
+/// 2. `/proc/sys/fs/binfmt_misc/WSLInterop` exists (kernel-registered
+///    interop entry; only present on real WSL)
+/// 3. `/proc/version` matches `microsoft`/`wsl` AND `WSL_INTEROP` env is
+///    set (the `WSL_INTEROP` env var points at the WSL interop socket,
+///    so its presence is a strong second signal)
 #[cfg(unix)]
 pub fn is_wsl() -> bool {
     static IS_WSL: OnceLock<bool> = OnceLock::new();
     *IS_WSL.get_or_init(|| {
-        // Fast path: WSL sets this env var
+        // Signal 1: WSL_DISTRO_NAME is set by WSL itself.
         if std::env::var_os("WSL_DISTRO_NAME").is_some() {
             return true;
         }
-        // Fallback: check /proc/version
-        std::fs::read_to_string("/proc/version")
+        // Signal 2: binfmt_misc WSLInterop entry is kernel-registered only
+        // on real WSL distros.
+        if Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists() {
+            return true;
+        }
+        // Signal 3: /proc/version substring match REQUIRES a second env-var
+        // corroboration (`WSL_INTEROP`). Neither is sufficient on its own:
+        // /proc/version can match on Mariner/Azure, and `WSL_INTEROP` could
+        // theoretically be user-set. The AND keeps the false-positive rate
+        // near zero.
+        let proc_version_matches = std::fs::read_to_string("/proc/version")
             .map(|v| {
                 let lower = v.to_lowercase();
                 lower.contains("microsoft") || lower.contains("wsl")
             })
-            .unwrap_or(false)
+            .unwrap_or(false);
+        proc_version_matches && std::env::var_os("WSL_INTEROP").is_some()
     })
 }
 
@@ -50,6 +74,30 @@ pub fn is_wsl() -> bool {
 #[cfg(not(unix))]
 pub fn is_wsl() -> bool {
     false
+}
+
+/// Check whether a path lives under a WSL DrvFS automount
+/// (`/mnt/<letter>/...`), where advisory file locking is unreliable and
+/// NTFS reports permission bits as `0o777`.
+///
+/// PB-V1.29-6: Consolidates the three inline `"/mnt/"` prefix checks
+/// (`hnsw/persist.rs`, `project.rs`, and the per-path permission gate in
+/// this file) into a single helper. The `/mnt/[a-z]/` pattern avoids
+/// false-positives on plain Linux hosts that legitimately mount
+/// filesystems below `/mnt/` (e.g. `/mnt/data/` on a native Linux server
+/// was being treated as WSL DrvFS by the naive prefix check).
+///
+/// Returns `false` for non-UTF8 paths (WSL DrvFS paths are always UTF-8
+/// under the Linux view) and for anything shorter than `/mnt/c/`.
+pub fn is_wsl_drvfs_path(path: &Path) -> bool {
+    let s = match path.to_str() {
+        Some(s) => s,
+        None => return false,
+    };
+    s.len() >= 7
+        && s.starts_with("/mnt/")
+        && s.as_bytes()[5].is_ascii_lowercase()
+        && s.as_bytes()[6] == b'/'
 }
 
 /// Reference index configuration
@@ -440,15 +488,9 @@ impl Config {
         {
             use std::os::unix::fs::PermissionsExt;
             // Skip permission check on WSL (NTFS always reports 777) or Windows drive mounts.
-            // SEC-13: Use `/mnt/[a-z]/` pattern to match WSL drive mounts specifically,
-            // not arbitrary /mnt/ subdirectories (e.g., /mnt/data/ on native Linux).
-            let is_wsl_mount = is_wsl()
-                || path.to_str().is_some_and(|p| {
-                    p.len() >= 7
-                        && p.starts_with("/mnt/")
-                        && p.as_bytes()[5].is_ascii_lowercase()
-                        && p.as_bytes()[6] == b'/'
-                });
+            // PB-V1.29-6: Shared `is_wsl_drvfs_path` keeps the `/mnt/[a-z]/`
+            // logic in one spot rather than duplicating it in every call site.
+            let is_wsl_mount = is_wsl() || is_wsl_drvfs_path(path);
             if !is_wsl_mount {
                 if let Ok(meta) = std::fs::metadata(path) {
                     let mode = meta.permissions().mode();

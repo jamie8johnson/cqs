@@ -134,6 +134,29 @@ pub struct ModelConfig {
     ///
     /// Defaults to [`PoolingStrategy::Mean`] (BGE, E5, v9-200k).
     pub pooling: PoolingStrategy,
+    /// EX-V1.29-6: Approximate download size of the ONNX bundle in bytes.
+    ///
+    /// Populated for shipped presets so `cqs init` can report a concrete size
+    /// instead of the old `dim >= 1024 ? "~1.3GB" : "~547MB"` heuristic
+    /// (which silently misreported custom models and smaller-dim BGE variants).
+    /// `None` when unknown — the init command falls back to "(size unknown)"
+    /// rather than guessing. Custom models from `EmbeddingConfig` leave this
+    /// unset; operators supplying a custom repo know their own sizes.
+    pub approx_download_bytes: Option<u64>,
+    /// SHL-V1.29-1: Token id used to pad `input_ids` / `attention_mask` tensors
+    /// below `max_length`.
+    ///
+    /// Every BERT/E5/BGE variant cqs ships today uses `0` (the `[PAD]` token);
+    /// this has been hardcoded at `pad_2d_i64(..., 0)` call sites since the
+    /// encoder's first draft. A custom ONNX export with a different pad id
+    /// silently gets wrong padding — the model still runs (the attention
+    /// mask zeros the positions) but the pre-mask hidden states are
+    /// unambiguously different, which leaks into mean-pooled embeddings when
+    /// the mask shape leaves a spurious `1`. The encoder now reads the
+    /// tokenizer's declared pad id at session init (see `Embedder::pad_id`)
+    /// with this field as the fallback when the tokenizer omits a pad
+    /// configuration.
+    pub pad_id: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +190,8 @@ macro_rules! define_embedder_presets {
             $variant_fn:ident => name = $name:literal, repo = $repo:literal, onnx_path = $onnx_path:literal,
                 tokenizer_path = $tokenizer_path:literal, dim = $dim:literal, max_seq_length = $max:literal,
                 query_prefix = $qp:literal, doc_prefix = $dp:literal,
-                input_names = $input_names:expr, output_name = $output_name:expr, pooling = $pooling:expr
+                input_names = $input_names:expr, output_name = $output_name:expr, pooling = $pooling:expr,
+                approx_download_bytes = $bytes:expr, pad_id = $pad_id:literal
                 $(, default = $default:tt)?
                 ;
         )+
@@ -188,6 +212,8 @@ macro_rules! define_embedder_presets {
                         input_names: $input_names,
                         output_name: $output_name,
                         pooling: $pooling,
+                        approx_download_bytes: $bytes,
+                        pad_id: $pad_id,
                     }
                 }
             )+
@@ -293,7 +319,11 @@ define_embedder_presets! {
         onnx_path = "onnx/model.onnx", tokenizer_path = "tokenizer.json",
         dim = 768, max_seq_length = 512,
         query_prefix = "query: ", doc_prefix = "passage: ",
-        input_names = InputNames::bert(), output_name = default_output_name(), pooling = PoolingStrategy::Mean;
+        input_names = InputNames::bert(), output_name = default_output_name(), pooling = PoolingStrategy::Mean,
+        // EX-V1.29-6: ONNX bundle (model.onnx + tokenizer.json). ~547 MiB real.
+        approx_download_bytes = Some(547 * 1024 * 1024),
+        // SHL-V1.29-1: BERT [PAD] token = id 0.
+        pad_id = 0;
 
     /// v9-200k LoRA: E5-base fine-tuned with call-graph false-negative filtering.
     /// 768-dim, 512 tokens. 90.5% R@1 on expanded eval (296 queries, 7 languages).
@@ -303,7 +333,10 @@ define_embedder_presets! {
         onnx_path = "model.onnx", tokenizer_path = "tokenizer.json",
         dim = 768, max_seq_length = 512,
         query_prefix = "query: ", doc_prefix = "passage: ",
-        input_names = InputNames::bert(), output_name = default_output_name(), pooling = PoolingStrategy::Mean;
+        input_names = InputNames::bert(), output_name = default_output_name(), pooling = PoolingStrategy::Mean,
+        // EX-V1.29-6: same base architecture as e5-base; ONNX bundle ~440 MiB.
+        approx_download_bytes = Some(440 * 1024 * 1024),
+        pad_id = 0;
 
     /// BGE-large-en-v1.5: 1024-dim, 512 tokens. Higher quality, slower.
     ///
@@ -314,6 +347,9 @@ define_embedder_presets! {
         dim = 1024, max_seq_length = 512,
         query_prefix = "Represent this sentence for searching relevant passages: ", doc_prefix = "",
         input_names = InputNames::bert(), output_name = default_output_name(), pooling = PoolingStrategy::Mean,
+        // EX-V1.29-6: full BGE-large ONNX bundle ~1.3 GiB.
+        approx_download_bytes = Some(1_300 * 1024 * 1024),
+        pad_id = 0,
         default = true;
 }
 
@@ -474,6 +510,11 @@ impl ModelConfig {
                     input_names,
                     output_name,
                     pooling,
+                    approx_download_bytes: None,
+                    // SHL-V1.29-1: custom model — fall back to `0` and let
+                    // the encoder's session-init probe the tokenizer for a
+                    // declared pad id. `0` matches every BERT-family model.
+                    pad_id: embedding_cfg.pad_id.unwrap_or(0),
                 };
                 tracing::info!(model = %cfg.name, source = "config-custom", "Resolved custom model config");
                 return cfg;
@@ -552,6 +593,13 @@ pub struct EmbeddingConfig {
     /// Pooling strategy (`mean`, `cls`, or `lasttoken`; default `mean`).
     #[serde(default)]
     pub pooling: Option<PoolingStrategy>,
+    /// SHL-V1.29-1: Pad token id for `input_ids` padding (default `0`).
+    ///
+    /// Override only when the custom tokenizer declares a non-zero pad id
+    /// and `tokenizer.json` doesn't carry a usable `padding` section for
+    /// the encoder to read at session init.
+    #[serde(default)]
+    pub pad_id: Option<i64>,
 }
 
 fn default_model_name() -> String {
@@ -577,6 +625,7 @@ impl Default for EmbeddingConfig {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         }
     }
 }
@@ -772,6 +821,7 @@ mod tests {
             input_names: Some(InputNames::bert_no_token_types()),
             output_name: Some("sentence_embedding".to_string()),
             pooling: Some(PoolingStrategy::Cls),
+            pad_id: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&embedding_cfg));
         assert_eq!(resolved.name, "synthetic-distilbert");
@@ -933,6 +983,7 @@ mod tests {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         };
         let cfg = ModelConfig::resolve(None, Some(&embedding_cfg));
         assert_eq!(cfg.name, "bge-large");
@@ -954,6 +1005,7 @@ mod tests {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         };
         let cfg = ModelConfig::resolve(None, Some(&embedding_cfg));
         assert_eq!(cfg.name, "my-custom");
@@ -982,6 +1034,7 @@ mod tests {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         };
         let cfg = ModelConfig::resolve(None, Some(&embedding_cfg));
         assert_eq!(cfg.name, "bge-large"); // falls back
@@ -1044,6 +1097,7 @@ mod tests {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         };
         let cfg = ModelConfig::resolve(Some("e5-base"), Some(&embedding_cfg));
         assert_eq!(cfg.name, "e5-base");
@@ -1068,6 +1122,7 @@ mod tests {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         };
         let cfg = ModelConfig::resolve(None, Some(&embedding_cfg));
         assert_eq!(
@@ -1095,6 +1150,7 @@ mod tests {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -1119,6 +1175,7 @@ mod tests {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -1143,6 +1200,7 @@ mod tests {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -1167,6 +1225,7 @@ mod tests {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -1193,6 +1252,7 @@ mod tests {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -1219,6 +1279,7 @@ mod tests {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -1243,6 +1304,7 @@ mod tests {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(
@@ -1267,6 +1329,7 @@ mod tests {
             input_names: None,
             output_name: None,
             pooling: None,
+            pad_id: None,
         };
         let resolved = ModelConfig::resolve(None, Some(&cfg));
         assert_eq!(

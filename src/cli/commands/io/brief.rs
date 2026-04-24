@@ -6,6 +6,7 @@ use anyhow::{bail, Context as _, Result};
 
 use cqs::rel_display;
 use cqs::store::{ChunkSummary, Store};
+use std::path::Path;
 
 /// One-line summary entry for a function in the file.
 #[derive(Debug, serde::Serialize)]
@@ -37,8 +38,12 @@ struct BriefData {
 fn build_brief_data<Mode>(store: &Store<Mode>, path: &str) -> Result<BriefData> {
     let _span = tracing::info_span!("build_brief_data", path).entered();
 
+    // PB-V1.29-1: normalize backslash input from Windows / agent pipelines.
+    // `get_chunks_by_origin` matches on the stored `origin` column which is
+    // forward-slash-normalized; unnormalized `src\foo.rs` silently returns empty.
+    let normalized = cqs::normalize_path(Path::new(path));
     let chunks = store
-        .get_chunks_by_origin(path)
+        .get_chunks_by_origin(&normalized)
         .context("Failed to load chunks for file")?;
     if chunks.is_empty() {
         bail!(
@@ -56,23 +61,20 @@ fn build_brief_data<Mode>(store: &Store<Mode>, path: &str) -> Result<BriefData> 
 
     let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
 
-    let caller_counts = store.get_caller_counts_batch(&names).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to fetch caller counts");
-        HashMap::new()
-    });
+    // EH-V1.29-1: propagate query errors so agents can't mistake "query failed"
+    // for "genuine zero". Previously these three calls used `.unwrap_or_else`
+    // with empty fallbacks, hiding store failures behind a cosmetic warn log.
+    let caller_counts = store
+        .get_caller_counts_batch(&names)
+        .context("Failed to fetch caller counts for brief")?;
 
     // Get test coverage via call graph BFS (same approach as test_map)
-    let graph = store.get_call_graph().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to load call graph for test counts");
-        std::sync::Arc::new(cqs::store::CallGraph::from_string_maps(
-            std::collections::HashMap::new(),
-            std::collections::HashMap::new(),
-        ))
-    });
-    let test_chunks = store.find_test_chunks().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to find test chunks");
-        std::sync::Arc::new(Vec::new())
-    });
+    let graph = store
+        .get_call_graph()
+        .context("Failed to load call graph for brief")?;
+    let test_chunks = store
+        .find_test_chunks()
+        .context("Failed to find test chunks for brief")?;
 
     let mut test_counts: HashMap<String, u64> = HashMap::new();
     for chunk in &chunks {

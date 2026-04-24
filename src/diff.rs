@@ -199,11 +199,22 @@ pub fn semantic_diff<Mode1, Mode2>(
     // Sort modified by similarity (most changed first).
     // Entries with None similarity (missing embeddings) sort to the end
     // rather than being conflated with maximally-changed (similarity=0.0).
-    modified.sort_by(|a, b| match (a.similarity, b.similarity) {
-        (Some(sa), Some(sb)) => sa.total_cmp(&sb),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => std::cmp::Ordering::Equal,
+    //
+    // AC-V1.29-1: cascade on (file, name, chunk_type) so identical
+    // similarities (common when many chunks hit the exact threshold
+    // boundary or all lose their embeddings) produce deterministic output.
+    // `HashMap` iteration is process-seed-dependent and the previous sort
+    // preserved that non-determinism into `cqs diff` / `cqs drift` JSON.
+    modified.sort_by(|a, b| {
+        match (a.similarity, b.similarity) {
+            (Some(sa), Some(sb)) => sa.total_cmp(&sb),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| a.file.cmp(&b.file))
+        .then_with(|| a.name.cmp(&b.name))
+        .then_with(|| format!("{:?}", a.chunk_type).cmp(&format!("{:?}", b.chunk_type)))
     });
 
     Ok(DiffResult {
@@ -295,17 +306,89 @@ mod tests {
         ];
 
         // Apply the same sort as semantic_diff
-        entries.sort_by(|a, b| match (a.similarity, b.similarity) {
-            (Some(sa), Some(sb)) => sa.total_cmp(&sb),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
+        entries.sort_by(|a, b| {
+            match (a.similarity, b.similarity) {
+                (Some(sa), Some(sb)) => sa.total_cmp(&sb),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| format!("{:?}", a.chunk_type).cmp(&format!("{:?}", b.chunk_type)))
         });
 
         // Most changed (lowest similarity) first, unknown at end
         assert_eq!(entries[0].name, "known_low");
         assert_eq!(entries[1].name, "known_high");
         assert_eq!(entries[2].name, "unknown");
+    }
+
+    #[test]
+    fn test_diff_sort_tie_break_deterministic() {
+        // AC-V1.29-1: entries with identical similarity must sort
+        // deterministically by (file, name, chunk_type). Previously
+        // HashMap iteration order bled into the output — shuffled inputs
+        // produced different outputs across process invocations.
+        let make_entry = |name: &str, file: &str, chunk_type: ChunkType| DiffEntry {
+            name: name.into(),
+            file: file.into(),
+            chunk_type,
+            similarity: Some(0.5),
+        };
+
+        let sort_them = |entries: &mut Vec<DiffEntry>| {
+            entries.sort_by(|a, b| {
+                match (a.similarity, b.similarity) {
+                    (Some(sa), Some(sb)) => sa.total_cmp(&sb),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+                .then_with(|| a.file.cmp(&b.file))
+                .then_with(|| a.name.cmp(&b.name))
+                .then_with(|| format!("{:?}", a.chunk_type).cmp(&format!("{:?}", b.chunk_type)))
+            });
+        };
+
+        let mut canonical = vec![
+            make_entry("alpha", "src/a.rs", ChunkType::Function),
+            make_entry("beta", "src/a.rs", ChunkType::Function),
+            make_entry("gamma", "src/b.rs", ChunkType::Function),
+            make_entry("delta", "src/a.rs", ChunkType::Struct),
+        ];
+        sort_them(&mut canonical);
+
+        // Lexicographic file order: a.rs < b.rs; within a.rs name order:
+        // alpha < beta < delta (deltaStruct vs Function is the chunk_type
+        // cascade — "Function" < "Struct" lexicographically).
+        assert_eq!(canonical[3].file.to_string_lossy(), "src/b.rs");
+        assert_eq!(canonical[3].name, "gamma");
+
+        // Deterministic across 100 permutations of the same input.
+        for seed in 0..100u64 {
+            let mut shuffled = vec![
+                make_entry("alpha", "src/a.rs", ChunkType::Function),
+                make_entry("beta", "src/a.rs", ChunkType::Function),
+                make_entry("gamma", "src/b.rs", ChunkType::Function),
+                make_entry("delta", "src/a.rs", ChunkType::Struct),
+            ];
+            // Deterministic pseudo-shuffle from `seed` — small linear
+            // congruential scramble, reproducible and dependency-free.
+            let mut state = seed.wrapping_mul(2862933555777941757).wrapping_add(1);
+            for i in (1..shuffled.len()).rev() {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let j = (state as usize) % (i + 1);
+                shuffled.swap(i, j);
+            }
+            sort_them(&mut shuffled);
+            let canonical_names: Vec<&str> = canonical.iter().map(|e| e.name.as_str()).collect();
+            let shuffled_names: Vec<&str> = shuffled.iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(
+                canonical_names, shuffled_names,
+                "shuffle seed={seed} produced different sort order"
+            );
+        }
     }
 
     #[test]

@@ -21,15 +21,17 @@ pub fn html_to_markdown(source: &str) -> Result<String> {
     Ok(markdown)
 }
 
-/// Convert an HTML file to Markdown.
-/// Reads the file at `path` and converts its HTML content to Markdown.
+/// Converts an HTML file to Markdown format.
+///
+/// Reads the HTML file from the specified path and converts its contents to Markdown. The file size must not exceed the configured maximum limit.
 /// This is the path-based wrapper used by `FORMAT_TABLE`; the string-based
 /// [`html_to_markdown`] is still used directly by `chm` and `webhelp`.
-/// Maximum file size for conversion (100 MB)
-const MAX_CONVERT_FILE_SIZE: u64 = 100 * 1024 * 1024;
-
-/// Converts an HTML file to Markdown format.
-/// Reads the HTML file from the specified path and converts its contents to Markdown. The file size must not exceed the configured maximum limit.
+///
+/// SHL-V1.29-10: the size cap used to be a local `MAX_CONVERT_FILE_SIZE = 100 MB`
+/// duplicated in `convert::markdown_passthrough`. Both now route through
+/// `crate::limits::convert_file_size()` so `CQS_CONVERT_MAX_FILE_SIZE`
+/// tunes both single-file converters in lockstep.
+///
 /// # Arguments
 /// * `path` - Path to the HTML file to convert
 /// # Returns
@@ -42,13 +44,14 @@ const MAX_CONVERT_FILE_SIZE: u64 = 100 * 1024 * 1024;
 /// * The HTML to Markdown conversion fails
 pub fn html_file_to_markdown(path: &Path) -> Result<String> {
     let _span = tracing::info_span!("html_file_to_markdown", path = %path.display()).entered();
+    let max_bytes = crate::limits::convert_file_size();
     let meta = std::fs::metadata(path)
         .map_err(|e| anyhow::anyhow!("Failed to stat {}: {}", path.display(), e))?;
-    if meta.len() > MAX_CONVERT_FILE_SIZE {
+    if meta.len() > max_bytes {
         anyhow::bail!(
             "File {} exceeds {} MB size limit",
             path.display(),
-            MAX_CONVERT_FILE_SIZE / 1024 / 1024,
+            max_bytes / 1024 / 1024,
         );
     }
     let source = std::fs::read_to_string(path)

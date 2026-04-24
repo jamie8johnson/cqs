@@ -22,16 +22,6 @@ pub struct BatchSubmitItem {
 /// Abstracts the batch submission, polling, and result fetching lifecycle.
 /// Currently implemented for Anthropic's Messages Batches API.
 pub trait BatchProvider {
-    /// Submit a batch of prompt requests. Returns the batch ID.
-    /// `prompt_builder` constructs the user message from (content, context, language).
-    fn submit_batch(
-        &self,
-        items: &[BatchSubmitItem],
-        max_tokens: u32,
-        purpose: &str,
-        prompt_builder: fn(&str, &str, &str) -> String,
-    ) -> Result<String, LlmError>;
-
     /// Submit a batch where prompts are already built (content field IS the prompt).
     /// Used by the contrastive summary path which pre-builds prompts with neighbor context.
     fn submit_batch_prebuilt(
@@ -97,16 +87,6 @@ impl MockBatchProvider {
 
 #[cfg(test)]
 impl BatchProvider for MockBatchProvider {
-    fn submit_batch(
-        &self,
-        _items: &[BatchSubmitItem],
-        _max_tokens: u32,
-        _purpose: &str,
-        _prompt_builder: fn(&str, &str, &str) -> String,
-    ) -> Result<String, LlmError> {
-        Ok(self.batch_id.clone())
-    }
-
     fn submit_batch_prebuilt(
         &self,
         _items: &[BatchSubmitItem],
@@ -161,16 +141,6 @@ mod tests {
     struct DefaultValidationProvider;
 
     impl BatchProvider for DefaultValidationProvider {
-        fn submit_batch(
-            &self,
-            _items: &[BatchSubmitItem],
-            _max_tokens: u32,
-            _purpose: &str,
-            _prompt_builder: fn(&str, &str, &str) -> String,
-        ) -> Result<String, LlmError> {
-            Ok(String::new())
-        }
-
         fn submit_batch_prebuilt(
             &self,
             _items: &[BatchSubmitItem],

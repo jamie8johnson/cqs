@@ -100,6 +100,25 @@ pub(crate) fn run_umap_projection(store: &Store, quiet: bool) -> Result<usize> {
     }
 
     let id_max_len = buffered.iter().map(|(id, _)| id.len()).max().unwrap_or(0);
+
+    // RB-V1.29-2: the wire format writes `n_rows`, `dim`, and `id_max_len`
+    // as little-endian u32. A 64-bit host could in principle buffer more
+    // than 4 billion rows / a >4 GB max id length — validate before the
+    // narrowing cast so we fail loud instead of silently truncating and
+    // producing a corrupt payload.
+    anyhow::ensure!(
+        n_rows <= u32::MAX as usize,
+        "UMAP input has too many rows for wire format: {n_rows} > u32::MAX"
+    );
+    anyhow::ensure!(
+        dim <= u32::MAX as usize,
+        "UMAP embedding dim exceeds wire format: {dim} > u32::MAX"
+    );
+    anyhow::ensure!(
+        id_max_len <= u32::MAX as usize,
+        "UMAP id_max_len exceeds wire format: {id_max_len} > u32::MAX"
+    );
+
     let mut payload: Vec<u8> = Vec::with_capacity(12 + n_rows * (2 + id_max_len + dim * 4));
     payload.extend_from_slice(&(n_rows as u32).to_le_bytes());
     payload.extend_from_slice(&(dim as u32).to_le_bytes());

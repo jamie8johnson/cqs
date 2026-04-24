@@ -70,7 +70,7 @@ pub(crate) fn cmd_affected(
     if json {
         let mut json_val = diff_impact_to_json(&result);
         // Add overall risk
-        json_val["overall_risk"] = serde_json::json!(overall_risk_label(&result));
+        json_val["overall_risk"] = serde_json::json!(overall_risk(&result).to_string());
         crate::cli::json_envelope::emit_json(&json_val)?;
     } else {
         display_affected_text(&result, root);
@@ -80,22 +80,26 @@ pub(crate) fn cmd_affected(
 }
 
 fn empty_affected_json() -> serde_json::Value {
-    serde_json::json!({
-        "changed_functions": [],
-        "callers": [],
-        "tests": [],
-        "overall_risk": "none",
-        "summary": { "changed_count": 0, "caller_count": 0, "test_count": 0 }
-    })
+    // CQ-V1.29-5: share the empty-diff JSON shape with impact_diff / graph
+    // handlers. Adds `overall_risk: "none"` on top of the shared base — the
+    // sentinel that cannot collide with overall_risk() (which only emits
+    // Low/Medium/High) so agents can detect "no changes" without counting.
+    let mut base = cqs::diff_impact_empty_json();
+    base["overall_risk"] = serde_json::json!("none");
+    base
 }
 
-fn overall_risk_label(result: &DiffImpactResult) -> &'static str {
+/// CQ-V1.29-4: single source of truth for the affected-command risk
+/// thresholds. Both the JSON path (`overall_risk` field) and the text path
+/// (`Risk: ...` footer) go through this function so the two renderings
+/// can't drift on future threshold tweaks.
+fn overall_risk(result: &DiffImpactResult) -> RiskLevel {
     if result.all_callers.len() > 10 || result.changed_functions.len() > 5 {
-        "high"
+        RiskLevel::High
     } else if result.all_callers.len() > 3 || result.changed_functions.len() > 2 {
-        "medium"
+        RiskLevel::Medium
     } else {
-        "low"
+        RiskLevel::Low
     }
 }
 
@@ -138,15 +142,10 @@ fn display_affected_text(result: &DiffImpactResult, root: &Path) {
         }
     }
 
-    // Risk summary
+    // Risk summary — CQ-V1.29-4: route through the same `overall_risk` helper
+    // used by the JSON path so the two outputs can't drift.
     println!();
-    let risk = if result.all_callers.len() > 10 || result.changed_functions.len() > 5 {
-        risk_label(&RiskLevel::High)
-    } else if result.all_callers.len() > 3 || result.changed_functions.len() > 2 {
-        risk_label(&RiskLevel::Medium)
-    } else {
-        risk_label(&RiskLevel::Low)
-    };
+    let risk = risk_label(&overall_risk(result));
     println!(
         "Risk: {} ({} changed, {} callers, {} tests)",
         risk,
@@ -188,8 +187,10 @@ mod tests {
                 test_count: 0,
                 truncated: false,
                 truncated_functions: 0,
+                degraded: false,
             },
         };
-        assert_eq!(overall_risk_label(&empty_result), "low");
+        assert_eq!(overall_risk(&empty_result), RiskLevel::Low);
+        assert_eq!(overall_risk(&empty_result).to_string(), "low");
     }
 }

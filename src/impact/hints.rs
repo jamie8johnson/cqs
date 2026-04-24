@@ -1,5 +1,9 @@
 //! Hint computation and risk scoring
 
+use crate::limits::{
+    blast_high_min, blast_low_max, risk_threshold_high, risk_threshold_medium,
+    RISK_THRESHOLD_HIGH_DEFAULT, RISK_THRESHOLD_MEDIUM_DEFAULT,
+};
 use crate::store::{CallGraph, StoreError};
 use crate::Store;
 
@@ -7,10 +11,25 @@ use super::bfs::{reverse_bfs, reverse_bfs_multi_attributed, test_reachability};
 use super::types::{FunctionHints, RiskLevel, RiskScore};
 use super::DEFAULT_MAX_TEST_SEARCH_DEPTH;
 
-/// Risk score threshold above which a function is classified as high risk.
-pub const RISK_THRESHOLD_HIGH: f32 = 5.0;
-/// Risk score threshold above which a function is classified as medium risk.
-pub const RISK_THRESHOLD_MEDIUM: f32 = 2.0;
+// SHL-V1.29-8: the risk and blast-radius thresholds drive `cqs review` CI
+// gating — wrong defaults silently alter classification on monorepos. The
+// values now flow through `crate::limits::*` so `CQS_RISK_HIGH`,
+// `CQS_RISK_MEDIUM`, `CQS_BLAST_LOW_MAX`, `CQS_BLAST_HIGH_MIN` can pin
+// project-specific policy. The consts below are kept as the canonical
+// defaults (exported for telemetry / doctor output / doctests).
+
+/// Default risk score above which a function is classified as high risk.
+/// Env-override via `CQS_RISK_HIGH`; see [`risk_threshold_high`].
+///
+/// Retained as a public constant for callers that need the compile-time
+/// default (docs, tests, telemetry). The runtime decision uses
+/// `risk_threshold_high()` so env overrides take effect.
+#[allow(dead_code)]
+pub const RISK_THRESHOLD_HIGH: f32 = RISK_THRESHOLD_HIGH_DEFAULT;
+/// Default risk score above which a function is classified as medium risk.
+/// Env-override via `CQS_RISK_MEDIUM`; see [`risk_threshold_medium`].
+#[allow(dead_code)]
+pub const RISK_THRESHOLD_MEDIUM: f32 = RISK_THRESHOLD_MEDIUM_DEFAULT;
 
 /// Core implementation — accepts pre-loaded graph and test chunks.
 /// Use this when processing multiple functions to avoid loading the graph
@@ -120,6 +139,12 @@ pub fn compute_risk_batch(
     let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
     let reachability = test_reachability(graph, &test_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
 
+    // SHL-V1.29-8: read env-overridable thresholds once per batch.
+    let risk_high = risk_threshold_high();
+    let risk_medium = risk_threshold_medium();
+    let low_max = blast_low_max();
+    let high_min = blast_high_min();
+
     names
         .iter()
         .map(|name| {
@@ -138,18 +163,14 @@ pub fn compute_risk_batch(
             let risk_level = if caller_count == 0 && test_count == 0 {
                 // Entry point with no tests — flag as medium
                 RiskLevel::Medium
-            } else if score >= RISK_THRESHOLD_HIGH {
+            } else if score >= risk_high {
                 RiskLevel::High
-            } else if score >= RISK_THRESHOLD_MEDIUM {
+            } else if score >= risk_medium {
                 RiskLevel::Medium
             } else {
                 RiskLevel::Low
             };
-            let blast_radius = match caller_count {
-                0..=2 => RiskLevel::Low,
-                3..=10 => RiskLevel::Medium,
-                _ => RiskLevel::High,
-            };
+            let blast_radius = classify_blast_radius(caller_count, low_max, high_min);
             RiskScore {
                 caller_count,
                 test_count,
@@ -160,6 +181,23 @@ pub fn compute_risk_batch(
             }
         })
         .collect()
+}
+
+/// Classify a blast-radius from caller count, honoring the env-overridable
+/// `CQS_BLAST_LOW_MAX` / `CQS_BLAST_HIGH_MIN` thresholds.
+/// - `callers <= low_max` → Low
+/// - `callers >= high_min` → High
+/// - otherwise → Medium
+/// Degenerate configs (`high_min <= low_max`) prefer High, matching the
+/// historical defaults where `low_max=2` and `high_min=11` are disjoint.
+fn classify_blast_radius(callers: usize, low_max: usize, high_min: usize) -> RiskLevel {
+    if callers >= high_min {
+        RiskLevel::High
+    } else if callers <= low_max {
+        RiskLevel::Low
+    } else {
+        RiskLevel::Medium
+    }
 }
 
 /// Compute risk scores and collect deduplicated tests in a single pass.
@@ -209,6 +247,12 @@ pub fn compute_risk_and_tests(
         }
     }
 
+    // SHL-V1.29-8: read env-overridable thresholds once per call.
+    let risk_high = risk_threshold_high();
+    let risk_medium = risk_threshold_medium();
+    let low_max = blast_low_max();
+    let high_min = blast_high_min();
+
     let mut scores = Vec::with_capacity(targets.len());
     for (i, &name) in targets.iter().enumerate() {
         // Risk scoring: use forward BFS reachability (consistent with compute_risk_batch)
@@ -226,18 +270,14 @@ pub fn compute_risk_and_tests(
         let score = caller_count as f32 * (1.0 - test_ratio);
         let risk_level = if caller_count == 0 && test_count == 0 {
             RiskLevel::Medium
-        } else if score >= RISK_THRESHOLD_HIGH {
+        } else if score >= risk_high {
             RiskLevel::High
-        } else if score >= RISK_THRESHOLD_MEDIUM {
+        } else if score >= risk_medium {
             RiskLevel::Medium
         } else {
             RiskLevel::Low
         };
-        let blast_radius = match caller_count {
-            0..=2 => RiskLevel::Low,
-            3..=10 => RiskLevel::Medium,
-            _ => RiskLevel::High,
-        };
+        let blast_radius = classify_blast_radius(caller_count, low_max, high_min);
         let _ = &tests_per_target[i]; // ensure we computed tests for this target
         scores.push(RiskScore {
             caller_count,
@@ -255,19 +295,50 @@ pub fn compute_risk_and_tests(
 
 /// Find the most-called functions in the codebase (hotspots).
 /// Returns [`Hotspot`] entries sorted by caller count descending.
+///
+/// PF-V1.29-4: previously allocated a `String` per callee (via `name.to_string()`)
+/// into a full `Vec<Hotspot>` before sorting and truncating to `top_n`. For a
+/// graph with 50k+ callees and `top_n = 5` this produced ~50k throwaway
+/// strings. Now uses a bounded min-heap keyed on `caller_count`: the heap
+/// never exceeds `top_n` entries, and `Arc::clone` on the name is a refcount
+/// bump (not an allocation). Only the surviving `top_n` names are converted
+/// to owned `String`s at the end.
 pub fn find_hotspots(graph: &CallGraph, top_n: usize) -> Vec<crate::health::Hotspot> {
     let _span = tracing::info_span!("find_hotspots", top_n).entered();
 
-    let mut hotspots: Vec<crate::health::Hotspot> = graph
-        .reverse
-        .iter()
-        .map(|(name, callers)| crate::health::Hotspot {
+    if top_n == 0 {
+        return Vec::new();
+    }
+
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    use std::sync::Arc;
+
+    // Min-heap on caller_count: smallest element sits at `peek()`, so the
+    // heap efficiently rejects entries that can't crack the top-N.
+    let mut heap: BinaryHeap<(Reverse<usize>, Arc<str>)> = BinaryHeap::with_capacity(top_n);
+    for (name, callers) in graph.reverse.iter() {
+        let count = callers.len();
+        if heap.len() < top_n {
+            heap.push((Reverse(count), Arc::clone(name)));
+        } else if let Some(&(Reverse(min_count), _)) = heap.peek() {
+            if count > min_count {
+                heap.pop();
+                heap.push((Reverse(count), Arc::clone(name)));
+            }
+        }
+    }
+
+    // Drain the heap (unordered) and sort descending by caller_count for
+    // the caller-facing contract. Only top_n `to_string()` calls here.
+    let mut hotspots: Vec<crate::health::Hotspot> = heap
+        .into_iter()
+        .map(|(Reverse(caller_count), name)| crate::health::Hotspot {
             name: name.to_string(),
-            caller_count: callers.len(),
+            caller_count,
         })
         .collect();
-    hotspots.sort_by_key(|h| std::cmp::Reverse(h.caller_count));
-    hotspots.truncate(top_n);
+    hotspots.sort_by_key(|h| Reverse(h.caller_count));
     hotspots
 }
 

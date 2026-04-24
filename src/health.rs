@@ -7,13 +7,14 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::impact::find_hotspots;
+use crate::limits::{health_hotspot_count, hotspot_min_callers};
 use crate::store::helpers::IndexStats;
 use crate::store::StoreError;
-use crate::suggest::HOTSPOT_MIN_CALLERS;
 use crate::{compute_risk_batch, HnswIndex, RiskLevel, Store};
 
-/// Number of top hotspots to include in the health report.
-const HEALTH_HOTSPOT_COUNT: usize = 5;
+// SHL-V1.29-7: the previous `HEALTH_HOTSPOT_COUNT = 5` constant was hardcoded.
+// It now scales with corpus size via `crate::limits::health_hotspot_count`.
+// Env override: `CQS_HEALTH_HOTSPOT_COUNT`.
 
 /// A function hotspot: high caller count indicates central importance.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -55,6 +56,11 @@ pub fn health_check<Mode>(
     // Fatal: can't report without basic stats
     let stats = store.stats()?;
 
+    // SHL-V1.29-7: scale hotspot thresholds with corpus size.
+    let chunk_count = stats.total_chunks as usize;
+    let hotspot_count = health_hotspot_count(chunk_count);
+    let min_callers = hotspot_min_callers(chunk_count);
+
     let mut warnings = Vec::new();
 
     // Staleness
@@ -80,9 +86,9 @@ pub fn health_check<Mode>(
     // Call graph → hotspots + untested hotspot detection
     let (hotspots, untested_hotspots) = match store.get_call_graph() {
         Ok(graph) => {
-            let spots = find_hotspots(&graph, HEALTH_HOTSPOT_COUNT);
+            let spots = find_hotspots(&graph, hotspot_count);
 
-            // Find untested hotspots: high-caller functions (≥HOTSPOT_MIN_CALLERS) with 0 tests
+            // Find untested hotspots: high-caller functions (≥min_callers) with 0 tests
             let untested = match store.find_test_chunks() {
                 Ok(test_chunks) => {
                     let hotspot_names: Vec<&str> = spots.iter().map(|h| h.name.as_str()).collect();
@@ -91,7 +97,7 @@ pub fn health_check<Mode>(
                         .into_iter()
                         .zip(spots.iter())
                         .filter(|(r, _)| {
-                            r.caller_count >= HOTSPOT_MIN_CALLERS
+                            r.caller_count >= min_callers
                                 && r.test_count == 0
                                 && r.risk_level == RiskLevel::High
                         })

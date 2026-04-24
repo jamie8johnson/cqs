@@ -53,6 +53,15 @@
 //! # }
 //! ```
 //!
+// RB-V1.29-6: cqs routinely narrows `u64` row counts and SQLite `i64` row IDs
+// to `usize` (e.g. `chunk_count as usize` in `cli/store.rs`, HNSW ID map
+// loads, store batch readers). On a 32-bit target those casts would silently
+// truncate once a corpus exceeds ~4 billion elements. Rather than sprinkle
+// per-site checked casts everywhere, gate the whole crate at compile time —
+// every target cqs ships for is 64-bit anyway.
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("cqs requires a 64-bit target (target_pointer_width = \"64\")");
+
 // Public library API modules
 pub mod audit;
 pub mod aux_model;
@@ -217,6 +226,23 @@ pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
 /// Use `Embedder::embedding_dim()` for the runtime value.
 /// Derived from `ModelConfig::default_model().dim`.
 pub const EMBEDDING_DIM: usize = embedder::DEFAULT_DIM;
+
+/// DS2-10: Convert a [`std::time::Duration`] to milliseconds as `i64` for
+/// storage in SQLite `INTEGER` mtime columns.
+///
+/// The underlying `as_millis()` returns `u128`, and all 13 prior call sites
+/// lost the overflow check by casting with `as i64` — a duration past
+/// `~292M years` since the Unix epoch would silently wrap to a negative
+/// value. `i64::try_from` returns an error which we collapse to
+/// `i64::MAX` (the closest representable "far future" mtime); the alternative
+/// — truncating wrap — would invert monotonic ordering and break freshness
+/// comparisons. Real-world mtimes are never anywhere near this cap, so the
+/// saturation is functionally equivalent to the prior cast on every valid
+/// input.
+#[inline]
+pub fn duration_to_mtime_millis(d: std::time::Duration) -> i64 {
+    i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
+}
 
 // # Batch Size Constants (#683)
 //
@@ -451,7 +477,7 @@ pub fn index_notes(
                 })
                 .ok()
         })
-        .map(|d| d.as_millis() as i64)
+        .map(duration_to_mtime_millis)
         .unwrap_or(0);
 
     // Atomically replace notes (delete old + insert new in single transaction)

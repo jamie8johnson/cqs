@@ -314,9 +314,26 @@ pub(crate) fn bfs_expand(
         name_scores.keys().map(|k| Arc::from(k.as_str())).collect();
     let initial_size = name_scores.len();
 
+    // AC-V1.29-3: HashMap iteration order is process-seed-dependent, so
+    // enqueueing straight from `name_scores.keys()` made BFS non-deterministic.
+    // When `max_expanded_nodes` fires mid-expansion, which seeds got their
+    // neighbors in before the cap depended on randomness. Sort by
+    // (score desc, name asc) so a given input produces the same output on
+    // every run, regardless of process-wide HashMap randomization.
+    let mut seeds: Vec<(&str, f32)> = name_scores
+        .iter()
+        .map(|(k, (s, _))| (k.as_str(), *s))
+        .collect();
+    seeds.sort_by(|(a_name, a_score), (b_name, b_score)| {
+        b_score
+            .partial_cmp(a_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a_name.cmp(b_name))
+    });
+
     let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();
-    for name in name_scores.keys() {
-        queue.push_back((Arc::from(name.as_str()), 0));
+    for (name, _) in seeds {
+        queue.push_back((Arc::from(name), 0));
     }
 
     while let Some((name, depth)) = queue.pop_front() {
@@ -907,6 +924,77 @@ mod tests {
         assert_eq!(opts.seed_limit, 10);
         assert!((opts.seed_threshold - 0.5).abs() < f32::EPSILON);
         assert!((opts.decay_factor - 0.9).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_bfs_seed_order_deterministic() {
+        // AC-V1.29-3: BFS seeding must be deterministic regardless of
+        // HashMap iteration order. The previous impl enqueued seeds in
+        // `name_scores.keys()` order, which is process-seed-randomized.
+        // When the cap fires mid-expansion, that randomness bled into the
+        // output. Seed with 10 names, cap at 15, run twice, assert output
+        // is the same set on both runs.
+        let mut forward = HashMap::new();
+        let mut reverse = HashMap::new();
+        // Build a graph where every seed has multiple callees so the cap
+        // has a real decision to make.
+        for seed_idx in 0..10 {
+            let seed_name = format!("S{seed_idx}");
+            let callees: Vec<String> = (0..5).map(|i| format!("callee_{seed_idx}_{i}")).collect();
+            forward.insert(seed_name.clone(), callees.clone());
+            for c in &callees {
+                reverse
+                    .entry(c.clone())
+                    .or_insert_with(Vec::new)
+                    .push(seed_name.clone());
+            }
+        }
+        let graph = CallGraph::from_string_maps(forward, reverse);
+
+        let build_seeds = || {
+            let mut m: HashMap<String, (f32, usize)> = HashMap::new();
+            for i in 0..10 {
+                // Give all seeds the same score so name-ascending is the
+                // only tie-break left — this is the worst case where the
+                // HashMap order used to leak through.
+                m.insert(format!("S{i}"), (0.5, 0));
+            }
+            m
+        };
+
+        let opts = GatherOptions::default()
+            .with_expand_depth(1)
+            .with_direction(GatherDirection::Callees)
+            .with_max_expanded_nodes(15); // 10 seeds + 5 callees = first seed's fanout only
+
+        let mut run1 = build_seeds();
+        let capped1 = bfs_expand(&mut run1, &graph, &opts);
+        let mut run2 = build_seeds();
+        let capped2 = bfs_expand(&mut run2, &graph, &opts);
+
+        assert_eq!(capped1, capped2, "cap flag must match across runs");
+        assert!(
+            capped1,
+            "cap should fire at 15 nodes given 10 seeds x 5 callees"
+        );
+
+        // Set of included names must match across runs.
+        let mut keys1: Vec<&String> = run1.keys().collect();
+        let mut keys2: Vec<&String> = run2.keys().collect();
+        keys1.sort();
+        keys2.sort();
+        assert_eq!(
+            keys1, keys2,
+            "BFS expanded the same nodes across two runs with identical input"
+        );
+
+        // And the first-processed seed (which gets full fanout before the
+        // cap fires) should be S0 under (score desc, name asc) sort —
+        // not a random HashMap-seed-dependent choice.
+        assert!(
+            run1.contains_key("callee_0_0"),
+            "seed S0 should be processed first under name-ascending sort"
+        );
     }
 
     #[test]

@@ -24,8 +24,12 @@ pub(crate) struct CompactData {
 /// Build compact-mode data: chunks with caller/callee counts.
 pub(crate) fn build_compact_data<Mode>(store: &Store<Mode>, path: &str) -> Result<CompactData> {
     let _span = tracing::info_span!("build_compact_data", path).entered();
+    // PB-V1.29-1: normalize backslash input from Windows / agent pipelines.
+    // `get_chunks_by_origin` matches on the stored `origin` column which is
+    // forward-slash-normalized; unnormalized `src\foo.rs` silently returns empty.
+    let normalized = cqs::normalize_path(Path::new(path));
     let chunks = store
-        .get_chunks_by_origin(path)
+        .get_chunks_by_origin(&normalized)
         .context("Failed to load chunks for file")?;
     if chunks.is_empty() {
         bail!(
@@ -101,6 +105,12 @@ pub(crate) struct FullData {
     /// (callee_name, called_from)
     pub external_callees: Vec<(String, String)>,
     pub dependent_files: HashSet<String>,
+    /// EH-V1.29-9: human-readable warnings from store batch failures during
+    /// assembly. Populated when `get_callers_full_batch` or
+    /// `get_callees_full_batch` fall back to empty maps; surfaces via
+    /// `FullOutput`/`SummaryOutput` so JSON consumers can distinguish
+    /// "no external callers" from "batch query failed silently".
+    pub warnings: Vec<String>,
 }
 
 /// Build full-mode data: chunks with external callers/callees/dependent files.
@@ -111,8 +121,12 @@ pub(crate) fn build_full_data<Mode>(
     root: &Path,
 ) -> Result<FullData> {
     let _span = tracing::info_span!("build_full_data", path).entered();
+    // PB-V1.29-1: normalize backslash input from Windows / agent pipelines.
+    // `get_chunks_by_origin` matches on the stored `origin` column which is
+    // forward-slash-normalized; unnormalized `src\foo.rs` silently returns empty.
+    let normalized = cqs::normalize_path(Path::new(path));
     let chunks = store
-        .get_chunks_by_origin(path)
+        .get_chunks_by_origin(&normalized)
         .context("Failed to load chunks for file")?;
     if chunks.is_empty() {
         bail!(
@@ -124,17 +138,26 @@ pub(crate) fn build_full_data<Mode>(
     let chunk_names: HashSet<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
     let names_vec: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
 
-    // Batch-fetch callers and callees for all chunks
+    // Batch-fetch callers and callees for all chunks.
+    // EH-V1.29-9: collect warnings on fallback so the JSON consumer can
+    // distinguish "no external callers" from "the batch query failed".
+    let mut warnings: Vec<String> = Vec::new();
     let callers_by_callee = store
         .get_callers_full_batch(&names_vec)
         .unwrap_or_else(|e| {
             tracing::warn!(error = %e, "Failed to batch-fetch callers for context");
+            warnings.push(format!(
+                "get_callers_full_batch failed: {e}; external_callers may be incomplete"
+            ));
             HashMap::new()
         });
     let callees_by_caller = store
         .get_callees_full_batch(&names_vec)
         .unwrap_or_else(|e| {
             tracing::warn!(error = %e, "Failed to batch-fetch callees for context");
+            warnings.push(format!(
+                "get_callees_full_batch failed: {e}; external_callees may be incomplete"
+            ));
             HashMap::new()
         });
 
@@ -147,8 +170,11 @@ pub(crate) fn build_full_data<Mode>(
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
         for caller in callers {
-            let caller_origin = caller.file.to_string_lossy().to_string();
-            if !caller_origin.ends_with(path) {
+            // PB-V1.29-1: normalize caller_origin and compare against the
+            // slash-normalized user path; otherwise Windows backslash input
+            // mis-classifies in-file callers as external.
+            let caller_origin = cqs::normalize_path(&caller.file);
+            if !caller_origin.ends_with(normalized.as_str()) {
                 let rel = cqs::rel_display(&caller.file, root);
                 external_callers.push((
                     caller.name.clone(),
@@ -183,6 +209,7 @@ pub(crate) fn build_full_data<Mode>(
         external_callers,
         external_callees,
         dependent_files,
+        warnings,
     })
 }
 
@@ -198,6 +225,10 @@ pub(crate) struct FullOutput<'a> {
     pub token_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<usize>,
+    /// EH-V1.29-9: partial-data warnings from batch store failures.
+    /// Omitted when empty so the normal happy-path output is unchanged.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// A chunk in full context output.
@@ -284,6 +315,7 @@ pub(crate) fn full_to_json(
         dependent_files: dep_files,
         token_count: token_info.map(|(used, _)| used),
         token_budget: token_info.map(|(_, budget)| budget),
+        warnings: data.warnings.clone(),
     };
     serde_json::to_value(&output).unwrap_or_else(|e| {
         tracing::warn!(error = %e, "Failed to serialize FullOutput");
@@ -426,6 +458,10 @@ pub(crate) struct SummaryOutput<'a> {
     pub external_caller_count: usize,
     pub external_callee_count: usize,
     pub dependent_files: Vec<String>,
+    /// EH-V1.29-9: partial-data warnings from batch store failures in
+    /// `build_full_data`. Omitted when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// A chunk in summary context output.
@@ -457,6 +493,7 @@ pub(crate) fn summary_to_json(data: &FullData, path: &str) -> serde_json::Value 
         external_caller_count: data.external_callers.len(),
         external_callee_count: data.external_callees.len(),
         dependent_files: dep_files,
+        warnings: data.warnings.clone(),
     };
     serde_json::to_value(&output).unwrap_or_else(|e| {
         tracing::warn!(error = %e, "Failed to serialize SummaryOutput");
@@ -507,6 +544,10 @@ fn print_summary_terminal(data: &FullData, path: &str) {
         for f in dep_files {
             println!("    {}", f);
         }
+    }
+    // EH-V1.29-9: surface partial-data warnings at the bottom.
+    for w in &data.warnings {
+        println!("{} {}", "Warning:".yellow(), w);
     }
 }
 
@@ -571,6 +612,11 @@ fn print_full_terminal(
         for f in files {
             println!("  {}", f);
         }
+    }
+
+    // EH-V1.29-9: surface partial-data warnings at the bottom.
+    for w in &data.warnings {
+        println!("{} {}", "Warning:".yellow(), w);
     }
 }
 
@@ -678,6 +724,7 @@ mod tests {
             external_callers,
             external_callees,
             dependent_files,
+            warnings: Vec::new(),
         };
         let json = full_to_json(&data, "src/lib.rs", None, None);
 
@@ -736,6 +783,7 @@ mod tests {
             external_callers: vec![],
             external_callees: vec![],
             dependent_files: HashSet::new(),
+            warnings: Vec::new(),
         };
         let json = full_to_json(&data, "src/lib.rs", None, Some((150, 500)));
 
@@ -754,6 +802,7 @@ mod tests {
             external_callers: vec![],
             external_callees: vec![],
             dependent_files: HashSet::new(),
+            warnings: Vec::new(),
         };
         let mut content_set = HashSet::new();
         content_set.insert("included".to_string());
@@ -799,6 +848,7 @@ mod tests {
                 s.insert("src/d.rs".to_string());
                 s
             },
+            warnings: Vec::new(),
         };
         let json = summary_to_json(&data, "src/lib.rs");
 

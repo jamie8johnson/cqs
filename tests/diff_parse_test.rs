@@ -196,3 +196,158 @@ diff --git a/src/a.rs b/src/a.rs
     assert_eq!(by_file[1].file, Path::new("src/b.rs"));
     assert_eq!(by_file[1].start, 5);
 }
+
+// ============================================================================
+// TC-ADV-1.29-4 — edge-case adversarial inputs
+// ============================================================================
+
+/// Two `+++` lines before any `@@` hunk — current behaviour lets the later
+/// `+++` silently win. Pins that behaviour so a refactor to "first wins" is
+/// deliberate.
+#[test]
+fn test_parse_unified_diff_double_plus_plus_plus_header() {
+    let diff = "\
++++ b/src/first.rs
++++ b/src/second.rs
+@@ -1 +1,3 @@
++x
+";
+    let hunks = parse_unified_diff(diff);
+    assert_eq!(hunks.len(), 1, "only one hunk follows");
+    assert_eq!(
+        hunks[0].file,
+        Path::new("src/second.rs"),
+        "when two `+++` arrive back-to-back, the LAST one wins (overwrites current_file)"
+    );
+}
+
+/// Orphan `@@` hunk header with no preceding `+++ b/...`. Parser requires
+/// `current_file` to be `Some` before emitting a hunk, so this input must
+/// produce zero hunks.
+#[test]
+fn test_parse_unified_diff_orphan_hunk_header() {
+    let diff = "@@ -1 +1,3 @@\n+line\n";
+    let hunks = parse_unified_diff(diff);
+    assert!(
+        hunks.is_empty(),
+        "`@@` without preceding `+++ b/...` must not emit a hunk, got {hunks:?}"
+    );
+}
+
+/// Whitespace-only input. Exercises the post-normalization empty-lines path —
+/// must not panic and must return empty.
+#[test]
+fn test_parse_unified_diff_whitespace_only_input() {
+    for input in &["   ", "\n\n\n", "\t\t\n", " \n \t\n "] {
+        let hunks = parse_unified_diff(input);
+        assert!(
+            hunks.is_empty(),
+            "whitespace-only input {input:?} should produce no hunks, got {hunks:?}"
+        );
+    }
+}
+
+/// `@@` header with extra spaces around the range — the compiled regex is
+/// `@@ [^@]* \+(\d+)(?:,(\d+))? @@` so leading extra spaces after `@@` are
+/// absorbed by `[^@]*`. This should still parse.
+#[test]
+fn test_parse_unified_diff_extra_spaces_in_hunk_header() {
+    let diff = "\
++++ b/src/a.rs
+@@  -10,3   +10,5 @@ fn main() {
++    x
+";
+    let hunks = parse_unified_diff(diff);
+    assert_eq!(
+        hunks.len(),
+        1,
+        "extra spaces around the hunk range should still parse"
+    );
+    assert_eq!(hunks[0].start, 10);
+    assert_eq!(hunks[0].count, 5);
+}
+
+/// Hunk header with NO leading space after `@@` — `@@-1 +1,3 @@`. The regex
+/// requires a space after the first `@@`, so this should be rejected silently.
+#[test]
+fn test_parse_unified_diff_hunk_no_leading_space() {
+    let diff = "\
++++ b/src/a.rs
+@@-1 +1,3 @@
++x
+";
+    let hunks = parse_unified_diff(diff);
+    assert!(
+        hunks.is_empty(),
+        "hunk header missing the required space after `@@ ` must not match, got {hunks:?}"
+    );
+}
+
+// ============================================================================
+// TC-ADV-1.29-10 — DoS / large-input stress
+// ============================================================================
+
+/// Parse a large diff with one single-line hunk per file (each file pair gets
+/// its own `+++` and `@@` line). Pins that `parse_unified_diff` does not blow
+/// up on large inputs and that every hunk is recovered.
+///
+/// Keeps runtime well under a second on a modest dev machine. The previous
+/// suite had no DoS/scale test for this function at all.
+#[test]
+fn test_parse_unified_diff_large_input_many_hunks() {
+    // 50_000 hunks × ~50 bytes per hunk ≈ 2.5 MB input, 50_000 output entries.
+    // We size it to stay fast but exceed typical real diffs by 2-3 orders
+    // of magnitude.
+    const N: usize = 50_000;
+    let mut diff = String::with_capacity(N * 64);
+    for i in 0..N {
+        diff.push_str(&format!("+++ b/src/f{i}.rs\n"));
+        diff.push_str(&format!("@@ -1 +{},1 @@\n", i + 1));
+        diff.push_str("+x\n");
+    }
+
+    let hunks = parse_unified_diff(&diff);
+    assert_eq!(
+        hunks.len(),
+        N,
+        "every `+++`/`@@` pair must produce a hunk (got {}, expected {})",
+        hunks.len(),
+        N
+    );
+    // Spot-check a few entries to guard against index drift (e.g. a future
+    // "dedup by file" refactor silently collapsing the list).
+    assert_eq!(hunks[0].file, Path::new("src/f0.rs"));
+    assert_eq!(hunks[0].start, 1);
+    assert_eq!(hunks[N / 2].file, Path::new(&format!("src/f{}.rs", N / 2)));
+    assert_eq!(hunks[N / 2].start, (N / 2) as u32 + 1);
+    assert_eq!(hunks[N - 1].file, Path::new(&format!("src/f{}.rs", N - 1)));
+    assert_eq!(hunks[N - 1].start, N as u32);
+}
+
+/// Truly huge single-file diff: one `+++` and 50k `@@` hunks against the
+/// same path. Exercises the path where `current_file` stays set and we
+/// iterate just the hunk-matching branch N times.
+#[test]
+fn test_parse_unified_diff_many_hunks_same_file() {
+    const N: usize = 50_000;
+    let mut diff = String::with_capacity(N * 32);
+    diff.push_str("+++ b/src/giant.rs\n");
+    for i in 0..N {
+        diff.push_str(&format!("@@ -{} +{},1 @@\n+x\n", i + 1, i + 1));
+    }
+
+    let hunks = parse_unified_diff(&diff);
+    assert_eq!(
+        hunks.len(),
+        N,
+        "all {N} hunks in the same file must be recovered, got {}",
+        hunks.len()
+    );
+    for (i, h) in hunks.iter().enumerate() {
+        assert_eq!(
+            h.file,
+            Path::new("src/giant.rs"),
+            "all hunks should share the same file path (hunk {i})"
+        );
+    }
+}

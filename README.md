@@ -691,11 +691,16 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_CENTROID_ALPHA_FLOOR` | `0.7` | Minimum α when the centroid classifier overrides the rule-based classifier. Caps downside of wrong-category alpha routing. |
 | `CQS_CENTROID_CLASSIFIER` | `1` | Embedding-centroid query classifier — fills `Unknown` gaps from the rule-based classifier with embedding-space matching. Enabled by default; set to `0` to opt out. |
 | `CQS_CENTROID_THRESHOLD` | `0.01` | Minimum cosine margin (top1 − top2) for the centroid classifier to commit to a category. Below this, falls back to the rule-based classifier. |
+| `CQS_CONVERT_MAX_FILE_SIZE` | `104857600` (100 MiB) | Max bytes a single-file converter (HTML, Markdown passthrough) will read. Shared across `cqs convert <file.html>` and markdown passthrough. Bump for pathologically large single-file docs; the cap exists as a malicious-input guard, not a normal-case constraint. |
 | `CQS_CONVERT_MAX_PAGES` | `1000` | Max HTML pages processed from a single CHM archive or web-help directory by `cqs convert`. Excess pages are dropped with a warn. Bump for multi-thousand-page vendor docs. |
 | `CQS_CONVERT_MAX_WALK_DEPTH` | `50` | Max recursion depth for `cqs convert <dir>`'s walkdir. Entries deeper than this are silently dropped by walkdir; depth-cap-hit emits a warn so you can detect the truncation. |
+| `CQS_CONVERT_PAGE_BYTES` | `10485760` (10 MiB) | Max bytes read per page from CHM and web-help archives. A pathological archive with one huge HTML page can't OOM the process. A file that hits the cap is truncated with a warn; bump for vendor docs with unusually large single pages. |
+| `CQS_CONVERT_WEBHELP_BYTES` | `52428800` (50 MiB) | Max merged-output bytes for `cqs convert <webhelp-dir>`. Concatenation past this bound truncates with a warn; this guards against runaway concatenation, not a normal-case workload. |
 | `CQS_DAEMON_MAX_RESPONSE_BYTES` | `16777216` (16 MiB) | Max response bytes the CLI accepts from the daemon socket before falling back to direct execution. Larger `gather`/`task` outputs need this lifted. |
 | `CQS_DAEMON_PERIODIC_GC` | `1` | Set to `0` to disable the daemon's idle-time periodic GC (#1024). When on, every 30 min of idle the daemon prunes a bounded batch of missing-file and gitignored chunks so the index stays close to a fresh `cqs index --force` over long sessions. |
 | `CQS_DAEMON_PERIODIC_GC_CAP` | `1000` | Max distinct origins examined per periodic-GC tick. Lower = shorter write transactions; higher = faster convergence on a polluted index. |
+| `CQS_DAEMON_PERIODIC_GC_IDLE_SECS` | `60` | Minimum idle gap (seconds) between the last file event and a periodic-GC tick. Prevents GC from running mid-burst during long edit sequences. |
+| `CQS_DAEMON_PERIODIC_GC_INTERVAL_SECS` | `1800` (30 min) | Idle-time periodic GC interval (seconds). A tick fires only once this many seconds have passed since the previous sweep; combined with `CQS_DAEMON_PERIODIC_GC_IDLE_SECS`, keeps GC off the hot path. |
 | `CQS_DAEMON_STARTUP_GC` | `1` | Set to `0` to skip the daemon's startup GC pass (#1024). The startup pass drops chunks for files no longer on disk and chunks whose path is now matched by `.gitignore`. Synchronous, runs once when `cqs watch --serve` starts. |
 | `CQS_DAEMON_TIMEOUT_MS` | `2000` | Daemon client connect/read timeout in milliseconds (CLI → daemon) |
 | `CQS_DEFERRED_FLUSH_INTERVAL` | `50` | Chunks between deferred flushes during indexing |
@@ -717,6 +722,14 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_HNSW_MAX_DATA_BYTES` | `1073741824` (1 GB) | Max HNSW data file size |
 | `CQS_HNSW_MAX_GRAPH_BYTES` | `524288000` (500 MB) | Max HNSW graph file size |
 | `CQS_HNSW_MAX_ID_MAP_BYTES` | `524288000` (500 MB) | Max HNSW ID map file size |
+| `CQS_HEALTH_HOTSPOT_COUNT` | auto (log₂(n) clamped `[5, 50]`) | Number of top hotspots `cqs health` reports. Default scales with corpus size (1k→10, 100k→17, 1M→20). SHL-V1.29-7. |
+| `CQS_HOTSPOT_MIN_CALLERS` | auto (log₂(n)·0.7 clamped `[5, 50]`) | Minimum caller count for "untested hotspot" / "high risk" detectors. Default scales with corpus size (1k→5, 100k→11, 1M→14). SHL-V1.29-7. |
+| `CQS_DEAD_CLUSTER_MIN_SIZE` | auto (log₂(n)·0.7 clamped `[5, 50]`) | Minimum dead functions in a single file to flag as a "dead code cluster" in `cqs suggest`. Scales with corpus size. SHL-V1.29-7. |
+| `CQS_SUGGEST_HOTSPOT_POOL` | auto (4× hotspot count, clamped `[20, 200]`) | Pool size `cqs suggest` evaluates for risk patterns. SHL-V1.29-7. |
+| `CQS_RISK_HIGH` | `5.0` | Risk score threshold above which a function is "High" risk. Drives `cqs review` CI gating; override on monorepos where the default classifies too aggressively. SHL-V1.29-8. |
+| `CQS_RISK_MEDIUM` | `2.0` | Risk score threshold above which a function is "Medium" risk. SHL-V1.29-8. |
+| `CQS_BLAST_LOW_MAX` | `2` | Inclusive upper bound on caller count for "Low" blast radius (callers `0..=N`). SHL-V1.29-8. |
+| `CQS_BLAST_HIGH_MIN` | `11` | Inclusive lower bound on caller count for "High" blast radius (callers `N..`). Medium sits between `CQS_BLAST_LOW_MAX` and this. SHL-V1.29-8. |
 | `CQS_HYDE_MAX_TOKENS` | (config) | Max tokens for HyDE query prediction |
 | `CQS_IDLE_TIMEOUT_SECS` | `30` | SQLite connection idle timeout in seconds |
 | `CQS_INTEGRITY_CHECK` | `0` | Set to `1` to enable PRAGMA quick_check on write-mode store opens |
@@ -729,6 +742,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_LLM_MODEL` | `claude-haiku-4-5` | LLM model name for summaries |
 | `CQS_LLM_PROVIDER` | `anthropic` | LLM provider (`anthropic`) |
 | `CQS_MAX_CONNECTIONS` | `4` | SQLite write-pool max connections |
+| `CQS_BATCH_MAX_LINE_LEN` | `52428800` (50 MiB) | Max bytes per batch-mode line (`cqs batch` stdin and the daemon socket request). Aligned with `CQS_MAX_DIFF_BYTES` so batch-routed diffs aren't capped 50× sooner than the CLI path. |
 | `CQS_MAX_CONTRASTIVE_CHUNKS` | `30000` | Max chunks for contrastive summary matrix (memory = N*N*4 bytes) |
 | `CQS_MAX_DIFF_BYTES` | `52428800` (50 MiB) | Max bytes accepted on stdin (`cqs review --stdin`, `cqs impact --diff`) and from `git diff` subprocess. Long-running feature branches with multi-MB diffs need this lifted. |
 | `CQS_MAX_DISPLAY_FILE_SIZE` | `10485760` (10 MiB) | Max file size that `read_context_lines` (snippet extraction for search results) will open. |
@@ -737,7 +751,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_MAX_SEQ_LENGTH` | (auto) | Override max sequence length for custom ONNX models |
 | `CQS_MD_MAX_SECTION_LINES` | `150` | Max markdown section lines before overflow split |
 | `CQS_MD_MIN_SECTION_LINES` | `30` | Min markdown section lines (smaller sections merge) |
-| `CQS_MIGRATE_REQUIRE_BACKUP` | `0` | Set to `1` to turn a failed migration-time DB backup into a hard error. Default `0` logs a `warn!` and proceeds without a recovery snapshot. |
+| `CQS_MIGRATE_REQUIRE_BACKUP` | `1` | Migration-time DB backup is required by default; a backup failure aborts the migration with `StoreError::Io` so the destructive v18→v19 rebuild never runs without a recovery snapshot. Set to `0` to downgrade to a `warn!` and proceed without a snapshot (accept data-loss risk on a subsequent commit failure). |
 | `CQS_MMAP_SIZE` | `268435456` (256 MB) | SQLite memory-mapped I/O size |
 | `CQS_NO_DAEMON` | (none) | Set to `1` to force CLI mode (skip daemon connection attempt) |
 | `CQS_ONNX_DIR` | (auto) | Custom ONNX model directory (must contain `model.onnx` + `tokenizer.json`) |

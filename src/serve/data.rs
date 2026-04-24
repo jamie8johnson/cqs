@@ -11,6 +11,18 @@ use sqlx::Row;
 
 use crate::store::{ReadOnly, Store, StoreError};
 
+/// SEC-3: absolute ceiling on nodes returned by `/api/graph` even when the
+/// client doesn't pass `?max_nodes=N`. Prevents a single unauth request from
+/// materialising the full chunks table (millions of rows) in process memory.
+pub(crate) const ABS_MAX_GRAPH_NODES: usize = 50_000;
+
+/// SEC-3: absolute ceiling on edges returned by `/api/graph`. function_calls
+/// typically has ~10× the rows of chunks, so cap higher but still bound.
+pub(crate) const ABS_MAX_GRAPH_EDGES: usize = 500_000;
+
+/// SEC-3: absolute ceiling on nodes returned by `/api/embed/2d`.
+pub(crate) const ABS_MAX_CLUSTER_NODES: usize = 50_000;
+
 /// One node in the call graph. Cytoscape renders one of these per
 /// chunk (or per windowed-chunk row, since each window has its own
 /// embedding + identity).
@@ -176,19 +188,16 @@ pub(crate) struct ClusterResponse {
 
 /// Build the graph response from the store.
 ///
-/// Two paths:
-/// - **Capped** (`max_nodes = Some(N)`) — prerank chunks by global
-///   caller count in SQL, fetch only the top N + only the edges whose
-///   endpoints touch that name set. The whole-corpus scan + Rust-side
-///   truncate that earlier versions did was the dominant cost on the
-///   serve UI's first paint (perf step 4-1).
-/// - **Full** (`max_nodes = None`) — fetch every chunk + every edge, same
-///   as before. Used when the caller wants the complete graph (rare in
-///   the UI; useful for tooling).
+/// Always capped: preranks chunks by global caller count in SQL, fetches
+/// only the top N + only the edges whose endpoints touch that name set.
+/// When the caller passes `max_nodes = None`, `ABS_MAX_GRAPH_NODES` is
+/// substituted; when they pass a value larger than the hard ceiling, the
+/// value is clamped. SEC-3 closes the DoS vector of a single unauth
+/// request materialising millions of chunk rows into memory.
 ///
-/// In both paths the per-node `n_callers`/`n_callees`/`dead` fields reflect
-/// the GLOBAL degree of the chunk (so node sizing on the cap'd response
-/// still represents real importance, not just visible-edge degree).
+/// The per-node `n_callers`/`n_callees`/`dead` fields reflect the GLOBAL
+/// degree of the chunk (so node sizing on the cap'd response still
+/// represents real importance, not just visible-edge degree).
 pub(crate) fn build_graph(
     store: &Store<ReadOnly>,
     file_filter: Option<&str>,
@@ -206,63 +215,54 @@ pub(crate) fn build_graph(
     store.rt.block_on(async {
         // 1. Chunk fetch.
         //
-        // When capped: a correlated subquery counts function_calls per name
-        // for the rank. ORDER BY ... LIMIT N pushes the truncation down to
-        // SQL so we don't pull the whole table. The subquery is the same
-        // approximation we'd make in Rust anyway: it counts the *name* not
-        // the chunk, which over-counts for shared-name overloads — but
-        // that's exactly what the post-fetch resolution does too.
+        // SEC-3: always bind an effective cap. When the client omits
+        // `?max_nodes`, fall back to ABS_MAX_GRAPH_NODES so a single
+        // request can't materialise a million chunks into memory. The
+        // user-supplied value is clamped to ABS_MAX_GRAPH_NODES too so
+        // `?max_nodes=999999999` can't be used as a DoS vector either.
         //
-        // When uncapped: keep the simple SELECT *. The cost lives in
-        // edge resolution; a correlated subquery here would just be wasted
-        // work.
-        let (node_sql, want_n_callers_col) = if max_nodes.is_some() {
-            (
-                "SELECT c.id, c.name, c.chunk_type, c.language, c.origin, \
-                        c.line_start, c.line_end, \
-                        COALESCE((SELECT COUNT(*) FROM function_calls fc \
-                                  WHERE fc.callee_name = c.name), 0) AS n_callers_global \
-                 FROM chunks c \
-                 WHERE 1=1"
-                    .to_string(),
-                true,
-            )
-        } else {
-            (
-                "SELECT id, name, chunk_type, language, origin, line_start, line_end \
-                 FROM chunks WHERE 1=1"
-                    .to_string(),
-                false,
-            )
-        };
-
-        let mut node_query = node_sql;
+        // The correlated subquery counts function_calls per name for
+        // the rank. ORDER BY ... LIMIT N pushes the truncation down to
+        // SQL so we don't pull the whole table. The subquery is the
+        // same approximation we'd make in Rust anyway: it counts the
+        // *name* not the chunk, which over-counts for shared-name
+        // overloads — but that's exactly what the post-fetch resolution
+        // does too.
+        let effective_cap = max_nodes
+            .unwrap_or(ABS_MAX_GRAPH_NODES)
+            .min(ABS_MAX_GRAPH_NODES);
+        let mut node_query = "SELECT c.id, c.name, c.chunk_type, c.language, c.origin, \
+                    c.line_start, c.line_end, \
+                    COALESCE((SELECT COUNT(*) FROM function_calls fc \
+                              WHERE fc.callee_name = c.name), 0) AS n_callers_global \
+             FROM chunks c \
+             WHERE 1=1"
+            .to_string();
         let mut binds: Vec<String> = Vec::new();
         if let Some(file) = file_filter {
-            node_query.push_str(if want_n_callers_col {
-                " AND c.origin LIKE ?"
-            } else {
-                " AND origin LIKE ?"
-            });
-            binds.push(format!("{file}%"));
+            // SEC-5: escape LIKE metacharacters so `%` / `_` in the
+            // query string stay literal. Without this, a hostile (or
+            // accidental) `%` in `?file=` turns the prefix filter into
+            // a full-text contains — changing the semantic contract
+            // and potentially widening the matched row set far beyond
+            // what the user sees in the URL. The `ESCAPE '\\'` clause
+            // tells SQLite the backslash below should be treated as
+            // the escape byte.
+            let escaped = file
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            node_query.push_str(" AND c.origin LIKE ? ESCAPE '\\'");
+            binds.push(format!("{escaped}%"));
         }
         if let Some(kind) = kind_filter {
-            node_query.push_str(if want_n_callers_col {
-                " AND c.chunk_type = ?"
-            } else {
-                " AND chunk_type = ?"
-            });
+            node_query.push_str(" AND c.chunk_type = ?");
             binds.push(kind.to_string());
         }
-        if let Some(cap) = max_nodes {
-            // Stable tie-break by id so equal-rank chunks don't reshuffle
-            // between requests.
-            node_query.push_str(" ORDER BY n_callers_global DESC, c.id ASC LIMIT ?");
-            binds.push(cap.to_string());
-        } else {
-            // Stable order so the response is deterministic for caching.
-            node_query.push_str(" ORDER BY id");
-        }
+        // Stable tie-break by id so equal-rank chunks don't reshuffle
+        // between requests.
+        node_query.push_str(" ORDER BY n_callers_global DESC, c.id ASC LIMIT ?");
+        binds.push(effective_cap.to_string());
 
         let mut q = sqlx::query(&node_query);
         for b in &binds {
@@ -286,10 +286,8 @@ pub(crate) fn build_graph(
             let origin: String = row.get("origin");
             let line_start: i64 = row.get("line_start");
             let line_end: i64 = row.get("line_end");
-            if want_n_callers_col {
-                let n: i64 = row.get("n_callers_global");
-                prelim_n_callers.insert(id.clone(), n.max(0) as u32);
-            }
+            let n: i64 = row.get("n_callers_global");
+            prelim_n_callers.insert(id.clone(), n.max(0) as u32);
             nodes_by_id.insert(
                 id.clone(),
                 Node {
@@ -310,12 +308,23 @@ pub(crate) fn build_graph(
 
         // 2. Edge fetch.
         //
-        // Capped: restrict to edges whose callee_name OR caller_name is in
-        // the visible set. With ~300 chunks and 1-2 unique names per
-        // chunk, the IN list is well under SQLite's 32k-bind limit.
+        // SEC-3: always use the name-scoped edge fetch and always bind
+        // a hard LIMIT. The previous uncapped branch (`SELECT fc.*`)
+        // would return the entire function_calls table (tens of
+        // millions of rows on a large monorepo); the IN-scoped query
+        // could also blow up if the visible-node name set grew large,
+        // so ABS_MAX_GRAPH_EDGES caps it unconditionally.
         //
-        // Uncapped: pull all edges (matches the historical behavior).
-        let edge_rows = if max_nodes.is_some() {
+        // SEC-4: chunk the IN-list so `name_set.len()` > SQLite's
+        // `SQLITE_MAX_VARIABLE_NUMBER` (32766) doesn't overflow the
+        // bind cursor. Each row binds the chunk twice (once for
+        // callee_name, once for caller_name) so the per-chunk row
+        // count is `max_rows_per_statement(2)` (~16233). Dedup via
+        // HashSet because an edge whose callee and caller fall into
+        // different chunks can surface in both sub-queries. We carry
+        // `(file, caller, callee)` tuples rather than raw `SqliteRow`s
+        // so the resolver step below doesn't re-parse the row.
+        let edge_tuples: Vec<(String, String, String)> = {
             let mut name_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for node in nodes_by_id.values() {
                 name_set.insert(node.name.as_str());
@@ -323,30 +332,49 @@ pub(crate) fn build_graph(
             if name_set.is_empty() {
                 Vec::new()
             } else {
+                use crate::store::helpers::sql::max_rows_per_statement;
+                const EDGE_CHUNK: usize = max_rows_per_statement(2);
                 let names: Vec<&str> = name_set.into_iter().collect();
-                let placeholders = vec!["?"; names.len()].join(",");
-                let edge_sql = format!(
-                    "SELECT fc.file, fc.caller_name, fc.callee_name \
-                     FROM function_calls fc \
-                     WHERE fc.callee_name IN ({placeholders}) \
-                        OR fc.caller_name IN ({placeholders})"
-                );
-                let mut eq = sqlx::query(&edge_sql);
-                for n in &names {
-                    eq = eq.bind(*n);
+                let mut seen: std::collections::HashSet<(String, String, String)> =
+                    std::collections::HashSet::new();
+                let mut accum: Vec<(String, String, String)> = Vec::new();
+                'chunks: for chunk in names.chunks(EDGE_CHUNK) {
+                    if accum.len() >= ABS_MAX_GRAPH_EDGES {
+                        break;
+                    }
+                    let placeholders = vec!["?"; chunk.len()].join(",");
+                    let edge_sql = format!(
+                        "SELECT fc.file, fc.caller_name, fc.callee_name \
+                         FROM function_calls fc \
+                         WHERE fc.callee_name IN ({placeholders}) \
+                            OR fc.caller_name IN ({placeholders}) \
+                         LIMIT ?"
+                    );
+                    let remaining = (ABS_MAX_GRAPH_EDGES - accum.len()) as i64;
+                    let mut eq = sqlx::query(&edge_sql);
+                    for n in chunk {
+                        eq = eq.bind(*n);
+                    }
+                    for n in chunk {
+                        eq = eq.bind(*n);
+                    }
+                    eq = eq.bind(remaining);
+                    let rows = eq.fetch_all(&store.pool).await?;
+                    for row in rows {
+                        let file: String = row.get("file");
+                        let caller: String = row.get("caller_name");
+                        let callee: String = row.get("callee_name");
+                        let key = (file.clone(), caller.clone(), callee.clone());
+                        if seen.insert(key) {
+                            accum.push((file, caller, callee));
+                            if accum.len() >= ABS_MAX_GRAPH_EDGES {
+                                break 'chunks;
+                            }
+                        }
+                    }
                 }
-                for n in &names {
-                    eq = eq.bind(*n);
-                }
-                eq.fetch_all(&store.pool).await?
+                accum
             }
-        } else {
-            sqlx::query(
-                "SELECT fc.file, fc.caller_name, fc.callee_name \
-                 FROM function_calls fc",
-            )
-            .fetch_all(&store.pool)
-            .await?
         };
 
         // 3. Resolve edges. Same overload-disambiguation pattern as before:
@@ -362,14 +390,10 @@ pub(crate) fn build_graph(
                 .push(node.id.clone());
         }
 
-        let mut edges = Vec::with_capacity(edge_rows.len());
+        let mut edges = Vec::with_capacity(edge_tuples.len());
         let mut caller_count: HashMap<String, u32> = HashMap::new();
         let mut callee_count: HashMap<String, u32> = HashMap::new();
-        for row in edge_rows {
-            let file: String = row.get("file");
-            let caller_name: String = row.get("caller_name");
-            let callee_name: String = row.get("callee_name");
-
+        for (file, caller_name, callee_name) in edge_tuples {
             let Some(callers) = origin_name_to_id.get(&(file, caller_name)) else {
                 continue;
             };
@@ -400,40 +424,26 @@ pub(crate) fn build_graph(
 
         // 4. Populate per-node degree + dead flag.
         //
-        // For the capped path: n_callers comes from the SQL prelim count
-        // (global), n_callees comes from the resolved-edge count (visible).
-        // Reasoning: importance lives in n_callers (drives node size); the
-        // visible n_callees is only the calls inside the window. Showing
-        // global n_callees would mislead on the cap'd graph because the
-        // listed callees might not exist in the visible set.
-        //
-        // For the uncapped path: both come from the resolved-edge counts,
-        // which IS the global degree by definition (no truncation).
+        // n_callers comes from the SQL prelim count (global); n_callees
+        // comes from the resolved-edge count (visible). Reasoning:
+        // importance lives in n_callers (drives node size); the visible
+        // n_callees is only the calls inside the window. Showing global
+        // n_callees would mislead on the cap'd graph because the listed
+        // callees might not exist in the visible set.
         for (id, node) in nodes_by_id.iter_mut() {
-            node.n_callers = if want_n_callers_col {
-                *prelim_n_callers.get(id).unwrap_or(&0)
-            } else {
-                *caller_count.get(id).unwrap_or(&0)
-            };
+            node.n_callers = *prelim_n_callers.get(id).unwrap_or(&0);
             node.n_callees = *callee_count.get(id).unwrap_or(&0);
             node.dead = node.n_callers == 0 && node.kind != "test";
         }
 
         // 5. Drop edges whose endpoints didn't both land in the visible
-        //    set (capped path). For the uncapped path every edge is
-        //    already inside the set, so this is a no-op.
+        //    set. SEC-3 always caps at ABS_MAX_GRAPH_NODES, so this
+        //    prune is always meaningful.
         let mut nodes: Vec<Node> = nodes_by_id.into_values().collect();
-        if max_nodes.is_some() {
-            let kept: std::collections::HashSet<&str> =
-                nodes.iter().map(|n| n.id.as_str()).collect();
-            edges.retain(|e| kept.contains(e.source.as_str()) && kept.contains(e.target.as_str()));
-            // Stable response order: by descending caller count, ties by id.
-            nodes.sort_unstable_by(|a, b| {
-                b.n_callers.cmp(&a.n_callers).then_with(|| a.id.cmp(&b.id))
-            });
-        } else {
-            nodes.sort_unstable_by(|a, b| a.id.cmp(&b.id));
-        }
+        let kept: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        edges.retain(|e| kept.contains(e.source.as_str()) && kept.contains(e.target.as_str()));
+        // Stable response order: by descending caller count, ties by id.
+        nodes.sort_unstable_by(|a, b| b.n_callers.cmp(&a.n_callers).then_with(|| a.id.cmp(&b.id)));
 
         tracing::info!(
             nodes = nodes.len(),
@@ -453,6 +463,8 @@ pub(crate) fn build_chunk_detail(
     store: &Store<ReadOnly>,
     chunk_id: &str,
 ) -> Result<Option<ChunkDetail>, StoreError> {
+    let _span = tracing::info_span!("build_chunk_detail", chunk_id = %chunk_id).entered();
+
     store.rt.block_on(async {
         // Fetch the chunk row.
         let row = sqlx::query(
@@ -495,15 +507,30 @@ pub(crate) fn build_chunk_detail(
         .bind(&name)
         .fetch_all(&store.pool)
         .await?;
-        let callers: Vec<NodeRef> = callers_rows
-            .into_iter()
-            .map(|r| NodeRef {
-                id: r.get("id"),
+        // RB-V1.29-3: surface out-of-range `line_start` (negative or
+        // overflows u32) as a `StoreError::Corruption` rather than
+        // silently clamping to 0. A corrupted row here manifests in
+        // the UI as a mis-scrolled sidebar; without the explicit
+        // error the regression has no diagnostic at all. The error
+        // propagates through the axum handler as a 500.
+        let to_noderef = |r: sqlx::sqlite::SqliteRow| -> Result<NodeRef, StoreError> {
+            let raw: i64 = r.get("line_start");
+            let id: String = r.get("id");
+            let line_start = u32::try_from(raw).map_err(|_| {
+                StoreError::Corruption(format!("chunk {id} has out-of-range line_start {raw}"))
+            })?;
+            Ok(NodeRef {
                 name: r.get("name"),
                 file: r.get("origin"),
-                line_start: r.get::<i64, _>("line_start").max(0) as u32,
+                id,
+                line_start,
             })
-            .collect();
+        };
+
+        let callers: Vec<NodeRef> = callers_rows
+            .into_iter()
+            .map(&to_noderef)
+            .collect::<Result<_, _>>()?;
 
         // Callee chunks: function_calls WHERE caller_name = this.name AND file = this.origin
         let callees_rows = sqlx::query(
@@ -520,35 +547,36 @@ pub(crate) fn build_chunk_detail(
         .await?;
         let callees: Vec<NodeRef> = callees_rows
             .into_iter()
-            .map(|r| NodeRef {
-                id: r.get("id"),
-                name: r.get("name"),
-                file: r.get("origin"),
-                line_start: r.get::<i64, _>("line_start").max(0) as u32,
-            })
-            .collect();
+            .map(&to_noderef)
+            .collect::<Result<_, _>>()?;
 
         // Tests-that-cover: heuristic — chunks whose chunk_type = 'test'
         // and whose content references this name. Cheap LIKE search.
+        //
+        // SEC-8: escape LIKE metacharacters in `name` so a chunk named
+        // e.g. `%` or `foo_bar` doesn't turn the substring contains
+        // into a wildcard that matches every test. Names come from the
+        // chunks table, not user input, but parser-produced names can
+        // legitimately contain underscores — `foo_bar` would otherwise
+        // match `fooXbar` in test content and over-report coverage.
+        let escaped_name = name
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
         let tests_rows = sqlx::query(
             "SELECT id, name, origin, line_start \
              FROM chunks \
-             WHERE chunk_type = 'test' AND content LIKE ? \
+             WHERE chunk_type = 'test' AND content LIKE ? ESCAPE '\\' \
              ORDER BY origin, line_start \
              LIMIT 20",
         )
-        .bind(format!("%{name}%"))
+        .bind(format!("%{escaped_name}%"))
         .fetch_all(&store.pool)
         .await?;
         let tests: Vec<NodeRef> = tests_rows
             .into_iter()
-            .map(|r| NodeRef {
-                id: r.get("id"),
-                name: r.get("name"),
-                file: r.get("origin"),
-                line_start: r.get::<i64, _>("line_start").max(0) as u32,
-            })
-            .collect();
+            .map(&to_noderef)
+            .collect::<Result<_, _>>()?;
 
         Ok(Some(ChunkDetail {
             id,
@@ -668,41 +696,60 @@ pub(crate) fn build_hierarchy(
     }
 
     let response = store.rt.block_on(async {
-        let placeholders = vec!["?"; visited_names.len()].join(",");
-        let sql = format!(
-            "SELECT id, name, chunk_type, language, origin, line_start, line_end \
-             FROM chunks WHERE name IN ({placeholders}) ORDER BY id"
-        );
-        let mut q = sqlx::query(&sql);
-        for n in &visited_names {
-            q = q.bind(n);
-        }
-        let rows = q.fetch_all(&store.pool).await?;
+        // SEC-4: chunk the IN-list for the chunk-metadata fetch. Deep
+        // hierarchies (e.g. callers of a heavily-called std helper)
+        // can generate >32k visited names, overflowing SQLite's bind
+        // cap. Binds once per row, so batch size is
+        // `max_rows_per_statement(1)` (~32466).
+        //
+        // We preserve the "smallest id wins" disambiguation the
+        // downstream code relies on by taking the lexicographic min
+        // across chunks whenever a name appears in more than one
+        // batch (which only happens when the same name resolves to
+        // multiple chunks — the disambiguation target).
+        use crate::store::helpers::sql::max_rows_per_statement;
+        const META_CHUNK: usize = max_rows_per_statement(1);
 
-        // For each name, keep the deterministic-first chunk_id (sorted
-        // by id from the SQL ORDER BY). If a name has multiple chunks
-        // (overloads in different files), this is the first one.
         let mut name_to_first_id: HashMap<String, String> = HashMap::new();
-        // Also keep all chunks so we can build node metadata for every
-        // unique chunk_id that we emit (we emit one per name).
         let mut chunk_meta: HashMap<String, (String, String, String, String, i64, i64)> =
             HashMap::new();
 
-        for row in rows {
-            let id: String = row.get("id");
-            let name: String = row.get("name");
-            let chunk_type: String = row.get("chunk_type");
-            let language: String = row.get("language");
-            let origin: String = row.get("origin");
-            let line_start: i64 = row.get("line_start");
-            let line_end: i64 = row.get("line_end");
-
-            // First-seen wins (rows already sorted by id).
-            name_to_first_id.entry(name.clone()).or_insert(id.clone());
-            chunk_meta.insert(
-                id,
-                (name, chunk_type, language, origin, line_start, line_end),
+        for batch in visited_names.chunks(META_CHUNK) {
+            let placeholders = vec!["?"; batch.len()].join(",");
+            let sql = format!(
+                "SELECT id, name, chunk_type, language, origin, line_start, line_end \
+                 FROM chunks WHERE name IN ({placeholders}) ORDER BY id"
             );
+            let mut q = sqlx::query(&sql);
+            for n in batch {
+                q = q.bind(n);
+            }
+            let rows = q.fetch_all(&store.pool).await?;
+
+            for row in rows {
+                let id: String = row.get("id");
+                let name: String = row.get("name");
+                let chunk_type: String = row.get("chunk_type");
+                let language: String = row.get("language");
+                let origin: String = row.get("origin");
+                let line_start: i64 = row.get("line_start");
+                let line_end: i64 = row.get("line_end");
+
+                // Preserve "smallest id wins" across chunks: if we've
+                // already recorded a first id for this name, keep the
+                // lexicographic minimum so the result is deterministic
+                // regardless of chunk iteration order.
+                match name_to_first_id.get(&name) {
+                    Some(existing) if existing.as_str() <= id.as_str() => {}
+                    _ => {
+                        name_to_first_id.insert(name.clone(), id.clone());
+                    }
+                }
+                chunk_meta.insert(
+                    id,
+                    (name, chunk_type, language, origin, line_start, line_end),
+                );
+            }
         }
 
         // Build the node set. For names that didn't resolve to a chunk
@@ -740,42 +787,67 @@ pub(crate) fn build_hierarchy(
         // 6. Pull all edges where both endpoints are inside the visited
         //    name set, then resolve each (caller, callee) name pair to
         //    chunk IDs using the same name_to_first_id map.
-        let edge_sql = format!(
-            "SELECT DISTINCT caller_name, callee_name FROM function_calls \
-             WHERE caller_name IN ({placeholders}) AND callee_name IN ({placeholders})"
-        );
-        let mut eq = sqlx::query(&edge_sql);
-        for n in &visited_names {
-            eq = eq.bind(n);
-        }
-        for n in &visited_names {
-            eq = eq.bind(n);
-        }
-        let edge_rows = eq.fetch_all(&store.pool).await?;
+        //
+        // SEC-4: the edge SQL binds visited_names twice (once for
+        // caller_name, once for callee_name), so chunk at
+        // `max_rows_per_statement(2)` (~16233). Because the WHERE
+        // clause is an AND, splitting visited_names into N chunks
+        // means an edge whose caller lives in chunk A and callee in
+        // chunk B is only found when we query the pair (A, B). Iterate
+        // the cartesian product of chunks (N² sub-queries). In
+        // practice N is ~1 for normal hierarchies; the outer loop
+        // only activates for pathologically deep BFS above the bind
+        // cap. Dedup edges with a HashSet because the SELECT DISTINCT
+        // is now only per sub-query.
+        const EDGE_CHUNK: usize = max_rows_per_statement(2);
+        let edge_batches: Vec<&[String]> = visited_names.chunks(EDGE_CHUNK).collect();
 
         let mut caller_count: HashMap<String, u32> = HashMap::new();
         let mut callee_count: HashMap<String, u32> = HashMap::new();
-        let mut edges: Vec<Edge> = Vec::with_capacity(edge_rows.len());
-        for row in edge_rows {
-            let caller_name: String = row.get("caller_name");
-            let callee_name: String = row.get("callee_name");
-            let Some(caller_id) = name_to_first_id.get(&caller_name) else {
-                continue;
-            };
-            let Some(callee_id) = name_to_first_id.get(&callee_name) else {
-                continue;
-            };
-            // Skip self-loops; 3d-force-graph is not happy with them.
-            if caller_id == callee_id {
-                continue;
+        let mut edges: Vec<Edge> = Vec::new();
+        let mut seen_edges: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        for caller_batch in &edge_batches {
+            for callee_batch in &edge_batches {
+                let caller_ph = vec!["?"; caller_batch.len()].join(",");
+                let callee_ph = vec!["?"; callee_batch.len()].join(",");
+                let edge_sql = format!(
+                    "SELECT DISTINCT caller_name, callee_name FROM function_calls \
+                     WHERE caller_name IN ({caller_ph}) AND callee_name IN ({callee_ph})"
+                );
+                let mut eq = sqlx::query(&edge_sql);
+                for n in caller_batch.iter() {
+                    eq = eq.bind(n);
+                }
+                for n in callee_batch.iter() {
+                    eq = eq.bind(n);
+                }
+                let edge_rows = eq.fetch_all(&store.pool).await?;
+                for row in edge_rows {
+                    let caller_name: String = row.get("caller_name");
+                    let callee_name: String = row.get("callee_name");
+                    let Some(caller_id) = name_to_first_id.get(&caller_name) else {
+                        continue;
+                    };
+                    let Some(callee_id) = name_to_first_id.get(&callee_name) else {
+                        continue;
+                    };
+                    // Skip self-loops; 3d-force-graph is not happy with them.
+                    if caller_id == callee_id {
+                        continue;
+                    }
+                    if !seen_edges.insert((caller_id.clone(), callee_id.clone())) {
+                        continue;
+                    }
+                    *caller_count.entry(callee_id.clone()).or_insert(0) += 1;
+                    *callee_count.entry(caller_id.clone()).or_insert(0) += 1;
+                    edges.push(Edge {
+                        source: caller_id.clone(),
+                        target: callee_id.clone(),
+                        kind: "call".to_string(),
+                    });
+                }
             }
-            *caller_count.entry(callee_id.clone()).or_insert(0) += 1;
-            *callee_count.entry(caller_id.clone()).or_insert(0) += 1;
-            edges.push(Edge {
-                source: caller_id.clone(),
-                target: callee_id.clone(),
-                kind: "call".to_string(),
-            });
         }
 
         // Backfill per-node degrees + dead flags using only the edges
@@ -829,11 +901,29 @@ pub(crate) fn build_cluster(
     let _span = tracing::info_span!("build_cluster", max_nodes = ?max_nodes).entered();
 
     store.rt.block_on(async {
-        // Chunks that have coords already projected.
+        // SEC-3: always bind an effective cap. When the client omits
+        // `?max_nodes`, fall back to ABS_MAX_CLUSTER_NODES so a single
+        // request can't materialise the full chunks table. The
+        // user-supplied value is clamped to ABS_MAX_CLUSTER_NODES too so
+        // `?max_nodes=999999999` can't be used as a DoS vector either.
+        let effective_cap = max_nodes
+            .unwrap_or(ABS_MAX_CLUSTER_NODES)
+            .min(ABS_MAX_CLUSTER_NODES);
+
+        // Chunks that have coords already projected. The ORDER BY id here
+        // is preserved from the pre-SEC-3 code; because it's by id rather
+        // than n_callers_global, the cap under load picks an arbitrary
+        // subset — for the UMAP cluster view that's fine (all points are
+        // semantically meaningful) and lets us skip the correlated
+        // subquery cost.
         let rows = sqlx::query(
             "SELECT id, name, chunk_type, language, origin, line_start, line_end, umap_x, umap_y \
-             FROM chunks WHERE umap_x IS NOT NULL AND umap_y IS NOT NULL ORDER BY id",
+             FROM chunks \
+             WHERE umap_x IS NOT NULL AND umap_y IS NOT NULL \
+             ORDER BY id \
+             LIMIT ?",
         )
+        .bind(effective_cap as i64)
         .fetch_all(&store.pool)
         .await?;
 
@@ -856,7 +946,13 @@ pub(crate) fn build_cluster(
             name_to_first_id.entry(name).or_insert(id);
         }
 
-        let edge_rows = sqlx::query("SELECT caller_name, callee_name FROM function_calls")
+        // SEC-3: cap the edge fetch too. function_calls can have tens of
+        // millions of rows on a large monorepo — even though the loop
+        // below filters on `name_to_first_id` membership, Rust-side
+        // filtering after pulling every row over the wire is the DoS
+        // vector we're closing.
+        let edge_rows = sqlx::query("SELECT caller_name, callee_name FROM function_calls LIMIT ?")
+            .bind(ABS_MAX_GRAPH_EDGES as i64)
             .fetch_all(&store.pool)
             .await?;
         for row in edge_rows {
@@ -906,16 +1002,19 @@ pub(crate) fn build_cluster(
             })
             .collect();
 
-        if let Some(cap) = max_nodes {
-            if nodes.len() > cap {
-                nodes.sort_unstable_by(|a, b| {
-                    b.base
-                        .n_callers
-                        .cmp(&a.base.n_callers)
-                        .then_with(|| a.base.id.cmp(&b.base.id))
-                });
-                nodes.truncate(cap);
-            }
+        // SQL already caps at `effective_cap`, so the Rust-side truncate
+        // is only meaningful when the client's `max_nodes` is BELOW the
+        // SQL cap (e.g. `?max_nodes=100` on a 50k-cap default). Sort by
+        // descending caller count so the truncation keeps the most
+        // important nodes.
+        if nodes.len() > effective_cap {
+            nodes.sort_unstable_by(|a, b| {
+                b.base
+                    .n_callers
+                    .cmp(&a.base.n_callers)
+                    .then_with(|| a.base.id.cmp(&b.base.id))
+            });
+            nodes.truncate(effective_cap);
         }
 
         tracing::info!(
@@ -931,6 +1030,8 @@ pub(crate) fn build_cluster(
 /// Pull richer stats than the `Store::base_embedding_count` shortcut.
 /// One query for total chunks + files + call edges + type edges.
 pub(crate) fn build_stats(store: &Store<ReadOnly>) -> Result<StatsResponse, StoreError> {
+    let _span = tracing::info_span!("build_stats").entered();
+
     store.rt.block_on(async {
         let chunks_row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM chunks")
             .fetch_one(&store.pool)

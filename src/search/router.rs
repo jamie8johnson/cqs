@@ -559,6 +559,26 @@ pub fn resolve_splade_alpha(category: &QueryCategory) -> f32 {
 /// Priority order: Negation > Identifier > CrossLanguage > TypeFiltered >
 /// Structural > Behavioral > Conceptual > MultiStep > Unknown.
 pub fn classify_query(query: &str) -> Classification {
+    // OB-V1.29-6: entry span so trace captures show the classifier running
+    // on every search query, plus a debug log at exit that records which
+    // category / strategy was picked. `classify_query` is pure but sits on
+    // the hot path for every search, so callers often want to confirm the
+    // category assignment after the fact without recomputing it.
+    let _span = tracing::info_span!("classify_query", query_len = query.len()).entered();
+    let classification = classify_query_inner(query);
+    tracing::debug!(
+        category = %classification.category,
+        confidence = ?classification.confidence,
+        strategy = ?classification.strategy,
+        "Query classified"
+    );
+    classification
+}
+
+/// Inner body of [`classify_query`] — split so the outer function can log the
+/// chosen category once regardless of which branch fires. Keeps the early
+/// `return` chain intact so the priority order reads top-to-bottom.
+fn classify_query_inner(query: &str) -> Classification {
     let query_lower = query.to_lowercase();
     let words: Vec<&str> = query_lower.split_whitespace().collect();
 
@@ -777,6 +797,12 @@ fn is_cross_language_query(query: &str, words: &[&str]) -> bool {
 }
 
 /// Check if query is structural (about code structure, not behavior).
+///
+/// AC-V1.29-2: keyword matching uses whitespace-split word tokens so the
+/// keyword fires regardless of position (`"find all trait"`, `"all class"`,
+/// `"find enum"`). The previous impl required a trailing space, so any
+/// keyword at end-of-query silently misrouted to Conceptual α=0.70 instead
+/// of Structural α=0.90.
 fn is_structural_query(query: &str) -> bool {
     // Structural patterns like "functions that return"
     if STRUCTURAL_PATTERNS_AC.is_match(query) {
@@ -784,9 +810,10 @@ fn is_structural_query(query: &str) -> bool {
     }
     // Contains structural keywords as NL words (not identifiers)
     // e.g., "find all structs" but not "MyStruct"
+    let words: Vec<&str> = query.split_whitespace().collect();
     STRUCTURAL_KEYWORDS
         .iter()
-        .any(|kw| query.contains(&format!(" {} ", kw)) || query.starts_with(&format!("{} ", kw)))
+        .any(|kw| words.iter().any(|w| w == kw))
 }
 
 /// Check if query describes behavior.
@@ -1094,6 +1121,9 @@ pub fn reclassify_with_centroid(
     mut classification: Classification,
     embedding: &[f32],
 ) -> Classification {
+    // OB-V1.29-6: entry span so the centroid-upgrade step is visible in
+    // traces separately from the outer rule-based classify.
+    let _span = tracing::info_span!("reclassify_with_centroid").entered();
     // Centroid classifier: fills Unknown gaps with embedding-space classification.
     // Alpha-clipped: centroid-assigned α is clamped to ≥ CENTROID_ALPHA_FLOOR
     // so misclassifications can't catastrophically zero out SPLADE (the −4.6pp
@@ -1475,6 +1505,51 @@ mod tests {
         // Behavioral after word-boundary tightening.
         let c = classify_query("code that handles retries");
         assert_eq!(c.category, QueryCategory::Behavioral);
+    }
+
+    // ── AC-V1.29-2 structural keyword end-of-query ──────────────────
+
+    #[test]
+    fn test_structural_keyword_at_end_of_query() {
+        // The previous probe required a trailing space, so keywords at
+        // end-of-query silently misrouted to Conceptual. After the
+        // whitespace-split rewrite, every position matches.
+        assert!(
+            is_structural_query("find all trait"),
+            "trailing 'trait' should classify as structural"
+        );
+        assert!(
+            is_structural_query("all class"),
+            "trailing 'class' should classify as structural"
+        );
+        assert!(
+            is_structural_query("find enum"),
+            "trailing 'enum' should classify as structural"
+        );
+    }
+
+    #[test]
+    fn test_structural_keyword_single_word_query() {
+        // A single-keyword query (just "trait") is structural — previously
+        // required surrounding spaces that a one-word query doesn't have.
+        assert!(is_structural_query("trait"));
+        assert!(is_structural_query("struct"));
+    }
+
+    #[test]
+    fn test_structural_keyword_middle_still_works() {
+        // Keyword in the middle of a query was already matched by the
+        // " {kw} " probe. Regression-cover it so the rewrite doesn't
+        // silently drop this case.
+        assert!(is_structural_query("find all trait implementations"));
+        assert!(is_structural_query("every class definition"));
+    }
+
+    #[test]
+    fn test_structural_keyword_substring_does_not_fire() {
+        // Word-split matching: "MyTraitImpl" as a CamelCase identifier does
+        // NOT classify as structural just because it contains "trait".
+        assert!(!is_structural_query("MyTraitImpl"));
     }
 
     // ── Micro-benchmark (#964) ───────────────────────────────────────

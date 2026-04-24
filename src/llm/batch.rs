@@ -376,16 +376,6 @@ impl LlmClient {
 }
 
 impl BatchProvider for LlmClient {
-    fn submit_batch(
-        &self,
-        items: &[super::provider::BatchSubmitItem],
-        max_tokens: u32,
-        purpose: &str,
-        prompt_builder: fn(&str, &str, &str) -> String,
-    ) -> Result<String, LlmError> {
-        self.submit_batch_inner(items, max_tokens, purpose, prompt_builder)
-    }
-
     fn submit_batch_prebuilt(
         &self,
         items: &[super::provider::BatchSubmitItem],

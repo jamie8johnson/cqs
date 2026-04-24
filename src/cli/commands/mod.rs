@@ -34,6 +34,7 @@ pub(crate) use train::task;
 // -- search --
 pub(crate) use search::build_gather_output;
 pub(crate) use search::build_related_output;
+pub(crate) use search::build_scout_output;
 pub(crate) use search::build_where_output;
 pub(crate) use search::cmd_gather;
 pub(crate) use search::cmd_neighbors;

@@ -229,8 +229,16 @@ impl Parser {
             Err(e) => return Err(e.into()),
         };
 
-        // Normalize line endings (CRLF -> LF) for consistent hashing across platforms
-        let source = source.replace("\r\n", "\n");
+        // Normalize line endings (CRLF -> LF) for consistent hashing across
+        // platforms. PF-V1.29-5: the unconditional `replace` allocated a full
+        // copy of every source file even on Unix-native repos that never had
+        // CRLF. The `contains` probe keeps the Windows-origin path correct
+        // while saving one string allocation per file in the common case.
+        let source = if source.contains("\r\n") {
+            source.replace("\r\n", "\n")
+        } else {
+            source
+        };
 
         let ext_raw = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let ext = ext_raw.to_ascii_lowercase();
@@ -487,8 +495,16 @@ impl Parser {
             Err(e) => return Err(e.into()),
         };
 
-        // Normalize line endings (CRLF -> LF) for consistent hashing across platforms
-        let source = source.replace("\r\n", "\n");
+        // Normalize line endings (CRLF -> LF) for consistent hashing across
+        // platforms. PF-V1.29-5: the unconditional `replace` allocated a full
+        // copy of every source file even on Unix-native repos that never had
+        // CRLF. The `contains` probe keeps the Windows-origin path correct
+        // while saving one string allocation per file in the common case.
+        let source = if source.contains("\r\n") {
+            source.replace("\r\n", "\n")
+        } else {
+            source
+        };
 
         let ext_raw = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let ext = ext_raw.to_ascii_lowercase();

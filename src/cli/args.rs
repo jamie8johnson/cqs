@@ -8,7 +8,7 @@
 
 use clap::Args;
 
-use super::{parse_finite_f32, parse_nonzero_usize};
+use super::{parse_finite_f32, parse_nonzero_usize, parse_unit_f32};
 use cqs::store::DeadConfidence;
 
 /// Shared `--limit / -n` argument for graph commands that previously had no
@@ -54,7 +54,12 @@ pub(crate) struct SearchArgs {
     pub threshold: f32,
 
     /// Weight for name matching in hybrid search (0.0-1.0)
-    #[arg(long, default_value = "0.2", value_parser = parse_finite_f32)]
+    ///
+    /// AC-V1.29-5: value_parser is `parse_unit_f32` (bounded [0.0, 1.0]) to
+    /// reject out-of-range values at parse time. Previously accepted e.g.
+    /// `--name-boost 1.5`, which silently subtracted > 1.0 from embedding
+    /// weight and degraded search with no warning.
+    #[arg(long, default_value = "0.2", value_parser = parse_unit_f32)]
     pub name_boost: f32,
 
     /// Filter by language
@@ -120,8 +125,13 @@ pub(crate) struct SearchArgs {
     pub context: Option<usize>,
 
     /// Expand results with parent context (small-to-big retrieval)
-    #[arg(long)]
-    pub expand: bool,
+    ///
+    /// API-V1.29-9: renamed from `--expand` to `--expand-parent` so it aligns
+    /// with the top-level `Cli::expand_parent` flag (`src/cli/definitions.rs`).
+    /// The old `--expand` spelling is kept as a visible alias for now so batch
+    /// scripts that still pass it don't break.
+    #[arg(long = "expand-parent", visible_alias = "expand")]
+    pub expand_parent: bool,
 
     /// Search only this reference index (skip project index)
     #[arg(long = "ref")]
@@ -172,7 +182,10 @@ pub(crate) struct ImpactArgs {
     /// Function name or file:function
     pub name: String,
     /// Caller depth (1=direct, 2+=transitive)
-    #[arg(long, default_value = "1")]
+    ///
+    /// API-V1.29-10: `-d` short flag added for parity with `OnboardArgs::depth`
+    /// which already accepts it.
+    #[arg(short = 'd', long, default_value = "1")]
     pub depth: usize,
     /// Suggest tests for untested callers
     #[arg(long)]
@@ -320,7 +333,10 @@ pub(crate) struct TestMapArgs {
     /// Function name or file:function
     pub name: String,
     /// Max call chain depth to search
-    #[arg(long, default_value = "5")]
+    ///
+    /// API-V1.29-10: `-d` short flag added for parity with `OnboardArgs::depth`
+    /// which already accepts it.
+    #[arg(short = 'd', long, default_value = "5")]
     pub depth: usize,
     /// Search for tests across all configured reference projects
     #[arg(long)]
@@ -529,6 +545,12 @@ pub(crate) struct ImpactDiffArgs {
 /// Subcommand mutations (`add` / `update` / `remove`) remain on the CLI
 /// `NotesCommand` subcommand enum and are not batch-dispatchable — see the
 /// `BatchSupport` classifier for the policy.
+///
+/// EX-V1.29-5 / API-V1.29-4: `NotesCommand::List` flattens this struct
+/// (same pattern as `Commands::Search { args: SearchArgs }`). The flattened
+/// fields include `check`, which the daemon batch path picks up via
+/// `BatchCmd::Notes { args, .. }` — previously `NotesCommand::List` had
+/// `check: bool` inline and the daemon dropped it silently.
 #[derive(Args, Debug, Clone)]
 pub(crate) struct NotesListArgs {
     /// Show only warnings (negative sentiment)
@@ -537,6 +559,9 @@ pub(crate) struct NotesListArgs {
     /// Show only patterns (positive sentiment)
     #[arg(long)]
     pub patterns: bool,
+    /// Check mentions for staleness (verifies files exist and symbols are in index)
+    #[arg(long)]
+    pub check: bool,
 }
 
 /// Arguments for the `index` command.

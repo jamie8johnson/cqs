@@ -82,8 +82,9 @@ impl ProjectRegistry {
             .open(&path)?;
         lock_file.lock()?;
 
+        // PB-V1.29-6: Delegate the `/mnt/<letter>/` detection to the shared helper.
         if crate::config::is_wsl()
-            && path.to_str().is_some_and(|p| p.starts_with("/mnt/"))
+            && crate::config::is_wsl_drvfs_path(&path)
             && !WSL_REGISTRY_LOCK_WARNED.swap(true, Ordering::Relaxed)
         {
             tracing::warn!(

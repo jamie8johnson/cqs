@@ -7,52 +7,95 @@ use std::path::Path;
 
 use sqlx::Row;
 
+use super::helpers::sql::max_rows_per_statement;
 use super::helpers::{NoteStats, NoteSummary, StoreError};
 use super::{ReadWrite, Store};
 use crate::nl::normalize_for_fts;
 use crate::note::Note;
 use crate::note::{SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
 
-/// Insert a single note + FTS entry within an existing transaction.
-async fn insert_note_with_fts(
+/// Insert a batch of notes + FTS entries within an existing transaction.
+///
+/// PF-V1.29-7: the prior implementation issued 3 SQL statements per note
+/// (INSERT OR REPLACE notes, DELETE FROM notes_fts, INSERT INTO notes_fts).
+/// A 500-note reindex meant 1500 round-trips to SQLite; the single write
+/// transaction amortized commit cost but every statement still paid the
+/// query-prepare + row-binding overhead.
+///
+/// Now three batched statements per `max_rows_per_statement` chunk:
+///   1. INSERT OR REPLACE INTO notes (9 binds/row) — multi-row via QueryBuilder.
+///   2. DELETE FROM notes_fts WHERE id IN (?,?,...) — one statement per batch.
+///   3. INSERT INTO notes_fts (2 binds/row) — multi-row via QueryBuilder.
+///
+/// FTS5 supports multi-row INSERT in this codebase — see
+/// `async_helpers::upsert_fts_conditional` for the `chunks_fts` precedent.
+async fn insert_notes_with_fts_batched(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    note: &Note,
+    notes: &[Note],
     source_str: &str,
     file_mtime: i64,
     now: &str,
 ) -> Result<(), StoreError> {
-    let mentions_json = serde_json::to_string(&note.mentions)?;
+    if notes.is_empty() {
+        return Ok(());
+    }
 
-    // Write empty blob for embedding column (SQ-9: note embeddings removed).
+    // Empty blob for embedding column (SQ-9: note embeddings removed).
     // Column retained for SQLite compatibility (no DROP COLUMN in older versions).
     let empty_blob: &[u8] = &[];
-    sqlx::query(
-        "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-    )
-    .bind(&note.id)
-    .bind(&note.text)
-    .bind(note.sentiment)
-    .bind(&mentions_json)
-    .bind(empty_blob)
-    .bind(source_str)
-    .bind(file_mtime)
-    .bind(now)
-    .bind(now)
-    .execute(&mut **tx)
-    .await?;
 
-    // Delete from FTS before insert - error must fail transaction to prevent desync
-    sqlx::query("DELETE FROM notes_fts WHERE id = ?1")
-        .bind(&note.id)
-        .execute(&mut **tx)
-        .await?;
+    // Pre-serialize mentions JSON + FTS-normalized text once so the batch
+    // loops below don't re-compute across chunk boundaries.
+    let mentions_json: Vec<String> = notes
+        .iter()
+        .map(|n| serde_json::to_string(&n.mentions))
+        .collect::<Result<Vec<_>, _>>()?;
+    let fts_text: Vec<String> = notes.iter().map(|n| normalize_for_fts(&n.text)).collect();
 
-    sqlx::query("INSERT INTO notes_fts (id, text) VALUES (?1, ?2)")
-        .bind(&note.id)
-        .bind(normalize_for_fts(&note.text))
-        .execute(&mut **tx)
-        .await?;
+    // Step 1: INSERT OR REPLACE INTO notes (9 cols per row).
+    const NOTES_BATCH: usize = max_rows_per_statement(9);
+    for (batch_idx, batch) in notes.chunks(NOTES_BATCH).enumerate() {
+        let row_offset = batch_idx * NOTES_BATCH;
+        let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+            "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)",
+        );
+        qb.push_values(batch.iter().enumerate(), |mut b, (i, note)| {
+            b.push_bind(&note.id)
+                .push_bind(&note.text)
+                .push_bind(note.sentiment)
+                .push_bind(&mentions_json[row_offset + i])
+                .push_bind(empty_blob)
+                .push_bind(source_str)
+                .push_bind(file_mtime)
+                .push_bind(now)
+                .push_bind(now);
+        });
+        qb.build().execute(&mut **tx).await?;
+    }
+
+    // Step 2: DELETE FROM notes_fts WHERE id IN (?,?,...) — one statement per
+    // batch replaces the per-note DELETE.
+    for batch in notes.chunks(max_rows_per_statement(1)) {
+        let placeholders = crate::store::helpers::make_placeholders(batch.len());
+        let sql = format!("DELETE FROM notes_fts WHERE id IN ({})", placeholders);
+        let mut q = sqlx::query(&sql);
+        for n in batch {
+            q = q.bind(&n.id);
+        }
+        q.execute(&mut **tx).await?;
+    }
+
+    // Step 3: INSERT INTO notes_fts — multi-row via QueryBuilder.
+    const FTS_BATCH: usize = max_rows_per_statement(2);
+    for (batch_idx, batch) in notes.chunks(FTS_BATCH).enumerate() {
+        let text_offset = batch_idx * FTS_BATCH;
+        let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> =
+            sqlx::QueryBuilder::new("INSERT INTO notes_fts (id, text)");
+        qb.push_values(batch.iter().enumerate(), |mut b, (i, note)| {
+            b.push_bind(&note.id).push_bind(&fts_text[text_offset + i]);
+        });
+        qb.build().execute(&mut **tx).await?;
+    }
 
     Ok(())
 }
@@ -77,9 +120,7 @@ impl Store<ReadWrite> {
             let (_guard, mut tx) = self.begin_write().await?;
 
             let now = chrono::Utc::now().to_rfc3339();
-            for note in notes {
-                insert_note_with_fts(&mut tx, note, &source_str, file_mtime, &now).await?;
-            }
+            insert_notes_with_fts_batched(&mut tx, notes, &source_str, file_mtime, &now).await?;
 
             tx.commit().await?;
             self.invalidate_notes_cache();
@@ -121,11 +162,9 @@ impl Store<ReadWrite> {
                 .execute(&mut *tx)
                 .await?;
 
-            // Step 2: Insert new notes + FTS
+            // Step 2: Insert new notes + FTS (batched).
             let now = chrono::Utc::now().to_rfc3339();
-            for note in notes {
-                insert_note_with_fts(&mut tx, note, &source_str, file_mtime, &now).await?;
-            }
+            insert_notes_with_fts_batched(&mut tx, notes, &source_str, file_mtime, &now).await?;
 
             tx.commit().await?;
             self.invalidate_notes_cache();
@@ -142,12 +181,13 @@ impl<Mode> Store<Mode> {
     pub fn notes_need_reindex(&self, source_file: &Path) -> Result<Option<i64>, StoreError> {
         let _span =
             tracing::debug_span!("notes_need_reindex", path = %source_file.display()).entered();
-        let current_mtime = source_file
-            .metadata()?
-            .modified()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| StoreError::SystemTime)?
-            .as_millis() as i64;
+        let current_mtime = crate::duration_to_mtime_millis(
+            source_file
+                .metadata()?
+                .modified()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| StoreError::SystemTime)?,
+        );
 
         self.rt.block_on(async {
             let row: Option<(i64,)> =
@@ -344,14 +384,15 @@ mod tests {
         std::fs::write(&notes_file, "# empty").unwrap();
 
         // Get the file's actual mtime
-        let current_mtime = notes_file
-            .metadata()
-            .unwrap()
-            .modified()
-            .unwrap()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
+        let current_mtime = crate::duration_to_mtime_millis(
+            notes_file
+                .metadata()
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
 
         // Insert with the current mtime
         let notes = vec![make_note("n1", "current note", 0.0)];

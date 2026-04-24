@@ -24,10 +24,34 @@ use crate::store::{ReadWrite, Store};
 /// origin relative; `existing_files` may hold canonicalized absolutes).
 /// Canonicalizing both sides removes the form mismatch, which is the only
 /// reason the fallback existed.
-fn origin_exists(origin: &str, existing_files: &HashSet<PathBuf>, root: &Path) -> bool {
+///
+/// PF-V1.29-8: origins are stored as slash-normalized absolute paths (via
+/// `normalize_path`), while `existing_files` holds OS-native `PathBuf`s
+/// (backslashes on Windows). That form mismatch forced every origin
+/// through the slow `dunce::canonicalize` path on Windows. Callers now
+/// pre-compute a parallel `HashSet<String>` of slash-normalized entries
+/// once per prune and pass it in — the fast string hash probe always
+/// hits for real matches, and `dunce::canonicalize` only fires for true
+/// misses (e.g. stale relative origins from old schema versions).
+fn origin_exists(
+    origin: &str,
+    existing_files: &HashSet<PathBuf>,
+    existing_normalized: Option<&HashSet<String>>,
+    root: &Path,
+) -> bool {
+    // Fast string path (PF-V1.29-8): origins and the pre-normalized set
+    // are both in slash form, so on Windows this replaces the former
+    // "miss → dunce::canonicalize(absolute)" path with a hash probe.
+    if let Some(set) = existing_normalized {
+        if set.contains(origin) {
+            return true;
+        }
+    }
+
     let origin_path = PathBuf::from(origin);
-    // Cheap path: exact match as stored. Covers the case where the caller
-    // passes a HashSet built without canonicalization.
+    // Legacy cheap path: exact PathBuf match as stored. Retained as a
+    // no-cost fallback for callers that pass an already-matching HashSet
+    // without pre-normalizing.
     if existing_files.contains(&origin_path) {
         return true;
     }
@@ -44,6 +68,17 @@ fn origin_exists(origin: &str, existing_files: &HashSet<PathBuf>, root: &Path) -
         Ok(canonical) => existing_files.contains(&canonical),
         Err(_) => false,
     }
+}
+
+/// Pre-compute the slash-normalized string form of each entry in
+/// `existing_files`. Built once at the top of each prune/stale entry
+/// function so `origin_exists` can do a direct string lookup (no
+/// PathBuf allocation, no dunce syscall) on the common-case hit.
+fn build_normalized_set(existing_files: &HashSet<PathBuf>) -> HashSet<String> {
+    existing_files
+        .iter()
+        .map(|p| crate::normalize_path(p))
+        .collect()
 }
 
 /// Result of running all GC prune operations atomically.
@@ -73,19 +108,37 @@ impl Store<ReadWrite> {
     ) -> Result<u32, StoreError> {
         let _span = tracing::info_span!("prune_missing", existing = existing_files.len()).entered();
         self.rt.block_on(async {
+            // DS2-1: acquire the write transaction BEFORE reading origins.
+            // Reading outside the tx creates a TOCTOU window where a
+            // concurrent `cqs watch` upsert adds a chunk for a file between
+            // the SELECT and the DELETE. Because that file also isn't in
+            // the caller's `existing_files` snapshot (gathered before this
+            // call), our stale origin list would flag it as missing and
+            // wipe the just-added row on DELETE. Serialising the read
+            // under the write lock closes it — same fix class as P2 #32
+            // that hardened `prune_all`.
+            let (_guard, mut tx) = self.begin_write().await?;
+
             let rows: Vec<(String,)> = sqlx::query_as(
                 "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
             )
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
 
             // AC / CQ-V1.25-4 / CQ-V1.25-6 / PB-V1.25-7: reconcile stored origins
             // against current filesystem state via `origin_exists`. The previous
             // `ends_with` heuristic retained 81% of chunks as orphans whenever a
             // worktree or subdirectory tail-matched a root file name.
+            //
+            // PF-V1.29-8: pre-compute the slash-normalized string set once so
+            // `origin_exists` hits the cheap string path for Windows origins
+            // (which are stored with `/` while `existing_files` holds `\`).
+            let existing_normalized = build_normalized_set(existing_files);
             let missing: Vec<String> = rows
                 .into_iter()
-                .filter(|(origin,)| !origin_exists(origin, existing_files, root))
+                .filter(|(origin,)| {
+                    !origin_exists(origin, existing_files, Some(&existing_normalized), root)
+                })
                 .map(|(origin,)| origin)
                 .collect();
 
@@ -98,8 +151,6 @@ impl Store<ReadWrite> {
             // would leave the index inconsistent with disk.
             const BATCH_SIZE: usize = 100;
             let mut deleted = 0u32;
-
-            let (_guard, mut tx) = self.begin_write().await?;
 
             for batch in missing.chunks(BATCH_SIZE) {
                 let placeholder_str = crate::store::helpers::make_placeholders(batch.len());
@@ -205,9 +256,14 @@ impl Store<ReadWrite> {
             .await?;
 
             // Same filesystem-existence reconciliation as `prune_missing`.
+            // PF-V1.29-8: pre-compute the slash-normalized string set once
+            // so the per-origin check hits the cheap string path.
+            let existing_normalized = build_normalized_set(existing_files);
             let missing: Vec<String> = rows
                 .into_iter()
-                .filter(|(origin,)| !origin_exists(origin, existing_files, root))
+                .filter(|(origin,)| {
+                    !origin_exists(origin, existing_files, Some(&existing_normalized), root)
+                })
                 .map(|(origin,)| origin)
                 .collect();
 
@@ -328,12 +384,22 @@ impl Store<ReadWrite> {
     ) -> Result<u32, StoreError> {
         let _span = tracing::info_span!("prune_gitignored", max_paths = ?max_paths).entered();
         self.rt.block_on(async {
-            // Phase 1: collect distinct origins (Rust-side filter, outside tx
-            // so the matcher walk doesn't hold the write lock).
+            // DS2-2: acquire the write transaction BEFORE reading origins.
+            // Same TOCTOU fix as DS2-1 / P2 #32: a concurrent `cqs watch`
+            // upsert landing between the SELECT and the DELETE creates a
+            // chunk for a path the matcher will flag as ignored; the stale
+            // origin list then points DELETE at a just-inserted row. The
+            // matcher walk below is pure CPU over the already-fetched
+            // `rows` Vec (microseconds on ~10k origins) and is safe to
+            // hold the write lock across — single writer, no re-entry.
+            let (_guard, mut tx) = self.begin_write().await?;
+
+            // Phase 1 (now inside the tx): collect distinct origins via the
+            // tx's read snapshot so reads and deletes serialise as one unit.
             let rows: Vec<(String,)> = sqlx::query_as(
                 "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
             )
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
 
             let cap = max_paths.unwrap_or(usize::MAX);
@@ -365,13 +431,11 @@ impl Store<ReadWrite> {
                 return Ok(0);
             }
 
-            // Phase 2: batched delete in a single transaction. Same shape as
-            // `prune_missing` so a partial prune on crash leaves the index
-            // consistent with the remaining rows in `chunks`.
+            // Phase 2: batched delete in the SAME transaction started above.
+            // Same shape as `prune_missing` so a partial prune on crash
+            // leaves the index consistent with the remaining rows in `chunks`.
             const BATCH_SIZE: usize = 100;
             let mut deleted = 0u32;
-
-            let (_guard, mut tx) = self.begin_write().await?;
 
             for batch in ignored.chunks(BATCH_SIZE) {
                 let placeholder_str = crate::store::helpers::make_placeholders(batch.len());
@@ -473,7 +537,7 @@ impl<Mode> Store<Mode> {
 
                 // Filesystem existence check — same logic as prune_*. Replaces
                 // the previous macOS case-fold + set-contains special case.
-                if !origin_exists(&origin, existing_files, root) {
+                if !origin_exists(&origin, existing_files, None, root) {
                     missing.push(path);
                     continue;
                 }
@@ -508,7 +572,7 @@ impl<Mode> Store<Mode> {
                     Ok(t) => t
                         .duration_since(std::time::UNIX_EPOCH)
                         .ok()
-                        .map(|d| d.as_millis() as i64),
+                        .map(crate::duration_to_mtime_millis),
                     Err(e) => {
                         tracing::warn!(
                             path = %lookup_path.display(),
@@ -598,7 +662,7 @@ impl<Mode> Store<Mode> {
                         .and_then(|m| m.modified())
                         .ok()
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_millis() as i64);
+                        .map(crate::duration_to_mtime_millis);
 
                     if let Some(current) = current_mtime {
                         if current > stored {
@@ -664,14 +728,15 @@ mod tests {
         };
 
         // Get current mtime
-        let mtime = file_path
-            .metadata()
-            .unwrap()
-            .modified()
-            .unwrap()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
+        let mtime = crate::duration_to_mtime_millis(
+            file_path
+                .metadata()
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
 
         store
             .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(mtime))
@@ -824,14 +889,15 @@ mod tests {
             parser_version: 0,
         };
 
-        let mtime = file_path
-            .metadata()
-            .unwrap()
-            .modified()
-            .unwrap()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
+        let mtime = crate::duration_to_mtime_millis(
+            file_path
+                .metadata()
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
 
         store
             .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(mtime))
@@ -869,14 +935,15 @@ mod tests {
             parser_version: 0,
         };
 
-        let fresh_mtime = fresh_path
-            .metadata()
-            .unwrap()
-            .modified()
-            .unwrap()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
+        let fresh_mtime = crate::duration_to_mtime_millis(
+            fresh_path
+                .metadata()
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
 
         store
             .upsert_chunks_batch(&[(c_fresh, mock_embedding(1.0))], Some(fresh_mtime))
@@ -1322,14 +1389,15 @@ mod tests {
         };
 
         // Store with the exact mtime currently on disk.
-        let mtime = file_path
-            .metadata()
-            .unwrap()
-            .modified()
-            .unwrap()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
+        let mtime = crate::duration_to_mtime_millis(
+            file_path
+                .metadata()
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
 
         store
             .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(mtime))
@@ -1385,14 +1453,15 @@ mod tests {
         // Store with an mtime 10_000_000 ms (~2.7 hours) in the future
         // relative to the file on disk. Pins `current > stored` (false)
         // → fresh.
-        let disk_mtime = file_path
-            .metadata()
-            .unwrap()
-            .modified()
-            .unwrap()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
+        let disk_mtime = crate::duration_to_mtime_millis(
+            file_path
+                .metadata()
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
         let future_mtime = disk_mtime + 10_000_000;
 
         store

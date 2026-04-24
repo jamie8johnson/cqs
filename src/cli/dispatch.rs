@@ -77,6 +77,23 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         // `cqs init`). Exits 1 if no daemon is running so health-monitor
         // scripts can act on the result.
         Some(Commands::Ping { json }) => return cmd_ping(cli.json || json),
+        // API-V1.29-6: `cqs refresh` is a daemon-only concept — a fresh CLI
+        // process holds no caches to invalidate. `try_daemon_query` above
+        // already forwarded this to `BatchCmd::Refresh` if a daemon was
+        // running; reaching this arm means there isn't one. Exit 0 with a
+        // human-readable line (or a JSON envelope when `--json` is set) so
+        // scripts can treat "no daemon, nothing to do" as success.
+        Some(Commands::Refresh) => {
+            if cli.json {
+                crate::cli::json_envelope::emit_json(&serde_json::json!({
+                    "status": "noop",
+                    "message": "no daemon running, nothing to refresh",
+                }))?;
+            } else {
+                println!("no daemon running, nothing to refresh");
+            }
+            return Ok(());
+        }
         Some(Commands::Index { ref args }) => return cmd_index(&cli, args),
         Some(Commands::Watch {
             debounce,
@@ -151,10 +168,13 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref output,
         }) => {
             return if reset {
-                cmd_telemetry_reset(&cqs_dir, reason.as_deref())
+                // API-V1.29-3: forward the resolved --json bit so reset emits
+                // the `{archived_events, archive_path, lock_path}` envelope
+                // instead of silently dropping the flag.
+                cmd_telemetry_reset(&cqs_dir, reason.as_deref(), cli.json || output.json)
             } else {
                 cmd_telemetry(&cqs_dir, cli.json || output.json, all)
-            }
+            };
         }
         Some(Commands::Project { ref subcmd }) => {
             return cmd_project(&cli, subcmd, cli.try_model_config()?)
@@ -605,6 +625,7 @@ fn command_variant_name(cmd: &Commands) -> &'static str {
         Commands::TrainPairs { .. } => "train-pairs",
         Commands::Cache { .. } => "cache",
         Commands::Ping { .. } => "ping",
+        Commands::Refresh => "refresh",
         Commands::Eval { .. } => "eval",
         Commands::Model { .. } => "model",
         #[cfg(feature = "serve")]
@@ -782,10 +803,33 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
         //     is one re-encode but no escape inflation, replacing the prior
         //     parse-of-escaped-string cost the client used to pay.
         // `daemon_ping` already handled both shapes for the same reason.
-        let output = resp.get("output")?;
+        let output = match resp.get("output") {
+            Some(v) => v,
+            None => {
+                tracing::warn!(
+                    stage = "parse",
+                    "Daemon ok response missing/unserializable output — falling back to CLI"
+                );
+                return None;
+            }
+        };
         let text = match output {
             serde_json::Value::String(s) => s.clone(),
-            other => serde_json::to_string(other).ok()?,
+            // API-V1.29-8: pretty-print to match CLI `emit_json` so agents
+            // diffing `cqs --json …` output between CLI and daemon modes
+            // don't hit spurious whitespace drift. One re-encode cost; worth
+            // the parity with the in-process path.
+            other => match serde_json::to_string_pretty(other) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        stage = "parse",
+                        "Daemon ok response missing/unserializable output — falling back to CLI"
+                    );
+                    return None;
+                }
+            },
         };
         return Some(text);
     }

@@ -205,13 +205,7 @@ fn suggest_placement_with_options_core<Mode>(
         .map(|(f, _, _)| f.to_string_lossy().into_owned())
         .collect();
     let origin_refs: Vec<&str> = origin_strings.iter().map(|s| s.as_str()).collect();
-    let mut all_origins_chunks = match store.get_chunks_by_origins_batch(&origin_refs) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to batch-fetch file chunks for pattern extraction");
-            HashMap::new()
-        }
-    };
+    let mut all_origins_chunks = store.get_chunks_by_origins_batch(&origin_refs)?;
 
     // Build suggestions
     let mut suggestions = Vec::with_capacity(file_scores.len());
@@ -307,6 +301,12 @@ fn detect_error_style(chunks: &[ChunkSummary], patterns: &[(&str, &str)]) -> Str
 // ---------------------------------------------------------------------------
 
 /// How to detect dominant visibility from chunk signatures.
+///
+/// This enum is slightly broader than its name suggests: `RegexImportSet` also
+/// overrides import extraction for languages that need more than simple prefix
+/// matching (e.g., TS/JS `const x = require(...)`). Keeping everything in one
+/// enum means one `LanguagePatternDef::visibility` field covers all the
+/// per-language quirks without introducing a parallel knob.
 pub enum VisibilityRule {
     /// Fixed string, no detection needed (e.g., "module-level", "default").
     Fixed(&'static str),
@@ -339,6 +339,32 @@ pub enum VisibilityRule {
         if_majority: &'static str,
         if_minority: &'static str,
     },
+    /// Three-way triage by `starts_with` prefix (Rust's `pub(crate)` / `pub` /
+    /// private split). Counts chunks whose signature starts with `a`, those
+    /// starting with `b`, and the rest. Tie-break: `a` wins when
+    /// `count_a >= count_b && count_a >= count_else`; otherwise `b` wins when
+    /// `count_b >= count_else`; otherwise `else_`. The visibility label is the
+    /// matched prefix trimmed (so `b = "pub "` → label `"pub"`), except
+    /// `else_` which is returned as-is.
+    SigStartsTriage {
+        a: &'static str,
+        b: &'static str,
+        else_: &'static str,
+    },
+    /// TS/JS-style imports with a visibility companion. The regex patterns
+    /// replace prefix-based extraction (`import_prefixes` is ignored when this
+    /// variant is the visibility rule) — a trimmed line counts as an import
+    /// when it matches any pattern. Visibility itself is a simple signature
+    /// check: if any chunk's signature contains `"export"` → `"export"`,
+    /// otherwise `"module-private"`. The hardcoded labels match the legacy
+    /// TS/JS branch in `extract_patterns`.
+    RegexImportSet { patterns: &'static [&'static str] },
+    /// Go-style name-case classification: count chunks whose name starts with
+    /// an uppercase letter. Majority → `if_upper`; otherwise `if_lower`.
+    NameCase {
+        if_upper: &'static str,
+        if_lower: &'static str,
+    },
 }
 
 /// Data-driven definition for per-language pattern extraction.
@@ -350,6 +376,11 @@ pub struct LanguagePatternDef {
     pub import_prefixes: &'static [&'static str],
     pub error_patterns: &'static [(&'static str, &'static str)],
     pub visibility: VisibilityRule,
+    /// Substrings whose presence in any chunk's content flips
+    /// `LocalPatterns::has_inline_tests` to `true`. Empty `&[]` keeps it
+    /// `false` for languages without an inline-test convention.
+    /// Rust uses `&["#[cfg(test)]"]` to mirror its `mod tests` idiom.
+    pub inline_test_markers: &'static [&'static str],
 }
 
 /// Evaluate a `VisibilityRule` against chunks, returning the visibility string.
@@ -426,6 +457,42 @@ fn eval_visibility(rule: &VisibilityRule, chunks: &[ChunkSummary]) -> String {
             }
             .to_string()
         }
+        VisibilityRule::SigStartsTriage { a, b, else_ } => {
+            let count_a = chunks.iter().filter(|c| c.signature.starts_with(a)).count();
+            let count_b = chunks.iter().filter(|c| c.signature.starts_with(b)).count();
+            let count_else = chunks
+                .iter()
+                .filter(|c| !c.signature.starts_with(a) && !c.signature.starts_with(b))
+                .count();
+            if count_a >= count_b && count_a >= count_else {
+                a.trim().to_string()
+            } else if count_b >= count_else {
+                b.trim().to_string()
+            } else {
+                (*else_).to_string()
+            }
+        }
+        VisibilityRule::RegexImportSet { .. } => {
+            // Import regexes drive extraction; visibility is a simple
+            // signature contains check matching the legacy TS/JS semantics.
+            if chunks.iter().any(|c| c.signature.contains("export")) {
+                "export".to_string()
+            } else {
+                "module-private".to_string()
+            }
+        }
+        VisibilityRule::NameCase { if_upper, if_lower } => {
+            let exported = chunks
+                .iter()
+                .filter(|c| c.name.starts_with(|ch: char| ch.is_uppercase()))
+                .count();
+            if exported > chunks.len() / 2 {
+                if_upper
+            } else {
+                if_lower
+            }
+            .to_string()
+        }
     }
 }
 
@@ -442,6 +509,7 @@ pub mod patterns_data {
         import_prefixes: &["import ", "from "],
         error_patterns: &[("raise ", "raise"), ("try:", "try/except")],
         visibility: VisibilityRule::Fixed("module-level"),
+        inline_test_markers: &[],
     };
     pub static C: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["#include"],
@@ -451,6 +519,7 @@ pub mod patterns_data {
             if_majority: "static",
             if_minority: "extern",
         },
+        inline_test_markers: &[],
     };
     pub static CPP_LIKE: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["#include"],
@@ -464,6 +533,7 @@ pub mod patterns_data {
             if_majority: "static",
             if_minority: "extern",
         },
+        inline_test_markers: &[],
     };
     pub static JAVA: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import "],
@@ -473,6 +543,7 @@ pub mod patterns_data {
             if_majority: "public",
             if_minority: "package-private",
         },
+        inline_test_markers: &[],
     };
     pub static JVM: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import "],
@@ -482,6 +553,7 @@ pub mod patterns_data {
             if_majority: "public",
             if_minority: "package-private",
         },
+        inline_test_markers: &[],
     };
     pub static DOTNET: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["using ", "open "],
@@ -492,11 +564,13 @@ pub mod patterns_data {
             if_pub_wins: "public",
             if_int_wins: "internal",
         },
+        inline_test_markers: &[],
     };
     pub static RUBY: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["require ", "require_relative "],
         error_patterns: &[("raise ", "raise"), ("rescue", "begin/rescue")],
         visibility: VisibilityRule::Fixed("module-level"),
+        inline_test_markers: &[],
     };
     pub static PHP: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["require ", "require_once ", "include ", "use "],
@@ -506,26 +580,31 @@ pub mod patterns_data {
             if_majority: "public",
             if_minority: "default",
         },
+        inline_test_markers: &[],
     };
     pub static PERL: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["use ", "require "],
         error_patterns: &[("die ", "die"), ("croak", "croak")],
         visibility: VisibilityRule::Fixed("module-level"),
+        inline_test_markers: &[],
     };
     pub static LUA: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["require(", "require \"", "require '"],
         error_patterns: &[("error(", "error"), ("pcall(", "pcall")],
         visibility: VisibilityRule::Fixed("module-level"),
+        inline_test_markers: &[],
     };
     pub static HASKELL: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import "],
         error_patterns: &[("error ", "error"), ("throwIO", "throwIO")],
         visibility: VisibilityRule::Fixed("module-level"),
+        inline_test_markers: &[],
     };
     pub static OCAML: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["open "],
         error_patterns: &[("raise ", "raise"), ("Result.", "Result")],
         visibility: VisibilityRule::Fixed("module-level"),
+        inline_test_markers: &[],
     };
     pub static ELIXIR: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import ", "alias ", "use ", "require "],
@@ -535,11 +614,13 @@ pub mod patterns_data {
             if_majority: "private",
             if_minority: "public",
         },
+        inline_test_markers: &[],
     };
     pub static ERLANG: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["-include"],
         error_patterns: &[("throw(", "throw"), ("{error,", "{error, _}")],
         visibility: VisibilityRule::Fixed("module-level"),
+        inline_test_markers: &[],
     };
     pub static GLEAM: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import "],
@@ -549,16 +630,19 @@ pub mod patterns_data {
             if_majority: "pub",
             if_minority: "private",
         },
+        inline_test_markers: &[],
     };
     pub static R_LANG: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["library(", "require("],
         error_patterns: &[],
         visibility: VisibilityRule::Fixed("default"),
+        inline_test_markers: &[],
     };
     pub static JULIA: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["using ", "import "],
         error_patterns: &[("throw(", "throw"), ("error(", "error")],
         visibility: VisibilityRule::Fixed("module-level"),
+        inline_test_markers: &[],
     };
     pub static ZIG: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["@import("],
@@ -568,6 +652,7 @@ pub mod patterns_data {
             if_majority: "pub",
             if_minority: "private",
         },
+        inline_test_markers: &[],
     };
     pub static SWIFT: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import "],
@@ -577,6 +662,7 @@ pub mod patterns_data {
             if_majority: "public",
             if_minority: "internal",
         },
+        inline_test_markers: &[],
     };
     pub static SOLIDITY: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["import "],
@@ -587,16 +673,64 @@ pub mod patterns_data {
             if_majority: "public",
             if_minority: "internal",
         },
+        inline_test_markers: &[],
     };
     pub static BASH: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["source ", ". "],
         error_patterns: &[("exit ", "exit code"), ("set -e", "set -e")],
         visibility: VisibilityRule::Fixed("default"),
+        inline_test_markers: &[],
     };
     pub static POWERSHELL: LanguagePatternDef = LanguagePatternDef {
         import_prefixes: &["Import-Module ", "using module "],
         error_patterns: &[("throw ", "throw"), ("try {", "try/catch")],
         visibility: VisibilityRule::Fixed("default"),
+        inline_test_markers: &[],
+    };
+
+    // --- New rows that fold the formerly-custom Rust / TS-JS / Go arms back
+    // into data. Each row mirrors the exact semantics of the match arm it
+    // replaces — see the doc comments on `SigStartsTriage`, `RegexImportSet`,
+    // and `NameCase` for evaluation details.
+    pub static RUST: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["use "],
+        error_patterns: &[
+            ("anyhow::", "anyhow"),
+            ("thiserror", "thiserror"),
+            ("Result<", "Result<>"),
+        ],
+        visibility: VisibilityRule::SigStartsTriage {
+            a: "pub(crate)",
+            b: "pub ",
+            else_: "private",
+        },
+        inline_test_markers: &["#[cfg(test)]"],
+    };
+    pub static TS_JS: LanguagePatternDef = LanguagePatternDef {
+        // `import_prefixes` is ignored for RegexImportSet — extraction uses
+        // the regex list below. Kept empty so the intent is obvious.
+        import_prefixes: &[],
+        error_patterns: &[
+            ("throw ", "throw"),
+            (".catch(", "try/catch"),
+            ("try {", "try/catch"),
+        ],
+        visibility: VisibilityRule::RegexImportSet {
+            // `^import\s` matches `import foo` and `import{…}`; the second
+            // pattern covers CJS `const x = require(...)`. Compile is per
+            // call (two patterns, small input).
+            patterns: &[r"^import\s", r"^const\s.*require\("],
+        },
+        inline_test_markers: &[],
+    };
+    pub static GO: LanguagePatternDef = LanguagePatternDef {
+        import_prefixes: &["import "],
+        error_patterns: &[("error", "error return")],
+        visibility: VisibilityRule::NameCase {
+            if_upper: "exported",
+            if_lower: "unexported",
+        },
+        inline_test_markers: &[],
     };
 }
 
@@ -604,117 +738,84 @@ pub mod patterns_data {
 ///
 /// Delegates to `LanguageDef::patterns` so that adding or changing the
 /// pattern data for a language is a one-line edit at the language row in
-/// `src/language/languages.rs`, not a second match arm here.
-/// Returns `None` for languages with custom logic (Rust, TS/JS, Go) or
-/// non-code languages (SQL, Markdown, JSON, etc.) that have no patterns.
+/// `src/language/languages.rs`, not a second match arm here. Returns `None`
+/// only for non-code languages (SQL, Markdown, JSON, etc.) that have no
+/// meaningful local patterns — every code-carrying language ships a
+/// `LanguagePatternDef` row.
 fn pattern_def_for(lang: Language) -> Option<&'static LanguagePatternDef> {
     lang.def().patterns
 }
 
+/// Extract imports when the visibility rule is `RegexImportSet`. The regex
+/// patterns replace simple prefix matching — a trimmed line counts as an
+/// import when any pattern matches. Regex compilation failures skip that
+/// pattern (logged) so one broken entry can't kill the whole extraction.
+fn extract_imports_regex(
+    chunks: &[ChunkSummary],
+    patterns: &[&'static str],
+    max: usize,
+) -> Vec<String> {
+    let compiled: Vec<regex::Regex> = patterns
+        .iter()
+        .filter_map(|p| match regex::Regex::new(p) {
+            Ok(re) => Some(re),
+            Err(e) => {
+                tracing::warn!(pattern = %p, error = %e, "invalid import regex; skipping");
+                None
+            }
+        })
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut imports = Vec::new();
+    for chunk in chunks {
+        for line in chunk.content.lines() {
+            let trimmed = line.trim();
+            if compiled.iter().any(|re| re.is_match(trimmed))
+                && imports.len() < max
+                && seen.insert(trimmed.to_string())
+            {
+                imports.push(trimmed.to_string());
+            }
+        }
+    }
+    imports
+}
+
 /// Extract local coding patterns from a file's chunks.
 /// Iterates chunks individually instead of concatenating all content into
-/// one string (avoids a large allocation for files with many chunks).
-/// Most languages use data-driven lookup via `pattern_def_for`. Three languages
-/// have custom logic: Rust (3-way visibility with `pub(crate)`), TS/JS (custom
-/// `require()` import matching), Go (name-based uppercase export detection).
+/// one string (avoids a large allocation for files with many chunks). Every
+/// code-carrying language is handled via `LanguagePatternDef` lookup — the
+/// formerly-custom Rust/TS-JS/Go arms now live as data rows using the
+/// `SigStartsTriage`, `RegexImportSet`, and `NameCase` variants.
 fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> LocalPatterns {
     let mut error_style = String::new();
     let mut has_inline_tests = false;
 
-    let (imports, visibility) = match language {
-        // --- Custom logic: Rust (3-way pub(crate)/pub/private) ---
-        Some(Language::Rust) => {
-            let imports = extract_imports(chunks, &["use "], MAX_IMPORT_COUNT);
-            has_inline_tests = chunks.iter().any(|c| c.content.contains("#[cfg(test)]"));
-            error_style = detect_error_style(
-                chunks,
-                &[
-                    ("anyhow::", "anyhow"),
-                    ("thiserror", "thiserror"),
-                    ("Result<", "Result<>"),
-                ],
-            );
-            let pub_crate = chunks
-                .iter()
-                .filter(|c| c.signature.contains("pub(crate)"))
-                .count();
-            let pub_count = chunks
-                .iter()
-                .filter(|c| c.signature.starts_with("pub ") || c.signature.starts_with("pub fn"))
-                .count();
-            let private = chunks
-                .iter()
-                .filter(|c| !c.signature.contains("pub"))
-                .count();
-            let vis = if pub_crate >= pub_count && pub_crate >= private {
-                "pub(crate)"
-            } else if pub_count >= private {
-                "pub"
-            } else {
-                "private"
-            };
-            (imports, vis.to_string())
-        }
-        // --- Custom logic: TS/JS (also matches `const x = require(...)`) ---
-        Some(Language::TypeScript | Language::JavaScript) => {
-            let mut seen = std::collections::HashSet::new();
-            let mut imports = Vec::new();
-            for chunk in chunks {
-                for line in chunk.content.lines() {
-                    let trimmed = line.trim();
-                    if (trimmed.starts_with("import ")
-                        || (trimmed.starts_with("const ") && trimmed.contains("require(")))
-                        && imports.len() < MAX_IMPORT_COUNT
-                        && seen.insert(trimmed.to_string())
-                    {
-                        imports.push(trimmed.to_string());
-                    }
+    let (imports, visibility) = match language.and_then(pattern_def_for) {
+        Some(def) => {
+            // Import extraction: regex override when `RegexImportSet`, else
+            // prefix-based.
+            let imports = match &def.visibility {
+                VisibilityRule::RegexImportSet { patterns } => {
+                    extract_imports_regex(chunks, patterns, MAX_IMPORT_COUNT)
                 }
-            }
-            error_style = detect_error_style(
-                chunks,
-                &[
-                    ("throw ", "throw"),
-                    (".catch(", "try/catch"),
-                    ("try {", "try/catch"),
-                ],
-            );
-            let has_export = chunks.iter().any(|c| c.signature.contains("export"));
-            let vis = if has_export {
-                "export"
-            } else {
-                "module-private"
+                _ => extract_imports(chunks, def.import_prefixes, MAX_IMPORT_COUNT),
             };
-            (imports, vis.to_string())
-        }
-        // --- Custom logic: Go (uppercase name = exported) ---
-        Some(Language::Go) => {
-            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
-            error_style = detect_error_style(chunks, &[("error", "error return")]);
-            let exported = chunks
-                .iter()
-                .filter(|c| c.name.starts_with(|ch: char| ch.is_uppercase()))
-                .count();
-            let vis = if exported > chunks.len() / 2 {
-                "exported"
-            } else {
-                "unexported"
-            };
-            (imports, vis.to_string())
-        }
-        // --- Data-driven: lookup table handles all other languages ---
-        Some(lang) => match pattern_def_for(lang) {
-            Some(def) => {
-                let imports = extract_imports(chunks, def.import_prefixes, MAX_IMPORT_COUNT);
-                if !def.error_patterns.is_empty() {
-                    error_style = detect_error_style(chunks, def.error_patterns);
-                }
-                let vis = eval_visibility(&def.visibility, chunks);
-                (imports, vis)
+            if !def.error_patterns.is_empty() {
+                error_style = detect_error_style(chunks, def.error_patterns);
             }
-            // Non-code languages (SQL, Markdown, JSON, etc.)
-            None => (Vec::new(), "default".to_string()),
-        },
+            // Inline-test marker scan (empty `&[]` short-circuits to false).
+            if !def.inline_test_markers.is_empty() {
+                has_inline_tests = chunks.iter().any(|c| {
+                    def.inline_test_markers
+                        .iter()
+                        .any(|m| c.content.contains(m))
+                });
+            }
+            let vis = eval_visibility(&def.visibility, chunks);
+            (imports, vis)
+        }
+        // Non-code languages (SQL, Markdown, JSON, etc.) or `language = None`.
         None => (Vec::new(), "default".to_string()),
     };
 
