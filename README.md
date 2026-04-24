@@ -736,11 +736,14 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_IMPACT_MAX_CHANGED_FUNCTIONS` | `500` | Cap on changed functions processed by `impact --diff` / `review --diff`. Excess is dropped and surfaced as `summary.truncated_functions` in JSON. |
 | `CQS_IMPACT_MAX_NODES` | `10000` | Max BFS nodes in impact analysis |
 | `CQS_LLM_ALLOW_INSECURE` | `0` | Set to `1` to permit `CQS_LLM_API_BASE` to use cleartext `http://`. Without it, any `http://` base is rejected so the API key isn't sent in the clear. Localhost-testing escape hatch only. |
-| `CQS_LLM_API_BASE` | `https://api.anthropic.com/v1` | LLM API base URL |
+| `CQS_LLM_API_BASE` | `https://api.anthropic.com/v1` | LLM API base URL. Required when `CQS_LLM_PROVIDER=local`; set to e.g. `http://localhost:8080/v1`. |
+| `CQS_LLM_API_KEY` | (none) | Optional bearer token for `CQS_LLM_PROVIDER=local`. Sent as `Authorization: Bearer $CQS_LLM_API_KEY`. Ignored by the anthropic provider (which uses `ANTHROPIC_API_KEY`). |
 | `CQS_LLM_MAX_CONTENT_CHARS` | `8000` | Max content chars in LLM prompts |
 | `CQS_LLM_MAX_TOKENS` | `100` | Max tokens for LLM summary generation |
-| `CQS_LLM_MODEL` | `claude-haiku-4-5` | LLM model name for summaries |
-| `CQS_LLM_PROVIDER` | `anthropic` | LLM provider (`anthropic`) |
+| `CQS_LLM_MODEL` | `claude-haiku-4-5` | LLM model name for summaries. Required when `CQS_LLM_PROVIDER=local`; must match a model your server exposes. |
+| `CQS_LLM_PROVIDER` | `anthropic` | LLM provider: `anthropic` (Messages Batches API) or `local` (any OpenAI-compat `/v1/chat/completions` endpoint — llama.cpp, vLLM, Ollama, LMStudio). |
+| `CQS_LOCAL_LLM_CONCURRENCY` | `4` | Worker pool size for `CQS_LLM_PROVIDER=local`. Clamped to `[1, 64]`. |
+| `CQS_LOCAL_LLM_TIMEOUT_SECS` | `120` | Per-request timeout (seconds) for `CQS_LLM_PROVIDER=local`. Local inference can be slow, so the default is 2× the Anthropic 60s ceiling. |
 | `CQS_MAX_CONNECTIONS` | `4` | SQLite write-pool max connections |
 | `CQS_BATCH_MAX_LINE_LEN` | `52428800` (50 MiB) | Max bytes per batch-mode line (`cqs batch` stdin and the daemon socket request). Aligned with `CQS_MAX_DIFF_BYTES` so batch-routed diffs aren't capped 50× sooner than the CLI path. |
 | `CQS_MAX_CONTRASTIVE_CHUNKS` | `30000` | Max chunks for contrastive summary matrix (memory = N*N*4 bytes) |

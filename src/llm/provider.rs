@@ -4,6 +4,12 @@ use std::collections::HashMap;
 
 use super::LlmError;
 
+/// Callback type for the per-item streaming persist hook.
+///
+/// `(custom_id, text)` — see [`BatchProvider::set_on_item_complete`] for the
+/// full concurrency contract.
+pub type OnItemCallback = Box<dyn Fn(&str, &str) + Send + Sync>;
+
 /// A single item in a batch submission.
 /// Named fields replace the opaque `(String, String, String, String)` tuple
 /// to prevent positional errors at call sites.
@@ -64,6 +70,24 @@ pub trait BatchProvider {
 
     /// Get the model name for this provider.
     fn model_name(&self) -> &str;
+
+    /// Optional streaming callback invoked once per completed item.
+    ///
+    /// Callers (e.g. `llm_summary_pass`) can set this to persist results
+    /// to SQLite as they arrive, enabling crash-safe partial completion
+    /// without changing the store-all-at-end contract of `fetch_batch_results`.
+    ///
+    /// **Concurrency contract:** the callback may be invoked from multiple
+    /// worker threads concurrently. Implementations must be `Fn + Send + Sync`
+    /// and must serialize any shared mutable state internally (typically via
+    /// `Mutex<Connection>`). Panics in the callback are caught and logged;
+    /// they do not abort the batch. SQLite `INSERT OR IGNORE` on the
+    /// `content_hash` primary key gracefully handles redundant writes from
+    /// both streaming and `fetch_batch_results` paths.
+    ///
+    /// Default: no-op. The Anthropic path uses fetch-at-end semantics and
+    /// ignores the callback.
+    fn set_on_item_complete(&mut self, _cb: OnItemCallback) {}
 }
 
 /// Mock batch provider for testing batch orchestration without API calls.

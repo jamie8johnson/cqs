@@ -16,6 +16,7 @@
 mod batch;
 mod doc_comments;
 mod hyde;
+pub mod local;
 mod prompts;
 pub mod provider;
 mod summary;
@@ -27,6 +28,7 @@ use serde::{Deserialize, Serialize};
 // Re-export public API
 pub use doc_comments::needs_doc_comment;
 pub use hyde::hyde_query_pass;
+pub use local::LocalProvider;
 pub use provider::BatchProvider;
 pub use summary::llm_summary_pass;
 
@@ -198,7 +200,8 @@ const BATCH_POLL_INTERVAL: Duration = Duration::from_secs(10);
 pub enum LlmProvider {
     /// Anthropic Messages Batches API (default)
     Anthropic,
-    // Future: OpenAI, Local, etc.
+    /// OpenAI-compatible `/v1/chat/completions` endpoint (llama.cpp, vLLM, Ollama, LMStudio).
+    Local,
 }
 
 /// Resolved LLM configuration (env vars > config file > constants).
@@ -287,6 +290,10 @@ impl LlmConfig {
                 );
                 LlmProvider::Anthropic
             }
+            Some("local") => {
+                tracing::debug!(source = "env", provider = "local", "provider resolved");
+                LlmProvider::Local
+            }
             Some(other) => {
                 tracing::warn!(
                     provider = other,
@@ -349,20 +356,95 @@ impl LlmConfig {
 
 /// Create a batch provider from the resolved config.
 ///
-/// EX-31/EX-34: Single factory, provider-aware. Currently only Anthropic is supported.
-pub fn create_client(llm_config: LlmConfig) -> Result<LlmClient, LlmError> {
+/// EX-31/EX-34: Single factory, provider-aware. Returns a boxed trait object so
+/// callers don't need to care which provider is in use — all operations go
+/// through the [`BatchProvider`] trait.
+pub fn create_client(llm_config: LlmConfig) -> Result<Box<dyn BatchProvider>, LlmError> {
     let _span = tracing::info_span!("create_client", provider = ?llm_config.provider).entered();
-    // EX-34: When adding providers, match on llm_config.provider here
-    // and return the appropriate Box<dyn BatchProvider>.
-    let env_var = match llm_config.provider {
-        LlmProvider::Anthropic => "ANTHROPIC_API_KEY",
-    };
-    let api_key = std::env::var(env_var).map_err(|_| {
-        LlmError::ApiKeyMissing(format!(
-            "{env_var} environment variable required for LLM features"
-        ))
-    })?;
-    LlmClient::new(&api_key, llm_config)
+    match llm_config.provider {
+        LlmProvider::Anthropic => {
+            let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+                LlmError::ApiKeyMissing(
+                    "ANTHROPIC_API_KEY environment variable required for LLM features".to_string(),
+                )
+            })?;
+            Ok(Box::new(LlmClient::new(&api_key, llm_config)?))
+        }
+        LlmProvider::Local => {
+            // Local provider needs an explicit endpoint URL and model name —
+            // the Anthropic defaults do not apply. Validate here (before any
+            // HTTP traffic) so misconfig surfaces with an actionable message.
+            //
+            // We validate against the *resolved* config: when `CQS_LLM_API_BASE`
+            // or `CQS_LLM_MODEL` is left at the Anthropic default, that's a
+            // misconfig for local use. Users must override both.
+            if llm_config.api_base == API_BASE {
+                return Err(LlmError::ApiKeyMissing(
+                    "CQS_LLM_PROVIDER=local requires CQS_LLM_API_BASE. \
+                     Set CQS_LLM_API_BASE=http://localhost:8080/v1 (or your server's URL)"
+                        .to_string(),
+                ));
+            }
+            if llm_config.model == MODEL {
+                return Err(LlmError::ApiKeyMissing(format!(
+                    "CQS_LLM_PROVIDER=local requires CQS_LLM_MODEL. \
+                     Set CQS_LLM_MODEL=<your-model-name>; try curl {}/models to list available",
+                    llm_config.api_base
+                )));
+            }
+            Ok(Box::new(local::LocalProvider::new(llm_config)?))
+        }
+    }
+}
+
+/// Resolve `CQS_LOCAL_LLM_CONCURRENCY` from env, clamped to `[1, 64]`.
+///
+/// Default 4. Values ≤0 clamp to 1; values >64 clamp to 64.
+///
+/// Not memoised: local-provider knobs are read once at `LocalProvider::new`
+/// time, not hot-path; tests that flip env vars need fresh reads.
+pub(crate) fn local_concurrency() -> usize {
+    match std::env::var("CQS_LOCAL_LLM_CONCURRENCY") {
+        Ok(raw) => match raw.parse::<i64>() {
+            Ok(n) => {
+                let clamped = n.clamp(1, 64) as usize;
+                if n != clamped as i64 {
+                    tracing::warn!(
+                        raw = n,
+                        clamped,
+                        "CQS_LOCAL_LLM_CONCURRENCY out of range [1,64], clamped"
+                    );
+                }
+                clamped
+            }
+            Err(e) => {
+                tracing::warn!(value = %raw, error = %e, "Invalid CQS_LOCAL_LLM_CONCURRENCY, using default 4");
+                4
+            }
+        },
+        Err(_) => 4,
+    }
+}
+
+/// Resolve `CQS_LOCAL_LLM_TIMEOUT_SECS` from env.
+///
+/// Default 120 (Anthropic uses 60). Must be a positive integer.
+///
+/// Not memoised: see [`local_concurrency`].
+pub(crate) fn local_timeout() -> Duration {
+    match std::env::var("CQS_LOCAL_LLM_TIMEOUT_SECS") {
+        Ok(raw) => match raw.parse::<u64>() {
+            Ok(n) if n > 0 => Duration::from_secs(n),
+            _ => {
+                tracing::warn!(
+                    value = %raw,
+                    "Invalid CQS_LOCAL_LLM_TIMEOUT_SECS, using default 120"
+                );
+                Duration::from_secs(120)
+            }
+        },
+        Err(_) => Duration::from_secs(120),
+    }
 }
 
 /// Claude API client for generating summaries.
@@ -932,5 +1014,152 @@ mod tests {
             results.is_empty(),
             "succeeded + null message should produce no result"
         );
+    }
+
+    // ===== Local provider config sad-paths (spec items 23-25) =====
+
+    /// Helper to snapshot and restore the full local-provider env surface.
+    type LocalEnv = [Option<String>; 6];
+
+    fn save_local_env() -> LocalEnv {
+        [
+            std::env::var("CQS_LLM_PROVIDER").ok(),
+            std::env::var("CQS_LLM_API_BASE").ok(),
+            std::env::var("CQS_LLM_MODEL").ok(),
+            std::env::var("CQS_LLM_ALLOW_INSECURE").ok(),
+            std::env::var("CQS_API_BASE").ok(),
+            std::env::var("CQS_LLM_API_KEY").ok(),
+        ]
+    }
+
+    fn restore_local_env(saved: LocalEnv) {
+        let names = [
+            "CQS_LLM_PROVIDER",
+            "CQS_LLM_API_BASE",
+            "CQS_LLM_MODEL",
+            "CQS_LLM_ALLOW_INSECURE",
+            "CQS_API_BASE",
+            "CQS_LLM_API_KEY",
+        ];
+        for (name, val) in names.iter().zip(saved) {
+            match val {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+
+    /// Item 23: `CQS_LLM_PROVIDER=local` without `CQS_LLM_API_BASE` →
+    /// `create_client` returns an actionable error before any HTTP traffic.
+    #[test]
+    fn local_provider_missing_api_base_errors() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = save_local_env();
+
+        std::env::set_var("CQS_LLM_PROVIDER", "local");
+        std::env::remove_var("CQS_LLM_API_BASE");
+        std::env::remove_var("CQS_API_BASE");
+        std::env::set_var("CQS_LLM_MODEL", "my-model");
+
+        let cfg = crate::config::Config::default();
+        let llm_config = LlmConfig::resolve(&cfg).unwrap();
+        let err = match create_client(llm_config) {
+            Ok(_) => panic!("should reject missing API_BASE"),
+            Err(e) => e,
+        };
+
+        restore_local_env(saved);
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("CQS_LLM_API_BASE"),
+            "error should name the missing var, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("localhost") || msg.contains("http"),
+            "error should include actionable URL example, got: {}",
+            msg
+        );
+    }
+
+    /// Item 24: `CQS_LLM_PROVIDER=local` without `CQS_LLM_MODEL` →
+    /// actionable error.
+    #[test]
+    fn local_provider_missing_model_errors() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = save_local_env();
+
+        std::env::set_var("CQS_LLM_PROVIDER", "local");
+        std::env::set_var("CQS_LLM_API_BASE", "https://localhost:8080/v1");
+        std::env::remove_var("CQS_LLM_MODEL");
+
+        let cfg = crate::config::Config::default();
+        let llm_config = LlmConfig::resolve(&cfg).unwrap();
+        let err = match create_client(llm_config) {
+            Ok(_) => panic!("should reject missing MODEL"),
+            Err(e) => e,
+        };
+
+        restore_local_env(saved);
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("CQS_LLM_MODEL"),
+            "error should name the missing var, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("/models") || msg.contains("model-name"),
+            "error should include actionable guidance, got: {}",
+            msg
+        );
+    }
+
+    /// Item 25: local provider inherits the existing SEC-V1.25-13 http://
+    /// rejection — opt-in required for cleartext bases.
+    #[test]
+    fn local_provider_rejects_http_without_allow_insecure() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = save_local_env();
+
+        std::env::set_var("CQS_LLM_PROVIDER", "local");
+        std::env::set_var("CQS_LLM_API_BASE", "http://localhost:8080/v1");
+        std::env::set_var("CQS_LLM_MODEL", "my-model");
+        std::env::remove_var("CQS_LLM_ALLOW_INSECURE");
+        std::env::remove_var("CQS_API_BASE");
+
+        let cfg = crate::config::Config::default();
+        let err = match LlmConfig::resolve(&cfg) {
+            Ok(_) => panic!("should reject http:// without opt-in"),
+            Err(e) => e,
+        };
+
+        restore_local_env(saved);
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cleartext") || msg.contains("http://"),
+            "error should flag cleartext http, got: {}",
+            msg
+        );
+    }
+
+    /// Provider resolution: `CQS_LLM_PROVIDER=local` actually sets the variant.
+    #[test]
+    fn provider_resolves_local() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = save_local_env();
+
+        std::env::set_var("CQS_LLM_PROVIDER", "local");
+        std::env::set_var("CQS_LLM_API_BASE", "https://example.com/v1");
+        std::env::set_var("CQS_LLM_MODEL", "my-model");
+
+        let cfg = crate::config::Config::default();
+        let llm_config = LlmConfig::resolve(&cfg).unwrap();
+
+        restore_local_env(saved);
+
+        assert_eq!(llm_config.provider, LlmProvider::Local);
     }
 }
