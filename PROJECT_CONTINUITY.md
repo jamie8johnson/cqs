@@ -2,11 +2,32 @@
 
 ## Right Now
 
-**v1.29.1 prepared 2026-04-24.** Audit close-out patch release. Working tree: CHANGELOG / PROJECT_CONTINUITY / ROADMAP updated, release build in progress, release via `/release` skill pending. Main is at `1a9215c7` (post-audit merge).
+**v1.29.1 shipped 2026-04-24.** Audit close-out patch release is on crates.io + GitHub Release. Main is at `087c605f` (post-#1101 merge).
 
-### Open PRs
+Next in flight: **embeddings cache + named slots** arc. Spec committed via #1100 at `docs/plans/2026-04-24-embeddings-cache-and-slots.md`. Single PR scope — cache (`.cqs/embeddings_cache.db`) + project-level slots (`.cqs/slots/<name>/`) + `cqs slot {list,create,promote,remove,active}` + `cqs cache {stats,prune,compact}` + `--slot` / `CQS_SLOT` on every major command + one-shot migration of existing `.cqs/index.db` → `.cqs/slots/default/`. ~38 new tests per spec §Testing. Implementer dispatch pending on a fresh `feat/embeddings-cache-slots` branch.
 
-None. PR #1094 (91 P1-P3 fixes, cagra segfault root-caused, TC-HAP coverage) merged at 2026-04-24T19:55 UTC. PR #1093 (docs refresh for v1.29.0) merged at 2026-04-24T19:17 UTC.
+### Recently shipped PRs (2026-04-24)
+
+- **#1101 — `feat(llm): add Local LLM provider (OpenAI-compat)`** (merged 22:xx UTC). Closes #1098. `LocalProvider` against `/v1/chat/completions` (vLLM / llama.cpp / Ollama / LMStudio / text-generation-webui). `BatchProvider::set_on_item_complete` + streaming persist. 25 new lib tests (1679 → 1704), 4 `#[ignore]`-gated integration tests. Live-acceptance-tested against Qwen3-0.6B vLLM: 5/5 summaries in 1.68s, full tracing present.
+- **#1100 — `chore(roadmap): embedder swap arc cleanup + cache/slots spec`** (merged 22:22 UTC). Marked index-aware embedder resolution + #949 embedder abstraction as shipped (stale checkboxes). Collapsed the remaining two cache/slots items into a single spec.
+- **#1099 — `chore: Release v1.29.1`** (merged 19:55 UTC). Cargo.toml bump + CHANGELOG + PROJECT_CONTINUITY + ROADMAP. `cargo publish` + GitHub Release workflow #24910934581 built binaries.
+- **#1094 — v1.29.0 audit close-out**: 91 P1-P3 fixes, cagra SIGSEGV root-caused.
+- **#1093 — docs refresh for v1.29.0.**
+
+### Open issues this session
+
+- **#1098 — `EX-V1.29-3 LlmProvider trait + Local provider`** — closed by #1101.
+- **#1102 — `llm: batch.rs log says "Claude API" regardless of provider`** — cosmetic, filed from live-acceptance observation.
+- **#1095 / #1096 / #1097 / #1098** — audit-close-out tracking issues (1098 now closed).
+
+### Acceptance test results (LocalProvider, 2026-04-24)
+
+Ran against Qwen3-0.6B vLLM on :8000 with a 5-function scratch project:
+- `cqs doctor` — `check_local_llm` surfaced both env-var presence checks + `/v1/models` 200 OK probe
+- `cqs index --llm-summaries` — 5/5 succeeded, 1.68s elapsed, all rows landed in `llm_summaries` via streaming callback with `model="qwen3-0.6b"`
+- Tracing — `local_provider_new`, `local_batch_submit` span, `local batch complete` event all emitted cleanly
+
+The Qwen3-0.6B output was chain-of-thought `<think>...` tokens because Qwen3 defaults to thinking mode — pipeline correctly captured whatever the server returned. Wire format confirmed.
 
 ### v1.29.1 contents
 
