@@ -488,6 +488,57 @@ impl Store<ReadWrite> {
         })
     }
 
+    /// Build a streaming per-item persist callback for the local LLM provider.
+    ///
+    /// Returns a `Box<dyn Fn(&str, &str) + Send + Sync>` that can be handed to
+    /// [`crate::llm::BatchProvider::set_on_item_complete`]. Each invocation
+    /// `cb(custom_id, text)` inserts one row into `llm_summaries` under the
+    /// given `purpose`, using `INSERT OR IGNORE` so redundant writes from the
+    /// final `fetch_batch_results` pass are no-ops.
+    ///
+    /// The callback captures owned handles to the SQLite pool and runtime so
+    /// it can outlive any `&Store` reference on the caller's stack. Errors on
+    /// individual writes are logged at `warn!` and swallowed — losing one
+    /// streamed summary must not abort the batch.
+    #[cfg(feature = "llm-summaries")]
+    pub fn stream_summary_writer(
+        &self,
+        model: String,
+        purpose: String,
+    ) -> crate::llm::provider::OnItemCallback {
+        use std::sync::Arc;
+        let pool = self.pool.clone();
+        let rt = Arc::clone(&self.rt);
+        Box::new(move |custom_id: &str, text: &str| {
+            let now = chrono::Utc::now().to_rfc3339();
+            let pool = pool.clone();
+            let model = model.clone();
+            let purpose = purpose.clone();
+            let custom_id = custom_id.to_string();
+            let text = text.to_string();
+            let result = rt.block_on(async move {
+                sqlx::query(
+                    "INSERT OR IGNORE INTO llm_summaries \
+                     (content_hash, summary, model, purpose, created_at) \
+                     VALUES (?, ?, ?, ?, ?)",
+                )
+                .bind(&custom_id)
+                .bind(&text)
+                .bind(&model)
+                .bind(&purpose)
+                .bind(&now)
+                .execute(&pool)
+                .await
+            });
+            if let Err(e) = result {
+                tracing::warn!(
+                    error = %e,
+                    "streaming summary persist failed, will retry via fetch_batch_results"
+                );
+            }
+        })
+    }
+
     /// Delete orphan LLM summaries whose content_hash doesn't exist in any chunk.
     pub fn prune_orphan_summaries(&self) -> Result<usize, StoreError> {
         let _span = tracing::debug_span!("prune_orphan_summaries").entered();

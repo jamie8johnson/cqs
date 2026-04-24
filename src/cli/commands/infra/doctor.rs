@@ -444,6 +444,16 @@ pub(crate) fn cmd_doctor(
         }
     }
 
+    // Local LLM provider check: only run when the user opted in.
+    // Validates that the required env vars are set and that the configured
+    // endpoint is reachable (GET /v1/models or equivalent root probe).
+    #[cfg(feature = "llm-summaries")]
+    if std::env::var("CQS_LLM_PROVIDER").as_deref() == Ok("local") {
+        out(json, "");
+        out(json, "Local LLM:");
+        check_local_llm(json, &mut check_records, &mut any_failed);
+    }
+
     out(json, "");
     if any_failed {
         out(
@@ -494,6 +504,116 @@ fn out(json: bool, line: &str) {
         eprintln!("{line}");
     } else {
         println!("{line}");
+    }
+}
+
+/// Doctor check for `CQS_LLM_PROVIDER=local` — surfaces misconfig + endpoint
+/// reachability. Only called when the env var is set.
+///
+/// Verifies:
+///   1. `CQS_LLM_API_BASE` is present
+///   2. `CQS_LLM_MODEL` is present
+///   3. The endpoint responds to a trivial GET (`{api_base}/models`)
+///
+/// A 401/403 on step 3 is still "endpoint reachable, auth wrong" — reported
+/// as a warn rather than err because many local servers don't require auth.
+#[cfg(feature = "llm-summaries")]
+fn check_local_llm(json: bool, records: &mut Vec<CheckRecord>, any_failed: &mut bool) {
+    let _span = tracing::info_span!("doctor_local_llm").entered();
+
+    let api_base = std::env::var("CQS_LLM_API_BASE").ok();
+    let model = std::env::var("CQS_LLM_MODEL").ok();
+
+    match api_base.as_deref() {
+        Some(s) if !s.is_empty() => {
+            out(
+                json,
+                &format!("  {} CQS_LLM_API_BASE: {}", "[✓]".green(), s),
+            );
+            records.push(CheckRecord::ok("local_llm", "api_base", s.to_string()));
+        }
+        _ => {
+            let msg = "CQS_LLM_API_BASE is required when CQS_LLM_PROVIDER=local. \
+                 Set CQS_LLM_API_BASE=http://localhost:8080/v1 (or your server's URL).";
+            out(json, &format!("  {} {}", "[✗]".red(), msg));
+            records.push(CheckRecord::err("local_llm", "api_base", msg.to_string()));
+            *any_failed = true;
+            return;
+        }
+    }
+
+    match model.as_deref() {
+        Some(s) if !s.is_empty() => {
+            out(json, &format!("  {} CQS_LLM_MODEL: {}", "[✓]".green(), s));
+            records.push(CheckRecord::ok("local_llm", "model", s.to_string()));
+        }
+        _ => {
+            let msg = "CQS_LLM_MODEL is required when CQS_LLM_PROVIDER=local. \
+                 Set CQS_LLM_MODEL=<your-model-name>.";
+            out(json, &format!("  {} {}", "[✗]".red(), msg));
+            records.push(CheckRecord::err("local_llm", "model", msg.to_string()));
+            *any_failed = true;
+            return;
+        }
+    }
+
+    // Endpoint reachability probe: GET `{api_base}/models` with a tight
+    // timeout. We don't want doctor to hang if the user typo'd a URL.
+    let base = api_base.unwrap();
+    let probe_url = format!("{}/models", base.trim_end_matches('/'));
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .redirect(reqwest::redirect::Policy::limited(2))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("Failed to build HTTP probe client: {}", e);
+            out(json, &format!("  {} {}", "[✗]".red(), msg));
+            records.push(CheckRecord::err("local_llm", "http_client", msg));
+            *any_failed = true;
+            return;
+        }
+    };
+
+    match client.get(&probe_url).send() {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() {
+                let msg = format!("{} → {}", probe_url, status);
+                out(
+                    json,
+                    &format!("  {} Endpoint reachable: {}", "[✓]".green(), msg),
+                );
+                records.push(CheckRecord::ok("local_llm", "endpoint_reachable", msg));
+            } else if status == 401 || status == 403 {
+                let msg = format!(
+                    "{} returned {} — set CQS_LLM_API_KEY if your server requires auth",
+                    probe_url, status
+                );
+                out(json, &format!("  {} {}", "[!]".yellow(), msg));
+                records.push(CheckRecord::warn("local_llm", "auth", msg));
+            } else {
+                // Many local servers (Ollama, llama.cpp) may not implement
+                // `/models` — a 404 means "reachable but no model list
+                // endpoint" which is fine. Surface as warn, not err.
+                let msg = format!(
+                    "{} returned {} (server reachable but /models not implemented)",
+                    probe_url, status
+                );
+                out(json, &format!("  {} {}", "[!]".yellow(), msg));
+                records.push(CheckRecord::warn("local_llm", "endpoint_probe", msg));
+            }
+        }
+        Err(e) => {
+            let msg = format!(
+                "Cannot reach {}: {}. Is your vLLM/llama.cpp/Ollama server running?",
+                probe_url, e
+            );
+            out(json, &format!("  {} {}", "[✗]".red(), msg));
+            records.push(CheckRecord::err("local_llm", "endpoint_reachable", msg));
+            *any_failed = true;
+        }
     }
 }
 

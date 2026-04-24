@@ -34,7 +34,16 @@ pub fn llm_summary_pass(
         "LLM config resolved"
     );
 
-    let client = super::create_client(llm_config)?;
+    // Capture max_tokens and model before moving `llm_config` into
+    // `create_client` — the returned `Box<dyn BatchProvider>` hides the
+    // concrete config.
+    let max_tokens = llm_config.max_tokens;
+    let model_name = llm_config.model.clone();
+    let mut client = super::create_client(llm_config)?;
+
+    // LocalProvider: stream per-item persist so Ctrl-C mid-batch doesn't
+    // lose completed work. The Anthropic path's default no-op ignores this.
+    client.set_on_item_complete(store.stream_summary_writer(model_name, "summary".to_string()));
 
     // Phase 0: Precompute contrastive neighbors from embedding similarity
     let neighbor_map = match find_contrastive_neighbors(store, 3) {
@@ -108,12 +117,12 @@ pub fn llm_summary_pass(
     // Phase 2: Submit batch to Claude API (or resume a pending one)
     let phase2 = BatchPhase2 {
         purpose: "summary",
-        max_tokens: client.llm_config.max_tokens,
+        max_tokens,
         quiet,
         lock_dir,
     };
     let api_results = phase2.submit_or_resume(
-        &client,
+        client.as_ref(),
         store,
         &batch_items,
         &|s| s.get_pending_batch_id(),

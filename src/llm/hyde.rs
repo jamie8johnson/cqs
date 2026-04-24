@@ -28,7 +28,12 @@ pub fn hyde_query_pass(
     );
 
     let hyde_max_tokens = llm_config.hyde_max_tokens;
-    let client = super::create_client(llm_config)?;
+    let model_name = llm_config.model.clone();
+    let mut client = super::create_client(llm_config)?;
+
+    // LocalProvider: stream per-item persist so Ctrl-C mid-batch doesn't
+    // lose completed work. The Anthropic path's default no-op ignores this.
+    client.set_on_item_complete(store.stream_summary_writer(model_name, "hyde".to_string()));
 
     let effective_batch_size = if max_hyde > 0 {
         max_hyde.min(MAX_BATCH_SIZE)
@@ -78,7 +83,7 @@ pub fn hyde_query_pass(
         lock_dir,
     };
     let api_results = phase2.submit_or_resume(
-        &client,
+        client.as_ref(),
         store,
         &batch_items,
         &|s| s.get_pending_hyde_batch_id(),
