@@ -17,20 +17,39 @@ use super::commands::{
     cmd_explain, cmd_export_model, cmd_gather, cmd_gc, cmd_health, cmd_impact, cmd_impact_diff,
     cmd_index, cmd_init, cmd_model, cmd_neighbors, cmd_notes, cmd_onboard, cmd_ping, cmd_plan,
     cmd_project, cmd_query, cmd_read, cmd_reconstruct, cmd_ref, cmd_related, cmd_review, cmd_scout,
-    cmd_similar, cmd_stale, cmd_stats, cmd_suggest, cmd_task, cmd_telemetry, cmd_telemetry_reset,
-    cmd_test_map, cmd_trace, cmd_train_data, cmd_train_pairs, cmd_where,
+    cmd_similar, cmd_slot, cmd_stale, cmd_stats, cmd_suggest, cmd_task, cmd_telemetry,
+    cmd_telemetry_reset, cmd_test_map, cmd_trace, cmd_train_data, cmd_train_pairs, cmd_where,
 };
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
 pub fn run_with(mut cli: Cli) -> Result<()> {
     // Log command for telemetry (opt-in via CQS_TELEMETRY=1)
-    let cqs_dir = cqs::resolve_index_dir(&find_project_root());
+    let project_cqs_dir = cqs::resolve_index_dir(&find_project_root());
     let telem_args: Vec<String> = std::env::args().collect();
     let (telem_cmd, telem_query) = telemetry::describe_command(&telem_args);
-    telemetry::log_command(&cqs_dir, &telem_cmd, telem_query.as_deref(), None);
+    telemetry::log_command(&project_cqs_dir, &telem_cmd, telem_query.as_deref(), None);
 
     // v1.22.0 audit OB-14: root span so all per-command logs have a parent.
     let _root = tracing::info_span!("cqs", cmd = %telem_cmd).entered();
+
+    // Slot migration: one-shot move of legacy `.cqs/index.db` (+ HNSW + SPLADE)
+    // into `.cqs/slots/default/` on first post-upgrade run. Idempotent — every
+    // subsequent run observes `.cqs/slots/` and skips. Safe to call on
+    // never-indexed projects (returns false, no-op).
+    if project_cqs_dir.exists() {
+        if let Err(e) = cqs::slot::migrate_legacy_index_to_default_slot(&project_cqs_dir) {
+            tracing::warn!(error = %e, "slot migration failed; continuing without it");
+        }
+    }
+
+    // Propagate `--slot <name>` to `CQS_SLOT` env so commands that resolve the
+    // active slot via `cqs::slot::resolve_slot_name(None, ...)` (no ctx-passed
+    // flag) honor the explicit override. Resolution order is preserved:
+    // `--slot` (now in env) > pre-existing `CQS_SLOT` > `.cqs/active_slot` >
+    // `"default"`. Only set when the flag was passed on the CLI.
+    if let Some(ref slot_name) = cli.slot {
+        std::env::set_var("CQS_SLOT", slot_name);
+    }
 
     // Load config and apply defaults (CLI flags override config)
     let config = cqs::config::Config::load(&find_project_root());
@@ -55,9 +74,12 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     cli.limit = cli.limit.clamp(1, 100);
 
     // ── Daemon client: forward to running daemon if available ──────────────
+    // The daemon binds to whichever slot was active at *its* startup (per
+    // spec). If the user passed `--slot <name>`, bypass the daemon so the
+    // requested slot wins instead of silently getting the daemon's slot.
     #[cfg(unix)]
-    if std::env::var("CQS_NO_DAEMON").as_deref() != Ok("1") {
-        if let Some(output) = try_daemon_query(&cqs_dir, &cli) {
+    if cli.slot.is_none() && std::env::var("CQS_NO_DAEMON").as_deref() != Ok("1") {
+        if let Some(output) = try_daemon_query(&project_cqs_dir, &cli) {
             print!("{}", output);
             return Ok(());
         }
@@ -67,6 +89,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     match cli.command {
         Some(Commands::Init) => return cmd_init(&cli),
         Some(Commands::Cache { ref subcmd }) => return cmd_cache(&cli, subcmd),
+        Some(Commands::Slot { ref subcmd }) => return cmd_slot(&cli, subcmd),
         Some(Commands::Doctor { fix, verbose, json }) => {
             // Task #8: top-level `--json` cascades into doctor's `--json` so
             // `cqs --json doctor --verbose` emits JSON.
@@ -171,9 +194,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
                 // API-V1.29-3: forward the resolved --json bit so reset emits
                 // the `{archived_events, archive_path, lock_path}` envelope
                 // instead of silently dropping the flag.
-                cmd_telemetry_reset(&cqs_dir, reason.as_deref(), cli.json || output.json)
+                cmd_telemetry_reset(&project_cqs_dir, reason.as_deref(), cli.json || output.json)
             } else {
-                cmd_telemetry(&cqs_dir, cli.json || output.json, all)
+                cmd_telemetry(&project_cqs_dir, cli.json || output.json, all)
             };
         }
         Some(Commands::Project { ref subcmd }) => {
@@ -624,6 +647,7 @@ fn command_variant_name(cmd: &Commands) -> &'static str {
         Commands::TrainData { .. } => "train-data",
         Commands::TrainPairs { .. } => "train-pairs",
         Commands::Cache { .. } => "cache",
+        Commands::Slot { .. } => "slot",
         Commands::Ping { .. } => "ping",
         Commands::Refresh => "refresh",
         Commands::Eval { .. } => "eval",

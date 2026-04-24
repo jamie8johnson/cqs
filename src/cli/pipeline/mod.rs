@@ -93,17 +93,38 @@ pub(crate) fn run_index_pipeline(
         })
     };
 
-    // Open global embedding cache (best-effort)
+    // Open project-scoped embeddings cache (best-effort).
+    //
+    // Spec §Cache: cache lives at `<project_cqs_dir>/embeddings_cache.db`,
+    // shared across all slots so an embedder swap only re-embeds chunks
+    // whose hash hasn't been seen for that model_id before.
+    //
+    // `CQS_CACHE_ENABLED=0` disables the cache entirely for benchmarking /
+    // debugging — the embed path falls back to per-batch GPU/CPU work without
+    // the partition step.
     let global_cache: Option<Arc<cqs::cache::EmbeddingCache>> = {
-        let cache_path = cqs::cache::EmbeddingCache::default_path();
-        match cqs::cache::EmbeddingCache::open(&cache_path) {
-            Ok(c) => {
-                tracing::info!(path = %cache_path.display(), "Global embedding cache opened");
-                Some(Arc::new(c))
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Global embedding cache unavailable");
-                None
+        if std::env::var("CQS_CACHE_ENABLED").as_deref() == Ok("0") {
+            tracing::info!("CQS_CACHE_ENABLED=0 — embeddings cache disabled for this run");
+            None
+        } else {
+            let project_cqs_dir = cqs::resolve_index_dir(root);
+            let cache_path = cqs::cache::EmbeddingCache::project_default_path(&project_cqs_dir);
+            match cqs::cache::EmbeddingCache::open(&cache_path) {
+                Ok(c) => {
+                    tracing::info!(
+                        path = %cache_path.display(),
+                        "Project embeddings cache opened"
+                    );
+                    Some(Arc::new(c))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        path = %cache_path.display(),
+                        "Project embeddings cache unavailable; disabling cache for this run"
+                    );
+                    None
+                }
             }
         }
     };

@@ -35,6 +35,22 @@ pub struct CacheStats {
     pub newest_timestamp: Option<i64>,
 }
 
+/// Per-model cache statistics — surfaced by [`EmbeddingCache::stats_per_model`]
+/// for `cqs cache stats` so users can see which model_id holds how many
+/// embeddings before pruning.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PerModelStats {
+    pub model_id: String,
+    pub entries: u64,
+    pub total_bytes: u64,
+}
+
+/// File name of the project-scoped embeddings cache, sibling to `slots/`
+/// inside `.cqs/`. The cache is shared across all slots of a project so an
+/// embedder swap (BGE → E5 etc.) only re-embeds chunks whose hash hasn't
+/// previously been seen for that model_id.
+pub const PROJECT_EMBEDDINGS_CACHE_FILENAME: &str = "embeddings_cache.db";
+
 /// Global embedding cache backed by SQLite.
 ///
 /// Best-effort: all operations that fail are logged and skipped.
@@ -55,11 +71,25 @@ pub struct EmbeddingCache {
 }
 
 impl EmbeddingCache {
-    /// Default cache location.
+    /// Legacy global cache location at `~/.cache/cqs/embeddings.db`.
+    ///
+    /// Kept so existing callers (`cqs cache` subcommand pre-slots) continue to
+    /// work for invocations outside a project. New code prefers
+    /// [`Self::project_default_path`] so caches are scoped to the project and
+    /// survive slot promotion / removal.
     pub fn default_path() -> std::path::PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join(".cache/cqs/embeddings.db")
+    }
+
+    /// Project-scoped cache path: `<project_cqs_dir>/embeddings_cache.db`.
+    ///
+    /// Located alongside `.cqs/slots/` so cache survives `cqs slot remove`
+    /// and `cqs slot create` cycles. One file per project — same chunk hashed
+    /// across two slots with the same model_id only embeds once.
+    pub fn project_default_path(project_cqs_dir: &Path) -> std::path::PathBuf {
+        project_cqs_dir.join(PROJECT_EMBEDDINGS_CACHE_FILENAME)
     }
 
     /// Open or create the embedding cache.
@@ -534,6 +564,159 @@ impl EmbeddingCache {
             tracing::info!(pruned, "Cache pruned");
             Ok(pruned)
         })
+    }
+
+    /// Drop every cache entry tagged with the given `model_id`.
+    ///
+    /// Used by `cqs cache prune --model <id>` after a model swap when the
+    /// user knows the corresponding embeddings will never be reused. Returns
+    /// the number of rows deleted. Identical to [`Self::clear`] with
+    /// `Some(model_id)` but exposes the spec's verb shape.
+    pub fn prune_by_model(&self, model_id: &str) -> Result<usize, CacheError> {
+        let _span = tracing::info_span!("cache_prune_by_model", model_id).entered();
+        self.clear(Some(model_id))
+    }
+
+    /// `VACUUM` the cache database to reclaim unused pages after large
+    /// deletes. Spec §Cache: surface as `cqs cache compact`.
+    pub fn compact(&self) -> Result<(), CacheError> {
+        let _span = tracing::info_span!("cache_compact").entered();
+        self.rt.block_on(async {
+            // VACUUM cannot run inside an explicit transaction.
+            sqlx::query("VACUUM").execute(&self.pool).await?;
+            tracing::info!("Cache vacuumed");
+            Ok(())
+        })
+    }
+
+    /// Per-model cache statistics — entry count + sum-of-embedding-bytes.
+    ///
+    /// Surfaced by `cqs cache stats` so users can pick a `prune_by_model`
+    /// target. Returns rows sorted by entry count descending.
+    pub fn stats_per_model(&self) -> Result<Vec<PerModelStats>, CacheError> {
+        let _span = tracing::info_span!("cache_stats_per_model").entered();
+        self.rt.block_on(async {
+            let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+                "SELECT model_fingerprint, COUNT(*), COALESCE(SUM(LENGTH(embedding)), 0) \
+                 FROM embedding_cache \
+                 GROUP BY model_fingerprint \
+                 ORDER BY COUNT(*) DESC",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            Ok(rows
+                .into_iter()
+                .map(|(model_id, entries, bytes)| PerModelStats {
+                    model_id,
+                    entries: entries.max(0) as u64,
+                    total_bytes: bytes.max(0) as u64,
+                })
+                .collect())
+        })
+    }
+
+    /// Partition `items` into (cached, missed) by checking which content
+    /// hashes already have an embedding stored for `model_id`.
+    ///
+    /// Spec §Cache: pre-filter before the embed batch so only misses go
+    /// through the GPU. `hash_fn` extracts the content hash bytes (matching
+    /// the cache's stored `content_hash` column) from each item.
+    ///
+    /// Returns `(cached_with_emb, missed)` where:
+    /// - `cached_with_emb`: items whose hash hit, paired with the cached
+    ///   `Vec<f32>` embedding
+    /// - `missed`: items whose hash didn't hit (or whose dim mismatched —
+    ///   stale entries are silently re-embedded by the caller; the cache
+    ///   write later overwrites via `INSERT OR IGNORE` once the dim matches)
+    ///
+    /// Preserves input order for both arrays so the caller can interleave
+    /// fresh embeddings back in their original positions.
+    #[allow(clippy::type_complexity)]
+    pub fn partition<'a, T>(
+        &self,
+        items: &'a [T],
+        model_id: &str,
+        expected_dim: usize,
+        hash_fn: impl Fn(&T) -> &str,
+    ) -> Result<(Vec<(&'a T, Vec<f32>)>, Vec<&'a T>), CacheError> {
+        let _span = tracing::debug_span!(
+            "cache_partition",
+            count = items.len(),
+            model_id_prefix = &model_id[..8.min(model_id.len())]
+        )
+        .entered();
+
+        if items.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+
+        let hashes: Vec<&str> = items.iter().map(&hash_fn).collect();
+        let hits = self.read_batch(&hashes, model_id, expected_dim)?;
+        let mut cached = Vec::with_capacity(hits.len());
+        let mut missed = Vec::with_capacity(items.len() - hits.len());
+        for item in items {
+            let h = hash_fn(item);
+            if let Some(emb) = hits.get(h) {
+                cached.push((item, emb.clone()));
+            } else {
+                missed.push(item);
+            }
+        }
+        Ok((cached, missed))
+    }
+
+    /// Insert many `(content_hash, model_id, embedding)` tuples in one
+    /// transaction. Convenience wrapper over [`Self::write_batch`] when the
+    /// caller doesn't already have entries grouped by model.
+    ///
+    /// Mixed `model_id` values across `entries` are handled by grouping
+    /// entries per model and issuing one `write_batch` per group.
+    pub fn insert_many(
+        &self,
+        entries: &[(Vec<u8>, String, Vec<f32>)],
+        expected_dim: usize,
+    ) -> Result<usize, CacheError> {
+        let _span = tracing::debug_span!("cache_insert_many", count = entries.len()).entered();
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        // Group by model_id.
+        let mut groups: HashMap<&str, Vec<(String, &[f32])>> = HashMap::new();
+        for (hash, model_id, emb) in entries {
+            // Cache stores content_hash as TEXT. Convert blob → utf-8 hex for
+            // backwards compatibility with the existing column type.
+            let hex = blake3_hex_or_passthrough(hash);
+            groups
+                .entry(model_id)
+                .or_default()
+                .push((hex, emb.as_slice()));
+        }
+        let mut total = 0;
+        for (model_id, group) in groups {
+            // Collapse to the borrowed shape the existing write_batch expects
+            // — owned String for the hash, borrowed slice for the embedding.
+            let borrowed: Vec<(&str, &[f32])> =
+                group.iter().map(|(h, e)| (h.as_str(), *e)).collect();
+            total += self.write_batch(&borrowed, model_id, expected_dim)?;
+        }
+        Ok(total)
+    }
+}
+
+/// Best-effort hex encoding for blob hashes. If the bytes are already a valid
+/// UTF-8 hex string (the common case — `Chunk::content_hash` is produced as
+/// a hex string), the value passes through unchanged.
+fn blake3_hex_or_passthrough(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(s) if s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()) => s.to_string(),
+        _ => {
+            let mut s = String::with_capacity(bytes.len() * 2);
+            for b in bytes {
+                use std::fmt::Write;
+                let _ = write!(s, "{:02x}", b);
+            }
+            s
+        }
     }
 }
 
@@ -1021,6 +1204,169 @@ mod tests {
 
         let stats = cache.stats().unwrap();
         assert_eq!(stats.total_entries, 3); // only fresh ones survive
+    }
+
+    // ─── New spec methods ───────────────────────────────────────────────
+
+    /// `partition` splits items into hits + misses preserving order.
+    #[test]
+    fn test_partition_hits_and_misses() {
+        let (cache, _dir) = test_cache();
+        // Pre-populate two of the four hashes.
+        let entries = vec![
+            ("hash_a".to_string(), make_embedding(64, 1.0)),
+            ("hash_c".to_string(), make_embedding(64, 3.0)),
+        ];
+        cache.write_batch_owned(&entries, "model_x", 64).unwrap();
+
+        let items: Vec<&str> = vec!["hash_a", "hash_b", "hash_c", "hash_d"];
+        let (cached, missed) = cache
+            .partition(&items, "model_x", 64, |s: &&str| *s)
+            .unwrap();
+        assert_eq!(cached.len(), 2);
+        assert_eq!(missed.len(), 2);
+        let cached_hashes: Vec<&str> = cached.iter().map(|(s, _)| **s).collect();
+        let missed_hashes: Vec<&str> = missed.iter().map(|s| **s).collect();
+        assert_eq!(cached_hashes, vec!["hash_a", "hash_c"]);
+        assert_eq!(missed_hashes, vec!["hash_b", "hash_d"]);
+    }
+
+    /// `partition` returns empty splits for empty input.
+    #[test]
+    fn test_partition_empty() {
+        let (cache, _dir) = test_cache();
+        let items: Vec<&str> = Vec::new();
+        let (cached, missed) = cache
+            .partition(&items, "model_x", 64, |s: &&str| *s)
+            .unwrap();
+        assert!(cached.is_empty());
+        assert!(missed.is_empty());
+    }
+
+    /// `prune_by_model` only removes entries for the named model_id.
+    #[test]
+    fn test_prune_by_model_keeps_other_models() {
+        let (cache, _dir) = test_cache();
+        let entries: Vec<_> = (0..3)
+            .map(|i| (format!("h{i}"), make_embedding(64, i as f32)))
+            .collect();
+        cache.write_batch_owned(&entries, "model_a", 64).unwrap();
+        cache.write_batch_owned(&entries, "model_b", 64).unwrap();
+        let removed = cache.prune_by_model("model_a").unwrap();
+        assert_eq!(removed, 3);
+        let stats_a = cache
+            .read_batch(&["h0", "h1", "h2"], "model_a", 64)
+            .unwrap();
+        assert!(stats_a.is_empty());
+        let stats_b = cache
+            .read_batch(&["h0", "h1", "h2"], "model_b", 64)
+            .unwrap();
+        assert_eq!(stats_b.len(), 3);
+    }
+
+    /// `compact` shrinks the DB after a large delete.
+    #[test]
+    fn test_compact_after_delete_shrinks_file() {
+        let (cache, _dir) = test_cache();
+        let entries: Vec<_> = (0..200)
+            .map(|i| (format!("hh{i}"), make_embedding(128, i as f32)))
+            .collect();
+        cache.write_batch_owned(&entries, "model_y", 128).unwrap();
+        let before = cache.stats().unwrap().total_size_bytes;
+
+        // Delete everything.
+        let _ = cache.clear(None).unwrap();
+        // VACUUM
+        cache.compact().unwrap();
+        let after = cache.stats().unwrap().total_size_bytes;
+        assert!(after <= before, "compact should not grow the DB");
+    }
+
+    /// `stats_per_model` reports per-model entries + bytes.
+    #[test]
+    fn test_stats_per_model_groups_correctly() {
+        let (cache, _dir) = test_cache();
+        let mk = |n: usize, dim: usize| -> Vec<_> {
+            (0..n)
+                .map(|i| (format!("h{i}"), make_embedding(dim, i as f32)))
+                .collect()
+        };
+        cache.write_batch_owned(&mk(5, 64), "alpha", 64).unwrap();
+        cache.write_batch_owned(&mk(2, 64), "beta", 64).unwrap();
+        let per = cache.stats_per_model().unwrap();
+        assert_eq!(per.len(), 2);
+        // Order: COUNT(*) DESC — alpha first.
+        assert_eq!(per[0].model_id, "alpha");
+        assert_eq!(per[0].entries, 5);
+        assert_eq!(per[1].model_id, "beta");
+        assert_eq!(per[1].entries, 2);
+    }
+
+    /// `insert_many` groups by model_id and writes all entries.
+    #[test]
+    fn test_insert_many_grouped_by_model() {
+        let (cache, _dir) = test_cache();
+        let entries: Vec<(Vec<u8>, String, Vec<f32>)> = vec![
+            (
+                "ha".bytes().collect(),
+                "modelA".to_string(),
+                make_embedding(32, 1.0),
+            ),
+            (
+                "hb".bytes().collect(),
+                "modelB".to_string(),
+                make_embedding(32, 2.0),
+            ),
+            (
+                "hc".bytes().collect(),
+                "modelA".to_string(),
+                make_embedding(32, 3.0),
+            ),
+        ];
+        let n = cache.insert_many(&entries, 32).unwrap();
+        assert_eq!(n, 3);
+        let per = cache.stats_per_model().unwrap();
+        let total: u64 = per.iter().map(|p| p.entries).sum();
+        assert_eq!(total, 3);
+    }
+
+    /// `partition` reports a miss when the cached entry has a stale dim
+    /// (different model dim than expected). Re-embed path is the caller's.
+    #[test]
+    fn test_partition_dim_mismatch_treated_as_miss() {
+        let (cache, _dir) = test_cache();
+        // Cache a 128-dim entry under model_z.
+        let entries = vec![("hd".to_string(), make_embedding(128, 0.5))];
+        cache.write_batch_owned(&entries, "model_z", 128).unwrap();
+        // Query for the same hash + model but expect dim=64 — should miss.
+        let items = vec!["hd"];
+        let (cached, missed) = cache
+            .partition(&items, "model_z", 64, |s: &&str| *s)
+            .unwrap();
+        assert!(cached.is_empty());
+        assert_eq!(missed.len(), 1);
+    }
+
+    /// Project default path resolves under the project's `.cqs/` dir.
+    #[test]
+    fn test_project_default_path() {
+        let p = EmbeddingCache::project_default_path(Path::new("/proj/.cqs"));
+        assert_eq!(p, Path::new("/proj/.cqs/embeddings_cache.db"));
+    }
+
+    /// `model_id` round-trips with HF revision suffix unchanged.
+    #[test]
+    fn test_model_id_roundtrip_preserves_hf_revision() {
+        let (cache, _dir) = test_cache();
+        let model_id = "BAAI/bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09";
+        let entries = vec![("hh".to_string(), make_embedding(64, 0.0))];
+        cache.write_batch_owned(&entries, model_id, 64).unwrap();
+        let result = cache.read_batch(&["hh"], model_id, 64).unwrap();
+        assert_eq!(result.len(), 1);
+        // Sanity: a different revision suffix MUST miss.
+        let other = "BAAI/bge-large-en-v1.5@aaaa1111";
+        let result2 = cache.read_batch(&["hh"], other, 64).unwrap();
+        assert!(result2.is_empty());
     }
 }
 

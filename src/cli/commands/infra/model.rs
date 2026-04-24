@@ -139,7 +139,7 @@ fn cmd_model_show(json: bool) -> Result<()> {
 
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+    let index_path = cqs::resolve_index_db(&cqs_dir);
 
     if !index_path.exists() {
         bail!(
@@ -262,7 +262,7 @@ fn cmd_model_swap(cli: &Cli, preset: &str, no_backup: bool, json: bool) -> Resul
 
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+    let index_path = cqs::resolve_index_db(&cqs_dir);
 
     if !index_path.exists() {
         bail!(
@@ -812,7 +812,7 @@ fn restore_from_backup(cqs_dir: &Path, backup: &Path) -> Result<()> {
 fn read_current_model_name() -> Option<String> {
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+    let index_path = cqs::resolve_index_db(&cqs_dir);
     if !index_path.exists() {
         return None;
     }

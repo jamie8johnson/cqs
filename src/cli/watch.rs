@@ -1270,11 +1270,40 @@ pub fn cmd_watch(
         debounce_ms
     };
 
-    let cqs_dir = cqs::resolve_index_dir(&root);
+    let project_cqs_dir = cqs::resolve_index_dir(&root);
+
+    // Migration: ensure legacy `.cqs/index.db` (if present) is moved to
+    // `.cqs/slots/default/` before watch hooks the index file. This is
+    // idempotent — the migration runs at top of `dispatch::run_with`
+    // already, so this is a belt-and-braces guard for daemon-only paths
+    // (cqs-watch systemd service launched directly via `cqs watch --serve`
+    // before any other CLI invocation triggered the migration).
+    if project_cqs_dir.exists() {
+        if let Err(e) = cqs::slot::migrate_legacy_index_to_default_slot(&project_cqs_dir) {
+            tracing::warn!(error = %e, "slot migration failed inside watch boot; continuing without it");
+        }
+    }
+
+    // Resolve active slot at daemon startup. The daemon binds to whichever
+    // slot is active at this moment; promotion afterwards requires a daemon
+    // restart per spec §Daemon.
+    let active_slot = cqs::slot::resolve_slot_name(cli.slot.as_deref(), &project_cqs_dir)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    tracing::info!(
+        slot = %active_slot.name,
+        source = active_slot.source.as_str(),
+        "daemon bound to slot"
+    );
+
+    let cqs_dir = if cqs::slot::slots_root(&project_cqs_dir).exists() {
+        cqs::resolve_slot_dir(&project_cqs_dir, &active_slot.name)
+    } else {
+        project_cqs_dir.clone()
+    };
     let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
 
     if !index_path.exists() {
-        bail!("No index found. Run 'cqs index' first.");
+        bail!("No index found at {}. Run 'cqs index' first (or 'cqs index --slot {}' if the slot exists but is empty).", index_path.display(), active_slot.name);
     }
 
     // Socket listener BEFORE watcher scan — daemon is immediately queryable
@@ -1282,7 +1311,10 @@ pub fn cmd_watch(
     // Unix domain sockets are not available on Windows.
     #[cfg(unix)]
     let mut socket_listener = if serve {
-        let sock_path = super::daemon_socket_path(&cqs_dir);
+        // Daemon socket is keyed by the project-level `.cqs/` dir so all
+        // slots share one socket — the daemon serves whichever slot was
+        // active at startup, but the socket is per-project not per-slot.
+        let sock_path = super::daemon_socket_path(&project_cqs_dir);
         if sock_path.exists() {
             match std::os::unix::net::UnixStream::connect(&sock_path) {
                 Ok(_) => {
@@ -1940,7 +1972,11 @@ pub fn cmd_watch(
                     // piggybacks on the existing worker pool rather than
                     // spinning up a fresh current_thread runtime.
                     if last_cache_evict.elapsed() >= Duration::from_secs(3600) {
-                        super::batch::evict_global_embedding_cache_with_runtime(
+                        let project_cqs_dir = cqs::resolve_index_dir(&root);
+                        let cache_path =
+                            cqs::cache::EmbeddingCache::project_default_path(&project_cqs_dir);
+                        super::batch::evict_embeddings_cache_with_runtime(
+                            &cache_path,
                             "watch reindex cycle",
                             Some(Arc::clone(&shared_rt)),
                         );

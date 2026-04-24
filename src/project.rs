@@ -117,8 +117,12 @@ impl ProjectRegistry {
 
     /// Register a project (replaces existing entry with same name)
     pub fn register(&mut self, name: String, path: PathBuf) -> Result<(), ProjectError> {
-        // Validate the path has a .cqs (or legacy .cq) directory
-        if !path.join(".cqs/index.db").exists() && !path.join(".cq/index.db").exists() {
+        // Validate the path has a .cqs (or legacy .cq) directory.
+        // Post-slots layout: `.cqs/slots/<active>/index.db`. Pre-slots layout:
+        // `.cqs/index.db`. Pre-v0.9.7 layout: `.cq/index.db`.
+        let cqs_dir = path.join(".cqs");
+        let has_cqs = cqs_dir.exists() && crate::resolve_index_db(&cqs_dir).exists();
+        if !has_cqs && !path.join(".cq/index.db").exists() {
             return Err(ProjectError::NotFound(format!(
                 "No cqs index found at {}. Run 'cqs init && cqs index' there first.",
                 path.display()
@@ -304,11 +308,13 @@ fn search_single_project(
     threshold: f32,
 ) -> Result<Vec<CrossProjectResult>, anyhow::Error> {
     let _span = tracing::info_span!("search_single_project", project = %entry.name).entered();
-    // Prefer .cqs, fall back to legacy .cq
+    // Prefer .cqs (with slot resolution), fall back to legacy .cq.
+    // `resolve_index_db` handles slots/<active>/index.db AND pre-slots
+    // `.cqs/index.db` for unmigrated cross-project entries.
     let index_path = {
-        let new_path = entry.path.join(".cqs/index.db");
-        if new_path.exists() {
-            new_path
+        let cqs_dir = entry.path.join(".cqs");
+        if cqs_dir.exists() {
+            crate::resolve_index_db(&cqs_dir)
         } else {
             entry.path.join(".cq/index.db")
         }

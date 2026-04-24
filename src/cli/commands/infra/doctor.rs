@@ -117,7 +117,19 @@ pub(crate) fn cmd_doctor(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_doctor", fix, verbose, json).entered();
     let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
+    let project_cqs_dir = cqs::resolve_index_dir(&root);
+
+    // Resolve active slot for the local project. Pre-slots layout (no
+    // `.cqs/slots/` yet) keeps `cqs_dir == project_cqs_dir`; post-migration
+    // we descend into `.cqs/slots/<active>/`.
+    let active_slot_name = cqs::slot::resolve_slot_name(None, &project_cqs_dir)
+        .map(|r| r.name)
+        .unwrap_or_else(|_| cqs::slot::DEFAULT_SLOT.to_string());
+    let cqs_dir = if cqs::slot::slots_root(&project_cqs_dir).exists() {
+        cqs::resolve_slot_dir(&project_cqs_dir, &active_slot_name)
+    } else {
+        project_cqs_dir.clone()
+    };
     let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
     let mut any_failed = false;
     let mut issues: Vec<DoctorIssue> = Vec::new();
@@ -388,7 +400,7 @@ pub(crate) fn cmd_doctor(
         out(json, "");
         out(json, "References:");
         for r in &config.references {
-            let db_path = r.path.join(cqs::INDEX_DB_FILENAME);
+            let db_path = cqs::resolve_index_db(&cqs::resolve_index_dir(&r.path));
             if !r.path.exists() {
                 out(
                     json,
@@ -702,6 +714,9 @@ struct VerboseReport {
     config: ConfigSummary,
     /// Every `CQS_*` env var currently set, with value.
     env: Vec<EnvVar>,
+    /// Active slot + per-slot presence. New in v1.30.0 (spec
+    /// `2026-04-24-embeddings-cache-and-slots.md`).
+    slots: SlotsSection,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -826,11 +841,17 @@ fn build_verbose_report(
 
     let model_files = collect_model_files(&resolved);
 
-    let daemon = collect_daemon_state(cqs_dir);
+    // Daemon socket is keyed by the project-level `.cqs/` dir, NOT the slot
+    // dir. Climb out of `slots/<name>/` if the cqs_dir we were handed lives
+    // under one. Pre-slots layout: cqs_dir IS the project dir.
+    let project_cqs_dir = project_cqs_dir_from(cqs_dir);
+    let daemon = collect_daemon_state(&project_cqs_dir);
 
     let config_summary = collect_config_summary(project_root, config);
 
     let env = collect_cqs_env_vars();
+
+    let slots = collect_slots_section(&project_cqs_dir);
 
     VerboseReport {
         project_root: project_root.to_path_buf(),
@@ -851,6 +872,74 @@ fn build_verbose_report(
         index: index_meta,
         config: config_summary,
         env,
+        slots,
+    }
+}
+
+/// Climb out of `slots/<name>/` to the project-level `.cqs/` dir if the
+/// caller handed us a slot dir; pre-slots returns `cqs_dir` unchanged.
+///
+/// Detection: the parent of the slot dir is named `slots`, and its parent
+/// is the project `.cqs/`. Anything else is treated as "already project-level".
+fn project_cqs_dir_from(cqs_dir: &Path) -> std::path::PathBuf {
+    if let Some(parent) = cqs_dir.parent() {
+        if parent.file_name().map(|n| n == "slots").unwrap_or(false) {
+            if let Some(grand) = parent.parent() {
+                return grand.to_path_buf();
+            }
+        }
+    }
+    cqs_dir.to_path_buf()
+}
+
+/// Slot section of the doctor verbose report — surfaces the active slot
+/// name + per-slot health (does the dir have an index.db?).
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct SlotsSection {
+    pub active_slot: String,
+    pub active_slot_source: String,
+    pub active_slot_file: String,
+    pub slots: Vec<SlotsRow>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct SlotsRow {
+    pub name: String,
+    pub indexed: bool,
+    pub path: String,
+}
+
+fn collect_slots_section(project_cqs_dir: &Path) -> SlotsSection {
+    let resolved = match cqs::slot::resolve_slot_name(None, project_cqs_dir) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "slot resolution failed inside doctor");
+            cqs::slot::ResolvedSlot {
+                name: cqs::slot::DEFAULT_SLOT.to_string(),
+                source: cqs::slot::SlotSource::Fallback,
+            }
+        }
+    };
+    let names = cqs::slot::list_slots(project_cqs_dir).unwrap_or_default();
+    let rows = names
+        .into_iter()
+        .map(|n| {
+            let dir = cqs::resolve_slot_dir(project_cqs_dir, &n);
+            let indexed = dir.join(cqs::INDEX_DB_FILENAME).exists();
+            SlotsRow {
+                name: n,
+                indexed,
+                path: dir.display().to_string(),
+            }
+        })
+        .collect();
+    SlotsSection {
+        active_slot: resolved.name,
+        active_slot_source: resolved.source.as_str().to_string(),
+        active_slot_file: cqs::slot::active_slot_path(project_cqs_dir)
+            .display()
+            .to_string(),
+        slots: rows,
     }
 }
 
@@ -1288,6 +1377,31 @@ fn print_verbose_report(r: &VerboseReport) {
         }
         None => {
             println!("  socket_path:      (n/a — non-Unix platform)");
+        }
+    }
+    println!();
+
+    println!("{}", "Slots:".bold());
+    println!(
+        "  active:           {} ({})",
+        r.slots.active_slot, r.slots.active_slot_source
+    );
+    println!("  active_slot_file: {}", r.slots.active_slot_file);
+    if r.slots.slots.is_empty() {
+        println!("  (no slots — pre-migration / never indexed)");
+    } else {
+        for s in &r.slots.slots {
+            let mark = if s.indexed {
+                "[\u{2713}]".green().to_string()
+            } else {
+                "[?]".yellow().to_string()
+            };
+            let active_mark = if s.name == r.slots.active_slot {
+                "*".green().bold().to_string()
+            } else {
+                " ".to_string()
+            };
+            println!("  {} {} {:<20} {}", active_mark, mark, s.name, s.path);
         }
     }
     println!();

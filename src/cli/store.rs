@@ -10,6 +10,65 @@ use anyhow::Result;
 use super::config::find_project_root;
 use super::definitions;
 
+/// Bundle of paths produced by [`resolve_slot_paths`] — slot-local index +
+/// project-level metadata in one struct so call sites don't have to re-derive
+/// either.
+#[derive(Debug, Clone)]
+pub(crate) struct SlotPaths {
+    /// Project root (`<root>` — directory holding `.cqs/`).
+    pub root: PathBuf,
+    /// Project-level `.cqs/` (telemetry, daemon socket, embeddings_cache.db,
+    /// active_slot pointer, slots/).
+    pub project_cqs_dir: PathBuf,
+    /// Slot dir `.cqs/slots/<name>/` (holds index.db, hnsw_*, splade.*).
+    pub slot_dir: PathBuf,
+    /// Slot name (validated, post-resolution).
+    pub slot_name: String,
+}
+
+impl SlotPaths {
+    pub fn index_path(&self) -> PathBuf {
+        self.slot_dir.join(cqs::INDEX_DB_FILENAME)
+    }
+}
+
+/// Resolve `--slot` / `CQS_SLOT` / `.cqs/active_slot` / "default" into the
+/// concrete slot dir, falling back to a legacy `.cqs/index.db` layout when
+/// `slots/` doesn't yet exist (pre-migration / never-indexed projects).
+pub(crate) fn resolve_slot_paths(slot_flag: Option<&str>) -> Result<SlotPaths> {
+    let _span = tracing::debug_span!("resolve_slot_paths", slot_flag).entered();
+    let root = find_project_root();
+    let project_cqs_dir = cqs::resolve_index_dir(&root);
+
+    // Pre-slots layout (legacy): `.cqs/index.db` directly under project_cqs_dir.
+    // Path is returned as a fake slot of name "default" so downstream code
+    // that joins INDEX_DB_FILENAME against `slot_dir` finds the existing file.
+    let resolved = cqs::slot::resolve_slot_name(slot_flag, &project_cqs_dir)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let slot_dir = cqs::resolve_slot_dir(&project_cqs_dir, &resolved.name);
+    let slots_root = cqs::slot::slots_root(&project_cqs_dir);
+
+    // If neither the slot dir nor the legacy `.cqs/index.db` is present, we
+    // still return the slot_dir form so `open_project_store` can produce a
+    // clean "Index not found" error pointing at the modern path.
+    if !slots_root.exists() && project_cqs_dir.join(cqs::INDEX_DB_FILENAME).exists() {
+        // Pre-slots layout — index.db sits directly in `.cqs/`. Treat
+        // `.cqs/` as the slot dir for this read.
+        return Ok(SlotPaths {
+            root,
+            project_cqs_dir: project_cqs_dir.clone(),
+            slot_dir: project_cqs_dir,
+            slot_name: cqs::slot::DEFAULT_SLOT.to_string(),
+        });
+    }
+    Ok(SlotPaths {
+        root,
+        project_cqs_dir,
+        slot_dir,
+        slot_name: resolved.name,
+    })
+}
+
 /// Shared helper: locate project root and index, open store with the given opener.
 ///
 /// Generic over the typestate returned by `opener`, so both `Store::open`
@@ -17,28 +76,46 @@ use super::definitions;
 /// (→ `Store<ReadOnly>`) compose through the same helper.
 fn open_store_with<Mode>(
     opener: fn(&Path) -> std::result::Result<cqs::Store<Mode>, cqs::store::StoreError>,
-) -> Result<(cqs::Store<Mode>, PathBuf, PathBuf)> {
+    slot_flag: Option<&str>,
+) -> Result<(cqs::Store<Mode>, SlotPaths)> {
     // P3 #131: span on the shared opener so both `open_project_store` and
     // `open_project_store_readonly` (which fan into here) get consistent
     // tracing identity covering the index existence check + open.
     let _span = tracing::info_span!("open_project_store").entered();
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+    let paths = resolve_slot_paths(slot_flag)?;
+    let index_path = paths.index_path();
 
     if !index_path.exists() {
-        anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
+        anyhow::bail!(
+            "Index not found at {}. Run `cqs init && cqs index` (or `cqs index --slot {}` if the slot exists but is empty).",
+            index_path.display(),
+            paths.slot_name,
+        );
     }
 
     let store = opener(&index_path)
         .map_err(|e| anyhow::anyhow!("Failed to open index at {}: {}", index_path.display(), e))?;
-    Ok((store, root, cqs_dir))
+    Ok((store, paths))
 }
 
-/// Open the project store, returning the store, project root, and index directory.
+/// Open the project store, returning the store, project root, and slot dir.
 /// Bails with a user-friendly message if no index exists.
+///
+/// Kept for legacy in-tree callers that don't (yet) flow through
+/// `CommandContext`. New code should prefer
+/// [`open_project_store_for_slot`] which honors the `--slot` flag.
+#[allow(dead_code)]
 pub(crate) fn open_project_store() -> Result<(cqs::Store, PathBuf, PathBuf)> {
-    open_store_with(cqs::Store::open)
+    let (store, paths) = open_store_with(cqs::Store::open, None)?;
+    Ok((store, paths.root, paths.slot_dir))
+}
+
+/// Slot-aware variant of [`open_project_store`]. Honors the resolved slot flag
+/// from CLI / env / file.
+pub(crate) fn open_project_store_for_slot(
+    slot_flag: Option<&str>,
+) -> Result<(cqs::Store, SlotPaths)> {
+    open_store_with(cqs::Store::open, slot_flag)
 }
 
 /// Open the project store with a single-threaded runtime for read-only commands.
@@ -47,7 +124,16 @@ pub(crate) fn open_project_store() -> Result<(cqs::Store, PathBuf, PathBuf)> {
 /// Keeps full 256MB mmap and 16MB cache for search performance.
 pub(crate) fn open_project_store_readonly(
 ) -> Result<(cqs::Store<cqs::store::ReadOnly>, PathBuf, PathBuf)> {
-    open_store_with(cqs::Store::open_readonly_pooled)
+    let (store, paths) = open_store_with(cqs::Store::open_readonly_pooled, None)?;
+    Ok((store, paths.root, paths.slot_dir))
+}
+
+/// Slot-aware read-only open. Honors `--slot`/env/file resolution for query
+/// commands flowing through [`CommandContext`].
+pub(crate) fn open_project_store_readonly_for_slot(
+    slot_flag: Option<&str>,
+) -> Result<(cqs::Store<cqs::store::ReadOnly>, SlotPaths)> {
+    open_store_with(cqs::Store::open_readonly_pooled, slot_flag)
 }
 
 /// Shared context for CLI commands that need an open store.
@@ -68,7 +154,24 @@ pub(crate) struct CommandContext<'a, Mode = cqs::store::ReadWrite> {
     pub cli: &'a definitions::Cli,
     pub store: cqs::Store<Mode>,
     pub root: PathBuf,
+    /// Slot dir — `.cqs/slots/<active>/`. Holds index.db, hnsw_*, splade.*.
+    /// Most call sites use this as the "where do my index files live" anchor.
     pub cqs_dir: PathBuf,
+    /// Project-level `.cqs/` dir (parent of `slots/`). Holds the
+    /// embeddings_cache.db, the active_slot pointer, telemetry, daemon
+    /// socket. Pre-slots projects have `cqs_dir == project_cqs_dir`.
+    ///
+    /// Surfaced as `pub` for handlers that need to open the project-scoped
+    /// embeddings cache, write the active_slot pointer, or interact with
+    /// the daemon socket — all project-level concerns rather than
+    /// slot-local ones.
+    #[allow(dead_code)] // wired into doctor + handlers progressively; spec §Architecture
+    pub project_cqs_dir: PathBuf,
+    /// Slot name resolved from `--slot` / `CQS_SLOT` / `.cqs/active_slot` /
+    /// fallback "default". Available so handlers can include the slot in
+    /// their tracing fields and `--json` envelopes without re-resolving.
+    #[allow(dead_code)] // wired into doctor + handlers progressively
+    pub slot_name: String,
     reranker: OnceLock<cqs::Reranker>,
     embedder: OnceLock<cqs::Embedder>,
     splade_encoder: OnceLock<Option<cqs::splade::SpladeEncoder>>,
@@ -83,12 +186,14 @@ pub(crate) struct CommandContext<'a, Mode = cqs::store::ReadWrite> {
 impl<'a> CommandContext<'a, cqs::store::ReadOnly> {
     /// Open the project store in read-only mode and build a command context.
     pub fn open_readonly(cli: &'a definitions::Cli) -> Result<Self> {
-        let (store, root, cqs_dir) = open_project_store_readonly()?;
+        let (store, paths) = open_project_store_readonly_for_slot(cli.slot.as_deref())?;
         Ok(Self {
             cli,
             store,
-            root,
-            cqs_dir,
+            root: paths.root,
+            cqs_dir: paths.slot_dir,
+            project_cqs_dir: paths.project_cqs_dir,
+            slot_name: paths.slot_name,
             reranker: OnceLock::new(),
             embedder: OnceLock::new(),
             splade_encoder: OnceLock::new(),
@@ -105,12 +210,14 @@ impl<'a> CommandContext<'a, cqs::store::ReadWrite> {
     /// from `CommandContext` but also need a writable store.
     pub fn open_readwrite(cli: &'a definitions::Cli) -> Result<Self> {
         let _span = tracing::info_span!("CommandContext::open_readwrite").entered();
-        let (store, root, cqs_dir) = open_project_store()?;
+        let (store, paths) = open_project_store_for_slot(cli.slot.as_deref())?;
         Ok(Self {
             cli,
             store,
-            root,
-            cqs_dir,
+            root: paths.root,
+            cqs_dir: paths.slot_dir,
+            project_cqs_dir: paths.project_cqs_dir,
+            slot_name: paths.slot_name,
             reranker: OnceLock::new(),
             embedder: OnceLock::new(),
             splade_encoder: OnceLock::new(),
