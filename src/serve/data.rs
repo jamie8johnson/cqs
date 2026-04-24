@@ -11,6 +11,18 @@ use sqlx::Row;
 
 use crate::store::{ReadOnly, Store, StoreError};
 
+/// SEC-3: absolute ceiling on nodes returned by `/api/graph` even when the
+/// client doesn't pass `?max_nodes=N`. Prevents a single unauth request from
+/// materialising the full chunks table (millions of rows) in process memory.
+pub(crate) const ABS_MAX_GRAPH_NODES: usize = 50_000;
+
+/// SEC-3: absolute ceiling on edges returned by `/api/graph`. function_calls
+/// typically has ~10× the rows of chunks, so cap higher but still bound.
+pub(crate) const ABS_MAX_GRAPH_EDGES: usize = 500_000;
+
+/// SEC-3: absolute ceiling on nodes returned by `/api/embed/2d`.
+pub(crate) const ABS_MAX_CLUSTER_NODES: usize = 50_000;
+
 /// One node in the call graph. Cytoscape renders one of these per
 /// chunk (or per windowed-chunk row, since each window has its own
 /// embedding + identity).
@@ -176,19 +188,16 @@ pub(crate) struct ClusterResponse {
 
 /// Build the graph response from the store.
 ///
-/// Two paths:
-/// - **Capped** (`max_nodes = Some(N)`) — prerank chunks by global
-///   caller count in SQL, fetch only the top N + only the edges whose
-///   endpoints touch that name set. The whole-corpus scan + Rust-side
-///   truncate that earlier versions did was the dominant cost on the
-///   serve UI's first paint (perf step 4-1).
-/// - **Full** (`max_nodes = None`) — fetch every chunk + every edge, same
-///   as before. Used when the caller wants the complete graph (rare in
-///   the UI; useful for tooling).
+/// Always capped: preranks chunks by global caller count in SQL, fetches
+/// only the top N + only the edges whose endpoints touch that name set.
+/// When the caller passes `max_nodes = None`, `ABS_MAX_GRAPH_NODES` is
+/// substituted; when they pass a value larger than the hard ceiling, the
+/// value is clamped. SEC-3 closes the DoS vector of a single unauth
+/// request materialising millions of chunk rows into memory.
 ///
-/// In both paths the per-node `n_callers`/`n_callees`/`dead` fields reflect
-/// the GLOBAL degree of the chunk (so node sizing on the cap'd response
-/// still represents real importance, not just visible-edge degree).
+/// The per-node `n_callers`/`n_callees`/`dead` fields reflect the GLOBAL
+/// degree of the chunk (so node sizing on the cap'd response still
+/// represents real importance, not just visible-edge degree).
 pub(crate) fn build_graph(
     store: &Store<ReadOnly>,
     file_filter: Option<&str>,
@@ -206,63 +215,42 @@ pub(crate) fn build_graph(
     store.rt.block_on(async {
         // 1. Chunk fetch.
         //
-        // When capped: a correlated subquery counts function_calls per name
-        // for the rank. ORDER BY ... LIMIT N pushes the truncation down to
-        // SQL so we don't pull the whole table. The subquery is the same
-        // approximation we'd make in Rust anyway: it counts the *name* not
-        // the chunk, which over-counts for shared-name overloads — but
-        // that's exactly what the post-fetch resolution does too.
+        // SEC-3: always bind an effective cap. When the client omits
+        // `?max_nodes`, fall back to ABS_MAX_GRAPH_NODES so a single
+        // request can't materialise a million chunks into memory. The
+        // user-supplied value is clamped to ABS_MAX_GRAPH_NODES too so
+        // `?max_nodes=999999999` can't be used as a DoS vector either.
         //
-        // When uncapped: keep the simple SELECT *. The cost lives in
-        // edge resolution; a correlated subquery here would just be wasted
-        // work.
-        let (node_sql, want_n_callers_col) = if max_nodes.is_some() {
-            (
-                "SELECT c.id, c.name, c.chunk_type, c.language, c.origin, \
-                        c.line_start, c.line_end, \
-                        COALESCE((SELECT COUNT(*) FROM function_calls fc \
-                                  WHERE fc.callee_name = c.name), 0) AS n_callers_global \
-                 FROM chunks c \
-                 WHERE 1=1"
-                    .to_string(),
-                true,
-            )
-        } else {
-            (
-                "SELECT id, name, chunk_type, language, origin, line_start, line_end \
-                 FROM chunks WHERE 1=1"
-                    .to_string(),
-                false,
-            )
-        };
-
-        let mut node_query = node_sql;
+        // The correlated subquery counts function_calls per name for
+        // the rank. ORDER BY ... LIMIT N pushes the truncation down to
+        // SQL so we don't pull the whole table. The subquery is the
+        // same approximation we'd make in Rust anyway: it counts the
+        // *name* not the chunk, which over-counts for shared-name
+        // overloads — but that's exactly what the post-fetch resolution
+        // does too.
+        let effective_cap = max_nodes
+            .unwrap_or(ABS_MAX_GRAPH_NODES)
+            .min(ABS_MAX_GRAPH_NODES);
+        let mut node_query = "SELECT c.id, c.name, c.chunk_type, c.language, c.origin, \
+                    c.line_start, c.line_end, \
+                    COALESCE((SELECT COUNT(*) FROM function_calls fc \
+                              WHERE fc.callee_name = c.name), 0) AS n_callers_global \
+             FROM chunks c \
+             WHERE 1=1"
+            .to_string();
         let mut binds: Vec<String> = Vec::new();
         if let Some(file) = file_filter {
-            node_query.push_str(if want_n_callers_col {
-                " AND c.origin LIKE ?"
-            } else {
-                " AND origin LIKE ?"
-            });
+            node_query.push_str(" AND c.origin LIKE ?");
             binds.push(format!("{file}%"));
         }
         if let Some(kind) = kind_filter {
-            node_query.push_str(if want_n_callers_col {
-                " AND c.chunk_type = ?"
-            } else {
-                " AND chunk_type = ?"
-            });
+            node_query.push_str(" AND c.chunk_type = ?");
             binds.push(kind.to_string());
         }
-        if let Some(cap) = max_nodes {
-            // Stable tie-break by id so equal-rank chunks don't reshuffle
-            // between requests.
-            node_query.push_str(" ORDER BY n_callers_global DESC, c.id ASC LIMIT ?");
-            binds.push(cap.to_string());
-        } else {
-            // Stable order so the response is deterministic for caching.
-            node_query.push_str(" ORDER BY id");
-        }
+        // Stable tie-break by id so equal-rank chunks don't reshuffle
+        // between requests.
+        node_query.push_str(" ORDER BY n_callers_global DESC, c.id ASC LIMIT ?");
+        binds.push(effective_cap.to_string());
 
         let mut q = sqlx::query(&node_query);
         for b in &binds {
@@ -286,10 +274,8 @@ pub(crate) fn build_graph(
             let origin: String = row.get("origin");
             let line_start: i64 = row.get("line_start");
             let line_end: i64 = row.get("line_end");
-            if want_n_callers_col {
-                let n: i64 = row.get("n_callers_global");
-                prelim_n_callers.insert(id.clone(), n.max(0) as u32);
-            }
+            let n: i64 = row.get("n_callers_global");
+            prelim_n_callers.insert(id.clone(), n.max(0) as u32);
             nodes_by_id.insert(
                 id.clone(),
                 Node {
@@ -310,12 +296,13 @@ pub(crate) fn build_graph(
 
         // 2. Edge fetch.
         //
-        // Capped: restrict to edges whose callee_name OR caller_name is in
-        // the visible set. With ~300 chunks and 1-2 unique names per
-        // chunk, the IN list is well under SQLite's 32k-bind limit.
-        //
-        // Uncapped: pull all edges (matches the historical behavior).
-        let edge_rows = if max_nodes.is_some() {
+        // SEC-3: always use the name-scoped edge fetch and always bind
+        // a hard LIMIT. The previous uncapped branch (`SELECT fc.*`)
+        // would return the entire function_calls table (tens of
+        // millions of rows on a large monorepo); the IN-scoped query
+        // could also blow up if the visible-node name set grew large,
+        // so ABS_MAX_GRAPH_EDGES caps it unconditionally.
+        let edge_rows = {
             let mut name_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for node in nodes_by_id.values() {
                 name_set.insert(node.name.as_str());
@@ -329,7 +316,8 @@ pub(crate) fn build_graph(
                     "SELECT fc.file, fc.caller_name, fc.callee_name \
                      FROM function_calls fc \
                      WHERE fc.callee_name IN ({placeholders}) \
-                        OR fc.caller_name IN ({placeholders})"
+                        OR fc.caller_name IN ({placeholders}) \
+                     LIMIT ?"
                 );
                 let mut eq = sqlx::query(&edge_sql);
                 for n in &names {
@@ -338,15 +326,9 @@ pub(crate) fn build_graph(
                 for n in &names {
                     eq = eq.bind(*n);
                 }
+                eq = eq.bind(ABS_MAX_GRAPH_EDGES as i64);
                 eq.fetch_all(&store.pool).await?
             }
-        } else {
-            sqlx::query(
-                "SELECT fc.file, fc.caller_name, fc.callee_name \
-                 FROM function_calls fc",
-            )
-            .fetch_all(&store.pool)
-            .await?
         };
 
         // 3. Resolve edges. Same overload-disambiguation pattern as before:
@@ -400,40 +382,26 @@ pub(crate) fn build_graph(
 
         // 4. Populate per-node degree + dead flag.
         //
-        // For the capped path: n_callers comes from the SQL prelim count
-        // (global), n_callees comes from the resolved-edge count (visible).
-        // Reasoning: importance lives in n_callers (drives node size); the
-        // visible n_callees is only the calls inside the window. Showing
-        // global n_callees would mislead on the cap'd graph because the
-        // listed callees might not exist in the visible set.
-        //
-        // For the uncapped path: both come from the resolved-edge counts,
-        // which IS the global degree by definition (no truncation).
+        // n_callers comes from the SQL prelim count (global); n_callees
+        // comes from the resolved-edge count (visible). Reasoning:
+        // importance lives in n_callers (drives node size); the visible
+        // n_callees is only the calls inside the window. Showing global
+        // n_callees would mislead on the cap'd graph because the listed
+        // callees might not exist in the visible set.
         for (id, node) in nodes_by_id.iter_mut() {
-            node.n_callers = if want_n_callers_col {
-                *prelim_n_callers.get(id).unwrap_or(&0)
-            } else {
-                *caller_count.get(id).unwrap_or(&0)
-            };
+            node.n_callers = *prelim_n_callers.get(id).unwrap_or(&0);
             node.n_callees = *callee_count.get(id).unwrap_or(&0);
             node.dead = node.n_callers == 0 && node.kind != "test";
         }
 
         // 5. Drop edges whose endpoints didn't both land in the visible
-        //    set (capped path). For the uncapped path every edge is
-        //    already inside the set, so this is a no-op.
+        //    set. SEC-3 always caps at ABS_MAX_GRAPH_NODES, so this
+        //    prune is always meaningful.
         let mut nodes: Vec<Node> = nodes_by_id.into_values().collect();
-        if max_nodes.is_some() {
-            let kept: std::collections::HashSet<&str> =
-                nodes.iter().map(|n| n.id.as_str()).collect();
-            edges.retain(|e| kept.contains(e.source.as_str()) && kept.contains(e.target.as_str()));
-            // Stable response order: by descending caller count, ties by id.
-            nodes.sort_unstable_by(|a, b| {
-                b.n_callers.cmp(&a.n_callers).then_with(|| a.id.cmp(&b.id))
-            });
-        } else {
-            nodes.sort_unstable_by(|a, b| a.id.cmp(&b.id));
-        }
+        let kept: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        edges.retain(|e| kept.contains(e.source.as_str()) && kept.contains(e.target.as_str()));
+        // Stable response order: by descending caller count, ties by id.
+        nodes.sort_unstable_by(|a, b| b.n_callers.cmp(&a.n_callers).then_with(|| a.id.cmp(&b.id)));
 
         tracing::info!(
             nodes = nodes.len(),
@@ -829,11 +797,29 @@ pub(crate) fn build_cluster(
     let _span = tracing::info_span!("build_cluster", max_nodes = ?max_nodes).entered();
 
     store.rt.block_on(async {
-        // Chunks that have coords already projected.
+        // SEC-3: always bind an effective cap. When the client omits
+        // `?max_nodes`, fall back to ABS_MAX_CLUSTER_NODES so a single
+        // request can't materialise the full chunks table. The
+        // user-supplied value is clamped to ABS_MAX_CLUSTER_NODES too so
+        // `?max_nodes=999999999` can't be used as a DoS vector either.
+        let effective_cap = max_nodes
+            .unwrap_or(ABS_MAX_CLUSTER_NODES)
+            .min(ABS_MAX_CLUSTER_NODES);
+
+        // Chunks that have coords already projected. The ORDER BY id here
+        // is preserved from the pre-SEC-3 code; because it's by id rather
+        // than n_callers_global, the cap under load picks an arbitrary
+        // subset — for the UMAP cluster view that's fine (all points are
+        // semantically meaningful) and lets us skip the correlated
+        // subquery cost.
         let rows = sqlx::query(
             "SELECT id, name, chunk_type, language, origin, line_start, line_end, umap_x, umap_y \
-             FROM chunks WHERE umap_x IS NOT NULL AND umap_y IS NOT NULL ORDER BY id",
+             FROM chunks \
+             WHERE umap_x IS NOT NULL AND umap_y IS NOT NULL \
+             ORDER BY id \
+             LIMIT ?",
         )
+        .bind(effective_cap as i64)
         .fetch_all(&store.pool)
         .await?;
 
@@ -856,7 +842,13 @@ pub(crate) fn build_cluster(
             name_to_first_id.entry(name).or_insert(id);
         }
 
-        let edge_rows = sqlx::query("SELECT caller_name, callee_name FROM function_calls")
+        // SEC-3: cap the edge fetch too. function_calls can have tens of
+        // millions of rows on a large monorepo — even though the loop
+        // below filters on `name_to_first_id` membership, Rust-side
+        // filtering after pulling every row over the wire is the DoS
+        // vector we're closing.
+        let edge_rows = sqlx::query("SELECT caller_name, callee_name FROM function_calls LIMIT ?")
+            .bind(ABS_MAX_GRAPH_EDGES as i64)
             .fetch_all(&store.pool)
             .await?;
         for row in edge_rows {
@@ -906,16 +898,19 @@ pub(crate) fn build_cluster(
             })
             .collect();
 
-        if let Some(cap) = max_nodes {
-            if nodes.len() > cap {
-                nodes.sort_unstable_by(|a, b| {
-                    b.base
-                        .n_callers
-                        .cmp(&a.base.n_callers)
-                        .then_with(|| a.base.id.cmp(&b.base.id))
-                });
-                nodes.truncate(cap);
-            }
+        // SQL already caps at `effective_cap`, so the Rust-side truncate
+        // is only meaningful when the client's `max_nodes` is BELOW the
+        // SQL cap (e.g. `?max_nodes=100` on a 50k-cap default). Sort by
+        // descending caller count so the truncation keeps the most
+        // important nodes.
+        if nodes.len() > effective_cap {
+            nodes.sort_unstable_by(|a, b| {
+                b.base
+                    .n_callers
+                    .cmp(&a.base.n_callers)
+                    .then_with(|| a.base.id.cmp(&b.base.id))
+            });
+            nodes.truncate(effective_cap);
         }
 
         tracing::info!(

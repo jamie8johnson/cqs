@@ -16,11 +16,19 @@
 //! perspective. It builds its own tokio runtime and blocks on the server
 //! future until SIGINT or the listener exits.
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use axum::{routing::get, Router};
+use axum::{
+    extract::{Request, State},
+    http::{header, StatusCode},
+    middleware::{from_fn_with_state, Next},
+    response::Response,
+    routing::get,
+    Router,
+};
 use tokio::net::TcpListener;
 use tower_http::compression::CompressionLayer;
 
@@ -43,6 +51,11 @@ pub(crate) struct AppState {
     pub(crate) store: Arc<Store<ReadOnly>>,
 }
 
+/// Allowed `Host` header values, built at router-build time from the
+/// bind address. Shared via `Arc` so the middleware closure is cheap to
+/// clone per-request.
+pub(crate) type AllowedHosts = Arc<HashSet<String>>;
+
 /// Run the `cqs serve` HTTP server.
 ///
 /// Binds to `bind_addr` (default `127.0.0.1:8080`), serves the embedded
@@ -58,7 +71,8 @@ pub fn run_server(store: Store<ReadOnly>, bind_addr: SocketAddr, quiet: bool) ->
     let state = AppState {
         store: Arc::new(store),
     };
-    let app = build_router(state);
+    let allowed_hosts = allowed_host_set(&bind_addr);
+    let app = build_router(state, allowed_hosts);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -94,7 +108,10 @@ pub fn run_server(store: Store<ReadOnly>, bind_addr: SocketAddr, quiet: bool) ->
 /// Build the axum router. Public-in-crate so integration tests can
 /// exercise the full handler tree against an in-memory store without
 /// binding a TCP port.
-pub(crate) fn build_router(state: AppState) -> Router {
+///
+/// The `allowed_hosts` allowlist is wired through a middleware that
+/// rejects DNS-rebinding attacks (see [`enforce_host_allowlist`]).
+pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
         .route("/api/stats", get(handlers::stats))
@@ -106,11 +123,70 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/", get(assets::index_html))
         .route("/static/{*path}", get(assets::static_asset))
         .with_state(state)
+        // SEC-1: Host-header allowlist closes the DNS-rebinding class.
+        // Must sit inside the compression layer so rejections skip the
+        // gzip round-trip.
+        .layer(from_fn_with_state(allowed_hosts, enforce_host_allowlist))
         // Gzip every response axum sends. The graph + cluster JSON
         // payloads compress ~5-10× (1-2 MB → 150-300 KB on the cqs
         // corpus); vendor JS bundles compress ~3×. Negligible CPU on
         // the server side, big win on parse/transfer time at the browser.
         .layer(CompressionLayer::new())
+}
+
+/// Build the allowed-`Host` set for DNS-rebinding protection.
+///
+/// Accepts:
+/// - `localhost`, `127.0.0.1`, `[::1]` (bare, and with the bound port)
+/// - The exact `host:port` the server is bound to (e.g. `192.168.1.5:8080`)
+/// - The bind IP on its own, so an explicit LAN bind still answers when
+///   the client sends the naked IP as `Host:`
+///
+/// Any other `Host` value is refused by [`enforce_host_allowlist`].
+pub(crate) fn allowed_host_set(bind_addr: &SocketAddr) -> AllowedHosts {
+    let port = bind_addr.port();
+    let mut set = HashSet::new();
+    for host in ["localhost", "127.0.0.1", "[::1]"] {
+        set.insert(host.to_string());
+        set.insert(format!("{host}:{port}"));
+    }
+    // SocketAddr::to_string wraps IPv6 in brackets automatically.
+    set.insert(bind_addr.to_string());
+    set.insert(bind_addr.ip().to_string());
+    Arc::new(set)
+}
+
+/// axum middleware: reject requests whose `Host` header isn't on the
+/// allowlist.
+///
+/// SEC-1 (DNS-rebinding). An attacker page at `evil.example.com` with
+/// a TTL-0 DNS record pointing at `127.0.0.1` can make the victim's
+/// browser fetch `http://evil.example.com:8080/api/chunk/<id>` and
+/// same-origin it to the running cqs serve. The browser *sends* the
+/// attacker hostname in the `Host:` header, so rejecting unknown hosts
+/// closes the class.
+///
+/// A missing `Host:` header passes through — HTTP/1.1 requires one and
+/// hyper always provides one on real traffic, but unit tests built via
+/// `Request::builder()` without a `.uri()` that includes a host don't
+/// get one synthesized, and we'd rather not break that ergonomic.
+async fn enforce_host_allowlist(
+    State(allowed): State<AllowedHosts>,
+    req: Request,
+    next: Next,
+) -> Result<Response, (StatusCode, &'static str)> {
+    match req.headers().get(header::HOST) {
+        None => Ok(next.run(req).await),
+        Some(value) => {
+            let host = value.to_str().unwrap_or("");
+            if allowed.contains(host) {
+                Ok(next.run(req).await)
+            } else {
+                tracing::warn!(host = %host, "serve: rejected request with disallowed Host header");
+                Err((StatusCode::BAD_REQUEST, "disallowed Host header"))
+            }
+        }
+    }
 }
 
 /// Listen for Ctrl-C to trigger axum's graceful shutdown.

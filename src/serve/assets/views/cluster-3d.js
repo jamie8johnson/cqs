@@ -16,6 +16,17 @@
 (function (window) {
   "use strict";
 
+  // Local XSS guard: this IIFE can't reach app.js's escapeHtml, so mirror it here
+  // for any server-derived string interpolated into innerHTML.
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
   const TYPE_COLORS = {
     function: "#4a86e8",
     method: "#3d78d8",
@@ -84,7 +95,7 @@
         try {
           await window.cqsEnsureThreeBundle();
         } catch (e) {
-          container.innerHTML = `<div class="error" style="margin:24px">3D bundle failed to load: ${e.message}</div>`;
+          container.innerHTML = `<div class="error" style="margin:24px">3D bundle failed to load: ${escapeHtml(e.message)}</div>`;
           throw e;
         }
       }
@@ -111,7 +122,7 @@
         const resp = await fetch(`/api/embed/2d?${params}`);
         if (!resp.ok) {
           const body = await resp.text();
-          this.container.innerHTML = `<div class="error" style="margin:24px">cluster HTTP ${resp.status}: ${body.slice(0, 200)}</div>`;
+          this.container.innerHTML = `<div class="error" style="margin:24px">cluster HTTP ${resp.status}: ${escapeHtml(body.slice(0, 200))}</div>`;
           return null;
         }
         const data = await resp.json();
@@ -124,7 +135,7 @@
         }
         return data;
       } catch (e) {
-        this.container.innerHTML = `<div class="error" style="margin:24px">cluster fetch error: ${e.message}</div>`;
+        this.container.innerHTML = `<div class="error" style="margin:24px">cluster fetch error: ${escapeHtml(e.message)}</div>`;
         return null;
       }
     },

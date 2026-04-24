@@ -73,10 +73,21 @@ impl Store<ReadWrite> {
     ) -> Result<u32, StoreError> {
         let _span = tracing::info_span!("prune_missing", existing = existing_files.len()).entered();
         self.rt.block_on(async {
+            // DS2-1: acquire the write transaction BEFORE reading origins.
+            // Reading outside the tx creates a TOCTOU window where a
+            // concurrent `cqs watch` upsert adds a chunk for a file between
+            // the SELECT and the DELETE. Because that file also isn't in
+            // the caller's `existing_files` snapshot (gathered before this
+            // call), our stale origin list would flag it as missing and
+            // wipe the just-added row on DELETE. Serialising the read
+            // under the write lock closes it — same fix class as P2 #32
+            // that hardened `prune_all`.
+            let (_guard, mut tx) = self.begin_write().await?;
+
             let rows: Vec<(String,)> = sqlx::query_as(
                 "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
             )
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
 
             // AC / CQ-V1.25-4 / CQ-V1.25-6 / PB-V1.25-7: reconcile stored origins
@@ -98,8 +109,6 @@ impl Store<ReadWrite> {
             // would leave the index inconsistent with disk.
             const BATCH_SIZE: usize = 100;
             let mut deleted = 0u32;
-
-            let (_guard, mut tx) = self.begin_write().await?;
 
             for batch in missing.chunks(BATCH_SIZE) {
                 let placeholder_str = crate::store::helpers::make_placeholders(batch.len());
@@ -328,12 +337,22 @@ impl Store<ReadWrite> {
     ) -> Result<u32, StoreError> {
         let _span = tracing::info_span!("prune_gitignored", max_paths = ?max_paths).entered();
         self.rt.block_on(async {
-            // Phase 1: collect distinct origins (Rust-side filter, outside tx
-            // so the matcher walk doesn't hold the write lock).
+            // DS2-2: acquire the write transaction BEFORE reading origins.
+            // Same TOCTOU fix as DS2-1 / P2 #32: a concurrent `cqs watch`
+            // upsert landing between the SELECT and the DELETE creates a
+            // chunk for a path the matcher will flag as ignored; the stale
+            // origin list then points DELETE at a just-inserted row. The
+            // matcher walk below is pure CPU over the already-fetched
+            // `rows` Vec (microseconds on ~10k origins) and is safe to
+            // hold the write lock across — single writer, no re-entry.
+            let (_guard, mut tx) = self.begin_write().await?;
+
+            // Phase 1 (now inside the tx): collect distinct origins via the
+            // tx's read snapshot so reads and deletes serialise as one unit.
             let rows: Vec<(String,)> = sqlx::query_as(
                 "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
             )
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
 
             let cap = max_paths.unwrap_or(usize::MAX);
@@ -365,13 +384,11 @@ impl Store<ReadWrite> {
                 return Ok(0);
             }
 
-            // Phase 2: batched delete in a single transaction. Same shape as
-            // `prune_missing` so a partial prune on crash leaves the index
-            // consistent with the remaining rows in `chunks`.
+            // Phase 2: batched delete in the SAME transaction started above.
+            // Same shape as `prune_missing` so a partial prune on crash
+            // leaves the index consistent with the remaining rows in `chunks`.
             const BATCH_SIZE: usize = 100;
             let mut deleted = 0u32;
-
-            let (_guard, mut tx) = self.begin_write().await?;
 
             for batch in ignored.chunks(BATCH_SIZE) {
                 let placeholder_str = crate::store::helpers::make_placeholders(batch.len());

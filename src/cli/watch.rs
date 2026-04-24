@@ -1081,7 +1081,11 @@ fn encode_splade_for_changed_files(
     // upsert_sparse_vectors deletes then inserts atomically).
     let mut batch: Vec<(String, String)> = Vec::new();
     for file in changed_files {
-        let origin = file.display().to_string();
+        // PB-V1.29-2: `file.display()` emits Windows backslashes, which
+        // never match the forward-slash origins stored at ingest (chunks
+        // are upserted via `normalize_path`). Using `.display()` here
+        // makes SPLADE encoding a silent no-op on Windows.
+        let origin = cqs::normalize_path(file);
         let chunks = match store.get_chunks_by_origin(&origin) {
             Ok(v) => v,
             Err(e) => {
@@ -3149,6 +3153,32 @@ mod tests {
         assert!(
             got.is_none(),
             "CQS_WATCH_INCREMENTAL_SPLADE=0 must disable the encoder"
+        );
+    }
+
+    #[test]
+    fn splade_origin_key_normalizes_backslashes() {
+        // PB-V1.29-2 regression. `encode_splade_for_changed_files` builds
+        // the DB lookup key via `cqs::normalize_path(file)`. A `PathBuf`
+        // carrying backslashes (as any Windows-canonicalized path does)
+        // must normalize to the forward-slash form stored at ingest, or
+        // `get_chunks_by_origin` returns Ok(vec![]) and SPLADE silently
+        // no-ops for the file.
+        let p = std::path::PathBuf::from(r"src\cli\watch.rs");
+        let origin = cqs::normalize_path(&p);
+        assert_eq!(
+            origin, "src/cli/watch.rs",
+            "origin key must use forward slashes to match DB origins"
+        );
+
+        // UNC verbatim prefix must be stripped too (dunce::canonicalize
+        // may leave `\\?\C:\…` on Windows). On Unix this just asserts
+        // the helper doesn't mangle a plain relative path.
+        let p2 = std::path::PathBuf::from(r"\\?\C:\repo\src\cli\watch.rs");
+        let origin2 = cqs::normalize_path(&p2);
+        assert!(
+            !origin2.contains('\\') && !origin2.starts_with(r"\\?\"),
+            "normalize_path must strip the verbatim UNC prefix: got {origin2}"
         );
     }
 
