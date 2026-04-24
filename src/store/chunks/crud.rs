@@ -542,16 +542,52 @@ impl Store<ReadWrite> {
     /// Combines chunk upsert (with FTS) and call graph upsert into one transaction,
     /// preventing inconsistency from crashes between separate operations.
     /// Chunks are inserted in batches of 52 rows (52 * 19 = 988 < SQLite's 999 limit).
+    ///
+    /// Convenience wrapper around [`Self::upsert_chunks_calls_and_prune`] without
+    /// phantom-chunk pruning. Callers that know the full live-id set for a file
+    /// (e.g. the watch loop) should call `upsert_chunks_calls_and_prune`
+    /// directly so the upsert + phantom delete share one transaction.
     pub fn upsert_chunks_and_calls(
         &self,
         chunks: &[(Chunk, Embedding)],
         source_mtime: Option<i64>,
         calls: &[(String, crate::parser::CallSite)],
     ) -> Result<usize, StoreError> {
+        self.upsert_chunks_calls_and_prune(chunks, source_mtime, calls, None, &[])
+    }
+
+    /// Atomically upsert chunks + calls AND prune phantom chunks for a file,
+    /// all inside a single `begin_write()` transaction.
+    ///
+    /// DS2-4: Before this method, `reindex_files` in the watch loop called
+    /// `upsert_chunks_and_calls` and then `delete_phantom_chunks` in two
+    /// independent transactions. A crash between the two left the index in a
+    /// half-pruned state — new chunks were visible but removed chunks were
+    /// still there, alongside a dirty HNSW flag. Merging both operations into
+    /// one tx makes the reindex all-or-nothing.
+    ///
+    /// When `prune_file` is `None`, behaves identically to the old
+    /// `upsert_chunks_and_calls` (phantom pruning is skipped). When
+    /// `prune_file` is `Some(path)`, chunks matching that `origin` whose IDs
+    /// are not present in `live_ids` are deleted alongside the upsert.
+    ///
+    /// An empty `live_ids` combined with `Some(prune_file)` intentionally
+    /// matches `delete_phantom_chunks`'s contract: "no live chunks" means
+    /// the file was emptied and every chunk for that origin is pruned.
+    pub fn upsert_chunks_calls_and_prune(
+        &self,
+        chunks: &[(Chunk, Embedding)],
+        source_mtime: Option<i64>,
+        calls: &[(String, crate::parser::CallSite)],
+        prune_file: Option<&std::path::Path>,
+        live_ids: &[&str],
+    ) -> Result<usize, StoreError> {
         let _span = tracing::info_span!(
-            "upsert_chunks_and_calls",
+            "upsert_chunks_calls_and_prune",
             chunks = chunks.len(),
-            calls = calls.len()
+            calls = calls.len(),
+            prune = prune_file.is_some(),
+            live_count = live_ids.len()
         )
         .entered();
         let dim = self.dim;
@@ -612,6 +648,93 @@ impl Store<ReadWrite> {
                             .push_bind(call.line_number as i64);
                     });
                     query_builder.build().execute(&mut *tx).await?;
+                }
+            }
+
+            // DS2-4: Phantom-chunk pruning fused into the same transaction.
+            // Mirrors `delete_phantom_chunks`, adapted to run on the open
+            // `tx` instead of opening its own. An empty `live_ids` with
+            // `Some(prune_file)` degrades to a full DELETE of the file —
+            // same contract as `delete_phantom_chunks` → `delete_by_origin`.
+            if let Some(file) = prune_file {
+                let origin_str = crate::normalize_path(file);
+                if live_ids.is_empty() {
+                    // Whole file was emptied — inline `delete_by_origin`
+                    // logic so the write stays in this tx.
+                    sqlx::query(
+                        "DELETE FROM chunks_fts WHERE id IN \
+                         (SELECT id FROM chunks WHERE origin = ?1)",
+                    )
+                    .bind(&origin_str)
+                    .execute(&mut *tx)
+                    .await?;
+                    sqlx::query("DELETE FROM chunks WHERE origin = ?1")
+                        .bind(&origin_str)
+                        .execute(&mut *tx)
+                        .await?;
+                    // NOTE: function_calls cleanup is handled by the watch
+                    // loop's `upsert_function_calls` which DELETE-then-INSERTs
+                    // the current set; same reasoning as `delete_phantom_chunks`
+                    // below. See the NOTE at the end of this block.
+                } else {
+                    // Use a temp table to avoid SQLite's 999-parameter limit —
+                    // a file can have 1000+ chunks.
+                    sqlx::query("CREATE TEMP TABLE IF NOT EXISTS _live_ids (id TEXT PRIMARY KEY)")
+                        .execute(&mut *tx)
+                        .await?;
+                    sqlx::query("DELETE FROM _live_ids")
+                        .execute(&mut *tx)
+                        .await?;
+
+                    for batch in
+                        live_ids.chunks(crate::store::helpers::sql::max_rows_per_statement(1))
+                    {
+                        let placeholders: Vec<String> = batch
+                            .iter()
+                            .enumerate()
+                            .map(|(i, _)| format!("(?{})", i + 1))
+                            .collect();
+                        let insert_sql = format!(
+                            "INSERT OR IGNORE INTO _live_ids (id) VALUES {}",
+                            placeholders.join(",")
+                        );
+                        let mut stmt = sqlx::query(&insert_sql);
+                        for id in batch {
+                            stmt = stmt.bind(id);
+                        }
+                        stmt.execute(&mut *tx).await?;
+                    }
+
+                    let fts_query = "DELETE FROM chunks_fts WHERE id IN \
+                         (SELECT id FROM chunks WHERE origin = ?1 \
+                          AND id NOT IN (SELECT id FROM _live_ids))";
+                    sqlx::query(fts_query)
+                        .bind(&origin_str)
+                        .execute(&mut *tx)
+                        .await?;
+
+                    let chunks_query = "DELETE FROM chunks WHERE origin = ?1 \
+                         AND id NOT IN (SELECT id FROM _live_ids)";
+                    let result = sqlx::query(chunks_query)
+                        .bind(&origin_str)
+                        .execute(&mut *tx)
+                        .await?;
+                    let deleted = result.rows_affected();
+                    if deleted > 0 {
+                        tracing::info!(
+                            origin = %origin_str,
+                            deleted,
+                            "Removed phantom chunks (fused tx)"
+                        );
+                    }
+                    // NOTE on `function_calls` cleanup: mirrors
+                    // `delete_phantom_chunks`. The watch loop calls
+                    // `upsert_function_calls` BEFORE us (at watch.rs :2492),
+                    // which DELETE-then-INSERTs the current set for the
+                    // file — adding a DELETE here would wipe those
+                    // just-written rows. The `delete_by_origin` /
+                    // `prune_missing` paths (file fully removed, no upsert
+                    // follows) DO include that DELETE.
                 }
             }
 

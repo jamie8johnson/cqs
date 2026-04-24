@@ -280,10 +280,13 @@ pub(in crate::cli::batch) fn dispatch_search(
         results
     };
 
-    // --include-refs: merge reference results
+    // --include-refs: merge reference results. RM-V1.29-1: use the
+    // BatchContext LRU so repeated `--include-refs` queries in a daemon
+    // session don't rebuild every reference Store+HNSW per call. The
+    // rayon call below uses the default global pool — the old sequential
+    // fallback that built a fresh 4-thread pool per query is gone.
     let results = if args.include_refs {
-        let config = cqs::config::Config::load(&ctx.root);
-        let references = cqs::reference::load_references(&config.references);
+        let references = ctx.get_all_refs()?;
         if !references.is_empty() {
             use rayon::prelude::*;
             let ref_results: Vec<_> = references

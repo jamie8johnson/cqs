@@ -48,10 +48,13 @@ use super::helpers::CURRENT_SCHEMA_VERSION;
 /// partial write. On success, the newest two backups (including this one)
 /// are retained and older ones are pruned.
 ///
-/// If the backup step itself fails (e.g. parent dir is read-only), the
-/// migration proceeds without a snapshot and a warning is logged.
-/// Setting `CQS_MIGRATE_REQUIRE_BACKUP=1` promotes that warning to a hard
-/// error.
+/// If the backup step itself fails (e.g. parent dir is read-only, disk full),
+/// the migration aborts by default with `StoreError::Io` — destructive
+/// migrations (v18→v19 drops the old `sparse_vectors` table) without a
+/// recovery snapshot are a data-loss hazard on a subsequent commit failure.
+/// Setting `CQS_MIGRATE_REQUIRE_BACKUP=0` downgrades that to a `warn!` and
+/// proceeds without a snapshot for users who accept the risk (tight-quota
+/// filesystems, CI rebuilding from source).
 ///
 /// ## Concurrent-migrate safety (v1.22.0 audit DS-W6)
 ///
@@ -514,7 +517,27 @@ async fn migrate_v18_to_v19(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
         .fetch_one(&mut *conn)
         .await?;
     let dropped = before_rows - after_rows;
-    if dropped > 0 {
+    // DS2-8: escalate to `error!` when the INNER JOIN filter drops more than
+    // 10% of rows. A small orphan set is expected (pre-v19 delete paths
+    // leaked rows); a large drop suggests the chunks table was truncated
+    // out-of-band, or an unrelated bug produced widespread chunk/sparse
+    // inconsistency. Surface it at `error` so it's visible in logs even
+    // when the migration itself succeeds. Not a hard fail — the rebuild is
+    // still strictly an improvement on the old unconstrained shape — but
+    // the user should know.
+    let threshold = (before_rows as f64 * 0.10) as i64;
+    if before_rows > 0 && dropped > threshold {
+        tracing::error!(
+            before = before_rows,
+            after = after_rows,
+            dropped_orphans = dropped,
+            threshold,
+            "v18→v19 migration dropped more than 10% of sparse_vectors rows \
+             as orphans — this may indicate prior corruption or an out-of-band \
+             chunks truncation. Review the log and consider rebuilding from \
+             source via 'cqs index --force' if the drop looks wrong."
+        );
+    } else if dropped > 0 {
         tracing::warn!(
             before = before_rows,
             after = after_rows,

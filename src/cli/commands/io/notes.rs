@@ -48,19 +48,19 @@ struct NoteListEntry {
 #[derive(clap::Subcommand)]
 pub(crate) enum NotesCommand {
     /// List all notes with sentiment and mentions
+    ///
+    /// EX-V1.29-5 / API-V1.29-4: flattens the shared `NotesListArgs` so the
+    /// CLI and daemon batch paths can't drift — same pattern as
+    /// `Commands::Search { args: SearchArgs }`. Before the flatten,
+    /// `check: bool` was defined inline here but missing from
+    /// `NotesListArgs`, so daemon-routed `cqs notes list --check` silently
+    /// dropped the flag.
     List {
-        /// Show only warnings (negative sentiment)
-        #[arg(long)]
-        warnings: bool,
-        /// Show only patterns (positive sentiment)
-        #[arg(long)]
-        patterns: bool,
+        #[command(flatten)]
+        list: crate::cli::args::NotesListArgs,
         /// API-V1.22-2: shared `--json` arg (was inline `json: bool`).
         #[command(flatten)]
         output: TextJsonArgs,
-        /// Check mentions for staleness (verifies files exist and symbols are in index)
-        #[arg(long)]
-        check: bool,
     },
     /// Add a note to project memory
     Add {
@@ -131,16 +131,17 @@ pub(crate) fn cmd_notes(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_notes").entered();
     match subcmd {
-        NotesCommand::List {
-            warnings,
-            patterns,
-            output,
-            check,
-        } => {
+        NotesCommand::List { list, output } => {
             let ctx = ctx.ok_or_else(|| {
                 anyhow::anyhow!("Index not found. Run 'cqs init && cqs index' first to list notes.")
             })?;
-            cmd_notes_list(ctx, *warnings, *patterns, cli.json || output.json, *check)
+            cmd_notes_list(
+                ctx,
+                list.warnings,
+                list.patterns,
+                cli.json || output.json,
+                list.check,
+            )
         }
         NotesCommand::Add {
             text,

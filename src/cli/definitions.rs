@@ -129,6 +129,19 @@ pub(crate) fn parse_finite_f32(s: &str) -> std::result::Result<f32, String> {
     }
 }
 
+/// AC-V1.29-5: finite-f32 bounded to the `[0.0, 1.0]` unit interval. Used as
+/// `value_parser` for CLI flags that encode a weight or blending fraction
+/// (e.g., `--name-boost`, `cqs ref add --weight`) where out-of-range values
+/// silently corrupt scoring instead of surfacing a clap error. Rejects NaN /
+/// ±Inf via the underlying `parse_finite_f32`, then fences the range.
+pub(crate) fn parse_unit_f32(s: &str) -> std::result::Result<f32, String> {
+    let v = parse_finite_f32(s)?;
+    if !(0.0..=1.0).contains(&v) {
+        return Err(format!("value must be in [0.0, 1.0], got {v}"));
+    }
+    Ok(v)
+}
+
 #[derive(Parser)]
 #[command(name = "cqs")]
 #[command(about = "Semantic code search with local embeddings")]
@@ -156,7 +169,9 @@ pub struct Cli {
     pub threshold: f32,
 
     /// Weight for name matching in hybrid search (0.0-1.0)
-    #[arg(long, default_value = "0.2", value_parser = parse_finite_f32)]
+    ///
+    /// AC-V1.29-5: bounded parser — see `SearchArgs::name_boost`.
+    #[arg(long, default_value = "0.2", value_parser = parse_unit_f32)]
     pub name_boost: f32,
 
     /// Filter by language
@@ -959,6 +974,46 @@ mod tests {
     fn parse_finite_f32_rejects_garbage() {
         assert!(parse_finite_f32("not a number").is_err());
         assert!(parse_finite_f32("").is_err());
+    }
+
+    // AC-V1.29-5: `parse_unit_f32` is `parse_finite_f32` bounded to [0.0, 1.0]
+    // so flags like `--name-boost 1.5` surface a clap parse error instead of
+    // silently degrading scoring.
+    #[test]
+    fn parse_unit_f32_accepts_unit_range() {
+        assert_eq!(parse_unit_f32("0.0").unwrap(), 0.0);
+        assert_eq!(parse_unit_f32("0.5").unwrap(), 0.5);
+        assert_eq!(parse_unit_f32("1.0").unwrap(), 1.0);
+    }
+
+    #[test]
+    fn parse_unit_f32_rejects_above_one() {
+        let r = parse_unit_f32("1.5");
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("[0.0, 1.0]"));
+    }
+
+    #[test]
+    fn parse_unit_f32_rejects_negative() {
+        let r = parse_unit_f32("-0.1");
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("[0.0, 1.0]"));
+    }
+
+    #[test]
+    fn parse_unit_f32_rejects_nan_and_infinity() {
+        assert!(parse_unit_f32("NaN").is_err());
+        assert!(parse_unit_f32("inf").is_err());
+        assert!(parse_unit_f32("-inf").is_err());
+    }
+
+    #[test]
+    fn search_name_boost_rejects_out_of_range() {
+        use clap::Parser;
+        // `cqs search --name-boost 1.5 foo` must return a clap parse error
+        // now that `SearchArgs::name_boost` is bounded via `parse_unit_f32`.
+        let r = Cli::try_parse_from(["cqs", "search", "--name-boost", "1.5", "foo"]);
+        assert!(r.is_err());
     }
 
     // #947: spot-check the batch-support classifier. The exhaustive match in

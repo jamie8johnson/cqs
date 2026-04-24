@@ -29,10 +29,21 @@ use sqlx::SqlitePool;
 
 use super::helpers::StoreError;
 
-/// Env var that promotes a backup failure from "warn and continue" to "hard
-/// error". Default is off — users on tight-disk WSL 9P deployments should not
-/// be blocked from migrating by a backup that we couldn't write. Fleet
-/// operators who want stricter guarantees can set it to `1`.
+/// Env var that controls whether a failed migration-time DB backup is a hard
+/// error (default) or a warn-and-continue.
+///
+/// Default is **on** (require a backup). The v18→v19 migration permanently
+/// drops orphan `sparse_vectors` rows via an `INSERT … INNER JOIN chunks`
+/// filter and then `DROP TABLE sparse_vectors`; a subsequent non-transactional
+/// commit-time I/O failure with no backup on disk leaves the user with a
+/// partially-migrated DB and no recovery path short of `cqs index --force`.
+/// Opt-in to destructive behaviour is the standard stance — users who truly
+/// can't spare disk (tight-quota WSL 9P mounts, read-only parent dirs, CI
+/// rebuilding from source) can set `CQS_MIGRATE_REQUIRE_BACKUP=0` to proceed
+/// without a snapshot and accept the data-loss risk.
+///
+/// Accepted values for opt-out: `0` or `false` (case-insensitive). Any other
+/// value (including unset) keeps the default hard-error behaviour.
 pub(crate) const REQUIRE_BACKUP_ENV: &str = "CQS_MIGRATE_REQUIRE_BACKUP";
 
 /// Number of version-tagged backups to retain in the DB's parent directory.
@@ -69,11 +80,14 @@ pub(crate) fn backup_path_for(db_path: &Path, from: i32, to: i32) -> PathBuf {
 /// Returns:
 /// - `Ok(Some(backup_db_path))` on a successful copy — the caller can pass
 ///   this to `restore_from_backup` on migration failure.
-/// - `Ok(None)` if the backup step failed *but* `CQS_MIGRATE_REQUIRE_BACKUP`
-///   is unset. The migration proceeds without a recovery snapshot — the
-///   warning is logged at `warn!`.
-/// - `Err(StoreError::Io)` if the backup step failed *and*
-///   `CQS_MIGRATE_REQUIRE_BACKUP=1`. The caller must abort the migration.
+/// - `Ok(None)` if the backup step failed *and* the user has explicitly set
+///   `CQS_MIGRATE_REQUIRE_BACKUP=0` (opt-out). The migration proceeds
+///   without a recovery snapshot — the warning is logged at `warn!`.
+/// - `Err(StoreError::Io)` if the backup step failed and the env var is
+///   unset or anything other than `0`/`false`. The caller must abort the
+///   migration. This is the default stance: destructive migrations (v18→v19
+///   drops the old `sparse_vectors` table) without a recovery snapshot are
+///   a data-loss hazard on a subsequent commit failure.
 ///
 /// Implementation:
 /// 1. `PRAGMA wal_checkpoint(FULL)` drains the WAL into the main DB so the
@@ -115,27 +129,36 @@ pub(crate) async fn backup_before_migrate(
             Ok(Some(backup_db))
         }
         Err(e) => {
-            let require = std::env::var(REQUIRE_BACKUP_ENV)
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            // DS2-8: require-backup is now the default. Opt-out via
+            // CQS_MIGRATE_REQUIRE_BACKUP=0 for environments where the user
+            // accepts the data-loss risk (e.g. tight-quota WSL 9P mounts, CI
+            // rebuilding from source). The v18→v19 migration is destructive
+            // (INNER JOIN INSERT + DROP TABLE sparse_vectors), so the default
+            // must protect the DB when we can't take a snapshot.
+            let allow_no_backup = std::env::var(REQUIRE_BACKUP_ENV)
+                .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
                 .unwrap_or(false);
-            if require {
-                tracing::error!(
-                    error = %e,
-                    db = %db_path.display(),
-                    "Migration backup failed and CQS_MIGRATE_REQUIRE_BACKUP=1 is set; aborting"
-                );
-                // Best-effort cleanup of any partial backup files.
-                remove_triplet(&backup_db);
-                Err(e)
-            } else {
+            // Best-effort cleanup of any partial backup files in both branches.
+            remove_triplet(&backup_db);
+            if allow_no_backup {
                 tracing::warn!(
                     error = %e,
                     db = %db_path.display(),
                     "Migration backup failed; proceeding without snapshot \
-                     (set CQS_MIGRATE_REQUIRE_BACKUP=1 to fail instead)"
+                     because CQS_MIGRATE_REQUIRE_BACKUP=0 is set \
+                     (data-loss risk on subsequent migration failure)"
                 );
-                remove_triplet(&backup_db);
                 Ok(None)
+            } else {
+                tracing::error!(
+                    error = %e,
+                    db = %db_path.display(),
+                    "Migration backup failed; aborting to protect DB. \
+                     Set CQS_MIGRATE_REQUIRE_BACKUP=0 to proceed without a \
+                     snapshot and accept the data-loss risk on a subsequent \
+                     migration failure."
+                );
+                Err(e)
             }
         }
     }
@@ -399,5 +422,182 @@ mod tests {
             !sidecar_path(&dst, "-wal").exists(),
             "stale -wal must be removed"
         );
+    }
+
+    // ============================================================================
+    // DS2-8: `CQS_MIGRATE_REQUIRE_BACKUP` defaults to on.
+    //
+    // Serialised via a module-local mutex because `std::env::set_var` is
+    // process-global; running the two default-on and opt-out cases in
+    // parallel would race on the env var.
+    // ============================================================================
+
+    /// Process-global mutex for the CQS_MIGRATE_REQUIRE_BACKUP env-var tests.
+    /// `std::env::set_var` mutates process-global state, so two tests that
+    /// flip the env var in opposite directions must not run in parallel.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Restore `CQS_MIGRATE_REQUIRE_BACKUP` to whatever value (including
+    /// "unset") it had before the test started. RAII via Drop so a panic
+    /// inside the test body doesn't leak a bogus value into neighbours.
+    struct EnvGuard {
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            Self {
+                prev: std::env::var(REQUIRE_BACKUP_ENV).ok(),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var(REQUIRE_BACKUP_ENV, v),
+                None => std::env::remove_var(REQUIRE_BACKUP_ENV),
+            }
+        }
+    }
+
+    /// Build a fresh in-memory SqlitePool for tests that don't care about
+    /// persistent state — used to exercise `backup_before_migrate`'s
+    /// signature without creating a real on-disk DB.
+    async fn in_memory_pool() -> SqlitePool {
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// DS2-8 happy path: when the env var is **unset**, a backup failure is
+    /// promoted to `Err`. The previous default was "warn and proceed", which
+    /// silently ran the destructive v18→v19 migration without a recovery
+    /// snapshot; the fix flips that so unset = require = hard error.
+    #[test]
+    fn backup_failure_with_env_unset_returns_err_by_default() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = EnvGuard::new();
+        std::env::remove_var(REQUIRE_BACKUP_ENV);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let pool = in_memory_pool().await;
+            let dir = tempfile::tempdir().unwrap();
+            // Point at a DB path whose source file does NOT exist — the
+            // copy step inside copy_triplet will fail with ENOENT, which
+            // exercises the Err branch of backup_before_migrate.
+            let missing_db = dir.path().join("does_not_exist.db");
+
+            let result = backup_before_migrate(&pool, &missing_db, 18, 19).await;
+            match result {
+                Err(StoreError::Io(_)) => {}
+                Ok(v) => panic!(
+                    "expected Err(Io) when CQS_MIGRATE_REQUIRE_BACKUP is unset \
+                     and backup fails, got Ok({:?})",
+                    v
+                ),
+                Err(other) => panic!("expected Err(Io), got: {:?}", other),
+            }
+        });
+    }
+
+    /// DS2-8 opt-out path: when the user sets `CQS_MIGRATE_REQUIRE_BACKUP=0`,
+    /// a backup failure is downgraded to `Ok(None)` and the migration proceeds
+    /// without a snapshot. Matches the documented escape hatch for tight-quota
+    /// filesystems and CI that can rebuild from source.
+    #[test]
+    fn backup_failure_with_env_opt_out_returns_ok_none() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = EnvGuard::new();
+        std::env::set_var(REQUIRE_BACKUP_ENV, "0");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let pool = in_memory_pool().await;
+            let dir = tempfile::tempdir().unwrap();
+            let missing_db = dir.path().join("does_not_exist.db");
+
+            let result = backup_before_migrate(&pool, &missing_db, 18, 19).await;
+            match result {
+                Ok(None) => {}
+                Ok(Some(p)) => panic!(
+                    "expected Ok(None) on backup failure with opt-out, got Ok(Some({}))",
+                    p.display()
+                ),
+                Err(e) => panic!(
+                    "expected Ok(None) when CQS_MIGRATE_REQUIRE_BACKUP=0 is set, \
+                     got Err({:?})",
+                    e
+                ),
+            }
+        });
+    }
+
+    /// DS2-8: `CQS_MIGRATE_REQUIRE_BACKUP=false` (the string, not `0`) should
+    /// also opt out — the env-var parse is case-insensitive. Guards against a
+    /// regression where only the literal `0` was accepted.
+    #[test]
+    fn backup_failure_with_env_false_string_returns_ok_none() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = EnvGuard::new();
+        std::env::set_var(REQUIRE_BACKUP_ENV, "FALSE");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let pool = in_memory_pool().await;
+            let dir = tempfile::tempdir().unwrap();
+            let missing_db = dir.path().join("does_not_exist.db");
+
+            let result = backup_before_migrate(&pool, &missing_db, 18, 19).await;
+            assert!(
+                matches!(result, Ok(None)),
+                "CQS_MIGRATE_REQUIRE_BACKUP=FALSE must opt out, got {:?}",
+                result
+            );
+        });
+    }
+
+    /// DS2-8: any value that is not `0`/`false` (e.g. `1`, `true`, or junk)
+    /// keeps the default require-backup behaviour. This protects against a
+    /// typo turning into silent data-loss risk.
+    #[test]
+    fn backup_failure_with_env_garbage_value_still_returns_err() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = EnvGuard::new();
+        std::env::set_var(REQUIRE_BACKUP_ENV, "yes-please");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let pool = in_memory_pool().await;
+            let dir = tempfile::tempdir().unwrap();
+            let missing_db = dir.path().join("does_not_exist.db");
+
+            let result = backup_before_migrate(&pool, &missing_db, 18, 19).await;
+            assert!(
+                matches!(result, Err(StoreError::Io(_))),
+                "non-opt-out env values must keep the default hard-error \
+                 behaviour, got {:?}",
+                result
+            );
+        });
     }
 }

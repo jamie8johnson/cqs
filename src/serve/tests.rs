@@ -913,6 +913,189 @@ fn sec3_build_cluster_honors_client_cap_under_hard_limit() {
     );
 }
 
+// TC-HAP-1.29-1: positive tests for build_graph / build_chunk_detail /
+// build_hierarchy / build_cluster against a populated store. The existing
+// SEC-3 cases only prove the cap clamps; these prove the functions return
+// expected shapes when there's actually data in the store.
+//
+// `populated_fixture(n, _)` seeds a *ring* of call edges (func_0 → func_1
+// → ... → func_{n-1} → func_0), so edge count == node count for every n.
+
+/// Helper: look up the chunk_id for a given function name. Used by the
+/// hierarchy + chunk_detail tests which accept an id, not a name.
+fn chunk_id_for_name(state: &AppState, name: &str) -> String {
+    let store = state.store.clone();
+    let name = name.to_string();
+    std::thread::spawn(move || {
+        store.rt.block_on(async {
+            use sqlx::Row;
+            let row = sqlx::query("SELECT id FROM chunks WHERE name = ? ORDER BY id LIMIT 1")
+                .bind(&name)
+                .fetch_one(&store.pool)
+                .await
+                .expect("chunk row for name");
+            row.get::<String, _>("id")
+        })
+    })
+    .join()
+    .expect("chunk_id_for_name join")
+}
+
+#[test]
+fn build_graph_returns_expected_nodes_and_edges_for_populated_store() {
+    // `populated_fixture(3, false)` seeds func_0000 → func_0001 → func_0002
+    // → func_0000 (3-edge ring).
+    let fixture = populated_fixture(3, false);
+    let store = fixture.state.as_ref().expect("fixture state").store.clone();
+
+    let graph = std::thread::spawn(move || super::data::build_graph(&store, None, None, None))
+        .join()
+        .expect("build_graph join")
+        .expect("build_graph ok");
+
+    assert_eq!(graph.nodes.len(), 3, "3 seeded chunks");
+    assert_eq!(graph.edges.len(), 3, "3-chunk ring → 3 edges");
+
+    // Every node is in the ring, so each should have n_callers == 1 and
+    // n_callees == 1. n_callers comes from the global SQL count; n_callees
+    // is derived from the resolved visible-edge set.
+    for node in &graph.nodes {
+        assert_eq!(
+            node.n_callers, 1,
+            "ring node {} should have 1 caller",
+            node.name
+        );
+        assert_eq!(
+            node.n_callees, 1,
+            "ring node {} should have 1 callee",
+            node.name
+        );
+    }
+}
+
+#[test]
+fn build_chunk_detail_returns_callers_callees_tests() {
+    // 3-ring: func_0 → func_1 → func_2 → func_0. Pull detail for func_1:
+    // exactly one caller (func_0), one callee (func_2), zero tests (the
+    // fixture doesn't seed test-kind chunks).
+    let fixture = populated_fixture(3, false);
+    let state = fixture.state();
+    let mid_id = chunk_id_for_name(&state, "func_0001");
+    let store = state.store.clone();
+
+    let detail = std::thread::spawn(move || super::data::build_chunk_detail(&store, &mid_id))
+        .join()
+        .expect("build_chunk_detail join")
+        .expect("build_chunk_detail ok")
+        .expect("detail present");
+
+    assert_eq!(detail.callers.len(), 1, "one caller (func_0000)");
+    assert_eq!(detail.callers[0].name, "func_0000");
+    assert_eq!(detail.callees.len(), 1, "one callee (func_0002)");
+    assert_eq!(detail.callees[0].name, "func_0002");
+    assert_eq!(detail.tests.len(), 0, "no test chunks seeded");
+}
+
+#[test]
+fn build_hierarchy_walks_callees_to_depth() {
+    // 3-ring: BFS from func_0000 along callees with depth=2 visits
+    // {func_0000, func_0001, func_0002}. At depth 3 the BFS would wrap
+    // back to func_0000 but it's already visited so the frontier stays
+    // empty. With depth=1, BFS visits {func_0000, func_0001} — two nodes.
+    let fixture = populated_fixture(3, false);
+    let state = fixture.state();
+    let root_id = chunk_id_for_name(&state, "func_0000");
+
+    let store_d2 = state.store.clone();
+    let root_d2 = root_id.clone();
+    let h_d2 = std::thread::spawn(move || {
+        super::data::build_hierarchy(
+            &store_d2,
+            &root_d2,
+            super::data::HierarchyDirection::Callees,
+            2,
+        )
+    })
+    .join()
+    .expect("build_hierarchy d=2 join")
+    .expect("build_hierarchy d=2 ok")
+    .expect("hierarchy d=2 present");
+
+    assert_eq!(
+        h_d2.nodes.len(),
+        3,
+        "depth=2 over a 3-ring covers every node"
+    );
+
+    let store_d1 = state.store.clone();
+    let root_d1 = root_id.clone();
+    let h_d1 = std::thread::spawn(move || {
+        super::data::build_hierarchy(
+            &store_d1,
+            &root_d1,
+            super::data::HierarchyDirection::Callees,
+            1,
+        )
+    })
+    .join()
+    .expect("build_hierarchy d=1 join")
+    .expect("build_hierarchy d=1 ok")
+    .expect("hierarchy d=1 present");
+
+    assert_eq!(h_d1.nodes.len(), 2, "depth=1 visits root + one callee");
+}
+
+#[test]
+fn build_cluster_returns_chunks_with_umap_coords() {
+    // `with_umap=true` populates umap_x/umap_y for every chunk via the
+    // fixture's UPDATE. build_cluster's SELECT filters NULL coords, so
+    // all 5 chunks should survive.
+    let fixture = populated_fixture(5, true);
+    let store = fixture.state.as_ref().expect("fixture state").store.clone();
+
+    let cluster = std::thread::spawn(move || super::data::build_cluster(&store, None))
+        .join()
+        .expect("build_cluster join")
+        .expect("build_cluster ok");
+
+    assert_eq!(cluster.nodes.len(), 5, "5 umap-tagged chunks");
+
+    // Every node carries coords (set to rowid-derived non-zero values).
+    // rowid starts at 1, so x = 0.1*rowid and y = 0.2*rowid are both
+    // strictly positive finite floats.
+    for node in &cluster.nodes {
+        assert!(
+            node.umap_x.is_finite() && node.umap_x > 0.0,
+            "{} umap_x should be positive finite, got {}",
+            node.base.name,
+            node.umap_x
+        );
+        assert!(
+            node.umap_y.is_finite() && node.umap_y > 0.0,
+            "{} umap_y should be positive finite, got {}",
+            node.base.name,
+            node.umap_y
+        );
+    }
+
+    // The ring seed produces one incoming + one outgoing edge per node.
+    // build_cluster computes per-node degree from the edge scan, so every
+    // visible node should reflect those counts — proves the edge query
+    // path ran and its results were merged into the response.
+    for node in &cluster.nodes {
+        assert_eq!(
+            node.base.n_callers, 1,
+            "{} should reflect one caller from the ring",
+            node.base.name
+        );
+        assert_eq!(
+            node.base.n_callees, 1,
+            "{} should reflect one callee from the ring",
+            node.base.name
+        );
+    }
+}
+
 // SEC-1: DNS-rebinding host-header allowlist tests.
 //
 // The attack: a page at evil.example.com (DNS-rebound to 127.0.0.1,

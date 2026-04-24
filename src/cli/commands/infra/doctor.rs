@@ -132,30 +132,62 @@ pub(crate) fn cmd_doctor(
     // the final JSON envelope.
     let mut check_records: Vec<CheckRecord> = Vec::new();
 
+    // CQ-V1.29-6: the "metadata:" label on the `Model:` check used to report
+    // the compile-time `cqs::store::MODEL_NAME` constant, which is identical
+    // to the default model on every invocation — silently wrong after
+    // `cqs model swap` or a custom-model init. Read the actual stored model
+    // name out of the index (if one exists) so doctor surfaces real drift.
+    let stored_metadata_model = if index_path.exists() {
+        match Store::open_readonly(&index_path) {
+            Ok(s) => s.stored_model_name(),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to open index read-only for metadata model lookup");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     out(json, "Runtime:");
 
     // Check model
     let model_config = ModelConfig::resolve(model_override, None);
     match Embedder::new(model_config.clone()) {
         Ok(embedder) => {
-            out(
-                json,
-                &format!(
-                    "  {} Model: {} (metadata: {})",
-                    "[✓]".green(),
-                    cqs::embedder::model_repo(),
-                    cqs::store::MODEL_NAME
-                ),
-            );
-            check_records.push(CheckRecord::ok(
-                "runtime",
-                "model",
-                format!(
-                    "{} (metadata: {})",
-                    cqs::embedder::model_repo(),
-                    cqs::store::MODEL_NAME
-                ),
-            ));
+            // CQ-V1.29-6: show the actual index-metadata model rather than
+            // the compile-time constant. If stored differs from the runtime
+            // `model_repo()`, promote the record from `ok` → `warn` so
+            // agents parsing `--json` see the drift as a warning.
+            let runtime_repo = cqs::embedder::model_repo();
+            let metadata_label = stored_metadata_model.as_deref().unwrap_or("unset");
+            let model_msg = format!("{} (metadata: {})", runtime_repo, metadata_label);
+            let stored_matches = match stored_metadata_model.as_deref() {
+                Some(s) => s == runtime_repo.as_str(),
+                None => true, // nothing stored → not a mismatch, just a fresh index
+            };
+            let mark = if stored_matches {
+                "[✓]".green()
+            } else {
+                "[!]".yellow()
+            };
+            out(json, &format!("  {} Model: {}", mark, model_msg));
+            let record = if stored_matches {
+                CheckRecord::ok("runtime", "model", model_msg.clone())
+            } else {
+                CheckRecord::warn(
+                    "runtime",
+                    "model",
+                    format!(
+                        "{} (stored metadata \"{}\" differs from runtime repo \"{}\")",
+                        model_msg, metadata_label, runtime_repo
+                    ),
+                )
+            };
+            check_records.push(record);
+            if !stored_matches {
+                any_failed = true;
+            }
             out(json, &format!("  {} Tokenizer: loaded", "[✓]".green()));
             check_records.push(CheckRecord::ok(
                 "runtime",

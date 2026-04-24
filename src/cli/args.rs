@@ -8,7 +8,7 @@
 
 use clap::Args;
 
-use super::{parse_finite_f32, parse_nonzero_usize};
+use super::{parse_finite_f32, parse_nonzero_usize, parse_unit_f32};
 use cqs::store::DeadConfidence;
 
 /// Shared `--limit / -n` argument for graph commands that previously had no
@@ -54,7 +54,12 @@ pub(crate) struct SearchArgs {
     pub threshold: f32,
 
     /// Weight for name matching in hybrid search (0.0-1.0)
-    #[arg(long, default_value = "0.2", value_parser = parse_finite_f32)]
+    ///
+    /// AC-V1.29-5: value_parser is `parse_unit_f32` (bounded [0.0, 1.0]) to
+    /// reject out-of-range values at parse time. Previously accepted e.g.
+    /// `--name-boost 1.5`, which silently subtracted > 1.0 from embedding
+    /// weight and degraded search with no warning.
+    #[arg(long, default_value = "0.2", value_parser = parse_unit_f32)]
     pub name_boost: f32,
 
     /// Filter by language
@@ -529,6 +534,12 @@ pub(crate) struct ImpactDiffArgs {
 /// Subcommand mutations (`add` / `update` / `remove`) remain on the CLI
 /// `NotesCommand` subcommand enum and are not batch-dispatchable — see the
 /// `BatchSupport` classifier for the policy.
+///
+/// EX-V1.29-5 / API-V1.29-4: `NotesCommand::List` flattens this struct
+/// (same pattern as `Commands::Search { args: SearchArgs }`). The flattened
+/// fields include `check`, which the daemon batch path picks up via
+/// `BatchCmd::Notes { args, .. }` — previously `NotesCommand::List` had
+/// `check: bool` inline and the daemon dropped it silently.
 #[derive(Args, Debug, Clone)]
 pub(crate) struct NotesListArgs {
     /// Show only warnings (negative sentiment)
@@ -537,6 +548,9 @@ pub(crate) struct NotesListArgs {
     /// Show only patterns (positive sentiment)
     #[arg(long)]
     pub patterns: bool,
+    /// Check mentions for staleness (verifies files exist and symbols are in index)
+    #[arg(long)]
+    pub check: bool,
 }
 
 /// Arguments for the `index` command.

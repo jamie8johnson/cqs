@@ -365,8 +365,21 @@ impl Reranker {
         }
         let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
 
+        // AC-V1.29-6: ORT's `shape[1]` is `i64` and can be -1 when a
+        // dynamic axis is unbound (or, in principle, any negative value
+        // the model exporter emits). Casting `-1 as usize` gives
+        // `usize::MAX` — the subsequent `batch_size * stride` then wraps,
+        // `data.len() < expected_len` flips direction, and we read past
+        // the buffer. Guard the cast first, then use `checked_mul` so a
+        // large legitimate stride can't silently overflow either.
         let stride = if shape.len() == 2 {
-            shape[1] as usize
+            let dim = shape[1];
+            if dim < 0 {
+                return Err(RerankerError::Inference(format!(
+                    "Model returned negative output dim {dim} (dynamic axis not bound?)"
+                )));
+            }
+            dim as usize
         } else {
             1
         };
@@ -375,7 +388,11 @@ impl Reranker {
                 "Model returned zero-width output tensor".to_string(),
             ));
         }
-        let expected_len = batch_size * stride;
+        let expected_len = batch_size.checked_mul(stride).ok_or_else(|| {
+            RerankerError::Inference(format!(
+                "Reranker output too large: batch_size={batch_size} * stride={stride} overflows usize"
+            ))
+        })?;
         if data.len() < expected_len {
             return Err(RerankerError::Inference(format!(
                 "Model output too short: expected {} elements, got {}",

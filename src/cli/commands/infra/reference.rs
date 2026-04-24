@@ -47,8 +47,15 @@ pub(crate) enum RefCommand {
         /// Path to the source codebase to index
         source: PathBuf,
         /// Score weight multiplier (0.0-1.0, default 0.8)
-        #[arg(long, default_value = "0.8", value_parser = crate::cli::definitions::parse_finite_f32)]
+        // AC-V1.29-5: bounded at parse time via `parse_unit_f32`. The
+        // after-the-fact range check in `cmd_ref_add` still guards the
+        // config-file loader path, so we keep belt-and-braces here.
+        #[arg(long, default_value = "0.8", value_parser = crate::cli::definitions::parse_unit_f32)]
         weight: f32,
+        /// API-V1.29-2: shared `--json` arg — without it, `cqs --json ref add`
+        /// still printed colored text and broke downstream JSON parsers.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// List configured references
     List {
@@ -60,11 +67,17 @@ pub(crate) enum RefCommand {
     Remove {
         /// Name of the reference to remove
         name: String,
+        /// API-V1.29-2: shared `--json` arg.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Update a reference index from its source
     Update {
         /// Name of the reference to update
         name: String,
+        /// API-V1.29-2: shared `--json` arg.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
 }
 
@@ -75,17 +88,24 @@ pub(crate) fn cmd_ref(cli: &Cli, subcmd: &RefCommand) -> Result<()> {
             name,
             source,
             weight,
-        } => cmd_ref_add(cli, name, source, *weight),
+            output,
+        } => cmd_ref_add(cli, name, source, *weight, cli.json || output.json),
         RefCommand::List { output } => cmd_ref_list(cli, output.json),
-        RefCommand::Remove { name } => cmd_ref_remove(name),
-        RefCommand::Update { name } => cmd_ref_update(cli, name),
+        RefCommand::Remove { name, output } => cmd_ref_remove(name, cli.json || output.json),
+        RefCommand::Update { name, output } => cmd_ref_update(cli, name, cli.json || output.json),
     }
 }
 
 /// Add a reference: validate name/weight, index source, update config.
 /// * If the source path does not exist or cannot be resolved
 /// * If the reference storage directory cannot be created
-fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> Result<()> {
+fn cmd_ref_add(
+    cli: &Cli,
+    name: &str,
+    source: &std::path::Path,
+    weight: f32,
+    json: bool,
+) -> Result<()> {
     // Validate name first — fast-fail before any I/O
     cqs::reference::validate_ref_name(name)
         .map_err(|e| anyhow::anyhow!("Invalid reference name '{}': {}", name, e))?;
@@ -133,7 +153,7 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
         bail!("No supported source files found in '{}'", source.display());
     }
 
-    if !cli.quiet {
+    if !cli.quiet && !json {
         println!(
             "Indexing {} files from '{}'...",
             files.len(),
@@ -157,13 +177,13 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
         cli.try_model_config()?.clone(),
     )?;
 
-    if !cli.quiet {
+    if !cli.quiet && !json {
         println!("  Embedded: {} chunks", stats.total_embedded);
     }
 
     // Build HNSW index
     if let Some(count) = build_hnsw_index(&store, &ref_dir)? {
-        if !cli.quiet {
+        if !cli.quiet && !json {
             println!("  HNSW: {} vectors", count);
         }
     }
@@ -178,7 +198,13 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
     let config_path = root.join(".cqs.toml");
     add_reference_to_config(&config_path, &ref_config)?;
 
-    if !cli.quiet {
+    if json {
+        crate::cli::json_envelope::emit_json(&serde_json::json!({
+            "status": "added",
+            "name": name,
+            "weight": weight,
+        }))?;
+    } else if !cli.quiet {
         println!("Reference '{}' added.", name);
     }
     Ok(())
@@ -187,13 +213,21 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
 fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
     let root = find_project_root();
     let config = cqs::config::Config::load(&root);
+    let want_json = json || cli.json;
 
     if config.references.is_empty() {
-        println!("No references configured.");
+        if want_json {
+            // API-V1.29-2: emit empty-list envelope so agents piping through
+            // `jq` don't choke on "No references configured." text.
+            let empty: Vec<RefListEntry> = Vec::new();
+            crate::cli::json_envelope::emit_json(&empty)?;
+        } else {
+            println!("No references configured.");
+        }
         return Ok(());
     }
 
-    if json || cli.json {
+    if want_json {
         let refs: Vec<_> = config
             .references
             .iter()
@@ -264,12 +298,22 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
 }
 
 /// Remove a reference: delete from config and remove its directory.
-fn cmd_ref_remove(name: &str) -> Result<()> {
+fn cmd_ref_remove(name: &str, json: bool) -> Result<()> {
     let root = find_project_root();
     let config_path = root.join(".cqs.toml");
     let removed = remove_reference_from_config(&config_path, name)?;
 
     if !removed {
+        // API-V1.29-2: in JSON mode, surface `not_found` as a structured
+        // envelope error instead of an anyhow bail that would serialize as
+        // plain text on stderr.
+        if json {
+            crate::cli::json_envelope::emit_json_error(
+                crate::cli::json_envelope::error_codes::NOT_FOUND,
+                &format!("Reference '{}' not found in config.", name),
+            )?;
+            return Ok(());
+        }
         bail!("Reference '{}' not found in config.", name);
     }
 
@@ -296,20 +340,36 @@ fn cmd_ref_remove(name: &str) -> Result<()> {
         }
     }
 
-    println!("Reference '{}' removed.", name);
+    if json {
+        crate::cli::json_envelope::emit_json(&serde_json::json!({
+            "status": "removed",
+            "name": name,
+        }))?;
+    } else {
+        println!("Reference '{}' removed.", name);
+    }
     Ok(())
 }
 
 /// Re-index a reference from its source directory.
-fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
+fn cmd_ref_update(cli: &Cli, name: &str, json: bool) -> Result<()> {
     let root = find_project_root();
     let config = cqs::config::Config::load(&root);
 
-    let ref_config = config
-        .references
-        .iter()
-        .find(|r| r.name == name)
-        .ok_or_else(|| anyhow::anyhow!("Reference '{}' not found in config.", name))?;
+    let ref_config = match config.references.iter().find(|r| r.name == name) {
+        Some(r) => r,
+        None => {
+            // API-V1.29-2: structured envelope error in JSON mode.
+            if json {
+                crate::cli::json_envelope::emit_json_error(
+                    crate::cli::json_envelope::error_codes::NOT_FOUND,
+                    &format!("Reference '{}' not found in config.", name),
+                )?;
+                return Ok(());
+            }
+            return Err(anyhow::anyhow!("Reference '{}' not found in config.", name));
+        }
+    };
 
     let source = ref_config
         .source
@@ -362,7 +422,7 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
         );
     }
 
-    if !cli.quiet {
+    if !cli.quiet && !json {
         println!("Updating reference '{}' ({} files)...", name, files.len());
     }
 
@@ -380,7 +440,7 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
         cli.try_model_config()?.clone(),
     )?;
 
-    if !cli.quiet {
+    if !cli.quiet && !json {
         let newly = stats.total_embedded - stats.total_cached;
         println!(
             "  Chunks: {} ({} cached, {} embedded)",
@@ -412,18 +472,26 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
         }
     }
 
-    if !cli.quiet && pruned > 0 {
+    if !cli.quiet && !json && pruned > 0 {
         println!("  Pruned: {} (deleted files)", pruned);
     }
 
     // Rebuild HNSW
     if let Some(count) = build_hnsw_index(&store, ref_dir)? {
-        if !cli.quiet {
+        if !cli.quiet && !json {
             println!("  HNSW: {} vectors", count);
         }
     }
 
-    if !cli.quiet {
+    if json {
+        crate::cli::json_envelope::emit_json(&serde_json::json!({
+            "status": "updated",
+            "name": name,
+            "weight": ref_config.weight,
+            "chunks": stats.total_embedded,
+            "pruned": pruned,
+        }))?;
+    } else if !cli.quiet {
         println!("Reference '{}' updated.", name);
     }
     Ok(())

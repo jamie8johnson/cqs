@@ -125,6 +125,20 @@ pub(crate) fn max_daemon_response_bytes() -> u64 {
     parse_env_u64("CQS_DAEMON_MAX_RESPONSE_BYTES", MAX_DAEMON_RESPONSE_BYTES)
 }
 
+// ============ SHL-V1.29-2: batch stdin line cap ============
+
+/// Default cap on a single batch stdin / daemon line. Matches
+/// [`MAX_DIFF_BYTES`] (50 MiB) so a piped `--stdin` diff that passes the
+/// CLI path is not silently rejected by the batch path. Historically this
+/// was 1 MiB, which blocked realistic unified diffs of large PRs from
+/// reaching the daemon.
+pub(crate) const DEFAULT_MAX_BATCH_LINE_LEN: usize = MAX_DIFF_BYTES;
+
+/// Resolve the batch-line cap honoring `CQS_BATCH_MAX_LINE_LEN`.
+pub(crate) fn batch_max_line_len() -> usize {
+    parse_env_usize("CQS_BATCH_MAX_LINE_LEN", DEFAULT_MAX_BATCH_LINE_LEN)
+}
+
 // ============ shared parsing helpers ============
 
 /// Parse a `usize`-shaped env var. Empty / unparseable / zero values fall

@@ -1,8 +1,6 @@
 //! Shared target resolution for CLI commands
 //!
-//! Delegates to `cqs::resolve_target` and `cqs::parse_target` in the library crate.
-
-pub use cqs::parse_target;
+//! Delegates to `cqs::resolve_target` in the library crate.
 
 use std::path::Path;
 

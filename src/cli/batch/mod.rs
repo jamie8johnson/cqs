@@ -99,10 +99,6 @@ impl DbFileIdentity {
     }
 }
 
-/// Maximum batch stdin line length (1MB). Lines exceeding this are rejected
-/// to prevent unbounded memory allocation from malicious input.
-const MAX_BATCH_LINE_LEN: usize = 1_048_576;
-
 /// Default idle timeout for ONNX sessions (embedder, reranker) in minutes.
 /// After this many minutes without a command, sessions are cleared to free
 /// memory. Matches watch mode's ~5-minute idle clear pattern. Override via
@@ -270,7 +266,9 @@ pub(crate) struct BatchContext {
     notes_cache: RefCell<Option<Vec<cqs::note::Note>>>,
     // Single-threaded by design — RefCell is correct, no Mutex needed
     // RM-27: Reduced from 4 to 2 — each ReferenceIndex holds Store + HNSW (50-200MB)
-    refs: RefCell<lru::LruCache<String, ReferenceIndex>>,
+    // RM-V1.29-1: values are `Arc` so `get_all_refs` can fan out refs to
+    // parallel `--include-refs` searches without cloning the index bytes.
+    refs: RefCell<lru::LruCache<String, std::sync::Arc<ReferenceIndex>>>,
     splade_encoder: OnceLock<Option<cqs::splade::SpladeEncoder>>,
     splade_index: RefCell<Option<cqs::splade::index::SpladeIndex>>,
     pub root: PathBuf,
@@ -554,6 +552,12 @@ impl BatchContext {
     /// `cmd_batch` stdin loop and the daemon socket handler converge on
     /// the same counter — previously only `cmd_batch` bumped `error_count`,
     /// leaving socket queries invisible).
+    ///
+    /// PF-V1.29-1: Daemon socket path now calls [`Self::dispatch_tokens`]
+    /// directly (skipping shell round-trip), and the `cmd_batch` stdin loop
+    /// does its own tokenization. `dispatch_line` is retained for tests and
+    /// any future stdin-style surface that needs shell parsing.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn dispatch_line(&self, line: &str, out: &mut impl std::io::Write) {
         use crate::cli::json_envelope::error_codes;
         let trimmed = line.trim();
@@ -573,15 +577,49 @@ impl BatchContext {
         if tokens.is_empty() {
             return;
         }
+        self.dispatch_parsed_tokens(&tokens, out);
+    }
+
+    /// PF-V1.29-1: Dispatch pre-tokenized `(command, args)` directly, skipping
+    /// the `shell_words::join` / `shell_words::split` round-trip that
+    /// `dispatch_line` requires for the stdin surface.
+    ///
+    /// The daemon socket path already receives `{ "command": "...", "args":
+    /// [...] }` as parsed JSON — round-tripping that through a shell-quoted
+    /// string is wasted work on every daemon query and a latent correctness
+    /// bug on tokens containing shell metacharacters. This entry point takes
+    /// the tokens directly and still shares the NUL check, counter bumps,
+    /// and dispatch body with `dispatch_line`.
+    pub(crate) fn dispatch_tokens(
+        &self,
+        command: &str,
+        args: &[String],
+        out: &mut impl std::io::Write,
+    ) {
+        if command.is_empty() {
+            return;
+        }
+        let tokens: Vec<String> = std::iter::once(command.to_string())
+            .chain(args.iter().cloned())
+            .collect();
+        self.dispatch_parsed_tokens(&tokens, out);
+    }
+
+    /// Shared dispatch body for both `dispatch_line` (stdin surface) and
+    /// `dispatch_tokens` (daemon socket surface). The only difference between
+    /// the two callers is how they reached a non-empty `tokens` vec — NUL
+    /// check, counter bumps, clap parse, and handler dispatch are identical.
+    fn dispatch_parsed_tokens(&self, tokens: &[String], out: &mut impl std::io::Write) {
+        use crate::cli::json_envelope::error_codes;
         // D.2: NUL byte check parity with the daemon socket loop in cmd_batch.
         // Both surfaces share downstream handlers; they must share input
         // validation too. RT-INJ-2.
-        if let Err(msg) = reject_null_tokens(&tokens) {
+        if let Err(msg) = reject_null_tokens(tokens) {
             self.error_count.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(
                 code = error_codes::INVALID_INPUT,
                 error = msg,
-                "Batch dispatch_line: NUL byte in tokens"
+                "Batch dispatch: NUL byte in tokens"
             );
             let _ = write_envelope_error(out, error_codes::INVALID_INPUT, msg);
             return;
@@ -591,7 +629,7 @@ impl BatchContext {
         // not a query). Counts both successes and errors — symmetric with
         // how `total_queries` is described in PingResponse.
         self.query_count.fetch_add(1, Ordering::Relaxed);
-        match commands::BatchInput::try_parse_from(&tokens) {
+        match commands::BatchInput::try_parse_from(tokens) {
             Ok(input) => match commands::dispatch(self, input.cmd) {
                 Ok(value) => {
                     let _ = write_json_line(out, &value);
@@ -614,7 +652,7 @@ impl BatchContext {
                 // safe to surface verbatim and useful for the agent to
                 // correct its query. No redaction needed.
                 let msg = format!("{e:#}");
-                tracing::warn!(code = error_codes::PARSE_ERROR, error = %msg, "Batch dispatch_line: clap parse failed");
+                tracing::warn!(code = error_codes::PARSE_ERROR, error = %msg, "Batch dispatch: clap parse failed");
                 let _ = write_envelope_error(out, error_codes::PARSE_ERROR, &msg);
             }
         }
@@ -951,8 +989,77 @@ impl BatchContext {
                 name
             )
         })?;
-        self.refs.borrow_mut().put(name.to_string(), found);
+        self.refs
+            .borrow_mut()
+            .put(name.to_string(), std::sync::Arc::new(found));
         Ok(())
+    }
+
+    /// Return every configured reference as a shared `Arc`, populating the
+    /// LRU cache on miss. Amortizes Store+HNSW loads across a daemon
+    /// session — without this, each `--include-refs` query called
+    /// `cqs::reference::load_references(...)` which rebuilt every
+    /// reference from scratch (PERF regression RM-V1.29-1).
+    ///
+    /// Staleness is honored: a cached reference whose `index.db`
+    /// identity changed (concurrent `cqs ref update <name>`) is evicted
+    /// and reloaded.
+    ///
+    /// The LRU size cap still applies — references not in the cache at
+    /// the moment of the call are loaded; if total configured refs
+    /// exceed the cap, the oldest cached entries churn, but within a
+    /// single call the returned `Vec` holds strong `Arc`s so eviction
+    /// cannot race with in-flight searches.
+    pub fn get_all_refs(&self) -> Result<Vec<std::sync::Arc<ReferenceIndex>>> {
+        let _span = tracing::info_span!("batch_get_all_refs").entered();
+        let config = self.config();
+        if config.references.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Partition configured refs into cached-hits vs misses. Checking
+        // hit/miss first avoids calling `load_references` (which builds a
+        // rayon pool + reopens the store) on every entry — we only load
+        // those not present or stale.
+        let mut hits: Vec<std::sync::Arc<ReferenceIndex>> =
+            Vec::with_capacity(config.references.len());
+        let mut misses: Vec<cqs::config::ReferenceConfig> = Vec::new();
+        {
+            let mut cache = self.refs.borrow_mut();
+            for cfg in &config.references {
+                if let Some(existing) = cache.peek(&cfg.name) {
+                    if existing.is_stale() {
+                        tracing::info!(
+                            reference = %cfg.name,
+                            "Cached reference stale (index.db mtime/size changed) — evicting for reload"
+                        );
+                        cache.pop(&cfg.name);
+                        misses.push(cfg.clone());
+                    } else {
+                        // `get` to promote LRU order, then clone the Arc.
+                        let arc = cache
+                            .get(&cfg.name)
+                            .map(std::sync::Arc::clone)
+                            .expect("peek hit above");
+                        hits.push(arc);
+                    }
+                } else {
+                    misses.push(cfg.clone());
+                }
+            }
+        }
+
+        if !misses.is_empty() {
+            let loaded = cqs::reference::load_references(&misses);
+            let mut cache = self.refs.borrow_mut();
+            for ri in loaded {
+                let arc = std::sync::Arc::new(ri);
+                cache.put(arc.name.clone(), std::sync::Arc::clone(&arc));
+                hits.push(arc);
+            }
+        }
+
+        Ok(hits)
     }
 
     /// Get or build the file set for staleness checks (cached).
@@ -1068,15 +1175,9 @@ impl BatchContext {
     /// Returns `None` if the reference hasn't been loaded yet.
     /// Uses `borrow_mut` because `LruCache::get()` promotes the entry (marks
     /// as recently used), which requires `&mut self`.
-    pub fn borrow_ref(&self, name: &str) -> Option<std::cell::RefMut<'_, ReferenceIndex>> {
-        let cache = self.refs.borrow_mut();
-        if cache.contains(name) {
-            Some(std::cell::RefMut::map(cache, |m| {
-                m.get_mut(name).expect("checked contains above")
-            }))
-        } else {
-            None
-        }
+    pub fn borrow_ref(&self, name: &str) -> Option<std::sync::Arc<ReferenceIndex>> {
+        let mut cache = self.refs.borrow_mut();
+        cache.get(name).map(std::sync::Arc::clone)
     }
 
     /// Get or load the call graph (cached, invalidated on index change). (PERF-22)
@@ -1456,18 +1557,17 @@ pub(crate) fn create_context_with_runtime(
 
 /// Create a BatchContext for testing with a temporary store.
 ///
-/// Visibility: `pub(in crate::cli::batch)` under `#[cfg(test)]` so submodule
-/// tests (handlers/search.rs tests for issue #973) can reuse the same fixture
-/// wiring as the in-file `mod tests`.
+/// Visibility: `pub(in crate::cli)` under `#[cfg(test)]` so both
+/// `batch::handlers::*` tests (search.rs / dispatch_tests.rs) and
+/// `cli::watch` adversarial tests can reuse the same fixture wiring.
+/// Previously `pub(in crate::cli::batch)` — relaxed for TC-ADV-1.29-3.
 ///
 /// The store is opened RO at the SQLite connection level via
 /// [`Store::open_readonly_after_init`] (#986) — the DB is expected to be
 /// pre-initialized by `setup_test_store` so the closure is a no-op, but
 /// the constructor path matches production code that may need fixture setup.
 #[cfg(test)]
-pub(in crate::cli::batch) fn create_test_context(
-    cqs_dir: &std::path::Path,
-) -> Result<BatchContext> {
+pub(in crate::cli) fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
     let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
     // #986: open_readonly_after_init returns Store<ReadOnly> directly —
     // the unsafe into_readonly() type-erasure is gone.
@@ -1525,7 +1625,11 @@ pub(crate) fn cmd_batch() -> Result<()> {
     // SEC-1: read_line allocates incrementally (8KB chunks) until newline or EOF.
     // A multi-GB line without newlines could OOM before the post-hoc check below.
     // Accepted risk: batch input is from a controlling process (AI agent or pipe),
-    // not from untrusted network input. The 1MB check prevents processing, not allocation.
+    // not from untrusted network input. The post-hoc cap prevents processing, not
+    // allocation. SHL-V1.29-2: the cap matches `MAX_DIFF_BYTES` (50 MiB) so piped
+    // `--stdin` diffs that clear the CLI path aren't silently rejected by the
+    // batch/daemon path. Override via `CQS_BATCH_MAX_LINE_LEN`.
+    let max_line_len = crate::cli::limits::batch_max_line_len();
     let mut line = String::new();
     loop {
         line.clear();
@@ -1538,13 +1642,22 @@ pub(crate) fn cmd_batch() -> Result<()> {
             }
         };
 
-        // Reject lines exceeding 1MB to prevent further processing.
-        if line.len() > MAX_BATCH_LINE_LEN {
+        // Reject lines exceeding the configured cap to prevent further processing.
+        if line.len() > max_line_len {
             ctx.error_count.fetch_add(1, Ordering::Relaxed);
-            // Hardcoded JSON — no serialization needed, no NaN risk
-            if writeln!(stdout, r#"{{"error":"Line too long (max 1MB)"}}"#).is_err() {
-                break;
-            }
+            // Error is written as a JSON envelope so the agent can pick up the
+            // (code, message) pair. Mentioning the env var lets operators bump
+            // the cap without grepping source.
+            let msg = format!(
+                "Batch line exceeds CQS_BATCH_MAX_LINE_LEN ({} bytes); got {} bytes",
+                max_line_len,
+                line.len(),
+            );
+            let _ = write_envelope_error(
+                &mut stdout,
+                crate::cli::json_envelope::error_codes::INVALID_INPUT,
+                &msg,
+            );
             let _ = stdout.flush();
             continue;
         }

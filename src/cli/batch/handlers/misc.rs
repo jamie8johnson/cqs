@@ -73,23 +73,51 @@ pub(in crate::cli::batch) fn dispatch_gather(
 }
 
 /// Dispatches filtered notes from the batch context as a JSON response.
-/// Retrieves all notes from the provided batch context and filters them based on the specified criteria. If `warnings` is true, only warning notes are included; if `patterns` is true, only pattern notes are included; otherwise, all notes are included. Each note is serialized to JSON with its text, sentiment score, sentiment label, and mentions.
+///
+/// Retrieves all notes from the provided batch context and filters them based
+/// on the specified criteria. If `warnings` is true, only warning notes are
+/// included; if `patterns` is true, only pattern notes are included;
+/// otherwise, all notes are included. Each note is serialized to JSON with
+/// its text, sentiment score, sentiment label, and mentions.
+///
+/// API-V1.29-4: `check: bool` routes staleness checks through the daemon
+/// path so agents calling `cqs notes list --check --json` via the socket
+/// receive `stale_mentions` per note — matching the CLI's `cmd_notes_list`
+/// shape (field present when `--check` is set, absent otherwise).
+///
 /// # Arguments
 /// * `ctx` - The batch context containing the notes to dispatch
 /// * `warnings` - If true, filter to only warning notes
 /// * `patterns` - If true, filter to only pattern notes
+/// * `check` - If true, run `cqs::suggest::check_note_staleness` and attach
+///   `stale_mentions` to each note in the output.
+///
 /// # Returns
-/// A JSON object containing an array of filtered notes and the total count of notes matching the filter criteria.
+/// A JSON object containing an array of filtered notes and the total count
+/// of notes matching the filter criteria.
+///
 /// # Errors
-/// Returns an error if JSON serialization fails.
+/// Returns an error if JSON serialization or the staleness check fails.
 pub(in crate::cli::batch) fn dispatch_notes(
     ctx: &BatchContext,
     warnings: bool,
     patterns: bool,
+    check: bool,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_notes", warnings, patterns).entered();
+    let _span = tracing::info_span!("batch_notes", warnings, patterns, check).entered();
 
     let notes = ctx.notes();
+
+    // Populate `stale_mentions` keyed by note text only when `--check` is set
+    // (single query through the cached read-only store; no extra writes).
+    let staleness: std::collections::HashMap<String, Vec<String>> = if check {
+        cqs::suggest::check_note_staleness(&ctx.store(), &ctx.root)?
+            .into_iter()
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
+
     let filtered: Vec<_> = notes
         .iter()
         .filter(|n| {
@@ -102,12 +130,19 @@ pub(in crate::cli::batch) fn dispatch_notes(
             }
         })
         .map(|n| {
-            serde_json::json!({
+            let mut entry = serde_json::json!({
                 "text": n.text,
                 "sentiment": n.sentiment,
                 "sentiment_label": n.sentiment_label(),
                 "mentions": n.mentions,
-            })
+            });
+            if check {
+                // Emit the key even on clean notes so agents can rely on
+                // field presence when `check` is requested — mirrors CLI.
+                let stale = staleness.get(&n.text).cloned().unwrap_or_default();
+                entry["stale_mentions"] = serde_json::json!(stale);
+            }
+            entry
         })
         .collect();
 
@@ -272,9 +307,12 @@ pub(in crate::cli::batch) fn dispatch_drift(
         .drifted
         .iter()
         .map(|e| {
+            // PB-V1.29-5: emit normalized forward-slash paths (match sister
+            // handlers in info.rs) so agents chaining `drift` → `context --json`
+            // don't trip on Windows backslashes.
             serde_json::json!({
                 "name": e.name,
-                "file": e.file.display().to_string(),
+                "file": cqs::normalize_path(&e.file),
                 "chunk_type": e.chunk_type,
                 "similarity": e.similarity,
                 "drift": e.drift,
@@ -344,13 +382,15 @@ pub(in crate::cli::batch) fn dispatch_diff(
         )?
     };
 
+    // PB-V1.29-5: emit normalized forward-slash paths (same rationale as
+    // `dispatch_drift` above) across added/removed/modified.
     let added: Vec<_> = result
         .added
         .iter()
         .map(|e| {
             serde_json::json!({
                 "name": e.name,
-                "file": e.file.display().to_string(),
+                "file": cqs::normalize_path(&e.file),
                 "type": e.chunk_type.to_string(),
             })
         })
@@ -362,7 +402,7 @@ pub(in crate::cli::batch) fn dispatch_diff(
         .map(|e| {
             serde_json::json!({
                 "name": e.name,
-                "file": e.file.display().to_string(),
+                "file": cqs::normalize_path(&e.file),
                 "type": e.chunk_type.to_string(),
             })
         })
@@ -374,7 +414,7 @@ pub(in crate::cli::batch) fn dispatch_diff(
         .map(|e| {
             serde_json::json!({
                 "name": e.name,
-                "file": e.file.display().to_string(),
+                "file": cqs::normalize_path(&e.file),
                 "type": e.chunk_type.to_string(),
                 "similarity": e.similarity,
             })

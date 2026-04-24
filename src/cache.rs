@@ -401,54 +401,40 @@ impl EmbeddingCache {
     }
 
     /// Get cache statistics.
+    ///
+    /// EH-V1.29-7: all five sub-queries propagate sqlx errors via `?` instead
+    /// of the previous `unwrap_or_else` zero-fallback. The return type is
+    /// `Result<CacheStats, CacheError>` and callers already handle `Err` — a
+    /// silent `{total_entries: 0, ...}` on a broken DB reads as "healthy
+    /// empty cache" to agents, which is wrong.
     pub fn stats(&self) -> Result<CacheStats, CacheError> {
         let _span = tracing::info_span!("cache_stats").entered();
 
         self.rt.block_on(async {
             let total_entries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM embedding_cache")
                 .fetch_one(&self.pool)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "cache stats: COUNT failed");
-                    0
-                });
+                .await?;
 
             let total_size: i64 = sqlx::query_scalar(
                 "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
             )
             .fetch_one(&self.pool)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "cache stats: page_size failed");
-                0
-            });
+            .await?;
 
             let unique_models: i64 =
                 sqlx::query_scalar("SELECT COUNT(DISTINCT model_fingerprint) FROM embedding_cache")
                     .fetch_one(&self.pool)
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, "cache stats: DISTINCT failed");
-                        0
-                    });
+                    .await?;
 
             let oldest: Option<i64> =
                 sqlx::query_scalar("SELECT MIN(created_at) FROM embedding_cache")
                     .fetch_one(&self.pool)
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, "cache stats: MIN failed");
-                        None
-                    });
+                    .await?;
 
             let newest: Option<i64> =
                 sqlx::query_scalar("SELECT MAX(created_at) FROM embedding_cache")
                     .fetch_one(&self.pool)
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, "cache stats: MAX failed");
-                        None
-                    });
+                    .await?;
 
             Ok(CacheStats {
                 total_entries: total_entries as u64,

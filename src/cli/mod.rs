@@ -21,7 +21,8 @@ mod watch;
 
 // Re-export definitions (clap structs, enums, helpers) for external use
 pub(crate) use definitions::{
-    parse_finite_f32, parse_nonzero_usize, validate_finite_f32, AuditModeState, GateThreshold,
+    parse_finite_f32, parse_nonzero_usize, parse_unit_f32, validate_finite_f32, AuditModeState,
+    GateThreshold,
 };
 pub use definitions::{Cli, OutputFormat};
 
@@ -240,16 +241,12 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "notes", "list"]).unwrap();
         match cli.command {
             Some(Commands::Notes { ref subcmd }) => match subcmd {
-                commands::NotesCommand::List {
-                    warnings,
-                    patterns,
-                    output,
-                    check,
-                } => {
-                    assert!(!warnings);
-                    assert!(!patterns);
+                commands::NotesCommand::List { list, output } => {
+                    // EX-V1.29-5: fields now live on `NotesListArgs`.
+                    assert!(!list.warnings);
+                    assert!(!list.patterns);
+                    assert!(!list.check);
                     assert!(!output.json);
-                    assert!(!check);
                 }
                 _ => panic!("Expected List subcommand"),
             },
@@ -262,8 +259,27 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "notes", "list", "--warnings"]).unwrap();
         match cli.command {
             Some(Commands::Notes { ref subcmd }) => match subcmd {
-                commands::NotesCommand::List { warnings, .. } => {
-                    assert!(warnings);
+                commands::NotesCommand::List { list, .. } => {
+                    assert!(list.warnings);
+                }
+                _ => panic!("Expected List subcommand"),
+            },
+            _ => panic!("Expected Notes command"),
+        }
+    }
+
+    /// API-V1.29-4: `--check` parses into `NotesListArgs.check`, so the
+    /// daemon batch path can forward it (previously the flag was inline on
+    /// `NotesCommand::List` and dropped when routed through the socket).
+    #[test]
+    fn test_cmd_notes_list_check_parses_into_shared_args() {
+        let cli = Cli::try_parse_from(["cqs", "notes", "list", "--check"]).unwrap();
+        match cli.command {
+            Some(Commands::Notes { ref subcmd }) => match subcmd {
+                commands::NotesCommand::List { list, .. } => {
+                    assert!(list.check);
+                    assert!(!list.warnings);
+                    assert!(!list.patterns);
                 }
                 _ => panic!("Expected List subcommand"),
             },
@@ -370,6 +386,7 @@ mod tests {
                     name,
                     source,
                     weight,
+                    ..
                 } => {
                     assert_eq!(name, "tokio");
                     assert_eq!(source.to_string_lossy(), "/path/to/source");
@@ -413,7 +430,7 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "ref", "remove", "tokio"]).unwrap();
         match cli.command {
             Some(Commands::Ref { ref subcmd }) => match subcmd {
-                commands::RefCommand::Remove { name } => assert_eq!(name, "tokio"),
+                commands::RefCommand::Remove { name, .. } => assert_eq!(name, "tokio"),
                 _ => panic!("Expected Remove subcommand"),
             },
             _ => panic!("Expected Ref command"),
@@ -425,7 +442,7 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "ref", "update", "tokio"]).unwrap();
         match cli.command {
             Some(Commands::Ref { ref subcmd }) => match subcmd {
-                commands::RefCommand::Update { name } => assert_eq!(name, "tokio"),
+                commands::RefCommand::Update { name, .. } => assert_eq!(name, "tokio"),
                 _ => panic!("Expected Update subcommand"),
             },
             _ => panic!("Expected Ref command"),

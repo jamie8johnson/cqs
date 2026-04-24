@@ -504,7 +504,11 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             args.lang.as_deref(),
             args.limit,
         ),
-        BatchCmd::Notes { args, .. } => handlers::dispatch_notes(ctx, args.warnings, args.patterns),
+        BatchCmd::Notes { args, .. } => {
+            // API-V1.29-4: pass `check` through so the daemon path matches
+            // `cqs notes list --check` when routed via the socket.
+            handlers::dispatch_notes(ctx, args.warnings, args.patterns, args.check)
+        }
         BatchCmd::Task { args, .. } => {
             log_query("task", &args.description);
             handlers::dispatch_task(ctx, &args.description, args.limit, args.tokens)

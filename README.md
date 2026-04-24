@@ -729,6 +729,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_LLM_MODEL` | `claude-haiku-4-5` | LLM model name for summaries |
 | `CQS_LLM_PROVIDER` | `anthropic` | LLM provider (`anthropic`) |
 | `CQS_MAX_CONNECTIONS` | `4` | SQLite write-pool max connections |
+| `CQS_BATCH_MAX_LINE_LEN` | `52428800` (50 MiB) | Max bytes per batch-mode line (`cqs batch` stdin and the daemon socket request). Aligned with `CQS_MAX_DIFF_BYTES` so batch-routed diffs aren't capped 50× sooner than the CLI path. |
 | `CQS_MAX_CONTRASTIVE_CHUNKS` | `30000` | Max chunks for contrastive summary matrix (memory = N*N*4 bytes) |
 | `CQS_MAX_DIFF_BYTES` | `52428800` (50 MiB) | Max bytes accepted on stdin (`cqs review --stdin`, `cqs impact --diff`) and from `git diff` subprocess. Long-running feature branches with multi-MB diffs need this lifted. |
 | `CQS_MAX_DISPLAY_FILE_SIZE` | `10485760` (10 MiB) | Max file size that `read_context_lines` (snippet extraction for search results) will open. |
@@ -737,7 +738,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_MAX_SEQ_LENGTH` | (auto) | Override max sequence length for custom ONNX models |
 | `CQS_MD_MAX_SECTION_LINES` | `150` | Max markdown section lines before overflow split |
 | `CQS_MD_MIN_SECTION_LINES` | `30` | Min markdown section lines (smaller sections merge) |
-| `CQS_MIGRATE_REQUIRE_BACKUP` | `0` | Set to `1` to turn a failed migration-time DB backup into a hard error. Default `0` logs a `warn!` and proceeds without a recovery snapshot. |
+| `CQS_MIGRATE_REQUIRE_BACKUP` | `1` | Migration-time DB backup is required by default; a backup failure aborts the migration with `StoreError::Io` so the destructive v18→v19 rebuild never runs without a recovery snapshot. Set to `0` to downgrade to a `warn!` and proceed without a snapshot (accept data-loss risk on a subsequent commit failure). |
 | `CQS_MMAP_SIZE` | `268435456` (256 MB) | SQLite memory-mapped I/O size |
 | `CQS_NO_DAEMON` | (none) | Set to `1` to force CLI mode (skip daemon connection attempt) |
 | `CQS_ONNX_DIR` | (auto) | Custom ONNX model directory (must contain `model.onnx` + `tokenizer.json`) |

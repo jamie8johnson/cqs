@@ -30,6 +30,16 @@ pub(crate) struct ProjectSearchResult {
     pub score: f32,
 }
 
+/// API-V1.29-1: JSON envelope row for `cqs --json project list`.
+/// `indexed` is true if either `.cqs/index.db` or the legacy `.cq/index.db`
+/// sits on disk — mirrors the text-mode `ok` / `missing index` status string.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ProjectListEntry {
+    pub name: String,
+    pub path: String,
+    pub indexed: bool,
+}
+
 // ---------------------------------------------------------------------------
 // CLI types
 // ---------------------------------------------------------------------------
@@ -45,11 +55,20 @@ pub(crate) enum ProjectCommand {
         path: PathBuf,
     },
     /// List registered projects
-    List,
+    List {
+        /// API-V1.29-1: shared `--json` arg so `cqs --json project list`
+        /// honors the top-level flag. Without this, the `cli.json` bit was
+        /// dropped and agents consuming JSON got colored ANSI text.
+        #[command(flatten)]
+        output: TextJsonArgs,
+    },
     /// Remove a registered project
     Remove {
         /// Project name to remove
         name: String,
+        /// API-V1.29-1: shared `--json` arg — see `List` above.
+        #[command(flatten)]
+        output: TextJsonArgs,
     },
     /// Search across all registered projects
     Search {
@@ -87,9 +106,24 @@ pub(crate) fn cmd_project(
             println!("Registered '{}' at {}", name, abs_path.display());
             Ok(())
         }
-        ProjectCommand::List => {
+        ProjectCommand::List { output } => {
+            let json = cli.json || output.json;
             let registry = ProjectRegistry::load()?;
-            if registry.project.is_empty() {
+            if json {
+                let entries: Vec<ProjectListEntry> = registry
+                    .project
+                    .iter()
+                    .map(|e| ProjectListEntry {
+                        name: e.name.clone(),
+                        path: normalize_path(&e.path),
+                        indexed: e.path.join(".cqs/index.db").exists()
+                            || e.path.join(".cq/index.db").exists(),
+                    })
+                    .collect();
+                crate::cli::json_envelope::emit_json(&serde_json::json!({
+                    "projects": entries,
+                }))?;
+            } else if registry.project.is_empty() {
                 println!("No projects registered.");
                 println!("Use 'cqs project register <name> <path>' to add one.");
             } else {
@@ -107,9 +141,17 @@ pub(crate) fn cmd_project(
             }
             Ok(())
         }
-        ProjectCommand::Remove { name } => {
+        ProjectCommand::Remove { name, output } => {
+            let json = cli.json || output.json;
             let mut registry = ProjectRegistry::load()?;
-            if registry.remove(name)? {
+            let removed = registry.remove(name)?;
+            if json {
+                let status = if removed { "removed" } else { "not_found" };
+                crate::cli::json_envelope::emit_json(&serde_json::json!({
+                    "status": status,
+                    "name": name,
+                }))?;
+            } else if removed {
                 println!("Removed '{}'", name);
             } else {
                 println!("Project '{}' not found", name);

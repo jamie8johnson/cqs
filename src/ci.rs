@@ -54,8 +54,21 @@ pub struct CiReport {
     pub review: ReviewResult,
     /// Dead code in files touched by the diff
     pub dead_in_diff: Vec<DeadInDiff>,
+    /// Whether the dead-code scan actually ran successfully. EH-V1.29-2: when
+    /// `false`, `dead_in_diff` is empty because the scan failed — not because
+    /// no dead code exists. The gate fails the build on scan failure unless
+    /// the threshold is `Off`, so CI can't silently green-light a broken
+    /// index. Field is omitted from JSON on the happy path via
+    /// `skip_serializing_if` so agents consuming existing CI JSON see no
+    /// shape change — the failure signal is also surfaced in `gate.reasons`.
+    #[serde(skip_serializing_if = "is_true")]
+    pub dead_scan_ok: bool,
     /// Gate evaluation result
     pub gate: GateResult,
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 /// Run CI analysis on a unified diff.
@@ -80,6 +93,7 @@ pub fn run_ci_analysis<Mode>(
             return Ok(CiReport {
                 review: empty_review(),
                 dead_in_diff: Vec::new(),
+                dead_scan_ok: true,
                 gate: GateResult {
                     threshold,
                     passed: true,
@@ -97,7 +111,7 @@ pub fn run_ci_analysis<Mode>(
         .collect();
     let diff_files: HashSet<&str> = diff_file_strings.iter().map(|s| s.as_str()).collect();
 
-    let dead_in_diff = match store.find_dead_code(true) {
+    let (dead_in_diff, dead_scan_ok) = match store.find_dead_code(true) {
         Ok((confident, possibly_pub)) => {
             let dead: Vec<DeadInDiff> = confident
                 .into_iter()
@@ -119,16 +133,19 @@ pub fn run_ci_analysis<Mode>(
                 diff_files = diff_files.len(),
                 "Dead code scan complete"
             );
-            dead
+            (dead, true)
         }
         Err(e) => {
-            tracing::warn!(error = %e, "Dead code detection failed — CI will report 0 dead code (not 'scan passed')");
-            Vec::new()
+            // EH-V1.29-2: record the scan failure so the gate fails loud.
+            // Previously this returned `Vec::new()` with no flag, letting
+            // `evaluate_gate` green-light a CI run whose index was unreadable.
+            tracing::error!(error = %e, "Dead code detection failed — CI treating as a gate failure");
+            (Vec::new(), false)
         }
     };
 
     // 3. Gate evaluation
-    let gate = evaluate_gate(&review.risk_summary, threshold);
+    let gate = evaluate_gate(&review.risk_summary, threshold, dead_scan_ok);
     if !gate.passed {
         tracing::info!(
             threshold = ?threshold,
@@ -140,13 +157,18 @@ pub fn run_ci_analysis<Mode>(
     Ok(CiReport {
         review,
         dead_in_diff,
+        dead_scan_ok,
         gate,
     })
 }
 
 /// Evaluate whether the CI gate passes for the given risk summary.
-fn evaluate_gate(risk: &RiskSummary, threshold: GateThreshold) -> GateResult {
-    let (passed, reasons) = match threshold {
+///
+/// EH-V1.29-2: when `dead_scan_ok == false`, the gate fails unless the
+/// threshold is `Off`. A broken dead-code scan is a broken build — the
+/// previous behaviour silently reported "0 dead code, gate passed".
+fn evaluate_gate(risk: &RiskSummary, threshold: GateThreshold, dead_scan_ok: bool) -> GateResult {
+    let (mut passed, mut reasons) = match threshold {
         GateThreshold::High => {
             if risk.high > 0 {
                 (
@@ -169,6 +191,14 @@ fn evaluate_gate(risk: &RiskSummary, threshold: GateThreshold) -> GateResult {
         }
         GateThreshold::Off => (true, Vec::new()),
     };
+
+    // Short-circuit: broken scan fails the gate for High/Medium thresholds.
+    // `Off` means "never fail" — respect that even if the scan exploded.
+    if !dead_scan_ok && !matches!(threshold, GateThreshold::Off) {
+        passed = false;
+        reasons.push("Dead-code scan failed — treating as gate failure".to_string());
+    }
+
     GateResult {
         threshold,
         passed,
@@ -230,7 +260,7 @@ mod tests {
     #[test]
     fn test_gate_high_passes_when_no_high_risk() {
         let risk = make_summary(0, 3, 5);
-        let gate = evaluate_gate(&risk, GateThreshold::High);
+        let gate = evaluate_gate(&risk, GateThreshold::High, true);
         assert!(gate.passed);
         assert!(gate.reasons.is_empty());
     }
@@ -238,7 +268,7 @@ mod tests {
     #[test]
     fn test_gate_high_fails_on_high_risk() {
         let risk = make_summary(2, 1, 0);
-        let gate = evaluate_gate(&risk, GateThreshold::High);
+        let gate = evaluate_gate(&risk, GateThreshold::High, true);
         assert!(!gate.passed);
         assert_eq!(gate.reasons.len(), 1);
         assert!(gate.reasons[0].contains("2 high-risk"));
@@ -247,7 +277,7 @@ mod tests {
     #[test]
     fn test_gate_medium_fails_on_medium() {
         let risk = make_summary(0, 1, 5);
-        let gate = evaluate_gate(&risk, GateThreshold::Medium);
+        let gate = evaluate_gate(&risk, GateThreshold::Medium, true);
         assert!(!gate.passed);
         assert_eq!(gate.reasons.len(), 1);
         assert!(gate.reasons[0].contains("medium-risk"));
@@ -256,7 +286,7 @@ mod tests {
     #[test]
     fn test_gate_medium_reports_both_high_and_medium() {
         let risk = make_summary(2, 3, 1);
-        let gate = evaluate_gate(&risk, GateThreshold::Medium);
+        let gate = evaluate_gate(&risk, GateThreshold::Medium, true);
         assert!(!gate.passed);
         assert_eq!(gate.reasons.len(), 2);
         assert!(gate.reasons[0].contains("high-risk"));
@@ -266,7 +296,7 @@ mod tests {
     #[test]
     fn test_gate_off_always_passes() {
         let risk = make_summary(10, 5, 0);
-        let gate = evaluate_gate(&risk, GateThreshold::Off);
+        let gate = evaluate_gate(&risk, GateThreshold::Off, true);
         assert!(gate.passed);
         assert!(gate.reasons.is_empty());
     }
@@ -274,9 +304,9 @@ mod tests {
     #[test]
     fn test_gate_all_low_passes_any_threshold() {
         let risk = make_summary(0, 0, 10);
-        assert!(evaluate_gate(&risk, GateThreshold::High).passed);
-        assert!(evaluate_gate(&risk, GateThreshold::Medium).passed);
-        assert!(evaluate_gate(&risk, GateThreshold::Off).passed);
+        assert!(evaluate_gate(&risk, GateThreshold::High, true).passed);
+        assert!(evaluate_gate(&risk, GateThreshold::Medium, true).passed);
+        assert!(evaluate_gate(&risk, GateThreshold::Off, true).passed);
     }
 
     #[test]
@@ -286,5 +316,39 @@ mod tests {
         assert!(review.changed_functions.is_empty());
         assert!(review.affected_callers.is_empty());
         assert!(review.affected_tests.is_empty());
+    }
+
+    /// EH-V1.29-2: a broken dead-code scan must fail the gate for High/Medium
+    /// thresholds, regardless of the review risk summary. The previous
+    /// behaviour let `evaluate_gate` see an empty `dead_in_diff` and green-
+    /// light the build.
+    #[test]
+    fn test_gate_fails_when_dead_scan_broken_high_threshold() {
+        let risk = make_summary(0, 0, 0);
+        let gate = evaluate_gate(&risk, GateThreshold::High, false);
+        assert!(!gate.passed);
+        assert_eq!(gate.reasons.len(), 1);
+        assert!(gate.reasons[0].contains("Dead-code scan failed"));
+    }
+
+    #[test]
+    fn test_gate_fails_when_dead_scan_broken_medium_threshold() {
+        let risk = make_summary(0, 0, 5);
+        let gate = evaluate_gate(&risk, GateThreshold::Medium, false);
+        assert!(!gate.passed);
+        assert!(gate
+            .reasons
+            .iter()
+            .any(|r| r.contains("Dead-code scan failed")));
+    }
+
+    /// `Off` means "never fail" — respect that even if the scan exploded.
+    /// Operators explicitly asked for permissive mode.
+    #[test]
+    fn test_gate_off_passes_even_when_dead_scan_broken() {
+        let risk = make_summary(10, 5, 0);
+        let gate = evaluate_gate(&risk, GateThreshold::Off, false);
+        assert!(gate.passed);
+        assert!(gate.reasons.is_empty());
     }
 }

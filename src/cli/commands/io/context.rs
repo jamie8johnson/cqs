@@ -24,8 +24,12 @@ pub(crate) struct CompactData {
 /// Build compact-mode data: chunks with caller/callee counts.
 pub(crate) fn build_compact_data<Mode>(store: &Store<Mode>, path: &str) -> Result<CompactData> {
     let _span = tracing::info_span!("build_compact_data", path).entered();
+    // PB-V1.29-1: normalize backslash input from Windows / agent pipelines.
+    // `get_chunks_by_origin` matches on the stored `origin` column which is
+    // forward-slash-normalized; unnormalized `src\foo.rs` silently returns empty.
+    let normalized = cqs::normalize_path(Path::new(path));
     let chunks = store
-        .get_chunks_by_origin(path)
+        .get_chunks_by_origin(&normalized)
         .context("Failed to load chunks for file")?;
     if chunks.is_empty() {
         bail!(
@@ -111,8 +115,12 @@ pub(crate) fn build_full_data<Mode>(
     root: &Path,
 ) -> Result<FullData> {
     let _span = tracing::info_span!("build_full_data", path).entered();
+    // PB-V1.29-1: normalize backslash input from Windows / agent pipelines.
+    // `get_chunks_by_origin` matches on the stored `origin` column which is
+    // forward-slash-normalized; unnormalized `src\foo.rs` silently returns empty.
+    let normalized = cqs::normalize_path(Path::new(path));
     let chunks = store
-        .get_chunks_by_origin(path)
+        .get_chunks_by_origin(&normalized)
         .context("Failed to load chunks for file")?;
     if chunks.is_empty() {
         bail!(
@@ -147,8 +155,11 @@ pub(crate) fn build_full_data<Mode>(
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
         for caller in callers {
-            let caller_origin = caller.file.to_string_lossy().to_string();
-            if !caller_origin.ends_with(path) {
+            // PB-V1.29-1: normalize caller_origin and compare against the
+            // slash-normalized user path; otherwise Windows backslash input
+            // mis-classifies in-file callers as external.
+            let caller_origin = cqs::normalize_path(&caller.file);
+            if !caller_origin.ends_with(normalized.as_str()) {
                 let rel = cqs::rel_display(&caller.file, root);
                 external_callers.push((
                     caller.name.clone(),
