@@ -56,7 +56,12 @@ fn resolve_reference_db(root: &Path, ref_name: &str) -> Result<std::path::PathBu
             )
         })?;
 
-    let ref_db = ref_cfg.path.join(cqs::INDEX_DB_FILENAME);
+    // Refs use the same `.cqs/` layout as projects, so honor slot resolution
+    // (post-migration: `.cqs/slots/<active>/index.db`; pre-migration:
+    // `.cqs/index.db`). `resolve_index_db` falls back to the legacy path for
+    // refs that were built against an older cqs version and never migrated.
+    let ref_cqs_dir = cqs::resolve_index_dir(&ref_cfg.path);
+    let ref_db = cqs::resolve_index_db(&ref_cqs_dir);
     if !ref_db.exists() {
         bail!(
             "Reference '{}' has no index at {}. Run 'cqs ref update {}' first.",

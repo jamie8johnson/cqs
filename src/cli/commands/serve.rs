@@ -35,7 +35,7 @@ pub(crate) fn cmd_serve(port: u16, bind: String, open: bool) -> Result<()> {
 
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+    let index_path = cqs::resolve_index_db(&cqs_dir);
 
     if !index_path.exists() {
         anyhow::bail!(

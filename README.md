@@ -518,7 +518,8 @@ Key commands (`--json` works on all commands; `--format mermaid` also accepted o
 - `cqs ref add/remove/list` - manage reference indexes for multi-index search
 - `cqs project register/remove/list/search` - cross-project search registry
 - `cqs export-model --repo <org/model>` - export a HuggingFace model to ONNX format for use with cqs
-- `cqs cache stats/clear/prune` - manage global embedding cache (~/.cache/cqs/embeddings.db)
+- `cqs cache stats/prune/compact` - manage the project-scoped embeddings cache at `<project>/.cqs/embeddings_cache.db`. `--per-model` on stats; `prune <DAYS>` or `prune --model <id>`; `compact` runs VACUUM
+- `cqs slot list/create/promote/remove/active` - named slots — side-by-side full indexes under `.cqs/slots/<name>/`. Promote is atomic; daemon restart picks up the new slot
 - `cqs doctor` - check model, index, hardware (execution provider, CAGRA availability)
 - `cqs completions <shell>` - generate shell completions (bash, zsh, fish, powershell, elvish)
 
@@ -772,6 +773,9 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_RERANK_OVER_RETRIEVAL` | `4` | Multiplier on `--limit` for the reranker over-retrieval pool. At `--rerank --limit N`, stage-1 returns `N * MULTIPLIER` candidates so the cross-encoder has recall headroom. Bump for projects where the right answer routinely sits past rank-20 in stage-1. |
 | `CQS_RERANK_POOL_MAX` | `20` | Hard cap on the reranker pool regardless of multiplier. Caps ORT memory + per-batch latency, and avoids weak cross-encoders shuffling noise at deep ranks. Bump on workstations running a known-strong reranker. |
 | `CQS_RRF_K` | `60` | RRF fusion constant (higher = more weight to top results) |
+| `CQS_SLOT` | (unset) | Slot to use for this invocation. Overridden by `--slot` flag, overrides `.cqs/active_slot`. See `cqs slot --help`. |
+| `CQS_CACHE_ENABLED` | `1` | Set `0` to disable the project-scoped embeddings cache for this run (benchmark / debug). Cache lives at `<project>/.cqs/embeddings_cache.db`. |
+| `CQS_CACHE_MAX_BYTES` | (unset) | Soft cap; emits `tracing::warn!` when the embeddings cache DB exceeds this many bytes. Does NOT auto-prune — use `cqs cache prune` / `cqs cache compact`. |
 | `CQS_SKIP_ENRICHMENT` | (none) | Comma-separated enrichment layers to skip (e.g. `llm,hyde,callgraph`) |
 | `CQS_SKIP_INTEGRITY_CHECK` | (none) | Set to `1` to skip `PRAGMA quick_check` on write-mode store opens |
 | `CQS_SPLADE_ALPHA` | (per-category default) | Global SPLADE fusion alpha override (0.0 = pure sparse, 1.0 = pure dense) |

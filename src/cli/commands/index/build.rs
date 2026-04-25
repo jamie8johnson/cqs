@@ -64,23 +64,78 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     }
 
     let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
+    let project_cqs_dir = cqs::resolve_index_dir(&root);
+
+    // Ensure project `.cqs/` exists before slot resolution / migration so
+    // the slot helpers find a real directory to inspect.
+    if !project_cqs_dir.exists() {
+        std::fs::create_dir_all(&project_cqs_dir)
+            .with_context(|| format!("Failed to create {}", project_cqs_dir.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) =
+                std::fs::set_permissions(&project_cqs_dir, std::fs::Permissions::from_mode(0o700))
+            {
+                tracing::debug!(path = %project_cqs_dir.display(), error = %e, "Failed to set file permissions");
+            }
+        }
+    }
+
+    // Idempotent migration: if a legacy `.cqs/index.db` exists and slots/
+    // hasn't been seeded yet, move the legacy index into `slots/default/`.
+    if let Err(e) = cqs::slot::migrate_legacy_index_to_default_slot(&project_cqs_dir) {
+        tracing::warn!(error = %e, "slot migration failed during index; continuing");
+    }
+
+    // Resolve slot. `cqs index` accepts the global `--slot` flag, falls back
+    // to `CQS_SLOT` / `.cqs/active_slot` / "default" per spec. If the
+    // operator runs `cqs index --slot foo` against a non-existent slot dir,
+    // create it now (analogous to `cqs slot create foo` followed by index).
+    let resolved_slot = cqs::slot::resolve_slot_name(cli.slot.as_deref(), &project_cqs_dir)
+        .map_err(anyhow::Error::from)?;
+    let cqs_dir = if cqs::slot::slots_root(&project_cqs_dir).exists() {
+        cqs::resolve_slot_dir(&project_cqs_dir, &resolved_slot.name)
+    } else {
+        // Pre-slots layout: `.cqs/index.db` directly. We allowed migration
+        // above to fail silently — the only way to reach here with neither
+        // slots/ nor a legacy index is a fresh project. Materialize the
+        // slot dir so subsequent runs are slot-aware.
+        let dir = cqs::resolve_slot_dir(&project_cqs_dir, &resolved_slot.name);
+        if !dir.exists() {
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("Failed to create slot dir {}", dir.display()))?;
+        }
+        dir
+    };
     let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
 
-    // Ensure .cqs directory exists with restrictive permissions
+    // Ensure the slot dir itself exists with restrictive permissions when
+    // we materialize it as part of `cqs index --slot <new>` flows. The
+    // project_cqs_dir was already chmodded above; the slot dir is a fresh
+    // child whose permissions also matter for SEC-D.4 alignment.
     if !cqs_dir.exists() {
         std::fs::create_dir_all(&cqs_dir)
-            .with_context(|| format!("Failed to create {}", cqs_dir.display()))?;
+            .with_context(|| format!("Failed to create slot dir {}", cqs_dir.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             if let Err(e) =
                 std::fs::set_permissions(&cqs_dir, std::fs::Permissions::from_mode(0o700))
             {
-                tracing::debug!(path = %cqs_dir.display(), error = %e, "Failed to set file permissions");
+                tracing::debug!(path = %cqs_dir.display(), error = %e, "Failed to set slot dir permissions");
             }
         }
     }
+
+    // Span carries slot name + resolution source so failed-index logs
+    // surface which slot was being touched without reading code.
+    let _slot_span = tracing::info_span!(
+        "index_slot",
+        slot_name = %resolved_slot.name,
+        slot_source = resolved_slot.source.as_str(),
+    )
+    .entered();
 
     // Detect a running cqs-watch --serve daemon BEFORE we touch anything.
     // The daemon holds a shared file lock on `index.hnsw.lock` for the
@@ -94,9 +149,12 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     // running an older `PingResponse` schema still gets detected — schema
     // drift would otherwise let the deserialize error fall through and
     // silently restore the old hang behavior on version mismatches.
+    //
+    // Daemon socket is hashed from the project-level `.cqs/` (one daemon
+    // per project, regardless of slot) so we use `project_cqs_dir` here.
     #[cfg(unix)]
     if !dry_run {
-        let sock_path = cqs::daemon_translate::daemon_socket_path(&cqs_dir);
+        let sock_path = cqs::daemon_translate::daemon_socket_path(&project_cqs_dir);
         if sock_path.exists() {
             use std::os::unix::net::UnixStream;
             use std::time::Duration;

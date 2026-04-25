@@ -277,6 +277,15 @@ pub struct Cli {
     #[arg(long)]
     pub model: Option<String>,
 
+    /// Named slot to use (overrides `CQS_SLOT` env and `.cqs/active_slot`).
+    ///
+    /// Slots are project-scoped, side-by-side full indexes living under
+    /// `.cqs/slots/<name>/`. Default behaviour is to read the active slot
+    /// from `.cqs/active_slot` (falls back to `default`). Spec:
+    /// `docs/plans/2026-04-24-embeddings-cache-and-slots.md`.
+    #[arg(long, global = true)]
+    pub slot: Option<String>,
+
     /// Show debug info (sets RUST_LOG=debug)
     #[arg(short, long)]
     pub verbose: bool,
@@ -719,10 +728,16 @@ pub(super) enum Commands {
         #[arg(long)]
         contrastive: bool,
     },
-    /// Manage global embedding cache (stats, clear, prune)
+    /// Manage the embeddings cache (stats, prune, compact). Project-scoped
+    /// at `<project>/.cqs/embeddings_cache.db`.
     Cache {
         #[command(subcommand)]
         subcmd: CacheCommand,
+    },
+    /// Manage named slots — side-by-side full indexes under `.cqs/slots/<name>/`
+    Slot {
+        #[command(subcommand)]
+        subcmd: SlotCommand,
     },
     /// Daemon healthcheck — show daemon model, uptime, and counters
     ///
@@ -776,7 +791,7 @@ pub(super) enum Commands {
 
 // Re-export the subcommand types used in Commands variants
 pub(super) use super::commands::{
-    CacheCommand, ModelCommand, NotesCommand, ProjectCommand, RefCommand,
+    CacheCommand, ModelCommand, NotesCommand, ProjectCommand, RefCommand, SlotCommand,
 };
 
 /// Classifier used by `try_daemon_query` to decide whether a CLI command can
@@ -826,6 +841,7 @@ impl Commands {
             | Commands::TrainData { .. }
             | Commands::TrainPairs { .. }
             | Commands::Cache { .. }
+            | Commands::Slot { .. }
             // Registry commands — not on batch surface.
             | Commands::Ref { .. }
             | Commands::Project { .. }

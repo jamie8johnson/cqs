@@ -731,17 +731,26 @@ impl BatchContext {
                 }
             }
         }
-        // RM-V1.25-5: Evict global EmbeddingCache at daemon startup.
+        // RM-V1.25-5: Evict the project's embeddings cache at daemon startup.
+        //
         // `evict()` was previously only called at the tail of the full
         // `cqs index` pipeline (src/cli/pipeline/mod.rs), so long-lived
         // daemons / watch sessions on machines that never run a manual
-        // index can grow the shared ~/.cache/cqs/embeddings.db past the
-        // 10GB cap (CQS_CACHE_MAX_SIZE) without ever trimming. Kick off
-        // a single post-warm eviction so the daemon self-heals on boot.
+        // index can grow the cache past the `CQS_CACHE_MAX_SIZE` cap
+        // (default 10 GB) without ever trimming. Kick off a single post-warm
+        // eviction so the daemon self-heals on boot.
+        //
+        // Spec §Cache: the cache moved from `~/.cache/cqs/embeddings.db`
+        // (global) to `<project>/.cqs/embeddings_cache.db` (project-scoped),
+        // so we resolve the path against the daemon's project root via
+        // `resolve_index_dir(&self.root)` instead of the legacy global.
         //
         // #968: reuse the batch context's runtime so this one-shot open
         // doesn't spawn a fresh current_thread runtime.
-        evict_global_embedding_cache_with_runtime(
+        let project_cqs_dir = cqs::resolve_index_dir(&self.root);
+        let cache_path = cqs::cache::EmbeddingCache::project_default_path(&project_cqs_dir);
+        evict_embeddings_cache_with_runtime(
+            &cache_path,
             "daemon startup",
             Some(std::sync::Arc::clone(&self.runtime)),
         );
@@ -1280,7 +1289,8 @@ fn build_vector_index<Mode: crate::cli::store::ClearHnswDirty>(
     crate::cli::build_vector_index_with_config(store, cqs_dir, ef_search)
 }
 
-/// RM-V1.25-5: Evict the global embedding cache if it exceeds its size cap.
+/// RM-V1.25-5: Evict the embeddings cache at `cache_path` if it exceeds its
+/// size cap.
 ///
 /// `EmbeddingCache::evict` is a no-op below `CQS_CACHE_MAX_SIZE` (default
 /// 10GB), so it's cheap to call. Opens the cache (WAL-mode SQLite, one
@@ -1288,17 +1298,25 @@ fn build_vector_index<Mode: crate::cli::store::ClearHnswDirty>(
 /// startup and the watch reindex path to keep the shared cache bounded
 /// even when the user never runs a full `cqs index`.
 ///
+/// Spec §Cache: callers resolve `cache_path` to
+/// `<project>/.cqs/embeddings_cache.db` rather than the legacy global.
+///
 /// #968: takes an optional shared runtime so the daemon's one
 /// multi-thread pool drives this open instead of spinning up a fresh
 /// `current_thread` runtime. Pass `None` to fall back to the per-open
 /// runtime constructor (used by non-daemon callers like `cqs index`).
-pub(crate) fn evict_global_embedding_cache_with_runtime(
+pub(crate) fn evict_embeddings_cache_with_runtime(
+    cache_path: &std::path::Path,
     trigger: &str,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 ) {
-    let _span = tracing::debug_span!("daemon_cache_evict", trigger).entered();
-    let cache_path = cqs::cache::EmbeddingCache::default_path();
-    let cache = match cqs::cache::EmbeddingCache::open_with_runtime(&cache_path, runtime.clone()) {
+    let _span = tracing::debug_span!(
+        "daemon_cache_evict",
+        trigger,
+        path = %cache_path.display()
+    )
+    .entered();
+    let cache = match cqs::cache::EmbeddingCache::open_with_runtime(cache_path, runtime.clone()) {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(
@@ -1492,7 +1510,7 @@ pub(crate) fn create_context_with_runtime(
 ) -> Result<BatchContext> {
     let root = super::config::find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
+    let index_path = cqs::resolve_index_db(&cqs_dir);
     if !index_path.exists() {
         anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
     }

@@ -86,6 +86,7 @@ pub mod health;
 pub mod reranker;
 #[cfg(feature = "serve")]
 pub mod serve;
+pub mod slot;
 pub mod suggest;
 
 // Internal modules - not part of public library API
@@ -219,6 +220,37 @@ pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
     } else {
         new_dir
     }
+}
+
+/// Compute the slot directory path: `<project_cqs_dir>/slots/<slot_name>/`.
+///
+/// Convenience wrapper around [`crate::slot::slot_dir`] for callers that
+/// already imported `cqs::resolve_index_dir`.
+pub fn resolve_slot_dir(project_cqs_dir: &Path, slot_name: &str) -> PathBuf {
+    crate::slot::slot_dir(project_cqs_dir, slot_name)
+}
+
+/// Resolve the active index.db path within a project's `.cqs/` dir.
+///
+/// Honors the slot resolution order (`CQS_SLOT` env > `.cqs/active_slot` file >
+/// `"default"`) and falls back to the pre-migration `.cqs/index.db` layout for
+/// unmigrated projects (cross-project search, external references).
+///
+/// Returns the slot path even when nothing exists, so the caller's
+/// "not found" error message points at the forward-looking layout.
+pub fn resolve_index_db(project_cqs_dir: &Path) -> PathBuf {
+    if let Ok(resolved) = crate::slot::resolve_slot_name(None, project_cqs_dir) {
+        let slot_path =
+            crate::slot::slot_dir(project_cqs_dir, &resolved.name).join(INDEX_DB_FILENAME);
+        if slot_path.exists() {
+            return slot_path;
+        }
+    }
+    let legacy = project_cqs_dir.join(INDEX_DB_FILENAME);
+    if legacy.exists() {
+        return legacy;
+    }
+    crate::slot::slot_dir(project_cqs_dir, crate::slot::DEFAULT_SLOT).join(INDEX_DB_FILENAME)
 }
 
 /// Default embedding dimension (1024, BGE-large-en-v1.5).
