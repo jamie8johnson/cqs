@@ -14,7 +14,7 @@ use colored::Colorize;
 
 use cqs::slot::{
     active_slot_path, list_slots, read_active_slot, slot_dir, validate_slot_name,
-    write_active_slot, DEFAULT_SLOT,
+    write_active_slot, write_slot_model, DEFAULT_SLOT,
 };
 
 use crate::cli::config::find_project_root;
@@ -234,9 +234,15 @@ fn slot_create(project_cqs_dir: &Path, name: &str, model: Option<&str>, json: bo
 
     // Validate the model now (preset or HF) so the user gets a fast error
     // before the next `cqs index` runs. The actual download happens later.
+    // #1107: persist the user's intent in `slot.toml` so `cqs index --slot <name>`
+    // picks it up automatically. We store the *user's input* (preset name like
+    // `nomic-coderank`, or full HF repo like `BAAI/bge-large-en-v1.5`) — not the
+    // resolved canonical repo — so future preset table additions don't shift
+    // semantics out from under the user.
     let resolved_model: Option<String> = match model {
         Some(m) => {
             let cfg = cqs::embedder::ModelConfig::resolve(Some(m), None);
+            write_slot_model(project_cqs_dir, name, m).map_err(anyhow::Error::from)?;
             Some(cfg.repo)
         }
         None => None,
@@ -410,6 +416,31 @@ mod tests {
         let r = slot_create(&cqs, "e5", None, true);
         assert!(r.is_ok(), "{:?}", r.err());
         assert!(slot_dir(&cqs, "e5").exists());
+    }
+
+    #[test]
+    fn slot_create_with_model_persists_slot_toml() {
+        // #1107: --model X must write `[embedding] model = "X"` so a later
+        // `cqs index --slot <name>` (without --model) honors the user's intent.
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = with_slots(&[]);
+        let cqs = tmp.path().join(".cqs");
+        fs::create_dir_all(&cqs).unwrap();
+        slot_create(&cqs, "coderank", Some("nomic-coderank"), true).unwrap();
+        assert_eq!(
+            cqs::slot::read_slot_model(&cqs, "coderank").as_deref(),
+            Some("nomic-coderank")
+        );
+    }
+
+    #[test]
+    fn slot_create_without_model_leaves_slot_toml_absent() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = with_slots(&[]);
+        let cqs = tmp.path().join(".cqs");
+        fs::create_dir_all(&cqs).unwrap();
+        slot_create(&cqs, "noflag", None, true).unwrap();
+        assert!(cqs::slot::read_slot_model(&cqs, "noflag").is_none());
     }
 
     #[test]

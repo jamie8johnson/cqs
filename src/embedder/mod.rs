@@ -555,6 +555,27 @@ impl Embedder {
         Ok(encodings.iter().map(|e| e.get_ids().len()).collect())
     }
 
+    /// Count tokens consumed by the document prefix (e.g. "passage: " for E5,
+    /// "Represent this query for searching relevant code: " for nomic).
+    ///
+    /// Used by windowing to size each window so that `prefix + window + special
+    /// tokens` fits within `max_seq_length`. Falls back to a conservative 16 if
+    /// tokenizer load fails — long-prefix models will silently truncate but the
+    /// process still makes progress.
+    pub fn doc_prefix_token_count(&self) -> usize {
+        let prefix = &self.model_config.doc_prefix;
+        if prefix.is_empty() {
+            return 0;
+        }
+        match self.tokenizer() {
+            Ok(t) => match t.encode(prefix.as_str(), false) {
+                Ok(enc) => enc.get_ids().len(),
+                Err(_) => 16,
+            },
+            Err(_) => 16,
+        }
+    }
+
     /// Split text into overlapping windows of max_tokens with overlap tokens of context.
     /// Returns Vec of (window_content, window_index).
     /// If text fits in max_tokens, returns single window with index 0.

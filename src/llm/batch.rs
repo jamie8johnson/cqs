@@ -712,7 +712,7 @@ impl BatchPhase2<'_> {
         tracing::info!(
             count = batch_items.len(),
             purpose = self.purpose,
-            "Submitting batch to Claude API"
+            "Submitting batch to LLM provider"
         );
         let id = submit(client, batch_items, self.max_tokens)?;
         set_pending(store, Some(&id)).map_err(|e| {

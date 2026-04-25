@@ -63,10 +63,27 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         cqs::store::set_rrf_k_from_config(scoring);
     }
 
-    // Resolve embedding model config once (CLI > env > config > default),
-    // then apply env var overrides (CQS_MAX_SEQ_LENGTH, CQS_EMBEDDING_DIM)
+    // Resolve embedding model config once. Priority (#1107):
+    //   1. `--model` CLI flag           (explicit override)
+    //   2. `.cqs/slots/<name>/slot.toml` (slot intent — set at `slot create --model`)
+    //   3. `CQS_EMBEDDING_MODEL` env
+    //   4. `.cqs.toml [embedding]`
+    //   5. default preset
+    //
+    // Slot intent is forwarded by passing the persisted preset/repo as
+    // `cli_model` to `ModelConfig::resolve`, which makes it land in priority
+    // slot 1 inside `resolve` (still beating env/config) without needing a new
+    // resolve signature.
+    let slot_model_intent = if cli.model.is_none() {
+        let resolved_slot =
+            cqs::slot::resolve_slot_name(cli.slot.as_deref(), &project_cqs_dir).ok();
+        resolved_slot.and_then(|s| cqs::slot::read_slot_model(&project_cqs_dir, &s.name))
+    } else {
+        None
+    };
+    let effective_cli_model = cli.model.as_deref().or(slot_model_intent.as_deref());
     cli.resolved_model = Some(
-        cqs::embedder::ModelConfig::resolve(cli.model.as_deref(), config.embedding.as_ref())
+        cqs::embedder::ModelConfig::resolve(effective_cli_model, config.embedding.as_ref())
             .apply_env_overrides(),
     );
 

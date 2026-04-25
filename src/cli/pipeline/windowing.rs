@@ -4,16 +4,22 @@ use cqs::{Chunk, Embedder};
 
 // Windowing constants
 //
-// WINDOW_OVERHEAD: reserved tokens for query/passage prefix and special tokens
-const WINDOW_OVERHEAD: usize = 32;
+// SPECIAL_TOKEN_OVERHEAD: reserved for [CLS], [SEP], and tokenizer-added boundary
+// markers. WordPiece adds two; SentencePiece adds 1-2. Four is the safe ceiling
+// across BGE/E5/CodeRank/nomic.
+const SPECIAL_TOKEN_OVERHEAD: usize = 4;
 
-/// Compute max tokens per window from the model's max_seq_length.
-/// Falls back to 480 (safe for 512-token models) if model config unavailable.
-pub(crate) fn max_tokens_per_window(model_max_seq: usize) -> usize {
+/// Compute max tokens per window from the model's max_seq_length and the doc
+/// prefix length. Long prefixes (e.g. nomic's 38-token instruction) shrink the
+/// window so prefix + window + special tokens stay under `max_seq_length`.
+///
+/// Falls back to 480 (safe for 512-token models) if `model_max_seq == 0`.
+pub(crate) fn max_tokens_per_window(model_max_seq: usize, prefix_tokens: usize) -> usize {
     if model_max_seq == 0 {
         480
     } else {
-        model_max_seq.saturating_sub(WINDOW_OVERHEAD).max(128)
+        let overhead = prefix_tokens.saturating_add(SPECIAL_TOKEN_OVERHEAD);
+        model_max_seq.saturating_sub(overhead).max(128)
     }
 }
 
@@ -38,7 +44,10 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
     let mut result = Vec::with_capacity(chunks.len());
 
     // P3 #119: max_tokens and overlap are model-fixed; computed once outside the loop.
-    let max_tokens = max_tokens_per_window(embedder.model_config().max_seq_length);
+    // #1042: factor in doc prefix length so long-prefix models (nomic, instruction-tuned)
+    // don't silently overflow max_seq_length.
+    let prefix_tokens = embedder.doc_prefix_token_count();
+    let max_tokens = max_tokens_per_window(embedder.model_config().max_seq_length, prefix_tokens);
     let overlap = window_overlap_tokens(max_tokens);
 
     for chunk in chunks {

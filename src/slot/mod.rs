@@ -54,6 +54,9 @@ pub const SLOTS_DIR: &str = "slots";
 /// Bare file name of the active-slot pointer in `.cqs/`.
 pub const ACTIVE_SLOT_FILE: &str = "active_slot";
 
+/// Bare file name of the per-slot config in `.cqs/slots/<name>/`.
+pub const SLOT_CONFIG_FILE: &str = "slot.toml";
+
 /// Default slot name, used when nothing else resolves.
 pub const DEFAULT_SLOT: &str = "default";
 
@@ -182,6 +185,127 @@ pub fn slot_dir(project_cqs_dir: &Path, slot_name: &str) -> PathBuf {
 /// Path of `.cqs/slots/` for the given project `.cqs/` dir.
 pub fn slots_root(project_cqs_dir: &Path) -> PathBuf {
     project_cqs_dir.join(SLOTS_DIR)
+}
+
+/// Path of `.cqs/slots/<name>/slot.toml` — the per-slot config file.
+pub fn slot_config_path(project_cqs_dir: &Path, slot_name: &str) -> PathBuf {
+    slot_dir(project_cqs_dir, slot_name).join(SLOT_CONFIG_FILE)
+}
+
+/// Read the embedding model preset/repo persisted in `.cqs/slots/<name>/slot.toml`.
+///
+/// Schema (#1107):
+/// ```toml
+/// [embedding]
+/// model = "nomic-coderank"
+/// ```
+///
+/// Returns `None` if the file is missing, unreadable, or has no `[embedding].model`.
+/// Caller falls back to the next priority in `ModelConfig::resolve`.
+pub fn read_slot_model(project_cqs_dir: &Path, slot_name: &str) -> Option<String> {
+    let path = slot_config_path(project_cqs_dir, slot_name);
+    let raw = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Failed to read slot config; falling back to default resolution"
+            );
+            return None;
+        }
+    };
+    match toml::from_str::<SlotConfigFile>(&raw) {
+        Ok(cfg) => cfg.embedding.and_then(|e| e.model),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Slot config is malformed TOML; falling back to default resolution"
+            );
+            None
+        }
+    }
+}
+
+/// Write `model` into `.cqs/slots/<name>/slot.toml [embedding].model`.
+///
+/// Atomic via temp+rename. Creates the slot dir if missing (idempotent).
+/// Existing TOML keys outside `[embedding]` are not preserved — slot.toml is
+/// owned by cqs; users should not hand-edit it.
+pub fn write_slot_model(
+    project_cqs_dir: &Path,
+    slot_name: &str,
+    model: &str,
+) -> Result<(), SlotError> {
+    validate_slot_name(slot_name)?;
+    let dir = slot_dir(project_cqs_dir, slot_name);
+    if !dir.exists() {
+        fs::create_dir_all(&dir).map_err(|source| SlotError::Io {
+            slot: slot_name.to_string(),
+            source,
+        })?;
+    }
+    let final_path = slot_config_path(project_cqs_dir, slot_name);
+    let tmp_path = dir.join(format!("{}.tmp", SLOT_CONFIG_FILE));
+
+    // Hand-write the body so unrelated TOML keys (if a user added some) don't
+    // get clobbered through serde round-tripping. With only one section this
+    // is simpler than a Document-preserving edit.
+    let body = format!("[embedding]\nmodel = {}\n", toml_quote(model));
+    {
+        let mut f = fs::File::create(&tmp_path).map_err(|source| SlotError::Io {
+            slot: slot_name.to_string(),
+            source,
+        })?;
+        f.write_all(body.as_bytes())
+            .map_err(|source| SlotError::Io {
+                slot: slot_name.to_string(),
+                source,
+            })?;
+        f.sync_all().map_err(|source| SlotError::Io {
+            slot: slot_name.to_string(),
+            source,
+        })?;
+    }
+    fs::rename(&tmp_path, &final_path).map_err(|source| SlotError::Io {
+        slot: slot_name.to_string(),
+        source,
+    })?;
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct SlotConfigFile {
+    embedding: Option<SlotEmbeddingSection>,
+}
+
+#[derive(serde::Deserialize)]
+struct SlotEmbeddingSection {
+    model: Option<String>,
+}
+
+/// Quote a value for use as a TOML basic string. Escapes the bare minimum
+/// (`\`, `"`, control chars) so a preset name like `BAAI/bge-large-en-v1.5`
+/// round-trips cleanly. Slot names are pre-validated (a-z, 0-9, _, -) so the
+/// only risky characters live in the model value.
+fn toml_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Path of `.cqs/active_slot` pointer file.
@@ -786,5 +910,82 @@ mod tests {
         fs::write(cqs.join("index.db"), b"db-data").unwrap();
         assert!(!migrate_legacy_index_to_default_slot(&cqs).unwrap());
         assert!(cqs.join("index.db").exists());
+    }
+
+    // ── slot.toml read / write (#1107) ───────────────────────────────────
+
+    #[test]
+    fn read_slot_model_returns_none_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        fs::create_dir_all(slot_dir(&cqs, "e5")).unwrap();
+        assert!(read_slot_model(&cqs, "e5").is_none());
+    }
+
+    #[test]
+    fn write_then_read_slot_model_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        fs::create_dir_all(slot_dir(&cqs, "coderank")).unwrap();
+        write_slot_model(&cqs, "coderank", "nomic-coderank").unwrap();
+        assert_eq!(
+            read_slot_model(&cqs, "coderank").as_deref(),
+            Some("nomic-coderank")
+        );
+    }
+
+    #[test]
+    fn write_slot_model_preserves_hf_repo_form() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        write_slot_model(&cqs, "bge", "BAAI/bge-large-en-v1.5").unwrap();
+        assert_eq!(
+            read_slot_model(&cqs, "bge").as_deref(),
+            Some("BAAI/bge-large-en-v1.5")
+        );
+    }
+
+    #[test]
+    fn write_slot_model_creates_dir_if_missing() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        // Note: slot dir does not exist beforehand
+        write_slot_model(&cqs, "fresh", "e5-base").unwrap();
+        assert!(slot_dir(&cqs, "fresh").exists());
+        assert_eq!(read_slot_model(&cqs, "fresh").as_deref(), Some("e5-base"));
+    }
+
+    #[test]
+    fn read_slot_model_returns_none_on_malformed_toml() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        let s = slot_dir(&cqs, "e5");
+        fs::create_dir_all(&s).unwrap();
+        fs::write(s.join(SLOT_CONFIG_FILE), b"not = valid = toml\n").unwrap();
+        assert!(read_slot_model(&cqs, "e5").is_none());
+    }
+
+    #[test]
+    fn write_slot_model_rejects_invalid_slot_name() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        assert!(write_slot_model(&cqs, "BadName", "bge-large").is_err());
+    }
+
+    #[test]
+    fn write_slot_model_overwrites_previous_value() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        write_slot_model(&cqs, "x", "bge-large").unwrap();
+        write_slot_model(&cqs, "x", "e5-base").unwrap();
+        assert_eq!(read_slot_model(&cqs, "x").as_deref(), Some("e5-base"));
+    }
+
+    #[test]
+    fn slot_config_path_resolves() {
+        assert_eq!(
+            slot_config_path(Path::new("/proj/.cqs"), "default"),
+            Path::new("/proj/.cqs/slots/default/slot.toml")
+        );
     }
 }

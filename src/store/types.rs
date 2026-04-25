@@ -314,7 +314,7 @@ impl<Mode> Store<Mode> {
         self.rt.block_on(async {
             let rows: Vec<ChunkRow> = sqlx::query(
                 "SELECT DISTINCT c.id, c.origin, c.language, c.chunk_type, c.name,
-                        c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id, c.parent_type_name
+                        c.signature, c.content, c.doc, c.line_start, c.line_end, c.content_hash, c.parent_id, c.parent_type_name
                  FROM type_edges te
                  JOIN chunks c ON te.source_chunk_id = c.id
                  WHERE te.target_type_name = ?1
@@ -396,7 +396,7 @@ impl<Mode> Store<Mode> {
                 let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT te.target_type_name, c.id, c.origin, c.language, c.chunk_type, c.name,
-                            c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id, c.parent_type_name
+                            c.signature, c.content, c.doc, c.line_start, c.line_end, c.content_hash, c.parent_id, c.parent_type_name
                      FROM type_edges te
                      JOIN chunks c ON te.source_chunk_id = c.id
                      WHERE te.target_type_name IN ({})

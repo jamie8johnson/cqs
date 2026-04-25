@@ -32,7 +32,7 @@ impl<Mode> Store<Mode> {
         for batch in ids.chunks(BATCH_SIZE) {
             let placeholders = crate::store::helpers::make_placeholders(batch.len());
             let sql = format!(
-                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id, parent_type_name
+                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, content_hash, parent_id, parent_type_name
                  FROM chunks WHERE id IN ({})",
                 placeholders
             );
@@ -132,7 +132,7 @@ impl<Mode> Store<Mode> {
 
         let placeholders = crate::store::helpers::make_placeholders(ids.len());
         let sql = format!(
-            "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id, parent_type_name, embedding
+            "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, content_hash, parent_id, parent_type_name, embedding
              FROM chunks WHERE id IN ({})",
             placeholders
         );
