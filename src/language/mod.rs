@@ -526,6 +526,7 @@ macro_rules! define_chunk_types {
             $variant:ident => $name:literal
                 $(, capture = $capture:literal)?
                 $(, hints = [ $($hint:literal),* $(,)? ])?
+                $(, human = $human:literal)?
                 ;
         )+
     ) => {
@@ -569,6 +570,23 @@ macro_rules! define_chunk_types {
                 match self {
                     $(
                         ChunkType::$variant => define_chunk_types!(@hints $(, [ $($hint),* ])?),
+                    )+
+                }
+            }
+
+            /// Human-readable display name used by NL text generation.
+            ///
+            /// Most variants are single words and use their `Display` string
+            /// verbatim. Multi-word concepts (`type alias`, `stored
+            /// procedure`, `config key`) declare an explicit `human = "..."`
+            /// in `define_chunk_types!`. The exhaustive match generated here
+            /// makes "forgot to give the new variant a spaced form" a
+            /// compile-time category — no `_ =>` fallback can rot a future
+            /// `MetaProgram` into `"metaprogram"` (issue #1047).
+            pub fn human_name(&self) -> &'static str {
+                match self {
+                    $(
+                        ChunkType::$variant => define_chunk_types!(@human $name $(, $human)?),
                     )+
                 }
             }
@@ -642,6 +660,11 @@ macro_rules! define_chunk_types {
     // Internal rule: resolve hint phrases. If `hints = [...]` given, use them; otherwise empty slice.
     (@hints , [ $($hint:literal),* ]) => { &[ $($hint),* ] };
     (@hints) => { &[] };
+
+    // Internal rule: resolve human-readable name. If `human = "..."` given, use
+    // it; otherwise fall back to the canonical display name.
+    (@human $name:literal, $human:literal) => { $human };
+    (@human $name:literal) => { $name };
 }
 
 // Hint declaration order matters: `extract_type_hints` returns hits in
@@ -683,7 +706,7 @@ define_chunk_types! {
     /// Object/singleton definition (Scala)
     Object => "object", hints = ["all objects", "every object"];
     /// Type alias definition (Scala, future: Haskell, Kotlin)
-    TypeAlias => "typealias", hints = ["type alias", "all type aliases"];
+    TypeAlias => "typealias", hints = ["type alias", "all type aliases"], human = "type alias";
     /// Extension (Swift `extension Type { ... }`)
     Extension => "extension", hints = ["extension method", "all extensions"];
     /// Constructor (initializer method — `__init__`, `new`, `init`, etc.)
@@ -691,7 +714,7 @@ define_chunk_types! {
     /// Implementation block (Haskell `instance`, Rust `impl`)
     Impl => "impl", hints = ["all impl blocks", "implementation block"];
     /// Configuration key (JSON, TOML, YAML, INI — data, not code)
-    ConfigKey => "configkey", hints = ["config key", "all config keys"];
+    ConfigKey => "configkey", hints = ["config key", "all config keys"], human = "config key";
     /// Test function or test suite (Jest describe, pytest test_, #[test], etc.)
     Test => "test", hints = ["test function", "test method", "all tests", "every test"];
     /// Top-level exported variable (let/var, global declarations — mutable, not constant)
@@ -701,7 +724,7 @@ define_chunk_types! {
     /// RPC/service definition (protobuf service, GraphQL Query/Mutation)
     Service => "service", hints = ["all services", "every service"];
     /// SQL stored procedure, view, or trigger
-    StoredProc => "storedproc", hints = ["stored procedure", "all stored procedures"];
+    StoredProc => "storedproc", hints = ["stored procedure", "all stored procedures"], human = "stored procedure";
     /// FFI declaration without implementation (Rust extern fn, TS declare, C prototype, Java native)
     Extern => "extern", hints = ["extern function", "all externs", "every extern", "ffi declaration"];
     /// Namespace or package scope (C++ namespace, C# namespace)
@@ -726,21 +749,6 @@ pub enum ChunkClass {
 }
 
 impl ChunkType {
-    /// Human-readable display name for use in NL text generation.
-    ///
-    /// Most variants return their canonical `Display` string (always single words), but
-    /// multi-word concepts need a spaced form. Currently `TypeAlias` → `"type alias"`.
-    /// This is the single authoritative place for that mapping — callers (e.g., `nl.rs`)
-    /// must use this method rather than hardcoding `"typealias"` string comparisons.
-    pub fn human_name(self) -> String {
-        match self {
-            ChunkType::TypeAlias => "type alias".to_string(),
-            ChunkType::StoredProc => "stored procedure".to_string(),
-            ChunkType::ConfigKey => "config key".to_string(),
-            other => other.to_string(),
-        }
-    }
-
     /// Coarse classification of a `ChunkType` used by the search filter and
     /// the call graph.
     ///
