@@ -577,7 +577,29 @@ struct WatchState {
     /// because pending_files was at cap. Logged once per cycle in
     /// process_file_changes, cleared after.
     dropped_this_cycle: usize,
+    /// #1090: when a background HNSW rebuild is running, the watch loop
+    /// queues new (chunk_id, embedding) pairs here so they can be replayed
+    /// into the rebuilt Owned index before the swap. `None` while no
+    /// rebuild is in flight.
+    pending_rebuild: Option<PendingRebuild>,
 }
+
+/// #1090: handle to an in-flight background HNSW rebuild.
+///
+/// The rebuild thread streams embeddings from a read-only Store opened on
+/// the same `index.db`, builds a fresh `Owned` `HnswIndex`, and saves it to
+/// disk before sending the index back through the channel. While the
+/// thread runs, the watch loop continues to commit new chunks to SQLite —
+/// any (id, embedding) pair indexed during the rebuild window is captured
+/// in `delta` and replayed into the new index just before the atomic swap,
+/// closing the TOCTOU between the rebuild thread's snapshot and `recv`.
+struct PendingRebuild {
+    rx: std::sync::mpsc::Receiver<RebuildOutcome>,
+    delta: Vec<(String, Embedding)>,
+    started_at: std::time::Instant,
+}
+
+type RebuildOutcome = Result<Option<HnswIndex>, anyhow::Error>;
 
 /// Track exponential backoff state for embedder initialization retries.
 ///
@@ -898,6 +920,199 @@ fn daemon_periodic_gc_cap() -> usize {
             .and_then(|v| v.parse().ok())
             .unwrap_or(DAEMON_PERIODIC_GC_CAP_DEFAULT)
     })
+}
+
+/// #1090: Spawn a background thread to rebuild the enriched HNSW from the
+/// store and save it to disk. Returns a `PendingRebuild` whose `rx` will
+/// receive the new `Owned` index (or an error) when the build completes.
+///
+/// The thread opens its own read-only Store on the same `index.db` so the
+/// main watch loop's `&Store` isn't borrowed across thread boundaries.
+/// SQLite WAL gives the thread a consistent read snapshot; new commits made
+/// by the watch loop while the rebuild is in flight are tracked in the
+/// returned `PendingRebuild::delta` (filled by the caller) and replayed
+/// into the new index just before the swap, closing the TOCTOU.
+///
+/// `context` is logged at info on completion to help operators distinguish
+/// startup-owned-swap rebuilds from threshold-triggered rebuilds.
+fn spawn_hnsw_rebuild(
+    cqs_dir: PathBuf,
+    index_path: PathBuf,
+    expected_dim: usize,
+    context: &'static str,
+) -> PendingRebuild {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let started_at = std::time::Instant::now();
+    let span = tracing::info_span!(
+        "hnsw_rebuild_bg",
+        context,
+        cqs_dir = %cqs_dir.display(),
+    );
+    let thread_result = std::thread::Builder::new()
+        .name(format!("cqs-hnsw-rebuild-{}", context))
+        .spawn(move || {
+            let _enter = span.entered();
+            let result: RebuildOutcome = (|| -> RebuildOutcome {
+                let store =
+                    cqs::Store::open_readonly_pooled(&index_path).map_err(anyhow::Error::from)?;
+                if store.dim() != expected_dim {
+                    anyhow::bail!(
+                        "store dim ({}) does not match expected ({}); refusing rebuild",
+                        store.dim(),
+                        expected_dim
+                    );
+                }
+                let enriched = super::commands::build_hnsw_index_owned(&store, &cqs_dir)?;
+                // Phase 5: also rebuild the base (non-enriched) HNSW so the
+                // dual-index router stays in sync. The base index is loaded
+                // fresh from disk by search processes — no in-memory swap
+                // needed. Best-effort: a base rebuild failure shouldn't block
+                // the enriched swap, so log + continue.
+                match super::commands::build_hnsw_base_index(&store, &cqs_dir) {
+                    Ok(Some(n)) => tracing::info!(vectors = n, "base HNSW rebuilt in background"),
+                    Ok(None) => tracing::debug!("base HNSW skipped (no embedding_base rows yet)"),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "base HNSW rebuild failed in background; router falls back to enriched-only"
+                    ),
+                }
+                Ok(enriched)
+            })();
+            let elapsed_ms = started_at.elapsed().as_millis();
+            match &result {
+                Ok(Some(idx)) => tracing::info!(
+                    vectors = idx.len(),
+                    elapsed_ms,
+                    context,
+                    "background HNSW rebuild complete"
+                ),
+                Ok(None) => tracing::info!(
+                    elapsed_ms,
+                    context,
+                    "background HNSW rebuild: store empty, nothing to build"
+                ),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    elapsed_ms,
+                    context,
+                    "background HNSW rebuild failed"
+                ),
+            }
+            // Receiver may have been dropped if the daemon shut down — that's fine.
+            let _ = tx.send(result);
+        });
+    if let Err(e) = thread_result {
+        // Spawn failed (rare — only on resource exhaustion). Log and return
+        // a PendingRebuild whose channel will hang up on first poll, which
+        // the caller treats as "no rebuild in flight."
+        tracing::warn!(error = %e, context, "Failed to spawn HNSW rebuild thread");
+    }
+    PendingRebuild {
+        rx,
+        delta: Vec::new(),
+        started_at,
+    }
+}
+
+/// #1090: Try to consume a completed background HNSW rebuild and swap it
+/// into `state.hnsw_index`. Replays any chunks captured in
+/// `pending.delta` into the new index before saving + swapping so chunks
+/// committed during the rebuild window aren't dropped.
+///
+/// Behaviour:
+/// - Channel ready, `Ok(Some(idx))`: replay delta → save → swap, clear pending.
+/// - Channel ready, `Ok(None)`: store was empty when the thread ran; clear
+///   pending without swapping. Next reindex cycle will spawn a fresh one.
+/// - Channel ready, `Err(_)`: thread reported an error; clear pending so
+///   the next threshold trigger can retry.
+/// - Channel empty: rebuild still in flight; leave pending alone so the
+///   caller continues to capture delta entries.
+/// - Channel disconnected: spawn failed earlier or thread panicked; clear.
+fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mut WatchState) {
+    let Some(pending) = state.pending_rebuild.as_mut() else {
+        return;
+    };
+    let outcome = match pending.rx.try_recv() {
+        Ok(o) => o,
+        Err(std::sync::mpsc::TryRecvError::Empty) => return,
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            tracing::warn!("Background rebuild thread channel disconnected; clearing pending");
+            state.pending_rebuild = None;
+            return;
+        }
+    };
+    let pending = state
+        .pending_rebuild
+        .take()
+        .expect("pending_rebuild was Some when we held a borrow");
+
+    match outcome {
+        Ok(Some(mut new_index)) => {
+            // Replay captured delta — but skip ids the rebuild thread already
+            // saw via its store snapshot, so we don't double-insert. (hnsw_rs
+            // has no dedup; duplicate ids would create twin vectors that bloat
+            // the graph until the next threshold cleans them up.)
+            let known: std::collections::HashSet<&str> =
+                new_index.ids().iter().map(String::as_str).collect();
+            let to_replay: Vec<(String, Embedding)> = pending
+                .delta
+                .into_iter()
+                .filter(|(id, _)| !known.contains(id.as_str()))
+                .collect();
+            drop(known);
+            if !to_replay.is_empty() {
+                let items: Vec<(String, &[f32])> = to_replay
+                    .iter()
+                    .map(|(id, emb)| (id.clone(), emb.as_slice()))
+                    .collect();
+                match new_index.insert_batch(&items) {
+                    Ok(n) => {
+                        tracing::info!(replayed = n, "Replayed delta into rebuilt HNSW before swap")
+                    }
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        replayed_attempt = items.len(),
+                        "Failed to replay delta into rebuilt HNSW; new chunks will surface on next rebuild"
+                    ),
+                }
+            }
+            if let Err(e) = new_index.save(cfg.cqs_dir, "index") {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to save rebuilt HNSW after delta replay; in-memory swap proceeds anyway"
+                );
+            } else {
+                clear_hnsw_dirty_with_retry(
+                    store,
+                    cqs::HnswKind::Enriched,
+                    "background_rebuild_swap",
+                );
+            }
+            let elapsed_ms = pending.started_at.elapsed().as_millis();
+            let n = new_index.len();
+            state.hnsw_index = Some(new_index);
+            state.incremental_count = 0;
+            info!(
+                vectors = n,
+                elapsed_ms, "Background HNSW rebuild swapped in"
+            );
+            if !cfg.quiet {
+                println!(
+                    "  HNSW index: {} vectors (background rebuild swapped in, {}ms)",
+                    n, elapsed_ms
+                );
+            }
+        }
+        Ok(None) => {
+            tracing::debug!("Background rebuild reported empty store; cleared pending");
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Background HNSW rebuild failed; will retry on next threshold trigger"
+            );
+        }
+    }
 }
 
 /// DS2-7: Clear the HNSW-dirty flag for `kind`, retrying once on a
@@ -1723,22 +1938,43 @@ pub fn cmd_watch(
     let mut db_id = db_file_identity(&index_path);
 
     // Persistent HNSW state for incremental updates.
-    // On first file change, does a full build and keeps the Owned index in memory.
-    // Subsequent changes insert only changed chunks via insert_batch.
-    // Full rebuild every hnsw_rebuild_threshold() incremental inserts to clean orphans.
     //
-    // DS-35: Load existing HNSW index from disk if present, to avoid orphan accumulation
-    // across restarts. Start incremental_count at threshold/2 so the first rebuild
-    // happens sooner, cleaning any orphans from prior sessions.
-    let (hnsw_index, incremental_count) =
+    // The watch loop keeps an *Owned* HnswIndex in memory so `insert_batch`
+    // (line ~2480 below) can append new chunks without rebuilding the graph
+    // from scratch. After every `hnsw_rebuild_threshold()` incremental inserts
+    // we trigger a full rebuild to clean orphan vectors (hnsw_rs has no
+    // delete; updated chunks leave their old vectors behind).
+    //
+    // #1090: at startup we load the persisted index from disk for instant
+    // search availability, and *immediately* spawn a background rebuild so
+    // we end up with an Owned variant ready before the first file save —
+    // without paying a 10-15s cold-start hit. The Loaded variant cannot be
+    // mutated (hnsw_rs constraint), so without this swap the first save
+    // after restart would fail incremental insert and force a synchronous
+    // full rebuild, blocking the editor for 15s. Spawning the rebuild
+    // off-thread keeps the daemon responsive throughout.
+    //
+    // DS-35: starting `incremental_count` at threshold/2 (when we loaded an
+    // existing index) means stale orphans from prior sessions get cleaned
+    // sooner; the cleanup is now async too via the same pending_rebuild path.
+    let (hnsw_index, incremental_count, pending_rebuild) =
         match HnswIndex::load_with_dim(cqs_dir.as_ref(), "index", store.dim()) {
             Ok(index) => {
-                info!(vectors = index.len(), "Loaded existing HNSW index");
-                (Some(index), hnsw_rebuild_threshold() / 2)
+                let n = index.len();
+                info!(vectors = n, "Loaded existing HNSW index from disk");
+                // Spawn background rebuild so we get an Owned variant ASAP
+                // (incremental insert needs Owned, Loaded is immutable).
+                let pending = spawn_hnsw_rebuild(
+                    cqs_dir.clone(),
+                    index_path.clone(),
+                    store.dim(),
+                    "startup_owned_swap",
+                );
+                (Some(index), hnsw_rebuild_threshold() / 2, Some(pending))
             }
             Err(ref e) if matches!(e, cqs::hnsw::HnswError::NotFound(_)) => {
                 tracing::debug!("No prior HNSW index, starting fresh");
-                (None, 0)
+                (None, 0, None)
             }
             Err(e) => {
                 // v1.22.0 audit EH-7: previously `Err(_) => (None, 0)` treated
@@ -1746,7 +1982,7 @@ pub fn cmd_watch(
                 // "first run." Now logs so the operator sees why the prior
                 // index was discarded.
                 tracing::warn!(error = %e, "Existing HNSW index unusable, rebuilding from scratch");
-                (None, 0)
+                (None, 0, None)
             }
         };
 
@@ -1871,6 +2107,7 @@ pub fn cmd_watch(
         hnsw_index,
         incremental_count,
         dropped_this_cycle: 0,
+        pending_rebuild,
     };
 
     let mut cycles_since_clear: u32 = 0;
@@ -2333,98 +2570,94 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                 }
             }
 
-            // Incremental HNSW update: insert changed chunks into existing Owned index.
-            // Falls back to full rebuild on first run or after hnsw_rebuild_threshold() inserts.
-            let needs_full_rebuild =
+            // === HNSW maintenance ===
+            //
+            // #1090: rebuilds run in a background thread (`spawn_hnsw_rebuild`).
+            // The watch loop's responsibilities each cycle are:
+            //
+            //   1. Drain a completed rebuild — replay any (id, embedding) the
+            //      loop captured during the build window into the new index,
+            //      save, and atomically swap into `state.hnsw_index`.
+            //   2. Decide whether to start a *new* rebuild (Owned-needed, or
+            //      threshold reached) — and if a rebuild is already in flight,
+            //      just record this cycle's chunks in the pending delta so
+            //      they survive the swap.
+            //   3. Otherwise (no rebuild needed, no rebuild in flight): take
+            //      the fast incremental path on the in-memory Owned index.
+            //
+            // The result: incremental_insert never blocks on a full rebuild,
+            // editor saves don't pause for 10-30s of CUDA work, and search
+            // keeps using the prior index until the new one is ready.
+
+            // 1. Drain a completed rebuild, if any.
+            drain_pending_rebuild(cfg, store, state);
+
+            let rebuild_in_flight = state.pending_rebuild.is_some();
+            let needs_owned =
                 state.hnsw_index.is_none() || state.incremental_count >= hnsw_rebuild_threshold();
 
-            // During full rebuild the old index and new batch coexist briefly,
-            // but `build_batched` streams one batch at a time so peak memory is
-            // old_index + one_batch, not 2× the full index.
-            if needs_full_rebuild {
-                match super::commands::build_hnsw_index_owned(store, cfg.cqs_dir) {
-                    Ok(Some(index)) => {
-                        let n = index.len();
-                        state.hnsw_index = Some(index);
-                        state.incremental_count = 0;
-                        clear_hnsw_dirty_with_retry(store, cqs::HnswKind::Enriched, "full_rebuild");
-                        info!(vectors = n, "HNSW index rebuilt (full)");
-                        if !cfg.quiet {
-                            println!("  HNSW index: {} vectors (full rebuild)", n);
-                        }
-                    }
-                    Ok(None) => {
-                        state.hnsw_index = None;
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "HNSW rebuild failed, removing stale HNSW files (search falls back to brute-force)");
-                        state.hnsw_index = None;
-                        for ext in cqs::hnsw::HNSW_ALL_EXTENSIONS {
-                            let path = cfg.cqs_dir.join(format!("index.{}", ext));
-                            if let Err(e) = std::fs::remove_file(&path) {
-                                if e.kind() != std::io::ErrorKind::NotFound {
-                                    tracing::warn!(
-                                        error = %e,
-                                        path = %path.display(),
-                                        "Failed to delete stale HNSW file"
-                                    );
-                                }
-                            }
-                            let base_path = cfg.cqs_dir.join(format!("index_base.{}", ext));
-                            if let Err(e) = std::fs::remove_file(&base_path) {
-                                if e.kind() != std::io::ErrorKind::NotFound {
-                                    tracing::warn!(
-                                        error = %e,
-                                        path = %base_path.display(),
-                                        "Failed to delete stale base HNSW file"
-                                    );
-                                }
-                            }
-                        }
-                    }
+            // 2. Start a new rebuild, if appropriate.
+            if needs_owned && !rebuild_in_flight {
+                let context = if state.hnsw_index.is_none() {
+                    "rebuild_from_empty"
+                } else {
+                    "threshold_rebuild"
+                };
+                let pending = spawn_hnsw_rebuild(
+                    cfg.cqs_dir.to_path_buf(),
+                    cfg.cqs_dir.join(cqs::INDEX_DB_FILENAME),
+                    store.dim(),
+                    context,
+                );
+                info!(context, "Spawned background HNSW rebuild");
+                if !cfg.quiet {
+                    println!(
+                        "  HNSW index: rebuild started in background ({}, search keeps using current index)",
+                        context
+                    );
                 }
+                state.pending_rebuild = Some(pending);
+            }
 
-                // Phase 5: also rebuild the base (non-enriched) HNSW. Not held
-                // in memory by watch state — the search process loads it fresh
-                // from disk. Incremental path skips base updates; they catch
-                // up on the next full rebuild.
-                match super::commands::build_hnsw_base_index(store, cfg.cqs_dir) {
-                    Ok(Some(n)) => {
-                        info!(vectors = n, "Base HNSW index rebuilt");
-                        clear_hnsw_dirty_with_retry(
-                            store,
-                            cqs::HnswKind::Base,
-                            "full_rebuild_base",
-                        );
-                        if !cfg.quiet {
-                            println!("  HNSW base index: {} vectors (full rebuild)", n);
-                        }
-                    }
-                    Ok(None) => {
-                        // No base embeddings yet — skip silently
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Base HNSW rebuild failed, router falls back to enriched-only");
-                    }
-                }
-            } else if !content_hashes.is_empty() {
-                // Incremental path: insert only newly-embedded chunks.
-                // Modified chunks get new IDs, so old vectors become orphans in
-                // the HNSW graph (hnsw_rs has no deletion). Orphans are harmless:
-                // search post-filters against live SQLite chunk IDs. They're
-                // cleaned on the next full rebuild (every hnsw_rebuild_threshold()).
+            // 3. Either drop new chunks into the in-flight rebuild's delta,
+            //    or run the fast incremental path.
+            if !content_hashes.is_empty() {
                 let hash_refs: Vec<&str> = content_hashes.iter().map(|s| s.as_str()).collect();
                 match store.get_chunk_ids_and_embeddings_by_hashes(&hash_refs) {
                     Ok(pairs) if !pairs.is_empty() => {
-                        let items: Vec<(String, &[f32])> = pairs
-                            .iter()
-                            .map(|(id, emb)| (id.clone(), emb.as_slice()))
-                            .collect();
-                        if let Some(ref mut index) = state.hnsw_index {
+                        if let Some(ref mut pending) = state.pending_rebuild {
+                            // A rebuild is in flight (just spawned this cycle,
+                            // or carried over from a prior one). The rebuild
+                            // thread's snapshot may not include these chunks —
+                            // capture them so `drain_pending_rebuild` can
+                            // replay them after the swap.
+                            let added = pairs.len();
+                            pending.delta.extend(pairs);
+                            tracing::debug!(
+                                added,
+                                total_delta = pending.delta.len(),
+                                "Captured chunks in pending rebuild delta"
+                            );
+                            if !cfg.quiet {
+                                println!(
+                                    "  HNSW index: +{} vectors queued for in-flight rebuild ({} total deferred)",
+                                    added,
+                                    pending.delta.len()
+                                );
+                            }
+                        } else if let Some(ref mut index) = state.hnsw_index {
+                            // Fast incremental path — Owned in memory, no rebuild pending.
+                            // Modified chunks get new IDs; old vectors become orphans
+                            // in the HNSW graph (hnsw_rs has no deletion). Orphans are
+                            // harmless: search post-filters against live SQLite chunk
+                            // IDs. They're cleaned on the next threshold rebuild.
+                            let items: Vec<(String, &[f32])> = pairs
+                                .iter()
+                                .map(|(id, emb)| (id.clone(), emb.as_slice()))
+                                .collect();
                             match index.insert_batch(&items) {
                                 Ok(n) => {
                                     state.incremental_count += n;
-                                    // Save updated index to disk for search processes
                                     if let Err(e) = index.save(cfg.cqs_dir, "index") {
                                         warn!(error = %e, "Failed to save HNSW after incremental insert");
                                     } else {
@@ -2449,16 +2682,36 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                                     }
                                 }
                                 Err(e) => {
-                                    warn!(error = %e, "HNSW incremental insert failed, will rebuild next cycle");
-                                    // Force full rebuild next cycle
-                                    state.hnsw_index = None;
+                                    // Insert failed. Rather than blocking on a
+                                    // synchronous rebuild (the old behavior),
+                                    // queue a background one — search keeps
+                                    // serving from the current index meanwhile.
+                                    warn!(
+                                        error = %e,
+                                        "HNSW incremental insert failed; spawning background rebuild"
+                                    );
+                                    let pending = spawn_hnsw_rebuild(
+                                        cfg.cqs_dir.to_path_buf(),
+                                        cfg.cqs_dir.join(cqs::INDEX_DB_FILENAME),
+                                        store.dim(),
+                                        "incremental_insert_failure",
+                                    );
+                                    // Carry these new chunks over into the new
+                                    // rebuild's delta so they survive the swap.
+                                    let mut p = pending;
+                                    p.delta.extend(pairs);
+                                    state.pending_rebuild = Some(p);
                                 }
                             }
                         }
+                        // No pending and no in-memory index → first save with
+                        // empty store. The needs_owned branch above already
+                        // spawned a rebuild this cycle; pairs were captured
+                        // there. Nothing to do here.
                     }
                     Ok(_) => {} // no embeddings found for hashes
                     Err(e) => {
-                        warn!(error = %e, "Failed to fetch embeddings for HNSW incremental insert");
+                        warn!(error = %e, "Failed to fetch embeddings for HNSW update");
                     }
                 }
             }
@@ -2838,6 +3091,7 @@ mod tests {
             hnsw_index: None,
             incremental_count: 0,
             dropped_this_cycle: 0,
+            pending_rebuild: None,
         }
     }
 
@@ -3633,6 +3887,188 @@ mod tests {
         assert!(
             matcher_guard.as_ref().unwrap().is_some(),
             "inner Option<Gitignore> must still be Some after poison recovery"
+        );
+    }
+
+    // ── #1090 background rebuild + atomic swap ──────────────────────────────
+
+    /// Build a tiny `Owned` HnswIndex from N synthetic vectors. Stand-in for a
+    /// thread-built index in the `drain_pending_rebuild` tests below.
+    fn synthetic_owned_index(n: usize, dim: usize) -> cqs::hnsw::HnswIndex {
+        // Non-zero, distinct vectors per id — hnsw_rs's HNSW can collapse
+        // zero vectors (undefined cosine sim) so the first entry needs a
+        // non-trivial value or the index ends up under-populated.
+        let batch: Vec<(String, cqs::Embedding)> = (0..n)
+            .map(|i| {
+                let mut v = vec![0.1_f32; dim];
+                v[i % dim] = (i as f32 + 1.0) * 0.5;
+                (format!("c{i}"), cqs::Embedding::new(v))
+            })
+            .collect();
+        let iter = std::iter::once(Ok::<_, cqs::store::StoreError>(batch));
+        cqs::hnsw::HnswIndex::build_batched_with_dim(iter, n, dim).expect("build synthetic index")
+    }
+
+    /// Make a Store + WatchConfig pair for a fresh tempdir, init'd to `dim`.
+    /// Returns owned bindings so each caller can pass long-lived references
+    /// to `test_watch_config`.
+    struct DrainFixture {
+        tmp: tempfile::TempDir,
+        store: Store,
+        supported_ext: HashSet<&'static str>,
+        notes_path: PathBuf,
+    }
+
+    fn drain_test_fixture(dim: usize) -> DrainFixture {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store_path = tmp.path().join("index.db");
+        let mut store = Store::open(&store_path).unwrap();
+        store
+            .init(&cqs::store::ModelInfo::new("test/m", dim))
+            .unwrap();
+        store.set_dim(dim);
+        let notes_path = tmp.path().join("docs/notes.toml");
+        DrainFixture {
+            tmp,
+            store,
+            supported_ext: HashSet::new(),
+            notes_path,
+        }
+    }
+
+    #[test]
+    fn drain_pending_rebuild_replays_delta_into_new_index() {
+        let dim = 4;
+        let new_idx = synthetic_owned_index(3, dim);
+        assert_eq!(new_idx.len(), 3);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Ok(Some(new_idx))).unwrap();
+        drop(tx);
+
+        let mut state = test_watch_state();
+        state.pending_rebuild = Some(PendingRebuild {
+            rx,
+            delta: vec![
+                ("delta_a".to_string(), cqs::Embedding::new(vec![1.0; dim])),
+                ("delta_b".to_string(), cqs::Embedding::new(vec![0.5; dim])),
+            ],
+            started_at: std::time::Instant::now(),
+        });
+
+        let fix = drain_test_fixture(dim);
+        let cfg = test_watch_config(
+            fix.tmp.path(),
+            fix.tmp.path(),
+            &fix.notes_path,
+            &fix.supported_ext,
+        );
+        let store = &fix.store;
+
+        drain_pending_rebuild(&cfg, store, &mut state);
+
+        let idx = state.hnsw_index.expect("rebuild was swapped in");
+        assert_eq!(idx.len(), 5, "3 from new_idx + 2 from delta");
+        assert!(idx.ids().iter().any(|id| id == "delta_a"));
+        assert!(idx.ids().iter().any(|id| id == "delta_b"));
+        assert_eq!(state.incremental_count, 0);
+        assert!(state.pending_rebuild.is_none());
+    }
+
+    #[test]
+    fn drain_pending_rebuild_dedups_against_known_ids() {
+        // The rebuild thread already includes c0..c2 in its snapshot. Replaying
+        // those same ids would double-insert (hnsw_rs has no dedup) — drain
+        // must filter them against `new_index.ids()` first.
+        let dim = 4;
+        let new_idx = synthetic_owned_index(3, dim); // ids: c0, c1, c2
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Ok(Some(new_idx))).unwrap();
+        drop(tx);
+
+        let mut state = test_watch_state();
+        state.pending_rebuild = Some(PendingRebuild {
+            rx,
+            delta: vec![
+                ("c0".to_string(), cqs::Embedding::new(vec![9.0; dim])),
+                ("c1".to_string(), cqs::Embedding::new(vec![9.0; dim])),
+                ("c_new".to_string(), cqs::Embedding::new(vec![9.0; dim])),
+            ],
+            started_at: std::time::Instant::now(),
+        });
+
+        let fix = drain_test_fixture(dim);
+        let cfg = test_watch_config(
+            fix.tmp.path(),
+            fix.tmp.path(),
+            &fix.notes_path,
+            &fix.supported_ext,
+        );
+        let store = &fix.store;
+
+        drain_pending_rebuild(&cfg, store, &mut state);
+
+        let idx = state.hnsw_index.expect("rebuild was swapped in");
+        assert_eq!(
+            idx.len(),
+            4,
+            "3 from new_idx + 1 genuinely-new delta entry — duplicates skipped"
+        );
+        assert!(idx.ids().iter().any(|id| id == "c_new"));
+    }
+
+    #[test]
+    fn drain_pending_rebuild_clears_pending_on_thread_error() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Err(anyhow::anyhow!("simulated rebuild failure")))
+            .unwrap();
+        drop(tx);
+
+        let mut state = test_watch_state();
+        state.pending_rebuild = Some(PendingRebuild {
+            rx,
+            delta: Vec::new(),
+            started_at: std::time::Instant::now(),
+        });
+
+        let fix = drain_test_fixture(4);
+        let cfg = test_watch_config(
+            fix.tmp.path(),
+            fix.tmp.path(),
+            &fix.notes_path,
+            &fix.supported_ext,
+        );
+        let store = &fix.store;
+
+        drain_pending_rebuild(&cfg, store, &mut state);
+        assert!(state.pending_rebuild.is_none());
+        assert!(state.hnsw_index.is_none());
+    }
+
+    #[test]
+    fn drain_pending_rebuild_leaves_pending_when_still_running() {
+        let (_tx, rx) = std::sync::mpsc::channel::<RebuildOutcome>();
+        let mut state = test_watch_state();
+        state.pending_rebuild = Some(PendingRebuild {
+            rx,
+            delta: Vec::new(),
+            started_at: std::time::Instant::now(),
+        });
+
+        let fix = drain_test_fixture(4);
+        let cfg = test_watch_config(
+            fix.tmp.path(),
+            fix.tmp.path(),
+            &fix.notes_path,
+            &fix.supported_ext,
+        );
+        let store = &fix.store;
+
+        drain_pending_rebuild(&cfg, store, &mut state);
+        assert!(
+            state.pending_rebuild.is_some(),
+            "pending should remain in flight when channel has no message"
         );
     }
 }
