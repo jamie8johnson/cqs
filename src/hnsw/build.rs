@@ -301,11 +301,16 @@ mod tests {
                 .unwrap();
         assert_eq!(index.len(), 25);
 
-        // Search should work correctly
+        // Search should work correctly. Top-10 (not top-5) for the same
+        // reason `test_build_batched_vs_regular_equivalence` uses top-10:
+        // HNSW batched builds on small N (25 here) have suboptimal recall —
+        // the unseeded random projections occasionally bump the matching
+        // chunk out of a top-5 window. Issue #1104 surfaced this as a CI
+        // flake; the test exists to verify batched-build wiring round-trips
+        // the right item, not to assert perfect recall.
         let query = make_embedding(1);
-        let results = index.search(&query, 5);
+        let results = index.search(&query, 10);
         assert!(!results.is_empty());
-        // chunk1 should be in top results
         assert!(results.iter().any(|r| r.id == "chunk1"));
     }
 
