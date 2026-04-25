@@ -80,8 +80,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 116,
-        "line_end": 126
+        "line_start": 121,
+        "line_end": 131
       },
       "gold_chunk_source": "consensus"
     },
@@ -216,8 +216,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 142,
-        "line_end": 148
+        "line_start": 147,
+        "line_end": 153
       },
       "gold_chunk_source": "consensus"
     },
@@ -280,8 +280,8 @@
         "origin": "src/hnsw/persist.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 533,
-        "line_end": 698
+        "line_start": 599,
+        "line_end": 780
       },
       "gold_chunk_source": "consensus"
     },
@@ -396,8 +396,8 @@
         "origin": "evals/generate_from_chunks.py",
         "language": "python",
         "chunk_type": "function",
-        "line_start": 109,
-        "line_end": 156
+        "line_start": 115,
+        "line_end": 162
       },
       "gold_chunk_source": "consensus",
       "_unresolved": true
@@ -461,8 +461,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 142,
-        "line_end": 148
+        "line_start": 147,
+        "line_end": 153
       },
       "gold_chunk_source": "consensus"
     },
@@ -529,8 +529,8 @@
         "origin": "src/cli/watch.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 601,
-        "line_end": 610
+        "line_start": 603,
+        "line_end": 612
       },
       "gold_chunk_source": "consensus"
     },
@@ -658,8 +658,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 142,
-        "line_end": 148
+        "line_start": 147,
+        "line_end": 153
       },
       "gold_chunk_source": "consensus"
     },
@@ -776,8 +776,8 @@
         "origin": "src/cli/batch/handlers/info.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 93,
-        "line_end": 148
+        "line_start": 100,
+        "line_end": 155
       },
       "gold_chunk_source": "consensus",
       "_unresolved": true
@@ -911,8 +911,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 74,
-        "line_end": 80
+        "line_start": 79,
+        "line_end": 85
       },
       "gold_chunk_source": "consensus"
     },
@@ -1106,8 +1106,8 @@
         "origin": "src/hnsw/persist.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 172,
-        "line_end": 860
+        "line_start": 191,
+        "line_end": 956
       },
       "gold_chunk_source": "consensus"
     },
@@ -1419,8 +1419,8 @@
         "origin": "evals/run_ablation.py",
         "language": "python",
         "chunk_type": "function",
-        "line_start": 193,
-        "line_end": 209
+        "line_start": 191,
+        "line_end": 207
       },
       "gold_chunk_source": "consensus",
       "_unresolved": true
@@ -1986,8 +1986,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 142,
-        "line_end": 148
+        "line_start": 147,
+        "line_end": 153
       },
       "gold_chunk_source": "consensus"
     },
@@ -2054,8 +2054,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 24,
-        "line_end": 27
+        "line_start": 27,
+        "line_end": 30
       },
       "gold_chunk_source": "consensus"
     },
@@ -2111,8 +2111,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 95,
-        "line_end": 102
+        "line_start": 108,
+        "line_end": 115
       },
       "gold_chunk_source": "consensus",
       "_unresolved": true
@@ -2180,8 +2180,8 @@
         "origin": "src/cache.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 980,
-        "line_end": 1265
+        "line_start": 1050,
+        "line_end": 1369
       },
       "gold_chunk_source": "consensus"
     },
@@ -2309,8 +2309,8 @@
         "origin": "src/cli/batch/mod.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 475,
-        "line_end": 518
+        "line_start": 480,
+        "line_end": 523
       },
       "gold_chunk_source": "consensus"
     },
@@ -2436,8 +2436,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 24,
-        "line_end": 27
+        "line_start": 27,
+        "line_end": 30
       },
       "gold_chunk_source": "consensus"
     },
@@ -2622,8 +2622,8 @@
         "origin": "src/store/migrations.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 439,
-        "line_end": 448
+        "line_start": 443,
+        "line_end": 452
       },
       "gold_chunk_source": "consensus"
     },
@@ -2749,8 +2749,8 @@
         "origin": "src/embedder/models.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 320,
-        "line_end": 518
+        "line_start": 356,
+        "line_end": 559
       },
       "gold_chunk_source": "consensus"
     },
@@ -2817,8 +2817,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 24,
-        "line_end": 27
+        "line_start": 27,
+        "line_end": 30
       },
       "gold_chunk_source": "consensus"
     },
@@ -2878,8 +2878,8 @@
         "origin": "src/store/chunks/crud.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 427,
-        "line_end": 449
+        "line_start": 506,
+        "line_end": 538
       },
       "gold_chunk_source": "consensus"
     },
@@ -3007,8 +3007,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 131,
-        "line_end": 135
+        "line_start": 136,
+        "line_end": 140
       },
       "gold_chunk_source": "consensus"
     },
@@ -3376,8 +3376,8 @@
         "origin": "src/embedder/mod.rs",
         "language": "rust",
         "chunk_type": "struct",
-        "line_start": 217,
-        "line_end": 249
+        "line_start": 225,
+        "line_end": 271
       },
       "gold_chunk_source": "consensus",
       "_unresolved": true
@@ -3504,8 +3504,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 116,
-        "line_end": 126
+        "line_start": 121,
+        "line_end": 131
       },
       "gold_chunk_source": "consensus"
     },
@@ -3568,8 +3568,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 116,
-        "line_end": 126
+        "line_start": 121,
+        "line_end": 131
       },
       "gold_chunk_source": "consensus"
     },
@@ -3695,8 +3695,8 @@
         "origin": "src/language/languages.rs",
         "language": "rust",
         "chunk_type": "constant",
-        "line_start": 6060,
-        "line_end": 6141
+        "line_start": 6067,
+        "line_end": 6148
       },
       "gold_chunk_source": "consensus"
     },
@@ -3763,8 +3763,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 103,
-        "line_end": 110
+        "line_start": 108,
+        "line_end": 115
       },
       "gold_chunk_source": "consensus"
     },
@@ -4083,8 +4083,8 @@
         "origin": "src/search/router.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 911,
-        "line_end": 931
+        "line_start": 950,
+        "line_end": 970
       },
       "gold_chunk_source": "consensus"
     },
@@ -4217,8 +4217,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 175,
-        "line_end": 182
+        "line_start": 180,
+        "line_end": 187
       },
       "gold_chunk_source": "consensus"
     },
@@ -4285,8 +4285,8 @@
         "origin": "src/cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 1103,
-        "line_end": 1151
+        "line_start": 1189,
+        "line_end": 1255
       },
       "gold_chunk_source": "consensus"
     },
@@ -4410,8 +4410,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 103,
-        "line_end": 110
+        "line_start": 108,
+        "line_end": 115
       },
       "gold_chunk_source": "consensus"
     },
@@ -4476,8 +4476,8 @@
         "origin": "src/cagra.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 241,
-        "line_end": 468
+        "line_start": 250,
+        "line_end": 257
       },
       "gold_chunk_source": "consensus"
     },
@@ -4671,8 +4671,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 131,
-        "line_end": 135
+        "line_start": 136,
+        "line_end": 140
       },
       "gold_chunk_source": "consensus"
     },
@@ -4798,8 +4798,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 86,
-        "line_end": 93
+        "line_start": 91,
+        "line_end": 98
       },
       "gold_chunk_source": "consensus"
     },
@@ -5114,8 +5114,8 @@
         "origin": "src/hnsw/persist.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 189,
-        "line_end": 519
+        "line_start": 208,
+        "line_end": 593
       },
       "gold_chunk_source": "consensus"
     },
@@ -5543,8 +5543,8 @@
         "origin": "src/convert/html.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 43,
-        "line_end": 57
+        "line_start": 45,
+        "line_end": 60
       },
       "gold_chunk_source": "consensus"
     },
@@ -5609,8 +5609,8 @@
         "origin": "src/language/languages.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 4655,
-        "line_end": 4674
+        "line_start": 4662,
+        "line_end": 4681
       },
       "gold_chunk_source": "consensus"
     },
@@ -5675,8 +5675,8 @@
         "origin": "src/language/languages.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 6662,
-        "line_end": 6680
+        "line_start": 6672,
+        "line_end": 6690
       },
       "gold_chunk_source": "consensus"
     },
@@ -5998,8 +5998,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 24,
-        "line_end": 27
+        "line_start": 27,
+        "line_end": 30
       },
       "gold_chunk_source": "consensus"
     },
@@ -6114,8 +6114,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 108,
-        "line_end": 118
+        "line_start": 121,
+        "line_end": 131
       },
       "gold_chunk_source": "consensus",
       "_unresolved": true
@@ -6183,8 +6183,8 @@
         "origin": "src/schema.sql",
         "language": "sql",
         "chunk_type": "struct",
-        "line_start": 74,
-        "line_end": 80
+        "line_start": 79,
+        "line_end": 85
       },
       "gold_chunk_source": "consensus"
     },
@@ -6249,8 +6249,8 @@
         "origin": "src/language/languages.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 6553,
-        "line_end": 6570
+        "line_start": 6563,
+        "line_end": 6580
       },
       "gold_chunk_source": "consensus"
     },
@@ -6617,8 +6617,8 @@
         "origin": "src/impact/analysis.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 221,
-        "line_end": 265
+        "line_start": 232,
+        "line_end": 279
       },
       "gold_chunk_source": "consensus"
     },
@@ -6753,8 +6753,8 @@
         "origin": "src/hnsw/persist.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 806,
-        "line_end": 812
+        "line_start": 894,
+        "line_end": 900
       },
       "gold_chunk_source": "consensus"
     },
