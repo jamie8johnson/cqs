@@ -59,11 +59,12 @@ pub(in crate::cli::batch) fn dispatch_search(
         }));
     }
 
-    let embedder = ctx.embedder()?;
-    let query_embedding = embedder
-        .embed_query(&args.query)
-        .context("Failed to embed query")?;
-
+    // Pure textual argument validation runs BEFORE embedder load —
+    // invalid `--lang` / `--include-type` / `--exclude-type` are user
+    // typos, not model state, so the user-facing error must fast-fail
+    // with the offending flag's name instead of "embed query failed"
+    // when the embedder is uncached or contended (HF Hub lock race in
+    // CI test env was the original symptom).
     let languages = match &args.lang {
         Some(l) => Some(vec![l
             .parse()
@@ -71,15 +72,6 @@ pub(in crate::cli::batch) fn dispatch_search(
         None => None,
     };
 
-    let limit = args.limit.clamp(1, 100);
-    // P3 #100: shared rerank pool sizing.
-    let effective_limit = if args.rerank {
-        crate::cli::limits::rerank_pool_size(limit)
-    } else {
-        limit
-    };
-
-    // Parse include/exclude type filters (CQ-5)
     let include_types = match &args.include_type {
         Some(types) => {
             let parsed: Result<Vec<cqs::parser::ChunkType>, _> =
@@ -95,6 +87,19 @@ pub(in crate::cli::batch) fn dispatch_search(
             Some(parsed.map_err(|e| anyhow::anyhow!("Invalid --exclude-type: {e}"))?)
         }
         None => None,
+    };
+
+    let embedder = ctx.embedder()?;
+    let query_embedding = embedder
+        .embed_query(&args.query)
+        .context("Failed to embed query")?;
+
+    let limit = args.limit.clamp(1, 100);
+    // P3 #100: shared rerank pool sizing.
+    let effective_limit = if args.rerank {
+        crate::cli::limits::rerank_pool_size(limit)
+    } else {
+        limit
     };
 
     // Classify query for per-category routing (SPLADE alpha + base/enriched index).
