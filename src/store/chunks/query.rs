@@ -153,7 +153,7 @@ impl<Mode> Store<Mode> {
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query(
                 "SELECT id, origin, language, chunk_type, name, signature, content, doc,
-                        line_start, line_end, parent_id, parent_type_name
+                        line_start, line_end, content_hash, parent_id, parent_type_name
                  FROM chunks WHERE origin = ?1
                  ORDER BY line_start",
             )
@@ -190,7 +190,7 @@ impl<Mode> Store<Mode> {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT id, origin, language, chunk_type, name, signature, content, doc,
-                            line_start, line_end, parent_id, parent_type_name
+                            line_start, line_end, content_hash, parent_id, parent_type_name
                      FROM chunks WHERE origin IN ({})
                      ORDER BY origin, line_start",
                     placeholders
@@ -235,7 +235,7 @@ impl<Mode> Store<Mode> {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT id, origin, language, chunk_type, name, signature, content, doc,
-                            line_start, line_end, parent_id, parent_type_name
+                            line_start, line_end, content_hash, parent_id, parent_type_name
                      FROM chunks WHERE name IN ({})
                      ORDER BY origin, line_start",
                     placeholders

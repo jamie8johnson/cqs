@@ -375,11 +375,20 @@ mod tests {
     #[test]
     fn test_windowing_constants() {
         // Verify windowing function produces sensible values
-        assert_eq!(max_tokens_per_window(512), 480); // E5-base/BGE-large
-        assert_eq!(max_tokens_per_window(8192), 8160); // nomic, jina
-        assert_eq!(max_tokens_per_window(32768), 32736); // GTE-Qwen2
-        assert_eq!(max_tokens_per_window(0), 480); // fallback
-        assert!(max_tokens_per_window(64) >= 128); // floor
+        // Short prefix (E5 "passage: " = 3 tokens, BGE "" = 0): overhead is dominated
+        // by SPECIAL_TOKEN_OVERHEAD = 4.
+        assert_eq!(max_tokens_per_window(512, 3), 505); // E5-base: 512 - (3 + 4)
+        assert_eq!(max_tokens_per_window(512, 0), 508); // BGE-large: 512 - (0 + 4)
+        assert_eq!(max_tokens_per_window(8192, 3), 8185); // nomic-style 8K, short prefix
+        assert_eq!(max_tokens_per_window(32768, 3), 32761); // GTE-Qwen2
+
+        // #1042: long-prefix instruction model (nomic-embed-code: ~38-token prefix)
+        // shrinks the window so prefix + window + special tokens stay under max_seq.
+        assert_eq!(max_tokens_per_window(512, 38), 470);
+        assert_eq!(max_tokens_per_window(8192, 38), 8150);
+
+        assert_eq!(max_tokens_per_window(0, 3), 480); // fallback
+        assert!(max_tokens_per_window(64, 0) >= 128); // floor
 
         // Overlap scales with window size, clamped below max_tokens/2
         assert_eq!(window_overlap_tokens(480), 64); // 512-token model: floor of 64

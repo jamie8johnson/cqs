@@ -78,10 +78,7 @@ impl ChunkRow {
             doc: row.get("doc"),
             line_start: clamp_line_number(row.get::<i64, _>("line_start")),
             line_end: clamp_line_number(row.get::<i64, _>("line_end")),
-            content_hash: row.try_get("content_hash").unwrap_or_else(|_| {
-                tracing::warn!("content_hash column missing from row, defaulting to empty");
-                String::new()
-            }),
+            content_hash: row.get("content_hash"),
             window_idx: row.try_get("window_idx").unwrap_or(None),
             parent_id: row.get("parent_id"),
             parent_type_name: row.get("parent_type_name"),

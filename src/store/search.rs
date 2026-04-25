@@ -131,7 +131,7 @@ impl<Mode> Store<Mode> {
 
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query(
-                "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id, c.parent_type_name
+                "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.content_hash, c.parent_id, c.parent_type_name
                  FROM chunks c
                  JOIN chunks_fts f ON c.id = f.id
                  WHERE chunks_fts MATCH ?1

@@ -1683,11 +1683,23 @@ pub fn cmd_watch(
 
     let (tx, rx) = mpsc::channel();
 
-    let config = Config::default().with_poll_interval(Duration::from_millis(debounce_ms));
+    // #1091: poll interval is separate from debounce. PollWatcher walks the
+    // entire tree on every tick — on WSL DrvFS each entry is a 9P round-trip,
+    // so 1500ms (the prior debounce-derived default) burns ~8% of one core
+    // continuously on a ~16k-file tree. Default to 5000ms (still fast enough
+    // for save → reindex), override with `CQS_WATCH_POLL_MS`. Inotify watchers
+    // ignore the value but the field exists in `Config`, so we set it
+    // unconditionally and let the watcher type decide.
+    let poll_ms = std::env::var("CQS_WATCH_POLL_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&ms| ms >= 100)
+        .unwrap_or(5000);
+    let config = Config::default().with_poll_interval(Duration::from_millis(poll_ms));
 
     // Box<dyn Watcher> so both watcher types work with the same variable
     let mut watcher: Box<dyn Watcher> = if use_poll {
-        println!("Using poll watcher (interval: {}ms)", debounce_ms);
+        println!("Using poll watcher (interval: {}ms)", poll_ms);
         Box::new(PollWatcher::new(tx, config)?)
     } else {
         Box::new(RecommendedWatcher::new(tx, config)?)
