@@ -797,6 +797,7 @@ Both splits are ±2-3pp noisy on a single trial; quote both when comparing confi
 | `CQS_WATCH_DEBOUNCE_MS` | `500` (inotify) / `1500` (WSL/poll auto) | Watch debounce window (milliseconds). Takes precedence over `--debounce`. |
 | `CQS_WATCH_INCREMENTAL_SPLADE` | `1` | Set to `0` to disable inline SPLADE encoding in `cqs watch`. Daemon then runs dense-only and sparse coverage drifts until a manual `cqs index`. |
 | `CQS_WATCH_MAX_PENDING` | `10000` | Max pending file changes before watch forces flush |
+| `CQS_WATCH_POLL_MS` | `5000` | Poll-watcher tick interval (milliseconds). Only used on WSL `/mnt/c/` and other non-inotify filesystems where notify-rs falls back to polling. Lower = faster reaction; higher = less idle CPU walking the tree. Min 100. |
 | `CQS_WATCH_REBUILD_THRESHOLD` | `100` | Files changed before watch triggers full HNSW rebuild |
 | `CQS_WATCH_RESPECT_GITIGNORE` | `1` | Set to `0` to stop `cqs watch` from honoring `.gitignore`. Defaults on — prevents ignored paths (e.g. `.claude/worktrees/*`) from polluting the index. |
 
