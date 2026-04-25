@@ -21,6 +21,107 @@ use super::commands::{
     cmd_telemetry_reset, cmd_test_map, cmd_trace, cmd_train_data, cmd_train_pairs, cmd_where,
 };
 
+// ── Dispatch macros (#1097) ──────────────────────────────────────────────
+//
+// Both Group A (no-store, early-return) and Group B (store-using) matches
+// in `run_with` are generated from the single registration table in
+// `crate::cli::registry`. The registry splits rows into `group_a:` and
+// `group_b:` brace groups; each emitter consumes both and emits the right
+// arm shape per group:
+//
+//   * **Group A match** (before `let ctx = …`)
+//     - `group_a` row → `Some($bind) => return $body`
+//     - `group_b` row → `Some($wild) => {}`  (no-op fall-through)
+//     - `None` arm    → `=> {}`              (bare query, handled below)
+//
+//   * **Group B match** (after `let ctx = …`)
+//     - `group_a` row → `Some($wild) => unreachable!()`  (already returned)
+//     - `group_b` row → `Some($bind) => $body`           (uses `&ctx`, `&cli`)
+//     - `None` arm    → bare-query path (`cmd_query`) and usage banner
+//
+// Both matches are exhaustive over `Commands`. The legacy `_ => {}` and
+// `_ => unreachable!()` catch-alls are gone — adding a new variant without
+// registering it is a compile error.
+//
+// Hygiene: macro_rules is unhygienic for free identifiers, so `cli`,
+// `ctx`, and the imported `cmd_*` paths in each `$body` resolve in the
+// `run_with` scope as expected. Local `let` bindings inside a body are
+// hygienic and won't collide with the Group B `let ctx = …` between the
+// two macro-emitted matches.
+macro_rules! gen_dispatch_group_a {
+    (
+        cli = $cli:ident,
+        ctx = $_ctx:ident,
+        project_cqs_dir = $_pcd:ident,
+        group_a: {
+            $(
+                $(#[$a_attr:meta])*
+                ( $a_bind:pat , $a_wild:pat , $a_name:literal , $a_bs:expr , $a_body:block )
+            ),* $(,)?
+        }
+        group_b: {
+            $(
+                $(#[$b_attr:meta])*
+                ( $b_bind:pat , $b_wild:pat , $b_name:literal , $b_bs:expr , $b_body:block )
+            ),* $(,)?
+        }
+    ) => {
+        match $cli.command {
+            $(
+                $(#[$a_attr])*
+                Some($a_bind) => return $a_body,
+            )*
+            $(
+                $(#[$b_attr])*
+                Some($b_wild) => {}, // handled in Group B match below
+            )*
+            None => {} // bare-query mode handled in Group B below
+        }
+    };
+}
+
+macro_rules! gen_dispatch_group_b {
+    (
+        cli = $cli:ident,
+        ctx = $ctx:ident,
+        project_cqs_dir = $_pcd:ident,
+        group_a: {
+            $(
+                $(#[$a_attr:meta])*
+                ( $a_bind:pat , $a_wild:pat , $a_name:literal , $a_bs:expr , $a_body:block )
+            ),* $(,)?
+        }
+        group_b: {
+            $(
+                $(#[$b_attr:meta])*
+                ( $b_bind:pat , $b_wild:pat , $b_name:literal , $b_bs:expr , $b_body:block )
+            ),* $(,)?
+        }
+    ) => {
+        match $cli.command {
+            $(
+                $(#[$a_attr])*
+                Some($a_wild) => unreachable!(
+                    "Group A variant `{}` handled before context open",
+                    $a_name
+                ),
+            )*
+            $(
+                $(#[$b_attr])*
+                Some($b_bind) => $b_body,
+            )*
+            None => match &$cli.query {
+                Some(q) => cmd_query(&$ctx, q),
+                None => {
+                    println!("Usage: cqs <query> or cqs <command>");
+                    println!("Run 'cqs --help' for more information.");
+                    Ok(())
+                }
+            },
+        }
+    };
+}
+
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
 pub fn run_with(mut cli: Cli) -> Result<()> {
     // Log command for telemetry (opt-in via CQS_TELEMETRY=1)
@@ -85,576 +186,42 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }
     }
 
-    // ── Group A: no-store commands (early return before CommandContext) ──────
-    match cli.command {
-        Some(Commands::Init) => return cmd_init(&cli),
-        Some(Commands::Cache { ref subcmd }) => return cmd_cache(&cli, subcmd),
-        Some(Commands::Slot { ref subcmd }) => return cmd_slot(&cli, subcmd),
-        Some(Commands::Doctor { fix, verbose, json }) => {
-            // Task #8: top-level `--json` cascades into doctor's `--json` so
-            // `cqs --json doctor --verbose` emits JSON.
-            return cmd_doctor(cli.model.as_deref(), fix, verbose, cli.json || json);
-        }
-        // Task B2: ping does direct socket I/O via cqs::daemon_translate::
-        // daemon_ping. Must NOT open a Store (works on fresh projects pre-
-        // `cqs init`). Exits 1 if no daemon is running so health-monitor
-        // scripts can act on the result.
-        Some(Commands::Ping { json }) => return cmd_ping(cli.json || json),
-        // API-V1.29-6: `cqs refresh` is a daemon-only concept — a fresh CLI
-        // process holds no caches to invalidate. `try_daemon_query` above
-        // already forwarded this to `BatchCmd::Refresh` if a daemon was
-        // running; reaching this arm means there isn't one. Exit 0 with a
-        // human-readable line (or a JSON envelope when `--json` is set) so
-        // scripts can treat "no daemon, nothing to do" as success.
-        Some(Commands::Refresh) => {
-            if cli.json {
-                crate::cli::json_envelope::emit_json(&serde_json::json!({
-                    "status": "noop",
-                    "message": "no daemon running, nothing to refresh",
-                }))?;
-            } else {
-                println!("no daemon running, nothing to refresh");
-            }
-            return Ok(());
-        }
-        Some(Commands::Index { ref args }) => return cmd_index(&cli, args),
-        Some(Commands::Watch {
-            debounce,
-            no_ignore,
-            poll,
-            serve,
-        }) => return watch::cmd_watch(&cli, debounce, no_ignore, poll, serve),
-        #[cfg(feature = "serve")]
-        Some(Commands::Serve {
-            port,
-            ref bind,
-            open,
-        }) => {
-            return crate::cli::commands::serve::cmd_serve(port, bind.clone(), open);
-        }
-        Some(Commands::Batch) => return batch::cmd_batch(),
-        Some(Commands::Chat) => return chat::cmd_chat(),
-        Some(Commands::Completions { shell }) => {
-            cmd_completions(shell);
-            return Ok(());
-        }
-        Some(Commands::TrainData {
-            repos,
-            output,
-            max_commits,
-            min_msg_len,
-            max_files,
-            dedup_cap,
-            resume,
-            verbose,
-        }) => {
-            return cmd_train_data(cqs::train_data::TrainDataConfig {
-                repos,
-                output,
-                // API-V1.22-13: CLI surface uses `Option<usize>` (None =
-                // unlimited). The library's TrainDataConfig still uses `usize`
-                // with `0` as the "no cap" sentinel — translate at the
-                // dispatch boundary to keep the lib API stable.
-                max_commits: max_commits.unwrap_or(0),
-                min_msg_len,
-                max_files,
-                dedup_cap,
-                resume,
-                verbose,
-            });
-        }
-        Some(Commands::ExportModel {
-            ref repo,
-            ref output,
-            dim,
-        }) => return cmd_export_model(repo, output, dim),
-        #[cfg(feature = "convert")]
-        Some(Commands::Convert {
-            ref path,
-            ref output,
-            overwrite,
-            dry_run,
-            ref clean_tags,
-        }) => {
-            return cmd_convert(
-                path,
-                output.as_deref(),
-                overwrite,
-                dry_run,
-                clean_tags.as_deref(),
-            )
-        }
-        Some(Commands::Telemetry {
-            reset,
-            ref reason,
-            all,
-            ref output,
-        }) => {
-            return if reset {
-                // API-V1.29-3: forward the resolved --json bit so reset emits
-                // the `{archived_events, archive_path, lock_path}` envelope
-                // instead of silently dropping the flag.
-                cmd_telemetry_reset(&project_cqs_dir, reason.as_deref(), cli.json || output.json)
-            } else {
-                cmd_telemetry(&project_cqs_dir, cli.json || output.json, all)
-            };
-        }
-        Some(Commands::Project { ref subcmd }) => {
-            return cmd_project(&cli, subcmd, cli.try_model_config()?)
-        }
-        // Model: each subcommand opens its own Store at known paths
-        // (`cqs model show/list` open readonly; `swap` orchestrates a backup
-        // + reindex). None fit through CommandContext because `swap` deletes
-        // the open store under it.
-        Some(Commands::Model { ref subcmd }) => return cmd_model(&cli, subcmd),
-        // Special: open stores on arbitrary paths, not via CommandContext
-        Some(Commands::Diff {
-            ref args,
-            ref output,
-        }) => {
-            return cmd_diff(
-                &args.source,
-                args.target.as_deref(),
-                args.threshold,
-                args.lang.as_deref(),
-                cli.json || output.json,
-            )
-        }
-        Some(Commands::Drift {
-            ref args,
-            ref output,
-        }) => {
-            return cmd_drift(
-                &args.reference,
-                args.threshold,
-                args.min_drift,
-                args.lang.as_deref(),
-                args.limit,
-                cli.json || output.json,
-            )
-        }
-        Some(Commands::Ref { ref subcmd }) => return cmd_ref(&cli, subcmd),
-        // Special: uses read-write CommandContext::open_readwrite()
-        Some(Commands::Gc { ref output }) => return cmd_gc(&cli, cli.json || output.json),
-        // AuditMode doesn't use a store — uses find_project_root + resolve_index_dir
-        Some(Commands::AuditMode {
-            ref state,
-            ref expires,
-            ref output,
-        }) => return cmd_audit_mode(state.as_ref(), expires, cli.json || output.json),
-        // Notes: opening the readonly store is optional — mutations
-        // (`add`/`update`/`remove`) must work on a fresh project before any
-        // `cqs init && cqs index` has run (so a user can capture notes from
-        // the first minute). `cmd_notes` only requires the store for `list`,
-        // which it enforces internally. This replaces the old split between
-        // `cmd_notes` and `cmd_notes_mutate` (issue #959): one handler, with
-        // the store lifecycle decided here instead of via a routing gate.
-        Some(Commands::Notes { ref subcmd }) => {
-            // SEC-D.9: don't silently collapse distinct store-open failures
-            // (schema corruption, dim mismatch, permission denied, missing
-            // index) into a single clueless "Index not found" downstream.
-            // Mutations (`add`/`update`/`remove`) work without an open store
-            // so we still fall through with `None`, but we leave a debug
-            // breadcrumb so an operator running with `RUST_LOG=cqs=debug`
-            // sees the underlying cause.
-            let ctx = match crate::cli::CommandContext::open_readonly(&cli) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    tracing::debug!(
-                        error = %e,
-                        "Notes: readonly store open failed; mutations will use write-only path"
-                    );
-                    None
-                }
-            };
-            return cmd_notes(&cli, ctx.as_ref(), subcmd);
-        }
-        _ => {} // Fall through to Group B
-    }
-
-    // ── Group B: store-using commands ───────────────────────────────────────
+    // ── Group A + Group B dispatch (#1097) ──────────────────────────────────
     //
-    // Task #8 — `--json` precedence: every subcommand reads
-    // `cli.json || output.json` (OR semantics). Top-level `--json` wins when
-    // set; the subcommand's `--json` is the fallback. For the impact/trace
-    // pair (`OutputArgs` with `--format`), `cli.json` short-circuits to
-    // `OutputFormat::Json` regardless of `--format`. This makes
-    // `cqs --json <subcmd> ...` always emit JSON without forcing the user
-    // to remember whether the subcommand has its own `--json`.
-    let ctx = crate::cli::CommandContext::open_readonly(&cli)?;
+    // Both matches are generated from the single registration table in
+    // `crate::cli::registry`. `__group_a_arm!` and `__group_b_arm!` (defined
+    // below) discriminate per row's group ident — Group A rows produce
+    // `=> return $body;` in match #1 and `=> {}` in match #2; Group B rows
+    // produce `=> {}` in match #1 and `=> $body` (with `&ctx` bound) in
+    // match #2. The legacy `_ => {}` and `_ => unreachable!()` catch-alls
+    // are gone — both matches are fully exhaustive over `Commands`.
+    //
+    // Task #8 — `--json` precedence: every Group B subcommand reads
+    // `cli.json || output.json` (OR semantics). Top-level `--json` wins
+    // when set; the subcommand's `--json` is the fallback. For the impact/
+    // trace pair (`OutputArgs` with `--format`), `cli.json` short-circuits
+    // to `OutputFormat::Json` regardless of `--format`. The exact wiring
+    // lives per-row in the registry.
+    crate::cli::registry::for_each_command!(
+        gen_dispatch_group_a,
+        cli = cli,
+        ctx = ctx,
+        project_cqs_dir = project_cqs_dir
+    );
 
-    match cli.command {
-        Some(Commands::Affected {
-            ref base,
-            stdin,
-            ref output,
-        }) => cmd_affected(&ctx, base.as_deref(), stdin, cli.json || output.json),
-        Some(Commands::Blame {
-            ref args,
-            ref output,
-        }) => cmd_blame(
-            &ctx,
-            &args.name,
-            args.commits,
-            args.callers,
-            cli.json || output.json,
-        ),
-        Some(Commands::Brief {
-            ref path,
-            ref output,
-        }) => cmd_brief(&ctx, path, cli.json || output.json),
-        Some(Commands::Stats { ref output }) => cmd_stats(&ctx, cli.json || output.json),
-        Some(Commands::Deps {
-            ref args,
-            ref output,
-        }) => cmd_deps(
-            &ctx,
-            &args.name,
-            args.reverse,
-            args.limit_arg.limit,
-            args.cross_project,
-            cli.json || output.json,
-        ),
-        Some(Commands::Callers {
-            ref args,
-            ref output,
-        }) => cmd_callers(
-            &ctx,
-            &args.name,
-            args.limit_arg.limit,
-            args.cross_project,
-            cli.json || output.json,
-        ),
-        Some(Commands::Callees {
-            ref args,
-            ref output,
-        }) => cmd_callees(
-            &ctx,
-            &args.name,
-            args.limit_arg.limit,
-            args.cross_project,
-            cli.json || output.json,
-        ),
-        Some(Commands::Onboard {
-            ref args,
-            ref output,
-        }) => cmd_onboard(
-            &ctx,
-            &args.query,
-            args.depth,
-            args.limit_arg.limit,
-            cli.json || output.json,
-            args.tokens,
-        ),
-        Some(Commands::Neighbors {
-            ref name,
-            limit,
-            ref output,
-        }) => cmd_neighbors(&ctx, name, limit, cli.json || output.json),
-        Some(Commands::Explain {
-            ref args,
-            ref output,
-        }) => cmd_explain(
-            &ctx,
-            &args.name,
-            args.limit_arg.limit,
-            cli.json || output.json,
-            args.tokens,
-        ),
-        Some(Commands::Similar {
-            ref args,
-            ref output,
-        }) => cmd_similar(
-            &ctx,
-            &args.name,
-            args.limit,
-            args.threshold,
-            cli.json || output.json,
-        ),
-        Some(Commands::Impact {
-            ref args,
-            ref output,
-        }) => {
-            // Task #8: top-level `--json` (cli.json) overrides whatever the
-            // subcommand's `--format` says. `effective_format()` already
-            // honours `output.json`; we OR cli.json on top so
-            // `cqs --json impact foo` works without `--json` on the subcommand.
-            let format = if cli.json {
-                crate::cli::OutputFormat::Json
-            } else {
-                output.effective_format()
-            };
-            cmd_impact(
-                &ctx,
-                &args.name,
-                args.depth,
-                args.limit_arg.limit,
-                &format,
-                args.suggest_tests,
-                args.type_impact,
-                args.cross_project,
-            )
-        }
-        Some(Commands::ImpactDiff {
-            ref args,
-            ref output,
-        }) => cmd_impact_diff(
-            &ctx,
-            args.base.as_deref(),
-            args.stdin,
-            cli.json || output.json,
-        ),
-        Some(Commands::Review {
-            ref args,
-            ref output,
-        }) => {
-            let format = if cli.json {
-                crate::cli::OutputFormat::Json
-            } else {
-                output.effective_format()
-            };
-            cmd_review(&ctx, args.base.as_deref(), args.stdin, &format, args.tokens)
-        }
-        Some(Commands::Ci {
-            ref args,
-            ref output,
-        }) => {
-            let format = if cli.json {
-                crate::cli::OutputFormat::Json
-            } else {
-                output.effective_format()
-            };
-            cmd_ci(
-                &ctx,
-                args.base.as_deref(),
-                args.stdin,
-                &format,
-                &args.gate,
-                args.tokens,
-            )
-        }
-        Some(Commands::Trace {
-            ref args,
-            ref output,
-        }) => {
-            // Task #8: cli.json wins over the subcommand format.
-            let format = if cli.json {
-                crate::cli::OutputFormat::Json
-            } else {
-                output.effective_format()
-            };
-            cmd_trace(
-                &ctx,
-                &args.source,
-                &args.target,
-                args.max_depth as usize,
-                args.limit_arg.limit,
-                &format,
-                args.cross_project,
-            )
-        }
-        Some(Commands::TestMap {
-            ref args,
-            ref output,
-        }) => cmd_test_map(
-            &ctx,
-            &args.name,
-            args.depth,
-            args.limit_arg.limit,
-            args.cross_project,
-            cli.json || output.json,
-        ),
-        Some(Commands::Context {
-            ref args,
-            ref output,
-        }) => cmd_context(
-            &ctx,
-            &args.path,
-            cli.json || output.json,
-            args.summary,
-            args.compact,
-            args.tokens,
-        ),
-        Some(Commands::Dead {
-            ref args,
-            ref output,
-        }) => cmd_dead(
-            &ctx,
-            cli.json || output.json,
-            args.include_pub,
-            args.min_confidence,
-        ),
-        Some(Commands::Gather {
-            ref args,
-            ref output,
-        }) => cmd_gather(&super::commands::GatherContext {
-            ctx: &ctx,
-            query: &args.query,
-            expand: args.expand,
-            direction: args.direction,
-            limit: args.limit,
-            max_tokens: args.tokens,
-            ref_name: args.ref_name.as_deref(),
-            json: cli.json || output.json,
-        }),
-        Some(Commands::Health { ref output }) => cmd_health(&ctx, cli.json || output.json),
-        Some(Commands::Stale {
-            ref args,
-            ref output,
-        }) => cmd_stale(&ctx, cli.json || output.json, args.count_only),
-        Some(Commands::Suggest {
-            ref args,
-            ref output,
-        }) => cmd_suggest(&ctx, cli.json || output.json, args.apply),
-        Some(Commands::Read {
-            ref args,
-            ref output,
-        }) => cmd_read(
-            &ctx,
-            &args.path,
-            args.focus.as_deref(),
-            cli.json || output.json,
-        ),
-        Some(Commands::Reconstruct {
-            ref path,
-            ref output,
-        }) => cmd_reconstruct(&ctx, path, cli.json || output.json),
-        Some(Commands::Related {
-            ref args,
-            ref output,
-        }) => cmd_related(&ctx, &args.name, args.limit, cli.json || output.json),
-        Some(Commands::Where {
-            ref args,
-            ref output,
-        }) => cmd_where(&ctx, &args.description, args.limit, cli.json || output.json),
-        Some(Commands::Scout {
-            ref args,
-            ref output,
-        }) => cmd_scout(
-            &ctx,
-            &args.query,
-            args.limit,
-            cli.json || output.json,
-            args.tokens,
-        ),
-        Some(Commands::Plan {
-            ref args,
-            ref output,
-        }) => cmd_plan(
-            &ctx,
-            &args.description,
-            args.limit,
-            cli.json || output.json,
-            args.tokens,
-        ),
-        Some(Commands::Task {
-            ref args,
-            ref output,
-        }) => cmd_task(
-            &ctx,
-            &args.description,
-            args.limit,
-            cli.json || output.json,
-            args.tokens,
-            args.brief,
-        ),
-        Some(Commands::TrainPairs {
-            ref output,
-            limit,
-            ref language,
-            contrastive,
-        }) => cmd_train_pairs(
-            &ctx,
-            output.as_path(),
-            limit,
-            language.as_deref(),
-            contrastive,
-        ),
-        Some(Commands::Eval { ref args }) => cmd_eval(&ctx, args),
-        None => match &cli.query {
-            Some(q) => cmd_query(&ctx, q),
-            None => {
-                println!("Usage: cqs <query> or cqs <command>");
-                println!("Run 'cqs --help' for more information.");
-                Ok(())
-            }
-        },
-        // All Group A commands were handled above with early returns
-        _ => unreachable!("All Group A commands return early before CommandContext"),
-    }
+    let ctx = crate::cli::CommandContext::open_readonly(&cli)?;
+    crate::cli::registry::for_each_command!(
+        gen_dispatch_group_b,
+        cli = cli,
+        ctx = ctx,
+        project_cqs_dir = project_cqs_dir
+    )
 }
 
 /// Generate shell completion scripts for the specified shell
 fn cmd_completions(shell: clap_complete::Shell) {
     use clap::CommandFactory;
     clap_complete::generate(shell, &mut Cli::command(), "cqs", &mut std::io::stdout());
-}
-
-/// Return a static string identifying the variant of a `Commands`.
-/// Used only for tracing spans; `Commands` does not derive `Debug` to keep
-/// help output clean.
-#[cfg(unix)]
-fn command_variant_name(cmd: &Commands) -> &'static str {
-    match cmd {
-        Commands::Init => "init",
-        Commands::Brief { .. } => "brief",
-        Commands::Doctor { .. } => "doctor",
-        Commands::Index { .. } => "index",
-        Commands::Stats { .. } => "stats",
-        Commands::Watch { .. } => "watch",
-        Commands::Affected { .. } => "affected",
-        Commands::Batch => "batch",
-        Commands::Blame { .. } => "blame",
-        Commands::Chat => "chat",
-        Commands::Completions { .. } => "completions",
-        Commands::Deps { .. } => "deps",
-        Commands::Callers { .. } => "callers",
-        Commands::Callees { .. } => "callees",
-        Commands::Onboard { .. } => "onboard",
-        Commands::Neighbors { .. } => "neighbors",
-        Commands::Notes { .. } => "notes",
-        Commands::Ref { .. } => "ref",
-        Commands::Diff { .. } => "diff",
-        Commands::Drift { .. } => "drift",
-        Commands::Explain { .. } => "explain",
-        Commands::Similar { .. } => "similar",
-        Commands::Impact { .. } => "impact",
-        Commands::ImpactDiff { .. } => "impact-diff",
-        Commands::Review { .. } => "review",
-        Commands::Ci { .. } => "ci",
-        Commands::Trace { .. } => "trace",
-        Commands::TestMap { .. } => "test-map",
-        Commands::Context { .. } => "context",
-        Commands::Dead { .. } => "dead",
-        Commands::Gather { .. } => "gather",
-        Commands::Project { .. } => "project",
-        Commands::Gc { .. } => "gc",
-        Commands::Health { .. } => "health",
-        Commands::AuditMode { .. } => "audit-mode",
-        Commands::Telemetry { .. } => "telemetry",
-        Commands::Stale { .. } => "stale",
-        Commands::Suggest { .. } => "suggest",
-        Commands::Read { .. } => "read",
-        Commands::Reconstruct { .. } => "reconstruct",
-        Commands::Related { .. } => "related",
-        Commands::Where { .. } => "where",
-        Commands::Scout { .. } => "scout",
-        Commands::Plan { .. } => "plan",
-        Commands::Task { .. } => "task",
-        #[cfg(feature = "convert")]
-        Commands::Convert { .. } => "convert",
-        Commands::ExportModel { .. } => "export-model",
-        Commands::TrainData { .. } => "train-data",
-        Commands::TrainPairs { .. } => "train-pairs",
-        Commands::Cache { .. } => "cache",
-        Commands::Slot { .. } => "slot",
-        Commands::Ping { .. } => "ping",
-        Commands::Refresh => "refresh",
-        Commands::Eval { .. } => "eval",
-        Commands::Model { .. } => "model",
-        #[cfg(feature = "serve")]
-        Commands::Serve { .. } => "serve",
-    }
 }
 
 /// Try to forward the current command to a running daemon.
@@ -667,7 +234,7 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
     let cmd_label = cli
         .command
         .as_ref()
-        .map(|c| command_variant_name(c))
+        .map(|c| c.variant_name())
         .unwrap_or("search");
     let _span = tracing::debug_span!("try_daemon_query", cmd = cmd_label).entered();
 

@@ -13,6 +13,7 @@ mod files;
 pub(crate) mod json_envelope;
 mod limits;
 mod pipeline;
+mod registry;
 mod signal;
 pub(crate) mod staleness;
 mod store;

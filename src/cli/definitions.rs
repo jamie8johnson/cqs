@@ -819,122 +819,120 @@ pub(crate) enum BatchSupport {
     Daemon,
 }
 
-impl Commands {
-    /// Classify this variant for daemon dispatch.
-    ///
-    /// Exhaustive match: adding a new `Commands` variant forces an explicit
-    /// classification decision. This is the whole point of the refactor —
-    /// no more silent daemon-forwarding drift.
-    pub(crate) fn batch_support(&self) -> BatchSupport {
-        match self {
-            // Process / lifecycle — never daemon.
-            Commands::Init
-            | Commands::Index { .. }
-            | Commands::Watch { .. }
-            | Commands::Batch
-            | Commands::Chat
-            | Commands::Completions { .. }
-            | Commands::Doctor { .. }
-            // Telemetry / audit / training — CLI-only tooling.
-            | Commands::AuditMode { .. }
-            | Commands::Telemetry { .. }
-            | Commands::TrainData { .. }
-            | Commands::TrainPairs { .. }
-            | Commands::Cache { .. }
-            | Commands::Slot { .. }
-            // Registry commands — not on batch surface.
-            | Commands::Ref { .. }
-            | Commands::Project { .. }
-            | Commands::ExportModel { .. }
-            // Task B2: `ping` is a CLI-only healthcheck. The daemon side
-            // exposes a `BatchCmd::Ping` handler, but the CLI handler
-            // (`cmd_ping`) talks to the socket directly so it can return a
-            // distinct exit code when no daemon is running. Routing through
-            // `try_daemon_query` would silently fall through to a
-            // store-opening CLI path — which we explicitly do not want.
-            | Commands::Ping { .. }
-            // Not-yet-on-batch commands. Candidates for a future BatchCmd.
-            | Commands::Affected { .. }
-            | Commands::Brief { .. }
-            | Commands::Neighbors { .. }
-            | Commands::Reconstruct { .. }
-            // Eval is a long-running per-process operation (file I/O, progress
-            // to stderr, optional --save side effect). Not a fit for daemon
-            // dispatch — runs inline via the CLI store path.
-            | Commands::Eval { .. }
-            // Model swaps mutate `.cqs/`, restart the daemon, and may take
-            // minutes to reindex — exclusively a CLI operation.
-            | Commands::Model { .. } => BatchSupport::Cli,
-
-            // cqs serve is a long-running HTTP server — never daemon-dispatched.
-            #[cfg(feature = "serve")]
-            Commands::Serve { .. } => BatchSupport::Cli,
-
-            #[cfg(feature = "convert")]
-            Commands::Convert { .. } => BatchSupport::Cli,
-
-            // Notes: list is daemon-compatible; mutations must hit CLI for
-            // the filesystem reindex. Inline-decide here so the call-site stays
-            // trivial.
-            Commands::Notes { subcmd } => match subcmd {
-                NotesCommand::List { .. } => BatchSupport::Daemon,
-                _ => BatchSupport::Cli,
-            },
-
-            // All remaining commands have a matching `BatchCmd` variant.
-            Commands::Stats { .. }
-            | Commands::Blame { .. }
-            | Commands::Deps { .. }
-            | Commands::Callers { .. }
-            | Commands::Callees { .. }
-            | Commands::Onboard { .. }
-            | Commands::Diff { .. }
-            | Commands::Drift { .. }
-            | Commands::Explain { .. }
-            | Commands::Similar { .. }
-            | Commands::Impact { .. }
-            | Commands::ImpactDiff { .. }
-            | Commands::Review { .. }
-            | Commands::Ci { .. }
-            | Commands::Trace { .. }
-            | Commands::TestMap { .. }
-            | Commands::Context { .. }
-            | Commands::Dead { .. }
-            | Commands::Gather { .. }
-            | Commands::Health { .. }
-            | Commands::Stale { .. }
-            | Commands::Read { .. }
-            | Commands::Related { .. }
-            | Commands::Where { .. }
-            | Commands::Scout { .. }
-            | Commands::Plan { .. }
-            | Commands::Task { .. }
-            // API-V1.29-6: forward to the existing `BatchCmd::Refresh` handler.
-            // When no daemon is running the top-level dispatch in `dispatch.rs`
-            // bails with "nothing to refresh" — classifying as Daemon here is
-            // still correct because the handler lives on the batch side.
-            | Commands::Refresh => BatchSupport::Daemon,
-
-            // #946 typestate: Gc mutates the DB (prune_all + HNSW rebuild).
-            // Daemon holds `Store<ReadOnly>`, so `prune_all` is literally
-            // not callable there. Must go through the CLI path, which
-            // opens `Store<ReadWrite>` via `CommandContext::open_readwrite`.
-            Commands::Gc { .. } => BatchSupport::Cli,
-
-            // #946 typestate: Suggest with --apply rewrites notes.toml and
-            // calls `index_notes` → `replace_notes_for_file` (a write).
-            // Classify on the `apply` flag: read-only dry-run is daemon-
-            // dispatchable; the write variant must hit CLI.
-            Commands::Suggest { ref args, .. } => {
-                if args.apply {
-                    BatchSupport::Cli
-                } else {
-                    BatchSupport::Daemon
+// #1097: `Commands::batch_support()` and `Commands::variant_name()` are
+// generated from the single registration table in `crate::cli::registry`.
+// Adding a new variant forces a row there because every emitter expands to
+// an exhaustive match — no row, no compile.
+//
+// `gen_batch_support_impl!` and `gen_variant_name_impl!` are the emitters;
+// `for_each_command!` invokes them with the row list (split into
+// `group_a:` and `group_b:` brace groups so the dispatch emitters can
+// emit different RHS per group without nested macros). Keeping the
+// emitters here means the generated `impl Commands` blocks stay in the
+// same module as the enum, which is where readers expect to find them.
+macro_rules! gen_batch_support_impl {
+    (
+        cli = $_cli:ident,
+        ctx = $_ctx:ident,
+        project_cqs_dir = $_pcd:ident,
+        group_a: {
+            $(
+                $(#[$a_attr:meta])*
+                ( $a_bind:pat , $a_wild:pat , $a_name:literal , $a_bs:expr , $a_body:block )
+            ),* $(,)?
+        }
+        group_b: {
+            $(
+                $(#[$b_attr:meta])*
+                ( $b_bind:pat , $b_wild:pat , $b_name:literal , $b_bs:expr , $b_body:block )
+            ),* $(,)?
+        }
+    ) => {
+        impl Commands {
+            /// Classify this variant for daemon dispatch.
+            ///
+            /// Exhaustive match generated from `crate::cli::registry`.
+            /// Adding a new `Commands` variant without registering it is a
+            /// compile error — the whole point of the refactor (issue
+            /// #1097, EX-V1.29-1).
+            ///
+            /// `#[allow(unused_variables)]` because most rows use a static
+            /// `BatchSupport::Cli` / `BatchSupport::Daemon` and don't read
+            /// the bound fields (e.g., `Cache { ref subcmd }`). Only Notes
+            /// and Suggest reference their bindings in the `$bs` expression.
+            #[allow(unused_variables)]
+            pub(crate) fn batch_support(&self) -> BatchSupport {
+                match self {
+                    $(
+                        $(#[$a_attr])*
+                        $a_bind => $a_bs,
+                    )*
+                    $(
+                        $(#[$b_attr])*
+                        $b_bind => $b_bs,
+                    )*
                 }
             }
         }
-    }
+    };
 }
+
+macro_rules! gen_variant_name_impl {
+    (
+        cli = $_cli:ident,
+        ctx = $_ctx:ident,
+        project_cqs_dir = $_pcd:ident,
+        group_a: {
+            $(
+                $(#[$a_attr:meta])*
+                ( $a_bind:pat , $a_wild:pat , $a_name:literal , $a_bs:expr , $a_body:block )
+            ),* $(,)?
+        }
+        group_b: {
+            $(
+                $(#[$b_attr:meta])*
+                ( $b_bind:pat , $b_wild:pat , $b_name:literal , $b_bs:expr , $b_body:block )
+            ),* $(,)?
+        }
+    ) => {
+        impl Commands {
+            /// Static command label used for tracing spans. `Commands` does
+            /// not derive `Debug` (it would clutter help output), so we
+            /// hand-roll a discriminant→string map. Generated from the
+            /// registry.
+            pub(crate) fn variant_name(&self) -> &'static str {
+                match self {
+                    $(
+                        $(#[$a_attr])*
+                        $a_wild => $a_name,
+                    )*
+                    $(
+                        $(#[$b_attr])*
+                        $b_wild => $b_name,
+                    )*
+                }
+            }
+        }
+    };
+}
+
+// `batch_support` and `variant_name` only consume the row metadata — they
+// do not emit `$body`. Pass placeholder identifiers (`_cli`, `_ctx`,
+// `_pcd`) for the cli/ctx/project_cqs_dir parameters. Macro_rules drops
+// captured-but-unemitted tokens, so the placeholders never appear in the
+// generated code and never need to resolve.
+crate::cli::registry::for_each_command!(
+    gen_batch_support_impl,
+    cli = _cli,
+    ctx = _ctx,
+    project_cqs_dir = _pcd
+);
+crate::cli::registry::for_each_command!(
+    gen_variant_name_impl,
+    cli = _cli,
+    ctx = _ctx,
+    project_cqs_dir = _pcd
+);
 
 #[cfg(test)]
 mod tests {
@@ -1134,6 +1132,38 @@ mod tests {
         match cli.command {
             Some(Commands::Affected { stdin, .. }) => assert!(stdin),
             _ => panic!("expected Affected command"),
+        }
+    }
+
+    /// #1097: `Commands::variant_name()` is generated from the registry
+    /// table. Pin a few high-traffic command labels so a typo in the
+    /// registration string surfaces as a test failure rather than rotting
+    /// in tracing output. The registry's exhaustiveness already prevents
+    /// missing rows; this test is the second line of defense for typos.
+    #[test]
+    fn variant_name_pins_critical_command_labels() {
+        use clap::Parser;
+        let cases = [
+            (vec!["cqs", "init"], "init"),
+            (vec!["cqs", "scout", "foo"], "scout"),
+            (vec!["cqs", "impact", "foo"], "impact"),
+            (vec!["cqs", "impact-diff"], "impact-diff"),
+            (vec!["cqs", "test-map", "foo"], "test-map"),
+            (vec!["cqs", "audit-mode"], "audit-mode"),
+            (vec!["cqs", "export-model", "--repo", "x"], "export-model"),
+            (
+                vec!["cqs", "train-data", "--repos", ".", "--output", "x"],
+                "train-data",
+            ),
+            (vec!["cqs", "refresh"], "refresh"),
+        ];
+        for (argv, expected) in cases {
+            let cli = Cli::try_parse_from(&argv).unwrap();
+            assert_eq!(
+                cli.command.unwrap().variant_name(),
+                expected,
+                "variant_name mismatch for {argv:?}"
+            );
         }
     }
 }
