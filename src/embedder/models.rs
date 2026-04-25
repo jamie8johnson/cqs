@@ -351,6 +351,28 @@ define_embedder_presets! {
         approx_download_bytes = Some(1_300 * 1024 * 1024),
         pad_id = 0,
         default = true;
+
+    /// CodeRankEmbed: 768-dim, 2048 tokens. Code-specialized fine-tune of
+    /// Snowflake Arctic Embed M Long, trained on CoRNStack (~21M code pairs).
+    /// Headline: 77.9 MRR on CodeSearchNet, 60.1 NDCG@10 on CoIR.
+    ///
+    /// Architecture is NomicBERT (custom: SwiGLU activation, RoPE, fused ops);
+    /// the ONNX export packages those into standard ONNX ops. Two inputs only
+    /// (`input_ids` + `attention_mask`, no `token_type_ids`); CLS pooling per
+    /// the model's `1_Pooling/config.json`. The official repo ships
+    /// safetensors only — this preset points at a re-exported ONNX bundle.
+    nomic_coderank => name = "nomic-coderank", repo = "jamie8johnson/CodeRankEmbed-onnx",
+        onnx_path = "onnx/model.onnx", tokenizer_path = "tokenizer.json",
+        dim = 768, max_seq_length = 2048,
+        query_prefix = "Represent this query for searching relevant code: ", doc_prefix = "",
+        // The sentence-transformers ONNX export exposes `token_embeddings`
+        // (3D `[batch, seq, dim]`) plus a pre-pooled `sentence_embedding`
+        // (2D). cqs's pooling expects a 3D tensor, so we read
+        // `token_embeddings` and CLS-pool ourselves.
+        input_names = InputNames::bert_no_token_types(), output_name = "token_embeddings".to_string(), pooling = PoolingStrategy::Cls,
+        // ONNX bundle: 522 MiB model + 712 KiB tokenizer.
+        approx_download_bytes = Some(523 * 1024 * 1024),
+        pad_id = 0;
 }
 
 impl ModelConfig {
