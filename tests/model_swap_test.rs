@@ -153,16 +153,19 @@ fn test_model_swap_same_preset_is_noop() {
     seed_store(&dir, "BAAI/bge-large-en-v1.5", 1024);
 
     let cqs_dir = dir.path().join(".cqs");
-    let index_db = cqs_dir.join(cqs::INDEX_DB_FILENAME);
-    // Use the index.db file itself as the "did anything destructive
-    // happen?" signal. Opening the store touches WAL/SHM siblings which
-    // bumps the directory mtime — those don't indicate a swap actually
-    // ran. The DB file mtime only changes on a real reindex pass.
-    let db_mtime_before = fs::metadata(&index_db)
+    // First cqs invocation will run the slot migration, atomically
+    // renaming index.db from `.cqs/index.db` to
+    // `.cqs/slots/default/index.db`. The atomic rename preserves mtime
+    // and size, so the pre/post comparison still detects a destructive
+    // swap (which would change both). Use `resolve_index_db` at each
+    // stat point so we follow the file across the migration.
+    let db_mtime_before = fs::metadata(cqs::resolve_index_db(&cqs_dir))
         .expect("stat index.db")
         .modified()
         .ok();
-    let db_size_before = fs::metadata(&index_db).expect("stat index.db").len();
+    let db_size_before = fs::metadata(cqs::resolve_index_db(&cqs_dir))
+        .expect("stat index.db")
+        .len();
 
     let result = cqs_no_daemon()
         .args(["model", "swap", "bge-large", "--json"])
@@ -188,16 +191,21 @@ fn test_model_swap_same_preset_is_noop() {
     );
 
     // index.db must be the same file (size + mtime unchanged) — no
-    // backup-and-recreate happened.
+    // backup-and-recreate happened. Use `resolve_index_db` again here
+    // because the file has been migrated into `.cqs/slots/default/`.
+    let index_db_after_path = cqs::resolve_index_db(&cqs_dir);
     assert!(
-        index_db.exists(),
-        ".cqs/index.db must still exist after no-op swap"
+        index_db_after_path.exists(),
+        "index.db must still exist after no-op swap (resolved at {})",
+        index_db_after_path.display()
     );
-    let db_mtime_after = fs::metadata(&index_db)
+    let db_mtime_after = fs::metadata(&index_db_after_path)
         .expect("stat index.db after")
         .modified()
         .ok();
-    let db_size_after = fs::metadata(&index_db).expect("stat index.db after").len();
+    let db_size_after = fs::metadata(&index_db_after_path)
+        .expect("stat index.db after")
+        .len();
     assert_eq!(
         db_mtime_before, db_mtime_after,
         "index.db mtime must not change on no-op swap. before={db_mtime_before:?} after={db_mtime_after:?}"
@@ -225,7 +233,10 @@ fn test_model_swap_unknown_preset_errors() {
     seed_store(&dir, "BAAI/bge-large-en-v1.5", 1024);
 
     let cqs_dir = dir.path().join(".cqs");
-    let index_db_before = fs::metadata(cqs_dir.join(cqs::INDEX_DB_FILENAME))
+    // Pre-cqs: file is still at `.cqs/index.db` (migration runs on first
+    // cqs invocation below). `resolve_index_db` falls back to the legacy
+    // path when slots/default/index.db doesn't exist yet.
+    let index_db_before = fs::metadata(cqs::resolve_index_db(&cqs_dir))
         .expect("stat index.db")
         .len();
 
@@ -267,7 +278,10 @@ fn test_model_swap_unknown_preset_errors() {
 
     // Original index untouched — pre-flight validation runs before any
     // backup or rename.
-    let index_db_after = fs::metadata(cqs_dir.join(cqs::INDEX_DB_FILENAME))
+    // Post-cqs: file lives at `.cqs/slots/default/index.db` after the
+    // dispatch-time migration ran (even though the swap itself failed
+    // pre-flight, the migration is unconditional).
+    let index_db_after = fs::metadata(cqs::resolve_index_db(&cqs_dir))
         .expect("stat index.db after failed swap")
         .len();
     assert_eq!(
