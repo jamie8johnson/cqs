@@ -9,24 +9,31 @@ use anyhow::{Context, Result};
 
 use crate::cli::find_project_root;
 
-/// Entry point for `cqs serve`. Bumped from the dispatch in
-/// `src/cli/dispatch.rs`.
+/// Entry point for `cqs serve`. Dispatched from `src/cli/dispatch.rs`.
 ///
 /// # Arguments
 /// * `port` — TCP port (default 8080)
-/// * `bind` — bind address (default `127.0.0.1`); anything else exposes
-///   the un-authenticated server beyond localhost
-/// * `open` — open the system browser on start
-pub(crate) fn cmd_serve(port: u16, bind: String, open: bool) -> Result<()> {
-    let _span = tracing::info_span!("cmd_serve", port, bind = %bind, open).entered();
+/// * `bind` — bind address (default `127.0.0.1`)
+/// * `open` — open the system browser on start (token-aware URL)
+/// * `no_auth` — disable per-launch auth (#1096); back-compat opt-out
+///   for scripted automation, with loud-warning banner on boot
+pub(crate) fn cmd_serve(port: u16, bind: String, open: bool, no_auth: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_serve", port, bind = %bind, open, no_auth).entered();
 
-    if bind != "127.0.0.1" && bind != "localhost" && bind != "::1" {
+    // #1096: warn loudly only when --no-auth is paired with a non-
+    // loopback bind. With auth on, non-loopback binds are fine — every
+    // request is gated by the token. The legacy unconditional warning
+    // misled operators into thinking any LAN bind was insecure.
+    if no_auth && bind != "127.0.0.1" && bind != "localhost" && bind != "::1" {
         tracing::warn!(
             bind = %bind,
-            "binding cqs serve to non-localhost — there is no auth, anyone with network \
+            "binding cqs serve to non-localhost without auth — anyone with network \
              access to this address can read the index"
         );
-        eprintln!("WARN: --bind {bind} exposes cqs serve beyond localhost; there is no auth");
+        eprintln!(
+            "WARN: --bind {bind} with --no-auth exposes cqs serve beyond localhost \
+             with no authentication"
+        );
     }
 
     let bind_addr: SocketAddr = format!("{bind}:{port}")
@@ -47,16 +54,34 @@ pub(crate) fn cmd_serve(port: u16, bind: String, open: bool) -> Result<()> {
     let store = cqs::Store::open_readonly(&index_path)
         .with_context(|| format!("Failed to open store at {}", index_path.display()))?;
 
+    // #1096: generate a per-launch token unless explicitly opted out.
+    // The token is shared with `run_server` (via `Some(token)`) and
+    // with the browser-open URL below — both branches need to agree
+    // on the same value, so we generate once here and clone.
+    let auth = if no_auth {
+        None
+    } else {
+        Some(cqs::serve::AuthToken::random())
+    };
+
     if open {
-        let url = format!("http://{bind_addr}");
+        // The launched URL embeds the token as a query parameter; the
+        // post-auth redirect strips it from the address bar and hands
+        // it off to a `cqs_token` cookie, so reload + bookmark stay
+        // working without leaving the token visible. With --no-auth
+        // the URL is the bare bind addr.
+        let url = match auth.as_ref() {
+            Some(token) => format!("http://{bind_addr}/?token={}", token.as_str()),
+            None => format!("http://{bind_addr}"),
+        };
         if let Err(e) = open_browser(&url) {
-            tracing::warn!(url = %url, error = %e, "failed to open browser");
+            tracing::warn!(error = %e, "failed to open browser");
             eprintln!("WARN: --open requested but failed to launch browser: {e}");
-            eprintln!("       open {url} manually");
+            eprintln!("       open the URL printed in the listening banner manually");
         }
     }
 
-    cqs::serve::run_server(store, bind_addr, false)
+    cqs::serve::run_server(store, bind_addr, false, auth)
 }
 
 /// Best-effort browser launch. Falls through cleanly on failure —

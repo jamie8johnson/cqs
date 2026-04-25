@@ -105,6 +105,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "time", "signal"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "query", "tokio", "json", "macros"], optional = true }
 tower = { version = "0.5", optional = true }
 tower-http = { version = "0.6", features = ["trace", "compression-gzip"], optional = true }
+# #1096: per-launch auth token. `subtle` for timing-safe compare against the
+# bearer/cookie value; `base64` for URL-safe encoding of the random token.
+# Both are feature-gated under `serve` (see [features] below).
+subtle = { version = "2", optional = true }
+base64 = { version = "0.22", optional = true }
 
 # Storage (sqlx async SQLite)
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
@@ -244,7 +249,7 @@ tree-sitter-elm = ["dep:tree-sitter-elm"]
 # `cqs serve` — graph visualization web UI. Adds axum + tower + tower-http.
 # Bundled separately so the default binary stays lean for users who only
 # need the CLI.
-serve = ["dep:axum", "dep:tower", "dep:tower-http"]
+serve = ["dep:axum", "dep:tower", "dep:tower-http", "dep:subtle", "dep:base64"]
 
 # Slow CLI integration tests that haven't yet been converted to the
 # in-process `InProcessFixture` harness. Five binaries were converted
