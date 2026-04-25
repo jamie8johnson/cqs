@@ -224,6 +224,14 @@ impl HnswIndex {
         self.id_map.is_empty()
     }
 
+    /// View of the chunk IDs currently indexed, in the order they were
+    /// inserted. Used by callers (e.g. the `cqs watch` background-rebuild
+    /// swap path in #1090) to dedup an external delta against what the
+    /// rebuild thread already snapshot-ingested before replaying.
+    pub fn ids(&self) -> &[String] {
+        &self.id_map
+    }
+
     /// Incrementally insert vectors into an Owned HNSW index.
     ///
     /// Returns the number of items inserted, or an error if called on a Loaded

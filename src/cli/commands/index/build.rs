@@ -845,7 +845,10 @@ pub(crate) fn build_hnsw_index(store: &Store, cqs_dir: &Path) -> Result<Option<u
 /// Builds from all chunk embeddings in the store, saves to disk, and returns
 /// the `HnswIndex` (Owned variant). Used by watch mode to keep a mutable index
 /// in memory for `insert_batch` calls on subsequent file changes.
-pub(crate) fn build_hnsw_index_owned(store: &Store, cqs_dir: &Path) -> Result<Option<HnswIndex>> {
+pub(crate) fn build_hnsw_index_owned<M>(
+    store: &cqs::store::Store<M>,
+    cqs_dir: &Path,
+) -> Result<Option<HnswIndex>> {
     let chunk_count = store.chunk_count().context("Failed to read chunk count")? as usize;
     let _span = tracing::info_span!("build_hnsw_index_owned", chunk_count).entered();
 
@@ -874,7 +877,10 @@ pub(crate) fn build_hnsw_index_owned(store: &Store, cqs_dir: &Path) -> Result<Op
 /// Returns `Ok(None)` when the column is entirely NULL (e.g. just after the
 /// v17→v18 migration before the next index pass has populated it). In that
 /// case the router silently falls back to the enriched index.
-pub(crate) fn build_hnsw_base_index(store: &Store, cqs_dir: &Path) -> Result<Option<usize>> {
+pub(crate) fn build_hnsw_base_index<M>(
+    store: &cqs::store::Store<M>,
+    cqs_dir: &Path,
+) -> Result<Option<usize>> {
     let _span = tracing::info_span!("build_hnsw_base_index").entered();
 
     // If the column hasn't been populated yet (e.g. fresh v17→v18 migration
