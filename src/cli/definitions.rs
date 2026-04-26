@@ -778,14 +778,31 @@ pub(super) enum Commands {
         /// TCP port to bind. Default 8080.
         #[arg(long, default_value_t = 8080)]
         port: u16,
-        /// Bind address. Default 127.0.0.1 — anything else exposes the
-        /// (un-authenticated) server beyond localhost. Spec'd as a
-        /// deliberate decision, not an oversight.
+        /// Bind address. Default 127.0.0.1.
+        ///
+        /// Non-loopback binds are gated by the per-launch auth token
+        /// (#1096 / SEC-7) — every request without the token is 401'd.
+        /// With `--no-auth`, this exposes an un-authenticated server
+        /// beyond localhost (loud-warning banner on boot).
         #[arg(long, default_value = "127.0.0.1")]
         bind: String,
         /// Open the system browser on start.
+        ///
+        /// The launched URL includes the auth token as a query
+        /// parameter; the browser hands it off to a cookie on the
+        /// post-auth redirect, so reload + bookmark both work.
         #[arg(long)]
         open: bool,
+        /// Disable the per-launch auth token (#1096).
+        ///
+        /// Default behavior generates a fresh 256-bit token per
+        /// launch, prints the paste-ready URL on stdout, and rejects
+        /// every request without it. This flag opts out for
+        /// scripted-automation back-compat — pair with `--bind
+        /// 127.0.0.1` to avoid exposing an un-auth'd server beyond
+        /// localhost.
+        #[arg(long)]
+        no_auth: bool,
     },
 }
 

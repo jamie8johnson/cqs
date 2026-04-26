@@ -130,11 +130,11 @@ macro_rules! for_each_command {
                  { watch::cmd_watch(&$cli, debounce, no_ignore, poll, serve) }),
 
                 #[cfg(feature = "serve")]
-                (Commands::Serve { port, ref bind, open },
+                (Commands::Serve { port, ref bind, open, no_auth },
                  Commands::Serve { .. },
                  "serve",
                  BatchSupport::Cli,
-                 { crate::cli::commands::serve::cmd_serve(port, bind.clone(), open) }),
+                 { crate::cli::commands::serve::cmd_serve(port, bind.clone(), open, no_auth) }),
 
                 (Commands::Batch,
                  Commands::Batch,

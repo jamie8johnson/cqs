@@ -29,9 +29,17 @@ fn test_allowed_hosts() -> AllowedHosts {
 }
 
 /// Build a router wired up for tests — same production config, but with
-/// the fixed test allowlist.
+/// the fixed test allowlist and auth disabled. Existing handler tests
+/// pre-date the auth layer (#1096) and assume routes return 200; new
+/// auth-specific tests use [`test_router_with_auth`].
 fn test_router(state: AppState) -> axum::Router {
-    build_router(state, test_allowed_hosts())
+    build_router(state, test_allowed_hosts(), None)
+}
+
+/// Build a router with auth enabled. Used by auth-specific tests that
+/// pin 401 / cookie-handoff / cross-instance-rejection behavior.
+fn test_router_with_auth(state: AppState, token: super::AuthToken) -> axum::Router {
+    build_router(state, test_allowed_hosts(), Some(token))
 }
 
 /// Build a fixture by opening a fresh temp store, initializing it,
@@ -1214,7 +1222,7 @@ async fn host_allowlist_includes_explicit_lan_bind() {
     // must accept that exact host:port as well as loopback.
     let fixture = fixture_state();
     let lan_addr: SocketAddr = "192.168.1.50:8080".parse().unwrap();
-    let app = build_router(fixture.state(), allowed_host_set(&lan_addr));
+    let app = build_router(fixture.state(), allowed_host_set(&lan_addr), None);
 
     let resp = app
         .oneshot(
@@ -1250,4 +1258,288 @@ async fn host_allowlist_passes_when_header_missing() {
         .expect("oneshot");
 
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ===== #1096 SEC-7: per-launch auth token integration tests =====
+//
+// Pins the auth middleware behavior end-to-end through the same
+// `build_router` path used in production:
+//  - 401 on missing/wrong token (every channel)
+//  - 200 with Authorization: Bearer header
+//  - 200 with cqs_token cookie
+//  - 302/303 + Set-Cookie when ?token=… matches (the redirect handoff)
+//  - cross-instance: token from instance A is rejected by instance B
+//  - 401 body contains no token-length leak
+
+mod auth_tests {
+    use super::*;
+    use axum::http::header;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_required_no_credentials_returns_401() {
+        let fixture = fixture_state();
+        let token = super::super::AuthToken::from_string("test-token-fixed");
+        let app = test_router_with_auth(fixture.state(), token);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert_eq!(&bytes[..], b"Unauthorized");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_required_html_root_returns_401() {
+        // AC: 401 on HTML routes too, not just /api/*.
+        let fixture = fixture_state();
+        let token = super::super::AuthToken::from_string("test-token-fixed");
+        let app = test_router_with_auth(fixture.state(), token);
+
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .expect("oneshot");
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_passes_with_bearer_header() {
+        let fixture = fixture_state();
+        let token_val = "test-token-fixed";
+        let token = super::super::AuthToken::from_string(token_val);
+        let app = test_router_with_auth(fixture.state(), token);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats")
+                    .header(header::AUTHORIZATION, format!("Bearer {token_val}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_rejects_wrong_bearer_token() {
+        let fixture = fixture_state();
+        let token = super::super::AuthToken::from_string("test-token-correct");
+        let app = test_router_with_auth(fixture.state(), token);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats")
+                    .header(header::AUTHORIZATION, "Bearer wrong-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_passes_with_cookie() {
+        let fixture = fixture_state();
+        let token_val = "test-cookie-token";
+        let token = super::super::AuthToken::from_string(token_val);
+        let app = test_router_with_auth(fixture.state(), token);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats")
+                    .header(header::COOKIE, format!("cqs_token={token_val}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_passes_with_cookie_among_other_cookies() {
+        // Real browsers send multiple cookies in one Cookie: header.
+        // The middleware splits on `;` and trims each pair.
+        let fixture = fixture_state();
+        let token_val = "test-cookie-token";
+        let token = super::super::AuthToken::from_string(token_val);
+        let app = test_router_with_auth(fixture.state(), token);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats")
+                    .header(
+                        header::COOKIE,
+                        format!("session=abc; cqs_token={token_val}; pref=dark"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_query_param_redirects_with_set_cookie() {
+        let fixture = fixture_state();
+        let token_val = "test-query-token";
+        let token = super::super::AuthToken::from_string(token_val);
+        let app = test_router_with_auth(fixture.state(), token);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/?token={token_val}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+
+        // axum's `Redirect::to` defaults to 303 See Other; older
+        // versions used 302 Found. Either is acceptable per the
+        // RFC for our purposes (the client will follow either with
+        // a GET).
+        let status = resp.status();
+        assert!(
+            status == StatusCode::SEE_OTHER || status == StatusCode::FOUND,
+            "expected 302/303, got {status}"
+        );
+
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .expect("Location header on redirect")
+            .to_str()
+            .unwrap();
+        assert_eq!(location, "/", "redirect must strip the token from the URI");
+
+        let cookie = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("Set-Cookie header on redirect")
+            .to_str()
+            .unwrap();
+        assert!(
+            cookie.starts_with(&format!("cqs_token={token_val};")),
+            "Set-Cookie must include the token: {cookie}"
+        );
+        assert!(
+            cookie.contains("HttpOnly"),
+            "Set-Cookie missing HttpOnly: {cookie}"
+        );
+        assert!(
+            cookie.contains("SameSite=Strict"),
+            "Set-Cookie missing SameSite=Strict: {cookie}"
+        );
+        assert!(
+            cookie.contains("Path=/"),
+            "Set-Cookie missing Path=/: {cookie}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_query_param_strips_token_preserves_other_params() {
+        let fixture = fixture_state();
+        let token_val = "test-query-token";
+        let token = super::super::AuthToken::from_string(token_val);
+        let app = test_router_with_auth(fixture.state(), token);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/graph?depth=3&token={token_val}&limit=5"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .expect("Location header")
+            .to_str()
+            .unwrap();
+        assert_eq!(location, "/api/graph?depth=3&limit=5");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_token_from_a_is_rejected_by_b() {
+        // Two parallel serve instances — token from A must never
+        // authenticate against B. AC for #1096.
+        let fixture_a = fixture_state();
+        let fixture_b = fixture_state();
+        let token_a = super::super::AuthToken::from_string("token-instance-a");
+        let token_b = super::super::AuthToken::from_string("token-instance-b");
+        let app_a = test_router_with_auth(fixture_a.state(), token_a);
+        let app_b = test_router_with_auth(fixture_b.state(), token_b);
+
+        // A's token authenticates against A.
+        let resp = app_a
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats")
+                    .header(header::AUTHORIZATION, "Bearer token-instance-a")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // A's token is rejected by B.
+        let resp = app_b
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats")
+                    .header(header::AUTHORIZATION, "Bearer token-instance-a")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_disabled_when_token_is_none() {
+        // Back-compat: `--no-auth` builds the router with `None` and
+        // every route works without credentials. The CLI emits a loud
+        // warning banner — here we just verify the wire behavior.
+        let fixture = fixture_state();
+        let app = test_router(fixture.state()); // None auth
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 }

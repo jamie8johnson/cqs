@@ -36,6 +36,7 @@ use tower_http::trace::TraceLayer;
 use crate::store::{ReadOnly, Store};
 
 mod assets;
+mod auth;
 mod data;
 mod error;
 mod handlers;
@@ -43,6 +44,7 @@ mod handlers;
 #[cfg(test)]
 mod tests;
 
+pub use auth::AuthToken;
 pub use error::ServeError;
 
 /// Shared state passed to every axum handler. Wraps a read-only store
@@ -66,14 +68,26 @@ pub(crate) type AllowedHosts = Arc<HashSet<String>>;
 /// Returns when the listener fails or the process is interrupted.
 /// `quiet` suppresses the "listening on" stdout banner so test code
 /// can run the server without polluting test output.
-pub fn run_server(store: Store<ReadOnly>, bind_addr: SocketAddr, quiet: bool) -> Result<()> {
+///
+/// `auth` is the per-launch token (#1096). Pass `Some(token)` to require
+/// authentication on every route via [`auth::enforce_auth`]; pass `None`
+/// for the back-compat unauthenticated mode (the CLI calls this when
+/// `--no-auth` is set, after emitting a loud-warning banner). The
+/// caller is responsible for emitting the token in the "listening on"
+/// banner, since `quiet=true` callers (tests) construct their own URL.
+pub fn run_server(
+    store: Store<ReadOnly>,
+    bind_addr: SocketAddr,
+    quiet: bool,
+    auth: Option<AuthToken>,
+) -> Result<()> {
     let _span = tracing::info_span!("serve", addr = %bind_addr).entered();
 
     let state = AppState {
         store: Arc::new(store),
     };
     let allowed_hosts = allowed_host_set(&bind_addr);
-    let app = build_router(state, allowed_hosts);
+    let app = build_router(state, allowed_hosts, auth.clone());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -89,10 +103,29 @@ pub fn run_server(store: Store<ReadOnly>, bind_addr: SocketAddr, quiet: bool) ->
             .with_context(|| format!("Failed to read local_addr after bind {bind_addr}"))?;
 
         if !quiet {
-            println!("cqs serve listening on http://{actual}");
+            // #1096: when auth is enabled, emit the paste-ready URL
+            // (token + bind addr) so a fresh launch is one click away
+            // from being usable. The token appears here once and is
+            // never logged via tracing — auditors can grep for serve
+            // banners separately from the structured log stream.
+            match auth.as_ref() {
+                Some(token) => {
+                    println!(
+                        "cqs serve listening on http://{actual}/?token={}",
+                        token.as_str()
+                    );
+                }
+                None => {
+                    println!("cqs serve listening on http://{actual}");
+                    eprintln!(
+                        "WARN: --no-auth in use — anyone with network access to {actual} \
+                         can read this index"
+                    );
+                }
+            }
             println!("press Ctrl-C to stop");
         }
-        tracing::info!(addr = %actual, "cqs serve started");
+        tracing::info!(addr = %actual, auth_enabled = auth.is_some(), "cqs serve started");
 
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal())
@@ -112,8 +145,18 @@ pub fn run_server(store: Store<ReadOnly>, bind_addr: SocketAddr, quiet: bool) ->
 ///
 /// The `allowed_hosts` allowlist is wired through a middleware that
 /// rejects DNS-rebinding attacks (see [`enforce_host_allowlist`]).
-pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts) -> Router {
-    Router::new()
+///
+/// `auth` is the per-launch token (#1096). When `Some(_)`, every route
+/// requires the token via header / cookie / query param (see
+/// [`auth::enforce_auth`]). When `None`, the auth layer is omitted —
+/// callers using this mode are responsible for emitting a back-compat
+/// warning to the operator.
+pub(crate) fn build_router(
+    state: AppState,
+    allowed_hosts: AllowedHosts,
+    auth: Option<AuthToken>,
+) -> Router {
+    let mut app = Router::new()
         .route("/health", get(handlers::health))
         .route("/api/stats", get(handlers::stats))
         .route("/api/graph", get(handlers::graph))
@@ -123,7 +166,18 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts) -> Rout
         .route("/api/search", get(handlers::search))
         .route("/", get(assets::index_html))
         .route("/static/{*path}", get(assets::static_asset))
-        .with_state(state)
+        .with_state(state);
+
+    // #1096 SEC-7: per-launch auth. Sits inside the host-header
+    // allowlist (rejected hosts skip auth — saves a constant-time
+    // compare on a request we'd reject anyway) and outside the
+    // compression/trace layers (so 401 responses are still gzipped
+    // and traced).
+    if let Some(token) = auth {
+        app = app.layer(from_fn_with_state(token, auth::enforce_auth));
+    }
+
+    app
         // SEC-1: Host-header allowlist closes the DNS-rebinding class.
         // Must sit inside the compression layer so rejections skip the
         // gzip round-trip.
