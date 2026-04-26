@@ -10,18 +10,16 @@ cqs processes your code locally by default. With `--llm-summaries`, function cod
 
 ## What Gets Stored
 
-When you run `cqs index`, the following is stored in `.cqs/index.db`:
+When you run `cqs index`, the following is stored under `.cqs/`:
 
-- Code chunks (functions, methods, documentation sections)
-- Embedding vectors (dimension depends on configured model; 1024 for BGE-large default, 768 for E5-base/v9-200k presets)
-- File paths and line numbers
-- File modification times
+- `.cqs/slots/<name>/index.db` — code chunks, embedding vectors (dim depends on configured model; 1024 for BGE-large default, 768 for E5-base / nomic-coderank presets), file paths, line numbers, modification times. Per-named-slot, side-by-side (#1105). Pre-migration projects may still see a legacy single-slot path at `.cqs/index.db`.
+- `.cqs/embeddings_cache.db` — per-project embedding cache, keyed by `(content_hash, model_id)` (#1105). Skips re-embedding chunks that haven't changed across reindexes / model swaps.
 
-Additional caches are kept under `~/.cache/cqs/`:
+A legacy global cache may also exist from older versions:
 
-- `embeddings.db` — content-addressed embedding cache, capped at 1 GB by default (configurable via `CQS_CACHE_MAX_SIZE`). Reused across projects to skip re-embedding identical chunks.
-- `query_cache.db` — recent query embeddings with a 7-day TTL. Speeds up repeated searches.
-- `query_log.jsonl` — opt-in query log, written only when `CQS_TELEMETRY=1` or the file already exists. Stays local.
+- `~/.cache/cqs/embeddings.db` — pre-#1105 cross-project embedding cache, capped at 1 GB by default (`CQS_CACHE_MAX_SIZE`). Still consulted when the per-project cache misses.
+- `~/.cache/cqs/query_cache.db` — recent query embeddings with a 7-day TTL. Speeds up repeated searches.
+- `~/.cache/cqs/query_log.jsonl` — opt-in query log, written only when `CQS_TELEMETRY=1` or the file already exists. Stays local.
 
 This data never leaves your machine.
 
@@ -31,7 +29,7 @@ The embedding model is downloaded once from HuggingFace:
 
 - Default: `BAAI/bge-large-en-v1.5` (BGE-large, ~1.2GB, 1024-dim)
 - Preset: `intfloat/e5-base-v2` (E5-base, ~438MB, 768-dim)
-- Preset: `jamie8johnson/e5-base-v2-code-search` (v9-200k LoRA, ~417MB, 768-dim)
+- Preset: `nomic-ai/CodeRankEmbed` (nomic-coderank, ~547MB, 768-dim) — code-specialised, opt-in via `CQS_EMBEDDING_MODEL=nomic-coderank` (#1110)
 - Custom: any HuggingFace repo via `[embedding]` config section, `--model` CLI flag, or `CQS_EMBEDDING_MODEL` env var
 - Size varies by model
 - Cached in: `~/.cache/huggingface/`

@@ -14,6 +14,7 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 | **Project files** | Trusted | Your code, indexed by your choice |
 | **External documents** | Semi-trusted | PDF/HTML/CHM files converted via `cqs convert` — parsed but not executed |
 | **Reference sources** | Semi-trusted | Indexed via `cqs ref add` — search results blended with project code |
+| **`cqs serve` HTTP clients** | Untrusted by default | Per-launch 256-bit auth token gates every request (#1118 / SEC-7); cookie handoff is `HttpOnly; SameSite=Strict`; compare is constant-time. `--no-auth` opts out for scripted automation but is paired with a loud-warn banner on non-loopback binds. |
 
 ### What We Protect Against
 
@@ -39,7 +40,7 @@ The only network activity is:
 - **Model download** (`cqs init`): Downloads embedding model from HuggingFace Hub
   - Default: `huggingface.co/BAAI/bge-large-en-v1.5` (~1.2GB)
   - Preset: `e5-base` (`intfloat/e5-base-v2`, ~438MB)
-  - Preset: `v9-200k` (`jamie8johnson/e5-base-v2-code-search`, ~417MB) — fine-tuned E5-base LoRA
+  - Preset: `nomic-coderank` (`nomic-ai/CodeRankEmbed`, ~547MB) — code-specialised, opt-in via `CQS_EMBEDDING_MODEL=nomic-coderank` (#1110)
   - Custom: any HuggingFace repo via `[embedding]` config or `CQS_EMBEDDING_MODEL` env var. Custom model configs download ONNX files from the specified repo — only configure repos you trust.
   - One-time download per model, cached in `~/.cache/huggingface/`
 

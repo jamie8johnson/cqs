@@ -190,7 +190,7 @@ src/
     queries/    - Tree-sitter queries (.scm files, loaded via include_str!())
       <lang>.chunks.scm, <lang>.calls.scm, <lang>.types.scm
   test_helpers.rs - Shared test fixtures module
-  store/        - SQLite storage layer (Schema v20, WAL mode)
+  store/        - SQLite storage layer (Schema v22, WAL mode)
     mod.rs      - Store struct, open/init, FTS5, split_sql_statements (BEGIN/END-aware)
     metadata.rs - Chunk metadata queries, file-level operations
     search.rs   - RRF fusion, search_filtered, search_unified_with_index
@@ -204,7 +204,7 @@ src/
     types.rs    - Type edge storage and queries
     helpers/    - Types, embedding conversion, scoring, SQL utilities
       mod.rs, embeddings.rs, error.rs, rows.rs, scoring.rs, search_filter.rs, sql.rs, types.rs
-    migrations.rs - Schema migration framework (v10-v20, including v19 FK cascade + v20 trigger)
+    migrations.rs - Schema migration framework (v10-v22, including v19 FK cascade, v20 trigger, v21 splade tokens, v22 chunks.umap_x/y)
   parser/       - Code parsing (tree-sitter + custom parsers, delegates to language/ registry)
     mod.rs      - Parser struct, parse_file(), parse_file_all(), supported_extensions()
     types.rs    - Chunk (incl. parent_type_name), CallSite, FunctionCalls, TypeRef, ParserError
@@ -215,10 +215,10 @@ src/
     l5x.rs      - Rockwell PLC exports (L5X XML + L5K ASCII) → Structured Text extraction
     markdown/   - Heading-based markdown parser
       mod.rs, headings.rs, code_blocks.rs, tables.rs
-  embedder/      - ONNX embedding models (configurable: BGE-large-en-v1.5 default, E5-base preset, custom ONNX)
-    mod.rs      - Embedder struct, embed(), batch embedding, runtime dimension detection
-    models.rs   - ModelConfig struct, built-in presets (e5-base, bge-large), resolution logic, EmbeddingConfig
-    provider.rs - ORT execution provider selection (CUDA/TensorRT/CPU)
+  embedder/      - ONNX embedding models (configurable: BGE-large-en-v1.5 default; E5-base, nomic-coderank-137M, custom ONNX presets)
+    mod.rs      - Embedder struct, embed(), batch embedding, runtime dimension detection, ExecutionProvider enum (CUDA/TensorRT/CPU; CoreML/ROCm cfg-gated per #956 Phase A)
+    models.rs   - ModelConfig struct, built-in presets (e5-base, bge-large, nomic-coderank), resolution logic, EmbeddingConfig
+    provider.rs - ORT execution provider selection — per-backend cfg-blocks; CUDA/TensorRT always-on, CoreML/ROCm scaffolded via `ep-coreml`/`ep-rocm` features (#956 Phase A)
   reranker.rs   - Cross-encoder re-ranking (ms-marco-MiniLM-L-6-v2)
   search/       - Search algorithms, name matching, HNSW-guided search
     mod.rs      - search_filtered(), search_unified_with_index(), hybrid RRF
@@ -247,7 +247,9 @@ src/
     naming.rs   - Title extraction, kebab-case filename generation
     cleaning.rs - Extensible tag-based cleaning rules (7 rules)
     webhelp.rs  - Web help site detection and multi-page merge
-  cache.rs      - Global embedding cache (SQLite, keyed by content_hash + model_fingerprint)
+  cache.rs      - Per-project embedding cache `.cqs/embeddings_cache.db` (SQLite, keyed by content_hash + model_id; #1105)
+  slot/         - Named slots — side-by-side full indexes under `.cqs/slots/<name>/` (#1105)
+    mod.rs      - slot_dir(), resolve_slot_name() (CQS_SLOT > .cqs/active_slot > "default"), one-shot legacy migration
   cagra.rs      - GPU-accelerated CAGRA index (optional), save/load via cuvsCagraSerialize
   nl/           - NL description generation, JSDoc parsing
     mod.rs      - Core NL generation, type-aware embeddings, call context
@@ -269,7 +271,7 @@ src/
     analysis.rs - suggest_tests, find_transitive_callers, extract_call_snippet_from_cache
     diff.rs     - analyze_diff_impact, map_hunks_to_functions
     cross_project.rs - Cross-project impact analysis and trace
-    bfs.rs      - Reverse BFS, reverse_bfs_multi_attributed, test_reachability
+    bfs.rs      - reverse_bfs, reverse_bfs_multi_attributed, test_reachability, forward_bfs_multi (used by suggest_tests, #1115)
     format.rs   - JSON/Mermaid formatting
     hints.rs    - compute_hints, compute_hints_batch, compute_risk_batch, risk scoring
     test_map.rs - Shared test-map algorithm (reverse BFS from function to test chunks)
@@ -299,6 +301,10 @@ src/
     diff.rs     - Git diff parsing for function-level changes
     git.rs      - Git history traversal (log, show, diff-tree)
     query.rs    - Query normalization for training pairs
+  serve/        - `cqs serve` web UI (gated on `serve` feature; axum + tower)
+    mod.rs      - run_server, build_router, route handlers (search, graph, hierarchy, cluster, chunk detail)
+    auth.rs     - Per-launch auth token: 256-bit URL-safe base64, constant-time compare, Bearer/cookie/?token= surfaces (#1118 / SEC-7)
+    tests.rs    - Router + auth integration tests (test_router_with_auth helper, host allowlist, gzip)
   lib.rs        - Public API
 .claude/
   skills/       - Claude Code skills (auto-discovered)
@@ -323,7 +329,7 @@ src/
 ```
 
 **Key design notes:**
-- Configurable embeddings (BGE-large 1024-dim default, E5-base 768-dim preset, custom ONNX)
+- Configurable embeddings (BGE-large 1024-dim default; E5-base 768-dim, nomic-coderank-137M 768-dim, custom ONNX presets)
 - HNSW index is chunk-only; notes use brute-force SQLite search (always fresh)
 - Streaming HNSW build via `build_batched()` for memory efficiency
 - Large chunks split by windowing (480 tokens, 64 overlap); notes capped at 10k entries
