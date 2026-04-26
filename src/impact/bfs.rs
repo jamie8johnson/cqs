@@ -1,6 +1,7 @@
 //! BFS graph traversal for impact analysis
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 use crate::store::CallGraph;
@@ -74,6 +75,66 @@ pub(super) fn reverse_bfs(
     }
 
     ancestors
+}
+
+/// Forward BFS from multiple source nodes, returning the set of every node
+/// reachable through forward call edges. The sources themselves are
+/// **excluded** from the returned set unless one of them is reached as a
+/// callee from another source (test-calls-test).
+///
+/// This is the forward dual of `reverse_bfs` used by `suggest_tests`: instead
+/// of calling `reverse_bfs(graph, caller)` once per caller and asking "is any
+/// test in the ancestor map?", we BFS forward from every test once and ask
+/// "is the caller in the reachable set?". Total work drops from
+/// `O(callers × graph)` to `O(tests + edges)` — single graph traversal
+/// instead of N. (Issue #1115 / audit PF-V1.29-9.)
+///
+/// Depth-bounded by `max_depth` (each source's BFS independently) and
+/// node-count-bounded by `bfs_max_nodes()`.
+pub(super) fn forward_bfs_multi(
+    graph: &CallGraph,
+    sources: &[&str],
+    max_depth: usize,
+) -> HashSet<Arc<str>> {
+    let mut reachable: HashSet<Arc<str>> = HashSet::new();
+    let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();
+
+    // Seed with the source keys (interned) at depth 0. Sources do NOT enter
+    // `reachable` directly — that matches `reverse_bfs(caller, _).get(test)
+    // .is_some_and(|d| d > 0)` semantics in the call site we're replacing.
+    // If one source happens to be a callee of another, it gets added to
+    // `reachable` during expansion, which is correct (test A calls test B
+    // ⇒ B is "covered by A").
+    for src in sources {
+        if let Some((k, _)) = graph.forward.get_key_value(*src) {
+            queue.push_back((Arc::clone(k), 0));
+        }
+    }
+
+    while let Some((current, d)) = queue.pop_front() {
+        if d >= max_depth {
+            continue;
+        }
+        if reachable.len() >= bfs_max_nodes() {
+            tracing::warn!(
+                nodes = reachable.len(),
+                "forward_bfs_multi hit node cap, returning partial results"
+            );
+            break;
+        }
+        if let Some(callees) = graph.forward.get(current.as_ref()) {
+            for callee in callees {
+                if reachable.len() >= bfs_max_nodes() {
+                    break;
+                }
+                if reachable.insert(Arc::clone(callee)) {
+                    queue.push_back((Arc::clone(callee), d + 1));
+                }
+            }
+        }
+    }
+
+    reachable
 }
 
 /// Multi-source reverse BFS from multiple target nodes simultaneously.
@@ -674,5 +735,125 @@ mod tests {
         assert_eq!(result.get("B"), Some(&1), "B at depth 1");
         assert_eq!(result.get("C"), Some(&1), "C at depth 2");
         assert!(!result.contains_key("D"), "D beyond depth limit");
+    }
+
+    // ===== forward_bfs_multi tests (#1115) =====
+
+    /// Helper: build a graph from forward edges; reverse is auto-derived so
+    /// we can compare `reverse_bfs` and `forward_bfs_multi` on the same shape.
+    fn graph_with_forward(forward: HashMap<String, Vec<String>>) -> CallGraph {
+        let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
+        for (caller, callees) in &forward {
+            for callee in callees {
+                reverse
+                    .entry(callee.clone())
+                    .or_default()
+                    .push(caller.clone());
+            }
+        }
+        CallGraph::from_string_maps(forward, reverse)
+    }
+
+    #[test]
+    fn forward_bfs_multi_empty_sources() {
+        let graph = CallGraph::from_string_maps(HashMap::new(), HashMap::new());
+        let result = forward_bfs_multi(&graph, &[], 5);
+        assert!(result.is_empty(), "no sources => no reachable nodes");
+    }
+
+    #[test]
+    fn forward_bfs_multi_excludes_source_itself() {
+        // test_a -> B
+        let mut forward = HashMap::new();
+        forward.insert("test_a".to_string(), vec!["B".to_string()]);
+        let graph = graph_with_forward(forward);
+
+        let result = forward_bfs_multi(&graph, &["test_a"], 5);
+        assert!(
+            !result.contains("test_a"),
+            "source must NOT be in reachable set (no self-coverage)"
+        );
+        assert!(result.contains("B"), "B reachable from test_a");
+    }
+
+    #[test]
+    fn forward_bfs_multi_chain() {
+        // test_a -> B -> C -> D
+        let mut forward = HashMap::new();
+        forward.insert("test_a".to_string(), vec!["B".to_string()]);
+        forward.insert("B".to_string(), vec!["C".to_string()]);
+        forward.insert("C".to_string(), vec!["D".to_string()]);
+        let graph = graph_with_forward(forward);
+
+        let result = forward_bfs_multi(&graph, &["test_a"], 5);
+        assert!(result.contains("B"));
+        assert!(result.contains("C"));
+        assert!(result.contains("D"));
+        assert_eq!(result.len(), 3, "B, C, D reachable; test_a excluded");
+    }
+
+    #[test]
+    fn forward_bfs_multi_respects_depth() {
+        // test_a -> B -> C -> D
+        let mut forward = HashMap::new();
+        forward.insert("test_a".to_string(), vec!["B".to_string()]);
+        forward.insert("B".to_string(), vec!["C".to_string()]);
+        forward.insert("C".to_string(), vec!["D".to_string()]);
+        let graph = graph_with_forward(forward);
+
+        let result = forward_bfs_multi(&graph, &["test_a"], 2);
+        assert!(result.contains("B"), "B at depth 1");
+        assert!(result.contains("C"), "C at depth 2");
+        assert!(!result.contains("D"), "D at depth 3, beyond limit");
+    }
+
+    #[test]
+    fn forward_bfs_multi_test_calls_test_includes_callee() {
+        // test_a -> test_b -> X
+        // Both are sources. test_b is a callee of test_a, so it should appear
+        // in reachable (covered by test_a).
+        let mut forward = HashMap::new();
+        forward.insert("test_a".to_string(), vec!["test_b".to_string()]);
+        forward.insert("test_b".to_string(), vec!["X".to_string()]);
+        let graph = graph_with_forward(forward);
+
+        let result = forward_bfs_multi(&graph, &["test_a", "test_b"], 5);
+        assert!(
+            result.contains("test_b"),
+            "test_b is reached as test_a's callee"
+        );
+        assert!(result.contains("X"));
+        assert!(
+            !result.contains("test_a"),
+            "test_a never appears as anyone's callee in this graph"
+        );
+    }
+
+    /// Parity check: for the suggest_tests use case (one caller, one test),
+    /// forward_bfs_multi must agree with the prior reverse_bfs predicate
+    ///   `reverse_bfs(caller).get(test).is_some_and(|d| d > 0)`.
+    #[test]
+    fn forward_bfs_multi_parity_with_reverse_bfs_predicate() {
+        // Graph: test_a -> mid -> caller_x; test_b -> caller_y; orphan_z
+        let mut forward = HashMap::new();
+        forward.insert("test_a".to_string(), vec!["mid".to_string()]);
+        forward.insert("mid".to_string(), vec!["caller_x".to_string()]);
+        forward.insert("test_b".to_string(), vec!["caller_y".to_string()]);
+        let graph = graph_with_forward(forward);
+
+        let tests = ["test_a", "test_b"];
+        let reachable = forward_bfs_multi(&graph, &tests, 5);
+
+        for caller in ["caller_x", "caller_y", "orphan_z", "mid"] {
+            let ancestors = reverse_bfs(&graph, caller, 5);
+            let prior_is_tested = tests
+                .iter()
+                .any(|t| ancestors.get(*t).is_some_and(|&d| d > 0));
+            let new_is_tested = reachable.contains(caller);
+            assert_eq!(
+                prior_is_tested, new_is_tested,
+                "parity mismatch for caller {caller}: reverse_bfs={prior_is_tested}, forward_bfs={new_is_tested}"
+            );
+        }
     }
 }

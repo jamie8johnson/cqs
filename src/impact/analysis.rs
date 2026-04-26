@@ -6,7 +6,7 @@ use crate::store::{CallerWithContext, SearchResult, StoreError};
 use crate::AnalysisError;
 use crate::Store;
 
-use super::bfs::reverse_bfs;
+use super::bfs::{forward_bfs_multi, reverse_bfs};
 use super::types::{
     CallerDetail, ImpactResult, TestInfo, TestSuggestion, TransitiveCaller, TypeImpacted,
 };
@@ -329,22 +329,22 @@ pub fn suggest_tests<Mode>(
             HashMap::new()
         });
 
+    // PF-V1.29-9 (#1115): one forward BFS from every test, instead of N
+    // independent reverse BFS calls (one per caller). Result is the set of
+    // every name reachable from any test through forward call edges. For
+    // each caller, "is_tested" is now an O(1) HashSet lookup.
+    let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
+    let reachable_from_tests =
+        forward_bfs_multi(&graph, &test_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
+
     let mut suggestions = Vec::new();
 
     for caller in &impact.callers {
-        // Check if this caller is reached by ANY test (not just the target's tests).
-        // Per-caller BFS is correct here because we need per-caller test status.
-        // PF-9 analysis: reverse_bfs_multi_attributed cannot replace this loop because
-        // it attributes each ancestor to only one source (the closest). A test reachable
-        // from callers A and B at different depths would only be attributed to one,
-        // making the other appear untested. Caller count is typically small (direct
-        // callers only), so per-caller BFS is acceptable.
-        let ancestors = reverse_bfs(&graph, &caller.name, DEFAULT_MAX_TEST_SEARCH_DEPTH);
-        let is_tested = test_chunks
-            .iter()
-            .any(|t| ancestors.get(&t.name).is_some_and(|&d| d > 0));
-
-        if is_tested {
+        // Caller is "tested" iff it's reachable from any test. This preserves
+        // the prior semantics of `reverse_bfs(caller).get(test).is_some_and(
+        // |d| d > 0)`: forward BFS excludes the source nodes themselves
+        // (depth 0), so a test isn't its own coverage.
+        if reachable_from_tests.contains(caller.name.as_str()) {
             continue;
         }
 

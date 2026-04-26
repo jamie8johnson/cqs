@@ -15,6 +15,7 @@
 //! For memory-constrained environments, consider running `cqs index` manually instead
 //! of using watch mode.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -187,15 +188,45 @@ fn handle_socket_client(
         );
     }
 
+    // RM-V1.29-10 (#1116): per-thread scratch buffer for the request line.
+    // `handle_socket_client` runs on a Tokio blocking-pool thread that
+    // services many connections in succession. Allocating a fresh `String`
+    // (and its grow-during-`read_line` churn) per accept is ~80% of the
+    // allocator pressure on this path under high-QPS agent workloads. The
+    // 8 KiB initial capacity covers typical JSON requests in one allocation.
+    thread_local! {
+        static REQ_LINE: RefCell<String> = RefCell::new(String::with_capacity(8192));
+    }
+
     // Read request (max 1MB). Wrap reader in .take() so allocation is
     // bounded *before* we accept a giant line — the post-hoc size check
     // below still fires if a client sends exactly the cap worth of data.
     use std::io::Read as _;
     let mut reader = std::io::BufReader::new(&stream).take(1_048_577);
-    let mut line = String::new();
-    match std::io::BufRead::read_line(&mut reader, &mut line) {
-        Ok(0) => return,
-        Ok(n) if n > 1_048_576 => {
+
+    enum ParseOutcome {
+        Ok(serde_json::Value),
+        Empty,
+        TooLarge,
+        IoError(String),
+        JsonError(String),
+    }
+    let parse_outcome = REQ_LINE.with_borrow_mut(|line| {
+        line.clear();
+        match std::io::BufRead::read_line(&mut reader, line) {
+            Ok(0) => ParseOutcome::Empty,
+            Ok(n) if n > 1_048_576 => ParseOutcome::TooLarge,
+            Err(e) => ParseOutcome::IoError(e.to_string()),
+            Ok(_) => match serde_json::from_str(line.trim()) {
+                Ok(v) => ParseOutcome::Ok(v),
+                Err(e) => ParseOutcome::JsonError(e.to_string()),
+            },
+        }
+    });
+    let request: serde_json::Value = match parse_outcome {
+        ParseOutcome::Ok(v) => v,
+        ParseOutcome::Empty => return,
+        ParseOutcome::TooLarge => {
             let delivered = write_daemon_error_tracked(&mut stream, "request too large");
             tracing::info!(
                 status = "client_error",
@@ -205,17 +236,13 @@ fn handle_socket_client(
             );
             return;
         }
-        Err(e) => {
-            tracing::debug!(error = %e, "Socket read failed");
+        ParseOutcome::IoError(msg) => {
+            tracing::debug!(error = %msg, "Socket read failed");
             return;
         }
-        Ok(_) => {}
-    }
-
-    let request: serde_json::Value = match serde_json::from_str(line.trim()) {
-        Ok(v) => v,
-        Err(e) => {
-            let delivered = write_daemon_error_tracked(&mut stream, &format!("invalid JSON: {e}"));
+        ParseOutcome::JsonError(msg) => {
+            let delivered =
+                write_daemon_error_tracked(&mut stream, &format!("invalid JSON: {msg}"));
             tracing::info!(
                 status = "parse_error",
                 delivered,
