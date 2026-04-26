@@ -15,13 +15,13 @@ Thank you for your interest in contributing to cqs!
 2. Build:
    ```bash
    cargo build                        # CPU-only
-   cargo build --features gpu-index   # with GPU acceleration (requires CUDA)
+   cargo build --features cuda-index   # with GPU acceleration (requires CUDA)
    ```
 
 3. Run tests:
    ```bash
    cargo test                         # CPU-only
-   cargo test --features gpu-index    # with GPU acceleration
+   cargo test --features cuda-index    # with GPU acceleration
    ```
 
 4. Initialize and index (for manual testing):
@@ -115,8 +115,8 @@ Rules:
 2. Make your changes
 3. Ensure all checks pass:
    ```bash
-   cargo test --features gpu-index
-   cargo clippy --features gpu-index -- -D warnings
+   cargo test --features cuda-index
+   cargo clippy --features cuda-index -- -D warnings
    cargo fmt --check
    ```
 4. Update documentation if needed (README, CLAUDE.md)
@@ -469,7 +469,7 @@ fn test_newlang_parse_function() {
 **6. Build and test:**
 
 ```bash
-cargo test --features gpu-index -- newlang
+cargo test --features cuda-index -- newlang
 ```
 
 ### Fields Reference

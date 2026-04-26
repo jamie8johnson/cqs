@@ -40,9 +40,9 @@ Skipping scout on a trivial fix is correct; skipping it on a risky change is rec
 ### After implementation (always run these, even for trivial fixes)
 
 9. Run `cargo fmt`
-10. Run `cargo build --features gpu-index` — fix any errors
-11. Run `cargo clippy --features gpu-index -- -D warnings` — fix warnings
-12. Run **targeted** tests only: `cargo test --features gpu-index -- test_name` for functions you changed
+10. Run `cargo build --features cuda-index` — fix any errors
+11. Run `cargo clippy --features cuda-index -- -D warnings` — fix warnings
+12. Run **targeted** tests only: `cargo test --features cuda-index -- test_name` for functions you changed
 13. For Standard or Risky scope: run `cqs review --json` to check the diff for risk
 14. Commit your changes
 
@@ -50,8 +50,8 @@ Skipping scout on a trivial fix is correct; skipping it on a risky change is rec
 
 - If scout reveals the function has >5 callers, be extra careful with signature changes
 - If review shows risk > 0.5, add a test before finishing
-- Use `--features gpu-index` for ALL cargo commands
-- **NEVER run the full test suite** (`cargo test --features gpu-index` with no filter). It takes 14 minutes and blocks other agents via cargo's target-dir lock. Always use `-- test_name` to run only relevant tests. The orchestrator runs the full suite after collecting all changes.
+- Use `--features cuda-index` for ALL cargo commands
+- **NEVER run the full test suite** (`cargo test --features cuda-index` with no filter). It takes 14 minutes and blocks other agents via cargo's target-dir lock. Always use `-- test_name` to run only relevant tests. The orchestrator runs the full suite after collecting all changes.
 - **Path discipline in worktrees**: if cwd contains `.claude/worktrees/`, use paths relative to project root in tool calls — worktree isolation is soft and absolute paths leak into the parent index.
 
 ## Output

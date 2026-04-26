@@ -172,36 +172,87 @@ pub(crate) fn select_provider() -> ExecutionProvider {
     *CACHED_PROVIDER.get_or_init(detect_provider)
 }
 
-/// Detect the best available execution provider
+/// Detect the best available execution provider.
+///
+/// Issue #956 (Phase A): probe order moves into a series of cfg-gated
+/// blocks rather than a single hardcoded CUDA → TensorRT → CPU chain.
+/// Each block is compiled out entirely when its `ep-*` cargo feature
+/// is off, so a build with `ep-coreml` disabled has no CoreML branch
+/// in the binary at all. CUDA + TensorRT are always-on today because
+/// the `ort` dep enables them unconditionally on Linux/Windows.
+///
+/// Probe order: TensorRT → CUDA → CoreML → ROCm → CPU. TensorRT goes
+/// before CUDA so an op-fallback-to-CUDA TensorRT session is preferred
+/// over CUDA-only on hardware that has both. Non-NVIDIA backends are
+/// last because they're only ever the right pick when CUDA is absent.
 fn detect_provider() -> ExecutionProvider {
     let _span = tracing::info_span!("detect_provider").entered();
-    use ort::ep::{TensorRT, CUDA};
 
-    // Ensure provider libs are findable before checking availability
+    // Ensure provider libs are findable before checking availability.
     ensure_ort_provider_libs();
 
-    // Try CUDA first
-    let cuda = CUDA::default();
-    if cuda.is_available().unwrap_or(false) {
-        let provider = ExecutionProvider::CUDA { device_id: 0 };
-        tracing::info!(provider = ?provider, "Execution provider selected");
-        return provider;
+    // ── NVIDIA TensorRT ────────────────────────────────────────────
+    {
+        use ort::ep::TensorRT;
+        let tensorrt = TensorRT::default();
+        if tensorrt.is_available().unwrap_or(false) {
+            let provider = ExecutionProvider::TensorRT { device_id: 0 };
+            tracing::info!(provider = ?provider, "Execution provider selected");
+            return provider;
+        }
     }
 
-    // Try TensorRT
-    let tensorrt = TensorRT::default();
-    if tensorrt.is_available().unwrap_or(false) {
-        let provider = ExecutionProvider::TensorRT { device_id: 0 };
-        tracing::info!(provider = ?provider, "Execution provider selected");
-        return provider;
+    // ── NVIDIA CUDA ────────────────────────────────────────────────
+    {
+        use ort::ep::CUDA;
+        let cuda = CUDA::default();
+        if cuda.is_available().unwrap_or(false) {
+            let provider = ExecutionProvider::CUDA { device_id: 0 };
+            tracing::info!(provider = ?provider, "Execution provider selected");
+            return provider;
+        }
     }
 
+    // ── Apple CoreML ───────────────────────────────────────────────
+    // Phase B will add the actual `ort::ep::CoreML` probe here once
+    // the target-conditional `ort/coreml` feature is wired. For now
+    // the cfg gates exist so adding the probe is a one-block change.
+    #[cfg(feature = "ep-coreml")]
+    {
+        // TODO(#956 Phase B): replace with `ort::ep::CoreML::default()
+        // .is_available()` once the macOS target adds `ort/coreml` to
+        // the dep features. Today the ort crate isn't compiled with
+        // CoreML support so the type doesn't exist.
+        tracing::warn!(
+            "ep-coreml feature is enabled but the CoreML provider isn't wired yet \
+             (Phase B). Falling through to next backend."
+        );
+    }
+
+    // ── AMD ROCm ───────────────────────────────────────────────────
+    #[cfg(feature = "ep-rocm")]
+    {
+        // TODO(#956 Phase C): replace with `ort::ep::ROCm::default()
+        // .is_available()` once the `ort/rocm` feature is wired and
+        // tested on AMD hardware.
+        tracing::warn!(
+            "ep-rocm feature is enabled but the ROCm provider isn't wired yet \
+             (Phase C). Falling through to next backend."
+        );
+    }
+
+    // ── CPU fallback (always available) ────────────────────────────
     let provider = ExecutionProvider::CPU;
     tracing::info!(provider = ?provider, "Execution provider selected");
     provider
 }
 
-/// Create an ort session with the specified provider
+/// Create an ort session with the specified provider.
+///
+/// Issue #956 (Phase A): non-NVIDIA arms are cfg-gated to mirror the
+/// `ExecutionProvider` enum. CUDA and TensorRT are always compiled in;
+/// CoreML and ROCm arms exist only when their `ep-*` features are on,
+/// which is the same condition under which their enum variants exist.
 pub(crate) fn create_session(
     model_path: &Path,
     provider: ExecutionProvider,
@@ -229,6 +280,23 @@ pub(crate) fn create_session(
                 .map_err(ort_err)?
                 .commit_from_file(model_path)
                 .map_err(ort_err)?
+        }
+        // Phase B/C arms: today these are unreachable because
+        // `detect_provider()` never returns the new variants — but the
+        // match must stay exhaustive once the variants exist. When
+        // Phase B wires `ort::ep::CoreML`, replace the `unreachable!()`
+        // with the real builder call.
+        #[cfg(feature = "ep-coreml")]
+        ExecutionProvider::CoreML => {
+            return Err(EmbedderError::InferenceFailed(
+                "CoreML provider not wired yet (#956 Phase B)".to_string(),
+            ));
+        }
+        #[cfg(feature = "ep-rocm")]
+        ExecutionProvider::ROCm { .. } => {
+            return Err(EmbedderError::InferenceFailed(
+                "ROCm provider not wired yet (#956 Phase C)".to_string(),
+            ));
         }
         ExecutionProvider::CPU => builder.commit_from_file(model_path).map_err(ort_err)?,
     };

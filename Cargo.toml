@@ -242,7 +242,24 @@ convert = ["dep:fast_html2md", "dep:walkdir"]
 # encrypt feature removed - sqlx doesn't support SQLCipher directly
 # TODO: Re-evaluate encryption strategy with sqlx
 encrypt = ["keyring"]
-gpu-index = ["cuvs", "ndarray_015"]
+
+# CAGRA (cuVS) ANN backend — CUDA-only. Issue #956 (Phase A): renamed
+# from `gpu-index` to make the CUDA-specificity explicit. The legacy
+# `gpu-index` name is preserved as an alias so existing build scripts
+# and CLAUDE.md instructions keep working; new code should use
+# `cuda-index` directly.
+cuda-index = ["cuvs", "ndarray_015"]
+gpu-index = ["cuda-index"]
+
+# Issue #956 Phase B/C scaffolding: ExecutionProvider variants for
+# Apple CoreML and AMD ROCm. The features only enable the variant in
+# the enum and the matching probe arm in `detect_provider()`; wiring
+# the actual ORT provider features (which require target-conditional
+# `ort` deps) is deferred to Phase B (CoreML, GHA macOS runner) and
+# Phase C (ROCm, AMD hardware).
+ep-coreml = []
+ep-rocm = []
+
 llm-summaries = ["dep:reqwest", "dep:uuid"]
 tree-sitter-elm = ["dep:tree-sitter-elm"]
 

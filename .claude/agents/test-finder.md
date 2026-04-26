@@ -35,7 +35,7 @@ Risk: score (LOW/MEDIUM/HIGH)
 - caller_name (file:line) — N downstream callers
 
 ### Run After Changes
-cargo test --features gpu-index -- test_name_1 test_name_2
+cargo test --features cuda-index -- test_name_1 test_name_2
 ```
 
 ## Rules

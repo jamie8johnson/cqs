@@ -176,13 +176,30 @@ impl Embedding {
     }
 }
 
-/// Hardware execution provider for inference
+/// Hardware execution provider for inference.
+///
+/// Issue #956: variants for non-NVIDIA backends are gated behind the
+/// matching `ep-*` cargo features so a build with no GPU support doesn't
+/// drag in unused enum arms or downstream match-arm scaffolding. CUDA
+/// and TensorRT are unconditional today because the `ort` crate's
+/// `cuda` and `tensorrt` features are always enabled on Linux/Windows
+/// (see `[target.'cfg(not(target_os = "macos"))'.dependencies]` in
+/// `Cargo.toml`); a future scope split could move them behind their
+/// own cargo features too.
 #[derive(Debug, Clone, Copy)]
 pub enum ExecutionProvider {
     /// NVIDIA CUDA (requires CUDA toolkit)
     CUDA { device_id: i32 },
     /// NVIDIA TensorRT (faster than CUDA, requires TensorRT)
     TensorRT { device_id: i32 },
+    /// Apple CoreML (Metal/Neural Engine on M-series). Requires
+    /// `--features ep-coreml` and a macOS target.
+    #[cfg(feature = "ep-coreml")]
+    CoreML,
+    /// AMD ROCm (HIP-based GPU compute). Requires `--features ep-rocm`
+    /// and ROCm-enabled `ort` binaries.
+    #[cfg(feature = "ep-rocm")]
+    ROCm { device_id: i32 },
     /// CPU fallback (always available)
     CPU,
 }
@@ -201,6 +218,10 @@ impl std::fmt::Display for ExecutionProvider {
             ExecutionProvider::TensorRT { device_id } => {
                 write!(f, "TensorRT (device {})", device_id)
             }
+            #[cfg(feature = "ep-coreml")]
+            ExecutionProvider::CoreML => write!(f, "CoreML"),
+            #[cfg(feature = "ep-rocm")]
+            ExecutionProvider::ROCm { device_id } => write!(f, "ROCm (device {})", device_id),
             ExecutionProvider::CPU => write!(f, "CPU"),
         }
     }
