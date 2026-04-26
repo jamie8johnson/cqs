@@ -413,22 +413,16 @@ mod tests {
     /// function can't return without a value, and that the result formats
     /// cleanly with `Debug` (a regression that broke the derive would
     /// surface here before it reached the tracing field).
+    ///
+    /// We deliberately don't assert which variant is chosen — `ort` probes
+    /// TensorRT / CUDA / CoreML / ROCm unconditionally at runtime regardless
+    /// of our cargo features, so the answer is environment-dependent.
     #[test]
     fn detect_provider_returns_valid_variant() {
         // Probe directly — `select_provider` would memoize whatever ran
         // first in the test binary (could be from a different test).
         let p = detect_provider();
         let _ = format!("{p:?}");
-
-        // Specifically when no GPU features are compiled in, the only
-        // reachable arm is CPU. Documents the post-#956 invariant.
-        #[cfg(not(any(feature = "cuda-index", feature = "ep-coreml", feature = "ep-rocm")))]
-        {
-            assert!(
-                matches!(p, ExecutionProvider::CPU),
-                "no-GPU-feature build must select CPU, got {p:?}"
-            );
-        }
     }
 
     /// Issue #956 Phase A enum: the always-on CPU variant must be `Copy`
