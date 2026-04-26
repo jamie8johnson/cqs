@@ -43,11 +43,9 @@ const DEFAULT_RERANKER_BATCH: usize = 32;
 /// Reads `CQS_RERANKER_BATCH`; falls back to [`DEFAULT_RERANKER_BATCH`] when
 /// unset, unparseable, or zero.
 fn reranker_batch_size() -> usize {
-    std::env::var("CQS_RERANKER_BATCH")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|&n: &usize| n > 0)
-        .unwrap_or(DEFAULT_RERANKER_BATCH)
+    // P2.4: route through shared `parse_env_usize` so behavior matches the
+    // 24 other CQS_* knobs (missing/empty/garbage/zero -> default).
+    crate::limits::parse_env_usize("CQS_RERANKER_BATCH", DEFAULT_RERANKER_BATCH)
 }
 
 /// Resolve the reranker model source via the shared auxiliary-model

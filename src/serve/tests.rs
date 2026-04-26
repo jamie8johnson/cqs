@@ -63,6 +63,12 @@ fn fixture_state() -> Fixture {
     Fixture {
         state: Some(AppState {
             store: Arc::new(ro),
+            // P2.76: tests use the same env-overridable cap so a future
+            // CQS_SERVE_BLOCKING_PERMITS regression is exercised by the
+            // existing handler-tree tests.
+            blocking_permits: Arc::new(tokio::sync::Semaphore::new(
+                crate::limits::serve_blocking_permits(),
+            )),
         }),
         _dir: Some(dir),
     }
@@ -192,6 +198,12 @@ fn populated_fixture(n_chunks: usize, with_umap: bool) -> Fixture {
     Fixture {
         state: Some(AppState {
             store: Arc::new(ro),
+            // P2.76: tests use the same env-overridable cap so a future
+            // CQS_SERVE_BLOCKING_PERMITS regression is exercised by the
+            // existing handler-tree tests.
+            blocking_permits: Arc::new(tokio::sync::Semaphore::new(
+                crate::limits::serve_blocking_permits(),
+            )),
         }),
         _dir: Some(dir),
     }
@@ -814,9 +826,10 @@ async fn cluster_accepts_max_nodes_filter() {
 // ===== SEC-3: DoS-cap regression tests =====
 
 /// SEC-3: when `max_nodes` is omitted, `build_graph` must still return at
-/// most `ABS_MAX_GRAPH_NODES` rows. On a populated corpus this is the
-/// behavior that prevents a single unauth GET `/api/graph` from
-/// materialising the full chunks table.
+/// most `serve_graph_max_nodes()` rows (P2.40 made this env-tunable from
+/// the formerly hardcoded `ABS_MAX_GRAPH_NODES`). On a populated corpus
+/// this is the behavior that prevents a single unauth GET `/api/graph`
+/// from materialising the full chunks table.
 ///
 /// Cheap sanity variant: 150 chunks, verify the response matches the
 /// corpus size (150 ≤ 50k cap, so nothing is actually truncated). The
@@ -838,15 +851,15 @@ fn sec3_build_graph_applies_default_cap_when_max_nodes_omitted() {
         "small corpus must pass through the default cap untruncated"
     );
     assert!(
-        graph.nodes.len() <= super::data::ABS_MAX_GRAPH_NODES,
-        "response exceeded ABS_MAX_GRAPH_NODES"
+        graph.nodes.len() <= crate::limits::serve_graph_max_nodes(),
+        "response exceeded serve_graph_max_nodes()"
     );
 }
 
 /// SEC-3: an attacker-chosen `max_nodes` that blows past the hard ceiling
-/// must be clamped to `ABS_MAX_GRAPH_NODES`. `build_graph` translates this
-/// clamp into the SQL `LIMIT` so the over-quota value never reaches the
-/// database as-is.
+/// must be clamped to `serve_graph_max_nodes()`. `build_graph` translates
+/// this clamp into the SQL `LIMIT` so the over-quota value never reaches
+/// the database as-is.
 #[test]
 fn sec3_build_graph_clamps_excessive_max_nodes() {
     let fixture = populated_fixture(150, false);
@@ -867,8 +880,8 @@ fn sec3_build_graph_clamps_excessive_max_nodes() {
         "populated corpus of 150 < ABS_MAX should return all 150"
     );
     assert!(
-        graph.nodes.len() <= super::data::ABS_MAX_GRAPH_NODES,
-        "response exceeded ABS_MAX_GRAPH_NODES"
+        graph.nodes.len() <= crate::limits::serve_graph_max_nodes(),
+        "response exceeded serve_graph_max_nodes()"
     );
 }
 
@@ -913,8 +926,8 @@ fn sec3_build_cluster_applies_default_cap_when_max_nodes_omitted() {
         "small corpus must pass through the default cap untruncated"
     );
     assert!(
-        cluster.nodes.len() <= super::data::ABS_MAX_CLUSTER_NODES,
-        "response exceeded ABS_MAX_CLUSTER_NODES"
+        cluster.nodes.len() <= crate::limits::serve_cluster_max_nodes(),
+        "response exceeded serve_cluster_max_nodes()"
     );
 }
 
@@ -937,8 +950,8 @@ fn sec3_build_cluster_clamps_excessive_max_nodes() {
         "populated corpus of 120 < ABS_MAX should return all 120"
     );
     assert!(
-        cluster.nodes.len() <= super::data::ABS_MAX_CLUSTER_NODES,
-        "response exceeded ABS_MAX_CLUSTER_NODES"
+        cluster.nodes.len() <= crate::limits::serve_cluster_max_nodes(),
+        "response exceeded serve_cluster_max_nodes()"
     );
 }
 

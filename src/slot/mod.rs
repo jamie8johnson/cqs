@@ -43,8 +43,15 @@
 //! `.cqs/active_slot = "default"`. Failures roll back via inventory.
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+
+/// Maximum bytes read from any slot pointer file. Slot config and active-slot
+/// pointer files are tiny (slot.toml is ~50 bytes; active_slot is ~10), so
+/// 4 KiB is two orders of magnitude headroom. Without this cap, an attacker or
+/// FS bug producing a multi-GB pointer would OOM every CLI invocation that
+/// touches slots (every `cqs index`, every `cqs search`, etc.).
+const SLOT_POINTER_MAX_BYTES: u64 = 4096;
 
 use thiserror::Error;
 
@@ -182,6 +189,44 @@ pub fn slot_dir(project_cqs_dir: &Path, slot_name: &str) -> PathBuf {
     project_cqs_dir.join(SLOTS_DIR).join(slot_name)
 }
 
+/// Bare file name of the slot lifecycle lockfile under `.cqs/`.
+pub const SLOTS_LOCK_FILE: &str = "slots.lock";
+
+/// Acquire an exclusive `flock` on `.cqs/slots.lock`. Held for the duration of
+/// any slot lifecycle operation (create / promote / remove) so concurrent
+/// invocations across processes serialize their read-validate-mutate
+/// sequences. The lock file is created if missing.
+///
+/// Defends against P2.61 / P2.28 (TOCTOU on concurrent promote+remove that
+/// would leave `active_slot` pointing at a deleted directory). Callers should
+/// hold the returned `File` for the duration of the slot mutation; dropping
+/// the file releases the OS lock.
+pub fn acquire_slots_lock(project_cqs_dir: &Path) -> Result<fs::File, SlotError> {
+    if !project_cqs_dir.exists() {
+        fs::create_dir_all(project_cqs_dir).map_err(|source| SlotError::Io {
+            slot: SLOTS_LOCK_FILE.to_string(),
+            source,
+        })?;
+    }
+    let path = project_cqs_dir.join(SLOTS_LOCK_FILE);
+    let f = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(&path)
+        .map_err(|source| SlotError::Io {
+            slot: SLOTS_LOCK_FILE.to_string(),
+            source,
+        })?;
+    // std::fs::File::lock (Rust 1.89+) blocks until exclusive ownership is
+    // acquired across processes. MSRV 1.95 covers it.
+    f.lock().map_err(|source| SlotError::Io {
+        slot: SLOTS_LOCK_FILE.to_string(),
+        source,
+    })?;
+    Ok(f)
+}
+
 /// Path of `.cqs/slots/` for the given project `.cqs/` dir.
 pub fn slots_root(project_cqs_dir: &Path) -> PathBuf {
     project_cqs_dir.join(SLOTS_DIR)
@@ -204,16 +249,30 @@ pub fn slot_config_path(project_cqs_dir: &Path, slot_name: &str) -> PathBuf {
 /// Caller falls back to the next priority in `ModelConfig::resolve`.
 pub fn read_slot_model(project_cqs_dir: &Path, slot_name: &str) -> Option<String> {
     let path = slot_config_path(project_cqs_dir, slot_name);
-    let raw = match fs::read_to_string(&path) {
-        Ok(s) => s,
+    // P2.33: bound the read so a pathological slot.toml (multi-GB or
+    // unbounded growth) can't OOM every CLI invocation. 4 KiB is ~80x the
+    // realistic slot.toml size.
+    let raw = match fs::File::open(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
             tracing::warn!(
                 path = %path.display(),
                 error = %e,
-                "Failed to read slot config; falling back to default resolution"
+                "Failed to open slot config; falling back to default resolution"
             );
             return None;
+        }
+        Ok(f) => {
+            let mut buf = String::new();
+            if let Err(e) = f.take(SLOT_POINTER_MAX_BYTES).read_to_string(&mut buf) {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Bounded read of slot config failed; falling back to default resolution"
+                );
+                return None;
+            }
+            buf
         }
     };
     match toml::from_str::<SlotConfigFile>(&raw) {
@@ -320,35 +379,48 @@ pub fn active_slot_path(project_cqs_dir: &Path) -> PathBuf {
 /// as missing so a single mangled write doesn't render the project unusable.
 pub fn read_active_slot(project_cqs_dir: &Path) -> Option<String> {
     let path = active_slot_path(project_cqs_dir);
-    match fs::read_to_string(&path) {
-        Ok(s) => {
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
-                tracing::warn!(
-                    path = %path.display(),
-                    "active_slot file is empty; falling back to default"
-                );
-                return None;
-            }
-            match validate_slot_name(trimmed) {
-                Ok(()) => Some(trimmed.to_string()),
-                Err(e) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        contents = %trimmed,
-                        error = %e,
-                        "active_slot file contains invalid slot name; falling back to default"
-                    );
-                    None
-                }
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+    // P2.33: bound the read of the active-slot pointer so an oversize file
+    // can't OOM every CLI invocation. 4 KiB is two orders of magnitude
+    // headroom on the ~10 byte realistic content (`default\n`, etc.).
+    let raw = match fs::File::open(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
             tracing::warn!(
                 path = %path.display(),
                 error = %e,
-                "Failed to read active_slot file; falling back to default"
+                "Failed to open active_slot pointer; falling back to default"
+            );
+            return None;
+        }
+        Ok(f) => {
+            let mut buf = String::new();
+            if let Err(e) = f.take(SLOT_POINTER_MAX_BYTES).read_to_string(&mut buf) {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Bounded read of active_slot pointer failed; falling back to default"
+                );
+                return None;
+            }
+            buf
+        }
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        tracing::warn!(
+            path = %path.display(),
+            "active_slot file is empty; falling back to default"
+        );
+        return None;
+    }
+    match validate_slot_name(trimmed) {
+        Ok(()) => Some(trimmed.to_string()),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                contents = %trimmed,
+                error = %e,
+                "active_slot file contains invalid slot name; falling back to default"
             );
             None
         }
@@ -496,6 +568,13 @@ pub fn resolve_slot_name(
     })
 }
 
+/// Bare file name of the migration sentinel — present while the legacy →
+/// slots/default migration is in progress, removed only on full success.
+/// Subsequent migration calls refuse to proceed if the sentinel exists, so
+/// half-state from a crashed migration becomes a loud signal instead of an
+/// undetectable split between `.cqs/` and `.cqs/slots/default/`.
+pub const MIGRATION_SENTINEL_FILE: &str = "migration.lock";
+
 /// One-shot filesystem migration: move legacy `.cqs/index.db` (and its HNSW /
 /// SPLADE sidecars) into `.cqs/slots/default/`, then write
 /// `.cqs/active_slot = "default"`.
@@ -504,6 +583,24 @@ pub fn resolve_slot_name(
 /// the source and destination live on the same filesystem (common case);
 /// otherwise falls back to copy + delete with an inventory-based rollback on
 /// partial failure.
+///
+/// # Half-state robustness (P2.34)
+///
+/// A `.cqs/migration.lock` sentinel is written before any file moves and only
+/// removed on full success. If a previous call crashed mid-migration the
+/// sentinel persists; the next call refuses to proceed and surfaces the
+/// previous failure context for manual recovery. This converts an undetectable
+/// split (`.cqs/index.db` AND `.cqs/slots/default/index.db` both present, or
+/// neither) into a loud, recoverable signal.
+///
+/// # WAL drain (P2.62)
+///
+/// Before any file moves, we open the legacy DB and run
+/// `PRAGMA wal_checkpoint(TRUNCATE)` so uncommitted WAL pages are flushed into
+/// the main DB. Without this, a non-atomic cross-device move (the EXDEV
+/// fallback in `move_file`) could land `index.db` and `index.db-wal` on the
+/// destination at different times; a crash between the two leaves the new
+/// slot's DB without its WAL and SQLite silently truncates uncommitted pages.
 ///
 /// Returns:
 /// - `Ok(true)` if migration ran (legacy → slots/default/)
@@ -530,6 +627,48 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
         // project as slot-aware. Without this a fresh project never enters
         // slot-aware mode until first index.
         return Ok(false);
+    }
+
+    // P2.34: refuse to proceed if a previous migration crashed mid-flight.
+    // Sentinel content tells the operator exactly what went wrong and which
+    // files (if any) had already moved — see the failure-arm `fs::write` below.
+    let sentinel = project_cqs_dir.join(MIGRATION_SENTINEL_FILE);
+    if sentinel.exists() {
+        let detail = fs::read_to_string(&sentinel).unwrap_or_default();
+        return Err(SlotError::Migration(format!(
+            "previous migration failed (see {}). Manually recover then `rm {}`. \
+             Sentinel contents:\n{}",
+            sentinel.display(),
+            sentinel.display(),
+            detail
+        )));
+    }
+
+    // P2.62: drain WAL before moving files. Failure is non-fatal — same-fs
+    // renames are atomic per file so the WAL/SHM either move with index.db or
+    // not at all. Cross-device moves (EXDEV fallback) accept the residual risk
+    // and we log loudly so operators can correlate any post-migration loss.
+    if let Err(e) = checkpoint_legacy_index(&legacy_index) {
+        tracing::warn!(
+            error = %e,
+            db = %legacy_index.display(),
+            "Failed to checkpoint legacy index.db before migration; cross-device \
+             move may lose uncommitted WAL pages"
+        );
+    }
+
+    // P2.34: write the sentinel before we touch the FS so a crash between
+    // here and full success leaves a recovery breadcrumb.
+    let started_at = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = fs::write(
+        &sentinel,
+        format!("started_at={}\nstate=in_progress\n", started_at),
+    ) {
+        tracing::warn!(
+            error = %e,
+            path = %sentinel.display(),
+            "Failed to write migration sentinel; migration will proceed without crash protection"
+        );
     }
 
     let dest = slot_dir(project_cqs_dir, DEFAULT_SLOT);
@@ -559,6 +698,7 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
                 error = %e,
                 "migration step failed; rolling back"
             );
+            let mut rollback_failures: Vec<String> = Vec::new();
             for (already_dst, already_src) in moved.iter().rev() {
                 if let Err(rollback_err) = move_file(already_dst, already_src) {
                     tracing::error!(
@@ -567,11 +707,34 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
                         error = %rollback_err,
                         "rollback failed (manual recovery may be needed)"
                     );
+                    rollback_failures.push(format!(
+                        "{} -> {}: {}",
+                        already_dst.display(),
+                        already_src.display(),
+                        rollback_err
+                    ));
                 }
             }
             // Best-effort: clean up the empty slots/default/ + slots/ if rollback was clean.
             let _ = fs::remove_dir(&dest);
             let _ = fs::remove_dir(&slots_dir);
+
+            // P2.34: persist failure context so the next migration call (which
+            // will refuse to proceed) tells the operator exactly what happened.
+            // Sentinel stays in place — operator must `rm` it after manual
+            // recovery, which doubles as the "I have looked at this" gate.
+            let _ = fs::write(
+                &sentinel,
+                format!(
+                    "started_at={}\nfailed_at={}\nstate=failed\nfailed_step={} -> {}\nreason={}\nrollback_failures={:?}\n",
+                    started_at,
+                    chrono::Utc::now().to_rfc3339(),
+                    src.display(),
+                    dst.display(),
+                    e,
+                    rollback_failures
+                ),
+            );
             return Err(SlotError::Migration(format!(
                 "failed to move {}: {}",
                 src.display(),
@@ -583,6 +746,22 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
 
     // Finalize by writing the active_slot pointer.
     write_active_slot(project_cqs_dir, DEFAULT_SLOT)?;
+
+    // P2.34: success — remove the sentinel as the last step. If the process
+    // dies after the moves but before this remove, the next call will refuse
+    // to migrate but the slot is already in place; operator can simply
+    // delete the sentinel.
+    if let Err(e) = fs::remove_file(&sentinel) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                error = %e,
+                path = %sentinel.display(),
+                "Failed to remove migration sentinel after successful migration; \
+                 next call will refuse to migrate until removed manually"
+            );
+        }
+    }
+
     tracing::info!(
         files_moved = moved.len(),
         from = %project_cqs_dir.display(),
@@ -590,6 +769,44 @@ pub fn migrate_legacy_index_to_default_slot(project_cqs_dir: &Path) -> Result<bo
         "legacy index.db migrated to slots/default/"
     );
     Ok(true)
+}
+
+/// Open the legacy DB and run `PRAGMA wal_checkpoint(TRUNCATE)` so the WAL
+/// sidecar is empty before the migration moves files. Closes the connection
+/// before returning so file handles don't leak into the move loop.
+///
+/// Used by [`migrate_legacy_index_to_default_slot`] to defend against
+/// non-atomic cross-device moves losing uncommitted WAL pages (P2.62).
+fn checkpoint_legacy_index(legacy_index: &Path) -> Result<(), SlotError> {
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+    use sqlx::{ConnectOptions, Connection};
+    use std::str::FromStr;
+
+    // Build a single-thread runtime for the pragma — slot migration is the
+    // only caller and runs at most once per project lifetime.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| SlotError::Migration(format!("checkpoint runtime: {e}")))?;
+
+    rt.block_on(async {
+        let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", legacy_index.display()))
+            .map_err(|e| SlotError::Migration(format!("checkpoint open: {e}")))?
+            .journal_mode(SqliteJournalMode::Wal)
+            .create_if_missing(false);
+        let mut conn = opts
+            .connect()
+            .await
+            .map_err(|e| SlotError::Migration(format!("checkpoint connect: {e}")))?;
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&mut conn)
+            .await
+            .map_err(|e| SlotError::Migration(format!("checkpoint pragma: {e}")))?;
+        // Drop the connection explicitly so file handles are released before
+        // the caller's move loop starts.
+        let _ = conn.close().await;
+        Ok::<(), SlotError>(())
+    })
 }
 
 /// Collect every file we want to migrate from `.cqs/` → `.cqs/slots/default/`.
@@ -910,6 +1127,63 @@ mod tests {
         fs::write(cqs.join("index.db"), b"db-data").unwrap();
         assert!(!migrate_legacy_index_to_default_slot(&cqs).unwrap());
         assert!(cqs.join("index.db").exists());
+    }
+
+    /// P2.31 / P2.34: a migration that crashed mid-flight leaves the
+    /// `migration.lock` sentinel behind. The next call must refuse to
+    /// proceed and surface the failure context for manual recovery —
+    /// rather than silently re-running the migration over a partially
+    /// migrated tree.
+    #[test]
+    fn migrate_refuses_to_proceed_when_sentinel_exists() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs).unwrap();
+        fs::write(cqs.join("index.db"), b"db-data").unwrap();
+
+        // Plant the sentinel as if a previous call crashed mid-flight.
+        let sentinel = cqs.join(MIGRATION_SENTINEL_FILE);
+        fs::write(
+            &sentinel,
+            "started_at=2026-04-26T00:00:00Z\nstate=in_progress\n",
+        )
+        .unwrap();
+
+        let err = migrate_legacy_index_to_default_slot(&cqs).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("previous migration failed") || msg.contains(MIGRATION_SENTINEL_FILE),
+            "error must surface sentinel-aware recovery context, got: {msg}",
+        );
+
+        // Sentinel must persist — only manual recovery removes it.
+        assert!(
+            sentinel.exists(),
+            "sentinel must remain in place until operator removes it"
+        );
+        // Legacy file must be untouched.
+        assert!(cqs.join("index.db").exists());
+        // No partial migration: slots/ must not have appeared.
+        assert!(!slots_root(&cqs).exists());
+    }
+
+    /// P2.31: a successful migration removes the sentinel as the last
+    /// step, so subsequent calls can proceed (idempotent no-op via the
+    /// `slots/` check).
+    #[test]
+    fn migrate_clears_sentinel_on_full_success() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        fs::create_dir_all(&cqs).unwrap();
+        fs::write(cqs.join("index.db"), b"db-data").unwrap();
+
+        assert!(migrate_legacy_index_to_default_slot(&cqs).unwrap());
+        // Sentinel must NOT linger after success — the next call would
+        // refuse to proceed if it did.
+        assert!(
+            !cqs.join(MIGRATION_SENTINEL_FILE).exists(),
+            "sentinel must be removed on full success"
+        );
     }
 
     // ── slot.toml read / write (#1107) ───────────────────────────────────

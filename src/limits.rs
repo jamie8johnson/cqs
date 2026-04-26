@@ -222,12 +222,23 @@ pub fn blast_high_min() -> usize {
 }
 
 // ============ shared parsing helpers ============
+//
+// P2.4: these helpers were previously module-private. The same
+// `env::var(...).parse().ok().filter(...).unwrap_or(default)` pattern was
+// duplicated across 25+ sites (`watch.rs`, `llm/mod.rs`, `pipeline/types.rs`,
+// `hnsw/persist.rs`, `embedder/`, `cache.rs`, `gather.rs`,
+// `commands/graph/trace.rs`, `impact/bfs.rs`, `reranker.rs`) with subtle
+// drift in zero-handling. They are now `pub` so any module can route through
+// a single contract: missing/empty/garbage/zero -> default, otherwise the
+// parsed value. Behavioral note: zero is treated as invalid by all three
+// helpers — call sites that *want* zero to mean "disabled" need to spell it
+// (`if value == 0 { return default; }` after a custom parse).
 
 /// Parse a finite positive `f32`-shaped env var, falling back to
 /// `default` on missing/empty/garbage/non-finite/non-positive values.
 /// Mirrors `parse_env_usize`'s "reject zero" stance so env-driven risk
 /// thresholds can't silently collapse the classification by pinning 0.
-fn parse_env_f32(key: &str, default: f32) -> f32 {
+pub fn parse_env_f32(key: &str, default: f32) -> f32 {
     match std::env::var(key) {
         Ok(v) => v
             .parse::<f32>()
@@ -240,7 +251,7 @@ fn parse_env_f32(key: &str, default: f32) -> f32 {
 
 /// Parse a `usize`-shaped env var, falling back to `default` on
 /// missing/empty/garbage/zero values.
-fn parse_env_usize(key: &str, default: usize) -> usize {
+pub fn parse_env_usize(key: &str, default: usize) -> usize {
     match std::env::var(key) {
         Ok(v) => v
             .parse::<usize>()
@@ -251,12 +262,97 @@ fn parse_env_usize(key: &str, default: usize) -> usize {
     }
 }
 
+/// Parse a `usize`-shaped env var clamped to `[min, max]`. Out-of-range
+/// values are clamped (not rejected) so a misconfigured env var still
+/// yields a usable value rather than the unclamped default. Missing/zero/
+/// garbage falls back to `default` (also clamped to the range).
+pub fn parse_env_usize_clamped(key: &str, default: usize, min: usize, max: usize) -> usize {
+    let clamp = |n: usize| n.clamp(min, max);
+    match std::env::var(key) {
+        Ok(v) => match v.parse::<usize>() {
+            Ok(n) if n > 0 => clamp(n),
+            _ => clamp(default),
+        },
+        Err(_) => clamp(default),
+    }
+}
+
+/// P2.39 — Resolve the LLM batch-submit cap (Anthropic Batches API tops out
+/// at 100,000 items per submission; default 10,000 is a safety margin). Env
+/// override `CQS_LLM_MAX_BATCH_SIZE` clamped to `[1, 100_000]`.
+pub fn llm_max_batch_size() -> usize {
+    parse_env_usize_clamped("CQS_LLM_MAX_BATCH_SIZE", 10_000, 1, 100_000)
+}
+
+// ============ P2.40 — serve graph/chunk-detail caps ============
+//
+// `cqs serve` previously hardcoded its DoS-prevention caps in `serve/data.rs`
+// (`ABS_MAX_GRAPH_NODES=50_000`, `ABS_MAX_GRAPH_EDGES=500_000`,
+// `ABS_MAX_CLUSTER_NODES=50_000`, plus per-list `LIMIT 50/50/20` inside
+// `build_chunk_detail`). Cytoscape stalls past ~5-10k nodes so the
+// default is too high for the UI; power-user queries on a monorepo
+// occasionally need more than 50k. Each is now env-overridable with a
+// hard ceiling so a misconfiguration can't unbound the response.
+
+/// SEC-3 cap on `/api/graph` nodes. Default 50k. Env: `CQS_SERVE_GRAPH_MAX_NODES`.
+pub fn serve_graph_max_nodes() -> usize {
+    parse_env_usize_clamped("CQS_SERVE_GRAPH_MAX_NODES", 50_000, 1, 1_000_000)
+}
+
+/// SEC-3 cap on `/api/graph` edges. Default 500k. Env: `CQS_SERVE_GRAPH_MAX_EDGES`.
+pub fn serve_graph_max_edges() -> usize {
+    parse_env_usize_clamped("CQS_SERVE_GRAPH_MAX_EDGES", 500_000, 1, 10_000_000)
+}
+
+/// SEC-3 cap on `/api/embed/2d` nodes. Default 50k. Env: `CQS_SERVE_CLUSTER_MAX_NODES`.
+pub fn serve_cluster_max_nodes() -> usize {
+    parse_env_usize_clamped("CQS_SERVE_CLUSTER_MAX_NODES", 50_000, 1, 1_000_000)
+}
+
+/// `build_chunk_detail` per-list LIMIT for callers. Default 50.
+/// Env: `CQS_SERVE_CHUNK_DETAIL_CALLERS`.
+pub fn serve_chunk_detail_callers_limit() -> usize {
+    parse_env_usize_clamped("CQS_SERVE_CHUNK_DETAIL_CALLERS", 50, 1, 1_000)
+}
+
+/// `build_chunk_detail` per-list LIMIT for callees. Default 50.
+/// Env: `CQS_SERVE_CHUNK_DETAIL_CALLEES`.
+pub fn serve_chunk_detail_callees_limit() -> usize {
+    parse_env_usize_clamped("CQS_SERVE_CHUNK_DETAIL_CALLEES", 50, 1, 1_000)
+}
+
+/// `build_chunk_detail` per-list LIMIT for tests-that-cover. Default 20.
+/// Env: `CQS_SERVE_CHUNK_DETAIL_TESTS`.
+pub fn serve_chunk_detail_tests_limit() -> usize {
+    parse_env_usize_clamped("CQS_SERVE_CHUNK_DETAIL_TESTS", 20, 1, 1_000)
+}
+
+/// P2.76 — cap on concurrent `spawn_blocking` jobs in `cqs serve`. Default 32.
+/// Env: `CQS_SERVE_BLOCKING_PERMITS`. Bounded to `[1, 1024]`.
+pub fn serve_blocking_permits() -> usize {
+    parse_env_usize_clamped("CQS_SERVE_BLOCKING_PERMITS", 32, 1, 1024)
+}
+
 /// Same as [`parse_env_usize`] but for `u64`-shaped byte limits.
-fn parse_env_u64(key: &str, default: u64) -> u64 {
+pub fn parse_env_u64(key: &str, default: u64) -> u64 {
     match std::env::var(key) {
         Ok(v) => v.parse::<u64>().ok().filter(|n| *n > 0).unwrap_or(default),
         Err(_) => default,
     }
+}
+
+/// Parse a duration-in-seconds env var into a `std::time::Duration`,
+/// falling back to `default_secs` on missing/empty/garbage/zero values.
+/// P2.4: convenience wrapper for the common `parse_env_u64(...) -> from_secs`
+/// pattern used by serve/watch timeouts.
+///
+/// Marked `#[allow(dead_code)]` because the call sites that will consume it
+/// (`serve` shutdown grace, `watch` debounce ceiling) live in agent-D-owned
+/// modules and will land in a follow-up. The helper is parked here to keep
+/// the env-var contract centralized.
+#[allow(dead_code)]
+pub fn parse_env_duration_secs(key: &str, default_secs: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(parse_env_u64(key, default_secs))
 }
 
 #[cfg(test)]

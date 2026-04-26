@@ -652,15 +652,17 @@ impl<Mode> Store<Mode> {
                 let d = dense_scores.get(id).copied().unwrap_or(0.0);
                 let s = sparse_scores.get(id).copied().unwrap_or(0.0);
                 let score = if alpha <= 0.0 {
-                    // Pure re-rank mode: SPLADE score for chunks it found,
-                    // cosine score (demoted) for chunks it didn't.
-                    // This preserves cosine ordering for SPLADE-unknown chunks
-                    // while letting SPLADE override when it has signal.
-                    if s > 0.0 {
-                        1.0 + s
-                    } else {
-                        d
-                    }
+                    // P2.53: pure re-rank mode used to emit `1.0 + s` for any
+                    // SPLADE-found chunk, putting its score in `[1.0, 2.0]`
+                    // while dense-only chunks stayed in cosine `[-1, 1]`.
+                    // Any positive sparse signal beat every dense match — a
+                    // strong cosine match (0.95) was outranked by a token
+                    // overlap whose normalized SPLADE score was 0.001
+                    // (yielding 1.001). The new formulation keeps the dense
+                    // cosine as the dominant signal and lets SPLADE nudge
+                    // it within the same band.
+                    let boost = s * 0.1;
+                    d + boost
                 } else {
                     alpha * d + (1.0 - alpha) * s
                 };

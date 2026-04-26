@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn test_cmd_init() {
         let cli = Cli::try_parse_from(["cqs", "init"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Init)));
+        assert!(matches!(cli.command, Some(Commands::Init { json: _ })));
     }
 
     #[test]

@@ -285,6 +285,14 @@ pub(crate) fn apply_scoring_pipeline(
     // uses clamp_config_f32, but a future programmatic / deserialised path
     // could bypass both, in which case `(1.0 - 5.0) * embedding` would
     // sign-flip search results silently. Cheap insurance.
+    //
+    // P2.54: also clamp `embedding_score` into `[0.0, 1.0]` before the
+    // linear interpolation. Raw cosine can be negative for orthogonal-or-
+    // worse pairs, and a negative embedding contaminating the blend then
+    // hits the downstream `.max(0.0)` and silently deletes a good
+    // name-only match. Clamping inputs makes the blend always interpolate
+    // between two same-range numbers and never sign-flip.
+    let embedding_score = embedding_score.clamp(0.0, 1.0);
     let name_boost = ctx.filter.name_boost.clamp(0.0, 1.0);
     let base_score = if let Some(matcher) = ctx.name_matcher {
         let n = name.unwrap_or("");

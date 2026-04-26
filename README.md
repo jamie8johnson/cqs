@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **42.2% R@1 / 67.0% R@5 / 83.5% R@20 on a 544-query dual-judge eval against the cqs codebase itself** (BGE-large dense + SPLADE sparse with per-category fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **42.2% R@1 / 67.0% R@5 / 83.5% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** (BGE-large dense + SPLADE sparse with per-category fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -518,8 +518,13 @@ Key commands (`--json` works on all commands; `--format mermaid` also accepted o
 - `cqs ref add/remove/list` - manage reference indexes for multi-index search
 - `cqs project register/remove/list/search` - cross-project search registry
 - `cqs export-model --repo <org/model>` - export a HuggingFace model to ONNX format for use with cqs
-- `cqs cache stats/prune/compact` - manage the project-scoped embeddings cache at `<project>/.cqs/embeddings_cache.db`. `--per-model` on stats; `prune <DAYS>` or `prune --model <id>`; `compact` runs VACUUM
+- `cqs cache stats/clear/prune/compact` - manage the project-scoped embeddings cache at `<project>/.cqs/embeddings_cache.db`. `--per-model` on stats; `clear --model <fp>` deletes all cached embeddings for one fingerprint; `prune <DAYS>` or `prune --model <id>`; `compact` runs VACUUM
 - `cqs slot list/create/promote/remove/active` - named slots — side-by-side full indexes under `.cqs/slots/<name>/`. Promote is atomic; daemon restart picks up the new slot
+- `cqs ping` - daemon healthcheck; reports daemon socket path and uptime if running
+- `cqs eval <fixture>` - run a query fixture against the current index and emit R@K metrics. `--baseline <path>` to compare two reports
+- `cqs model show/list/swap` - inspect the embedding model recorded in the index, list presets, or swap with restore-on-failure semantics
+- `cqs serve [--bind ADDR]` - launch the read-only web UI (graph, hierarchy, cluster, chunk-detail). Per-launch auth token; banner prints the URL
+- `cqs refresh` - invalidate daemon caches and re-open the Store. Alias `cqs invalidate`. No-op when no daemon is running
 - `cqs doctor` - check model, index, hardware (execution provider, CAGRA availability)
 - `cqs completions <shell>` - generate shell completions (bash, zsh, fish, powershell, elvish)
 
@@ -538,6 +543,7 @@ Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after
 - CUDA (reuses C++ grammar — kernels, classes, structs, device/host functions)
 - Dart (functions, classes, enums, mixins, extensions, methods, getters/setters)
 - Elixir (functions, modules, protocols, implementations, macros, pipe calls)
+- Elm (functions, type definitions, type aliases, ports, modules)
 - Erlang (functions, modules, records, type aliases, behaviours, callbacks)
 - F# (functions, records, discriminated unions, classes, interfaces, modules, members)
 - Gleam (functions, type definitions, type aliases, constants)

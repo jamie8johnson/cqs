@@ -1,7 +1,7 @@
 //! HyDE (Hypothetical Document Embeddings) query prediction pass.
 
 use super::batch::BatchPhase2;
-use super::{collect_eligible_chunks, max_content_chars, LlmConfig, LlmError, MAX_BATCH_SIZE};
+use super::{collect_eligible_chunks, max_content_chars, LlmConfig, LlmError};
 use crate::Store;
 
 /// Run the HyDE query prediction pass using the Batches API.
@@ -35,10 +35,11 @@ pub fn hyde_query_pass(
     // lose completed work. The Anthropic path's default no-op ignores this.
     client.set_on_item_complete(store.stream_summary_writer(model_name, "hyde".to_string()));
 
+    let max_batch_size = crate::limits::llm_max_batch_size();
     let effective_batch_size = if max_hyde > 0 {
-        max_hyde.min(MAX_BATCH_SIZE)
+        max_hyde.min(max_batch_size)
     } else {
-        MAX_BATCH_SIZE
+        max_batch_size
     };
 
     // Phase 1: Collect callable chunks needing HyDE predictions via shared filter
@@ -95,4 +96,86 @@ pub fn hyde_query_pass(
     tracing::info!(api_generated, cached, skipped, "HyDE query pass complete");
 
     Ok(api_generated)
+}
+
+// P2.87: TC-HAP — empty-store happy-path pin for `hyde_query_pass`.
+//
+// `hyde_query_pass` shipped with zero tests. The full happy path needs a
+// running LLM endpoint (Anthropic Batches or local provider) with an
+// httpmock-backed fixture, which the existing `local_provider_integration`
+// suite exercises for `llm_summary_pass`. The minimal pin we add here is
+// the "no eligible chunks" path: with an empty store, `collect_eligible_chunks`
+// returns no items, `submit_or_resume` short-circuits before any HTTP, and
+// the function returns `Ok(0)`. A regression that, e.g., started making
+// an API call before checking the eligibility list would surface here as
+// a connection-refused error.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::store::{ModelInfo, Store};
+    use std::sync::Mutex;
+
+    /// Env-touching tests must serialize: `std::env::set_var` is process-global.
+    static HYDE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Build an empty store with the canonical `ModelInfo::default()` so
+    /// `init` succeeds and the dim/model metadata is in place. Returns
+    /// `(tempdir, Store)` — the tempdir must outlive the store.
+    fn empty_store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("index.db");
+        let store = Store::open(&path).expect("open store");
+        store.init(&ModelInfo::default()).expect("init store");
+        (dir, store)
+    }
+
+    /// P2.87: empty store → zero candidates → `submit_or_resume` short-
+    /// circuits to `Ok(HashMap::new())` → caller returns `Ok(0)`.
+    /// Local-provider config so no real API key / network is touched.
+    #[test]
+    fn hyde_query_pass_returns_zero_for_empty_store() {
+        let _g = HYDE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Save / restore env so we don't poison sibling tests.
+        let prev_provider = std::env::var("CQS_LLM_PROVIDER").ok();
+        let prev_api_base = std::env::var("CQS_LLM_API_BASE").ok();
+        let prev_model = std::env::var("CQS_LLM_MODEL").ok();
+        let prev_allow = std::env::var("CQS_LLM_ALLOW_INSECURE").ok();
+
+        std::env::set_var("CQS_LLM_PROVIDER", "local");
+        // Plausible URL — never contacted because batch_items is empty
+        // and there's no pending batch in the store.
+        std::env::set_var("CQS_LLM_API_BASE", "http://127.0.0.1:1/v1");
+        std::env::set_var("CQS_LLM_MODEL", "test-model");
+        std::env::set_var("CQS_LLM_ALLOW_INSECURE", "1");
+
+        let (_tmp, store) = empty_store();
+        let config = Config::default();
+        let result = hyde_query_pass(&store, true, &config, 0, None);
+
+        // Restore env.
+        match prev_provider {
+            Some(v) => std::env::set_var("CQS_LLM_PROVIDER", v),
+            None => std::env::remove_var("CQS_LLM_PROVIDER"),
+        }
+        match prev_api_base {
+            Some(v) => std::env::set_var("CQS_LLM_API_BASE", v),
+            None => std::env::remove_var("CQS_LLM_API_BASE"),
+        }
+        match prev_model {
+            Some(v) => std::env::set_var("CQS_LLM_MODEL", v),
+            None => std::env::remove_var("CQS_LLM_MODEL"),
+        }
+        match prev_allow {
+            Some(v) => std::env::set_var("CQS_LLM_ALLOW_INSECURE", v),
+            None => std::env::remove_var("CQS_LLM_ALLOW_INSECURE"),
+        }
+
+        let n = result.expect("hyde_query_pass on empty store must not error");
+        assert_eq!(
+            n, 0,
+            "empty store must yield zero new HyDE predictions (no API call made)"
+        );
+    }
 }

@@ -168,6 +168,26 @@ pub(crate) async fn backup_before_migrate(
 /// failure to leave the DB in its pre-migrate state. Uses `atomic_replace` so
 /// the restore itself is crash-safe — the caller sees pre-migrate or
 /// post-migrate state, never a partially-restored file.
+///
+/// # P2.59 — caller contract (must close pool first)
+///
+/// **Caller MUST close every SQLite pool open against `db_path` BEFORE
+/// calling.** SQLite's in-process pool holds file descriptors against the
+/// old inode that the atomic replace unlinks; queries through those
+/// descriptors after restore see the unlinked-old inode while new processes
+/// (and any pool reopened after this returns) see the restored backup.
+/// Two-state divergence is silent — the WAL/SHM sidecars copied alongside
+/// the main DB land on the new inode while the live pool's mmap'd sidecars
+/// belong to the old.
+///
+/// In-process callers that need to keep working after restore must drop the
+/// returning `Store` and reopen a fresh handle.
+///
+/// scope=structural — full enforcement requires the migration caller in
+/// `src/store/migrations.rs:106-128` to drop the pool and run a
+/// `PRAGMA wal_checkpoint(TRUNCATE)` before invoking this. That sweep is
+/// out of scope for this batch (touches the migration runtime contract);
+/// documenting the contract here so the caller-side fix has a clear target.
 pub(crate) fn restore_from_backup(db_path: &Path, backup_db: &Path) -> Result<(), StoreError> {
     let _span = tracing::info_span!("restore_from_backup").entered();
     copy_triplet(backup_db, db_path)?;

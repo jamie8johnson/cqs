@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use super::batch::BatchPhase2;
-use super::{max_content_chars, LlmConfig, LlmError, MAX_BATCH_SIZE};
+use super::{max_content_chars, LlmConfig, LlmError};
 use crate::store::ChunkSummary;
 use crate::Store;
 
@@ -252,6 +252,7 @@ pub fn doc_comment_pass(
     uncached.truncate(uncached_cap);
 
     // Phase 2: Submit batch for uncached candidates (or resume pending)
+    let max_batch_size = crate::limits::llm_max_batch_size();
     let batch_items: Vec<super::provider::BatchSubmitItem> = {
         let mut items = Vec::new();
         let mut queued_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -268,7 +269,11 @@ pub fn doc_comment_pass(
                     context: cs.chunk_type.to_string(),
                     language: cs.language.to_string(),
                 });
-                if items.len() >= MAX_BATCH_SIZE {
+                if items.len() >= max_batch_size {
+                    // P2.39: surface the truncation hint on stderr so agents can re-run.
+                    eprintln!(
+                        "note: doc-comment batch reached cap CQS_LLM_MAX_BATCH_SIZE={max_batch_size}; remaining chunks will be picked up on next run."
+                    );
                     break;
                 }
             }
@@ -586,6 +591,71 @@ mod tests {
         assert!(
             !needs_doc_comment(&chunk),
             "Non-callable chunk type should not need doc comment"
+        );
+    }
+
+    // P2.87: TC-HAP — empty-store happy-path pin for `doc_comment_pass`.
+    //
+    // The doc_comment pass is the heavyweight cousin of llm_summary_pass —
+    // it scans every callable chunk, filters via `needs_doc_comment`, and
+    // submits via the same Batches API client. The full happy path needs an
+    // httpmock fixture (covered in `tests/local_provider_integration.rs`
+    // for summaries; the doc_comment cousin is missing). The minimal pin
+    // we add here is the "no candidates" path: with an empty store,
+    // `chunks_paged` returns no rows, `candidates` stays empty, and the
+    // function returns `Ok(Vec::new())` *before* any HTTP traffic. A
+    // regression that, e.g., started making an API call before the empty-
+    // candidates check would surface here as a connect error.
+    use std::sync::Mutex;
+    static DOC_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn doc_comment_pass_returns_empty_for_empty_store() {
+        let _g = DOC_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let prev_provider = std::env::var("CQS_LLM_PROVIDER").ok();
+        let prev_api_base = std::env::var("CQS_LLM_API_BASE").ok();
+        let prev_model = std::env::var("CQS_LLM_MODEL").ok();
+        let prev_allow = std::env::var("CQS_LLM_ALLOW_INSECURE").ok();
+
+        std::env::set_var("CQS_LLM_PROVIDER", "local");
+        // Plausible URL — never contacted because candidates is empty
+        // and the function returns before submit_or_resume.
+        std::env::set_var("CQS_LLM_API_BASE", "http://127.0.0.1:1/v1");
+        std::env::set_var("CQS_LLM_MODEL", "test-model");
+        std::env::set_var("CQS_LLM_ALLOW_INSECURE", "1");
+
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("index.db");
+        let store = crate::store::Store::open(&path).expect("open store");
+        store
+            .init(&crate::store::ModelInfo::default())
+            .expect("init store");
+
+        let config = crate::config::Config::default();
+        let result = doc_comment_pass(&store, &config, 0, false, None);
+
+        match prev_provider {
+            Some(v) => std::env::set_var("CQS_LLM_PROVIDER", v),
+            None => std::env::remove_var("CQS_LLM_PROVIDER"),
+        }
+        match prev_api_base {
+            Some(v) => std::env::set_var("CQS_LLM_API_BASE", v),
+            None => std::env::remove_var("CQS_LLM_API_BASE"),
+        }
+        match prev_model {
+            Some(v) => std::env::set_var("CQS_LLM_MODEL", v),
+            None => std::env::remove_var("CQS_LLM_MODEL"),
+        }
+        match prev_allow {
+            Some(v) => std::env::set_var("CQS_LLM_ALLOW_INSECURE", v),
+            None => std::env::remove_var("CQS_LLM_ALLOW_INSECURE"),
+        }
+
+        let docs = result.expect("doc_comment_pass on empty store must not error");
+        assert!(
+            docs.is_empty(),
+            "empty store must yield zero doc-comment results (no API call made)"
         );
     }
 }

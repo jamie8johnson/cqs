@@ -15,9 +15,9 @@ Priority bias: lean higher for items in the new `cqs serve` surface (first exter
 
 | ID | Title | Difficulty | Location | Status |
 |---|---|---|---|---|
-| SEC-1 | `cqs serve` accepts any `Host` header — DNS-rebinding exfiltration of entire corpus | easy | `src/serve/mod.rs:97-114` | pending |
-| SEC-2 | XSS via unescaped error body in hierarchy-3d / cluster-3d views (`body.slice()` → `innerHTML`) | easy | `src/serve/assets/views/hierarchy-3d.js:107`, `cluster-3d.js:114` | pending |
-| SEC-3 | `build_graph` (uncapped) + `build_cluster` fetch entire chunks+function_calls tables — DoS | easy | `src/serve/data.rs:232-234,344-350,833-861` | pending |
+| SEC-1 | `cqs serve` accepts any `Host` header — DNS-rebinding exfiltration of entire corpus | easy | `src/serve/mod.rs:97-114` | ✅ fixed |
+| SEC-2 | XSS via unescaped error body in hierarchy-3d / cluster-3d views (`body.slice()` → `innerHTML`) | easy | `src/serve/assets/views/hierarchy-3d.js:107`, `cluster-3d.js:114` | ✅ fixed |
+| SEC-3 | `build_graph` (uncapped) + `build_cluster` fetch entire chunks+function_calls tables — DoS | easy | `src/serve/data.rs:232-234,344-350,833-861` | ✅ fixed |
 | PB-V1.29-2 | Watch SPLADE encoder passes Windows `file.display()` to `get_chunks_by_origin` — silent no-op, SPLADE never updates on Windows | easy | `src/cli/watch.rs:1083-1085` | pending |
 | DS2-1 | `prune_missing` reads origin list OUTSIDE write tx — TOCTOU against concurrent upsert, wipes just-added chunks | easy | `src/store/chunks/staleness.rs:76-90` | pending |
 | DS2-2 | `prune_gitignored` reads origin list OUTSIDE write tx — same TOCTOU class | easy | `src/store/chunks/staleness.rs:333-337` | pending |
@@ -27,7 +27,7 @@ Priority bias: lean higher for items in the new `cqs serve` surface (first exter
 ### Security
 | ID | Title | Difficulty | Location | Status |
 |---|---|---|---|---|
-| SEC-4 | `build_graph` / `build_hierarchy` IN-list can exceed SQLite 32k bind limit → 500 | easy | `src/serve/data.rs:326-341, 670-754` | pending |
+| SEC-4 | `build_graph` / `build_hierarchy` IN-list can exceed SQLite 32k bind limit → 500 | easy | `src/serve/data.rs:326-341, 670-754` | ✅ fixed |
 
 ### Platform / Correctness
 | ID | Title | Difficulty | Location | Status |
@@ -50,13 +50,13 @@ Priority bias: lean higher for items in the new `cqs serve` surface (first exter
 | AC-V1.29-2 | `is_structural_query` misses keywords at end-of-query — `"find all trait"` misroutes to Conceptual (α=0.70 instead of 0.90) | easy | `src/search/router.rs:787-789` | pending |
 | AC-V1.29-3 | `bfs_expand` seeds in HashMap order — non-deterministic `name_scores` when cap hits mid-expansion | easy | `src/gather.rs:317-320` | pending |
 | AC-V1.29-5 | `--name-boost` accepts values outside [0,1] — negative embedding weight silently breaks search | easy | `src/cli/args.rs:57-58` | pending |
-| AC-V1.29-6 | `reranker::compute_scores_opt` unchecked `batch_size * stride` mul; negative dim wraps to `usize::MAX` | easy | `src/reranker.rs:368-387` | pending |
+| AC-V1.29-6 | `reranker::compute_scores_opt` unchecked `batch_size * stride` mul; negative dim wraps to `usize::MAX` | easy | `src/reranker.rs:368-387` | ✅ fixed |
 
 ### API Design
 | ID | Title | Difficulty | Location | Status |
 |---|---|---|---|---|
-| API-V1.29-1 | `cqs --json project list/remove` silently emit text | easy | `src/cli/commands/infra/project.rs:90-108, 110-118` | pending |
-| API-V1.29-2 | `cqs --json ref add/remove/update` silently emit text | easy | `src/cli/commands/infra/reference.rs:42-69` | pending |
+| API-V1.29-1 | `cqs --json project list/remove` silently emit text | easy | `src/cli/commands/infra/project.rs:90-108, 110-118` | ✅ fixed |
+| API-V1.29-2 | `cqs --json ref add/remove/update` silently emit text | easy | `src/cli/commands/infra/reference.rs:42-69` | ✅ fixed |
 | API-V1.29-4 | `cqs notes list --check` dropped by daemon batch dispatch (NotesListArgs missing field) | easy | `src/cli/args.rs:527-540`, `batch/handlers/misc.rs:85-118` | pending |
 
 ### Error Handling
@@ -104,9 +104,9 @@ Priority bias: lean higher for items in the new `cqs serve` surface (first exter
 ### Test Coverage
 | ID | Title | Difficulty | Location | Status |
 |---|---|---|---|---|
-| TC-HAP-1.29-1 | `cqs serve` endpoints (`build_graph` / `build_chunk_detail` / `build_hierarchy` / `build_cluster`) never tested with data | medium | `src/serve/data.rs:192, 452, 586, 825` | pending |
-| TC-HAP-1.29-2 | 16 batch dispatch handlers (gather/scout/task/where/onboard/callers/…) have zero tests | medium | `src/cli/batch/handlers/*.rs` | pending |
-| TC-ADV-1.29-3 | Daemon socket `handle_socket_client` — zero adversarial tests (1 MiB boundary, malformed JSON, NUL-in-args, oversized args) | medium | `src/cli/watch.rs:160-406` | pending |
+| TC-HAP-1.29-1 | `cqs serve` endpoints (`build_graph` / `build_chunk_detail` / `build_hierarchy` / `build_cluster`) never tested with data | medium | `src/serve/data.rs:192, 452, 586, 825` | ✅ fixed |
+| TC-HAP-1.29-2 | 16 batch dispatch handlers (gather/scout/task/where/onboard/callers/…) have zero tests | medium | `src/cli/batch/handlers/*.rs` | ✅ fixed |
+| TC-ADV-1.29-3 | Daemon socket `handle_socket_client` — zero adversarial tests (1 MiB boundary, malformed JSON, NUL-in-args, oversized args) | medium | `src/cli/watch.rs:160-406` | ✅ fixed |
 
 ## P3 — Easy + Low Impact (fix if time)
 

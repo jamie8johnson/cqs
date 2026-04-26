@@ -87,18 +87,36 @@ pub(crate) fn cmd_serve(port: u16, bind: String, open: bool, no_auth: bool) -> R
 /// Best-effort browser launch. Falls through cleanly on failure —
 /// the server still starts and the user can open the URL manually.
 fn open_browser(url: &str) -> Result<()> {
+    // P2.55: on Windows, `explorer.exe <url>` doesn't reliably navigate and
+    // can strip query strings (the `?token=…` we depend on for auth, since
+    // the serve banner mints a per-launch token). `cmd /C start "" "<url>"`
+    // hands the URL to the user's default browser through the documented
+    // Win32 protocol-handler path. The empty `""` is required because
+    // `start`'s first quoted arg is interpreted as the window title.
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .with_context(|| format!("Failed to spawn cmd /C start \"\" {url}"))?;
+        return Ok(());
+    }
+
     #[cfg(target_os = "linux")]
     let cmd = "xdg-open";
     #[cfg(target_os = "macos")]
     let cmd = "open";
-    #[cfg(target_os = "windows")]
-    let cmd = "explorer.exe";
 
-    std::process::Command::new(cmd)
-        .arg(url)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .with_context(|| format!("Failed to spawn {cmd} {url}"))?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        std::process::Command::new(cmd)
+            .arg(url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .with_context(|| format!("Failed to spawn {cmd} {url}"))?;
+    }
     Ok(())
 }

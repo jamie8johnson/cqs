@@ -1,6 +1,6 @@
 //! Diff-aware impact analysis
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use crate::store::CallerWithContext;
@@ -43,8 +43,12 @@ pub fn map_hunks_to_functions<Mode>(
     let mut seen = HashSet::new();
     let mut functions = Vec::new();
 
-    // Group hunks by file
-    let mut by_file: HashMap<&Path, Vec<&crate::diff_parse::DiffHunk>> = HashMap::new();
+    // Group hunks by file. P2.49: BTreeMap so iteration order is by path,
+    // not HashMap-randomized. The downstream `seen.insert()` dedup is
+    // first-wins, so the order this loop visits files determines which
+    // ChangedFunction representative survives a duplicate name across
+    // files. With HashMap the answer flipped per process invocation.
+    let mut by_file: BTreeMap<&Path, Vec<&crate::diff_parse::DiffHunk>> = BTreeMap::new();
     for hunk in hunks {
         by_file.entry(&hunk.file).or_default().push(hunk);
     }
@@ -102,6 +106,17 @@ pub fn map_hunks_to_functions<Mode>(
         }
     }
 
+    // P2.49: post-loop sort for full determinism. Even with the BTreeMap
+    // file iteration above, the inner `for chunk in chunks` order depends
+    // on `Vec<ChunkSummary>` from the batch fetch — sort the final
+    // returned `Vec<ChangedFunction>` so JSON consumers see stable output
+    // and `.take(cap)` truncation drops the same tail every run.
+    functions.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.line_start.cmp(&b.line_start))
+            .then(a.name.cmp(&b.name))
+    });
     functions
 }
 

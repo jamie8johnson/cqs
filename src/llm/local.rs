@@ -88,15 +88,35 @@ impl LocalProvider {
     pub fn new(llm_config: LlmConfig) -> Result<Self, LlmError> {
         let _span = tracing::info_span!("local_provider_new").entered();
 
+        // P2.32: bail if `api_base` isn't HTTP/HTTPS. `reqwest` will fail
+        // *every* request individually, burning the full retry budget per
+        // item before surfacing the error — a 7.5s stall per call instead
+        // of a fail-fast at construction. Lightweight scheme check avoids
+        // pulling `url` as a direct dep just for this guard.
+        let api_base_lc = llm_config.api_base.to_ascii_lowercase();
+        if !api_base_lc.starts_with("http://") && !api_base_lc.starts_with("https://") {
+            return Err(LlmError::Api {
+                status: 0,
+                message: format!(
+                    "CQS_LLM_API_BASE must use http:// or https://; got: {}",
+                    llm_config.api_base
+                ),
+            });
+        }
+
         let concurrency = local_concurrency();
         let timeout = local_timeout();
         let api_key = std::env::var("CQS_LLM_API_KEY")
             .ok()
             .filter(|s| !s.is_empty());
 
+        // P2.36: align production redirect policy with the doctor probe
+        // (`Policy::limited(2)`). Same-origin HTTP→HTTPS redirects on
+        // bind-localhost are benign; a strict `none()` here disagreed
+        // with what doctor reported reachable, surprising operators.
         let http = Client::builder()
             .timeout(timeout)
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(reqwest::redirect::Policy::limited(2))
             .build()?;
 
         tracing::info!(
@@ -138,19 +158,25 @@ impl LocalProvider {
 
         let batch_id = uuid::Uuid::new_v4().to_string();
 
+        // P2.32: clamp worker count to item count. Submitting 1 item to 64
+        // workers spawned 63 idle threads that immediately exited via channel
+        // disconnect, but each one still tripped the OS thread create/destroy
+        // path. Cap at items.len() with a floor of 1.
+        let workers = self.concurrency.min(items.len()).max(1);
+
         let _span = tracing::info_span!(
             "local_batch_submit",
             provider = "local",
             model = %self.model,
             n = items.len(),
-            concurrency = self.concurrency,
+            concurrency = workers,
             batch_id = %batch_id,
             purpose,
         )
         .entered();
 
         let start = Instant::now();
-        let (tx, rx) = bounded::<&BatchSubmitItem>(self.concurrency.max(8) * 2);
+        let (tx, rx) = bounded::<&BatchSubmitItem>(workers.max(8) * 2);
 
         let results: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
         // Track auth failures across workers — if *every* item that attempted
@@ -163,7 +189,7 @@ impl LocalProvider {
         std::thread::scope(|s| {
             // Spawn workers first so the channel has consumers by the time the
             // feeder starts sending.
-            for worker_id in 0..self.concurrency {
+            for worker_id in 0..workers {
                 let rx_worker = rx.clone();
                 let url = format!("{}/chat/completions", self.api_base);
                 let results_ref = &results;
@@ -331,10 +357,30 @@ impl LocalProvider {
             )));
         }
 
-        self.stash
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(batch_id.clone(), results_map);
+        // P2.73: cap the stash so a long-running daemon submitting batches
+        // without ever calling `fetch_batch_results` doesn't grow memory
+        // unbounded. 128 batches is plenty — production callers drain in
+        // submit order, so when this cap fires it's a leak signal.
+        const MAX_STASH_BATCHES: usize = 128;
+        let mut stash = self.stash.lock().unwrap_or_else(|p| p.into_inner());
+        while stash.len() >= MAX_STASH_BATCHES {
+            // Pick the lexicographically smallest UUID as a stable evictee —
+            // HashMap insertion order isn't preserved, and the alternative
+            // (rebuild as IndexMap) is more invasive than this finding warrants.
+            let stale_key = match stash.keys().min() {
+                Some(k) => k.clone(),
+                None => break,
+            };
+            stash.remove(&stale_key);
+            tracing::warn!(
+                batch_id = %stale_key,
+                cap = MAX_STASH_BATCHES,
+                "LocalProvider stash exceeded cap; evicting unfetched entry — \
+                 callers should drain via fetch_batch_results"
+            );
+        }
+        stash.insert(batch_id.clone(), results_map);
+        drop(stash);
 
         Ok(batch_id)
     }
@@ -415,13 +461,16 @@ impl LocalProvider {
 
                     // Track auth-failure statistics on the FIRST request only
                     // so we can abort the batch if every worker hit 401/403.
+                    // P2.35: recover poisoned mutexes via `into_inner` so an
+                    // earlier worker panic doesn't cascade into the rest of
+                    // the pool. Counters are advisory.
                     if is_first_attempt
                         && (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN)
                     {
-                        *auth_attempts.lock().unwrap() += 1;
-                        *auth_failures.lock().unwrap() += 1;
+                        *auth_attempts.lock().unwrap_or_else(|p| p.into_inner()) += 1;
+                        *auth_failures.lock().unwrap_or_else(|p| p.into_inner()) += 1;
                     } else if is_first_attempt {
-                        *auth_attempts.lock().unwrap() += 1;
+                        *auth_attempts.lock().unwrap_or_else(|p| p.into_inner()) += 1;
                     }
 
                     // Retriable: 429 (rate limit), 5xx. Skip: 4xx ≠ 429.
@@ -617,10 +666,18 @@ impl BatchProvider for LocalProvider {
     }
 
     fn fetch_batch_results(&self, batch_id: &str) -> Result<HashMap<String, String>, LlmError> {
-        // Drain the stash entry — returning empty if the id was already
-        // fetched or never existed.
-        let mut stash = self.stash.lock().unwrap();
-        Ok(stash.remove(batch_id).unwrap_or_default())
+        // P2.18: distinguish "already fetched / never submitted / silently
+        // evicted" from "no completed items in this batch" — the former is
+        // a hard error callers must surface; collapsing to an empty map hid
+        // data drift behind a successful return. P1.9: recover poisoned
+        // mutex via `into_inner` instead of cascading the panic.
+        let mut stash = self.stash.lock().unwrap_or_else(|p| p.into_inner());
+        match stash.remove(batch_id) {
+            Some(m) => Ok(m),
+            None => Err(LlmError::BatchNotFound(format!(
+                "local batch_id {batch_id} not found in stash — already fetched, evicted by stash cap, or submission silently lost results"
+            ))),
+        }
     }
 
     fn is_valid_batch_id(&self, id: &str) -> bool {
@@ -945,9 +1002,11 @@ mod tests {
         let first = provider.fetch_batch_results(&batch_id).unwrap();
         assert_eq!(first.len(), 1);
 
-        // Second fetch returns empty — stash was drained.
-        let second = provider.fetch_batch_results(&batch_id).unwrap();
-        assert!(second.is_empty());
+        // P2.18: second fetch returns BatchNotFound — distinguishes
+        // "already fetched" from "no items completed". Callers can no
+        // longer mistake a drained id for an empty batch.
+        let second = provider.fetch_batch_results(&batch_id);
+        assert!(matches!(second, Err(LlmError::BatchNotFound(_))));
 
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
     }

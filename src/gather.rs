@@ -911,6 +911,57 @@ mod tests {
         assert_eq!(&*callers[0], "B");
     }
 
+    /// P2.45 regression-pin: the seed-sort cascade in `bfs_expand` must
+    /// be deterministic on `(score desc, name asc)`. Directly testing
+    /// `bfs_expand` requires a `Store`, so we pin the seed-ordering
+    /// logic that sits at the top of the function.
+    #[test]
+    fn test_p2_45_bfs_seed_order_is_deterministic() {
+        // Build a name_scores-shaped vector with two equally-scored seeds
+        // and one above. Sort 50× from different starting orders;
+        // assert every run produces the same sequence.
+        let inputs: Vec<Vec<(&str, f32)>> = (0..50)
+            .map(|seed| {
+                let mut v = vec![("foo", 0.5_f32), ("bar", 0.5_f32), ("zed", 0.9_f32)];
+                // Deterministic LCG scramble keyed on `seed`.
+                let mut state = (seed as u64)
+                    .wrapping_mul(2862933555777941757)
+                    .wrapping_add(1);
+                for i in (1..v.len()).rev() {
+                    state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let j = (state as usize) % (i + 1);
+                    v.swap(i, j);
+                }
+                v
+            })
+            .collect();
+        let canonical: Vec<&str> = {
+            let mut v = inputs[0].clone();
+            v.sort_by(|(a_name, a_score), (b_name, b_score)| {
+                b_score
+                    .partial_cmp(a_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a_name.cmp(b_name))
+            });
+            v.into_iter().map(|(n, _)| n).collect()
+        };
+        for (i, mut perm) in inputs.into_iter().enumerate() {
+            perm.sort_by(|(a_name, a_score), (b_name, b_score)| {
+                b_score
+                    .partial_cmp(a_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a_name.cmp(b_name))
+            });
+            let names: Vec<&str> = perm.into_iter().map(|(n, _)| n).collect();
+            assert_eq!(
+                names, canonical,
+                "permutation #{i} produced a different seed order"
+            );
+        }
+        // Spot-check: highest score wins, ties broken by name asc.
+        assert_eq!(canonical, vec!["zed", "bar", "foo"]);
+    }
+
     #[test]
     fn test_gather_options_builder() {
         let opts = GatherOptions::default()

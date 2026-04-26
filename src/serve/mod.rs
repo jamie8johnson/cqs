@@ -49,14 +49,31 @@ pub use error::ServeError;
 
 /// Shared state passed to every axum handler. Wraps a read-only store
 /// behind an `Arc` so the handler tree can read concurrently.
+///
+/// P2.76: the `blocking_permits` semaphore caps how many handlers may
+/// hold a `spawn_blocking` slot at once. Without it, axum's default
+/// runtime allows up to 512 blocking threads — a single hostile (or
+/// pathological) client can fan out 512 graph queries and pin ~5 GB
+/// of working set across SQLite per-connection scratch buffers.
+/// Default 32 permits is plenty for an interactive single-user UI;
+/// `CQS_SERVE_BLOCKING_PERMITS` overrides per-launch (clamped 1..1024).
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) store: Arc<Store<ReadOnly>>,
+    pub(crate) blocking_permits: Arc<tokio::sync::Semaphore>,
 }
 
 /// Allowed `Host` header values, built at router-build time from the
 /// bind address. Shared via `Arc` so the middleware closure is cheap to
 /// clone per-request.
+///
+/// P2.58: an empty set means "wildcard bind — accept any Host". This
+/// short-circuits the DNS-rebinding allowlist when `--bind 0.0.0.0`,
+/// because the listening socket has no idea which interface IP a
+/// legitimate LAN browser will dial. Without this carve-out, every
+/// LAN client gets `400 disallowed Host header` and operators are
+/// pushed to `--no-auth`. The per-launch token (#1096) remains the
+/// primary defence in this mode.
 pub(crate) type AllowedHosts = Arc<HashSet<String>>;
 
 /// Run the `cqs serve` HTTP server.
@@ -83,8 +100,13 @@ pub fn run_server(
 ) -> Result<()> {
     let _span = tracing::info_span!("serve", addr = %bind_addr).entered();
 
+    // P2.76: bound concurrent `spawn_blocking` jobs across all
+    // handlers. See `AppState` doc comment.
+    let permits = crate::limits::serve_blocking_permits();
+    tracing::info!(permits, "serve: spawn_blocking semaphore initialised");
     let state = AppState {
         store: Arc::new(store),
+        blocking_permits: Arc::new(tokio::sync::Semaphore::new(permits)),
     };
     let allowed_hosts = allowed_host_set(&bind_addr);
     let app = build_router(state, allowed_hosts, auth.clone());
@@ -241,7 +263,26 @@ pub(crate) fn build_router(
 ///   the client sends the naked IP as `Host:`
 ///
 /// Any other `Host` value is refused by [`enforce_host_allowlist`].
+///
+/// P2.58: when `bind_addr.ip().is_unspecified()` (i.e. `0.0.0.0` or
+/// `[::]`), return an *empty* set. The listening socket can't enumerate
+/// which interface IP a legitimate LAN client will use, so any concrete
+/// allowlist is wrong. `enforce_host_allowlist` interprets the empty
+/// set as "allow any Host" and emits a one-shot startup warning (the
+/// per-launch token still gates access). Operators who want the
+/// allowlist back can bind to a specific IP.
 pub(crate) fn allowed_host_set(bind_addr: &SocketAddr) -> AllowedHosts {
+    if bind_addr.ip().is_unspecified() {
+        // Empty allowlist = "Host: anything goes". Auth token still
+        // checked downstream. See module-level note above.
+        tracing::warn!(
+            bind = %bind_addr,
+            "wildcard bind: DNS-rebinding Host-header allowlist disabled because we can't \
+             enumerate LAN interface IPs without an extra dep. Per-launch auth token remains \
+             the primary defence — bind to an explicit IP if you need the allowlist back."
+        );
+        return Arc::new(HashSet::new());
+    }
     let port = bind_addr.port();
     let mut set = HashSet::new();
     for host in ["localhost", "127.0.0.1", "[::1]"] {
@@ -274,6 +315,12 @@ async fn enforce_host_allowlist(
     req: Request,
     next: Next,
 ) -> Result<Response, (StatusCode, &'static str)> {
+    // P2.58: empty allowlist = wildcard bind, accept any Host.
+    // `allowed_host_set` emits the startup warning; per-launch auth
+    // token remains the primary defence in this mode.
+    if allowed.is_empty() {
+        return Ok(next.run(req).await);
+    }
     match req.headers().get(header::HOST) {
         None => {
             tracing::warn!("serve: rejected request with missing Host header");

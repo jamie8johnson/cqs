@@ -51,6 +51,48 @@ pub struct PerModelStats {
 /// previously been seen for that model_id.
 pub const PROJECT_EMBEDDINGS_CACHE_FILENAME: &str = "embeddings_cache.db";
 
+/// P2.3 (scope=structural): both [`EmbeddingCache::open_with_runtime`] and
+/// [`QueryCache::open_with_runtime`] share ~90 lines of parent-dir prep,
+/// runtime fallback, pool open, schema create, and 0o600 chmod loop with
+/// only `busy_timeout` (5000 vs 2000 ms) and the schema SQL differing.
+///
+/// A full extraction would yield three private helpers (`prepare_cache_dir_perms`,
+/// `apply_db_file_perms`, `connect_cache_pool(path, busy_ms, runtime, schema_sql)`)
+/// collapsing each `open_with_runtime` to ~30 lines. Out of scope for this
+/// batch (touches both opens + their tests + WAL/SHM filename quirk handling
+/// in `apply_db_file_perms`); filed as follow-on issue. This module-level
+/// note is the breadcrumb so the next sweep doesn't re-discover the
+/// duplication from scratch.
+///
+/// Two of the duplications were just unified in spirit by the v1.30.0 audit
+/// fixes — P2.5 (zero-handling on `CQS_CACHE_MAX_SIZE`) and P2.27 (NaN/Inf
+/// rejection) both apply identically to both caches. When the helpers land,
+/// those will fold into a single shared function.
+#[cfg(unix)]
+fn apply_db_file_perms(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(0o600);
+    for suffix in &["", "-wal", "-shm"] {
+        let db_file = path.with_extension(
+            path.extension()
+                .map(|e| format!("{}{}", e.to_string_lossy(), suffix))
+                .unwrap_or_else(|| suffix.trim_start_matches('-').to_string()),
+        );
+        if db_file.exists() {
+            if let Err(e) = std::fs::set_permissions(&db_file, perms.clone()) {
+                tracing::warn!(
+                    path = %db_file.display(),
+                    error = %e,
+                    "Failed to set cache permissions to 0o600"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn apply_db_file_perms(_path: &Path) {}
+
 /// Global embedding cache backed by SQLite.
 ///
 /// Best-effort: all operations that fail are logged and skipped.
@@ -156,7 +198,23 @@ impl EmbeddingCache {
                 .connect_with(connect_opts)
                 .await?;
 
-            // Create table if not exists
+            // Create table if not exists.
+            //
+            // P2.65 (scope=structural): the PRIMARY KEY is (content_hash,
+            // model_fingerprint) with no `purpose` discriminator. Today the
+            // only producer is `embed_documents` (purpose = "embedding"), but
+            // #1040 enrichment will eventually add a parallel `embedding_base`
+            // shape — same hash, same model, different vector. Without a
+            // `purpose` column the second writer overwrites the first and
+            // lookups silently return the wrong vector.
+            //
+            // The fix requires (1) adding `purpose TEXT NOT NULL DEFAULT
+            // 'embedding'` to the PK, (2) idempotent `ALTER TABLE ADD COLUMN`
+            // for existing caches, (3) updating `read_batch`, `write_batch`,
+            // `evict()` and every embed-cache caller (`prepare_for_embedding`)
+            // to bind `purpose`. Out of scope for this batch — filed as
+            // follow-on. Until then, the audit confirms only one purpose is
+            // ever written, so existing caches are correct by accident.
             sqlx::query(
                 "CREATE TABLE IF NOT EXISTS embedding_cache (
                     content_hash TEXT NOT NULL,
@@ -179,33 +237,18 @@ impl EmbeddingCache {
             Ok::<_, sqlx::Error>(pool)
         })?;
 
-        // Restrict DB file permissions (cache contains embedding data, not secrets,
-        // but no reason for world-readable)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            for suffix in &["", "-wal", "-shm"] {
-                let db_file = path.with_extension(
-                    path.extension()
-                        .map(|e| format!("{}{}", e.to_string_lossy(), suffix))
-                        .unwrap_or_else(|| suffix.trim_start_matches('-').to_string()),
-                );
-                if db_file.exists() {
-                    if let Err(e) = std::fs::set_permissions(&db_file, perms.clone()) {
-                        tracing::warn!(
-                            path = %db_file.display(),
-                            error = %e,
-                            "Failed to set embedding cache permissions to 0o600"
-                        );
-                    }
-                }
-            }
-        }
+        // P2.3: shared 0o600 chmod loop on the DB triplet — see helper docs.
+        apply_db_file_perms(path);
 
+        // P2.5: filter `0` so the env-var matches `QueryCache`'s semantic
+        // ("0 is invalid → fall back to default"). Without the filter, setting
+        // `CQS_CACHE_MAX_SIZE=0` silently disables eviction entirely (every
+        // `evict()` thinks it's already under budget) and the cache grows
+        // unbounded. With it, an explicit `0` still gets the 10GB default.
         let max_size_bytes = std::env::var("CQS_CACHE_MAX_SIZE")
             .ok()
             .and_then(|s| s.parse().ok())
+            .filter(|&n: &u64| n > 0)
             .unwrap_or(10 * 1024 * 1024 * 1024); // 10GB default
 
         tracing::info!("Embedding cache opened");
@@ -346,6 +389,18 @@ impl EmbeddingCache {
             return Ok(0);
         }
 
+        // P2.66: hold `evict_lock` across the write so a concurrent `evict()`
+        // can't measure size, then DELETE rows that this in-flight write_batch
+        // committed between the SELECT and DELETE. Without this, a writer
+        // sees its INSERT succeed while a cross-session reader sees a cache
+        // miss — silently re-embedding chunks the cache "should" have. Mutex
+        // poisoning is non-fatal: a previous holder's panic shouldn't keep
+        // the cache write path locked out.
+        let _evict_guard = self
+            .evict_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -368,6 +423,18 @@ impl EmbeddingCache {
                         actual = embedding.len(),
                         expected = dim,
                         "Skipping cache write: embedding length mismatch"
+                    );
+                    continue;
+                }
+
+                // P2.27: reject non-finite values. NaN/Inf in cached embeddings
+                // poison every downstream reader (cosine produces NaN, breaking
+                // sort+rank), and #1105 made it worse by extending cache lifetime
+                // across slot create/remove.
+                if embedding.iter().any(|f| !f.is_finite()) {
+                    tracing::warn!(
+                        hash = &content_hash[..8.min(content_hash.len())],
+                        "Skipping cache write: embedding contains NaN or Inf"
                     );
                     continue;
                 }
@@ -1478,31 +1545,11 @@ impl QueryCache {
             Ok::<_, sqlx::Error>(pool)
         })?;
 
-        // SEC-V1.25-4: restrict DB + WAL/SHM sidecar files to 0o600 to
-        // match EmbeddingCache::open. Query text may be sensitive (user
-        // prompts, internal tooling queries), and multi-user boxes must
-        // not leave this world-readable.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            for suffix in &["", "-wal", "-shm"] {
-                let db_file = path.with_extension(
-                    path.extension()
-                        .map(|e| format!("{}{}", e.to_string_lossy(), suffix))
-                        .unwrap_or_else(|| suffix.trim_start_matches('-').to_string()),
-                );
-                if db_file.exists() {
-                    if let Err(e) = std::fs::set_permissions(&db_file, perms.clone()) {
-                        tracing::warn!(
-                            path = %db_file.display(),
-                            error = %e,
-                            "Failed to set query cache permissions to 0o600"
-                        );
-                    }
-                }
-            }
-        }
+        // SEC-V1.25-4: restrict DB + WAL/SHM sidecar files to 0o600 to match
+        // `EmbeddingCache::open`. Query text may be sensitive (user prompts,
+        // internal tooling queries), and multi-user boxes must not leave this
+        // world-readable. P2.3: shared with `EmbeddingCache` via `apply_db_file_perms`.
+        apply_db_file_perms(path);
 
         // P3 #124: surface cap from env, default 100 MB. Disk-only — no per-row
         // accounting because the cache may persist across daemon restarts.
@@ -1675,6 +1722,15 @@ impl QueryCache {
 
     /// Store a query embedding (write-through).
     pub fn put(&self, query: &str, model_fp: &str, embedding: &crate::embedder::Embedding) {
+        // P2.27: reject non-finite values so cached query embeddings can't
+        // poison downstream cosine math (NaN propagates through scoring).
+        if embedding.as_slice().iter().any(|f| !f.is_finite()) {
+            tracing::warn!(
+                query_len = query.len(),
+                "Skipping query cache write: embedding contains NaN or Inf"
+            );
+            return;
+        }
         let bytes: Vec<u8> = embedding
             .as_slice()
             .iter()

@@ -129,6 +129,24 @@ fn build_shared_runtime() -> std::io::Result<Arc<tokio::runtime::Runtime>> {
     Ok(Arc::new(rt))
 }
 
+/// P2.74: count directories under `root` that `notify::RecommendedWatcher`
+/// would register an inotify watch on, honoring `.gitignore` so we don't
+/// over-count dirs the watcher already excludes via the gitignore matcher.
+///
+/// Used at `cmd_watch` startup to warn operators before saves silently stop
+/// triggering reindex because inotify exhausted `fs.inotify.max_user_watches`.
+#[cfg(target_os = "linux")]
+fn count_watchable_dirs(root: &Path) -> usize {
+    let mut count = 0usize;
+    let walker = ignore::WalkBuilder::new(root).hidden(false).build();
+    for entry in walker.flatten() {
+        if entry.file_type().is_some_and(|t| t.is_dir()) {
+            count += 1;
+        }
+    }
+    count
+}
+
 /// Install a SIGTERM handler so `systemctl stop cqs-watch` triggers a
 /// clean drain via `SHUTDOWN_REQUESTED` rather than a hard kill. The
 /// existing ctrlc-based SIGINT handler already flips `check_interrupted`;
@@ -624,7 +642,24 @@ struct PendingRebuild {
     rx: std::sync::mpsc::Receiver<RebuildOutcome>,
     delta: Vec<(String, Embedding)>,
     started_at: std::time::Instant,
+    /// P2.71: held so daemon shutdown can `join` (or detect the thread is
+    /// finished) instead of leaking a detached worker. `None` if the spawn
+    /// itself failed — the channel disconnect path then handles cleanup.
+    handle: Option<std::thread::JoinHandle<()>>,
+    /// P2.72: latched once `delta` exceeds `MAX_PENDING_REBUILD_DELTA`. When
+    /// set, the drain path discards the rebuilt index instead of swapping
+    /// (the missed embeddings would silently disappear); the next threshold
+    /// rebuild reads fresh state from SQLite and recovers cleanly.
+    delta_saturated: bool,
 }
+
+/// P2.72: cap on per-rebuild delta size. A stale-rebuild that runs longer
+/// than expected (very large index, slow disk) accumulates one entry per
+/// chunk re-embedded by the watch loop. Without a cap a multi-GB embedding
+/// vector backlog is possible — every entry is `Vec<f32>` of `dim` floats.
+/// 5,000 entries × 1024 dim × 4 bytes ≈ 20 MB worst case, recoverable by the
+/// next threshold rebuild's fresh SQLite scan.
+const MAX_PENDING_REBUILD_DELTA: usize = 5_000;
 
 type RebuildOutcome = Result<Option<HnswIndex>, anyhow::Error>;
 
@@ -1028,16 +1063,22 @@ fn spawn_hnsw_rebuild(
             // Receiver may have been dropped if the daemon shut down — that's fine.
             let _ = tx.send(result);
         });
-    if let Err(e) = thread_result {
-        // Spawn failed (rare — only on resource exhaustion). Log and return
-        // a PendingRebuild whose channel will hang up on first poll, which
-        // the caller treats as "no rebuild in flight."
-        tracing::warn!(error = %e, context, "Failed to spawn HNSW rebuild thread");
-    }
+    let handle = match thread_result {
+        Ok(h) => Some(h),
+        Err(e) => {
+            // Spawn failed (rare — only on resource exhaustion). Log and
+            // return a PendingRebuild whose channel will hang up on first
+            // poll, which the caller treats as "no rebuild in flight."
+            tracing::warn!(error = %e, context, "Failed to spawn HNSW rebuild thread");
+            None
+        }
+    };
     PendingRebuild {
         rx,
         delta: Vec::new(),
         started_at,
+        handle,
+        delta_saturated: false,
     }
 }
 
@@ -1075,6 +1116,26 @@ fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mut WatchStat
 
     match outcome {
         Ok(Some(mut new_index)) => {
+            // P2.72: if the delta saturated, the rebuilt index is missing
+            // events that we dropped on the floor; swapping it in would
+            // silently lose those chunks. Discard instead — the next
+            // threshold rebuild reads fresh state from SQLite and recovers.
+            if pending.delta_saturated {
+                let elapsed_ms = pending.started_at.elapsed().as_millis();
+                tracing::warn!(
+                    elapsed_ms,
+                    discarded_delta = pending.delta.len(),
+                    "Discarding rebuilt HNSW: delta saturated during rebuild — \
+                     next threshold rebuild will pick up changes from SQLite"
+                );
+                if !cfg.quiet {
+                    println!(
+                        "  HNSW index: rebuild discarded (delta saturated; {}ms wasted, will retry)",
+                        elapsed_ms
+                    );
+                }
+                return;
+            }
             // Replay captured delta — but skip ids the rebuild thread already
             // saw via its store snapshot, so we don't double-insert. (hnsw_rs
             // has no dedup; duplicate ids would create twin vectors that bloat
@@ -1772,6 +1833,17 @@ pub fn cmd_watch(
                 // this, a single malicious client sitting on the 5 s read
                 // timeout (or a slow legitimate client) could wedge the
                 // accept loop for `5 * N` seconds and DoS the daemon.
+                //
+                // P2.64 (scope=structural — known issue): every dispatch path
+                // currently serializes through this single `Mutex<BatchContext>`,
+                // so a slow query (LLM batch fetch, large gather) blocks every
+                // other reader. Audit recommends pivoting to `RwLock` with
+                // read-heavy paths (search/callers/stats) taking `read()` and
+                // mutators (sweep_idle_sessions, set_pending_*) taking `write()`,
+                // OR splitting BatchContext into per-resource sub-locks.
+                // Either approach requires walking the dispatch table to
+                // classify every command — out of scope for this batch.
+                // Filed as a follow-on issue; this comment is the breadcrumb.
                 let ctx = Arc::new(Mutex::new(ctx));
                 let in_flight = Arc::new(AtomicUsize::new(0));
                 // P3 #125: resolve cap once at startup so a `CQS_MAX_DAEMON_CLIENTS`
@@ -1946,6 +2018,41 @@ pub fn cmd_watch(
     } else {
         Box::new(RecommendedWatcher::new(tx, config)?)
     };
+
+    // P2.74: warn when the project tree approaches the inotify watch limit.
+    // notify::watch(Recursive) registers a watch per directory; on distros
+    // with the old default of 8192 a moderately-deep monorepo exhausts the
+    // limit and per-subdir registration failures are silent. We don't fail
+    // here — the watch still works for whatever directories were registered
+    // — but we emit a loud warning with the recommended fix so operators
+    // know why some saves stopped triggering reindex.
+    #[cfg(target_os = "linux")]
+    if !use_poll {
+        if let Ok(limit_str) = std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches") {
+            if let Ok(limit) = limit_str.trim().parse::<usize>() {
+                let dir_count = count_watchable_dirs(&root);
+                if dir_count * 10 > limit * 9 {
+                    tracing::warn!(
+                        dir_count,
+                        limit,
+                        "inotify watch limit nearly exhausted — saves in some subdirectories \
+                         may not trigger reindex. Either run `cqs watch --poll` or raise the \
+                         limit with: sudo sysctl -w fs.inotify.max_user_watches={}",
+                        limit * 4
+                    );
+                    if !cli.quiet {
+                        eprintln!(
+                            "[warn] inotify watch limit ({}) nearly exhausted by {} dirs in this tree.\n\
+                             [warn]   Either run `cqs watch --poll` or raise the limit:\n\
+                             [warn]     sudo sysctl -w fs.inotify.max_user_watches={}",
+                            limit, dir_count, limit * 4
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     watcher.watch(&root, RecursiveMode::Recursive)?;
 
     let debounce = Duration::from_millis(debounce_ms);
@@ -2401,6 +2508,45 @@ pub fn cmd_watch(
         }
     }
 
+    // P2.71: bounded join of the in-flight HNSW rebuild thread (if any).
+    // Without this, the rebuild thread is detached on daemon shutdown — a
+    // long rebuild keeps writing to disk after the process is "done" and may
+    // race the next startup. The rebuild thread doesn't observe a shutdown
+    // flag yet (audit calls cancellation a follow-on issue), so we bound the
+    // wait at 30s — the common case is a near-finished rebuild that completes
+    // in <1s, and a stalled rebuild gets detached with a loud warning.
+    if let Some(mut pending) = state.pending_rebuild.take() {
+        if let Some(handle) = pending.handle.take() {
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let poll = Duration::from_millis(100);
+            let mut handle_opt = Some(handle);
+            while std::time::Instant::now() < deadline {
+                match handle_opt.as_ref() {
+                    Some(h) if h.is_finished() => {
+                        if let Err(e) = handle_opt.take().unwrap().join() {
+                            tracing::warn!(
+                                ?e,
+                                "Background HNSW rebuild thread panicked during shutdown"
+                            );
+                        } else {
+                            tracing::info!("Background HNSW rebuild thread joined cleanly");
+                        }
+                        break;
+                    }
+                    Some(_) => std::thread::sleep(poll),
+                    None => break,
+                }
+            }
+            if handle_opt.is_some() {
+                tracing::warn!(
+                    "Background HNSW rebuild thread did not finish within 30s shutdown window — detaching"
+                );
+                // Drop to detach; rebuild thread keeps running until the
+                // process exits, but at least we logged it.
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -2467,13 +2613,25 @@ fn collect_events(event: &notify::Event, cfg: &WatchConfig, state: &mut WatchSta
 
         // Convert to relative path
         if let Ok(rel) = path.strip_prefix(cfg.root) {
-            // Skip if mtime unchanged since last index (dedup WSL/NTFS events)
+            // P2.56: dedup WSL/NTFS events. NTFS keeps 100 ns mtime resolution,
+            // but FAT32 mounts have a 2-second granularity floor — two saves
+            // within 2 s collide on the *same* mtime, so a strict `mtime <=
+            // last` check would skip the second save. On WSL drvfs
+            // (`/mnt/<letter>/`, where the drive may well be FAT32-formatted)
+            // we treat ties as "not stale" — i.e. only skip when `mtime` is
+            // strictly older than the cached `last`. On Linux/macOS we keep
+            // the original `<=` because sub-second mtimes there are reliable
+            // and equality genuinely means "same content, no reindex needed".
             if let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) {
-                if state
-                    .last_indexed_mtime
-                    .get(rel)
-                    .is_some_and(|last| mtime <= *last)
-                {
+                let coarse_fs = cqs::config::is_wsl_drvfs_path(&path);
+                let stale = state.last_indexed_mtime.get(rel).is_some_and(|last| {
+                    if coarse_fs {
+                        mtime < *last
+                    } else {
+                        mtime <= *last
+                    }
+                });
+                if stale {
                     tracing::trace!(path = %rel.display(), "Skipping unchanged mtime");
                     continue;
                 }
@@ -2670,19 +2828,41 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                             // thread's snapshot may not include these chunks —
                             // capture them so `drain_pending_rebuild` can
                             // replay them after the swap.
-                            let added = pairs.len();
-                            pending.delta.extend(pairs);
-                            tracing::debug!(
-                                added,
-                                total_delta = pending.delta.len(),
-                                "Captured chunks in pending rebuild delta"
-                            );
-                            if !cfg.quiet {
-                                println!(
-                                    "  HNSW index: +{} vectors queued for in-flight rebuild ({} total deferred)",
+                            //
+                            // P2.72: cap the delta. If the rebuild stalls long
+                            // enough to accumulate >MAX_PENDING_REBUILD_DELTA
+                            // entries, latch `delta_saturated` and stop
+                            // appending. The drain path will discard the
+                            // rebuilt index instead of swapping a stale
+                            // snapshot; the next threshold rebuild reads
+                            // SQLite fresh and recovers everything.
+                            if pending.delta.len() + pairs.len() > MAX_PENDING_REBUILD_DELTA {
+                                if !pending.delta_saturated {
+                                    tracing::warn!(
+                                        cap = MAX_PENDING_REBUILD_DELTA,
+                                        current = pending.delta.len(),
+                                        "Pending HNSW rebuild delta saturated; \
+                                         abandoning in-flight rebuild — next threshold \
+                                         rebuild will pick up changes from SQLite"
+                                    );
+                                    pending.delta_saturated = true;
+                                }
+                                // Drop the new pairs; SQLite is the source of truth.
+                            } else {
+                                let added = pairs.len();
+                                pending.delta.extend(pairs);
+                                tracing::debug!(
                                     added,
-                                    pending.delta.len()
+                                    total_delta = pending.delta.len(),
+                                    "Captured chunks in pending rebuild delta"
                                 );
+                                if !cfg.quiet {
+                                    println!(
+                                        "  HNSW index: +{} vectors queued for in-flight rebuild ({} total deferred)",
+                                        added,
+                                        pending.delta.len()
+                                    );
+                                }
                             }
                         } else if let Some(ref mut index) = state.hnsw_index {
                             // Fast incremental path — Owned in memory, no rebuild pending.
@@ -2797,6 +2977,11 @@ fn reindex_files(
     // Parse changed files once — extract chunks, calls, AND type refs in a single pass.
     // Avoids the previous double-read + double-parse per file.
     let mut all_type_refs: Vec<(PathBuf, Vec<ChunkTypeRefs>)> = Vec::new();
+    // P2.67: collect per-chunk call sites from the parser instead of re-parsing
+    // each chunk's body via `extract_calls_from_chunk` after the fact. The bulk
+    // pipeline already does this via `parse_file_all_with_chunk_calls`; the
+    // watch path was paying ~14k extra tree-sitter parses per repo-wide reindex.
+    let mut per_file_chunk_calls: Vec<(String, cqs::parser::CallSite)> = Vec::new();
     let chunks: Vec<_> = files
         .iter()
         .flat_map(|rel_path| {
@@ -2812,8 +2997,8 @@ fn reindex_files(
                 }
                 return vec![];
             }
-            match parser.parse_file_all(&abs_path) {
-                Ok((mut file_chunks, calls, chunk_type_refs)) => {
+            match parser.parse_file_all_with_chunk_calls(&abs_path) {
+                Ok((mut file_chunks, calls, chunk_type_refs, chunk_calls)) => {
                     // Rewrite paths to be relative (AC-2: fix both file and id)
                     //
                     // PB-V1.29-3: Use `cqs::normalize_path` on both sides. On
@@ -2834,6 +3019,16 @@ fn reindex_files(
                         if let Some(rest) = chunk.id.strip_prefix(abs_norm.as_str()) {
                             chunk.id = format!("{}{}", rel_norm, rest);
                         }
+                    }
+                    // P2.67: stash chunk-level calls keyed by the post-rewrite
+                    // chunk id so the post-loop fold can build `calls_by_id`
+                    // without re-parsing each chunk.
+                    for (abs_chunk_id, call) in chunk_calls {
+                        let chunk_id = match abs_chunk_id.strip_prefix(abs_norm.as_str()) {
+                            Some(rest) => format!("{}{}", rel_norm, rest),
+                            None => abs_chunk_id,
+                        };
+                        per_file_chunk_calls.push((chunk_id, call));
                     }
                     // Stash type refs for upsert after chunks are stored
                     if !chunk_type_refs.is_empty() {
@@ -2872,7 +3067,17 @@ fn reindex_files(
         return Ok((0, Vec::new()));
     }
 
-    // Check content hash cache to skip re-embedding unchanged chunks
+    // P2.68 (scope=structural): the watch reindex path only consults
+    // `store.get_embeddings_by_hashes` — it never sees the per-project
+    // `EmbeddingCache` introduced in #1105. File saves in watch mode pay
+    // GPU cost for every chunk not already in the *current slot's*
+    // `chunks.embedding`, even when the same hash exists in the
+    // cross-slot `EmbeddingCache::project_default_path` cache. The bulk
+    // pipeline already routes through `prepare_for_embedding` which
+    // checks both layers; the watch path needs the global_cache plumbed
+    // through `cmd_watch` → `WatchConfig` → `reindex_files`. Filed as
+    // follow-on issue — this comment is the breadcrumb so the next
+    // sweep doesn't re-discover the cache miss the hard way.
     let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
     let existing = store.get_embeddings_by_hashes(&hashes)?;
 
@@ -2923,19 +3128,13 @@ fn reindex_files(
         embeddings[i] = emb;
     }
 
-    // DS-2: Extract call graph from chunks (same loop), then use atomic upsert.
-    // This mirrors the pipeline's approach: extract_calls_from_chunk per chunk,
-    // then upsert_chunks_and_calls in a single transaction per file.
-    // Pre-group calls by chunk ID for O(1) lookup per file (PERF-4).
+    // P2.67: build calls_by_id directly from `per_file_chunk_calls` (collected
+    // by `parse_file_all_with_chunk_calls` above) instead of re-parsing every
+    // chunk's body with `extract_calls_from_chunk`. The bulk indexing pipeline
+    // has used this shape since #1040; the watch path now matches it.
     let mut calls_by_id: HashMap<String, Vec<cqs::parser::CallSite>> = HashMap::new();
-    for chunk in &chunks {
-        let calls = parser.extract_calls_from_chunk(chunk);
-        if !calls.is_empty() {
-            calls_by_id
-                .entry(chunk.id.clone())
-                .or_default()
-                .extend(calls);
-        }
+    for (chunk_id, call) in per_file_chunk_calls {
+        calls_by_id.entry(chunk_id).or_default().push(call);
     }
     // Group chunks by file and atomically upsert chunks + calls in a single transaction
     let mut mtime_cache: HashMap<PathBuf, Option<i64>> = HashMap::new();
@@ -3993,6 +4192,8 @@ mod tests {
                 ("delta_b".to_string(), cqs::Embedding::new(vec![0.5; dim])),
             ],
             started_at: std::time::Instant::now(),
+            handle: None,
+            delta_saturated: false,
         });
 
         let fix = drain_test_fixture(dim);
@@ -4035,6 +4236,8 @@ mod tests {
                 ("c_new".to_string(), cqs::Embedding::new(vec![9.0; dim])),
             ],
             started_at: std::time::Instant::now(),
+            handle: None,
+            delta_saturated: false,
         });
 
         let fix = drain_test_fixture(dim);
@@ -4069,6 +4272,8 @@ mod tests {
             rx,
             delta: Vec::new(),
             started_at: std::time::Instant::now(),
+            handle: None,
+            delta_saturated: false,
         });
 
         let fix = drain_test_fixture(4);
@@ -4085,6 +4290,130 @@ mod tests {
         assert!(state.hnsw_index.is_none());
     }
 
+    // P2.29: spawn_hnsw_rebuild adversarial coverage — the original
+    // production code shipped without tests for the dim-mismatch and
+    // store-open-fail paths even though both are realistic failure modes
+    // (model-swap mid-flight, slot dir deleted under the daemon).
+    //
+    // We invoke `spawn_hnsw_rebuild` directly, then join the worker thread
+    // and inspect what landed on the receive channel. The contract is:
+    //   - dim mismatch  → channel carries Err, pending must clear on drain
+    //   - missing index → channel carries Err, ditto
+    // Both paths must NOT panic and must NOT leak the pending entry forever.
+
+    /// P2.29: a dim mismatch between the store and the caller's
+    /// `expected_dim` must surface as `Err` on the channel, not a panic.
+    /// The on-disk store is dim=4; we ask for dim=8.
+    #[test]
+    fn spawn_hnsw_rebuild_dim_mismatch_returns_error_outcome() {
+        let dim = 4;
+        let expected_dim = 8;
+        let fix = drain_test_fixture(dim);
+        let cqs_dir = fix.tmp.path().to_path_buf();
+        let index_path = fix.tmp.path().join("index.db");
+
+        let pending = spawn_hnsw_rebuild(cqs_dir, index_path, expected_dim, "p2_29_dim");
+        // Wait for the worker thread to finish, bounded.
+        let outcome = pending
+            .rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("rebuild thread must report within 10s");
+        // `RebuildOutcome` is `Result<Option<HnswIndex>, anyhow::Error>` and
+        // `HnswIndex` is not `Debug`, so we can't call `unwrap_err` directly.
+        // Pattern-match instead.
+        let err = match outcome {
+            Ok(_) => panic!("dim mismatch must surface as an Err on the rebuild channel"),
+            Err(e) => e,
+        };
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("does not match expected") || msg.contains("dim"),
+            "error must mention the dim mismatch (got: {msg})"
+        );
+        // Drain the worker handle so the OS thread is reaped.
+        if let Some(h) = pending.handle {
+            let _ = h.join();
+        }
+    }
+
+    /// P2.29: pointing at a non-existent index path (e.g. slot dir
+    /// removed mid-flight) must surface as `Err` on the channel — never
+    /// panic, never hang. `Store::open_readonly_pooled` returns an Err
+    /// immediately and the closure propagates it via `?`.
+    #[test]
+    fn spawn_hnsw_rebuild_missing_index_path_returns_error_outcome() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cqs_dir = tmp.path().to_path_buf();
+        let bogus = tmp.path().join("does_not_exist.db");
+
+        let pending = spawn_hnsw_rebuild(cqs_dir, bogus, 4, "p2_29_missing");
+        let outcome = pending
+            .rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("rebuild thread must report within 10s");
+        assert!(
+            outcome.is_err(),
+            "missing index must surface as an Err on the rebuild channel"
+        );
+        if let Some(h) = pending.handle {
+            let _ = h.join();
+        }
+    }
+
+    /// P2.29: drain path must clear `pending_rebuild` when the worker
+    /// thread reported an error. Today the rebuild thread can fail for
+    /// many reasons (dim mismatch, store gone, save failure); the drain
+    /// must always reset state so the next threshold trigger can retry —
+    /// otherwise the pending slot leaks forever and no further rebuilds
+    /// run.
+    #[test]
+    fn drain_clears_pending_when_spawned_rebuild_errors() {
+        // Drive the full spawn+drain cycle through a guaranteed-failing
+        // path (missing index) so the drain sees a real Err rather than
+        // a hand-crafted `tx.send(Err(_))`.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pending = spawn_hnsw_rebuild(
+            tmp.path().to_path_buf(),
+            tmp.path().join("nope.db"),
+            4,
+            "p2_29_drain",
+        );
+
+        // Block until the worker thread has signalled — the drain uses
+        // try_recv so we want the message already enqueued.
+        if let Some(h) = pending.handle.as_ref() {
+            // Best-effort wait: rebuild thread writes to channel before
+            // exiting. Up to 10s tolerance for slow CI.
+            for _ in 0..100 {
+                if h.is_finished() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+
+        // Now build a state with this PendingRebuild and drive the drain.
+        let mut state = test_watch_state();
+        state.pending_rebuild = Some(pending);
+
+        let fix = drain_test_fixture(4);
+        let cfg = test_watch_config(
+            fix.tmp.path(),
+            fix.tmp.path(),
+            &fix.notes_path,
+            &fix.supported_ext,
+        );
+        drain_pending_rebuild(&cfg, &fix.store, &mut state);
+        assert!(
+            state.pending_rebuild.is_none(),
+            "drain must clear pending_rebuild when the rebuild thread errored"
+        );
+        assert!(
+            state.hnsw_index.is_none(),
+            "no index must be swapped in when the rebuild errored"
+        );
+    }
+
     #[test]
     fn drain_pending_rebuild_leaves_pending_when_still_running() {
         let (_tx, rx) = std::sync::mpsc::channel::<RebuildOutcome>();
@@ -4093,6 +4422,8 @@ mod tests {
             rx,
             delta: Vec::new(),
             started_at: std::time::Instant::now(),
+            handle: None,
+            delta_saturated: false,
         });
 
         let fix = drain_test_fixture(4);

@@ -258,9 +258,66 @@ impl std::fmt::Debug for CagraIndex {
 
 #[cfg(feature = "cuda-index")]
 impl CagraIndex {
-    /// Check if GPU is available for CAGRA
+    /// Check if GPU is available for CAGRA.
+    ///
+    /// Back-compat shim: equivalent to `gpu_available_for(0, 0)` so existing
+    /// boolean call sites still compile. New call sites should use
+    /// [`Self::gpu_available_for`] which estimates the build memory budget
+    /// and refuses to claim GPU availability when the corpus would OOM the
+    /// device.
     pub fn gpu_available() -> bool {
-        cuvs::Resources::new().is_ok()
+        Self::gpu_available_for(0, 0)
+    }
+
+    /// P2.42 — GPU-availability + VRAM-budget check.
+    ///
+    /// `cuvs::Resources::new().is_ok()` only verifies that the CUDA driver
+    /// loads; it doesn't guard against the *build* peak memory exceeding
+    /// the device's free VRAM. On 8 GB GPUs this surfaced as OOM during
+    /// CAGRA construction with no graceful fallback to HNSW.
+    ///
+    /// Pass the actual `(n_vectors, dim)` of the corpus you're about to
+    /// index. With `(0, 0)` this collapses to the legacy boolean check.
+    pub fn gpu_available_for(n_vectors: usize, dim: usize) -> bool {
+        if cuvs::Resources::new().is_err() {
+            return false;
+        }
+        if n_vectors == 0 || dim == 0 {
+            // Legacy callers asking only "is the driver loadable?" — keep
+            // existing semantics. The caller has no corpus shape to size.
+            return true;
+        }
+        // Estimate build peak memory: dataset + graph + ~30% slack for cuVS
+        // intermediate buffers. graph_degree default is 64 (matches
+        // `cagra_build_params`).
+        let dataset_bytes = (n_vectors as u64)
+            .saturating_mul(dim as u64)
+            .saturating_mul(4);
+        let graph_bytes = (n_vectors as u64).saturating_mul(64).saturating_mul(4);
+        let estimated = dataset_bytes
+            .saturating_add(graph_bytes)
+            .saturating_mul(130)
+            / 100;
+        // P2.42: env override `CQS_CAGRA_MAX_GPU_BYTES` lets operators with
+        // workloads they understand opt out of the conservative default
+        // (2 GiB). Without `nvml-wrapper` we can't probe free VRAM here;
+        // 2 GiB keeps RTX 4000 8 GB safe for most realistic corpora.
+        let cap = std::env::var("CQS_CAGRA_MAX_GPU_BYTES")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(2 * 1024 * 1024 * 1024);
+        if estimated > cap.saturating_mul(80) / 100 {
+            tracing::warn!(
+                estimated_bytes = estimated,
+                cap_bytes = cap,
+                n_vectors,
+                dim,
+                "CAGRA: estimated build memory exceeds 80% of cap — falling back to HNSW. \
+                 Set CQS_CAGRA_MAX_GPU_BYTES to override."
+            );
+            return false;
+        }
+        true
     }
 
     /// Build a CAGRA index from embeddings
@@ -356,7 +413,23 @@ impl CagraIndex {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or_else(|| cagra_itopk_max_default(self.len()));
-        let itopk_size = (k * 2).clamp(itopk_min, itopk_max);
+        // P2.37: cuVS CAGRA hard-requires `itopk_size >= k`. The previous
+        // `(k * 2).clamp(min, max)` could clamp `itopk_size` *below* `k`
+        // when `k > itopk_max` (e.g. `cqs search --limit 500` on a small
+        // corpus), and CAGRA then errored out with the result reaching
+        // the caller as an empty Vec — a silent zero-result regression.
+        // Force `itopk_size >= k` and refuse the search if the cap can't
+        // honour it; the caller falls back to HNSW.
+        let itopk_size = (k * 2).clamp(itopk_min, itopk_max).max(k);
+        if itopk_size > itopk_max {
+            tracing::warn!(
+                k,
+                itopk_max,
+                n_vectors = self.len(),
+                "CAGRA: k exceeds itopk_max — caller should fall back to HNSW"
+            );
+            return Vec::new();
+        }
         tracing::debug!(
             itopk_size,
             itopk_min,
@@ -559,6 +632,22 @@ impl VectorIndex for CagraIndex {
             return Vec::new();
         }
 
+        // P2.52: cap effective `k` at the bitset's `included` count. Asking
+        // CAGRA for more slots than feasible silently under-fills (or, when
+        // `k > itopk_max`, errors and returns empty). Both modes hide a
+        // "candidate pool was small" answer behind the same empty Vec a
+        // genuine "no matches" would produce. Trim explicitly so the caller
+        // sees an honest, smaller-than-requested result.
+        let effective_k = k.min(included);
+        if effective_k < k {
+            tracing::debug!(
+                requested = k,
+                effective = effective_k,
+                included,
+                "CAGRA filtered search: capping k at included to avoid under-fill"
+            );
+        }
+
         tracing::debug!(
             total = n,
             included,
@@ -594,7 +683,7 @@ impl VectorIndex for CagraIndex {
             }
         };
 
-        self.search_impl(&gpu, query, k, Some(&bitset_device))
+        self.search_impl(&gpu, query, effective_k, Some(&bitset_device))
     }
 }
 

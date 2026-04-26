@@ -10,8 +10,12 @@ pub fn cmd_convert(
     overwrite: bool,
     dry_run: bool,
     clean_tags: Option<&str>,
+    json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_convert").entered();
+    // P2.12: track wall-clock for the JSON envelope; doubles as a sanity
+    // metric on long PDF/CHM batches.
+    let start = std::time::Instant::now();
 
     let source = PathBuf::from(path);
     if !source.exists() {
@@ -59,6 +63,33 @@ pub fn cmd_convert(
     };
 
     let results = cqs::convert::convert_path(&source, &opts)?;
+
+    if json {
+        // P2.12: structured summary for JSON-driven agents. We don't have a
+        // distinct `skipped` list out of `convert_path` today (the converter
+        // surfaces skips as warnings), so the field stays as an empty array
+        // for forward compatibility — schema reservation, not a lie.
+        let converted: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "source": r.source.display().to_string(),
+                    "output": r.output.display().to_string(),
+                    "format": r.format.to_string(),
+                    "title": r.title,
+                    "sections": r.sections,
+                })
+            })
+            .collect();
+        let obj = serde_json::json!({
+            "converted": converted,
+            "skipped": Vec::<serde_json::Value>::new(),
+            "took_ms": start.elapsed().as_millis() as u64,
+            "dry_run": dry_run,
+        });
+        crate::cli::json_envelope::emit_json(&obj)?;
+        return Ok(());
+    }
 
     if results.is_empty() {
         println!("No supported documents found.");

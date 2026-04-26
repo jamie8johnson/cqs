@@ -5,6 +5,15 @@ Total findings: 170 (8 batch 1 categories + 8 batch 2 categories)
 
 Classification: P1 (easy + high impact, fix immediately) · P2 (medium + high, batch) · P3 (easy + low, quick wins) · P4 (hard or low impact, issues or inline trivial)
 
+## Rolling Status (auto-updated as fixes land)
+
+- **P1 — 20/21 fixed + 1 deferred.** P1.17 (drain_pending_rebuild dedup) is structural — filed as #1124, slated to land alongside P2.29 (HNSW rebuild adversarial tests). Branch `audit-v1.30.0-p1-fixes` commit `cce0fbdc` covers all 20 applied.
+- **P2 — 83/92 fixed, 9 filed as issues.** All 92 P2 rows accounted for. Issues #1125 (P2.59), #1126 (P2.60), #1127 (P2.64), #1128 (P2.65), #1129 (P2.68), #1130 (P2.88), #1131 (P2.89), #1132 (P2.90), #1133 (P2.91).
+- **P3 — 0/53 fixed.** Pending P2 completion.
+- **P4 — 0/3.** All three to be filed as tracking issues.
+
+(Counts include only `✅ fixed` cells; `structural — file as issue` rows count as deferred.)
+
 ## P1 — Fix Immediately
 
 | # | Title | Category | Location | Status |
@@ -25,7 +34,7 @@ Classification: P1 (easy + high impact, fix immediately) · P2 (medium + high, b
 | P1.14 | cqs serve has no RequestBodyLimitLayer — authenticated client can OOM via large POST | Security | `src/serve/mod.rs:154-196` | ✅ fixed |
 | P1.15 | UMAP coords not invalidated on chunk content change — cluster view serves stale | Data Safety | `src/store/chunks/async_helpers.rs:339` | ✅ fixed |
 | P1.16 | --name-boost CLI accepts >1 / <0 — embedding signal sign-flips, deletes good results | Algorithm | `src/cli/args.rs:57` + `src/search/scoring/candidate.rs:286` | ✅ fixed (consumer-side clamp; CLI parser fix already shipped in v1.29.x) |
-| P1.17 | drain_pending_rebuild dedup drops fresh embeddings during rebuild window | Algorithm | `src/cli/watch.rs:1077-1105` | pending |
+| P1.17 | drain_pending_rebuild dedup drops fresh embeddings during rebuild window | Algorithm | `src/cli/watch.rs:1077-1105` | 📋 issue #1124 |
 | P1.18 | token_pack break-on-first-oversized — drops smaller items that would fit | Algorithm | `src/cli/commands/mod.rs:398-417` | ✅ fixed |
 | P1.19 | cqs serve shutdown handles only Ctrl-C — SIGTERM (systemctl) skips graceful drain | Platform | `src/serve/mod.rs:253-260` | ✅ fixed |
 | P1.20 | OB-V1.30-1 default subscriber drops every info_span — 150 spans invisible at default level | Observability | `src/main.rs:14-32` | ✅ fixed |
@@ -35,98 +44,98 @@ Classification: P1 (easy + high impact, fix immediately) · P2 (medium + high, b
 
 | # | Title | Category | Location | Status |
 |---|-------|----------|----------|--------|
-| P2.1 | cmd_similar JSON emits 3 fields vs CLI's 9 — schema parity drop | Code Quality | `src/cli/batch/handlers/info.rs:139` | pending |
-| P2.2 | dispatch_diff target_store placeholder dead in else branch | Code Quality | `src/cli/batch/handlers/misc.rs:354-387` | pending |
-| P2.3 | Embedding/Query cache open_with_runtime ~80% copy-paste (90+ lines) | Code Quality | `src/cache.rs:103-220, 1412-1522` | pending |
-| P2.4 | Repeated env::var parse pattern at 25+ sites — shared helpers exist but private | Code Quality | `src/limits.rs:230-260` + 25 sites | pending |
-| P2.5 | EmbeddingCache accepts MAX_SIZE=0; QueryCache rejects — opposite behavior | Code Quality | `src/cache.rs:206-209, 1509-1513` | pending |
-| P2.6 | DOC: README "544-query eval" should be 218; metrics also stale | Documentation | `README.md:5,649` | pending |
-| P2.7 | DOC: README claims 54 languages but Cargo.toml/source disagree (Elm) | Documentation | `README.md:5,530-585` | pending |
-| P2.8 | DOC: SECURITY omits per-project embeddings_cache.db | Documentation | `SECURITY.md:65-82` | pending |
-| P2.9 | DOC: README/Claude integration list missing 5 commands (ping/eval/model/serve/refresh) | Documentation | `README.md:467-525` | pending |
-| P2.10 | DOC: README cache subcommands list missing `clear` | Documentation | `README.md:521` | pending |
-| P2.11 | --json model swap/show emits plain-text errors — no envelope | API Design | `src/cli/commands/infra/model.rs` | pending |
-| P2.12 | cqs init/index/convert lack --json | API Design | `src/cli/commands/infra/init.rs`, etc. | pending |
-| P2.13 | Global --slot silently ignored by `slot`/`cache` subcommands | API Design | `src/cli/definitions.rs` + slot/cache cmds | pending |
-| P2.14 | cqs refresh has no --json | API Design | `src/cli/definitions.rs:755-761` | pending |
-| P2.15 | List-shape JSON envelopes inconsistent across `*list` commands | API Design | `cmd_ref_list/cmd_model_list/cmd_project_list` | pending |
-| P2.16 | cache stats mixes bytes and MB; cache compact uses bytes only | API Design | `src/cli/commands/infra/cache_cmd.rs` | pending |
-| P2.17 | dispatch::try_daemon_query warns then silently re-runs in CLI | Error Handling | `src/cli/dispatch.rs:445-462` | pending |
-| P2.18 | LocalProvider::fetch_batch_results returns empty map on missing batch_id | Error Handling | `src/llm/local.rs:542-547` | pending |
-| P2.19 | impact/format `serde_json::to_value...unwrap_or_else(json!({}))` at 6 sites | Error Handling | `src/impact/format.rs`, etc. | pending |
-| P2.20 | cache_stats silently treats QueryCache::open failure as 0 bytes | Error Handling | `src/cli/commands/infra/cache_cmd.rs:120-139` | pending |
-| P2.21 | slot_remove masks list_slots failure as "only slot remaining" | Error Handling | `src/cli/commands/infra/slot.rs:303-313` | pending |
-| P2.22 | build_token_pack swallows get_caller_counts_batch — silently degrades ranking | Error Handling | `src/cli/commands/io/context.rs:438-441` | pending |
-| P2.23 | read --focus silently empties type_chunks on store batch failure | Error Handling | `src/cli/commands/io/read.rs:230-235` | pending |
-| P2.24 | serve::build_chunk_detail collapses NULL signature/content to empty string | Error Handling | `src/serve/data.rs:488-492` | pending |
-| P2.25 | Per-request span and build_* spans disconnected (spawn_blocking drops span ctx) | Observability | `src/serve/handlers.rs:86,111,131,160,210,236` | pending |
-| P2.26 | TC-ADV: LocalProvider body-size DoS — buffers entire HTTP response | Test Coverage (adv) | `src/llm/local.rs:474-500` | pending |
-| P2.27 | TC-ADV: EmbeddingCache/QueryCache accept NaN/Inf — cross-process cache poisoning | Test Coverage (adv) | `src/cache.rs:332-407, 1677-1699` | pending |
-| P2.28 | TC-ADV: slot_create/slot_remove TOCTOU under concurrent operation | Test Coverage (adv) | `src/cli/commands/infra/slot.rs:219-350` | pending |
-| P2.29 | TC-ADV: Non-blocking HNSW rebuild — no panic/dim-drift/store-fail tests | Test Coverage (adv) | `src/cli/watch.rs:965-1042` | pending |
-| P2.30 | TC-ADV: serve auth strip_token_param case/percent-encoding gaps | Test Coverage (adv) | `src/serve/auth.rs:101-115` | pending |
-| P2.31 | TC-ADV: slot::migrate_legacy rollback path untested; rollback failure leaves split state | Test Coverage (adv) | `src/slot/mod.rs:511-593` | pending |
-| P2.32 | TC-ADV: LocalProvider non-HTTP api_base + concurrency mis-sizing | Test Coverage (adv) | `src/llm/local.rs:88-121` | pending |
-| P2.33 | RB: Slot pointer files read with unbounded read_to_string | Robustness | `src/slot/mod.rs:207, 323` | pending |
-| P2.34 | RB: migrate_legacy rollback leaves undetectable half-state | Robustness | `src/slot/mod.rs:511-593` | pending |
-| P2.35 | RB: local.rs auth_attempts mutex unwrap cascades worker poison | Robustness | `src/llm/local.rs:393-396` | pending |
-| P2.36 | RB: redirect policy disagrees between production (none) and doctor (limited(2)) | Robustness | `src/llm/local.rs:99` vs `src/cli/commands/infra/doctor.rs:578` | pending |
-| P2.37 | SHL: CAGRA itopk_size < k on small indexes — silent zero-result regression | Scaling | `src/cagra.rs:359` | pending |
-| P2.38 | SHL: nl::generate_nl char_budget defaults to 512 even with 2048 max_seq_len | Scaling | `src/nl/mod.rs:222-229` | pending |
-| P2.39 | SHL: MAX_BATCH_SIZE=10_000 silently truncates summary/HyDE on large corpora | Scaling | `src/llm/mod.rs:192` | pending |
-| P2.40 | SHL: serve graph/cluster cap 50_000 hardcoded; chunk_detail LIMIT 50/50/20 | Scaling | `src/serve/data.rs:17,24,505,542,571` | pending |
-| P2.41 | SHL: embed_batch_size default 64 doesn't scale with model dim/seq | Scaling | `src/cli/pipeline/types.rs:143` | pending |
-| P2.42 | SHL: CagraIndex::gpu_available has no VRAM ceiling — OOMs on 8GB GPUs | Scaling | `src/cagra.rs:262-264` | pending |
-| P2.43 | semantic_diff sort lacks tie-breaker — non-deterministic JSON across runs | Algorithm | `src/diff.rs:202-207` | pending |
-| P2.44 | is_structural_query keyword probe misses keywords at end-of-query | Algorithm | `src/search/router.rs:787-789` | pending |
-| P2.45 | bfs_expand processes seeds in HashMap order — non-deterministic name_scores at cap | Algorithm | `src/gather.rs:317-320` | pending |
-| P2.46 | llm summary contrastive_neighbors top-K sort lacks tie-breaker | Algorithm | `src/llm/summary.rs:263-267` | pending |
-| P2.47 | reranker compute_scores unchecked batch_size*stride; negative shape[1] panic | Algorithm | `src/reranker.rs:368-387` | pending |
-| P2.48 | doc_comments select_uncached sort lacks chunk-id tertiary key | Algorithm | `src/llm/doc_comments.rs:222-242` | pending |
-| P2.49 | map_hunks_to_functions returns hunks in HashMap order — non-deterministic impact-diff | Algorithm | `src/impact/diff.rs:38-168` | pending |
-| P2.50 | search_reference threshold/weight ordering bug — under-samples corpus when weight<1 | Algorithm | `src/reference.rs:231-285` | pending |
-| P2.51 | find_type_overlap chunk_info uses HashMap iteration — non-deterministic file attribution | Algorithm | `src/related.rs:131-157` | pending |
-| P2.52 | CAGRA search_with_filter under-fills when included<k — caller can't distinguish | Algorithm | `src/cagra.rs:520-598` | pending |
-| P2.53 | Hybrid SPLADE alpha=0 emits 1.0+s scores; cliff at SPLADE boundary | Algorithm | `src/search/query.rs:649-672` | pending |
-| P2.54 | apply_scoring_pipeline sign-flips on out-of-range name_boost; clamp embedding pre-blend | Algorithm | `src/search/scoring/candidate.rs:283-298` | pending |
-| P2.55 | open_browser uses explorer.exe on Windows — drops query string/token | Platform | `src/cli/commands/serve.rs:89-104` | pending |
-| P2.56 | NTFS/FAT32 mtime equality check — watch loop skips second save on FAT32 USB | Platform | `src/cli/watch.rs:551-560` | pending |
-| P2.57 | enforce_host_allowlist accepts missing Host header (dev ergonomic) | Platform | `src/serve/mod.rs:230-251` | pending |
-| P2.58 | --bind 0.0.0.0 host-allowlist breaks LAN — pushes operators to --no-auth | Security | `src/serve/mod.rs:207-218` | pending |
-| P2.59 | Migration restore_from_backup overwrites live DB while pool open | Data Safety | `src/store/backup.rs:171-180` | pending |
-| P2.60 | stream_summary_writer bypasses WRITE_LOCK — concurrent writer collides with reindex | Data Safety | `src/store/chunks/crud.rs:504-545` | pending |
-| P2.61 | slot_remove TOCTOU on concurrent promote — active_slot points to deleted dir | Data Safety | `src/cli/commands/infra/slot.rs:299-350` | pending |
-| P2.62 | Slot legacy migration moves live WAL/SHM instead of checkpointing first | Data Safety | `src/slot/mod.rs:511-624` | pending |
-| P2.63 | model_fingerprint fallback uses Unix timestamp — every restart misses cache | Data Safety | `src/embedder/mod.rs:435-465` | pending |
-| P2.64 | Daemon serializes ALL queries through one Mutex<BatchContext> | Data Safety | `src/cli/watch.rs:1775-1858` | pending |
-| P2.65 | embedding_cache schema doesn't separate `embedding` vs `embedding_base` purpose | Data Safety | `src/cache.rs:159-171` | pending |
-| P2.66 | cache evict() vs write_batch race — evict deletes rows just inserted | Data Safety | `src/cache.rs:354-460` | pending |
-| P2.67 | PF: reindex_files watch path double-parses calls per chunk | Performance | `src/cli/watch.rs:2815, 2930-2939` | pending |
-| P2.68 | PF: reindex_files watch path bypasses global EmbeddingCache | Performance | `src/cli/watch.rs:2876-2887` | pending |
-| P2.69 | PF: wrap_value deep-clones entire payload via serde round trip | Performance | `src/cli/json_envelope.rs:160-176` | pending |
-| P2.70 | PF: build_graph correlated subquery for n_callers — N rows × COUNT(*) | Performance | `src/serve/data.rs:234-264` | pending |
-| P2.71 | RM: Background HNSW rebuild thread detached — daemon shutdown can't wait | Resource Mgmt | `src/cli/watch.rs:965-1042` | pending |
-| P2.72 | RM: pending_rebuild.delta grows unbounded during long rebuild | Resource Mgmt | `src/cli/watch.rs:611, 2667-2741` | pending |
-| P2.73 | RM: LocalProvider::stash retains all submitted batch results until drop | Resource Mgmt | `src/llm/local.rs:74, 304-309, 542-547` | pending |
-| P2.74 | RM: Daemon never checks fs.inotify.max_user_watches — silently drops events | Resource Mgmt | `src/cli/watch.rs:1947-1949` | pending |
-| P2.75 | RM: select_provider triggers CUDA probe + symlink for every CLI process | Resource Mgmt | `src/embedder/provider.rs:171-248` | pending |
-| P2.76 | RM: serve handlers spawn_blocking unbounded — 512 thread × 10MB working set | Resource Mgmt | `src/serve/handlers.rs:86-89` + `mod.rs:92` | pending |
-| P2.77 | RM: Embedder clear_session doubled-memory window invisible | Resource Mgmt | `src/embedder/mod.rs:261, 808-823` | pending |
-| P2.78 | TC-HAP: cqs serve data endpoints never tested with populated data | Test Coverage | `src/serve/data.rs` + `src/serve/tests.rs` | pending |
-| P2.79 | TC-HAP: 16 batch dispatch handlers have zero tests | Test Coverage | `src/cli/batch/handlers/{misc,graph,info}.rs` | pending |
-| P2.80 | TC-HAP: Reranker::rerank/rerank_with_passages have no tests | Test Coverage | `src/reranker.rs:160, 190` | pending |
-| P2.81 | TC-HAP: cmd_project Search has no CLI integration test | Test Coverage | `src/cli/commands/infra/project.rs:70` | pending |
-| P2.82 | TC-HAP: cqs ref add/list/remove/update no end-to-end CLI test | Test Coverage | `src/cli/commands/infra/reference.rs` | pending |
-| P2.83 | TC-HAP: handle_socket_client no happy-path round-trip test | Test Coverage | `src/cli/watch.rs:160` | pending |
-| P2.84 | TC-HAP: spawn_hnsw_rebuild/drain_pending_rebuild ship with zero tests | Test Coverage | `src/cli/watch.rs spawn_hnsw_rebuild` | pending |
-| P2.85 | TC-HAP: for_each_command! macro + 4 emitters have no behavioral tests | Test Coverage | `src/cli/registry.rs:61` | pending |
-| P2.86 | TC-HAP: build_hnsw_index_owned/build_hnsw_base_index — no direct tests | Test Coverage | `src/cli/commands/index/build.rs:848,880` | pending |
-| P2.87 | TC-HAP: hyde_query_pass and doc_comment_pass have zero tests | Test Coverage | `src/llm/hyde.rs:11`, `src/llm/doc_comments.rs:135` | pending |
-| P2.88 | EX: Adding third score signal touches two parallel fusion paths | Extensibility | `src/store/search.rs:182-229`, `src/search/query.rs:511-720` | pending |
-| P2.89 | EX: Vector index backend selection is hand-coded if/else; no IndexBackend trait | Extensibility | `src/cli/store.rs:423-540` | pending |
-| P2.90 | EX: ScoringOverrides knob → 4 sites; no shared resolver | Extensibility | `src/config.rs:153-172` + scoring | pending |
-| P2.91 | EX: NoteEntry has no kind/tag taxonomy — only sentiment | Extensibility | `src/note.rs:41-89` | pending |
-| P2.92 | RM: Embedder::new opens fresh QueryCache + 7-day prune on every CLI command | Resource Mgmt | `src/embedder/mod.rs:355-366` | pending |
+| P2.1 | cmd_similar JSON emits 3 fields vs CLI's 9 — schema parity drop | Code Quality | `src/cli/batch/handlers/info.rs:139` | ✅ fixed |
+| P2.2 | dispatch_diff target_store placeholder dead in else branch | Code Quality | `src/cli/batch/handlers/misc.rs:354-387` | ✅ fixed |
+| P2.3 | Embedding/Query cache open_with_runtime ~80% copy-paste (90+ lines) | Code Quality | `src/cache.rs:103-220, 1412-1522` | ✅ fixed |
+| P2.4 | Repeated env::var parse pattern at 25+ sites — shared helpers exist but private | Code Quality | `src/limits.rs:230-260` + 25 sites | ✅ fixed (helpers promoted to pub; reranker + 2 embedder sites swapped, others left to keep tracing logs) |
+| P2.5 | EmbeddingCache accepts MAX_SIZE=0; QueryCache rejects — opposite behavior | Code Quality | `src/cache.rs:206-209, 1509-1513` | ✅ fixed |
+| P2.6 | DOC: README "544-query eval" should be 218; metrics also stale | Documentation | `README.md:5,649` | ✅ fixed |
+| P2.7 | DOC: README claims 54 languages but Cargo.toml/source disagree (Elm) | Documentation | `README.md:5,530-585` | ✅ fixed |
+| P2.8 | DOC: SECURITY omits per-project embeddings_cache.db | Documentation | `SECURITY.md:65-82` | ✅ fixed |
+| P2.9 | DOC: README/Claude integration list missing 5 commands (ping/eval/model/serve/refresh) | Documentation | `README.md:467-525` | ✅ fixed |
+| P2.10 | DOC: README cache subcommands list missing `clear` | Documentation | `README.md:521` | ✅ fixed |
+| P2.11 | --json model swap/show emits plain-text errors — no envelope | API Design | `src/cli/commands/infra/model.rs` | ✅ fixed |
+| P2.12 | cqs init/index/convert lack --json | API Design | `src/cli/commands/infra/init.rs`, etc. | ✅ fixed |
+| P2.13 | Global --slot silently ignored by `slot`/`cache` subcommands | API Design | `src/cli/definitions.rs` + slot/cache cmds | ✅ fixed (Option B: bail in cmd_slot/cmd_cache) |
+| P2.14 | cqs refresh has no --json | API Design | `src/cli/definitions.rs:755-761` | ✅ fixed |
+| P2.15 | List-shape JSON envelopes inconsistent across `*list` commands | API Design | `cmd_ref_list/cmd_model_list/cmd_project_list` | ✅ fixed (ref + model now emit `{plural: [...]}` shape; project already had it) |
+| P2.16 | cache stats mixes bytes and MB; cache compact uses bytes only | API Design | `src/cli/commands/infra/cache_cmd.rs` | ✅ fixed |
+| P2.17 | dispatch::try_daemon_query warns then silently re-runs in CLI | Error Handling | `src/cli/dispatch.rs:445-462` | ✅ fixed |
+| P2.18 | LocalProvider::fetch_batch_results returns empty map on missing batch_id | Error Handling | `src/llm/local.rs:542-547` | ✅ fixed (added `LlmError::BatchNotFound`) |
+| P2.19 | impact/format `serde_json::to_value...unwrap_or_else(json!({}))` at 6 sites | Error Handling | `src/impact/format.rs`, etc. | ✅ fixed (impact/format + context.rs sites — blame.rs out-of-scope, owned by Agent A) |
+| P2.20 | cache_stats silently treats QueryCache::open failure as 0 bytes | Error Handling | `src/cli/commands/infra/cache_cmd.rs:120-139` | ✅ fixed |
+| P2.21 | slot_remove masks list_slots failure as "only slot remaining" | Error Handling | `src/cli/commands/infra/slot.rs:303-313` | ✅ fixed |
+| P2.22 | build_token_pack swallows get_caller_counts_batch — silently degrades ranking | Error Handling | `src/cli/commands/io/context.rs:438-441` | ✅ fixed |
+| P2.23 | read --focus silently empties type_chunks on store batch failure | Error Handling | `src/cli/commands/io/read.rs:230-235` | ✅ fixed (added `warnings` field to FocusedReadResult/JsonOutput) |
+| P2.24 | serve::build_chunk_detail collapses NULL signature/content to empty string | Error Handling | `src/serve/data.rs:488-492` | ✅ fixed (signature/content_preview now `Option<String>`; JS shows `<missing — DB column NULL>` placeholder) |
+| P2.25 | Per-request span and build_* spans disconnected (spawn_blocking drops span ctx) | Observability | `src/serve/handlers.rs:86,111,131,160,210,236` | ✅ fixed (capture `Span::current()` and re-enter inside the blocking closure at all 6 handlers) |
+| P2.26 | TC-ADV: LocalProvider body-size DoS — buffers entire HTTP response | Test Coverage (adv) | `src/llm/local.rs:474-500` | ✅ fixed (regression-pin tests at `src/llm/local.rs::body_size_dos_tests`: `oversized_response_body_capped_at_max`, `fourxx_with_large_body_does_not_buffer_entire_body`) |
+| P2.27 | TC-ADV: EmbeddingCache/QueryCache accept NaN/Inf — cross-process cache poisoning | Test Coverage (adv) | `src/cache.rs:332-407, 1677-1699` | ✅ fixed |
+| P2.28 | TC-ADV: slot_create/slot_remove TOCTOU under concurrent operation | Test Coverage (adv) | `src/cli/commands/infra/slot.rs:219-350` | ✅ fixed (regression-pin test added: `slot_create_concurrent_same_name_produces_deterministic_outcome`) |
+| P2.29 | TC-ADV: Non-blocking HNSW rebuild — no panic/dim-drift/store-fail tests | Test Coverage (adv) | `src/cli/watch.rs:965-1042` | ✅ fixed (regression-pin tests: `spawn_hnsw_rebuild_dim_mismatch_returns_error_outcome`, `spawn_hnsw_rebuild_missing_index_path_returns_error_outcome`, `drain_clears_pending_when_spawned_rebuild_errors`) |
+| P2.30 | TC-ADV: serve auth strip_token_param case/percent-encoding gaps | Test Coverage (adv) | `src/serve/auth.rs:101-115` | ✅ tests pinned current behavior (capital `Token=`, `%74oken=`, `&&`, multiple `token=`, empty value, capital-T check_request rejects); prod fix follow-on |
+| P2.31 | TC-ADV: slot::migrate_legacy rollback path untested; rollback failure leaves split state | Test Coverage (adv) | `src/slot/mod.rs:511-593` | ✅ fixed (regression-pin tests: `migrate_refuses_to_proceed_when_sentinel_exists`, `migrate_clears_sentinel_on_full_success`) |
+| P2.32 | TC-ADV: LocalProvider non-HTTP api_base + concurrency mis-sizing | Test Coverage (adv) | `src/llm/local.rs:88-121` | ✅ prod fix (api_base scheme guard + worker = min(concurrency, items.len()).max(1)); test skeletons left to follow-on |
+| P2.33 | RB: Slot pointer files read with unbounded read_to_string | Robustness | `src/slot/mod.rs:207, 323` | ✅ fixed |
+| P2.34 | RB: migrate_legacy rollback leaves undetectable half-state | Robustness | `src/slot/mod.rs:511-593` | ✅ fixed |
+| P2.35 | RB: local.rs auth_attempts mutex unwrap cascades worker poison | Robustness | `src/llm/local.rs:393-396` | ✅ fixed |
+| P2.36 | RB: redirect policy disagrees between production (none) and doctor (limited(2)) | Robustness | `src/llm/local.rs:99` vs `src/cli/commands/infra/doctor.rs:578` | ✅ fixed (LocalProvider now uses `limited(2)` to match doctor) |
+| P2.37 | SHL: CAGRA itopk_size < k on small indexes — silent zero-result regression | Scaling | `src/cagra.rs:359` | ✅ fixed (force itopk_size ≥ k; warn-and-empty when k > itopk_max so caller falls back to HNSW) |
+| P2.38 | SHL: nl::generate_nl char_budget defaults to 512 even with 2048 max_seq_len | Scaling | `src/nl/mod.rs:222-229` | ✅ fixed (added `generate_nl_with_template_and_seq_len` + `_with_seq_len` accessor; legacy entry points keep env-only behavior) |
+| P2.39 | SHL: MAX_BATCH_SIZE=10_000 silently truncates summary/HyDE on large corpora | Scaling | `src/llm/mod.rs:192` | ✅ fixed (`crate::limits::llm_max_batch_size` reads CQS_LLM_MAX_BATCH_SIZE; truncation now surfaces on stderr) |
+| P2.40 | SHL: serve graph/cluster cap 50_000 hardcoded; chunk_detail LIMIT 50/50/20 | Scaling | `src/serve/data.rs:17,24,505,542,571` | ✅ fixed (env-tunable via `CQS_SERVE_GRAPH_MAX_NODES/EDGES`, `CQS_SERVE_CLUSTER_MAX_NODES`, `CQS_SERVE_CHUNK_DETAIL_{CALLERS,CALLEES,TESTS}` in `crate::limits`; clamped to hard ceilings) |
+| P2.41 | SHL: embed_batch_size default 64 doesn't scale with model dim/seq | Scaling | `src/cli/pipeline/types.rs:143` | ✅ fixed (added `embed_batch_size_for(model)`; pipeline migration follow-on) |
+| P2.42 | SHL: CagraIndex::gpu_available has no VRAM ceiling — OOMs on 8GB GPUs | Scaling | `src/cagra.rs:262-264` | ✅ fixed (`gpu_available_for(n,dim)` with 2 GiB conservative cap + `CQS_CAGRA_MAX_GPU_BYTES`; legacy `gpu_available` shims through) |
+| P2.43 | semantic_diff sort lacks tie-breaker — non-deterministic JSON across runs | Algorithm | `src/diff.rs:202-207` | ✅ fixed (already cascading; pinned by existing `test_diff_sort_tie_break_deterministic`) |
+| P2.44 | is_structural_query keyword probe misses keywords at end-of-query | Algorithm | `src/search/router.rs:787-789` | ✅ fixed (regression-pin tests added: `test_p2_44_*`) |
+| P2.45 | bfs_expand processes seeds in HashMap order — non-deterministic name_scores at cap | Algorithm | `src/gather.rs:317-320` | ✅ fixed (regression-pin test added: `test_p2_45_bfs_seed_order_is_deterministic`) |
+| P2.46 | llm summary contrastive_neighbors top-K sort lacks tie-breaker | Algorithm | `src/llm/summary.rs:263-267` | ✅ fixed (regression-pin test added: `p2_46_contrastive_neighbors_top_k_deterministic_under_ties`) |
+| P2.47 | reranker compute_scores unchecked batch_size*stride; negative shape[1] panic | Algorithm | `src/reranker.rs:368-387` | ✅ fixed (already guarded via AC-V1.29-6; verified) |
+| P2.48 | doc_comments select_uncached sort lacks chunk-id tertiary key | Algorithm | `src/llm/doc_comments.rs:222-242` | ✅ fixed (already cascading on `a.id.cmp(&b.id)`; verified) |
+| P2.49 | map_hunks_to_functions returns hunks in HashMap order — non-deterministic impact-diff | Algorithm | `src/impact/diff.rs:38-168` | ✅ fixed (BTreeMap by_file + post-loop sort on (file, line_start, name)) |
+| P2.50 | search_reference threshold/weight ordering bug — under-samples corpus when weight<1 | Algorithm | `src/reference.rs:231-285` | ✅ fixed (relax raw_threshold = threshold/weight + 2× over-fetch + post-weight retain/sort/truncate) |
+| P2.51 | find_type_overlap chunk_info uses HashMap iteration — non-deterministic file attribution | Algorithm | `src/related.rs:131-157` | ✅ fixed (sorted result keys + min(file,line) representative + (count desc, name asc) tie-break + sorted type_names) |
+| P2.52 | CAGRA search_with_filter under-fills when included<k — caller can't distinguish | Algorithm | `src/cagra.rs:520-598` | ✅ fixed (cap effective_k = k.min(included)) |
+| P2.53 | Hybrid SPLADE alpha=0 emits 1.0+s scores; cliff at SPLADE boundary | Algorithm | `src/search/query.rs:649-672` | ✅ fixed (boost = s * 0.1; dense cosine remains dominant signal) |
+| P2.54 | apply_scoring_pipeline sign-flips on out-of-range name_boost; clamp embedding pre-blend | Algorithm | `src/search/scoring/candidate.rs:283-298` | ✅ fixed (clamp `embedding_score` into [0,1] before blend; name_boost clamp already present) |
+| P2.55 | open_browser uses explorer.exe on Windows — drops query string/token | Platform | `src/cli/commands/serve.rs:89-104` | ✅ fixed |
+| P2.56 | NTFS/FAT32 mtime equality check — watch loop skips second save on FAT32 USB | Platform | `src/cli/watch.rs:551-560` | ✅ fixed (actual equality at watch.rs:2475 — strict `<` on WSL drvfs paths) |
+| P2.57 | enforce_host_allowlist accepts missing Host header (dev ergonomic) | Platform | `src/serve/mod.rs:230-251` | ✅ fixed (covered by P1.12 — now rejects missing Host) |
+| P2.58 | --bind 0.0.0.0 host-allowlist breaks LAN — pushes operators to --no-auth | Security | `src/serve/mod.rs:207-218` | ✅ fixed (wildcard bind returns empty allowlist + startup warn; middleware short-circuits to "accept any Host"; per-launch token remains primary defence — avoids new `if_addrs` dep) |
+| P2.59 | Migration restore_from_backup overwrites live DB while pool open | Data Safety | `src/store/backup.rs:171-180` | 📋 issue #1125 |
+| P2.60 | stream_summary_writer bypasses WRITE_LOCK — concurrent writer collides with reindex | Data Safety | `src/store/chunks/crud.rs:504-545` | 📋 issue #1126 |
+| P2.61 | slot_remove TOCTOU on concurrent promote — active_slot points to deleted dir | Data Safety | `src/cli/commands/infra/slot.rs:299-350` | ✅ fixed |
+| P2.62 | Slot legacy migration moves live WAL/SHM instead of checkpointing first | Data Safety | `src/slot/mod.rs:511-624` | ✅ fixed |
+| P2.63 | model_fingerprint fallback uses Unix timestamp — every restart misses cache | Data Safety | `src/embedder/mod.rs:435-465` | ✅ fixed |
+| P2.64 | Daemon serializes ALL queries through one Mutex<BatchContext> | Data Safety | `src/cli/watch.rs:1775-1858` | 📋 issue #1127 |
+| P2.65 | embedding_cache schema doesn't separate `embedding` vs `embedding_base` purpose | Data Safety | `src/cache.rs:159-171` | 📋 issue #1128 |
+| P2.66 | cache evict() vs write_batch race — evict deletes rows just inserted | Data Safety | `src/cache.rs:354-460` | ✅ fixed |
+| P2.67 | PF: reindex_files watch path double-parses calls per chunk | Performance | `src/cli/watch.rs:2815, 2930-2939` | ✅ fixed |
+| P2.68 | PF: reindex_files watch path bypasses global EmbeddingCache | Performance | `src/cli/watch.rs:2876-2887` | 📋 issue #1129 |
+| P2.69 | PF: wrap_value deep-clones entire payload via serde round trip | Performance | `src/cli/json_envelope.rs:160-176` | ✅ fixed |
+| P2.70 | PF: build_graph correlated subquery for n_callers — N rows × COUNT(*) | Performance | `src/serve/data.rs:234-264` | ✅ fixed (replaced per-row correlated subquery with `LEFT JOIN (SELECT callee_name, COUNT(*) ... GROUP BY)` — O(M+N) instead of O(N log M)) |
+| P2.71 | RM: Background HNSW rebuild thread detached — daemon shutdown can't wait | Resource Mgmt | `src/cli/watch.rs:965-1042` | ✅ fixed |
+| P2.72 | RM: pending_rebuild.delta grows unbounded during long rebuild | Resource Mgmt | `src/cli/watch.rs:611, 2667-2741` | ✅ fixed |
+| P2.73 | RM: LocalProvider::stash retains all submitted batch results until drop | Resource Mgmt | `src/llm/local.rs:74, 304-309, 542-547` | ✅ fixed (cap MAX_STASH_BATCHES=128; evict-oldest on insert) |
+| P2.74 | RM: Daemon never checks fs.inotify.max_user_watches — silently drops events | Resource Mgmt | `src/cli/watch.rs:1947-1949` | ✅ fixed |
+| P2.75 | RM: select_provider triggers CUDA probe + symlink for every CLI process | Resource Mgmt | `src/embedder/provider.rs:171-248` | ✅ fixed (Embedder.provider is now `OnceLock<ExecutionProvider>` resolved on first inference; `new_cpu` pre-populates) |
+| P2.76 | RM: serve handlers spawn_blocking unbounded — 512 thread × 10MB working set | Resource Mgmt | `src/serve/handlers.rs:86-89` + `mod.rs:92` | ✅ fixed (semaphore in `AppState.blocking_permits`, default 32, env-tunable via `CQS_SERVE_BLOCKING_PERMITS`; permit acquired before spawn_blocking and held by closure) |
+| P2.77 | RM: Embedder clear_session doubled-memory window invisible | Resource Mgmt | `src/embedder/mod.rs:261, 808-823` | ✅ fixed (logs `strong_count` when in-flight inference is mid-encode at clear time) |
+| P2.78 | TC-HAP: cqs serve data endpoints never tested with populated data | Test Coverage | `src/serve/data.rs` + `src/serve/tests.rs` | ✅ fixed (populated_fixture tests at serve/tests.rs:1007–1146) |
+| P2.79 | TC-HAP: 16 batch dispatch handlers have zero tests | Test Coverage | `src/cli/batch/handlers/{misc,graph,info}.rs` | ✅ fixed (8 new tests across graph/info/misc handlers + the pre-existing 7-test `dispatch_tests` mod cover the high-traffic surface: `dispatch_callers/callees/related/impact_diff` in `graph::tests`, `dispatch_stats` in `info::tests`, `dispatch_ping/help/refresh` in `misc::tests`) |
+| P2.80 | TC-HAP: Reranker::rerank/rerank_with_passages have no tests | Test Coverage | `src/reranker.rs:160, 190` | ✅ fixed (`test_rerank_empty_input_returns_empty` no-op shortcut + `#[ignore]`-gated `test_rerank_reorders_by_relevance` for the model-loading happy path) |
+| P2.81 | TC-HAP: cmd_project Search has no CLI integration test | Test Coverage | `src/cli/commands/infra/project.rs:70` | ✅ fixed (`tests/cli_project_search_test.rs` — XDG-isolated two-project search with assert_cmd, gated behind `slow-tests`) |
+| P2.82 | TC-HAP: cqs ref add/list/remove/update no end-to-end CLI test | Test Coverage | `src/cli/commands/infra/reference.rs` | ✅ fixed (`tests/cli_ref_test.rs` — round-trip add/list/remove/update coverage) |
+| P2.83 | TC-HAP: handle_socket_client no happy-path round-trip test | Test Coverage | `src/cli/watch.rs:160` | ✅ fixed (UnixStream-pair round-trip in `watch::adversarial_socket_tests` — seeds chunk, sends `stats` request, asserts `status:ok` envelope with numeric `total_chunks`) |
+| P2.84 | TC-HAP: spawn_hnsw_rebuild/drain_pending_rebuild ship with zero tests | Test Coverage | `src/cli/watch.rs spawn_hnsw_rebuild` | ✅ fixed (covered by P2.29 spawn_hnsw_rebuild tests + existing `drain_pending_rebuild_*` tests in watch::tests) |
+| P2.85 | TC-HAP: for_each_command! macro + 4 emitters have no behavioral tests | Test Coverage | `src/cli/registry.rs:61` | ✅ fixed (`variant_name_pins_critical_command_labels` + 3× `batch_support_*` tests in `definitions::tests` exercise the macro-emitted `variant_name()` and `batch_support()` impls) |
+| P2.86 | TC-HAP: build_hnsw_index_owned/build_hnsw_base_index — no direct tests | Test Coverage | `src/cli/commands/index/build.rs:848,880` | ✅ fixed (4 direct happy-path + empty-store tests added in `build::tests`) |
+| P2.87 | TC-HAP: hyde_query_pass and doc_comment_pass have zero tests | Test Coverage | `src/llm/hyde.rs:11`, `src/llm/doc_comments.rs:135` | ✅ fixed (`hyde_query_pass_returns_zero_for_empty_store`, `doc_comment_pass_returns_empty_for_empty_store` — local-provider config, empty-store short-circuit) |
+| P2.88 | EX: Adding third score signal touches two parallel fusion paths | Extensibility | `src/store/search.rs:182-229`, `src/search/query.rs:511-720` | 📋 issue #1130 |
+| P2.89 | EX: Vector index backend selection is hand-coded if/else; no IndexBackend trait | Extensibility | `src/cli/store.rs:423-540` | 📋 issue #1131 |
+| P2.90 | EX: ScoringOverrides knob → 4 sites; no shared resolver | Extensibility | `src/config.rs:153-172` + scoring | 📋 issue #1132 |
+| P2.91 | EX: NoteEntry has no kind/tag taxonomy — only sentiment | Extensibility | `src/note.rs:41-89` | 📋 issue #1133 |
+| P2.92 | RM: Embedder::new opens fresh QueryCache + 7-day prune on every CLI command | Resource Mgmt | `src/embedder/mod.rs:355-366` | ✅ fixed |
 
 ## P3 — Quick Wins
 

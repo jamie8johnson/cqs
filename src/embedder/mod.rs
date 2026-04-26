@@ -261,13 +261,29 @@ pub struct Embedder {
     tokenizer: Mutex<Option<Arc<tokenizers::Tokenizer>>>,
     /// Lazy-loaded model paths (avoids HuggingFace API calls until actually embedding)
     model_paths: OnceCell<(PathBuf, PathBuf)>,
-    provider: ExecutionProvider,
+    /// P2.75: lazy execution-provider resolution. Was a precomputed
+    /// `ExecutionProvider` populated in `Embedder::new` via
+    /// `select_provider()` — that function probes for CUDA, runs symlink
+    /// ops, and is invoked on every CLI process even for commands that
+    /// never embed (notes list, slot list, cache stats, …). The
+    /// `OnceLock` defers the probe to first inference. `None` in the
+    /// initial slot encodes "no provider was eagerly chosen"; a `Some`
+    /// pre-populated by `new_with_provider(_, CPU)` keeps the explicit
+    /// `Embedder::new_cpu` shortcut working.
+    provider: std::sync::OnceLock<ExecutionProvider>,
     max_length: usize,
     /// LRU cache for query embeddings (avoids re-computing same queries)
     query_cache: Mutex<LruCache<String, Embedding>>,
     /// Disk-backed query cache (persists across CLI invocations).
     /// Best-effort: failures are logged and silently skipped.
-    disk_query_cache: Option<crate::cache::QueryCache>,
+    ///
+    /// P2.92: lazily opened on first `embed_query` so commands that never
+    /// touch query embeddings (`notes list`, `slot list`, `cache stats`,
+    /// etc.) skip the WSL DrvFS 30-50ms cold-open + 7-day prune. The
+    /// outer `OnceLock` is initialized empty in `Embedder::new`; the inner
+    /// `Option` is populated on first access — `Some` if the cache opened
+    /// successfully, `None` if it failed (best-effort fallback).
+    disk_query_cache: std::sync::OnceLock<Option<crate::cache::QueryCache>>,
     /// Detected embedding dimension from the model. Set on first inference.
     detected_dim: std::sync::OnceLock<usize>,
     /// Model configuration (repo, paths, prefixes, dimensions)
@@ -308,8 +324,11 @@ impl Embedder {
     /// Note: Model download and ONNX session are lazy-loaded on first
     /// embedding request. This avoids HuggingFace API calls for commands
     /// that don't need embeddings.
+    ///
+    /// P2.75: provider selection (CUDA probe + ORT EP symlink ops) is also
+    /// deferred — see [`Self::provider`].
     pub fn new(model_config: ModelConfig) -> Result<Self, EmbedderError> {
-        Self::new_with_provider(model_config, select_provider())
+        Self::new_lazy_provider(model_config)
     }
 
     /// Create a CPU-only embedder with lazy model loading.
@@ -320,11 +339,27 @@ impl Embedder {
         Self::new_with_provider(model_config, ExecutionProvider::CPU)
     }
 
+    /// P2.75: build an embedder without resolving the execution provider.
+    /// The probe runs on first inference via [`Self::provider`].
+    fn new_lazy_provider(model_config: ModelConfig) -> Result<Self, EmbedderError> {
+        let mut emb = Self::new_inner(model_config)?;
+        emb.provider = std::sync::OnceLock::new();
+        Ok(emb)
+    }
+
     /// Shared constructor for both GPU-auto and CPU-only embedders.
     fn new_with_provider(
         model_config: ModelConfig,
         provider: ExecutionProvider,
     ) -> Result<Self, EmbedderError> {
+        let emb = Self::new_inner(model_config)?;
+        // P2.75: pre-populate the OnceLock so `provider()` returns this
+        // explicit choice without ever calling `select_provider()`.
+        let _ = emb.provider.set(provider);
+        Ok(emb)
+    }
+
+    fn new_inner(model_config: ModelConfig) -> Result<Self, EmbedderError> {
         let max_length = model_config.max_seq_length;
 
         let cache_size = match std::env::var("CQS_QUERY_CACHE_SIZE") {
@@ -350,34 +385,57 @@ impl Embedder {
             NonZeroUsize::new(cache_size).expect("cache_size is non-zero"),
         ));
 
-        // Best-effort disk cache for query embeddings. Opens a small SQLite
-        // DB at ~/.cache/cqs/query_cache.db. Failure is non-fatal.
-        let disk_query_cache =
-            match crate::cache::QueryCache::open(&crate::cache::QueryCache::default_path()) {
-                Ok(c) => {
-                    // Prune entries older than 7 days (background, non-blocking)
-                    let _ = c.prune_older_than(7);
-                    Some(c)
-                }
-                Err(e) => {
-                    tracing::debug!(error = %e, "Disk query cache unavailable (non-fatal)");
-                    None
-                }
-            };
+        // P2.92: defer disk-cache open + 7-day prune until first `embed_query`.
+        // The 16+ commands that never embed a query (notes/slot/cache/etc.) used
+        // to pay 30-50ms on WSL DrvFS for a cache they never touched.
 
         Ok(Self {
             session: Mutex::new(None),
             tokenizer: Mutex::new(None),
             model_paths: OnceCell::new(),
-            provider,
+            // P2.75: lazy. Both `new_lazy_provider` and `new_with_provider`
+            // overwrite this slot before returning.
+            provider: std::sync::OnceLock::new(),
             max_length,
             query_cache,
-            disk_query_cache,
+            disk_query_cache: std::sync::OnceLock::new(),
             detected_dim: std::sync::OnceLock::new(),
             model_config,
             model_fingerprint: std::sync::OnceLock::new(),
             pad_id: std::sync::OnceLock::new(),
         })
+    }
+
+    /// P2.75: lazy provider accessor. Resolves on first call by running the
+    /// CUDA probe, then memoises. Pre-populated by `new_with_provider` for
+    /// the explicit-CPU path. Replaces the eagerly-resolved `provider`
+    /// field; matches the public visibility of the previous accessor so
+    /// out-of-crate callers compile unchanged.
+    pub fn provider(&self) -> ExecutionProvider {
+        *self
+            .provider
+            .get_or_init(crate::embedder::provider::select_provider)
+    }
+
+    /// Lazy accessor for the on-disk query embedding cache. Opens (and runs
+    /// the 7-day prune) on first call; subsequent calls return the cached
+    /// `Option<&QueryCache>`. Failure to open is non-fatal — caller treats
+    /// `None` as "no disk cache available" and proceeds.
+    fn disk_query_cache(&self) -> Option<&crate::cache::QueryCache> {
+        self.disk_query_cache
+            .get_or_init(|| {
+                match crate::cache::QueryCache::open(&crate::cache::QueryCache::default_path()) {
+                    Ok(c) => {
+                        let _ = c.prune_older_than(7);
+                        Some(c)
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "Disk query cache unavailable (non-fatal)");
+                        None
+                    }
+                }
+            })
+            .as_ref()
     }
 
     /// Get the model configuration
@@ -391,26 +449,36 @@ impl Embedder {
     /// models with the same name but different weights (fine-tuned, different
     /// HF revision, different ONNX export).
     pub fn model_fingerprint(&self) -> &str {
+        // P2.63: stable fallback fingerprint — must NOT include any value
+        // that changes across process restarts. Cross-slot embedding cache
+        // copy by content_hash relies on the model fingerprint matching
+        // across runs, so a per-restart Unix timestamp shape would fragment
+        // the cache and orphan every fallback embedding.
+        fn fallback_fingerprint(repo: &str, size: u64) -> String {
+            format!("{}:fallback:size={}", repo, size)
+        }
         self.model_fingerprint.get_or_init(|| {
             let _span = tracing::info_span!("compute_model_fingerprint").entered();
             match self.model_paths() {
                 Ok((model_path, _)) => {
                     match std::fs::metadata(model_path) {
                         Ok(meta) if meta.len() > 2 * 1024 * 1024 * 1024 => {
-                            // >2GB: fallback to name + size + mtime
-                            let mtime = meta
-                                .modified()
-                                .ok()
-                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
-                            let fp = format!(
-                                "{}_{}_{}",
-                                self.model_config.repo,
-                                meta.len(),
-                                mtime
+                            // P2.63: >2GB models skip the streaming hash (would
+                            // OOM on 32-bit / RAM-constrained boxes), but the
+                            // previous `repo_size_mtime` shape used wall-clock
+                            // mtime — `touch model.onnx` after every download
+                            // would mint a new fingerprint and orphan the cache.
+                            // mtime IS stable across restarts (filesystem
+                            // metadata, not wall clock at fingerprint time), so
+                            // it's safe in principle, but we prefer the
+                            // size-only fallback for parity with the
+                            // hash-failure path below — operators see the same
+                            // shape regardless of which fallback fired.
+                            let fp = fallback_fingerprint(&self.model_config.repo, meta.len());
+                            tracing::info!(
+                                size = meta.len(),
+                                "Model >2GB, using stable size-based fingerprint"
                             );
-                            tracing::info!(size = meta.len(), "Model >2GB, using metadata fingerprint");
                             fp
                         }
                         _ => {
@@ -433,10 +501,11 @@ impl Embedder {
                                             hash
                                         }
                                         Err(e) => {
-                                            // P1.8: stable size-based fallback,
-                                            // not timestamp — every restart with
-                                            // a transient hash failure used to mint
-                                            // a NEW fingerprint and thrash the cache.
+                                            // P1.8 / P2.63: stable size-based
+                                            // fallback, not timestamp — every
+                                            // restart with a transient hash
+                                            // failure used to mint a NEW
+                                            // fingerprint and thrash the cache.
                                             tracing::warn!(
                                                 error = %e,
                                                 "Failed to stream-hash model, using repo+size fallback (cache may miss until next successful hash)"
@@ -445,12 +514,12 @@ impl Embedder {
                                                 .ok()
                                                 .map(|m| m.len())
                                                 .unwrap_or(0);
-                                            format!("{}:fallback:size={}", self.model_config.repo, size)
+                                            fallback_fingerprint(&self.model_config.repo, size)
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    // P1.8: stable size-based fallback (see above).
+                                    // P1.8 / P2.63: stable size-based fallback (see above).
                                     tracing::warn!(
                                         error = %e,
                                         "Failed to open model for fingerprint, using repo+size fallback"
@@ -459,7 +528,7 @@ impl Embedder {
                                         .ok()
                                         .map(|m| m.len())
                                         .unwrap_or(0);
-                                    format!("{}:fallback:size={}", self.model_config.repo, size)
+                                    fallback_fingerprint(&self.model_config.repo, size)
                                 }
                             }
                         }
@@ -491,7 +560,7 @@ impl Embedder {
         if guard.is_none() {
             let _span = tracing::info_span!("embedder_session_init").entered();
             let (model_path, _) = self.model_paths()?;
-            *guard = Some(create_session(model_path, self.provider)?);
+            *guard = Some(create_session(model_path, self.provider())?);
             tracing::info!("Embedder session initialized");
         }
         Ok(guard)
@@ -695,11 +764,8 @@ impl Embedder {
     pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbedderError> {
         let _span = tracing::info_span!("embed_documents", count = texts.len()).entered();
         let prefix = &self.model_config.doc_prefix;
-        let max_batch: usize = std::env::var("CQS_EMBED_BATCH_SIZE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|&n: &usize| n > 0)
-            .unwrap_or(64);
+        // P2.4: route through shared `parse_env_usize` helper.
+        let max_batch: usize = crate::limits::parse_env_usize("CQS_EMBED_BATCH_SIZE", 64);
         if texts.len() <= max_batch {
             let prefixed: Vec<String> = texts.iter().map(|t| format!("{}{}", prefix, t)).collect();
             return self.embed_batch(&prefixed);
@@ -724,11 +790,8 @@ impl Embedder {
     /// prevents O(n) tokenization work on megabyte-sized inputs.
     /// Configurable via `CQS_MAX_QUERY_BYTES` (default 32768).
     fn max_query_bytes() -> usize {
-        std::env::var("CQS_MAX_QUERY_BYTES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|&n: &usize| n > 0)
-            .unwrap_or(32 * 1024)
+        // P2.4: route through shared `parse_env_usize` helper.
+        crate::limits::parse_env_usize("CQS_MAX_QUERY_BYTES", 32 * 1024)
     }
 
     pub fn embed_query(&self, text: &str) -> Result<Embedding, EmbedderError> {
@@ -769,7 +832,7 @@ impl Embedder {
 
         // Check disk cache (survives across CLI invocations)
         let model_fp = self.model_fingerprint();
-        if let Some(ref disk) = self.disk_query_cache {
+        if let Some(disk) = self.disk_query_cache() {
             if let Some(cached) = disk.get(text, model_fp) {
                 tracing::trace!(query = text, "Query cache hit (disk)");
                 // Populate in-memory LRU for fast subsequent hits
@@ -798,17 +861,18 @@ impl Embedder {
             });
             cache.put(text.to_string(), embedding.clone());
         }
-        if let Some(ref disk) = self.disk_query_cache {
+        if let Some(disk) = self.disk_query_cache() {
             disk.put(text, model_fp, &embedding);
         }
 
         Ok(embedding)
     }
 
-    /// Get the execution provider being used
-    pub fn provider(&self) -> ExecutionProvider {
-        self.provider
-    }
+    // P2.75: previously `pub fn provider(&self) -> ExecutionProvider`
+    // returned the eagerly-resolved field. Now superseded by the lazy
+    // accessor defined above (`pub(crate) fn provider`). External callers
+    // expecting the public symbol fall through to the lazy accessor's
+    // `pub(crate)` visibility — switch to that name.
 
     /// Clear the ONNX session to free memory (~500MB).
     ///
@@ -831,6 +895,26 @@ impl Embedder {
         // with its own copy; the inner `Option` slot is cleared and will
         // lazy-reload on the next `tokenizer()` access.
         let mut tok = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
+        // P2.77: surface the doubled-memory window when in-flight inference
+        // is mid-encode. `Arc::strong_count > 1` means a worker thread
+        // holds a clone of the old tokenizer; the inner Option clears here,
+        // but the cloned Arc keeps the old tokenizer alive until that
+        // thread releases it. Peak memory transiently exceeds the
+        // documented ~500 MB by the tokenizer size (~10–20 MB on BGE-large).
+        // Operators correlating memory spikes need this signal — option (a)
+        // (RwLock around tokenizer + clear takes write lock) is higher-risk
+        // because it extends the inference critical section.
+        if let Some(t) = tok.as_ref() {
+            let strong = std::sync::Arc::strong_count(t);
+            if strong > 1 {
+                tracing::info!(
+                    strong_count = strong,
+                    stage = "clear_during_inference",
+                    "tokenizer Arc still referenced by in-flight inference; \
+                     transient doubled-memory window during reload"
+                );
+            }
+        }
         *tok = None;
         tracing::info!("Embedder session, query cache, and tokenizer cleared");
     }

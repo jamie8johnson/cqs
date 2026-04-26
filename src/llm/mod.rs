@@ -156,6 +156,11 @@ pub enum LlmError {
     BatchFailed(String),
     #[error("Invalid batch ID: {0}")]
     InvalidBatchId(String),
+    /// P2.18: a `fetch_batch_results` call could not locate the requested
+    /// `batch_id` in its in-memory stash. Distinguished from transient
+    /// `Http`/`Api` errors so callers can decide whether to retry.
+    #[error("batch not found: {0}")]
+    BatchNotFound(String),
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("Store error: {0}")]
@@ -189,7 +194,9 @@ fn max_content_chars() -> usize {
     })
 }
 const MIN_CONTENT_CHARS: usize = 50;
-const MAX_BATCH_SIZE: usize = 10_000;
+// P2.39 — `MAX_BATCH_SIZE` const removed. Callers now use
+// `crate::limits::llm_max_batch_size()` directly so the env override
+// `CQS_LLM_MAX_BATCH_SIZE` takes effect.
 /// Max tokens for HyDE query predictions (3-5 short queries).
 const HYDE_MAX_TOKENS: u32 = 150;
 /// Poll interval for batch completion

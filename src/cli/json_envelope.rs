@@ -158,21 +158,22 @@ impl Envelope<serde_json::Value> {
 /// paths share the same shape — adding a new envelope field (e.g. `meta`)
 /// touches one place.
 pub fn wrap_value(payload: &serde_json::Value) -> serde_json::Value {
-    serde_json::to_value(Envelope::ok(payload)).unwrap_or_else(|e| {
-        // Envelope<T> serialize failures are structurally impossible today
-        // (the inner payload is already a Value, the wrapper has no
-        // non-Serializable fields). Logging at warn keeps the failure
-        // visible if the structure ever changes. The fallback path clones
-        // the payload (json! macro takes ownership) — acceptable cost
-        // because we only reach this branch on a serializer regression.
-        tracing::warn!(error = %e, "wrap_value: envelope serialization failed; emitting fallback shape");
-        let owned = payload.clone();
-        serde_json::json!({
-            "data": owned,
-            "error": null,
-            "version": JSON_OUTPUT_VERSION,
-        })
-    })
+    // P2.69: build the envelope as a Map directly. Previously we ran the
+    // payload through `serde_json::to_value(Envelope::ok(&payload))`, which
+    // walks the inner tree and rebuilds every Map/Vec — a deep clone in
+    // disguise. The hot-path daemon dispatch wraps tens of KB per query at
+    // hundreds of QPS, so the deep clone is real allocator pressure. Building
+    // the outer Map by hand makes the shallow `payload.clone()` the only
+    // allocation. Schema is identical and Envelope<T>::serialize stays as the
+    // canonical typed shape (see [`Envelope::ok`]).
+    let mut env = serde_json::Map::with_capacity(3);
+    env.insert("data".to_string(), payload.clone());
+    env.insert("error".to_string(), serde_json::Value::Null);
+    env.insert(
+        "version".to_string(),
+        serde_json::Value::Number(JSON_OUTPUT_VERSION.into()),
+    );
+    serde_json::Value::Object(env)
 }
 
 /// Build an error envelope as a raw [`serde_json::Value`]. P2 #40: thin

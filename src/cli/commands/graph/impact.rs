@@ -50,7 +50,7 @@ pub(crate) fn cmd_impact(
             return Ok(());
         }
         if matches!(format, OutputFormat::Json) {
-            let json = impact_to_json(&result);
+            let json = impact_to_json(&result)?;
             crate::cli::json_envelope::emit_json(&json)?;
         } else {
             let rel_file = "(cross-project)";
@@ -90,7 +90,7 @@ pub(crate) fn cmd_impact(
     }
 
     if matches!(format, OutputFormat::Json) {
-        let mut json = impact_to_json(&result);
+        let mut json = impact_to_json(&result)?;
         if do_suggest_tests {
             let suggestions_json = format_test_suggestions(&suggestions);
             if let Some(obj) = json.as_object_mut() {

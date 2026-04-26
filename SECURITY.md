@@ -74,8 +74,9 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 | `.cqs/splade.index.bin` | SPLADE sparse inverted index | Search operations (`--splade` or routed cross-language) |
 | `docs/notes.toml` | Developer notes | Search, `cqs read` |
 | `~/.cache/huggingface/` | ML model cache | Embedding operations |
+| `<project>/.cqs/embeddings_cache.db` | Per-project embedding cache (PR #1105, primary; legacy global cache at `~/.cache/cqs/embeddings.db` is fallback) | `cqs index`, search |
 | `~/.cache/cqs/embeddings.db` | Global embedding cache (content-addressed, capped at 1 GB) | Index and search |
-| `~/.cache/cqs/query_cache.db` | Recent query embedding cache (7-day TTL) | Search |
+| `~/.cache/cqs/query_cache.db` | Recent query embedding cache (size-capped at `CQS_QUERY_CACHE_MAX_SIZE`, 100 MiB default) | Search |
 | `~/.config/cqs/` | Config file (user-level defaults) | All operations |
 | `$CQS_ONNX_DIR/` | Local ONNX model directory | When `CQS_ONNX_DIR` is set |
 | `~/.local/share/cqs/refs/*/` | Reference indexes (read-only copies) | Search operations |
@@ -96,7 +97,8 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 | `.cqs.toml` | Reference configuration | `cqs ref add`, `cqs ref remove` |
 | `~/.config/cqs/projects.toml` | Project registry | `cqs project register`, `cqs project remove` |
 | `~/.local/share/cqs/refs/*/` | Reference index creation and updates (write) | `cqs ref add`, `cqs ref update` |
-| `~/.cache/cqs/embeddings.db` | Global embedding cache writes | `cqs index` |
+| `<project>/.cqs/embeddings_cache.db` | Per-project embedding cache writes (primary; PR #1105) | `cqs index`, search |
+| `~/.cache/cqs/embeddings.db` | Global embedding cache writes (legacy fallback) | `cqs index` |
 | `~/.cache/cqs/query_cache.db` | Recent query embedding cache writes | Search (cache miss) |
 | `~/.cache/cqs/query_log.jsonl` | Local query log (append-only) | `cqs chat` / `cqs batch` (search, gather, onboard, scout, where, task) |
 | Project source files | Doc comment insertion | `cqs index --llm-summaries --improve-docs` |

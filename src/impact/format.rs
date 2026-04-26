@@ -8,11 +8,11 @@ use super::types::{DiffImpactResult, ImpactResult, TestSuggestion};
 /// construction time by `analyze_impact`). Count fields (`caller_count`,
 /// `test_count`, `type_impacted_count`) are computed by the custom `Serialize`
 /// impl on `ImpactResult`.
-pub fn impact_to_json(result: &ImpactResult) -> serde_json::Value {
-    serde_json::to_value(result).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to serialize ImpactResult");
-        serde_json::json!({})
-    })
+pub fn impact_to_json(result: &ImpactResult) -> Result<serde_json::Value, serde_json::Error> {
+    // P2.19: `serde_json::to_value` only fails on `Serialize` impl bugs —
+    // these are programmer errors, must fail loud rather than coerce to
+    // `{}` and a tracing warn that agents won't see.
+    serde_json::to_value(result)
 }
 
 /// Format test suggestions as JSON values.
@@ -98,11 +98,11 @@ pub fn impact_to_mermaid(result: &ImpactResult) -> String {
 ///
 /// Paths in the result are already relative to the project root.
 /// Uses typed `Serialize` on `DiffImpactResult`.
-pub fn diff_impact_to_json(result: &DiffImpactResult) -> serde_json::Value {
-    serde_json::to_value(result).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to serialize DiffImpactResult");
-        serde_json::json!({})
-    })
+pub fn diff_impact_to_json(
+    result: &DiffImpactResult,
+) -> Result<serde_json::Value, serde_json::Error> {
+    // P2.19: same rationale as `impact_to_json` — surface the bug.
+    serde_json::to_value(result)
 }
 
 /// CQ-V1.29-5: shared empty-diff JSON envelope.
@@ -218,7 +218,7 @@ mod tests {
             type_impacted: Vec::new(),
             degraded: false,
         };
-        let json = impact_to_json(&result);
+        let json = impact_to_json(&result).unwrap();
 
         assert_eq!(json["name"], "target_fn");
         assert_eq!(json["caller_count"], 1);
@@ -251,7 +251,7 @@ mod tests {
             type_impacted: Vec::new(),
             degraded: false,
         };
-        let json = impact_to_json(&result);
+        let json = impact_to_json(&result).unwrap();
 
         assert!(json["transitive_callers"].is_array());
         let trans = json["transitive_callers"].as_array().unwrap();
@@ -270,7 +270,7 @@ mod tests {
             type_impacted: Vec::new(),
             degraded: false,
         };
-        let json = impact_to_json(&result);
+        let json = impact_to_json(&result).unwrap();
 
         assert_eq!(json["name"], "lonely");
         assert_eq!(json["caller_count"], 0);
@@ -314,7 +314,7 @@ mod tests {
                 degraded: false,
             },
         };
-        let json = diff_impact_to_json(&result);
+        let json = diff_impact_to_json(&result).unwrap();
 
         let changed = json["changed_functions"].as_array().unwrap();
         assert_eq!(changed.len(), 1);
@@ -352,7 +352,7 @@ mod tests {
                 degraded: false,
             },
         };
-        let json = diff_impact_to_json(&result);
+        let json = diff_impact_to_json(&result).unwrap();
 
         assert_eq!(json["changed_functions"].as_array().unwrap().len(), 0);
         assert_eq!(json["callers"].as_array().unwrap().len(), 0);

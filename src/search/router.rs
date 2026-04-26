@@ -1246,6 +1246,36 @@ mod tests {
         assert_eq!(c.confidence, Confidence::Medium);
     }
 
+    /// P2.44 regression-pin: structural keywords at end-of-query must
+    /// classify as Structural. The previous impl wrapped the keyword in
+    /// `format!(" {} ", kw)` and looked for that as a substring — any
+    /// keyword sitting at the end of the string failed the substring
+    /// search and silently misrouted to Conceptual α=0.70.
+    #[test]
+    fn test_p2_44_structural_keywords_at_end_of_query() {
+        for q in &[
+            "find all trait",
+            "show me all trait",
+            "find every impl",
+            "list all enum",
+            "all class",
+            "find enum",
+        ] {
+            assert!(
+                is_structural_query(q),
+                "query `{q}` must classify as structural"
+            );
+        }
+    }
+
+    /// P2.44 regression-pin: structural keywords as substrings of normal
+    /// words ("training" contains "trait") must NOT false-fire structural.
+    #[test]
+    fn test_p2_44_structural_keyword_as_substring_does_not_match() {
+        assert!(!is_structural_query("training pipeline"));
+        assert!(!is_structural_query("classifier"));
+    }
+
     #[test]
     fn test_classify_type_filtered() {
         let c = classify_query("all test functions");

@@ -613,4 +613,10 @@ pub(crate) struct IndexArgs {
     /// invocation; on large corpora (50k+ chunks) can take ~2 minutes CPU.
     #[arg(long)]
     pub umap: bool,
+    /// P2.12: emit a structured JSON envelope summarizing the index run on
+    /// completion. Suppresses progress prints in favor of a single
+    /// `{indexed_files, indexed_chunks, took_ms, model, …}` summary so
+    /// JSON-driven agents can chain `cqs init && cqs index --json`.
+    #[arg(long)]
+    pub json: bool,
 }

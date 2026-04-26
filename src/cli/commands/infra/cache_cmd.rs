@@ -78,6 +78,16 @@ fn resolve_cache_path() -> std::path::PathBuf {
 pub(crate) fn cmd_cache(cli: &Cli, subcmd: &CacheCommand) -> Result<()> {
     let _span = tracing::info_span!("cmd_cache").entered();
 
+    // P2.13: the embeddings cache is project-scoped (see PR #1105 design),
+    // *not* per-slot. A user passing `cqs --slot foo cache stats` was getting
+    // silent acceptance with the project-default path resolved anyway.
+    // Surface the misuse explicitly so we don't pretend to honor `--slot`.
+    if cli.slot.is_some() {
+        anyhow::bail!(
+            "--slot has no effect on `cqs cache` subcommands (the embeddings cache is project-scoped, not per-slot)"
+        );
+    }
+
     let cache_path = resolve_cache_path();
     let cache = EmbeddingCache::open(&cache_path)
         .with_context(|| format!("Failed to open embedding cache at {}", cache_path.display()))?;
@@ -119,40 +129,50 @@ fn cache_stats(
 
     // P3 #124: surface persistent QueryCache size alongside the embedding
     // cache so `cqs cache stats --json` consumers can monitor both.
-    // Open is best-effort — missing file is reported as 0 bytes.
-    let query_cache_size_bytes: u64 = {
+    // P2.20: report a structured `query_cache_status` so consumers can
+    // distinguish "missing file" (legitimate 0) from "open failed" (which
+    // previously also coerced to 0 with only a tracing warn).
+    let (query_cache_size_bytes, query_cache_status): (u64, String) = {
         let q_path = QueryCache::default_path();
-        if q_path.exists() {
+        if !q_path.exists() {
+            (0, "missing".to_string())
+        } else {
             match QueryCache::open(&q_path) {
-                Ok(qc) => qc.size_bytes().unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "Query cache size_bytes failed");
-                    0
-                }),
+                Ok(qc) => match qc.size_bytes() {
+                    Ok(n) => (n, "ok".to_string()),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Query cache size_bytes failed");
+                        (0, format!("error: {e}"))
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(error = %e, "Query cache open failed for stats");
-                    0
+                    (0, format!("error: {e}"))
                 }
             }
-        } else {
-            0
         }
     };
 
     if json {
-        // P1 #11: `total_size_mb` is a numeric field so consumers can do
-        // arithmetic on it (e.g., `obj["total_size_mb"] + 1`). Earlier
-        // `format!("{:.1}", ...)` made it a string and broke programmatic use.
+        // P2.16: `total_size_mb` was a derived MB float from the underlying
+        // `total_size_bytes`. Two competing units in one JSON envelope let
+        // callers diverge silently (one consumer sums bytes, another sums MB,
+        // they disagree by 1.048576x). Drop the derived MB field — bytes is
+        // canonical, the human-text path still renders MB. `cache compact`
+        // already emits bytes only, so all four cache subcommands now share
+        // the same unit contract.
         let obj = serde_json::json!({
             "cache_path": cache_path.display().to_string(),
             "total_entries": stats.total_entries,
             "total_size_bytes": stats.total_size_bytes,
-            "total_size_mb": stats.total_size_bytes as f64 / 1_048_576.0,
             "unique_models": stats.unique_models,
             "oldest_timestamp": stats.oldest_timestamp,
             "newest_timestamp": stats.newest_timestamp,
             // P3 #124: parallel `query_cache_size_bytes` field. Always present;
             // 0 when the QueryCache file doesn't exist yet.
             "query_cache_size_bytes": query_cache_size_bytes,
+            // P2.20: status disambiguates missing file vs open/size failure.
+            "query_cache_status": query_cache_status,
             "per_model": per_model_rows,
         });
         crate::cli::json_envelope::emit_json(&obj)?;
@@ -172,10 +192,18 @@ fn cache_stats(
         }
         // P3 #124: query cache size (0 when file absent). Single line — full
         // QueryCache stats live behind `cqs cache prune` and the daemon log.
-        println!(
-            "Query cache size: {:.1} MB",
-            query_cache_size_bytes as f64 / 1_048_576.0
-        );
+        // P2.20: append the status when it isn't `ok`/`missing` so operators
+        // see open/size failures instead of mistaking them for an empty cache.
+        match query_cache_status.as_str() {
+            "ok" | "missing" => println!(
+                "Query cache size: {:.1} MB",
+                query_cache_size_bytes as f64 / 1_048_576.0
+            ),
+            other => println!(
+                "Query cache size: {:.1} MB ({other})",
+                query_cache_size_bytes as f64 / 1_048_576.0
+            ),
+        }
         if per_model && !per_model_rows.is_empty() {
             println!();
             println!("Per-model:");

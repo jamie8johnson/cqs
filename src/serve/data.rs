@@ -11,17 +11,17 @@ use sqlx::Row;
 
 use crate::store::{ReadOnly, Store, StoreError};
 
-/// SEC-3: absolute ceiling on nodes returned by `/api/graph` even when the
-/// client doesn't pass `?max_nodes=N`. Prevents a single unauth request from
-/// materialising the full chunks table (millions of rows) in process memory.
-pub(crate) const ABS_MAX_GRAPH_NODES: usize = 50_000;
-
-/// SEC-3: absolute ceiling on edges returned by `/api/graph`. function_calls
-/// typically has ~10× the rows of chunks, so cap higher but still bound.
-pub(crate) const ABS_MAX_GRAPH_EDGES: usize = 500_000;
-
-/// SEC-3: absolute ceiling on nodes returned by `/api/embed/2d`.
-pub(crate) const ABS_MAX_CLUSTER_NODES: usize = 50_000;
+// SEC-3 absolute ceilings on response shapes — see `crate::limits::serve_*`.
+//
+// P2.40: previously hardcoded `const` values (50_000 / 500_000 / 50_000 +
+// per-list LIMIT 50/50/20 in `build_chunk_detail`). Operators can now
+// tune via env vars (`CQS_SERVE_GRAPH_MAX_NODES`, `CQS_SERVE_GRAPH_MAX_EDGES`,
+// `CQS_SERVE_CLUSTER_MAX_NODES`, `CQS_SERVE_CHUNK_DETAIL_{CALLERS,CALLEES,TESTS}`)
+// without recompiling. The helpers in `limits.rs` clamp to a hard maximum
+// so a misconfiguration can't unbound the response.
+//
+// Each helper reads its env var on every call. The cost is negligible
+// (one `getenv`) and lets tests flip values inside a single process.
 
 /// One node in the call graph. Cytoscape renders one of these per
 /// chunk (or per windowed-chunk row, since each window has its own
@@ -83,10 +83,18 @@ pub(crate) struct ChunkDetail {
     pub file: String,
     pub line_start: u32,
     pub line_end: u32,
-    pub signature: String,
+    /// P2.24 — `Option` so a NULL `chunks.signature` (partial write,
+    /// SIGKILL between INSERT phases) reaches the frontend as `null`
+    /// rather than collapsing to `""`. The frontend renders missing
+    /// columns as a `<missing — DB column NULL>` placeholder so an
+    /// empty signature pane is no longer indistinguishable from a
+    /// successfully-extracted void signature.
+    pub signature: Option<String>,
     pub doc: Option<String>,
-    /// First N lines of the chunk content for inline preview.
-    pub content_preview: String,
+    /// First N lines of the chunk content for inline preview. `None`
+    /// when the underlying `chunks.content` column is NULL — same
+    /// reasoning as `signature`. (P2.24.)
+    pub content_preview: Option<String>,
     pub callers: Vec<NodeRef>,
     pub callees: Vec<NodeRef>,
     pub tests: Vec<NodeRef>,
@@ -190,8 +198,8 @@ pub(crate) struct ClusterResponse {
 ///
 /// Always capped: preranks chunks by global caller count in SQL, fetches
 /// only the top N + only the edges whose endpoints touch that name set.
-/// When the caller passes `max_nodes = None`, `ABS_MAX_GRAPH_NODES` is
-/// substituted; when they pass a value larger than the hard ceiling, the
+/// When the caller passes `max_nodes = None`, `crate::limits::serve_graph_max_nodes()`
+/// is substituted; when they pass a value larger than the hard ceiling, the
 /// value is clamped. SEC-3 closes the DoS vector of a single unauth
 /// request materialising millions of chunk rows into memory.
 ///
@@ -216,26 +224,31 @@ pub(crate) fn build_graph(
         // 1. Chunk fetch.
         //
         // SEC-3: always bind an effective cap. When the client omits
-        // `?max_nodes`, fall back to ABS_MAX_GRAPH_NODES so a single
-        // request can't materialise a million chunks into memory. The
-        // user-supplied value is clamped to ABS_MAX_GRAPH_NODES too so
+        // `?max_nodes`, fall back to `serve_graph_max_nodes()` so a
+        // single request can't materialise a million chunks into
+        // memory. The user-supplied value is clamped too so
         // `?max_nodes=999999999` can't be used as a DoS vector either.
+        // (Env-tunable via `CQS_SERVE_GRAPH_MAX_NODES`; clamped to a
+        // 1M hard ceiling — see `crate::limits`. P2.40.)
         //
-        // The correlated subquery counts function_calls per name for
-        // the rank. ORDER BY ... LIMIT N pushes the truncation down to
-        // SQL so we don't pull the whole table. The subquery is the
-        // same approximation we'd make in Rust anyway: it counts the
+        // PF-V1.30 (P2.70): replace per-row correlated subquery with
+        // one aggregated subselect joined by name. Previously each
+        // scanned row triggered a log-N index probe into function_calls
+        // (~50k probes against the 50k node cap on a 30k-edge corpus).
+        // One GROUP BY pass is O(M+N). The subquery still counts the
         // *name* not the chunk, which over-counts for shared-name
         // overloads — but that's exactly what the post-fetch resolution
-        // does too.
-        let effective_cap = max_nodes
-            .unwrap_or(ABS_MAX_GRAPH_NODES)
-            .min(ABS_MAX_GRAPH_NODES);
+        // does too. ORDER BY ... LIMIT N pushes the truncation down to
+        // SQL so we don't pull the whole table.
+        let max_graph_nodes = crate::limits::serve_graph_max_nodes();
+        let effective_cap = max_nodes.unwrap_or(max_graph_nodes).min(max_graph_nodes);
         let mut node_query = "SELECT c.id, c.name, c.chunk_type, c.language, c.origin, \
                     c.line_start, c.line_end, \
-                    COALESCE((SELECT COUNT(*) FROM function_calls fc \
-                              WHERE fc.callee_name = c.name), 0) AS n_callers_global \
+                    COALESCE(cc.n, 0) AS n_callers_global \
              FROM chunks c \
+             LEFT JOIN (SELECT callee_name, COUNT(*) AS n \
+                        FROM function_calls GROUP BY callee_name) cc \
+               ON cc.callee_name = c.name \
              WHERE 1=1"
             .to_string();
         let mut binds: Vec<String> = Vec::new();
@@ -313,7 +326,9 @@ pub(crate) fn build_graph(
         // would return the entire function_calls table (tens of
         // millions of rows on a large monorepo); the IN-scoped query
         // could also blow up if the visible-node name set grew large,
-        // so ABS_MAX_GRAPH_EDGES caps it unconditionally.
+        // so `serve_graph_max_edges()` caps it unconditionally.
+        // (Env-tunable via `CQS_SERVE_GRAPH_MAX_EDGES`; P2.40.)
+        let max_graph_edges = crate::limits::serve_graph_max_edges();
         //
         // SEC-4: chunk the IN-list so `name_set.len()` > SQLite's
         // `SQLITE_MAX_VARIABLE_NUMBER` (32766) doesn't overflow the
@@ -339,7 +354,7 @@ pub(crate) fn build_graph(
                     std::collections::HashSet::new();
                 let mut accum: Vec<(String, String, String)> = Vec::new();
                 'chunks: for chunk in names.chunks(EDGE_CHUNK) {
-                    if accum.len() >= ABS_MAX_GRAPH_EDGES {
+                    if accum.len() >= max_graph_edges {
                         break;
                     }
                     let placeholders = vec!["?"; chunk.len()].join(",");
@@ -350,7 +365,7 @@ pub(crate) fn build_graph(
                             OR fc.caller_name IN ({placeholders}) \
                          LIMIT ?"
                     );
-                    let remaining = (ABS_MAX_GRAPH_EDGES - accum.len()) as i64;
+                    let remaining = (max_graph_edges - accum.len()) as i64;
                     let mut eq = sqlx::query(&edge_sql);
                     for n in chunk {
                         eq = eq.bind(*n);
@@ -367,7 +382,7 @@ pub(crate) fn build_graph(
                         let key = (file.clone(), caller.clone(), callee.clone());
                         if seen.insert(key) {
                             accum.push((file, caller, callee));
-                            if accum.len() >= ABS_MAX_GRAPH_EDGES {
+                            if accum.len() >= max_graph_edges {
                                 break 'chunks;
                             }
                         }
@@ -437,7 +452,7 @@ pub(crate) fn build_graph(
         }
 
         // 5. Drop edges whose endpoints didn't both land in the visible
-        //    set. SEC-3 always caps at ABS_MAX_GRAPH_NODES, so this
+        //    set. SEC-3 always caps at `serve_graph_max_nodes()`, so this
         //    prune is always meaningful.
         let mut nodes: Vec<Node> = nodes_by_id.into_values().collect();
         let kept: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
@@ -485,26 +500,34 @@ pub(crate) fn build_chunk_detail(
         let origin: String = row.get("origin");
         let line_start: i64 = row.get("line_start");
         let line_end: i64 = row.get("line_end");
-        let signature: String = row
-            .get::<Option<String>, _>("signature")
-            .unwrap_or_default();
+        // P2.24: NULL is a real signal (partial write during indexing,
+        // SIGKILL between INSERT phases) — preserve it through to the
+        // wire format rather than flattening to `""`.
+        let signature: Option<String> = row.get("signature");
         let doc: Option<String> = row.get("doc");
-        let content: String = row.get::<Option<String>, _>("content").unwrap_or_default();
+        let content: Option<String> = row.get("content");
 
         // Preview = first 30 lines of content. Bounded so big chunks
-        // don't bloat the sidebar JSON.
-        let content_preview: String = content.lines().take(30).collect::<Vec<_>>().join("\n");
+        // don't bloat the sidebar JSON. `None` when the row had NULL
+        // content (P2.24).
+        let content_preview: Option<String> = content
+            .as_deref()
+            .map(|c| c.lines().take(30).collect::<Vec<_>>().join("\n"));
 
-        // Caller chunks: function_calls WHERE callee_name = this.name
+        // Caller chunks: function_calls WHERE callee_name = this.name.
+        // P2.40: LIMIT bound to `serve_chunk_detail_callers_limit()`
+        // (env `CQS_SERVE_CHUNK_DETAIL_CALLERS`, default 50).
+        let callers_limit = crate::limits::serve_chunk_detail_callers_limit() as i64;
         let callers_rows = sqlx::query(
             "SELECT DISTINCT c.id, c.name, c.origin, c.line_start \
              FROM function_calls fc \
              JOIN chunks c ON c.name = fc.caller_name AND c.origin = fc.file \
              WHERE fc.callee_name = ? \
              ORDER BY c.origin, c.line_start \
-             LIMIT 50",
+             LIMIT ?",
         )
         .bind(&name)
+        .bind(callers_limit)
         .fetch_all(&store.pool)
         .await?;
         // RB-V1.29-3: surface out-of-range `line_start` (negative or
@@ -532,17 +555,21 @@ pub(crate) fn build_chunk_detail(
             .map(&to_noderef)
             .collect::<Result<_, _>>()?;
 
-        // Callee chunks: function_calls WHERE caller_name = this.name AND file = this.origin
+        // Callee chunks: function_calls WHERE caller_name = this.name AND file = this.origin.
+        // P2.40: LIMIT bound to `serve_chunk_detail_callees_limit()`
+        // (env `CQS_SERVE_CHUNK_DETAIL_CALLEES`, default 50).
+        let callees_limit = crate::limits::serve_chunk_detail_callees_limit() as i64;
         let callees_rows = sqlx::query(
             "SELECT DISTINCT c.id, c.name, c.origin, c.line_start \
              FROM function_calls fc \
              JOIN chunks c ON c.name = fc.callee_name \
              WHERE fc.caller_name = ? AND fc.file = ? \
              ORDER BY c.origin, c.line_start \
-             LIMIT 50",
+             LIMIT ?",
         )
         .bind(&name)
         .bind(&origin)
+        .bind(callees_limit)
         .fetch_all(&store.pool)
         .await?;
         let callees: Vec<NodeRef> = callees_rows
@@ -563,14 +590,18 @@ pub(crate) fn build_chunk_detail(
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_");
+        // P2.40: LIMIT bound to `serve_chunk_detail_tests_limit()`
+        // (env `CQS_SERVE_CHUNK_DETAIL_TESTS`, default 20).
+        let tests_limit = crate::limits::serve_chunk_detail_tests_limit() as i64;
         let tests_rows = sqlx::query(
             "SELECT id, name, origin, line_start \
              FROM chunks \
              WHERE chunk_type = 'test' AND content LIKE ? ESCAPE '\\' \
              ORDER BY origin, line_start \
-             LIMIT 20",
+             LIMIT ?",
         )
         .bind(format!("%{escaped_name}%"))
+        .bind(tests_limit)
         .fetch_all(&store.pool)
         .await?;
         let tests: Vec<NodeRef> = tests_rows
@@ -902,13 +933,15 @@ pub(crate) fn build_cluster(
 
     store.rt.block_on(async {
         // SEC-3: always bind an effective cap. When the client omits
-        // `?max_nodes`, fall back to ABS_MAX_CLUSTER_NODES so a single
-        // request can't materialise the full chunks table. The
-        // user-supplied value is clamped to ABS_MAX_CLUSTER_NODES too so
-        // `?max_nodes=999999999` can't be used as a DoS vector either.
+        // `?max_nodes`, fall back to `serve_cluster_max_nodes()` so a
+        // single request can't materialise the full chunks table.
+        // The user-supplied value is clamped too so `?max_nodes=999999999`
+        // can't be used as a DoS vector either. (Env-tunable via
+        // `CQS_SERVE_CLUSTER_MAX_NODES`; P2.40.)
+        let max_cluster_nodes = crate::limits::serve_cluster_max_nodes();
         let effective_cap = max_nodes
-            .unwrap_or(ABS_MAX_CLUSTER_NODES)
-            .min(ABS_MAX_CLUSTER_NODES);
+            .unwrap_or(max_cluster_nodes)
+            .min(max_cluster_nodes);
 
         // Chunks that have coords already projected. The ORDER BY id here
         // is preserved from the pre-SEC-3 code; because it's by id rather
@@ -950,9 +983,10 @@ pub(crate) fn build_cluster(
         // millions of rows on a large monorepo — even though the loop
         // below filters on `name_to_first_id` membership, Rust-side
         // filtering after pulling every row over the wire is the DoS
-        // vector we're closing.
+        // vector we're closing. (Env-tunable via
+        // `CQS_SERVE_GRAPH_MAX_EDGES`; P2.40.)
         let edge_rows = sqlx::query("SELECT caller_name, callee_name FROM function_calls LIMIT ?")
-            .bind(ABS_MAX_GRAPH_EDGES as i64)
+            .bind(crate::limits::serve_graph_max_edges() as i64)
             .fetch_all(&store.pool)
             .await?;
         for row in edge_rows {

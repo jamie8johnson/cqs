@@ -67,11 +67,11 @@ macro_rules! for_each_command {
             group_a: {
                 // ── lifecycle / no-store / mutation commands ────────────
 
-                (Commands::Init,
-                 Commands::Init,
+                (Commands::Init { json },
+                 Commands::Init { .. },
                  "init",
                  BatchSupport::Cli,
-                 { cmd_init(&$cli) }),
+                 { cmd_init(&$cli, json) }),
 
                 (Commands::Cache { ref subcmd },
                  Commands::Cache { .. },
@@ -101,15 +101,21 @@ macro_rules! for_each_command {
                 // time we reach this arm `try_daemon_query` already forwarded
                 // the request if a daemon was running, so we're guaranteed
                 // there isn't one. Emit a polite no-op.
-                (Commands::Refresh,
-                 Commands::Refresh,
+                // P2.14: Refresh now carries its own --json (in addition to
+                // honoring the global --json), so the macro pattern-match
+                // needs to bind the field.
+                (Commands::Refresh { json },
+                 Commands::Refresh { .. },
                  "refresh",
                  BatchSupport::Daemon,
                  {
-                    if $cli.json {
+                    if $cli.json || json {
                         crate::cli::json_envelope::emit_json(&serde_json::json!({
                             "status": "noop",
                             "message": "no daemon running, nothing to refresh",
+                            "refreshed": false,
+                            "daemon_running": false,
+                            "caches_invalidated": [],
                         }))
                     } else {
                         println!("no daemon running, nothing to refresh");
@@ -201,6 +207,7 @@ macro_rules! for_each_command {
                     overwrite,
                     dry_run,
                     ref clean_tags,
+                    json,
                  },
                  Commands::Convert { .. },
                  "convert",
@@ -212,6 +219,7 @@ macro_rules! for_each_command {
                         overwrite,
                         dry_run,
                         clean_tags.as_deref(),
+                        $cli.json || json,
                     )
                  }),
 
