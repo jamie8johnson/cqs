@@ -655,7 +655,7 @@ Two eval suites are run on every release:
 
 Both splits are ±2-3pp noisy on a single trial; quote both when comparing config changes.
 
-**Default config:** BGE-large dense + SPLADE sparse, RRF-fused with per-category α (set via offline sweep), centroid query classifier active by default for category routing. `CQS_EMBEDDING_MODEL=v9-200k` is a 1/3-size alternative for resource-constrained environments.
+**Default config:** BGE-large dense + SPLADE sparse, RRF-fused with per-category α (set via offline sweep), centroid query classifier active by default for category routing. `CQS_EMBEDDING_MODEL=nomic-coderank` is a 137M code-specialised opt-in preset (#1110) for resource-constrained environments — wins R@1 on the v3.v2 test split at ~⅓ the parameters of BGE-large.
 
 ## Environment Variables
 

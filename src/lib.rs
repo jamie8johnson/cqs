@@ -6,7 +6,7 @@
 //!
 //! ## Features
 //!
-//! - **Semantic search**: Hybrid RRF (keyword + vector) with configurable embedding models (BGE-large default, E5-base and v9-200k presets, custom ONNX). 90.9% Recall@1 on 296-query expanded eval.
+//! - **Semantic search**: Hybrid RRF (keyword + vector) with configurable embedding models (BGE-large default; E5-base, nomic-coderank-137M, and custom ONNX presets). 90.9% Recall@1 on 296-query expanded eval.
 //! - **Call graphs**: Callers, callees, transitive impact, shortest-path tracing between functions
 //! - **Impact analysis**: What breaks if you change X? Callers + affected tests + risk scoring
 //! - **Type dependencies**: Who uses this type? What types does this function use?
@@ -19,7 +19,7 @@
 //! - **Doc comment generation**: `--improve-docs` generates and writes doc comments to source files via LLM
 //! - **HyDE query predictions**: `--hyde-queries` generates synthetic search queries per function for improved recall
 //! - **Training data generation**: `train-data` command generates fine-tuning triplets from git history
-//! - **GPU acceleration**: CUDA/TensorRT with CPU fallback
+//! - **GPU acceleration**: CUDA/TensorRT with CPU fallback (CoreML and ROCm scaffolding present, wiring deferred per #956 Phase B/C)
 //! - **Document conversion**: PDF, HTML, CHM, Web Help → cleaned Markdown (optional `convert` feature)
 //!
 //! ## Quick Start
@@ -30,10 +30,13 @@
 //! use cqs::store::SearchFilter;
 //!
 //! # fn main() -> anyhow::Result<()> {
-//! // Initialize components
+//! // Initialize components. `resolve_index_db` honours the slot layout
+//! // (post-#1105: `.cqs/slots/<active>/index.db`) and falls back to the
+//! // pre-migration `.cqs/index.db` path on unmigrated projects.
 //! let parser = Parser::new()?;
 //! let embedder = Embedder::new(ModelConfig::resolve(None, None))?;
-//! let store = Store::open(std::path::Path::new(".cqs/index.db"))?;
+//! let cqs_dir = cqs::resolve_index_dir(std::path::Path::new("."));
+//! let store = Store::open(&cqs::resolve_index_db(&cqs_dir))?;
 //!
 //! // Parse and embed a file
 //! let chunks = parser.parse_file(std::path::Path::new("src/main.rs"))?;
