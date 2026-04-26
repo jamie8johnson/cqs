@@ -873,7 +873,7 @@ Mixed-batch throughput (~2 ops/sec) is dominated by search operations (~200 ms e
 cqs works on CPU out of the box. GPU acceleration has two independent components:
 
 - **Embedding (ORT CUDA)**: 5-7x embedding speedup. Works with `cargo install cqs` -- just needs CUDA 12 runtime and cuDNN.
-- **Index (CAGRA)**: GPU-accelerated nearest neighbor search via cuVS. Requires `cargo install cqs --features gpu-index` plus the cuVS conda package.
+- **Index (CAGRA)**: GPU-accelerated nearest neighbor search via cuVS. Requires `cargo install cqs --features cuda-index` plus the cuVS conda package.
 
 You can use either or both.
 
@@ -896,18 +896,18 @@ export LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/x86_64-linux-gnu:$LD_
 
 ### CAGRA GPU Index (Optional, requires conda)
 
-CAGRA uses cuVS for GPU-accelerated approximate nearest neighbor search, with native bitset filtering for type/language queries. Requires the `gpu-index` feature flag and matching libcuvs from conda:
+CAGRA uses cuVS for GPU-accelerated approximate nearest neighbor search, with native bitset filtering for type/language queries. Requires the `cuda-index` feature flag (the legacy `gpu-index` name is preserved as an alias) and matching libcuvs from conda:
 
 ```bash
 conda install -c rapidsai libcuvs=26.04 libcuvs-headers=26.04
-cargo install cqs --features gpu-index
+cargo install cqs --features cuda-index
 ```
 
 `cuvs-sys` does strict version matching — the conda `libcuvs` version must match the Rust `cuvs` crate version (currently `=26.4`).
 
 Building from source:
 ```bash
-cargo build --release --features gpu-index
+cargo build --release --features cuda-index
 ```
 
 > **Note:** cqs uses a patched cuvs crate that exposes `search_with_filter` for GPU-native bitset filtering. This is applied transparently via `[patch.crates-io]`. Once upstream rapidsai/cuvs#2019 merges, the patch will be removed.

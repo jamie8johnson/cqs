@@ -40,31 +40,31 @@
 //! Set `CQS_CAGRA_PERSIST=0` to disable save+load entirely (A/B testing or
 //! reducing on-disk footprint). Default: enabled.
 
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 use std::path::Path;
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 use std::sync::Mutex;
 
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 use ndarray_015::Array2;
 
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 use thiserror::Error;
 
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 use crate::embedder::Embedding;
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 use crate::index::{IndexResult, VectorIndex};
 
 /// On-disk magic bytes for the CAGRA sidecar. Changes force a rebuild.
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 const CAGRA_META_MAGIC: &str = "CAGRA01";
 
 /// On-disk version for the CAGRA sidecar. Bump when adding fields that an
 /// older binary can't parse; the parse-fail path falls through to rebuild.
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 const CAGRA_META_VERSION: u32 = 1;
 
 /// Sentinel distance marking an output slot cuVS did not write (issue #952).
@@ -116,10 +116,10 @@ const CAGRA_META_VERSION: u32 = 1;
 /// validity information. Re-audit this when bumping the `cuvs` pin; if
 /// either mechanism lands upstream, the sentinel scheme can be removed
 /// in favour of the native API.
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 const INVALID_DISTANCE: f32 = f32::INFINITY;
 
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 #[derive(Error, Debug)]
 pub enum CagraError {
     #[error("cuVS error: {0}")]
@@ -144,7 +144,7 @@ pub enum CagraError {
 
 /// SHL-10: Configurable CAGRA CPU memory cap via `CQS_CAGRA_MAX_BYTES` env var.
 /// Defaults to 2GB. Cached in OnceLock for single parse.
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 fn cagra_max_bytes() -> usize {
     static MAX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *MAX.get_or_init(|| {
@@ -162,7 +162,7 @@ fn cagra_max_bytes() -> usize {
 /// 1k → 320, 13k → 447, 100k → 532, 1M → 640, 10M → 744
 /// Then `(k * 2).clamp(min, max)` narrows the actual `itopk_size` at
 /// query time. Overridable via `CQS_CAGRA_ITOPK_MAX`.
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 fn cagra_itopk_max_default(n_vectors: usize) -> usize {
     let log2 = (n_vectors.max(1) as f64).log2();
     let scaled = (log2 * 32.0) as usize;
@@ -174,7 +174,7 @@ fn cagra_itopk_max_default(n_vectors: usize) -> usize {
 /// `CQS_CAGRA_INTERMEDIATE_GRAPH_DEGREE` (default 128) is the pruned-input
 /// graph degree. Both map to the corresponding cuVS `IndexParams` setters.
 /// Returns `IndexParams` with those setters applied (and traces the choice).
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 fn cagra_build_params() -> Result<cuvs::cagra::IndexParams, CagraError> {
     let graph_degree: usize = std::env::var("CQS_CAGRA_GRAPH_DEGREE")
         .ok()
@@ -202,7 +202,7 @@ fn cagra_build_params() -> Result<cuvs::cagra::IndexParams, CagraError> {
 /// `resources` and `index` are protected by a single Mutex to ensure safe
 /// concurrent access. CUDA contexts (managed by cuVS Resources) are not
 /// inherently thread-safe, so we serialize all GPU operations.
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 pub struct CagraIndex {
     /// Embedding dimensionality (runtime, from model config)
     dim: usize,
@@ -220,7 +220,7 @@ pub struct CagraIndex {
     poisoned: AtomicBool,
 }
 
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 struct GpuState {
     // Drop order is declaration order: `index` must drop before `resources`
     // because the cuVS Index holds handles into the Resources' CUDA context
@@ -229,7 +229,7 @@ struct GpuState {
     resources: cuvs::Resources,
 }
 
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 impl Drop for GpuState {
     fn drop(&mut self) {
         // Block until any pending CUDA work on this stream completes
@@ -246,7 +246,7 @@ impl Drop for GpuState {
 }
 
 // Debug impl needed because cuvs types don't implement Debug
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 impl std::fmt::Debug for CagraIndex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CagraIndex")
@@ -256,7 +256,7 @@ impl std::fmt::Debug for CagraIndex {
     }
 }
 
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 impl CagraIndex {
     /// Check if GPU is available for CAGRA
     pub fn gpu_available() -> bool {
@@ -486,7 +486,7 @@ impl CagraIndex {
     }
 }
 
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 impl VectorIndex for CagraIndex {
     fn search(&self, query: &Embedding, k: usize) -> Vec<IndexResult> {
         CagraIndex::search(self, query, k)
@@ -601,12 +601,12 @@ impl VectorIndex for CagraIndex {
 // SAFETY: CagraIndex is thread-safe because:
 // - `gpu` (resources + index) is protected by Mutex (CUDA contexts require serialized access)
 // - `id_map` is immutable after construction
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 unsafe impl Send for CagraIndex {}
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 unsafe impl Sync for CagraIndex {}
 
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 impl CagraIndex {
     /// Build CAGRA index from all embeddings in a Store.
     /// Unlike HNSW, CAGRA indexes are not persisted to disk.
@@ -719,7 +719,7 @@ impl CagraIndex {
 ///
 /// The JSON format is versioned via `magic` + `version` so a future binary
 /// that can't parse an older sidecar just falls through to rebuilding.
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct CagraMeta {
     /// Format magic. See [`CAGRA_META_MAGIC`].
@@ -749,7 +749,7 @@ struct CagraMeta {
 /// (build_vector_index_with_config won't even check for persisted indices).
 ///
 /// Cached in a `OnceLock` so we parse the env var exactly once per process.
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 pub fn cagra_persist_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| match std::env::var("CQS_CAGRA_PERSIST").as_deref() {
@@ -761,7 +761,7 @@ pub fn cagra_persist_enabled() -> bool {
     })
 }
 
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 impl CagraIndex {
     /// Persist the index to disk.
     ///
@@ -1131,7 +1131,7 @@ impl CagraIndex {
 }
 
 /// Sidecar path for a given CAGRA blob path.
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 fn meta_path_for(path: &Path) -> std::path::PathBuf {
     let mut s = path.as_os_str().to_os_string();
     s.push(".meta");
@@ -1139,7 +1139,7 @@ fn meta_path_for(path: &Path) -> std::path::PathBuf {
 }
 
 /// Stream-hash a file with blake3.
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 fn blake3_of_path(path: &Path) -> Result<String, CagraError> {
     let file = std::fs::File::open(path).map_err(|e| {
         CagraError::Io(format!(
@@ -1161,7 +1161,7 @@ fn blake3_of_path(path: &Path) -> Result<String, CagraError> {
 
 /// Write the CAGRA sidecar via write-temp + rename to avoid a torn JSON on
 /// crash.
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 fn write_meta_atomic(path: &Path, meta: &CagraMeta) -> Result<(), CagraError> {
     let parent = path.parent().ok_or_else(|| {
         CagraError::Io(format!(
@@ -1219,7 +1219,7 @@ fn write_meta_atomic(path: &Path, meta: &CagraMeta) -> Result<(), CagraError> {
     Ok(())
 }
 
-#[cfg(all(test, feature = "gpu-index"))]
+#[cfg(all(test, feature = "cuda-index"))]
 mod tests {
     use super::*;
     use crate::index::VectorIndex;

@@ -127,7 +127,7 @@ pub mod daemon_translate;
 #[cfg(test)]
 pub mod test_helpers;
 
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 pub mod cagra;
 
 pub use audit::parse_duration;
@@ -169,7 +169,7 @@ pub use structural::Pattern;
 pub use task::*;
 pub use where_to_add::*;
 
-#[cfg(feature = "gpu-index")]
+#[cfg(feature = "cuda-index")]
 pub use cagra::CagraIndex;
 
 use std::path::PathBuf;

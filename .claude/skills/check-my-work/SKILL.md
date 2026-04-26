@@ -31,8 +31,8 @@ None — operates on the current git diff.
 
 ### Checklist
 - [ ] All affected callers still work with your changes
-- [ ] Tests listed above pass: `cargo test --features gpu-index -- <test_names>`
-- [ ] No new warnings from `cargo clippy --features gpu-index`
+- [ ] Tests listed above pass: `cargo test --features cuda-index -- <test_names>`
+- [ ] No new warnings from `cargo clippy --features cuda-index`
 - [ ] Changes formatted: `cargo fmt`
 ```
 

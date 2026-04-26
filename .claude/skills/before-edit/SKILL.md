@@ -32,7 +32,7 @@ Present this to the user (fill in from the JSON results):
 - [ ] If changing the signature or return type, update all callers
 
 ### After you edit:
-- [ ] Run: `cargo test --features gpu-index -- <test_names>`
+- [ ] Run: `cargo test --features cuda-index -- <test_names>`
 - [ ] If tests fail, check whether your change broke the caller contract
 - [ ] If no tests cover the changed behavior, write one
 ```

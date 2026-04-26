@@ -215,7 +215,7 @@ The configurable models disaster: `build_batched_with_dim()` existed and worked,
 - `thiserror` for library errors, `anyhow` in CLI
 - No `unwrap()` except in tests
 - GPU detection at runtime, graceful CPU fallback
-- **GPU available** — always use `--features gpu-index` for cargo build/test/clippy. This is the default, not the exception. Env vars are in `~/.bashrc` (above the interactive guard).
+- **GPU available** — always use `--features cuda-index` for cargo build/test/clippy. This is the default, not the exception. Env vars are in `~/.bashrc` (above the interactive guard). The legacy `gpu-index` name is preserved as an alias (#956 Phase A renamed it to make CUDA-specificity explicit), so existing scripts and muscle memory keep working.
 
 ## Documentation
 
