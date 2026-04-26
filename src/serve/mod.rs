@@ -108,12 +108,30 @@ pub fn run_server(
             // from being usable. The token appears here once and is
             // never logged via tracing — auditors can grep for serve
             // banners separately from the structured log stream.
+            //
+            // P1.13 / SEC: route the token-bearing banner to stderr when
+            // stdout is not a TTY. systemd `StandardOutput=journal` and
+            // container log drivers persist stdout into a 30-day retention
+            // store — stderr is similarly captured but is the conventional
+            // place for "informational interactive output" and operators
+            // can redirect it (`2>/dev/null`) without losing structured
+            // logs. For a stronger guarantee, add `--no-banner` (TODO).
+            let stdout_is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
             match auth.as_ref() {
                 Some(token) => {
-                    println!(
+                    let line = format!(
                         "cqs serve listening on http://{actual}/?token={}",
                         token.as_str()
                     );
+                    if stdout_is_tty {
+                        println!("{line}");
+                    } else {
+                        eprintln!("{line}");
+                        eprintln!(
+                            "(stdout is not a TTY; token-bearing banner routed to stderr to \
+                             avoid persisting into journald/container logs)"
+                        );
+                    }
                 }
                 None => {
                     println!("cqs serve listening on http://{actual}");
@@ -182,6 +200,14 @@ pub(crate) fn build_router(
         // Must sit inside the compression layer so rejections skip the
         // gzip round-trip.
         .layer(from_fn_with_state(allowed_hosts, enforce_host_allowlist))
+        // P1.14 / SEC: cap request bodies. Every route is GET; legitimate
+        // clients never send a body. 64 KiB is plenty for query strings
+        // and cookies (which travel in headers, not body); axum rejects
+        // bodies larger than this with 413 Payload Too Large before
+        // allocating. Layer sits *outside* auth/host-allowlist so the
+        // limit applies even to rejected requests (preventing OOM-then-401
+        // attacks) but *inside* compression so 413 responses are gzipped.
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(64 * 1024))
         // Gzip every response axum sends. The graph + cluster JSON
         // payloads compress ~5-10× (1-2 MB → 150-300 KB on the cqs
         // corpus); vendor JS bundles compress ~3×. Negligible CPU on
@@ -192,7 +218,18 @@ pub(crate) fn build_router(
         // log entry via `tracing::info!`; this layer closes the loop
         // by logging completion, giving per-endpoint latency in the
         // journal without hand-wrapping every handler body.
-        .layer(TraceLayer::new_for_http())
+        //
+        // P1.11 / SEC: customise MakeSpan to record path only, NOT the
+        // full URI — the `?token=…` query param lands in span fields
+        // otherwise and bleeds the per-launch token into journald /
+        // RUST_LOG=debug.
+        .layer(TraceLayer::new_for_http().make_span_with(|req: &Request| {
+            tracing::info_span!(
+                "http_request",
+                method = %req.method(),
+                path = %req.uri().path(),
+            )
+        }))
 }
 
 /// Build the allowed-`Host` set for DNS-rebinding protection.
@@ -227,17 +264,21 @@ pub(crate) fn allowed_host_set(bind_addr: &SocketAddr) -> AllowedHosts {
 /// attacker hostname in the `Host:` header, so rejecting unknown hosts
 /// closes the class.
 ///
-/// A missing `Host:` header passes through — HTTP/1.1 requires one and
-/// hyper always provides one on real traffic, but unit tests built via
-/// `Request::builder()` without a `.uri()` that includes a host don't
-/// get one synthesized, and we'd rather not break that ergonomic.
+/// Reject requests with no `Host:` header. HTTP/1.1 requires one; HTTP/1.0
+/// does not, but a no-Host request bypasses DNS-rebinding protection (the
+/// allowlist has nothing to compare against) so we treat it as malformed.
+/// Tests must build requests with a Host header (see `src/serve/tests.rs`
+/// fixtures). (P1.12.)
 async fn enforce_host_allowlist(
     State(allowed): State<AllowedHosts>,
     req: Request,
     next: Next,
 ) -> Result<Response, (StatusCode, &'static str)> {
     match req.headers().get(header::HOST) {
-        None => Ok(next.run(req).await),
+        None => {
+            tracing::warn!("serve: rejected request with missing Host header");
+            Err((StatusCode::BAD_REQUEST, "missing Host header"))
+        }
         Some(value) => {
             let host = value.to_str().unwrap_or("");
             if allowed.contains(host) {
@@ -250,11 +291,35 @@ async fn enforce_host_allowlist(
     }
 }
 
-/// Listen for Ctrl-C to trigger axum's graceful shutdown.
+/// Listen for Ctrl-C or SIGTERM (Unix) to trigger axum's graceful
+/// shutdown. Without SIGTERM handling, `systemctl stop` and `launchd`
+/// shutdowns escalate to SIGKILL with no graceful drain. (P1.19.)
 async fn shutdown_signal() {
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        tracing::warn!(error = %e, "failed to install ctrl-c handler; server will only stop on listener failure");
-        std::future::pending::<()>().await;
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::warn!(error = %e, "failed to install ctrl-c handler");
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("ctrl-c received, beginning graceful shutdown"),
+        _ = terminate => tracing::info!("SIGTERM received, beginning graceful shutdown"),
     }
-    tracing::info!("ctrl-c received, beginning graceful shutdown");
 }

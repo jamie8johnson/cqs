@@ -223,9 +223,15 @@ pub(crate) async fn enforce_auth(
         }
         AuthOutcome::Unauthorized => {
             // Body intentionally minimal: no debug data, no token-
-            // length leak. Tracing happens once per launch (banner)
-            // and never per-request — auditors can grep for the
-            // count of 401s in access logs without seeing tokens.
+            // length leak. Tracing emits method + path (NOT query
+            // string — that may carry `?token=` candidates) so
+            // operators get a journal trail for 401s without
+            // logging token material. (P1.21 / OB-V1.30-2.)
+            tracing::warn!(
+                method = %req.method(),
+                path = %req.uri().path(),
+                "serve: rejected unauthenticated request",
+            );
             (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
         }
     }

@@ -98,7 +98,7 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 | `~/.local/share/cqs/refs/*/` | Reference index creation and updates (write) | `cqs ref add`, `cqs ref update` |
 | `~/.cache/cqs/embeddings.db` | Global embedding cache writes | `cqs index` |
 | `~/.cache/cqs/query_cache.db` | Recent query embedding cache writes | Search (cache miss) |
-| `~/.cache/cqs/query_log.jsonl` | Opt-in local query log | `CQS_TELEMETRY=1` or file exists |
+| `~/.cache/cqs/query_log.jsonl` | Local query log (append-only) | `cqs chat` / `cqs batch` (search, gather, onboard, scout, where, task) |
 | Project source files | Doc comment insertion | `cqs index --llm-summaries --improve-docs` |
 | `<output>/` directory | ONNX model files + model.toml | `cqs export-model` |
 

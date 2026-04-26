@@ -120,11 +120,20 @@ pub struct Reranker {
     /// XLM-R variants) do not. Computed at session-init time by inspecting
     /// the model's input names. `None` means "session not yet loaded."
     expects_token_type_ids: Mutex<Option<bool>>,
+    /// Cached config-file `[reranker]` section so `resolve_reranker` honours
+    /// `preset` / `model_path` / `tokenizer_path` set in `.cqs.toml` (P1.7).
+    section: Option<AuxModelSection>,
 }
 
 impl Reranker {
-    /// Create a new reranker with lazy model loading
+    /// Create a new reranker with lazy model loading (config-less; CLI/env only).
     pub fn new() -> Result<Self, RerankerError> {
+        Self::with_section(None)
+    }
+
+    /// Create a reranker, threading a `[reranker]` config section through to
+    /// `resolve_reranker` so `.cqs.toml` preset / model_path are honoured (P1.7).
+    pub fn with_section(section: Option<AuxModelSection>) -> Result<Self, RerankerError> {
         let provider = select_provider();
         let max_length = match std::env::var("CQS_RERANKER_MAX_LENGTH") {
             Ok(val) => match val.parse::<usize>() {
@@ -150,6 +159,7 @@ impl Reranker {
             provider,
             max_length,
             expects_token_type_ids: Mutex::new(None),
+            section,
         })
     }
 
@@ -443,7 +453,7 @@ impl Reranker {
         self.model_paths.get_or_try_init(|| {
             let _span = tracing::info_span!("reranker_model_resolve").entered();
 
-            let resolved = resolve_reranker(None)?;
+            let resolved = resolve_reranker(self.section.as_ref())?;
 
             // Local-bundle branch: resolver already verified the directory
             // existed when the override was path-like. For preset/default

@@ -207,6 +207,7 @@ async fn health_endpoint_returns_ok() {
         .oneshot(
             Request::builder()
                 .uri("/health")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -225,7 +226,13 @@ async fn index_html_served_at_root() {
     let app = test_router(state);
 
     let resp = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header("host", "127.0.0.1:8080")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .expect("oneshot");
 
@@ -258,6 +265,7 @@ async fn static_asset_serves_css() {
         .oneshot(
             Request::builder()
                 .uri("/static/app.css")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -286,6 +294,7 @@ async fn static_asset_serves_js() {
         .oneshot(
             Request::builder()
                 .uri("/static/app.js")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -317,7 +326,13 @@ async fn view_modules_serve() {
     ] {
         let resp = app
             .clone()
-            .oneshot(Request::builder().uri(*path).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri(*path)
+                    .header("host", "127.0.0.1:8080")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK, "view module {path} missing");
@@ -348,7 +363,13 @@ async fn vendor_3d_bundles_serve() {
     ] {
         let resp = app
             .clone()
-            .oneshot(Request::builder().uri(*path).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri(*path)
+                    .header("host", "127.0.0.1:8080")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK, "vendor {path} missing");
@@ -391,7 +412,13 @@ async fn index_html_loads_view_modules() {
 
     let resp = app
         .clone()
-        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header("host", "127.0.0.1:8080")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .expect("oneshot");
     let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
@@ -439,6 +466,7 @@ async fn index_html_loads_view_modules() {
         .oneshot(
             Request::builder()
                 .uri("/static/app.js")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -478,6 +506,7 @@ async fn gzip_compression_applied_to_json() {
             Request::builder()
                 .uri("/api/stats")
                 .header("accept-encoding", "gzip")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -506,6 +535,7 @@ async fn unknown_static_asset_returns_404() {
         .oneshot(
             Request::builder()
                 .uri("/static/no-such-file.css")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -525,6 +555,7 @@ async fn stats_endpoint_returns_chunks_count() {
         .oneshot(
             Request::builder()
                 .uri("/api/stats")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -552,6 +583,7 @@ async fn graph_returns_empty_for_fresh_store() {
         .oneshot(
             Request::builder()
                 .uri("/api/graph")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -577,6 +609,7 @@ async fn graph_accepts_query_filters_without_crash() {
         .oneshot(
             Request::builder()
                 .uri("/api/graph?file=src/serve/&type=function&max_nodes=10")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -596,6 +629,7 @@ async fn search_with_empty_query_returns_empty_matches() {
         .oneshot(
             Request::builder()
                 .uri("/api/search?q=")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -618,6 +652,7 @@ async fn chunk_detail_unknown_id_returns_404() {
         .oneshot(
             Request::builder()
                 .uri("/api/chunk/no-such-id")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -640,6 +675,7 @@ async fn hierarchy_unknown_root_returns_404() {
         .oneshot(
             Request::builder()
                 .uri("/api/hierarchy/no-such-id?direction=callees&depth=5")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -659,6 +695,7 @@ async fn hierarchy_invalid_direction_returns_400() {
         .oneshot(
             Request::builder()
                 .uri("/api/hierarchy/anything?direction=sideways&depth=5")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -691,6 +728,7 @@ async fn hierarchy_default_direction_is_callees() {
         .oneshot(
             Request::builder()
                 .uri("/api/hierarchy/some-id")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -715,6 +753,7 @@ async fn hierarchy_extreme_depth_is_clamped() {
         .oneshot(
             Request::builder()
                 .uri("/api/hierarchy/some-id?direction=callees&depth=999")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -736,6 +775,7 @@ async fn cluster_returns_empty_for_fresh_store() {
         .oneshot(
             Request::builder()
                 .uri("/api/embed/2d")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -761,6 +801,7 @@ async fn cluster_accepts_max_nodes_filter() {
         .oneshot(
             Request::builder()
                 .uri("/api/embed/2d?max_nodes=100")
+                .header("host", "127.0.0.1:8080")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1239,11 +1280,12 @@ async fn host_allowlist_includes_explicit_lan_bind() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn host_allowlist_passes_when_header_missing() {
-    // Requests built via `Request::builder().uri("/...")` without a
-    // full URI don't get a Host synthesized. Real HTTP/1.1 traffic
-    // always has Host (hyper enforces it); this test documents the
-    // defensive-allow for missing headers so unit tests stay ergonomic.
+async fn host_allowlist_rejects_missing_host_header() {
+    // P1.12: HTTP/1.1 requires a Host header; HTTP/1.0 does not, but a
+    // no-Host request bypasses DNS-rebinding protection (the allowlist
+    // has nothing to compare against) so we treat it as malformed and
+    // 400. Test fixtures must build requests with an explicit Host
+    // header to traverse the router.
     let fixture = fixture_state();
     let app = test_router(fixture.state());
 
@@ -1257,7 +1299,13 @@ async fn host_allowlist_passes_when_header_missing() {
         .await
         .expect("oneshot");
 
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    let body = std::str::from_utf8(&bytes).expect("utf8");
+    assert!(
+        body.contains("Host"),
+        "rejection body should mention Host, got {body:?}"
+    );
 }
 
 // ===== #1096 SEC-7: per-launch auth token integration tests =====
@@ -1285,6 +1333,7 @@ mod auth_tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/stats")
+                    .header("host", "127.0.0.1:8080")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1304,7 +1353,13 @@ mod auth_tests {
         let app = test_router_with_auth(fixture.state(), token);
 
         let resp = app
-            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("host", "127.0.0.1:8080")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .expect("oneshot");
 
@@ -1323,6 +1378,7 @@ mod auth_tests {
                 Request::builder()
                     .uri("/api/stats")
                     .header(header::AUTHORIZATION, format!("Bearer {token_val}"))
+                    .header("host", "127.0.0.1:8080")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1343,6 +1399,7 @@ mod auth_tests {
                 Request::builder()
                     .uri("/api/stats")
                     .header(header::AUTHORIZATION, "Bearer wrong-token")
+                    .header("host", "127.0.0.1:8080")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1364,6 +1421,7 @@ mod auth_tests {
                 Request::builder()
                     .uri("/api/stats")
                     .header(header::COOKIE, format!("cqs_token={token_val}"))
+                    .header("host", "127.0.0.1:8080")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1390,6 +1448,7 @@ mod auth_tests {
                         header::COOKIE,
                         format!("session=abc; cqs_token={token_val}; pref=dark"),
                     )
+                    .header("host", "127.0.0.1:8080")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1410,6 +1469,7 @@ mod auth_tests {
             .oneshot(
                 Request::builder()
                     .uri(format!("/?token={token_val}"))
+                    .header("host", "127.0.0.1:8080")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1469,6 +1529,7 @@ mod auth_tests {
             .oneshot(
                 Request::builder()
                     .uri(format!("/api/graph?depth=3&token={token_val}&limit=5"))
+                    .header("host", "127.0.0.1:8080")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1501,6 +1562,7 @@ mod auth_tests {
                 Request::builder()
                     .uri("/api/stats")
                     .header(header::AUTHORIZATION, "Bearer token-instance-a")
+                    .header("host", "127.0.0.1:8080")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1514,6 +1576,7 @@ mod auth_tests {
                 Request::builder()
                     .uri("/api/stats")
                     .header(header::AUTHORIZATION, "Bearer token-instance-a")
+                    .header("host", "127.0.0.1:8080")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1534,6 +1597,7 @@ mod auth_tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/stats")
+                    .header("host", "127.0.0.1:8080")
                     .body(Body::empty())
                     .unwrap(),
             )

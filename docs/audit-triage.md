@@ -1,276 +1,227 @@
-# Audit Triage — v1.29.0
+# v1.30.0 Post-Release Audit Triage
 
-Triage date: 2026-04-23. Source: `docs/audit-findings.md` (147 findings across 16 categories, 2 batches of 8 parallel opus auditors).
+Generated: 2026-04-26T20:42:41Z
+Total findings: 170 (8 batch 1 categories + 8 batch 2 categories)
 
-## Triage rules
+Classification: P1 (easy + high impact, fix immediately) · P2 (medium + high, batch) · P3 (easy + low, quick wins) · P4 (hard or low impact, issues or inline trivial)
 
-- **P1** — easy difficulty AND high impact (real bug or security exposure that could bite a user soon). Fix immediately.
-- **P2** — medium effort AND high impact, OR easy + solid MEDIUM impact. Fix in next batch.
-- **P3** — easy + low impact, or medium + low impact. Fix if time.
-- **P4** — hard effort OR speculative (architectural changes, "would be nice", coverage gaps with no current bug). Hard ones get filed as GitHub issues; trivial ones fixed inline.
+## P1 — Fix Immediately
 
-Priority bias: lean higher for items in the new `cqs serve` surface (first external-network-reachable code we've shipped), items that break correctness on Windows (silent no-ops, chunk-id drift), and items affecting data safety in GC / TOCTOU paths. Lean lower for "nice to have" coverage, speculative scaling, and bookkeeping cleanups.
+| # | Title | Category | Location | Status |
+|---|-------|----------|----------|--------|
+| P1.1 | PRIVACY/SECURITY claim query_log is opt-in but it's unconditional | Documentation | `PRIVACY.md:22, SECURITY.md:101` vs `src/cli/batch/commands.rs:371` | ✅ fixed |
+| P1.2 | PRIVACY claims 7-day TTL on query_cache.db; only size cap exists | Documentation | `PRIVACY.md:21` vs `src/cache.rs:1536` | ✅ fixed |
+| P1.3 | CHANGELOG names CQS_LLM_ENDPOINT — actual var is CQS_LLM_API_BASE | Documentation | `CHANGELOG.md:19` | ✅ fixed |
+| P1.4 | CONTRIBUTING tells contributors to edit dispatch.rs (registry.rs now) | Documentation | `CONTRIBUTING.md:339-355` | ✅ fixed |
+| P1.5 | ProjectRegistry doc lies about path on macOS/Windows | Platform | `src/project.rs:1-3, 176` | ✅ fixed |
+| P1.6 | gather warning hardcodes "200" — lies when CQS_GATHER_MAX_NODES set | Code Quality | `src/cli/commands/search/gather.rs:200` | ✅ fixed |
+| P1.7 | Reranker silently ignores [reranker] config section | Code Quality | `src/reranker.rs:127-154, 442` | ✅ fixed |
+| P1.8 | Embedder fingerprint falls back to repo:timestamp — cache thrash | Error Handling | `src/embedder/mod.rs:435-466` | ✅ fixed |
+| P1.9 | LocalProvider Mutex::into_inner().unwrap_or_default() loses all batch results on poison | Error Handling | `src/llm/local.rs:155, 196, 271-279, 305` | ✅ fixed |
+| P1.10 | LocalProvider unbounded HTTP body read — OOM on hostile/buggy server | Robustness | `src/llm/local.rs:97-100, 474-487` | ✅ fixed |
+| P1.11 | Auth token leaked into TraceLayer span URI logging | Security | `src/serve/mod.rs:195` + `src/serve/auth.rs:226` | ✅ fixed |
+| P1.12 | enforce_host_allowlist passes through missing Host header — DNS-rebinding bypass | Security | `src/serve/mod.rs:234-251` | ✅ fixed |
+| P1.13 | Auth token printed to stdout — captured by journald for 30-day retention | Security | `src/serve/mod.rs:111-117` | ✅ fixed |
+| P1.14 | cqs serve has no RequestBodyLimitLayer — authenticated client can OOM via large POST | Security | `src/serve/mod.rs:154-196` | ✅ fixed |
+| P1.15 | UMAP coords not invalidated on chunk content change — cluster view serves stale | Data Safety | `src/store/chunks/async_helpers.rs:339` | ✅ fixed |
+| P1.16 | --name-boost CLI accepts >1 / <0 — embedding signal sign-flips, deletes good results | Algorithm | `src/cli/args.rs:57` + `src/search/scoring/candidate.rs:286` | ✅ fixed (consumer-side clamp; CLI parser fix already shipped in v1.29.x) |
+| P1.17 | drain_pending_rebuild dedup drops fresh embeddings during rebuild window | Algorithm | `src/cli/watch.rs:1077-1105` | pending |
+| P1.18 | token_pack break-on-first-oversized — drops smaller items that would fit | Algorithm | `src/cli/commands/mod.rs:398-417` | ✅ fixed |
+| P1.19 | cqs serve shutdown handles only Ctrl-C — SIGTERM (systemctl) skips graceful drain | Platform | `src/serve/mod.rs:253-260` | ✅ fixed |
+| P1.20 | OB-V1.30-1 default subscriber drops every info_span — 150 spans invisible at default level | Observability | `src/main.rs:14-32` | ✅ fixed |
+| P1.21 | Auth failures log nothing — no journal trail for 401s | Observability | `src/serve/auth.rs:194-232` | ✅ fixed |
 
-## P1 — Easy + High Impact (fix immediately)
+## P2 — Batch Fix
 
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| SEC-1 | `cqs serve` accepts any `Host` header — DNS-rebinding exfiltration of entire corpus | easy | `src/serve/mod.rs:97-114` | pending |
-| SEC-2 | XSS via unescaped error body in hierarchy-3d / cluster-3d views (`body.slice()` → `innerHTML`) | easy | `src/serve/assets/views/hierarchy-3d.js:107`, `cluster-3d.js:114` | pending |
-| SEC-3 | `build_graph` (uncapped) + `build_cluster` fetch entire chunks+function_calls tables — DoS | easy | `src/serve/data.rs:232-234,344-350,833-861` | pending |
-| PB-V1.29-2 | Watch SPLADE encoder passes Windows `file.display()` to `get_chunks_by_origin` — silent no-op, SPLADE never updates on Windows | easy | `src/cli/watch.rs:1083-1085` | pending |
-| DS2-1 | `prune_missing` reads origin list OUTSIDE write tx — TOCTOU against concurrent upsert, wipes just-added chunks | easy | `src/store/chunks/staleness.rs:76-90` | pending |
-| DS2-2 | `prune_gitignored` reads origin list OUTSIDE write tx — same TOCTOU class | easy | `src/store/chunks/staleness.rs:333-337` | pending |
+| # | Title | Category | Location | Status |
+|---|-------|----------|----------|--------|
+| P2.1 | cmd_similar JSON emits 3 fields vs CLI's 9 — schema parity drop | Code Quality | `src/cli/batch/handlers/info.rs:139` | pending |
+| P2.2 | dispatch_diff target_store placeholder dead in else branch | Code Quality | `src/cli/batch/handlers/misc.rs:354-387` | pending |
+| P2.3 | Embedding/Query cache open_with_runtime ~80% copy-paste (90+ lines) | Code Quality | `src/cache.rs:103-220, 1412-1522` | pending |
+| P2.4 | Repeated env::var parse pattern at 25+ sites — shared helpers exist but private | Code Quality | `src/limits.rs:230-260` + 25 sites | pending |
+| P2.5 | EmbeddingCache accepts MAX_SIZE=0; QueryCache rejects — opposite behavior | Code Quality | `src/cache.rs:206-209, 1509-1513` | pending |
+| P2.6 | DOC: README "544-query eval" should be 218; metrics also stale | Documentation | `README.md:5,649` | pending |
+| P2.7 | DOC: README claims 54 languages but Cargo.toml/source disagree (Elm) | Documentation | `README.md:5,530-585` | pending |
+| P2.8 | DOC: SECURITY omits per-project embeddings_cache.db | Documentation | `SECURITY.md:65-82` | pending |
+| P2.9 | DOC: README/Claude integration list missing 5 commands (ping/eval/model/serve/refresh) | Documentation | `README.md:467-525` | pending |
+| P2.10 | DOC: README cache subcommands list missing `clear` | Documentation | `README.md:521` | pending |
+| P2.11 | --json model swap/show emits plain-text errors — no envelope | API Design | `src/cli/commands/infra/model.rs` | pending |
+| P2.12 | cqs init/index/convert lack --json | API Design | `src/cli/commands/infra/init.rs`, etc. | pending |
+| P2.13 | Global --slot silently ignored by `slot`/`cache` subcommands | API Design | `src/cli/definitions.rs` + slot/cache cmds | pending |
+| P2.14 | cqs refresh has no --json | API Design | `src/cli/definitions.rs:755-761` | pending |
+| P2.15 | List-shape JSON envelopes inconsistent across `*list` commands | API Design | `cmd_ref_list/cmd_model_list/cmd_project_list` | pending |
+| P2.16 | cache stats mixes bytes and MB; cache compact uses bytes only | API Design | `src/cli/commands/infra/cache_cmd.rs` | pending |
+| P2.17 | dispatch::try_daemon_query warns then silently re-runs in CLI | Error Handling | `src/cli/dispatch.rs:445-462` | pending |
+| P2.18 | LocalProvider::fetch_batch_results returns empty map on missing batch_id | Error Handling | `src/llm/local.rs:542-547` | pending |
+| P2.19 | impact/format `serde_json::to_value...unwrap_or_else(json!({}))` at 6 sites | Error Handling | `src/impact/format.rs`, etc. | pending |
+| P2.20 | cache_stats silently treats QueryCache::open failure as 0 bytes | Error Handling | `src/cli/commands/infra/cache_cmd.rs:120-139` | pending |
+| P2.21 | slot_remove masks list_slots failure as "only slot remaining" | Error Handling | `src/cli/commands/infra/slot.rs:303-313` | pending |
+| P2.22 | build_token_pack swallows get_caller_counts_batch — silently degrades ranking | Error Handling | `src/cli/commands/io/context.rs:438-441` | pending |
+| P2.23 | read --focus silently empties type_chunks on store batch failure | Error Handling | `src/cli/commands/io/read.rs:230-235` | pending |
+| P2.24 | serve::build_chunk_detail collapses NULL signature/content to empty string | Error Handling | `src/serve/data.rs:488-492` | pending |
+| P2.25 | Per-request span and build_* spans disconnected (spawn_blocking drops span ctx) | Observability | `src/serve/handlers.rs:86,111,131,160,210,236` | pending |
+| P2.26 | TC-ADV: LocalProvider body-size DoS — buffers entire HTTP response | Test Coverage (adv) | `src/llm/local.rs:474-500` | pending |
+| P2.27 | TC-ADV: EmbeddingCache/QueryCache accept NaN/Inf — cross-process cache poisoning | Test Coverage (adv) | `src/cache.rs:332-407, 1677-1699` | pending |
+| P2.28 | TC-ADV: slot_create/slot_remove TOCTOU under concurrent operation | Test Coverage (adv) | `src/cli/commands/infra/slot.rs:219-350` | pending |
+| P2.29 | TC-ADV: Non-blocking HNSW rebuild — no panic/dim-drift/store-fail tests | Test Coverage (adv) | `src/cli/watch.rs:965-1042` | pending |
+| P2.30 | TC-ADV: serve auth strip_token_param case/percent-encoding gaps | Test Coverage (adv) | `src/serve/auth.rs:101-115` | pending |
+| P2.31 | TC-ADV: slot::migrate_legacy rollback path untested; rollback failure leaves split state | Test Coverage (adv) | `src/slot/mod.rs:511-593` | pending |
+| P2.32 | TC-ADV: LocalProvider non-HTTP api_base + concurrency mis-sizing | Test Coverage (adv) | `src/llm/local.rs:88-121` | pending |
+| P2.33 | RB: Slot pointer files read with unbounded read_to_string | Robustness | `src/slot/mod.rs:207, 323` | pending |
+| P2.34 | RB: migrate_legacy rollback leaves undetectable half-state | Robustness | `src/slot/mod.rs:511-593` | pending |
+| P2.35 | RB: local.rs auth_attempts mutex unwrap cascades worker poison | Robustness | `src/llm/local.rs:393-396` | pending |
+| P2.36 | RB: redirect policy disagrees between production (none) and doctor (limited(2)) | Robustness | `src/llm/local.rs:99` vs `src/cli/commands/infra/doctor.rs:578` | pending |
+| P2.37 | SHL: CAGRA itopk_size < k on small indexes — silent zero-result regression | Scaling | `src/cagra.rs:359` | pending |
+| P2.38 | SHL: nl::generate_nl char_budget defaults to 512 even with 2048 max_seq_len | Scaling | `src/nl/mod.rs:222-229` | pending |
+| P2.39 | SHL: MAX_BATCH_SIZE=10_000 silently truncates summary/HyDE on large corpora | Scaling | `src/llm/mod.rs:192` | pending |
+| P2.40 | SHL: serve graph/cluster cap 50_000 hardcoded; chunk_detail LIMIT 50/50/20 | Scaling | `src/serve/data.rs:17,24,505,542,571` | pending |
+| P2.41 | SHL: embed_batch_size default 64 doesn't scale with model dim/seq | Scaling | `src/cli/pipeline/types.rs:143` | pending |
+| P2.42 | SHL: CagraIndex::gpu_available has no VRAM ceiling — OOMs on 8GB GPUs | Scaling | `src/cagra.rs:262-264` | pending |
+| P2.43 | semantic_diff sort lacks tie-breaker — non-deterministic JSON across runs | Algorithm | `src/diff.rs:202-207` | pending |
+| P2.44 | is_structural_query keyword probe misses keywords at end-of-query | Algorithm | `src/search/router.rs:787-789` | pending |
+| P2.45 | bfs_expand processes seeds in HashMap order — non-deterministic name_scores at cap | Algorithm | `src/gather.rs:317-320` | pending |
+| P2.46 | llm summary contrastive_neighbors top-K sort lacks tie-breaker | Algorithm | `src/llm/summary.rs:263-267` | pending |
+| P2.47 | reranker compute_scores unchecked batch_size*stride; negative shape[1] panic | Algorithm | `src/reranker.rs:368-387` | pending |
+| P2.48 | doc_comments select_uncached sort lacks chunk-id tertiary key | Algorithm | `src/llm/doc_comments.rs:222-242` | pending |
+| P2.49 | map_hunks_to_functions returns hunks in HashMap order — non-deterministic impact-diff | Algorithm | `src/impact/diff.rs:38-168` | pending |
+| P2.50 | search_reference threshold/weight ordering bug — under-samples corpus when weight<1 | Algorithm | `src/reference.rs:231-285` | pending |
+| P2.51 | find_type_overlap chunk_info uses HashMap iteration — non-deterministic file attribution | Algorithm | `src/related.rs:131-157` | pending |
+| P2.52 | CAGRA search_with_filter under-fills when included<k — caller can't distinguish | Algorithm | `src/cagra.rs:520-598` | pending |
+| P2.53 | Hybrid SPLADE alpha=0 emits 1.0+s scores; cliff at SPLADE boundary | Algorithm | `src/search/query.rs:649-672` | pending |
+| P2.54 | apply_scoring_pipeline sign-flips on out-of-range name_boost; clamp embedding pre-blend | Algorithm | `src/search/scoring/candidate.rs:283-298` | pending |
+| P2.55 | open_browser uses explorer.exe on Windows — drops query string/token | Platform | `src/cli/commands/serve.rs:89-104` | pending |
+| P2.56 | NTFS/FAT32 mtime equality check — watch loop skips second save on FAT32 USB | Platform | `src/cli/watch.rs:551-560` | pending |
+| P2.57 | enforce_host_allowlist accepts missing Host header (dev ergonomic) | Platform | `src/serve/mod.rs:230-251` | pending |
+| P2.58 | --bind 0.0.0.0 host-allowlist breaks LAN — pushes operators to --no-auth | Security | `src/serve/mod.rs:207-218` | pending |
+| P2.59 | Migration restore_from_backup overwrites live DB while pool open | Data Safety | `src/store/backup.rs:171-180` | pending |
+| P2.60 | stream_summary_writer bypasses WRITE_LOCK — concurrent writer collides with reindex | Data Safety | `src/store/chunks/crud.rs:504-545` | pending |
+| P2.61 | slot_remove TOCTOU on concurrent promote — active_slot points to deleted dir | Data Safety | `src/cli/commands/infra/slot.rs:299-350` | pending |
+| P2.62 | Slot legacy migration moves live WAL/SHM instead of checkpointing first | Data Safety | `src/slot/mod.rs:511-624` | pending |
+| P2.63 | model_fingerprint fallback uses Unix timestamp — every restart misses cache | Data Safety | `src/embedder/mod.rs:435-465` | pending |
+| P2.64 | Daemon serializes ALL queries through one Mutex<BatchContext> | Data Safety | `src/cli/watch.rs:1775-1858` | pending |
+| P2.65 | embedding_cache schema doesn't separate `embedding` vs `embedding_base` purpose | Data Safety | `src/cache.rs:159-171` | pending |
+| P2.66 | cache evict() vs write_batch race — evict deletes rows just inserted | Data Safety | `src/cache.rs:354-460` | pending |
+| P2.67 | PF: reindex_files watch path double-parses calls per chunk | Performance | `src/cli/watch.rs:2815, 2930-2939` | pending |
+| P2.68 | PF: reindex_files watch path bypasses global EmbeddingCache | Performance | `src/cli/watch.rs:2876-2887` | pending |
+| P2.69 | PF: wrap_value deep-clones entire payload via serde round trip | Performance | `src/cli/json_envelope.rs:160-176` | pending |
+| P2.70 | PF: build_graph correlated subquery for n_callers — N rows × COUNT(*) | Performance | `src/serve/data.rs:234-264` | pending |
+| P2.71 | RM: Background HNSW rebuild thread detached — daemon shutdown can't wait | Resource Mgmt | `src/cli/watch.rs:965-1042` | pending |
+| P2.72 | RM: pending_rebuild.delta grows unbounded during long rebuild | Resource Mgmt | `src/cli/watch.rs:611, 2667-2741` | pending |
+| P2.73 | RM: LocalProvider::stash retains all submitted batch results until drop | Resource Mgmt | `src/llm/local.rs:74, 304-309, 542-547` | pending |
+| P2.74 | RM: Daemon never checks fs.inotify.max_user_watches — silently drops events | Resource Mgmt | `src/cli/watch.rs:1947-1949` | pending |
+| P2.75 | RM: select_provider triggers CUDA probe + symlink for every CLI process | Resource Mgmt | `src/embedder/provider.rs:171-248` | pending |
+| P2.76 | RM: serve handlers spawn_blocking unbounded — 512 thread × 10MB working set | Resource Mgmt | `src/serve/handlers.rs:86-89` + `mod.rs:92` | pending |
+| P2.77 | RM: Embedder clear_session doubled-memory window invisible | Resource Mgmt | `src/embedder/mod.rs:261, 808-823` | pending |
+| P2.78 | TC-HAP: cqs serve data endpoints never tested with populated data | Test Coverage | `src/serve/data.rs` + `src/serve/tests.rs` | pending |
+| P2.79 | TC-HAP: 16 batch dispatch handlers have zero tests | Test Coverage | `src/cli/batch/handlers/{misc,graph,info}.rs` | pending |
+| P2.80 | TC-HAP: Reranker::rerank/rerank_with_passages have no tests | Test Coverage | `src/reranker.rs:160, 190` | pending |
+| P2.81 | TC-HAP: cmd_project Search has no CLI integration test | Test Coverage | `src/cli/commands/infra/project.rs:70` | pending |
+| P2.82 | TC-HAP: cqs ref add/list/remove/update no end-to-end CLI test | Test Coverage | `src/cli/commands/infra/reference.rs` | pending |
+| P2.83 | TC-HAP: handle_socket_client no happy-path round-trip test | Test Coverage | `src/cli/watch.rs:160` | pending |
+| P2.84 | TC-HAP: spawn_hnsw_rebuild/drain_pending_rebuild ship with zero tests | Test Coverage | `src/cli/watch.rs spawn_hnsw_rebuild` | pending |
+| P2.85 | TC-HAP: for_each_command! macro + 4 emitters have no behavioral tests | Test Coverage | `src/cli/registry.rs:61` | pending |
+| P2.86 | TC-HAP: build_hnsw_index_owned/build_hnsw_base_index — no direct tests | Test Coverage | `src/cli/commands/index/build.rs:848,880` | pending |
+| P2.87 | TC-HAP: hyde_query_pass and doc_comment_pass have zero tests | Test Coverage | `src/llm/hyde.rs:11`, `src/llm/doc_comments.rs:135` | pending |
+| P2.88 | EX: Adding third score signal touches two parallel fusion paths | Extensibility | `src/store/search.rs:182-229`, `src/search/query.rs:511-720` | pending |
+| P2.89 | EX: Vector index backend selection is hand-coded if/else; no IndexBackend trait | Extensibility | `src/cli/store.rs:423-540` | pending |
+| P2.90 | EX: ScoringOverrides knob → 4 sites; no shared resolver | Extensibility | `src/config.rs:153-172` + scoring | pending |
+| P2.91 | EX: NoteEntry has no kind/tag taxonomy — only sentiment | Extensibility | `src/note.rs:41-89` | pending |
+| P2.92 | RM: Embedder::new opens fresh QueryCache + 7-day prune on every CLI command | Resource Mgmt | `src/embedder/mod.rs:355-366` | pending |
 
-## P2 — Medium effort OR solid-MEDIUM impact (fix in next batch)
+## P3 — Quick Wins
 
-### Security
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| SEC-4 | `build_graph` / `build_hierarchy` IN-list can exceed SQLite 32k bind limit → 500 | easy | `src/serve/data.rs:326-341, 670-754` | pending |
+| # | Title | Category | Location | Status |
+|---|-------|----------|----------|--------|
+| P3.1 | panic_message helper duplicated 4 ways across 3 modules | Code Quality | `src/cli/pipeline/mod.rs:223`, `src/store/mod.rs:1322`, etc. | pending |
+| P3.2 | resolve.rs find_reference + resolve_reference_db duplicate "find by name" twice | Code Quality | `src/cli/commands/resolve.rs:26-57` | pending |
+| P3.3 | slot::libc_exdev hardcodes 18 with stale comment — libc is workspace dep | Code Quality | `src/slot/mod.rs:640-647` | pending |
+| P3.4 | DOC: enumerate_files doc claims gitignore only — also honors .cqsignore | Documentation | `src/lib.rs:542-547` | pending |
+| P3.5 | pub use nl::* leaks dead generate_nl_with_call_context wrapper | API Design | `src/lib.rs:165` + `src/nl/mod.rs:43-59` | pending |
+| P3.6 | cqs gather --expand vs --expand-parent flag-name collision | API Design | `src/cli/args.rs:GatherArgs::expand` | pending |
+| P3.7 | cqs eval --save accepts path with no .json validation | API Design | `src/cli/commands/eval/mod.rs:EvalCmdArgs::save` | pending |
+| P3.8 | OB: cqs eval runner uses eprintln! for progress instead of tracing | Observability | `src/cli/commands/eval/runner.rs:163-168` | pending |
+| P3.9 | OB: nl/mod.rs public NL generators have zero spans | Observability | `src/nl/mod.rs:43,65,189,209` | pending |
+| P3.10 | OB: embed_documents/embed_query lack completion fields (result.len, dim, time) | Observability | `src/embedder/mod.rs:683,722` | pending |
+| P3.11 | OB: Reranker::rerank_with_passages swallows length mismatch silently | Observability | `src/reranker.rs:200-220` | pending |
+| P3.12 | OB: train_data git wrappers don't log non-zero exit codes | Observability | `src/train_data/git.rs:65-242` | pending |
+| P3.13 | OB: format-string-interpolated tracing::info! at 9 sites — fields lost | Observability | `src/hnsw/build.rs:78,236` + 7 sites | pending |
+| P3.14 | OB: cluster_2d emits no warn when corpus has chunks but zero UMAP rows | Observability | `src/serve/data.rs:901, 1020` | pending |
+| P3.15 | TC-ADV: validate_slot_name accepts leading-dash / trailing-dash names | Test Coverage (adv) | `src/slot/mod.rs:159-178` | pending |
+| P3.16 | TC-ADV: provider.rs ort_runtime_search_dir untested for malformed cmdline | Test Coverage (adv) | `src/embedder/provider.rs:67-123` | pending |
+| P3.17 | TC-ADV: blake3_hex_or_passthrough uppercase/short-hex edges untested | Test Coverage (adv) | `src/cache.rs:709-721` | pending |
+| P3.18 | RB: SystemTime → i64 cache cast wraps in 2554 | Robustness | `src/cache.rs:349-352, 551-555` | pending |
+| P3.19 | RB: libc_exdev hardcodes 18 — wrong on Windows (ERROR_NOT_SAME_DEVICE=17) | Robustness | `src/slot/mod.rs:644-647` | pending |
+| P3.20 | RB: cache prune --older-than DAYS computes negative cutoff for huge values | Robustness | `src/cache.rs:548, 551-555` | pending |
+| P3.21 | RB: serve/data.rs i64.max(0) as u32 grew to 8 sites (was 3) | Robustness | `src/serve/data.rs` (8 sites) | pending |
+| P3.22 | RB: Daemon socket-thread join detaches on timeout but logs "joined cleanly" | Robustness | `src/cli/watch.rs:2374-2400` | pending |
+| P3.23 | SHL: diff EMBEDDING_BATCH_SIZE=1000 doesn't scale with model dim | Scaling | `src/diff.rs:158` | pending |
+| P3.24 | SHL: Daemon worker_threads=min(num_cpus,4) hardcoded — caps large machines | Scaling | `src/cli/watch.rs:115-119` | pending |
+| P3.25 | SHL: train_data MAX_SHOW_SIZE=50MB hardcoded — silent skip on big files | Scaling | `src/train_data/git.rs:167` | pending |
+| P3.26 | EX: BatchCmd::is_pipeable is a separate match outside command registry | Extensibility | `src/cli/batch/commands.rs:325-538` | pending |
+| P3.27 | EX: LlmProvider resolver hand-codes 2 providers — no registry | Extensibility | `src/llm/mod.rs:200-398` | pending |
+| P3.28 | EX: Tree-sitter query files no startup self-test (registry consistency) | Extensibility | `src/language/queries/*.scm` | pending |
+| P3.29 | EX: find_project_root markers list hardcoded — could be data | Extensibility | `src/cli/config.rs:155-162` | pending |
+| P3.30 | EX: structural_matchers per-language fn — no shared library | Extensibility | `src/language/mod.rs:191,345` | pending |
+| P3.31 | EX: Embedder constructor no per-preset extras hook | Extensibility | `src/embedder/models.rs:163-300` | pending |
+| P3.32 | PB: EmbeddingCache/QueryCache hardcode ~/.cache/cqs on Windows | Platform | `src/cache.rs:80-84, 1399-1403` | pending |
+| P3.33 | PB: dispatch_drift/diff JSON file fields use display() in suggest.rs/types.rs | Platform | `src/suggest.rs:101`, `src/store/types.rs:220` | pending |
+| P3.34 | PB: find_ld_library_dir splits on `:` — no Windows arm | Platform | `src/embedder/provider.rs:115-123` | pending |
+| P3.35 | PB: index.lock advisory on Linux but mandatory on Windows; doc gap | Platform | `src/cli/files.rs:120-213` | pending |
+| P3.36 | PB: is_wsl_drvfs_path misses //wsl.localhost and uppercase mounts | Platform | `src/config.rs:92-101` | pending |
+| P3.37 | PB: blame git_file = replace('\\', "/") — Windows verbatim prefix slips through | Platform | `src/cli/commands/io/blame.rs:113-115` | pending |
+| P3.38 | PB: daemon_socket_path falls back to temp_dir silently — log differing trust | Platform | `src/daemon_translate.rs:179-188` | pending |
+| P3.39 | DS: write_slot_model/write_active_slot skip parent-dir fsync after rename | Data Safety | `src/slot/mod.rs:237-406` | pending |
+| P3.40 | DS: update_umap_coords_batch uses TEMP TABLE shared across calls | Data Safety | `src/store/chunks/crud.rs:392-450` | pending |
+| P3.41 | PF: reindex_files allocates N empty Embedding placeholders | Performance | `src/cli/watch.rs:2918-2924` | pending |
+| P3.42 | PF: prepare_for_embedding always issues store-cache query even on full global hit | Performance | `src/cli/pipeline/embedding.rs:64-82` | pending |
+| P3.43 | PF: Daemon socket walks args array twice (validation + extraction) | Performance | `src/cli/watch.rs:266-297` | pending |
+| P3.44 | PF: build_graph edge-dedup HashSet keys clone (file,caller,callee) per row | Performance | `src/serve/data.rs:367-373` | pending |
+| P3.45 | PF: extract_imports HashSet<String> allocates per candidate even on duplicate | Performance | `src/where_to_add.rs:258-276` | pending |
+| P3.46 | PF: Watch reindex cached embedding clone via .get instead of .remove | Performance | `src/cli/watch.rs:2879-2887` | pending |
+| P3.47 | RM: LocalProvider worker threads use default 2MB stack — 128MB at concurrency=64 | Resource Mgmt | `src/llm/local.rs:163-256` | pending |
+| P3.48 | RM: LocalProvider::http no pool_max_idle / idle_timeout | Resource Mgmt | `src/llm/local.rs:97-100` | pending |
+| P3.49 | TC-HAP: cmd_similar (CLI) has no integration test | Test Coverage | `src/cli/commands/search/similar.rs:41` | pending |
+| P3.50 | TC-HAP: cmd_ci happy path untested; only error paths tested | Test Coverage | `src/cli/commands/review/ci.rs:9` | pending |
+| P3.51 | TC-HAP: cmd_gather (CLI) untested; only library gather() tested | Test Coverage | `src/cli/commands/search/gather.rs:77` | pending |
+| P3.52 | TC-HAP: dispatch_line no happy-path test for valid command | Test Coverage | `src/cli/batch/mod.rs:557` | pending |
+| P3.53 | TC-HAP: select_provider/detect_provider untested (#1120 split) | Test Coverage | `src/embedder/provider.rs:171-258` | pending |
 
-### Platform / Correctness
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| PB-V1.29-1 | `cqs context` / `cqs brief` fail on Windows backslash paths (never normalized) | easy | `src/cli/commands/io/context.rs:28,115`, `brief.rs:40-42` | pending |
-| PB-V1.29-3 | `chunk.id` prefix-strip uses `abs_path.display()` — breaks on Windows verbatim + backslash paths, silent data integrity drift | medium | `src/cli/watch.rs:2432-2434` | pending |
-| PB-V1.29-5 | `dispatch_drift` / `dispatch_diff` emit Windows backslashes in JSON `file` field — breaks cross-platform agent chaining | easy | `src/cli/batch/handlers/misc.rs:277,353,365,377` | pending |
+## P4 — Defer / Issues
 
-### Data Safety
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| DS2-3 | `set_metadata_opt` / `touch_updated_at` bypass `WRITE_LOCK` — SQLITE_BUSY under concurrent reindex + batch-id setters | easy | `src/store/metadata.rs:409-418, 452-475` | pending |
-| DS2-4 | Phantom-chunks DELETE in separate tx from upsert — mid-batch crash serves queries against half-pruned index | medium | `src/cli/watch.rs:2568-2579` | pending |
-| DS2-8 | `CQS_MIGRATE_REQUIRE_BACKUP` defaults to off — destructive v18→v19 migration with no backup on failure | medium | `src/store/migrations.rs:478-562` | pending |
+| # | Title | Category | Location | Disposition | Status |
+|---|-------|----------|----------|-------------|--------|
+| P4.1 | AuthToken::from_string cfg-gated, alphabet invariant relies on docstring | Security | `src/serve/auth.rs:75-78, 218` | issue (hardening) | pending |
+| P4.2 | Path=/ cookie scope on 127.0.0.1 — multiple cqs serve on same host stomp | Security | `src/serve/auth.rs:211-214` | issue (browser cookie limit) | pending |
+| P4.3 | Auth state ignored by quiet=true — Option<AuthToken> permits silent no-auth | Security | `src/serve/mod.rs:78-83` | issue (type-state refactor) | pending |
 
-### Algorithm Correctness
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| AC-V1.29-1 | `semantic_diff` sort has no tie-break — non-determinism in `cqs diff`/`cqs drift` output | easy | `src/diff.rs:202-207, 298-303` | pending |
-| AC-V1.29-2 | `is_structural_query` misses keywords at end-of-query — `"find all trait"` misroutes to Conceptual (α=0.70 instead of 0.90) | easy | `src/search/router.rs:787-789` | pending |
-| AC-V1.29-3 | `bfs_expand` seeds in HashMap order — non-deterministic `name_scores` when cap hits mid-expansion | easy | `src/gather.rs:317-320` | pending |
-| AC-V1.29-5 | `--name-boost` accepts values outside [0,1] — negative embedding weight silently breaks search | easy | `src/cli/args.rs:57-58` | pending |
-| AC-V1.29-6 | `reranker::compute_scores_opt` unchecked `batch_size * stride` mul; negative dim wraps to `usize::MAX` | easy | `src/reranker.rs:368-387` | pending |
+## Summary
 
-### API Design
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| API-V1.29-1 | `cqs --json project list/remove` silently emit text | easy | `src/cli/commands/infra/project.rs:90-108, 110-118` | pending |
-| API-V1.29-2 | `cqs --json ref add/remove/update` silently emit text | easy | `src/cli/commands/infra/reference.rs:42-69` | pending |
-| API-V1.29-4 | `cqs notes list --check` dropped by daemon batch dispatch (NotesListArgs missing field) | easy | `src/cli/args.rs:527-540`, `batch/handlers/misc.rs:85-118` | pending |
+- **P1: 21 findings** — biggest themes:
+  - Docs lying about security/privacy (query_log opt-in, query_cache TTL, registry/dispatch contributor docs, project registry path)
+  - Auth token leakage (TraceLayer span URI, journald banner, missing-Host bypass)
+  - Critical defaults misleading users (gather "200" warning, reranker config ignored, embedder fingerprint cache thrash)
+  - Single-line wiring bugs (LocalProvider mutex poison loses results, name_boost sign-flip, token_pack break-vs-continue, drain_pending_rebuild dedup)
+  - Observability "off" by default — 150 spans invisible until OB-V1.30-1 lands
+- **P2: 92 findings** — biggest themes:
+  - Determinism / tie-break gaps in 8+ sort sites (semantic_diff, bfs_expand, contrastive_neighbors, doc_comments, map_hunks, related, etc.)
+  - Cross-slot data-safety issues stemming from #1105 (slot TOCTOU, fingerprint fallback, evict/write race, schema purpose conflation)
+  - Untested v1.30.0 surfaces (#1113 HNSW rebuild, #1114 registry, #1118 auth, #1120 provider split, serve data endpoints, batch dispatch handlers, LLM passes)
+  - Config/JSON contract drift (--json absent on init/index/convert/refresh; list shapes inconsistent; cache stats unit mix)
+  - Resource-management leaks introduced in v1.30.0 (detached rebuild thread, pending.delta unbounded, LocalProvider stash, eager QueryCache open, eager CUDA probe)
+- **P3: 53 findings** — biggest themes:
+  - Observability convention drift (eprintln, format-string interpolation, missing completion fields, missing spans on hot fns)
+  - Platform/Windows refinements (cache paths, path normalization, EXDEV constant, WSL UNC paths, mtime FAT32)
+  - Performance micro-opts (allocator churn, unnecessary clone, double-pass scans, correlated subquery on small budget)
+  - Adversarial test additions for newly-shipped surfaces
+- **P4: 3 findings** — biggest themes:
+  - Auth/security hardening that requires type-state refactors or cookie scope changes browser-wide
+  - All three are tracking-issue material; no inline triv
 
-### Error Handling
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| EH-V1.29-1 | `cli/commands/io/brief.rs::build_brief_data` swallows 3 consecutive store errors, zero-filled output | medium | `src/cli/commands/io/brief.rs:59-75` | pending |
-| EH-V1.29-2 | `ci::run_ci_analysis` silently downgrades dead-code scan failure into "0 dead" with no gate signal | easy | `src/ci.rs:100-128` | pending |
-| EH-V1.29-7 | `cache::EmbeddingCache::stats` swallows 5 per-query failures into a single lying `CacheStats` | easy | `src/cache.rs:408-461` | pending |
-| EH-V1.29-8 | Daemon gitignore RwLock poison silently treated as "no matcher" — re-indexes ignored files | easy | `src/cli/watch.rs:1737,1945` | pending |
+## Cross-cutting Observations
 
-### Code Quality
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| CQ-V1.29-3 | `cmd_similar` local `resolve_target` diverges from `cqs::resolve_target` — CLI picks test chunks, batch picks real ones | easy | `src/cli/commands/search/similar.rs:16-39` | pending |
-| CQ-V1.29-6 | `cqs doctor` reports compile-time `MODEL_NAME` constant as index metadata — silently wrong after `cqs model swap` | easy | `src/cli/commands/infra/doctor.rs:144-147,155-156` | pending |
-
-### Documentation
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| DOC-V1.29-1 | CONTRIBUTING.md says "Schema v20" — actual is v22 | easy | `CONTRIBUTING.md:193,207` | pending |
-| DOC-V1.29-2 | README doesn't document `cqs serve` (flagship v1.29.0 feature) | medium | `README.md` | pending |
-| DOC-V1.29-3 | README/CONTRIBUTING missing `.cqsignore` | easy | `README.md`, `CONTRIBUTING.md` | pending |
-| DOC-V1.29-4 | SECURITY.md says integrity check is opt-out — actual is opt-in (backwards) | easy | `SECURITY.md:22` | pending |
-
-### Scaling
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| SHL-V1.29-2 | `MAX_BATCH_LINE_LEN = 1 MB` blocks large diffs via batch/daemon; CLI accepts 50 MB | easy | `src/cli/batch/mod.rs:104` | pending |
-
-### Performance
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| PF-V1.29-1 | Daemon shell-joins and re-splits args on every query (waste on hot path) | medium | `src/cli/watch.rs:315-331` | pending |
-
-### Resource Management
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| RM-V1.29-1 | `load_references` rebuilds rayon pool + reloads every ref Store+HNSW per `--include-refs` query (bypasses LRU) | medium | `src/cli/batch/handlers/search.rs:286`, `src/reference.rs:204-217` | pending |
-
-### Extensibility
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| EX-V1.29-5 | `NotesListArgs` and `NotesCommand::List` are two hand-maintained arg structs — drift already visible | easy | `src/cli/args.rs:527-540`, `commands/io/notes.rs:49-65` | pending |
-
-### Test Coverage
-| ID | Title | Difficulty | Location | Status |
-|---|---|---|---|---|
-| TC-HAP-1.29-1 | `cqs serve` endpoints (`build_graph` / `build_chunk_detail` / `build_hierarchy` / `build_cluster`) never tested with data | medium | `src/serve/data.rs:192, 452, 586, 825` | pending |
-| TC-HAP-1.29-2 | 16 batch dispatch handlers (gather/scout/task/where/onboard/callers/…) have zero tests | medium | `src/cli/batch/handlers/*.rs` | pending |
-| TC-ADV-1.29-3 | Daemon socket `handle_socket_client` — zero adversarial tests (1 MiB boundary, malformed JSON, NUL-in-args, oversized args) | medium | `src/cli/watch.rs:160-406` | pending |
-
-## P3 — Easy + Low Impact (fix if time)
-
-### Security (low-impact)
-- **SEC-5**: `GraphQuery.file` LIKE filter — `%`/`_` metacharacter injection breaks prefix contract (`src/serve/data.rs:241-248`)
-- **SEC-8**: LIKE injection in `build_chunk_detail` "tests that cover" heuristic — hostile function name matches many tests (`src/serve/data.rs:533-541`)
-
-### Platform (low-impact)
-- **PB-V1.29-4**: `init` writes `.gitignore` LF-only, noisy `git status` on Windows autocrlf (`src/cli/commands/infra/init.rs:36-40`)
-- **PB-V1.29-6**: Hardcoded `/mnt/` WSL check ignores custom `wsl.conf automount.root` (`src/hnsw/persist.rs:86-87`, `src/project.rs:85-86`, `src/config.rs:445-451`)
-- **PB-V1.29-7**: `EmbeddingCache::open` / `QueryCache::open` propagate `set_permissions` failure on WSL DrvFS (`src/cache.rs:73-80, 1002-1009`)
-- **PB-V1.29-9**: `aux_model::expand_tilde` only handles `~/` prefix — misses bare `~` and `~\` (`src/aux_model.rs:101-108`)
-
-### Data Safety (low-impact)
-- **DS2-5**: `EmbeddingCache::evict` / `QueryCache::evict` TOCTOU on SELECT size/AVG/DELETE (`src/cache.rs:352-400, 1103-1147`)
-- **DS2-6**: HNSW save's `.bak` rename doesn't fsync parent dir before `atomic_replace` pass (`src/hnsw/persist.rs:414-426`)
-- **DS2-7**: HNSW dirty-flag drift — `set_hnsw_dirty(false)` failure after save leaves `dirty=1` permanently (`src/cli/watch.rs:2326-2338, 2250-2257`)
-- **DS2-9**: `upsert_sparse_vectors` rollback missing generation bump — stale on-disk `splade.index.bin` trusted (`src/store/sparse.rs:113-117, 193-196`)
-- **DS2-10**: `as_millis() as i64` mtime cast — pathological mtime → negative value stored in `notes.file_mtime` (`src/cli/watch.rs:2556`, `src/lib.rs:454`, 13 sites total)
-
-### Algorithm Correctness (low-impact)
-- **AC-V1.29-4**: `llm::summary::contrastive_neighbors` top-K no tie-break (`src/llm/summary.rs:263,265,267`)
-- **AC-V1.29-7**: `llm::doc_comments::select_uncached` sort tie-break (`src/llm/doc_comments.rs:222-229`)
-
-### Code Quality (low-impact)
-- **CQ-V1.29-1**: `BatchProvider::submit_batch` (4-arg) + 3 impls dead — delete (`src/llm/provider.rs:27-33`)
-- **CQ-V1.29-2**: `build_scout_output` documented "shared" but `dispatch_scout` duplicates it inline (`src/cli/commands/search/scout.rs:26-38`)
-- **CQ-V1.29-4**: Risk thresholds duplicated in `cmd_affected` — JSON vs text path (`src/cli/commands/review/affected.rs:92-100, 143-149`)
-- **CQ-V1.29-5**: "Empty impact diff" JSON object duplicated across 3 files, 4 sites (`src/cli/batch/handlers/graph.rs:402-407, 412-417`, etc.)
-
-### Documentation (low-impact)
-- **DOC-V1.29-5**: ROADMAP.md lists shipped `cqs serve` under "Parked" (line 174)
-- **DOC-V1.29-6**: CONTRIBUTING.md Architecture Overview missing 6 files (`aux_model.rs`, `daemon_translate.rs`, `eval/`, `fs.rs`, `limits.rs`, `serve/`)
-- **DOC-V1.29-7**: `src/hnsw/build.rs:39` docstring points at nonexistent `cli/commands/index.rs`
-- **DOC-V1.29-8**: `.claude/skills/troubleshoot/SKILL.md` references nonexistent `hnsw.bin`, wrong default model
-- **DOC-V1.29-9**: `TODO(docs-agent): document this rule in CONTRIBUTING.md` unresolved after landing
-- **DOC-V1.29-10**: README Performance section pinned to v1.27.0 eval file, stale chunk count
-
-### API Design (low-impact)
-- **API-V1.29-3**: `cqs telemetry --reset --json` silently drops `--json` (`src/cli/commands/infra/telemetry_cmd.rs:520-578`)
-- **API-V1.29-5**: `dispatch_drift` / `dispatch_diff` emit `file` via `.display()` not `normalize_path` (subsumed by PB-V1.29-5)
-- **API-V1.29-6**: `BatchCmd::Refresh` / `invalidate` has no CLI surface
-- **API-V1.29-7**: `cqs eval --limit` missing `-n` short flag (sibling of every other query command)
-- **API-V1.29-8**: Pretty/compact JSON drift between CLI and daemon paths
-- **API-V1.29-9**: `--expand` on `cqs search` vs `--expand-parent` on top-level — rename to match
-- **API-V1.29-10**: `--depth` short flag `-d` present on `cqs onboard`, absent on `impact`/`test-map`
-
-### Error Handling (low-impact)
-- **EH-V1.29-3**: `dispatch::try_daemon_query` silently falls back to CLI when re-serialization fails (`src/cli/dispatch.rs:785-790`)
-- **EH-V1.29-4**: `cli/commands/io/blame.rs::build_blame_data` silently suppresses callers fetch failure (`:52-59`)
-- **EH-V1.29-5**: `suggest::generate_suggestions` silently skips dedup against existing notes on store error (`src/suggest.rs:62-65`)
-- **EH-V1.29-6**: `where_to_add::suggest_placement_with_options_core` silently drops pattern data on batch fetch failure (`src/where_to_add.rs:208-214`)
-- **EH-V1.29-10**: `cagra::delete_persisted` discards both `remove_file` errors silently (`src/cagra.rs:1097-1102`)
-
-### Observability (low-impact)
-- **OB-V1.29-1**: `Reranker::rerank` lacks entry span; `rerank_with_passages` has one (`src/reranker.rs:160`)
-- **OB-V1.29-2**: `serve::build_chunk_detail` and `build_stats` lack spans; other three `build_*` have them (`src/serve/data.rs:452, 933`)
-- **OB-V1.29-3**: `cmd_project` span doesn't record subcommand (`src/cli/commands/infra/project.rs:75`)
-- **OB-V1.29-4**: `verify_hnsw_checksums` uses format-interpolated `tracing::warn!` (`src/hnsw/persist.rs:136`)
-- **OB-V1.29-5**: `serve` axum handlers log entry but never completion — no latency trace (medium effort)
-- **OB-V1.29-6**: `classify_query` / `reclassify_with_centroid` lack entry span (`src/search/router.rs:561, 1093`)
-- **OB-V1.29-7**: `verify_hnsw_checksums` flattens `io::ErrorKind` via `String` — operator loses ErrorKind
-
-### Robustness (low-impact)
-- **RB-V1.29-1**: `timeout_minutes * 60` env-var multiplication can overflow (`src/cli/batch/mod.rs:343, 378`)
-- **RB-V1.29-2**: UMAP row/dim/id_max_len narrowing cast without ceiling check (`src/cli/commands/index/umap.rs:104-106,116`)
-- **RB-V1.29-3**: `serve/data.rs` negative `line_start` from DB silently clamped to 0 then cast to `u32` (`:504, :787, :785-788`)
-- **RB-V1.29-6**: `chunk_count as usize` on 32-bit silently truncates — add crate-level 64-bit gate
-- **RB-V1.29-9**: SPLADE 6 sites cast `shape[N] as usize` on ORT `i64` dim without negative check (`src/splade/mod.rs:145,154,524,549,770-838`)
-- **RB-V1.29-10**: `id_map.len() * dim * 4 * 2` unchecked mul in HNSW persist (`src/hnsw/persist.rs:647`)
-
-### Scaling (low-impact)
-- **SHL-V1.29-1**: `pad_2d_i64` hardcodes pad-token-id = 0 — breaks non-BERT tokenizers (RoBERTa pad=1) (medium effort)
-- **SHL-V1.29-3**: `MAX_ID_MAP_SIZE = 100 MB` in `count_vectors` silently drops stats for 1.7M+ chunk corpora
-- **SHL-V1.29-4**: Onboard `MAX_CALLEE_FETCH=30` / `MAX_CALLER_FETCH=15` no env override
-- **SHL-V1.29-5**: `task.rs` gather constants (`DEPTH=2`, `MAX_NODES=100`, `MULTIPLIER=3`) no env override
-- **SHL-V1.29-6**: `SCOUT_LIMIT_MAX` / `SIMILAR_LIMIT_MAX` / `RELATED_LIMIT_MAX` hardcoded while siblings have env overrides
-- **SHL-V1.29-9**: `DAEMON_PERIODIC_GC_INTERVAL_SECS` / `_IDLE_SECS` hardcoded while CAP has env override
-- **SHL-V1.29-10**: `convert/{html,mod}::MAX_FILE_SIZE = 100 MB` duplicated, no env override
-
-### Performance (low-impact)
-- **PF-V1.29-2**: `fetch_chunks_by_ids_async` / `fetch_candidates_by_ids_async` hardcode `BATCH_SIZE=500` based on obsolete 999-parameter limit (`src/store/chunks/async_helpers.rs:27,69`)
-- **PF-V1.29-3**: `get_type_users_batch` / `get_types_used_by_batch` hardcode 200 — 3× round trips on impact (`src/store/types.rs:392,438`)
-- **PF-V1.29-4**: `find_hotspots` allocates String for every callee before truncating (`src/impact/hints.rs:261-271`)
-- **PF-V1.29-5**: Parser unconditionally allocates CRLF-replaced copy of every source file (`src/parser/mod.rs:491`)
-- **PF-V1.29-6**: `BatchContext::notes()` clones full Vec per call; siblings use `Arc<...>` (medium effort)
-- **PF-V1.29-7**: `upsert_notes_batch` fires 3 SQL statements per note (medium effort)
-- **PF-V1.29-8**: `prune_missing` fires `dunce::canonicalize` syscall per missing-path candidate (medium effort)
-- **PF-V1.29-10**: `finalize_results` unnecessarily clones sanitized FTS string (`src/search/query.rs:363-369`)
-
-### Resource Management (low-impact)
-- **RM-V1.29-2**: `evict_global_embedding_cache_with_runtime` opens `QueryCache` with fresh single-thread runtime every eviction tick (`src/cli/batch/mod.rs:1225`)
-- **RM-V1.29-3**: `search_across_projects` builds fresh rayon pool per call (medium effort)
-- **RM-V1.29-4**: `TelemetryAggregator::query_counts` unbounded — no cardinality cap (medium effort)
-- **RM-V1.29-5**: CHM/WebHelp page readers no per-page byte cap (`src/convert/chm.rs:107`, `webhelp.rs:120`)
-- **RM-V1.29-6**: `cqs serve` multi-thread runtime no `worker_threads` cap — uses `num_cpus` (`src/serve/mod.rs:63-66`)
-- **RM-V1.29-7**: `EmbeddingCache` / `QueryCache` no `Drop` impl → no WAL checkpoint on daemon shutdown (P2 #70 claim was wrong) (medium effort)
-- **RM-V1.29-8**: `Box::leak` pattern in watch.rs test helpers (`src/cli/watch.rs:2660-2663, 2686-2689`)
-
-### Extensibility (low-impact)
-- **EX-V1.29-6**: `cli/commands/infra/init.rs` hardcodes model sizes to `dim >= 1024` heuristic (`:42-50`)
-- **EX-V1.29-9**: `aux_model::config_from_dir` hardcodes on-disk layout per kind (`:136-148`)
-
-### Test Coverage (adversarial, mostly P3)
-- **TC-ADV-1.29-1**: `normalize_l2` silently returns NaN/Inf — no test (`src/embedder/mod.rs:1023-1030`)
-- **TC-ADV-1.29-2**: `embed_batch` doesn't validate ORT output for NaN/Inf before `Embedding::new` (medium)
-- **TC-ADV-1.29-4**: `parse_unified_diff` missing edge-case tests (double `+++`, orphan `@@`, whitespace-only)
-- **TC-ADV-1.29-5**: `parse_notes_str` missing tests for huge mentions array, empty text, NUL-in-text
-- **TC-ADV-1.29-6**: HNSW `load_with_dim` missing id_map duplicate/empty/NUL tests
-- **TC-ADV-1.29-7**: `embedding_slice` silently passes NaN/Inf bytes from DB
-- **TC-ADV-1.29-8**: `dispatch_line` shell_words untested on ANSI/BEL/CR
-- **TC-ADV-1.29-9**: `SpladeEncoder::encode` raw-logits propagates Inf
-- **TC-ADV-1.29-10**: No DoS test for `parse_unified_diff` on 50MB diff (medium)
-
-### Test Coverage (happy path, low-impact)
-- **TC-HAP-1.29-3**: `Reranker::rerank`/`rerank_with_passages` no tests (medium)
-- **TC-HAP-1.29-4**: `cmd_project { Search }` no integration test (medium)
-- **TC-HAP-1.29-5**: `cmd_ref_add/list/remove/update` no end-to-end tests (medium)
-- **TC-HAP-1.29-6**: `handle_socket_client` no happy-path round-trip test (medium)
-- **TC-HAP-1.29-7**: `cmd_similar` no integration test
-- **TC-HAP-1.29-8**: `cmd_ci` happy path untested — library tested, CLI only error paths
-- **TC-HAP-1.29-9**: `cmd_gather` (CLI) untested
-- **TC-HAP-1.29-10**: `dispatch_line` no happy-path test (only error/adversarial)
-
-## P4 — Hard OR Low Impact (file issues or defer)
-
-### Security (architectural)
-- **SEC-6**: `cmd_serve` spawns `xdg-open`/`open`/`explorer.exe` on URL with bind string — command-string injection surface (hard, speculative) → file issue
-- **SEC-7**: `cqs serve` has no authentication — default stance relies on "localhost is trusted" (hard, architectural) → file issue
-
-### Platform (low-impact + speculative)
-- **PB-V1.29-8**: `HF_HOME` / `HUGGINGFACE_HUB_CACHE` lookup doesn't honor Windows `%LOCALAPPDATA%` default (medium, Windows-only)
-- **PB-V1.29-10**: WSL detection via `/proc/version` — false positives on non-WSL Linux with "microsoft" in kernel (medium, speculative)
-
-### Extensibility (architectural)
-- **EX-V1.29-1**: Adding a new CLI command requires coordinated edits across 5-7 files (hard) → file as tracking issue
-- **EX-V1.29-2**: `where_to_add::extract_patterns` hardcodes Rust/TS-JS/Go custom logic — refactor to `LanguageDef::patterns` (medium)
-- **EX-V1.29-3**: `LlmProvider` enum: adding new provider requires 5+ site edits (medium)
-- **EX-V1.29-4**: `AuxModelKind` preset registration duplicates matrix (medium)
-- **EX-V1.29-7**: Tree-sitter query file naming has no startup self-test (medium)
-- **EX-V1.29-8**: Config schema: adding `[foo]` section requires edits in 3-4 files with no shared pattern (medium)
-
-### Robustness (hard + low risk)
-- **RB-V1.29-5**: `extract_l5k_regions` regex captures `.unwrap()` on group 0/1/2 (hard, regex-crate-bug only)
-- **RB-V1.29-8**: `reranker.rs` ORT `shape[1] as usize` on negative dim (low — already covered by AC-V1.29-6)
-
-### Scaling (low-impact)
-- **SHL-V1.29-7**: Hotspot thresholds (`HOTSPOT_MIN_CALLERS=5` etc.) don't scale with corpus size (medium, speculative)
-- **SHL-V1.29-8**: Risk score thresholds (`HIGH=5.0, MEDIUM=2.0`) hardcoded (medium, speculative)
-
-### Error Handling (pattern)
-- **EH-V1.29-9**: Project-wide `warnings: Vec<String>` field pattern for `.unwrap_or_default()` paths (medium, cross-cutting pattern)
-
-### Performance (hard)
-- **PF-V1.29-9**: `suggest_tests` runs `reverse_bfs` inside a loop over callers — O(callers × graph) (hard)
-
-### Resource Management (low-impact)
-- **RM-V1.29-9**: Daemon socket thread spawn without pre-bounded stack size (medium)
-- **RM-V1.29-10**: `handle_socket_client` BufReader allocates per-connection (easy but low-priority)
-
-## Cross-references to known open issues
-
-Security findings overlap with the threat model in SECURITY.md for `cqs serve`. The platform findings (PB-V1.29-*) are a natural follow-up to v1.27.0 wave-1 triage which found similar `normalize_path` gaps. DS2-1/DS2-2 extend the P2 #32 fix that closed the equivalent class for `prune_all`.
-
-## Stop condition
-
-Triage covers all 147 findings. Next: generate fix prompts for P1 + P2 (bounded, high-signal set). P3 collected for inline sweep after P1/P2 land. P4 items filed as issues or deferred.
+- **Docs lying is concentrated in the v1.30.0 release surface.** PRIVACY/SECURITY/CHANGELOG/CONTRIBUTING/README each have ≥1 P1 lie (query_log opt-in, query_cache TTL, CQS_LLM_ENDPOINT, dispatch.rs procedure, project registry path). Each is an easy text fix; together they indicate the v1.30.0 release notes pass (#1122) didn't cross-check against actual code paths.
+- **Mutex/error-handling silent-failure pattern recurs across LocalProvider (#1101).** RB-V1.30-1 (unbounded body), RB-V1.30-7 (auth_attempts mutex unwrap), TC-ADV-1.30-1 (body DoS), EH (Mutex::into_inner unwrap_or_default loses batch results), and the silent fetch_batch_results empty-on-missing all stem from the same "build this fast for #1101 ship date" pattern. A focused PR to harden LocalProvider would close 5+ findings.
+- **#1105 (slots+cache) introduced 8+ TOCTOU/race/cache-mismatch findings.** slot_remove vs slot_promote, slot migrate rollback, embedding_cache purpose column missing, model_fingerprint timestamp fallback breaking cross-slot copy, evict-vs-write race, EmbeddingCache vs QueryCache zero-handling divergence, cache stats silent-zero. The cache+slots subsystem is overdue for a hardening pass with locks (`.cqs/slots.lock`) and schema purposes.
+- **Determinism regressions cluster around HashMap iteration in algorithm code.** semantic_diff sort, bfs_expand seed enqueue, contrastive_neighbors top-K, doc_comments select, map_hunks_to_functions, find_type_overlap chunk_info — six findings, all the same root cause (HashMap iter into score-sorted result), and all easy fixes. One sweep PR closes them.
+- **The v1.30.0 critical surfaces shipped without tests.** #1113 (non-blocking HNSW rebuild), #1114 (single-registration registry), #1118 (serve auth — strip_token_param, missing-Host), #1120 (execution-provider split), serve data endpoints, 16 batch dispatch handlers — all under-tested. TC-HAP findings P2.78–P2.87 form a coherent test-debt PR series that would close ~10 findings and provide regression protection for the next release.
+- **Observability "applied to new modules but default-off" pattern.** v0.12.1 lesson lifted spans into every new module, but OB-V1.30-1 reveals the default subscriber drops everything. Fixing the default plus structured-field cleanup (P3.13) and lazy span propagation across spawn_blocking (P2.25) would make the existing instrumentation actually useful in production.

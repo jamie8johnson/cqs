@@ -336,6 +336,11 @@ pub(super) async fn batch_insert_chunks(
         //
         // Phase 5: on content change, refresh embedding_base too — new content
         // means new NL text means new base embedding. Reindex sets both columns.
+        // P1.15: invalidate UMAP coords on content change. The cluster view
+        // filters `WHERE umap_x IS NOT NULL` to find chunks needing reprojection;
+        // without nulling here, a re-embedded chunk renders at its old position
+        // until `cqs index --umap` is rerun. Parser-version-only bumps do NOT
+        // change the embedding, so the CASE preserves coords on that branch.
         qb.push(
             " ON CONFLICT(id) DO UPDATE SET \
              origin=excluded.origin, \
@@ -356,7 +361,11 @@ pub(super) async fn batch_insert_chunks(
              parent_id=excluded.parent_id, \
              window_idx=excluded.window_idx, \
              parent_type_name=excluded.parent_type_name, \
-             parser_version=excluded.parser_version \
+             parser_version=excluded.parser_version, \
+             umap_x=CASE WHEN chunks.content_hash != excluded.content_hash \
+                         THEN NULL ELSE chunks.umap_x END, \
+             umap_y=CASE WHEN chunks.content_hash != excluded.content_hash \
+                         THEN NULL ELSE chunks.umap_y END \
              WHERE chunks.content_hash != excluded.content_hash \
                 OR chunks.parser_version != excluded.parser_version",
         );

@@ -18,8 +18,8 @@ When you run `cqs index`, the following is stored under `.cqs/`:
 A legacy global cache may also exist from older versions:
 
 - `~/.cache/cqs/embeddings.db` — pre-#1105 cross-project embedding cache, capped at 1 GB by default (`CQS_CACHE_MAX_SIZE`). Still consulted when the per-project cache misses.
-- `~/.cache/cqs/query_cache.db` — recent query embeddings with a 7-day TTL. Speeds up repeated searches.
-- `~/.cache/cqs/query_log.jsonl` — opt-in query log, written only when `CQS_TELEMETRY=1` or the file already exists. Stays local.
+- `~/.cache/cqs/query_cache.db` — recent query embeddings, evicted oldest-first when the DB exceeds `CQS_QUERY_CACHE_MAX_SIZE` (100 MiB default). Prune older entries with `cqs cache prune <DAYS>`. Speeds up repeated searches.
+- `~/.cache/cqs/query_log.jsonl` — local query log written by every `cqs chat` / `cqs batch` invocation (search/gather/onboard/scout/where/task). Append-only JSONL. Delete the file to disable; `cqs cache clear` does not remove it. Stays local.
 
 This data never leaves your machine.
 

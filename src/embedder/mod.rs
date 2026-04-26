@@ -433,34 +433,47 @@ impl Embedder {
                                             hash
                                         }
                                         Err(e) => {
-                                            tracing::warn!(error = %e, "Failed to stream-hash model, using repo+timestamp fallback");
-                                            let ts = std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .unwrap_or_default()
-                                                .as_secs();
-                                            format!("{}:{}", self.model_config.repo, ts)
+                                            // P1.8: stable size-based fallback,
+                                            // not timestamp — every restart with
+                                            // a transient hash failure used to mint
+                                            // a NEW fingerprint and thrash the cache.
+                                            tracing::warn!(
+                                                error = %e,
+                                                "Failed to stream-hash model, using repo+size fallback (cache may miss until next successful hash)"
+                                            );
+                                            let size = std::fs::metadata(model_path)
+                                                .ok()
+                                                .map(|m| m.len())
+                                                .unwrap_or(0);
+                                            format!("{}:fallback:size={}", self.model_config.repo, size)
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    tracing::warn!(error = %e, "Failed to open model for fingerprint, using repo+timestamp fallback");
-                                    let ts = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs();
-                                    format!("{}:{}", self.model_config.repo, ts)
+                                    // P1.8: stable size-based fallback (see above).
+                                    tracing::warn!(
+                                        error = %e,
+                                        "Failed to open model for fingerprint, using repo+size fallback"
+                                    );
+                                    let size = std::fs::metadata(model_path)
+                                        .ok()
+                                        .map(|m| m.len())
+                                        .unwrap_or(0);
+                                    format!("{}:fallback:size={}", self.model_config.repo, size)
                                 }
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "Failed to get model paths for fingerprint, using repo+timestamp fallback");
-                    let ts = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    format!("{}:{}", self.model_config.repo, ts)
+                    // P1.8: model path resolution failed entirely — no path to
+                    // stat — but `:fallback:no-path` is still deterministic
+                    // (does not vary by wall-clock).
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to get model paths for fingerprint, using repo-only fallback"
+                    );
+                    format!("{}:fallback:no-path", self.model_config.repo)
                 }
             }
         })

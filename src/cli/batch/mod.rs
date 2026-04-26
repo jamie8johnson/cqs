@@ -1271,7 +1271,11 @@ impl BatchContext {
             return Ok(r);
         }
         let _span = tracing::info_span!("batch_reranker_init").entered();
-        let r = cqs::Reranker::new().map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
+        // P1.7: thread the `[reranker]` config section so .cqs.toml preset/
+        // model_path is honoured instead of silently defaulting to ms-marco.
+        let config = self.config();
+        let r = cqs::Reranker::with_section(config.reranker.clone())
+            .map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
         let _ = self.reranker.set(r);
         Ok(self
             .reranker

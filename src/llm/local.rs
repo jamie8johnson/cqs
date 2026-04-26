@@ -268,15 +268,17 @@ impl LocalProvider {
         // `std::thread::scope` guarantees all workers have joined at this
         // point — no dangling threads, no lost results.
 
-        let ok = *succeeded.lock().unwrap();
-        let err = *failed.lock().unwrap();
+        // Recover counters even on poison — counts are advisory and dropping
+        // them to 0 would mask real progress in the "complete" log.
+        let ok = *succeeded.lock().unwrap_or_else(|p| p.into_inner());
+        let err = *failed.lock().unwrap_or_else(|p| p.into_inner());
         let elapsed_ms = start.elapsed().as_millis() as u64;
 
         // Fatal-batch check: if every item that talked to the server saw
         // 401/403 on its first request, the credentials are wrong — abort
         // with a specific error instead of silently returning an empty stash.
-        let auth_fail = *auth_failures.lock().unwrap();
-        let auth_attempt = *auth_attempts.lock().unwrap();
+        let auth_fail = *auth_failures.lock().unwrap_or_else(|p| p.into_inner());
+        let auth_attempt = *auth_attempts.lock().unwrap_or_else(|p| p.into_inner());
         if auth_attempt > 0 && auth_fail == auth_attempt {
             tracing::error!(
                 url = %self.api_base,
@@ -301,11 +303,37 @@ impl LocalProvider {
             "local batch complete"
         );
 
-        // Move results into the stash under the batch id.
-        let results_map = results.into_inner().unwrap_or_default();
+        // Move results into the stash under the batch id. On poison we recover
+        // the partially-populated map rather than silently substituting an
+        // empty one — losing partial results is worse than the panic risk.
+        let results_map = match results.into_inner() {
+            Ok(m) => m,
+            Err(poisoned) => {
+                tracing::error!(
+                    succeeded = ok,
+                    "results mutex poisoned during local batch — recovering inner state"
+                );
+                poisoned.into_inner()
+            }
+        };
+
+        // Invariant: if results_map.len() != ok, accounting drifted. Surface
+        // it loudly rather than shipping a short stash silently.
+        if results_map.len() != ok {
+            tracing::error!(
+                map_len = results_map.len(),
+                succeeded = ok,
+                "local batch accounting drift: results map size != succeeded count"
+            );
+            return Err(LlmError::BatchFailed(format!(
+                "local batch accounting drift: ok={ok} map_len={}",
+                results_map.len()
+            )));
+        }
+
         self.stash
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .insert(batch_id.clone(), results_map);
 
         Ok(batch_id)
@@ -464,15 +492,54 @@ impl LocalProvider {
     }
 }
 
+/// Hard cap on response body size (RB-V1.30-1 / P1.10).
+///
+/// Summary outputs are typically a few hundred bytes; 4 MiB is ~1000× headroom.
+/// Larger bodies are a sign of a misbehaving or hostile endpoint and we'd
+/// rather error than OOM the daemon. Up to `local_concurrency()` (≤64) workers
+/// can be reading concurrently, so an unbounded read multiplies the risk.
+///
+/// Override via `CQS_LOCAL_LLM_MAX_BODY_BYTES` (must be > 0).
+///
+/// Not memoised: read on each response so tests can flip the cap without a
+/// process-wide cache. The env-var cost is negligible compared to the HTTP
+/// request that just completed.
+fn local_max_body_bytes() -> usize {
+    std::env::var("CQS_LOCAL_LLM_MAX_BODY_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(4 * 1024 * 1024)
+}
+
 /// Parse an OpenAI-compat `/v1/chat/completions` response, extracting the
 /// first choice's `message.content`.
 ///
 /// Returns:
 /// - `Ok(Some(text))` — non-empty content present
 /// - `Ok(None)` — valid JSON but `choices` is empty or `content` is null/empty
-/// - `Err(_)` — malformed JSON
+/// - `Err(_)` — malformed JSON or body exceeds [`local_max_body_bytes`]
+///
+/// The body is read with a length cap to defend against hostile / misbehaving
+/// servers that return multi-GB responses (P1.10 / RB-V1.30-1).
 fn parse_choices_content(resp: reqwest::blocking::Response) -> Result<Option<String>, LlmError> {
-    let body: serde_json::Value = resp.json()?;
+    use std::io::Read;
+    let cap = local_max_body_bytes();
+    let mut buf = Vec::with_capacity(8 * 1024);
+    // Read one byte beyond the cap so we can distinguish "exactly cap" from
+    // "exceeded cap".
+    resp.take(cap as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| LlmError::BatchFailed(format!("response body read failed: {e}")))?;
+    if buf.len() > cap {
+        return Err(LlmError::BatchFailed(format!(
+            "response body exceeds cap ({} > {} bytes)",
+            buf.len(),
+            cap
+        )));
+    }
+    let body: serde_json::Value = serde_json::from_slice(&buf)
+        .map_err(|e| LlmError::BatchFailed(format!("response body not valid JSON: {e}")))?;
     let content = body
         .get("choices")
         .and_then(|v| v.as_array())
@@ -487,10 +554,20 @@ fn parse_choices_content(resp: reqwest::blocking::Response) -> Result<Option<Str
     }
 }
 
-/// Read up to 256 bytes from an HTTP error response body for log context.
+/// Read up to 2 KiB from an HTTP error response body for log context.
 /// Returns the empty string if the body can't be read or is non-UTF-8.
+///
+/// Hard-capped at 2 KiB to bound log spam and prevent OOM on hostile error
+/// bodies (P1.10 / RB-V1.30-1). The caller further trims to the first 256
+/// chars so logs don't blow up either.
 fn body_preview(resp: reqwest::blocking::Response) -> String {
-    let body = resp.text().unwrap_or_default();
+    use std::io::Read;
+    const PREVIEW_CAP: u64 = 2 * 1024;
+    let mut buf = Vec::with_capacity(PREVIEW_CAP as usize);
+    if resp.take(PREVIEW_CAP).read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    let body = String::from_utf8_lossy(&buf);
     let cut = body
         .char_indices()
         .nth(256)
@@ -1138,6 +1215,78 @@ mod tests {
         assert_eq!(results.len(), 4);
         // Callback attempted 4×; panics caught.
         assert_eq!(cb_fires.load(Ordering::SeqCst), 4);
+
+        std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
+    }
+
+    // ===== P1.10 / RB-V1.30-1: oversized body capped =====
+    //
+    // A 200 OK response whose JSON body exceeds CQS_LOCAL_LLM_MAX_BODY_BYTES
+    // must be rejected (item recorded as failed, no panic, no OOM). We force
+    // a tiny cap (1 KiB) and serve a 64 KiB body so the test stays fast.
+    #[test]
+    fn oversized_response_body_capped_at_max() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
+        std::env::set_var("CQS_LOCAL_LLM_MAX_BODY_BYTES", "1024");
+        std::env::remove_var("CQS_LLM_API_KEY");
+
+        // Build a 200 OK response with a content field big enough to push the
+        // total JSON body well past the 1 KiB cap.
+        let huge: String = "x".repeat(64 * 1024);
+        let server = httpmock::MockServer::start();
+        let _m = server.mock(|when, then| {
+            when.method("POST").path("/v1/chat/completions");
+            then.status(200).json_body(serde_json::json!({
+                "choices": [{ "message": { "content": huge.clone() } }]
+            }));
+        });
+
+        let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
+        let provider = LocalProvider::new(config).unwrap();
+
+        // submit_batch_prebuilt must still succeed (returns a batch id) — the
+        // single item failed during parse and was recorded as failed, not
+        // bubbled up. Successful items count = 0; stash is empty.
+        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let results = provider.fetch_batch_results(&batch_id).unwrap();
+        assert!(
+            results.is_empty(),
+            "oversized body must not produce a stashed result, got: {:?}",
+            results
+        );
+
+        std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
+        std::env::remove_var("CQS_LOCAL_LLM_MAX_BODY_BYTES");
+    }
+
+    // ===== P1.10 / RB-V1.30-1: 4xx with large body — body_preview is capped =====
+    //
+    // body_preview() reads at most 2 KiB regardless of the response size. A
+    // misbehaving server returning a 1 MiB error body must not OOM the worker
+    // and must complete the non-retriable-4xx skip path. We just verify the
+    // batch finishes and the item is recorded as failed.
+    #[test]
+    fn fourxx_with_large_body_does_not_buffer_entire_body() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
+        std::env::remove_var("CQS_LLM_API_KEY");
+
+        let huge: String = "y".repeat(1024 * 1024);
+        let server = httpmock::MockServer::start();
+        let _m = server.mock(|when, then| {
+            when.method("POST").path("/v1/chat/completions");
+            then.status(400).body(huge.clone());
+        });
+
+        let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
+        let provider = LocalProvider::new(config).unwrap();
+        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let results = provider.fetch_batch_results(&batch_id).unwrap();
+        assert!(
+            results.is_empty(),
+            "4xx item must not produce a stashed result"
+        );
 
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
     }

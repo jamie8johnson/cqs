@@ -151,7 +151,9 @@ impl GatherOptions {
 }
 
 /// PF-10: Read CQS_GATHER_MAX_NODES once via OnceLock, not on every GatherOptions::default().
-fn gather_max_nodes() -> usize {
+///
+/// Public so CLI text-mode warnings can report the actual cap (P1.6).
+pub fn gather_max_nodes() -> usize {
     static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CAP.get_or_init(|| match std::env::var("CQS_GATHER_MAX_NODES") {
         Ok(val) => match val.parse::<usize>() {
