@@ -7,7 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.29.1] - 2026-04-24
+## [1.30.0] - 2026-04-25
+
+Minor release: closes the v1.29.0 audit umbrella (#1095), ships the cache+slots infrastructure, adds a code-specialised embedder preset, hardens `cqs serve` with per-launch auth, and scaffolds non-NVIDIA `ExecutionProvider` backends. Schema unchanged from v1.29.x; no reindex required for the audit-fix changes (cache+slots auto-migrates the legacy `.cqs/index.db` on first command).
+
+### Added
+
+- **`cqs slot {list,create,promote,remove,active}`** — named slots: side-by-side full indexes living under `.cqs/slots/<name>/`, plus per-command `--slot` flag and `CQS_SLOT` env override (#1105). The legacy `.cqs/index.db` auto-migrates to `.cqs/slots/default/` on first command. Slot metadata persists in `.cqs/active_slot`; resolution order is `--slot` > `CQS_SLOT` > `.cqs/active_slot` > `"default"`.
+- **`cqs cache {stats,prune,compact}`** — per-project embedding cache `.cqs/embeddings_cache.db` keyed by `(content_hash, model_id)` (#1105). Reuses embeddings across reindexes and across slots when the chunk content + model match. The legacy global cache at `~/.cache/cqs/embeddings.db` continues to be consulted on miss for back-compat.
+- **`nomic-coderank` embedder preset** — `nomic-ai/CodeRankEmbed` 137M, 768-dim, code-specialised; opt-in via `CQS_EMBEDDING_MODEL=nomic-coderank` (#1110). Three-way A/B against BGE-large and v9-200k on the v3.v2 fixture: BGE stays default; CodeRankEmbed wins R@1 on test split at ⅓ the parameters; v9-200k retired from public recommendation.
+- **Local LLM provider (OpenAI-compatible)** — `cqs index --llm-summaries` accepts a local OpenAI-compatible endpoint via `CQS_LLM_ENDPOINT`, in addition to the existing Anthropic Batches API path (#1101 — closes audit finding EX-V1.29-3). `LlmProvider` trait, `LocalProvider` implementation, end-to-end summary generation via local vLLM / Ollama / etc.
+- **`cqs serve` per-launch auth token** — 256-bit URL-safe base64 token gates every request (#1118 / SEC-7). Three credential surfaces: `Authorization: Bearer`, `cqs_token` cookie, `?token=` query param. Constant-time compare via `subtle::ConstantTimeEq`. Query-param hits redirect to a stripped URL + `Set-Cookie: cqs_token=...; HttpOnly; SameSite=Strict; Path=/` so reload + bookmark keep working without leaving the token in the address bar. `--no-auth` opts out for scripted automation.
+- **`ExecutionProvider::CoreML` and `::ROCm` enum variants** — cfg-gated by new `ep-coreml` and `ep-rocm` cargo features (#956 Phase A, #1120). `detect_provider()` and `create_session()` restructured into per-backend cfg-blocks so adding the actual ORT provider wiring in Phase B (CoreML / GHA macOS) and Phase C (ROCm / AMD hardware) is a one-block change. CUDA path unchanged on this hardware. Phase B/C deferred to contributors with the matching test environment.
+- **`cqs refresh` CLI command** — daemon-only no-op when no daemon is running, otherwise forwards to the existing `BatchCmd::Refresh` handler (API-V1.29-6, surfaced during the #1112 batch).
+
+### Changed
+
+- **`cqs serve` defaults to auth-required** — every request without a valid token returns 401 (#1118). Operators running automation against a localhost serve must pass `--no-auth` or include the per-launch token. The launch banner prints a paste-ready `http://{addr}/?token={token}` URL.
+- **`gpu-index` cargo feature renamed to `cuda-index`** — the CAGRA backend is cuVS-only, and the old name was misleading (#1120). The legacy `gpu-index` name is preserved as an alias (`gpu-index = ["cuda-index"]`), so existing build scripts and shell history keep working without coordinated updates. Internal docs and the `cargo install` examples in README/CONTRIBUTING migrated to `cuda-index`.
+- **`cqs watch` HNSW rebuilds run off the dispatcher thread** — async rebuild via `tokio::task::spawn_blocking` (#1090, #1113). On `cqs watch` against an active editor, file-change events no longer block on a 15-30 s CUDA rebuild; the daemon stays responsive while the rebuild runs in the background.
+- **Single-registration command registry** — `Commands` enum dispatch + variant naming + batch classification + Group A/B match arms collapse into one `for_each_command!` table in `src/cli/registry.rs` (#1097, #1114). Adding a new command is now one row in the registry plus one handler; the previous five exhaustive matches are gone.
+- **v3.v2 fixture line-starts re-pinned** — 42 dev + 44 test gold chunks shifted by 1-96 lines after the v1.29.x audit-fix waves; eval matches `(file, name, line_start)` strictly (#1109). The post-v1.28.3 dev R@5 baseline of 78.0% had appeared to crash to 51.4% on current main — the gap was 100% fixture drift, not a search regression. Refreshed fixtures restore dev R@5 to 74.3% (3.7-5.5pp below canonical = real corpus-drift attrition).
+
+### Fixed
+
+- **5-issue batch (#1042, #1049, #1091, #1107, #1108)** in PR #1112: `WINDOW_OVERHEAD` now scales with embedder prefix length; `fallback_does_not_mix_comment_styles` test pinned with explicit assertion; WSL `cqs watch` poll-watcher CPU dropped via configurable interval (`CQS_WATCH_POLL_MS`); `cqs slot create --model X` now persists the model into the slot metadata; hot search SELECTs include `content_hash` so `reference.rs` no longer recomputes blake3 per result (~2,180 warnings/eval cleared).
+- **`ChunkType::human_name` catch-all hid multi-word variant omissions** (#1047, #1117). The `_ => name.to_string()` fallback fell through silently for new variants; replaced with macro-generated exhaustive match in `define_chunk_types!`. New variants now require an explicit `human = "..."` attribute or get their lower-kebab-case default.
+- **`suggest_tests` per-caller reverse-BFS** (#1115, #1119). `cqs impact --suggest-tests` previously called `reverse_bfs(graph, caller, 5)` once per caller — `O(N × |G|)`, visibly slow on hub functions with 1000+ callers. Replaced with one `forward_bfs_multi` from every test up front + per-caller HashSet membership: `O(tests + edges)`, single traversal.
+- **Daemon socket per-connection allocator churn** (#1116, #1119). `handle_socket_client` now reuses a `thread_local!` `RefCell<String>` (8 KiB capacity) for the request-line buffer across every connection a Tokio blocking-pool thread services. Wire protocol unchanged.
+- **`hnsw::test_build_batched` flake** (#1104, #1106). Recall window loosened from top-5 to top-10 of an unseeded 25-chunk HNSW build; original assertion was an unrealistic noise-floor target.
+
+### Internal
+
+- **`forward_bfs_multi` in `src/impact/bfs.rs`** — forward dual of `reverse_bfs`, gated on the same `bfs_max_nodes()` cap. Cross-checks against `reverse_bfs` predicate via parity test on a multi-caller fixture.
+- **Slot library module `src/slot/`** — `slot_dir()`, `resolve_slot_name()`, one-shot legacy migration logic. `cqs::resolve_index_db()` library helper honours the slot resolution order so embedding callers don't rebuild the path-resolution machinery.
+- **`define_chunk_types!` macro** gains an optional `human = "..."` per-variant attribute; `human_name()` is now generated exhaustively from the macro instead of hand-rolled in `language/mod.rs`.
+- **Tests**: 1767 lib tests pass (was ~1717 post-#1105). +5 unit tests for `forward_bfs_multi`, +7 unit + 10 integration tests for `cqs serve` auth, +1 macro-generation regression test for `human_name`.
+
+
 
 Patch release: v1.29.0 audit close-out. 147 findings triaged; 142 fixed across #1093 and #1094. Remaining 5 items are architectural / micro-perf and live in #1095, #1096, #1097, #1098. No new commands, no behaviour changes by default; env-var additions are additive, JSON field additions are non-breaking.
 
