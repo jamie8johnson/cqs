@@ -1,8 +1,13 @@
 # Roadmap
 
-## Post-v1.29.1 (in flight, no release yet)
+## Post-v1.29.1 (release candidate, no tag yet)
 
-Cache+slots infrastructure shipped on main (#1105). Three-way embedder A/B (BGE-large vs CodeRankEmbed-137M vs v9-200k) settled on the new infra: BGE-large stays default, CodeRankEmbed becomes opt-in preset, v9-200k retired from production candidacy on the v3.v2 distribution. Two PRs in flight, two issues outstanding from this work — see PROJECT_CONTINUITY.md "Right Now" for full state.
+Main is now ~13 PRs ahead of the v1.29.1 tag — bump-worthy after a docs-review pass. Four arcs landed since the v1.29.1 release:
+
+- **Cache+slots infrastructure (#1105)** — `.cqs/embeddings_cache.db` (content_hash, model_id) + `.cqs/slots/<name>/` directories + per-slot `cqs slot {list,create,promote,remove,active}` and `cqs cache {stats,prune,compact}` commands. One-shot migration of legacy `.cqs/index.db` → `.cqs/slots/default/`.
+- **Three-way embedder A/B (#1109 #1110)** — fixture refresh absorbed v1.29.x line-start drift; BGE-large stays default; CodeRankEmbed-137M added as opt-in preset; v9-200k retired from production candidacy on the v3.v2 distribution.
+- **v1.29.0 audit close-out batch (#1112 #1113 #1114 #1117 #1118 #1119)** — every umbrella finding from #1095 closed: SEC-7 serve auth (#1118), EX-1 command registry (#1114), `cqs watch` HNSW non-blocking (#1113), `ChunkType::human_name` macro (#1117), `forward_bfs_multi` for `suggest_tests` (#1119), thread-local socket scratch buffer (#1119), plus a 5-issue batch (#1112) clearing #1042/#1049/#1091/#1107/#1108.
+- **#956 Phase A scaffolding (#1120)** — `gpu-index` → `cuda-index` cargo feature rename (legacy alias preserved); `ep-coreml` / `ep-rocm` features added as scaffolding markers; `ExecutionProvider` enum gains cfg-gated `CoreML` and `ROCm { device_id }` variants; `detect_provider()` and `create_session()` restructured into per-backend cfg-blocks. CUDA path byte-identical at runtime. Phase B (CoreML, GHA macOS runner) and Phase C (ROCm, AMD hardware) both deferred — issue stays open.
 
 ## Current: v1.29.1 (v1.29.0 audit close-out)
 
@@ -139,31 +144,30 @@ Historical split (2026-04-09, 16,731 invocations): **main conversation** uses `s
 
 ## Open Issues
 
-Re-audited 2026-04-21 against actual GitHub state. **All Tier 1 + Tier 2 issues from the 2026-04-16 audit have shipped** (across PRs #1041, #1045, #1046 in the v1.27 → v1.28 audit-fix waves). Remaining work is the 6 P4 deferrals from the post-v1.27.0 audit + 5 hard-blocked Tier 3 items.
+Re-audited 2026-04-25 against actual GitHub state. **The v1.29.0 audit P4 backlog is now empty** — every numbered finding (1042/1047/1048/1049/1091/1107/1108) closed via PRs #1112, #1117, #1119 (the latter two from the post-v1.29.1 audit close-out batch). Remaining 9 open issues split into "small / opportunistic", "Windows-specific (need test env)", and "external-blocked".
 
-**P4 deferrals (small effort, low impact — opportunistic):**
+**Small / opportunistic:**
 
 | # | Finding | Notes |
 |---|---------|-------|
-| [#1107](https://github.com/jamie8johnson/cqs/issues/1107) | `cqs slot create --model` validates but does not persist | filed 2026-04-25 |
-| [#1108](https://github.com/jamie8johnson/cqs/issues/1108) | Hot search SELECTs omit `content_hash` (~2180 warnings/eval) | filed 2026-04-25 |
-| [#1102](https://github.com/jamie8johnson/cqs/issues/1102) | llm: batch.rs log says "Claude API" regardless of provider | cosmetic |
-| [#1042](https://github.com/jamie8johnson/cqs/issues/1042) | `WINDOW_OVERHEAD` doesn't scale with embedder prefix length | constant tuning |
-| [#1047](https://github.com/jamie8johnson/cqs/issues/1047) | `ChunkType::human_name` catch-all hides multi-word variant omissions | compile-time enforcement |
-| [#1048](https://github.com/jamie8johnson/cqs/issues/1048) | `try_daemon_query` strict-string output parsing | future-proof refactor |
-| [#1049](https://github.com/jamie8johnson/cqs/issues/1049) | Pin `fallback_does_not_mix_comment_styles` with explicit test | tiny test pin |
-| [#1043](https://github.com/jamie8johnson/cqs/issues/1043) | `is_slow_mmap_fs` ignores Windows network drives + reparse points | Windows-specific edge case |
-| [#1044](https://github.com/jamie8johnson/cqs/issues/1044) | Native Windows `cqs watch` cannot stop cleanly — DB corruption risk | Windows-specific signal handling |
+| [#1102](https://github.com/jamie8johnson/cqs/issues/1102) | llm: batch.rs log says "Claude API" regardless of provider | cosmetic wording fix |
 
-**Tier 3 (blocked on external factors):**
+**Windows-specific (need Windows test environment):**
 
 | # | Finding | Blocker |
 |---|---------|---------|
-| [#956](https://github.com/jamie8johnson/cqs/issues/956) | ExecutionProvider: CoreML/ROCm decouple | needs non-Linux CI |
-| [#255](https://github.com/jamie8johnson/cqs/issues/255) | Pre-built reference packages | signing/registry design |
-| [#717](https://github.com/jamie8johnson/cqs/issues/717) | HNSW mmap | needs lib swap to hnswlib-rs (nightly-only) |
-| [#916](https://github.com/jamie8johnson/cqs/issues/916) | mmap SPLADE body | smaller win than originally claimed |
-| [#106](https://github.com/jamie8johnson/cqs/issues/106) | ort 2.0-rc.12 stable release | upstream (pykeio) |
+| [#1043](https://github.com/jamie8johnson/cqs/issues/1043) | `is_slow_mmap_fs` ignores Windows network drives + reparse points | Linux/WSL unaffected; needs Windows runner |
+| [#1044](https://github.com/jamie8johnson/cqs/issues/1044) | Native Windows `cqs watch` cannot stop cleanly — DB corruption risk | Windows signal-handling edge case |
+
+**Tier 2 / 3 (external-blocked or scaffolding-only):**
+
+| # | Finding | Status |
+|---|---------|--------|
+| [#956](https://github.com/jamie8johnson/cqs/issues/956) | ExecutionProvider: CoreML/ROCm decouple | **Phase A in PR #1120** (cargo feature split + cfg-gated enum variants + restructured probe) — Phase B (CoreML, GHA macOS runner) and Phase C (ROCm, AMD hardware) both deferred to contributors with the matching test environment |
+| [#916](https://github.com/jamie8johnson/cqs/issues/916) | mmap SPLADE body (PF-11) | smaller win than originally claimed |
+| [#717](https://github.com/jamie8johnson/cqs/issues/717) | HNSW mmap (RM-40) | needs lib swap to hnswlib-rs (nightly-only) |
+| [#255](https://github.com/jamie8johnson/cqs/issues/255) | Pre-built reference packages | signing/registry design (infra, not code) |
+| [#106](https://github.com/jamie8johnson/cqs/issues/106) | ort 2.0-rc.12 stable release | blocked upstream (pykeio) |
 
 ---
 

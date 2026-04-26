@@ -2,15 +2,24 @@
 
 ## Right Now
 
-**v1.29.1 still current (no new release).** Main at `df689741` post-#1105 merge. Cache+slots infrastructure shipped; three-way embedder A/B run on the new infra (BGE-large vs CodeRankEmbed-137M vs v9-200k); fixture line-start drift surfaced and fixed.
+**v1.29.1 still tagged on crates.io.** Main now ~13 PRs ahead — release worthy of a v1.29.2 (or v1.30.0) bump after a docs-review pass. Today's session (2026-04-25) closed out the remaining v1.29.0 audit umbrella (#1095), shipped #956 Phase A scaffolding, and landed two infra PRs (cache+slots #1105, fixture refresh #1109, nomic-coderank preset #1110).
 
-**Two PRs open awaiting CI/merge:**
-- **#1109 — `chore(evals): refresh v3.v2 fixture line_starts after v1.29.x audits`**. 42 dev + 44 test gold chunks re-pinned to current line numbers. Recovers dev R@5 51.4% → 74.3% (the apparent 25pp regression was 100% fixture drift, not a search bug).
-- **#1110 — `feat(embedder): add nomic-coderank preset (CodeRankEmbed-137M)`**. Opt-in preset with the A/B numbers in the PR body.
+**This session's merged PRs** (newest first):
 
-**Two issues outstanding from today's work:**
-- **#1107 — `cqs slot create --model: validates but does not persist`**. Currently `--model` must be passed globally on every `cqs index --slot X` invocation. Caught when first coderank reindex silently used BGE.
-- **#1108 — `Hot search SELECTs omit content_hash, producing 20 warnings/query in eval`**. 5 production SELECTs in `src/store/{search.rs, chunks/async_helpers.rs, chunks/query.rs}` build `ChunkRow` via `from_row` without selecting `content_hash` — `try_get` falls back silently and `reference.rs:333` recomputes blake3 per result. ~2,180 warnings per dev eval run.
+| PR | Closes | Title |
+|---|---|---|
+| **#1120** | — *(Phase A only)* | `refactor(embedder): ExecutionProvider feature split — Phase A (#956)` — `gpu-index` → `cuda-index` rename + alias, `ep-coreml`/`ep-rocm` cargo features, cfg-gated enum variants, per-backend probe blocks. CUDA path byte-identical. Phase B (CoreML/macOS runner) + Phase C (ROCm/AMD) deferred. |
+| **#1119** | #1115 #1116 | `perf: v1.29.0 audit micro-fixes` — `forward_bfs_multi` for `suggest_tests` (`O(callers × graph)` → `O(tests + edges)`); thread-local scratch buffer in daemon socket handler |
+| **#1118** | #1096 (SEC-7) | `fix(serve): per-launch auth token` — 256-bit URL-safe base64 token, constant-time compare, three credential surfaces (Bearer / cookie / `?token=`), HttpOnly+SameSite=Strict cookie handoff |
+| **#1117** | #1047 | `fix(language): macro-generated ChunkType::human_name` — exhaustive `define_chunk_types!` macro removes catch-all that silently fell through for new variants |
+| #1114 | #1097 (EX-1) | `refactor: single-registration command registry` — collapses 5+ exhaustive matches into one `for_each_command!` table |
+| #1113 | #1090 | `fix(watch): non-blocking HNSW rebuilds` |
+| #1112 | #1042 #1049 #1091 #1107 #1108 | `fix: 5-issue batch` — clears most of the v1.29.0 audit P4 backlog |
+| #1111 | — | `chore(tears+roadmap): post-#1105 / cache+slots / embedder A/B state` |
+| #1110 | — | `feat(embedder): add nomic-coderank preset (CodeRankEmbed-137M)` |
+| #1109 | — | `chore(evals): refresh v3.v2 fixture line_starts` |
+
+**Outstanding issues**: down to 9 open (was 19 yesterday). Two tier-2 (#956 EP-decouple — Phase A landed, B/C still open; #916 mmap SPLADE), one cosmetic (#1102 LLM provider log string), three Windows-specific tier-3 (#1043 #1044 — both need Windows test env), three external-blocked tier-3 (#717 hnsw_rs lib swap, #255 pre-built indexes infra, #106 ort 2.0 stable). See ROADMAP.md "Open Issues".
 
 ### Today's session (2026-04-25) — what landed
 
@@ -174,35 +183,17 @@ None. Working tree clean post-release.
 
 3.7-5.5pp gap between canonical and refreshed-current is real corpus-drift attrition (5,413 new chunks since 2026-04-20, ~30% of corpus). Not a search regression. The v3.v2 fixture is the canonical eval slate; v4 fixtures (1526/split, 14× v3 N) exist for any future A/B that needs tighter noise floors. Long-term inoculation against fixture drift would be relaxing eval gold-match to `(file, name, chunk_type)` only — out of scope for this round.
 
-## Open issues (19 open)
+## Open issues (9 open)
 
-**Filed today:**
+| # | Title | Tier | Status |
+|---|---|---|---|
+| 1102 | llm: batch.rs log says "Claude API" regardless of provider | cosmetic | open — small wording fix |
+| 1044 | Windows `cqs watch` can't stop cleanly — DB corruption risk | tier-3, bug | needs Windows test env |
+| 1043 | `is_slow_mmap_fs` ignores Windows network drives | tier-3, perf | needs Windows test env |
+| 956 | ExecutionProvider — decouple gpu-index from CUDA | tier-2, refactor | **PR #1120 in flight (Phase A scaffolding); Phase B/C blocked on macOS / AMD hardware** |
+| 916 | mmap SPLADE index (PF-11) | tier-2, perf | smaller win than originally claimed |
+| 717 | HNSW fully in RAM, no mmap (RM-40) | tier-3, perf | hnsw_rs lib limitation; would need lib swap |
+| 255 | Pre-built reference packages (downloadable indexes) | tier-3, infra | needs signing/registry design |
+| 106 | ort dependency is pre-release RC | tier-3, dep | blocked upstream (pykeio) |
 
-| # | Title | Tier |
-|---|---|---|
-| 1108 | Hot search SELECTs omit content_hash, ~2180 warnings/eval | bug |
-| 1107 | `cqs slot create --model` validates but does not persist | bug |
-
-**Existing (post-v1.29.0 audit / earlier):**
-
-| # | Title | Tier |
-|---|---|---|
-| 1102 | llm: batch.rs log says "Claude API" regardless of provider | bug, cosmetic |
-| 1097 | refactor: collapse Commands enum into trait Command | enhancement, refactor |
-| 1096 | serve: add per-launch auth token | enhancement, security |
-| 1095 | v1.29.0 audit — P4 backlog | audit, tier-2 |
-| 1091 | WSL poll-watcher 8% CPU | performance |
-| 1090 | HNSW rebuild every save (15-30s CUDA) | performance |
-| 1049 | Pin fallback_does_not_mix_comment_styles test | testing, tier-3 |
-| 1048 | try_daemon_query strict-string parsing | enhancement, tier-3 |
-| 1047 | ChunkType::human_name catch-all hides variants | enhancement, tier-3 |
-| 1044 | Windows cqs watch can't stop cleanly | bug, data-integrity, tier-3 |
-| 1043 | is_slow_mmap_fs ignores Windows network drives | performance, tier-3 |
-| 1042 | WINDOW_OVERHEAD doesn't scale with prefix length | enhancement, tier-3 |
-| 956 | ExecutionProvider — decouple gpu-index from CUDA | refactor, tier-2 |
-| 916 | mmap SPLADE index | tier-2 |
-| 717 | HNSW fully in RAM, no mmap | tier-3 |
-| 255 | Pre-built reference packages | enhancement, tier-3 |
-| 106 | ort dependency is pre-release RC | tier-3 |
-
-**Closed today:** #1104 (HNSW flake) → PR #1106.
+**Closed this session (2026-04-25 batch):** #1042, #1047, #1048, #1049, #1090, #1091, #1095 (umbrella, split + closed), #1096, #1097, #1104, #1107, #1108, #1115, #1116. #1115/#1116 were filed and closed in the same session (split from #1095, fixed in #1119).
