@@ -2,7 +2,7 @@
 
 ## Right Now
 
-**v1.29.1 still tagged on crates.io.** Main now ~13 PRs ahead — release worthy of a v1.29.2 (or v1.30.0) bump after a docs-review pass. Today's session (2026-04-25) closed out the remaining v1.29.0 audit umbrella (#1095), shipped #956 Phase A scaffolding, and landed two infra PRs (cache+slots #1105, fixture refresh #1109, nomic-coderank preset #1110).
+**v1.30.0 released 2026-04-25.** Tag pushed (`68bfaca5`), GitHub release workflow building binaries, `cqs 1.30.0` published to crates.io, local `~/.cargo/bin/cqs` rebuilt and `cqs-watch` daemon restarted. Today's session (2026-04-25) closed out the remaining v1.29.0 audit umbrella (#1095), shipped #956 Phase A scaffolding, landed cache+slots (#1105) + fixture refresh (#1109) + nomic-coderank preset (#1110), and cut the v1.30.0 release.
 
 **This session's merged PRs** (newest first):
 

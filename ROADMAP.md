@@ -1,8 +1,8 @@
 # Roadmap
 
-## Post-v1.29.1 (release candidate, no tag yet)
+## Current: v1.30.0 (released 2026-04-25)
 
-Main is now ~13 PRs ahead of the v1.29.1 tag — bump-worthy after a docs-review pass. Four arcs landed since the v1.29.1 release:
+Tag `v1.30.0` pushed; `cqs 1.30.0` published to crates.io; GitHub release workflow building prebuilt binaries. Four arcs landed since the v1.29.1 tag:
 
 - **Cache+slots infrastructure (#1105)** — `.cqs/embeddings_cache.db` (content_hash, model_id) + `.cqs/slots/<name>/` directories + per-slot `cqs slot {list,create,promote,remove,active}` and `cqs cache {stats,prune,compact}` commands. One-shot migration of legacy `.cqs/index.db` → `.cqs/slots/default/`.
 - **Three-way embedder A/B (#1109 #1110)** — fixture refresh absorbed v1.29.x line-start drift; BGE-large stays default; CodeRankEmbed-137M added as opt-in preset; v9-200k retired from production candidacy on the v3.v2 distribution.
