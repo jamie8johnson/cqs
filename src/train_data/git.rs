@@ -84,6 +84,11 @@ pub fn git_log(repo: &Path, max_commits: usize) -> Result<Vec<CommitInfo>, Train
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(
+            exit = output.status.code(),
+            stderr = %stderr.trim(),
+            "git_log failed",
+        );
         return Err(TrainDataError::Git(format!(
             "git log failed: {}",
             stderr.trim()
@@ -153,6 +158,12 @@ pub fn git_diff_tree(repo: &Path, sha: &str) -> Result<String, TrainDataError> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(
+            exit = output.status.code(),
+            sha,
+            stderr = %stderr.trim(),
+            "git_diff_tree failed",
+        );
         return Err(TrainDataError::Git(format!(
             "git diff-tree failed for {}: {}",
             sha,
@@ -163,13 +174,24 @@ pub fn git_diff_tree(repo: &Path, sha: &str) -> Result<String, TrainDataError> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Maximum file size to retrieve via `git show` (50 MB).
-const MAX_SHOW_SIZE: usize = 50 * 1024 * 1024;
+/// Default maximum file size to retrieve via `git show` (50 MB).
+const DEFAULT_MAX_SHOW_SIZE: usize = 50 * 1024 * 1024;
+
+/// Maximum file size to retrieve via `git show`. Default 50 MB; override via
+/// `CQS_TRAIN_GIT_SHOW_MAX_BYTES` to capture larger generated files (e.g., schema
+/// dumps, vendored corpora) at training-data extraction time.
+fn max_show_size() -> usize {
+    std::env::var("CQS_TRAIN_GIT_SHOW_MAX_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_SHOW_SIZE)
+}
 
 /// Retrieve file content at a specific commit.
-/// Returns `Ok(None)` if the content exceeds 50 MB or is not valid UTF-8
-/// (binary files). Returns `Err` if git itself fails (e.g., path doesn't
-/// exist at that commit).
+/// Returns `Ok(None)` if the content exceeds the configured size cap (default 50 MB,
+/// override `CQS_TRAIN_GIT_SHOW_MAX_BYTES`) or is not valid UTF-8 (binary files).
+/// Returns `Err` if git itself fails (e.g., path doesn't exist at that commit).
 pub fn git_show(repo: &Path, sha: &str, path: &str) -> Result<Option<String>, TrainDataError> {
     let _span = tracing::info_span!("git_show", repo = %repo.display(), sha, path).entered();
 
@@ -208,6 +230,12 @@ pub fn git_show(repo: &Path, sha: &str, path: &str) -> Result<Option<String>, Tr
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(
+            exit = output.status.code(),
+            spec = %spec,
+            stderr = %stderr.trim(),
+            "git_show failed",
+        );
         return Err(TrainDataError::Git(format!(
             "git show failed for {}: {}",
             spec,
@@ -215,12 +243,15 @@ pub fn git_show(repo: &Path, sha: &str, path: &str) -> Result<Option<String>, Tr
         )));
     }
 
-    // Size guard
-    if output.stdout.len() > MAX_SHOW_SIZE {
-        tracing::debug!(
+    // Size guard — distinguish "too large" from "binary" so callers can act on it
+    let max = max_show_size();
+    if output.stdout.len() > max {
+        tracing::warn!(
+            path,
+            sha,
             size = output.stdout.len(),
-            max = MAX_SHOW_SIZE,
-            "Skipping oversized file"
+            max,
+            "git_show output exceeds max — skipping (override via CQS_TRAIN_GIT_SHOW_MAX_BYTES)"
         );
         return Ok(None);
     }

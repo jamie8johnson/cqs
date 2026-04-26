@@ -392,15 +392,21 @@ impl Store<ReadWrite> {
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
 
+            // P3.40: TEMP TABLE is connection-scoped, not transaction-scoped.
+            // A prior call on the same pooled connection (or a rollback path
+            // that didn't reach the trailing DROP) can leave a stale
+            // `_update_umap` with the wrong row count. DROP first, then
+            // CREATE without IF NOT EXISTS so we always start from an empty
+            // table — no DELETE pre-clear needed.
+            sqlx::query("DROP TABLE IF EXISTS _update_umap")
+                .execute(&mut *tx)
+                .await?;
             sqlx::query(
-                "CREATE TEMP TABLE IF NOT EXISTS _update_umap \
+                "CREATE TEMP TABLE _update_umap \
                  (id TEXT PRIMARY KEY, umap_x REAL NOT NULL, umap_y REAL NOT NULL)",
             )
             .execute(&mut *tx)
             .await?;
-            sqlx::query("DELETE FROM _update_umap")
-                .execute(&mut *tx)
-                .await?;
 
             use crate::store::helpers::sql::max_rows_per_statement;
             const BATCH_SIZE: usize = max_rows_per_statement(3);

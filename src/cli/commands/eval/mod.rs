@@ -94,6 +94,30 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
         );
     }
 
+    // Validate --save path: eval reports are JSON-only. Reject foreign
+    // extensions so a typo (e.g. `--save baseline.txt`) surfaces immediately
+    // instead of writing JSON to a misnamed file. Missing extension is
+    // tolerated — append `.json` and inform the operator.
+    let save_path: Option<PathBuf> = match args.save.as_deref() {
+        None => None,
+        Some(p) => {
+            let ext = p.extension().and_then(|e| e.to_str());
+            match ext {
+                Some(e) if e.eq_ignore_ascii_case("json") => Some(p.to_path_buf()),
+                Some(other) => {
+                    anyhow::bail!(
+                        "--save must end in .json (got .{other}); eval reports are JSON-only"
+                    );
+                }
+                None => {
+                    let with_ext = p.with_extension("json");
+                    tracing::info!(path = %with_ext.display(), "appending .json to --save path");
+                    Some(with_ext)
+                }
+            }
+        }
+    };
+
     let report = runner::run_eval(ctx, &args.query_file, args.category.as_deref(), args.limit)?;
 
     // When --baseline is set, prefer the diff output over the raw report —
@@ -109,7 +133,7 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
         }
     }
 
-    if let Some(save_path) = &args.save {
+    if let Some(save_path) = save_path.as_ref() {
         let bytes =
             serde_json::to_vec_pretty(&report).context("Failed to serialize eval report")?;
         std::fs::write(save_path, &bytes)

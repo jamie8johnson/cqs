@@ -82,7 +82,7 @@ pub fn load_audit_state(cqs_dir: &Path) -> AuditMode {
     let file: AuditModeFile = match serde_json::from_str(&content) {
         Ok(f) => f,
         Err(e) => {
-            tracing::debug!("Failed to parse audit-mode.json: {}", e);
+            tracing::debug!(error = %e, "Failed to parse audit-mode.json");
             return AuditMode::default();
         }
     };
@@ -90,7 +90,7 @@ pub fn load_audit_state(cqs_dir: &Path) -> AuditMode {
     let expires_at = file.expires_at.and_then(|s| {
         DateTime::parse_from_rfc3339(&s)
             .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| tracing::debug!("Failed to parse expires_at: {}", e))
+            .map_err(|e| tracing::debug!(error = %e, "Failed to parse expires_at"))
             .ok()
     });
 

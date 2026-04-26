@@ -36,28 +36,6 @@ pub struct CallContext {
     pub callees: Vec<String>,
 }
 
-/// Generate NL description enriched with call graph context.
-///
-/// Used in the second indexing pass. Appends caller/callee names to the base
-/// Compact description, filtered by IDF to suppress high-frequency utilities.
-pub fn generate_nl_with_call_context(
-    chunk: &Chunk,
-    ctx: &CallContext,
-    callee_doc_freq: &std::collections::HashMap<String, f32>,
-    max_callers: usize,
-    max_callees: usize,
-) -> String {
-    generate_nl_with_call_context_and_summary(
-        chunk,
-        ctx,
-        callee_doc_freq,
-        max_callers,
-        max_callees,
-        None,
-        None,
-    )
-}
-
 /// Generate NL with call context and optional LLM summary (SQ-6).
 ///
 /// If a summary is provided, it's prepended to the NL for maximum embedding weight.
@@ -233,6 +211,16 @@ pub fn generate_nl_with_template_and_seq_len(
     template: NlTemplate,
     model_max_seq_len: usize,
 ) -> String {
+    // P3.9: a single debug-level span at this root site covers all four NL
+    // generators (`generate_nl_description`, `generate_nl_description_with_seq_len`,
+    // `generate_nl_with_template`, and `_with_template_and_seq_len`).
+    let _span = tracing::debug_span!(
+        "generate_nl",
+        template = ?template,
+        chunk_kind = ?chunk.chunk_type,
+        len = chunk.content.len(),
+    )
+    .entered();
     // Section chunks (markdown): breadcrumb + name + content preview.
     // Markdown IS natural language, so we embed more content than code chunks.
     // Embedding models handle ~512 tokens (~2000 chars). Budget:
@@ -887,7 +875,7 @@ mod tests {
             callees: vec![],
         };
         let freq = std::collections::HashMap::new();
-        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
         assert!(nl.contains("Called by: main, serve"), "got: {}", nl);
         assert!(!nl.contains("Calls:"), "got: {}", nl);
     }
@@ -907,7 +895,7 @@ mod tests {
         freq.insert("log".to_string(), 0.15_f32); // above 10% threshold — filtered
         freq.insert("validate".to_string(), 0.05_f32); // below — kept
         freq.insert("save".to_string(), 0.02_f32); // below — kept
-        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
         assert!(nl.contains("Calls: validate, save"), "got: {}", nl);
         assert!(!nl.contains("log"), "log should be filtered, got: {}", nl);
     }
@@ -925,7 +913,7 @@ mod tests {
             callees: vec![],
         };
         let freq = std::collections::HashMap::new();
-        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 2, 5);
+        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 2, 5, None, None);
         assert!(nl.contains("Called by: a, b"), "got: {}", nl);
         assert!(!nl.contains(", c"), "c should be truncated, got: {}", nl);
     }
@@ -936,7 +924,8 @@ mod tests {
         let ctx = CallContext::default();
         let freq = std::collections::HashMap::new();
         let base = generate_nl_description(&chunk);
-        let enriched = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        let enriched =
+            generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
         assert_eq!(base, enriched);
     }
 
@@ -992,7 +981,7 @@ mod tests {
         freq.insert("log".to_string(), 0.15);
         freq.insert("rare_fn".to_string(), 0.02);
 
-        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
 
         // "log" should be filtered out (>= 0.10 threshold)
         assert!(

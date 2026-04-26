@@ -88,6 +88,10 @@ pub enum RerankerError {
         expected: String,
         actual: String,
     },
+    /// Caller supplied mismatched-length / otherwise invalid arguments.
+    /// Distinct from `Inference` so callers can pattern-match the bug.
+    #[error("Invalid arguments: {0}")]
+    InvalidArguments(String),
 }
 
 /// Convert any ort error to [`RerankerError::Inference`] via `.to_string()`.
@@ -223,7 +227,15 @@ impl Reranker {
             return Ok(());
         }
         if results.len() != passages.len() {
-            return Err(RerankerError::Inference(format!(
+            // P3.11: structured warn so operators see the mismatch in journal,
+            // and surface `InvalidArguments` instead of `Inference` so callers
+            // can match on the caller-bug case distinctly from model errors.
+            tracing::warn!(
+                passages = passages.len(),
+                results = results.len(),
+                "rerank_with_passages: length mismatch — caller bug, refusing to score",
+            );
+            return Err(RerankerError::InvalidArguments(format!(
                 "passages length ({}) must match results length ({})",
                 passages.len(),
                 results.len()

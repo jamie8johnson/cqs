@@ -766,16 +766,32 @@ impl Embedder {
         let prefix = &self.model_config.doc_prefix;
         // P2.4: route through shared `parse_env_usize` helper.
         let max_batch: usize = crate::limits::parse_env_usize("CQS_EMBED_BATCH_SIZE", 64);
-        if texts.len() <= max_batch {
+        let started = std::time::Instant::now();
+        let result = if texts.len() <= max_batch {
             let prefixed: Vec<String> = texts.iter().map(|t| format!("{}{}", prefix, t)).collect();
-            return self.embed_batch(&prefixed);
+            self.embed_batch(&prefixed)
+        } else {
+            let mut all = Vec::with_capacity(texts.len());
+            for chunk in texts.chunks(max_batch) {
+                let prefixed: Vec<String> =
+                    chunk.iter().map(|t| format!("{}{}", prefix, t)).collect();
+                all.extend(self.embed_batch(&prefixed)?);
+            }
+            Ok(all)
+        };
+        // P3.10: completion event with output dim/count/time. Entry span only
+        // carries inputs; without this operators have no signal that the call
+        // actually produced what was asked for.
+        if let Ok(ref embeddings) = result {
+            tracing::info!(
+                total = embeddings.len(),
+                dim = self.embedding_dim(),
+                input_count = texts.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "embed_documents complete"
+            );
         }
-        let mut all = Vec::with_capacity(texts.len());
-        for chunk in texts.chunks(max_batch) {
-            let prefixed: Vec<String> = chunk.iter().map(|t| format!("{}{}", prefix, t)).collect();
-            all.extend(self.embed_batch(&prefixed)?);
-        }
-        Ok(all)
+        result
     }
 
     /// Embed a query. Adds "query: " prefix for E5. Uses LRU cache for repeated queries.
@@ -865,6 +881,10 @@ impl Embedder {
             disk.put(text, model_fp, &embedding);
         }
 
+        // P3.10: completion event so embed_query has parity with the
+        // embed_documents log line. Debug-level — embed_query runs once per
+        // search and the entry span already covers timing.
+        tracing::debug!(dim = self.embedding_dim(), "embed_query complete");
         Ok(embedding)
     }
 

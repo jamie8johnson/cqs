@@ -23,6 +23,24 @@ pub enum CacheError {
     Database(#[from] sqlx::Error),
     #[error("Cache I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// Defense-in-depth: clock anomalies (system clock before unix epoch, or
+    /// past i64 cap in 2554) and pathologically out-of-range arguments
+    /// (e.g. `--older-than 999999999999`). Surfaced as an error rather than
+    /// silently wrapping/clamping so the operator sees the corruption.
+    #[error("Cache internal error: {0}")]
+    Internal(String),
+}
+
+/// Returns the current Unix timestamp in seconds as an `i64`, or
+/// [`CacheError::Internal`] if the clock is before the epoch or past the
+/// i64 ceiling (year 2554). Defense-in-depth — `as i64` casts on `as_secs()`
+/// silently wrap above `i64::MAX`.
+fn now_unix_i64() -> Result<i64, CacheError> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| CacheError::Internal("clock before unix epoch".into()))?
+        .as_secs();
+    i64::try_from(secs).map_err(|_| CacheError::Internal("clock above i64 cap".into()))
 }
 
 /// Statistics about the embedding cache.
@@ -113,16 +131,25 @@ pub struct EmbeddingCache {
 }
 
 impl EmbeddingCache {
-    /// Legacy global cache location at `~/.cache/cqs/embeddings.db`.
+    /// Legacy global cache location.
+    ///
+    /// Resolves to the platform's native user cache directory:
+    /// - Linux: `$XDG_CACHE_HOME/cqs/embeddings.db` or `~/.cache/cqs/embeddings.db`
+    /// - macOS: `~/Library/Caches/cqs/embeddings.db`
+    /// - Windows: `%LOCALAPPDATA%\cqs\embeddings.db`
     ///
     /// Kept so existing callers (`cqs cache` subcommand pre-slots) continue to
     /// work for invocations outside a project. New code prefers
     /// [`Self::project_default_path`] so caches are scoped to the project and
     /// survive slot promotion / removal.
     pub fn default_path() -> std::path::PathBuf {
-        dirs::home_dir()
+        // P3.32: prefer the platform's native cache dir; fall back to
+        // `~/.cache` for legacy behavior, then `.` for the headless case.
+        dirs::cache_dir()
+            .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".cache/cqs/embeddings.db")
+            .join("cqs")
+            .join("embeddings.db")
     }
 
     /// Project-scoped cache path: `<project_cqs_dir>/embeddings_cache.db`.
@@ -401,10 +428,7 @@ impl EmbeddingCache {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
+        let now = now_unix_i64()?;
 
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
@@ -612,14 +636,40 @@ impl EmbeddingCache {
     }
 
     /// Prune entries older than the given number of days.
+    ///
+    /// `days` is clamped to a 100-year ceiling (`MAX_PRUNE_DAYS`) so a typo
+    /// (e.g. `--older-than 999999999999`) can't underflow the cutoff and
+    /// silently delete everything (P3.20). The `now_unix_i64` helper
+    /// (P3.18) defends against clock-wrap above i64::MAX in 2554.
     pub fn prune_older_than(&self, days: u32) -> Result<usize, CacheError> {
+        const MAX_PRUNE_DAYS: u32 = 36_500; // 100 years; longer is operator error
+        let days_clamped = days.min(MAX_PRUNE_DAYS);
+        if days_clamped != days {
+            tracing::warn!(
+                requested = days,
+                effective = days_clamped,
+                "cache prune --older-than clamped to 100-year ceiling"
+            );
+        }
+        let days = days_clamped;
         let _span = tracing::info_span!("cache_prune", days).entered();
 
-        let cutoff = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64
-            - (days as i64 * 86400);
+        let now = now_unix_i64()?;
+        // Saturating subtraction: if `cutoff` would go below epoch (clock skew /
+        // very-large `days`), no rows can possibly be that old, so the prune is
+        // a no-op. Without this branch the SIGNED comparison `created_at < cutoff`
+        // returns true for every row (all `created_at >= 0` and `cutoff < 0`),
+        // silently deleting everything.
+        let cutoff_sat = (days as i64)
+            .checked_mul(86400)
+            .and_then(|d| now.checked_sub(d));
+        let cutoff = match cutoff_sat {
+            Some(c) if c >= 0 => c,
+            _ => {
+                tracing::info!(days, now, "cache prune: cutoff below epoch — no-op");
+                return Ok(0);
+            }
+        };
 
         self.rt.block_on(async {
             let result = sqlx::query("DELETE FROM embedding_cache WHERE created_at < ?1")
@@ -807,13 +857,9 @@ impl Drop for EmbeddingCache {
                 );
             }
         })) {
-            let msg = payload
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
-                .unwrap_or("unknown panic");
+            let msg = crate::panic_message(&payload);
             tracing::warn!(
-                panic = msg,
+                panic = %msg,
                 "WAL checkpoint panic caught in EmbeddingCache::drop (non-fatal)"
             );
         }
@@ -833,6 +879,34 @@ mod tests {
 
     fn make_embedding(dim: usize, seed: f32) -> Vec<f32> {
         (0..dim).map(|i| seed + i as f32 * 0.001).collect()
+    }
+
+    // P3.17: pin the surprises in `blake3_hex_or_passthrough` so a future
+    // "always-encode" tightening surfaces as an intentional break, not a
+    // silent change in cache-key format. The current invariant is:
+    //
+    //   - Exactly 64 ASCII hex chars (any case) → passthrough as String.
+    //   - Anything else (short, long, non-hex, raw bytes) → hex-encode.
+
+    #[test]
+    fn blake3_hex_or_passthrough_uppercase_64_chars_passthrough() {
+        let upper = "ABCDEF0123456789".repeat(4); // 64 chars, all hex
+        assert_eq!(blake3_hex_or_passthrough(upper.as_bytes()), upper);
+    }
+
+    #[test]
+    fn blake3_hex_or_passthrough_short_hex_string_gets_encoded() {
+        let short = "abcd"; // 4 hex chars — too short for passthrough
+        let out = blake3_hex_or_passthrough(short.as_bytes());
+        assert_eq!(out, "61626364"); // hex of ASCII 'a','b','c','d'
+    }
+
+    #[test]
+    fn blake3_hex_or_passthrough_64_byte_non_hex_gets_encoded() {
+        let bytes = vec![0xABu8; 64];
+        let out = blake3_hex_or_passthrough(&bytes);
+        assert_eq!(out.len(), 128); // 64 bytes × 2 hex chars per byte
+        assert!(out.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -1126,30 +1200,35 @@ mod tests {
         }
     }
 
-    // ===== TC-21: NaN embedding behavior =====
+    // ===== TC-21: NaN embedding behavior (P2.27 — now rejected) =====
 
     #[test]
-    fn test_nan_embedding() {
+    fn test_nan_embedding_rejected() {
         let (cache, _dir) = test_cache();
 
-        // Create an embedding containing NaN values
+        // Embeddings containing NaN/Inf are rejected by write_batch as of P2.27.
+        // Cache poisoning across processes is the failure mode prevented here.
         let mut nan_emb = make_embedding(128, 1.0);
         nan_emb[0] = f32::NAN;
         nan_emb[64] = f32::NAN;
 
         let entries = vec![("hash_nan".to_string(), nan_emb)];
-        // write_batch does not currently reject NaN — it round-trips through blob encoding.
-        // This test documents the current behavior: NaN is stored and retrieved.
         let written = cache.write_batch_owned(&entries, "fp_nan", 128).unwrap();
-        assert_eq!(written, 1);
+        assert_eq!(
+            written, 0,
+            "NaN entry should be filtered before persistence"
+        );
 
         let result = cache.read_batch(&["hash_nan"], "fp_nan", 128).unwrap();
-        assert_eq!(result.len(), 1);
-        let cached = &result["hash_nan"];
-        assert!(cached[0].is_nan(), "NaN should round-trip through cache");
-        assert!(cached[64].is_nan(), "NaN should round-trip through cache");
-        // Non-NaN values should be preserved
-        assert!(!cached[1].is_nan());
+        assert!(
+            !result.contains_key("hash_nan"),
+            "rejected NaN entry must not be readable"
+        );
+
+        // Sanity: same cache still accepts a clean entry.
+        let clean = vec![("hash_clean".to_string(), make_embedding(128, 0.5))];
+        let written_clean = cache.write_batch_owned(&clean, "fp_nan", 128).unwrap();
+        assert_eq!(written_clean, 1);
     }
 
     // ===== TC-24: prune edge cases =====
@@ -1462,10 +1541,16 @@ pub struct QueryCache {
 
 impl QueryCache {
     /// Default cache location (same directory as the embedding cache).
+    ///
+    /// Uses the platform's native cache dir — see [`EmbeddingCache::default_path`]
+    /// for the resolution order (`dirs::cache_dir()` → `~/.cache` → `.`).
     pub fn default_path() -> std::path::PathBuf {
-        dirs::home_dir()
+        // P3.32: native platform cache dir.
+        dirs::cache_dir()
+            .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".cache/cqs/query_cache.db")
+            .join("cqs")
+            .join("query_cache.db")
     }
 
     /// Open or create the query cache.
@@ -1788,13 +1873,9 @@ impl Drop for QueryCache {
                 );
             }
         })) {
-            let msg = payload
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
-                .unwrap_or("unknown panic");
+            let msg = crate::panic_message(&payload);
             tracing::warn!(
-                panic = msg,
+                panic = %msg,
                 "WAL checkpoint panic caught in QueryCache::drop (non-fatal)"
             );
         }

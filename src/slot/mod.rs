@@ -178,6 +178,12 @@ pub fn validate_slot_name(name: &str) -> Result<(), SlotError> {
     if !valid_chars {
         return Err(SlotError::InvalidCharacters(name.to_string()));
     }
+    if name.starts_with('-') || name.ends_with('-') {
+        // Leading dash collides with clap's flag parser ("cqs slot promote -foo"
+        // gets interpreted as an unknown flag); trailing dashes are stripped by
+        // common copy-paste/shell pipelines and produce subtle name drift.
+        return Err(SlotError::InvalidCharacters(name.to_string()));
+    }
     if RESERVED_SLOT_NAMES.contains(&name) {
         return Err(SlotError::Reserved(name.to_string()));
     }
@@ -290,9 +296,14 @@ pub fn read_slot_model(project_cqs_dir: &Path, slot_name: &str) -> Option<String
 
 /// Write `model` into `.cqs/slots/<name>/slot.toml [embedding].model`.
 ///
-/// Atomic via temp+rename. Creates the slot dir if missing (idempotent).
-/// Existing TOML keys outside `[embedding]` are not preserved — slot.toml is
-/// owned by cqs; users should not hand-edit it.
+/// Atomic via temp+rename + parent-dir fsync (`crate::fs::atomic_replace`).
+/// Creates the slot dir if missing (idempotent). Existing TOML keys outside
+/// `[embedding]` are not preserved — slot.toml is owned by cqs; users should
+/// not hand-edit it.
+///
+/// P3.39: routes through `crate::fs::atomic_replace` so the parent directory
+/// is fsynced after the rename — matches the durability contract of
+/// `notes.toml` / `audit-mode.json`.
 pub fn write_slot_model(
     project_cqs_dir: &Path,
     slot_name: &str,
@@ -323,14 +334,18 @@ pub fn write_slot_model(
                 slot: slot_name.to_string(),
                 source,
             })?;
-        f.sync_all().map_err(|source| SlotError::Io {
+        // atomic_replace re-opens the temp and calls sync_all itself, so a
+        // second sync_all here would be redundant.
+    }
+    crate::fs::atomic_replace(&tmp_path, &final_path).map_err(|source| {
+        // Best-effort cleanup: atomic_replace cleans up its own cross-device
+        // temp on failure, but the source temp may remain on a same-device
+        // rename failure path.
+        let _ = fs::remove_file(&tmp_path);
+        SlotError::Io {
             slot: slot_name.to_string(),
             source,
-        })?;
-    }
-    fs::rename(&tmp_path, &final_path).map_err(|source| SlotError::Io {
-        slot: slot_name.to_string(),
-        source,
+        }
     })?;
     Ok(())
 }
@@ -429,9 +444,14 @@ pub fn read_active_slot(project_cqs_dir: &Path) -> Option<String> {
 
 /// Write the active slot pointer atomically. Validates the name first.
 ///
-/// Writes to a sibling `<active_slot>.tmp` then `rename`s into place — atomic
-/// on the same filesystem. Crash between write and rename leaves the previous
+/// Writes to a sibling `<active_slot>.tmp` then routes through
+/// `crate::fs::atomic_replace` for the rename + parent-dir fsync. Atomic on
+/// the same filesystem; crash between write and rename leaves the previous
 /// pointer intact.
+///
+/// P3.39: routes through `crate::fs::atomic_replace` so the parent directory
+/// is fsynced after the rename — matches the durability contract of
+/// `notes.toml` / `audit-mode.json`.
 pub fn write_active_slot(project_cqs_dir: &Path, slot_name: &str) -> Result<(), SlotError> {
     validate_slot_name(slot_name)?;
     let _span = tracing::info_span!(
@@ -461,17 +481,16 @@ pub fn write_active_slot(project_cqs_dir: &Path, slot_name: &str) -> Result<(), 
                 slot: slot_name.to_string(),
                 source,
             })?;
-        // Best-effort fsync before rename so the rename atomicity covers a
-        // populated file, not an empty one. Failures here are non-fatal — the
-        // fsync is belt-and-braces over `rename`'s own crash safety.
-        if let Err(e) = f.sync_all() {
-            tracing::debug!(error = %e, "active_slot tmp fsync failed (non-fatal)");
-        }
+        // atomic_replace re-opens the temp and calls sync_all itself — no
+        // explicit fsync needed here.
     }
 
-    fs::rename(&tmp_path, &final_path).map_err(|source| SlotError::Io {
-        slot: slot_name.to_string(),
-        source,
+    crate::fs::atomic_replace(&tmp_path, &final_path).map_err(|source| {
+        let _ = fs::remove_file(&tmp_path);
+        SlotError::Io {
+            slot: slot_name.to_string(),
+            source,
+        }
     })?;
     tracing::info!(slot_name, "active slot pointer updated");
     Ok(())
@@ -840,27 +859,24 @@ fn collect_migration_files(project_cqs_dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Move a file, atomic where possible; falls back to copy + remove for
-/// cross-device renames. Errors surface to caller for inventory-based rollback.
+/// Move a file, atomic where possible; falls back to copy + remove on **any**
+/// rename failure.
+///
+/// Previously this matched on a hardcoded `EXDEV` errno (18 on Linux/macOS,
+/// `ERROR_NOT_SAME_DEVICE = 17` on Windows) which silently mis-classified the
+/// cross-device case on Windows. Falling back unconditionally is cheaper than
+/// tracking platform-specific errno constants — if the source is gone or the
+/// destination unwritable, the caller surfaces the I/O error from `copy()`
+/// instead.
 fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     match fs::rename(src, dst) {
         Ok(()) => Ok(()),
-        Err(e) if e.raw_os_error() == Some(libc_exdev()) => {
+        Err(_) => {
             fs::copy(src, dst)?;
             fs::remove_file(src)?;
             Ok(())
         }
-        Err(e) => Err(e),
     }
-}
-
-/// EXDEV `errno` value (cross-device link). We hardcode 18 (Linux) since
-/// `libc::EXDEV` would pull in a libc dep just for this constant. macOS also
-/// uses 18; Windows doesn't surface EXDEV the same way (rename across
-/// filesystems just succeeds via the win32 API).
-#[inline]
-fn libc_exdev() -> i32 {
-    18
 }
 
 #[cfg(test)]
@@ -913,6 +929,24 @@ mod tests {
     #[test]
     fn validate_rejects_empty() {
         assert!(matches!(validate_slot_name(""), Err(SlotError::EmptyName)));
+    }
+
+    #[test]
+    fn validate_rejects_leading_dash() {
+        // Leading dash collides with clap's flag parser.
+        assert!(matches!(
+            validate_slot_name("-foo"),
+            Err(SlotError::InvalidCharacters(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_trailing_dash() {
+        // Trailing dashes get silently stripped by common copy-paste pipelines.
+        assert!(matches!(
+            validate_slot_name("foo-"),
+            Err(SlotError::InvalidCharacters(_))
+        ));
     }
 
     #[test]

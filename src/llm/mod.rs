@@ -404,9 +404,18 @@ pub fn create_client(llm_config: LlmConfig) -> Result<Box<dyn BatchProvider>, Ll
     }
 }
 
-/// Resolve `CQS_LOCAL_LLM_CONCURRENCY` from env, clamped to `[1, 64]`.
+/// Resolve `CQS_LOCAL_LLM_CONCURRENCY` from env, clamped to `[1, 16]`.
 ///
-/// Default 4. Values ≤0 clamp to 1; values >64 clamp to 64.
+/// Default 4. Values ≤0 clamp to 1; values >16 clamp to 16.
+///
+/// P3.47: ceiling lowered from 64 → 16. Local LLM endpoints (vLLM,
+/// llama.cpp, ollama, lmstudio) bottleneck on GPU memory and KV cache
+/// scheduling well below 16 in-flight requests; values above that
+/// burn worker thread stacks (default 2 MB × N) without any throughput
+/// gain. The full per-thread stack-size knob (`Builder::stack_size`)
+/// would require lifting workers out of `thread::scope`, since
+/// `scope::Scope::spawn` lacks a stack-size hook — deferred until
+/// the provider API supports `Arc<Self>` worker dispatch.
 ///
 /// Not memoised: local-provider knobs are read once at `LocalProvider::new`
 /// time, not hot-path; tests that flip env vars need fresh reads.
@@ -414,12 +423,12 @@ pub(crate) fn local_concurrency() -> usize {
     match std::env::var("CQS_LOCAL_LLM_CONCURRENCY") {
         Ok(raw) => match raw.parse::<i64>() {
             Ok(n) => {
-                let clamped = n.clamp(1, 64) as usize;
+                let clamped = n.clamp(1, 16) as usize;
                 if n != clamped as i64 {
                     tracing::warn!(
                         raw = n,
                         clamped,
-                        "CQS_LOCAL_LLM_CONCURRENCY out of range [1,64], clamped"
+                        "CQS_LOCAL_LLM_CONCURRENCY out of range [1,16], clamped"
                     );
                 }
                 clamped

@@ -108,15 +108,24 @@ fn max_concurrent_daemon_clients() -> usize {
 /// Build the tokio runtime that the daemon shares across `Store`,
 /// `EmbeddingCache`, and `QueryCache` (#968).
 ///
-/// Uses `multi_thread` with `worker_threads = min(num_cpus, 4)` to match
+/// Uses `multi_thread` with `worker_threads = min(num_cpus, 4)` by default to match
 /// `Store::open`'s pre-968 default (that was the heaviest of the three).
 /// One shared pool replaces three separate per-struct runtimes that
 /// previously idled ~6–12 OS threads in the daemon with no overlap.
+///
+/// Override via `CQS_DAEMON_WORKER_THREADS` for large hosts where the
+/// `min(_, 4)` cap leaves cores idle under heavy concurrent client load.
 fn build_shared_runtime() -> std::io::Result<Arc<tokio::runtime::Runtime>> {
-    let worker_threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(4);
+    let worker_threads = std::env::var("CQS_DAEMON_WORKER_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .min(4)
+        });
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)
         .enable_all()
@@ -282,14 +291,24 @@ fn handle_socket_client(
     // elements, warn on them, and reject the whole request as malformed
     // rather than execute on a truncated arg list.
     let raw_args = request.get("args").and_then(|v| v.as_array());
-    let bad_arg_indices: Vec<usize> = raw_args
-        .map(|arr| {
-            arr.iter()
-                .enumerate()
-                .filter_map(|(i, v)| if v.as_str().is_none() { Some(i) } else { None })
-                .collect()
-        })
-        .unwrap_or_default();
+    // P3.43: fold validation + extraction into a single walk. The previous
+    // shape iterated the array twice — once to collect non-string indices,
+    // once to extract strings. Single pass collects both results into the
+    // typed `Vec<String>` and a parallel `Vec<usize>` of bad indices.
+    let (args, bad_arg_indices): (Vec<String>, Vec<usize>) = match raw_args {
+        Some(arr) => {
+            let mut args = Vec::with_capacity(arr.len());
+            let mut bad = Vec::new();
+            for (i, v) in arr.iter().enumerate() {
+                match v.as_str() {
+                    Some(s) => args.push(s.to_string()),
+                    None => bad.push(i),
+                }
+            }
+            (args, bad)
+        }
+        None => (Vec::new(), Vec::new()),
+    };
     if !bad_arg_indices.is_empty() {
         tracing::warn!(
             command,
@@ -306,13 +325,6 @@ fn handle_socket_client(
         );
         return;
     }
-    let args: Vec<String> = raw_args
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
 
     // Record command on the span so every event inside this handler is
     // enriched with it, without needing to repeat `command` on each log.
@@ -2498,13 +2510,17 @@ pub fn cmd_watch(
             }
         }
         if handle_opt.is_some() {
+            // P3.22: log audit verified — the warn fires whenever the deadline
+            // expires before `is_finished()` returns true, so journal output
+            // reflects reality (no silent detach masquerading as "joined
+            // cleanly"). The "joined cleanly" line above is reachable only
+            // from the `is_finished` arm, which already calls `.join()`.
             tracing::warn!(
-                "Daemon socket thread did not finish within 5s shutdown window — detaching (BatchContext Drop may race with process exit)"
+                deadline_secs = 5,
+                "Daemon socket thread did not exit within shutdown window — detaching (BatchContext Drop may race with process exit; in-flight embedder inference is the usual culprit)"
             );
-            // Intentionally drop `handle_opt` to detach — this is the
-            // pre-fix behaviour, preserved only when the 5 s budget is
-            // exhausted. In-flight embedder inference is the usual
-            // culprit.
+            // Intentionally drop `handle_opt` to detach — preserved as the
+            // pre-fix behaviour, only when the 5 s budget is exhausted.
         }
     }
 
@@ -3079,13 +3095,19 @@ fn reindex_files(
     // follow-on issue — this comment is the breadcrumb so the next
     // sweep doesn't re-discover the cache miss the hard way.
     let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
-    let existing = store.get_embeddings_by_hashes(&hashes)?;
+    let mut existing = store.get_embeddings_by_hashes(&hashes)?;
 
     let mut cached: Vec<(usize, Embedding)> = Vec::new();
     let mut to_embed: Vec<(usize, &cqs::Chunk)> = Vec::new();
+    // P3.46: take ownership via `.remove()` instead of `.get().clone()`. Each
+    // cached embedding is ~4 KB (1024-dim BGE-large), so cloning per chunk on
+    // a thousand-chunk reindex was 4 MB of avoidable allocation churn. Two
+    // chunks with the same content_hash within one reindex (rare — implies
+    // duplicate content across files) fall through to `to_embed` on the
+    // second hit, which is correct: one cached embedding satisfies one slot.
     for (i, chunk) in chunks.iter().enumerate() {
-        if let Some(emb) = existing.get(&chunk.content_hash) {
-            cached.push((i, emb.clone()));
+        if let Some(emb) = existing.remove(&chunk.content_hash) {
+            cached.push((i, emb));
         } else {
             to_embed.push((i, chunk));
         }
@@ -3118,15 +3140,36 @@ fn reindex_files(
         embedder.embed_documents(&text_refs)?.into_iter().collect()
     };
 
-    // Merge cached and new embeddings in original chunk order
+    // Merge cached and new embeddings in original chunk order.
+    //
+    // P3.41: build via a HashMap keyed by chunk index instead of pre-allocating
+    // `chunk_count` empty `Embedding::new(vec![])` placeholders. The old shape
+    // wasted N×Vec allocations on every reindex AND left a zero-length-vector
+    // landmine if a slot was ever skipped (cosine distance with len-0 = NaN).
+    // Mirrors the bulk pipeline's `create_embedded_batch` order-merge logic.
     let chunk_count = chunks.len();
-    let mut embeddings: Vec<Embedding> = vec![Embedding::new(vec![]); chunk_count];
+    let mut by_index: HashMap<usize, Embedding> = HashMap::with_capacity(chunk_count);
     for (i, emb) in cached {
-        embeddings[i] = emb;
+        by_index.insert(i, emb);
     }
     for ((i, _), emb) in to_embed.into_iter().zip(new_embeddings) {
-        embeddings[i] = emb;
+        by_index.insert(i, emb);
     }
+    let embeddings: Vec<Embedding> = (0..chunk_count)
+        .map(|i| {
+            by_index.remove(&i).unwrap_or_else(|| {
+                // Should be unreachable: every chunk index is filled either
+                // from `cached` or from `to_embed` above. If we ever land
+                // here, the upstream split lost a chunk.
+                tracing::error!(
+                    chunk_index = i,
+                    chunk_count,
+                    "missing embedding at chunk index — upstream split lost a chunk"
+                );
+                panic!("missing embedding at chunk index {i} (chunk_count={chunk_count})")
+            })
+        })
+        .collect();
 
     // P2.67: build calls_by_id directly from `per_file_chunk_calls` (collected
     // by `parse_file_all_with_chunk_calls` above) instead of re-parsing every

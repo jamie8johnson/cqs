@@ -176,9 +176,26 @@ pub fn daemon_socket_path(cqs_dir: &std::path::Path) -> std::path::PathBuf {
     use std::hash::{Hash, Hasher};
     use std::path::PathBuf;
 
-    let sock_dir = std::env::var("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
+    let sock_dir = match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(d) => PathBuf::from(d),
+        None => {
+            // P3.38: silent fallback to /tmp (mode 1777) is fine on macOS
+            // (`/var/folders/.../T/` is per-user) but a meaningful trust
+            // drop on multi-user Linux. Surface it once so operators can
+            // wire `XDG_RUNTIME_DIR=/run/user/$(id -u)` if they care.
+            #[cfg(target_os = "linux")]
+            {
+                static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                WARNED.get_or_init(|| {
+                    tracing::info!(
+                        "XDG_RUNTIME_DIR unset — daemon socket falls back to temp_dir; \
+                         consider XDG_RUNTIME_DIR=/run/user/$(id -u)"
+                    );
+                });
+            }
+            std::env::temp_dir()
+        }
+    };
     let sock_name = format!("cqs-{:x}.sock", {
         let mut h = DefaultHasher::new();
         cqs_dir.hash(&mut h);

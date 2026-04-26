@@ -78,7 +78,8 @@ impl LocalProvider {
     /// Build a `LocalProvider` from a resolved [`LlmConfig`].
     ///
     /// Reads `CQS_LLM_API_KEY` (optional), `CQS_LOCAL_LLM_CONCURRENCY`
-    /// (default 4, clamped [1,64]), `CQS_LOCAL_LLM_TIMEOUT_SECS` (default 120).
+    /// (default 4, clamped [1,16] post-P3.47), `CQS_LOCAL_LLM_TIMEOUT_SECS`
+    /// (default 120).
     ///
     /// # Errors
     ///
@@ -114,9 +115,17 @@ impl LocalProvider {
         // (`Policy::limited(2)`). Same-origin HTTP→HTTPS redirects on
         // bind-localhost are benign; a strict `none()` here disagreed
         // with what doctor reported reachable, surprising operators.
+        //
+        // P3.48: cap idle pool to `concurrency` per-host with a 30s idle
+        // timeout. The default reqwest pool is unbounded with a 90s idle
+        // timeout — long-running indexing sessions accumulated stale
+        // sockets against vLLM/llama.cpp servers, leaking FDs without a
+        // matching outbound traffic spike.
         let http = Client::builder()
             .timeout(timeout)
             .redirect(reqwest::redirect::Policy::limited(2))
+            .pool_max_idle_per_host(concurrency)
+            .pool_idle_timeout(Duration::from_secs(30))
             .build()?;
 
         tracing::info!(
@@ -545,7 +554,7 @@ impl LocalProvider {
 ///
 /// Summary outputs are typically a few hundred bytes; 4 MiB is ~1000× headroom.
 /// Larger bodies are a sign of a misbehaving or hostile endpoint and we'd
-/// rather error than OOM the daemon. Up to `local_concurrency()` (≤64) workers
+/// rather error than OOM the daemon. Up to `local_concurrency()` (≤16) workers
 /// can be reading concurrently, so an unbounded read multiplies the risk.
 ///
 /// Override via `CQS_LOCAL_LLM_MAX_BODY_BYTES` (must be > 0).
@@ -1200,14 +1209,16 @@ mod tests {
         assert_eq!(got, 1);
     }
 
-    // ===== Sad-path test 22: concurrency=9999 clamps to 64 =====
+    // ===== Sad-path test 22: concurrency=9999 clamps to 16 =====
+    // P3.47: ceiling reduced 64 → 16 — local endpoints saturate well
+    // before 16 workers and the unbounded shape was just stack churn.
     #[test]
-    fn concurrency_too_high_clamps_to_64() {
+    fn concurrency_too_high_clamps_to_16() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "9999");
         let got = local_concurrency();
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
-        assert_eq!(got, 64);
+        assert_eq!(got, 16);
     }
 
     // ===== Trait-level test: is_valid_batch_id =====

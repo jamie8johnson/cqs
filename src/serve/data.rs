@@ -11,6 +11,24 @@ use sqlx::Row;
 
 use crate::store::{ReadOnly, Store, StoreError};
 
+/// Clamp an i64 SQL line number / count to u32, warning once if the input
+/// was negative.
+///
+/// Negative values in `chunks.line_start` / `line_end` / `n_callers`-style
+/// columns signal DB corruption or a migration bug — the schema is `NOT NULL`
+/// `INTEGER` and our writers always store non-negative values. Surfacing the
+/// clamp as a warn lets operators correlate downstream weirdness with the
+/// underlying data issue instead of silently masking it as `0`.
+#[inline]
+fn clamp_line_to_u32(v: i64) -> u32 {
+    if v < 0 {
+        tracing::warn!(value = v, "negative SQL line/count clamped to 0");
+        0
+    } else {
+        v.min(u32::MAX as i64) as u32
+    }
+}
+
 // SEC-3 absolute ceilings on response shapes — see `crate::limits::serve_*`.
 //
 // P2.40: previously hardcoded `const` values (50_000 / 500_000 / 50_000 +
@@ -300,7 +318,7 @@ pub(crate) fn build_graph(
             let line_start: i64 = row.get("line_start");
             let line_end: i64 = row.get("line_end");
             let n: i64 = row.get("n_callers_global");
-            prelim_n_callers.insert(id.clone(), n.max(0) as u32);
+            prelim_n_callers.insert(id.clone(), clamp_line_to_u32(n));
             nodes_by_id.insert(
                 id.clone(),
                 Node {
@@ -309,8 +327,8 @@ pub(crate) fn build_graph(
                     kind: chunk_type,
                     language,
                     file: origin,
-                    line_start: line_start.max(0) as u32,
-                    line_end: line_end.max(0) as u32,
+                    line_start: clamp_line_to_u32(line_start),
+                    line_end: clamp_line_to_u32(line_end),
                     n_callers: 0,
                     n_callees: 0,
                     dead: false,
@@ -350,8 +368,15 @@ pub(crate) fn build_graph(
                 use crate::store::helpers::sql::max_rows_per_statement;
                 const EDGE_CHUNK: usize = max_rows_per_statement(2);
                 let names: Vec<&str> = name_set.into_iter().collect();
-                let mut seen: std::collections::HashSet<(String, String, String)> =
-                    std::collections::HashSet::new();
+                // P3.44: dedup keys are u64 hashes of (file, caller, callee)
+                // instead of three owned `String`s per row. Cloning three
+                // Strings on every dedup-miss row was a HashSet-worth of
+                // allocation churn proportional to the edge fan-out; hashing
+                // is constant per row and the false-collision rate at u64
+                // is negligible for the per-request edge set size we ship.
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
                 let mut accum: Vec<(String, String, String)> = Vec::new();
                 'chunks: for chunk in names.chunks(EDGE_CHUNK) {
                     if accum.len() >= max_graph_edges {
@@ -379,8 +404,11 @@ pub(crate) fn build_graph(
                         let file: String = row.get("file");
                         let caller: String = row.get("caller_name");
                         let callee: String = row.get("callee_name");
-                        let key = (file.clone(), caller.clone(), callee.clone());
-                        if seen.insert(key) {
+                        let mut h = DefaultHasher::new();
+                        file.hash(&mut h);
+                        caller.hash(&mut h);
+                        callee.hash(&mut h);
+                        if seen.insert(h.finish()) {
                             accum.push((file, caller, callee));
                             if accum.len() >= max_graph_edges {
                                 break 'chunks;
@@ -615,8 +643,8 @@ pub(crate) fn build_chunk_detail(
             kind: chunk_type,
             language,
             file: origin,
-            line_start: line_start.max(0) as u32,
-            line_end: line_end.max(0) as u32,
+            line_start: clamp_line_to_u32(line_start),
+            line_end: clamp_line_to_u32(line_end),
             signature,
             doc,
             content_preview,
@@ -805,8 +833,8 @@ pub(crate) fn build_hierarchy(
                     kind: ckind.clone(),
                     language: lang.clone(),
                     file: origin.clone(),
-                    line_start: (*l_start).max(0) as u32,
-                    line_end: (*l_end).max(0) as u32,
+                    line_start: clamp_line_to_u32(*l_start),
+                    line_end: clamp_line_to_u32(*l_end),
                     n_callers: 0,
                     n_callees: 0,
                     dead: false,
@@ -1024,8 +1052,8 @@ pub(crate) fn build_cluster(
                         kind: chunk_type,
                         language,
                         file: origin,
-                        line_start: line_start.max(0) as u32,
-                        line_end: line_end.max(0) as u32,
+                        line_start: clamp_line_to_u32(line_start),
+                        line_end: clamp_line_to_u32(line_end),
                         n_callers,
                         n_callees,
                         dead,
@@ -1056,6 +1084,17 @@ pub(crate) fn build_cluster(
             skipped,
             "build_cluster: built response"
         );
+
+        // P3.14: explicit warn when corpus has chunks but every one lacks
+        // UMAP coords. Cluster pane renders blank otherwise — operators
+        // staring at the empty view need a journal hint that they need to
+        // run `cqs index --umap` (UMAP is opt-in, not in default index).
+        if nodes.is_empty() && skipped > 0 {
+            tracing::warn!(
+                skipped,
+                "build_cluster: corpus has chunks but no UMAP coordinates — run `cqs index --umap`",
+            );
+        }
 
         Ok(ClusterResponse { nodes, skipped })
     })

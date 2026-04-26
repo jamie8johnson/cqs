@@ -217,7 +217,7 @@ pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
     });
 
     if !refs.is_empty() {
-        tracing::info!("Loaded {} reference indexes", refs.len());
+        tracing::info!(count = refs.len(), "Loaded reference indexes");
     }
 
     refs

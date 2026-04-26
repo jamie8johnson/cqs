@@ -1153,7 +1153,7 @@ mod tests {
         // Gather still accepts `--expand <N>` (graph depth).
         let cli = Cli::try_parse_from(["cqs", "gather", "alarm", "--expand", "2"]).unwrap();
         match cli.command {
-            Some(Commands::Gather { ref args, .. }) => assert_eq!(args.expand, 2),
+            Some(Commands::Gather { ref args, .. }) => assert_eq!(args.depth, 2),
             _ => panic!("expected Gather command"),
         }
     }

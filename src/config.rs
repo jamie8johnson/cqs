@@ -77,27 +77,42 @@ pub fn is_wsl() -> bool {
 }
 
 /// Check whether a path lives under a WSL DrvFS automount
-/// (`/mnt/<letter>/...`), where advisory file locking is unreliable and
-/// NTFS reports permission bits as `0o777`.
+/// (`/mnt/<letter>/...`) or a UNC path that reaches into WSL
+/// (`//wsl.localhost/...`, `//wsl$/...`), where advisory file locking is
+/// unreliable and NTFS reports permission bits as `0o777`.
 ///
 /// PB-V1.29-6: Consolidates the three inline `"/mnt/"` prefix checks
 /// (`hnsw/persist.rs`, `project.rs`, and the per-path permission gate in
-/// this file) into a single helper. The `/mnt/[a-z]/` pattern avoids
+/// this file) into a single helper. The `/mnt/<letter>/` pattern avoids
 /// false-positives on plain Linux hosts that legitimately mount
 /// filesystems below `/mnt/` (e.g. `/mnt/data/` on a native Linux server
 /// was being treated as WSL DrvFS by the naive prefix check).
 ///
+/// P3.36: accept uppercase drive letters too — WSL with
+/// `automount.options=case=force` exposes paths as `/mnt/C/...` — and
+/// recognise the Windows-side UNC entry points `//wsl.localhost/<distro>/`
+/// and the legacy `//wsl$/<distro>/`.
+///
 /// Returns `false` for non-UTF8 paths (WSL DrvFS paths are always UTF-8
-/// under the Linux view) and for anything shorter than `/mnt/c/`.
+/// under the Linux view) and for anything that doesn't match one of those
+/// three shapes.
 pub fn is_wsl_drvfs_path(path: &Path) -> bool {
     let s = match path.to_str() {
         Some(s) => s,
         None => return false,
     };
-    s.len() >= 7
-        && s.starts_with("/mnt/")
-        && s.as_bytes()[5].is_ascii_lowercase()
-        && s.as_bytes()[6] == b'/'
+    // /mnt/<letter>/  — accept upper or lowercase drive letter.
+    if let Some(rest) = s.strip_prefix("/mnt/") {
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b'/' {
+            return true;
+        }
+    }
+    // UNC paths reaching back into WSL from Windows-side tools.
+    if s.starts_with("//wsl.localhost/") || s.starts_with("//wsl$/") {
+        return true;
+    }
+    false
 }
 
 /// Reference index configuration

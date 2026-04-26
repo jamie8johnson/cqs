@@ -73,6 +73,18 @@ impl From<&ChunkIdentity> for ChunkKey {
     }
 }
 
+/// Embedding batch size for `semantic_diff`'s embedding-fetch loop.
+///
+/// Default 1000 keeps each batch ~12 MB at 1024-dim. Scales linearly with model dim;
+/// override via `CQS_DIFF_EMBEDDING_BATCH_SIZE` for larger models or tight memory budgets.
+fn embedding_batch_size() -> usize {
+    std::env::var("CQS_DIFF_EMBEDDING_BATCH_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(1000)
+}
+
 /// Run a semantic diff between two stores.
 ///
 /// # Memory
@@ -153,11 +165,13 @@ pub fn semantic_diff<Mode1, Mode2>(
         }
     }
 
-    // Batch-fetch embeddings in groups of ~1000 to bound memory usage.
+    // Batch-fetch embeddings in groups (default 1000) to bound memory usage.
     // For 20k pairs at ~12 bytes/dim * model_dim, each batch is ~9-12 MB instead of ~240 MB total.
-    const EMBEDDING_BATCH_SIZE: usize = 1000;
+    // Default scales to ~12 MB at 1024-dim; override via CQS_DIFF_EMBEDDING_BATCH_SIZE for larger
+    // models or memory-constrained hosts.
+    let batch_size = embedding_batch_size();
 
-    for batch in matched_pairs.chunks(EMBEDDING_BATCH_SIZE) {
+    for batch in matched_pairs.chunks(batch_size) {
         let batch_source_ids: Vec<&str> = batch.iter().map(|(s, _)| s.id.as_str()).collect();
         let batch_target_ids: Vec<&str> = batch.iter().map(|(_, t)| t.id.as_str()).collect();
 

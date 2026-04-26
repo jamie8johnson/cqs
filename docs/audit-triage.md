@@ -9,8 +9,8 @@ Classification: P1 (easy + high impact, fix immediately) · P2 (medium + high, b
 
 - **P1 — 20/21 fixed + 1 deferred.** P1.17 (drain_pending_rebuild dedup) is structural — filed as #1124, slated to land alongside P2.29 (HNSW rebuild adversarial tests). Branch `audit-v1.30.0-p1-fixes` commit `cce0fbdc` covers all 20 applied.
 - **P2 — 83/92 fixed, 9 filed as issues.** All 92 P2 rows accounted for. Issues #1125 (P2.59), #1126 (P2.60), #1127 (P2.64), #1128 (P2.65), #1129 (P2.68), #1130 (P2.88), #1131 (P2.89), #1132 (P2.90), #1133 (P2.91).
-- **P3 — 0/53 fixed.** Pending P2 completion.
-- **P4 — 0/3.** All three to be filed as tracking issues.
+- **P3 — 49/53 fixed, 4 filed as issues #1137 (P3.26), #1138 (P3.27), #1139 (P3.30), #1140 (P3.31).** All 53 P3 rows accounted for.
+- **P4 — 0/3 fixed, 3 filed as issues #1134, #1135, #1136.**
 
 (Counts include only `✅ fixed` cells; `structural — file as issue` rows count as deferred.)
 
@@ -141,67 +141,67 @@ Classification: P1 (easy + high impact, fix immediately) · P2 (medium + high, b
 
 | # | Title | Category | Location | Status |
 |---|-------|----------|----------|--------|
-| P3.1 | panic_message helper duplicated 4 ways across 3 modules | Code Quality | `src/cli/pipeline/mod.rs:223`, `src/store/mod.rs:1322`, etc. | pending |
-| P3.2 | resolve.rs find_reference + resolve_reference_db duplicate "find by name" twice | Code Quality | `src/cli/commands/resolve.rs:26-57` | pending |
-| P3.3 | slot::libc_exdev hardcodes 18 with stale comment — libc is workspace dep | Code Quality | `src/slot/mod.rs:640-647` | pending |
-| P3.4 | DOC: enumerate_files doc claims gitignore only — also honors .cqsignore | Documentation | `src/lib.rs:542-547` | pending |
-| P3.5 | pub use nl::* leaks dead generate_nl_with_call_context wrapper | API Design | `src/lib.rs:165` + `src/nl/mod.rs:43-59` | pending |
-| P3.6 | cqs gather --expand vs --expand-parent flag-name collision | API Design | `src/cli/args.rs:GatherArgs::expand` | pending |
-| P3.7 | cqs eval --save accepts path with no .json validation | API Design | `src/cli/commands/eval/mod.rs:EvalCmdArgs::save` | pending |
-| P3.8 | OB: cqs eval runner uses eprintln! for progress instead of tracing | Observability | `src/cli/commands/eval/runner.rs:163-168` | pending |
-| P3.9 | OB: nl/mod.rs public NL generators have zero spans | Observability | `src/nl/mod.rs:43,65,189,209` | pending |
-| P3.10 | OB: embed_documents/embed_query lack completion fields (result.len, dim, time) | Observability | `src/embedder/mod.rs:683,722` | pending |
-| P3.11 | OB: Reranker::rerank_with_passages swallows length mismatch silently | Observability | `src/reranker.rs:200-220` | pending |
-| P3.12 | OB: train_data git wrappers don't log non-zero exit codes | Observability | `src/train_data/git.rs:65-242` | pending |
-| P3.13 | OB: format-string-interpolated tracing::info! at 9 sites — fields lost | Observability | `src/hnsw/build.rs:78,236` + 7 sites | pending |
-| P3.14 | OB: cluster_2d emits no warn when corpus has chunks but zero UMAP rows | Observability | `src/serve/data.rs:901, 1020` | pending |
-| P3.15 | TC-ADV: validate_slot_name accepts leading-dash / trailing-dash names | Test Coverage (adv) | `src/slot/mod.rs:159-178` | pending |
-| P3.16 | TC-ADV: provider.rs ort_runtime_search_dir untested for malformed cmdline | Test Coverage (adv) | `src/embedder/provider.rs:67-123` | pending |
-| P3.17 | TC-ADV: blake3_hex_or_passthrough uppercase/short-hex edges untested | Test Coverage (adv) | `src/cache.rs:709-721` | pending |
-| P3.18 | RB: SystemTime → i64 cache cast wraps in 2554 | Robustness | `src/cache.rs:349-352, 551-555` | pending |
-| P3.19 | RB: libc_exdev hardcodes 18 — wrong on Windows (ERROR_NOT_SAME_DEVICE=17) | Robustness | `src/slot/mod.rs:644-647` | pending |
-| P3.20 | RB: cache prune --older-than DAYS computes negative cutoff for huge values | Robustness | `src/cache.rs:548, 551-555` | pending |
-| P3.21 | RB: serve/data.rs i64.max(0) as u32 grew to 8 sites (was 3) | Robustness | `src/serve/data.rs` (8 sites) | pending |
-| P3.22 | RB: Daemon socket-thread join detaches on timeout but logs "joined cleanly" | Robustness | `src/cli/watch.rs:2374-2400` | pending |
-| P3.23 | SHL: diff EMBEDDING_BATCH_SIZE=1000 doesn't scale with model dim | Scaling | `src/diff.rs:158` | pending |
-| P3.24 | SHL: Daemon worker_threads=min(num_cpus,4) hardcoded — caps large machines | Scaling | `src/cli/watch.rs:115-119` | pending |
-| P3.25 | SHL: train_data MAX_SHOW_SIZE=50MB hardcoded — silent skip on big files | Scaling | `src/train_data/git.rs:167` | pending |
-| P3.26 | EX: BatchCmd::is_pipeable is a separate match outside command registry | Extensibility | `src/cli/batch/commands.rs:325-538` | pending |
-| P3.27 | EX: LlmProvider resolver hand-codes 2 providers — no registry | Extensibility | `src/llm/mod.rs:200-398` | pending |
-| P3.28 | EX: Tree-sitter query files no startup self-test (registry consistency) | Extensibility | `src/language/queries/*.scm` | pending |
-| P3.29 | EX: find_project_root markers list hardcoded — could be data | Extensibility | `src/cli/config.rs:155-162` | pending |
-| P3.30 | EX: structural_matchers per-language fn — no shared library | Extensibility | `src/language/mod.rs:191,345` | pending |
-| P3.31 | EX: Embedder constructor no per-preset extras hook | Extensibility | `src/embedder/models.rs:163-300` | pending |
-| P3.32 | PB: EmbeddingCache/QueryCache hardcode ~/.cache/cqs on Windows | Platform | `src/cache.rs:80-84, 1399-1403` | pending |
-| P3.33 | PB: dispatch_drift/diff JSON file fields use display() in suggest.rs/types.rs | Platform | `src/suggest.rs:101`, `src/store/types.rs:220` | pending |
-| P3.34 | PB: find_ld_library_dir splits on `:` — no Windows arm | Platform | `src/embedder/provider.rs:115-123` | pending |
-| P3.35 | PB: index.lock advisory on Linux but mandatory on Windows; doc gap | Platform | `src/cli/files.rs:120-213` | pending |
-| P3.36 | PB: is_wsl_drvfs_path misses //wsl.localhost and uppercase mounts | Platform | `src/config.rs:92-101` | pending |
-| P3.37 | PB: blame git_file = replace('\\', "/") — Windows verbatim prefix slips through | Platform | `src/cli/commands/io/blame.rs:113-115` | pending |
-| P3.38 | PB: daemon_socket_path falls back to temp_dir silently — log differing trust | Platform | `src/daemon_translate.rs:179-188` | pending |
-| P3.39 | DS: write_slot_model/write_active_slot skip parent-dir fsync after rename | Data Safety | `src/slot/mod.rs:237-406` | pending |
-| P3.40 | DS: update_umap_coords_batch uses TEMP TABLE shared across calls | Data Safety | `src/store/chunks/crud.rs:392-450` | pending |
-| P3.41 | PF: reindex_files allocates N empty Embedding placeholders | Performance | `src/cli/watch.rs:2918-2924` | pending |
-| P3.42 | PF: prepare_for_embedding always issues store-cache query even on full global hit | Performance | `src/cli/pipeline/embedding.rs:64-82` | pending |
-| P3.43 | PF: Daemon socket walks args array twice (validation + extraction) | Performance | `src/cli/watch.rs:266-297` | pending |
-| P3.44 | PF: build_graph edge-dedup HashSet keys clone (file,caller,callee) per row | Performance | `src/serve/data.rs:367-373` | pending |
-| P3.45 | PF: extract_imports HashSet<String> allocates per candidate even on duplicate | Performance | `src/where_to_add.rs:258-276` | pending |
-| P3.46 | PF: Watch reindex cached embedding clone via .get instead of .remove | Performance | `src/cli/watch.rs:2879-2887` | pending |
-| P3.47 | RM: LocalProvider worker threads use default 2MB stack — 128MB at concurrency=64 | Resource Mgmt | `src/llm/local.rs:163-256` | pending |
-| P3.48 | RM: LocalProvider::http no pool_max_idle / idle_timeout | Resource Mgmt | `src/llm/local.rs:97-100` | pending |
-| P3.49 | TC-HAP: cmd_similar (CLI) has no integration test | Test Coverage | `src/cli/commands/search/similar.rs:41` | pending |
-| P3.50 | TC-HAP: cmd_ci happy path untested; only error paths tested | Test Coverage | `src/cli/commands/review/ci.rs:9` | pending |
-| P3.51 | TC-HAP: cmd_gather (CLI) untested; only library gather() tested | Test Coverage | `src/cli/commands/search/gather.rs:77` | pending |
-| P3.52 | TC-HAP: dispatch_line no happy-path test for valid command | Test Coverage | `src/cli/batch/mod.rs:557` | pending |
-| P3.53 | TC-HAP: select_provider/detect_provider untested (#1120 split) | Test Coverage | `src/embedder/provider.rs:171-258` | pending |
+| P3.1 | panic_message helper duplicated 4 ways across 3 modules | Code Quality | `src/cli/pipeline/mod.rs:223`, `src/store/mod.rs:1322`, etc. | ✅ fixed |
+| P3.2 | resolve.rs find_reference + resolve_reference_db duplicate "find by name" twice | Code Quality | `src/cli/commands/resolve.rs:26-57` | ✅ fixed |
+| P3.3 | slot::libc_exdev hardcodes 18 with stale comment — libc is workspace dep | Code Quality | `src/slot/mod.rs:640-647` | ✅ fixed |
+| P3.4 | DOC: enumerate_files doc claims gitignore only — also honors .cqsignore | Documentation | `src/lib.rs:542-547` | ✅ fixed |
+| P3.5 | pub use nl::* leaks dead generate_nl_with_call_context wrapper | API Design | `src/lib.rs:165` + `src/nl/mod.rs:43-59` | ✅ fixed |
+| P3.6 | cqs gather --expand vs --expand-parent flag-name collision | API Design | `src/cli/args.rs:GatherArgs::expand` | ✅ fixed |
+| P3.7 | cqs eval --save accepts path with no .json validation | API Design | `src/cli/commands/eval/mod.rs:EvalCmdArgs::save` | ✅ fixed |
+| P3.8 | OB: cqs eval runner uses eprintln! for progress instead of tracing | Observability | `src/cli/commands/eval/runner.rs:163-168` | ✅ fixed |
+| P3.9 | OB: nl/mod.rs public NL generators have zero spans | Observability | `src/nl/mod.rs:43,65,189,209` | ✅ fixed |
+| P3.10 | OB: embed_documents/embed_query lack completion fields (result.len, dim, time) | Observability | `src/embedder/mod.rs:683,722` | ✅ fixed |
+| P3.11 | OB: Reranker::rerank_with_passages swallows length mismatch silently | Observability | `src/reranker.rs:200-220` | ✅ fixed |
+| P3.12 | OB: train_data git wrappers don't log non-zero exit codes | Observability | `src/train_data/git.rs:65-242` | ✅ fixed |
+| P3.13 | OB: format-string-interpolated tracing::info! at 9 sites — fields lost | Observability | `src/hnsw/build.rs:78,236` + 7 sites | ✅ fixed |
+| P3.14 | OB: cluster_2d emits no warn when corpus has chunks but zero UMAP rows | Observability | `src/serve/data.rs:901, 1020` | ✅ fixed |
+| P3.15 | TC-ADV: validate_slot_name accepts leading-dash / trailing-dash names | Test Coverage (adv) | `src/slot/mod.rs:159-178` | ✅ fixed |
+| P3.16 | TC-ADV: provider.rs ort_runtime_search_dir untested for malformed cmdline | Test Coverage (adv) | `src/embedder/provider.rs:67-123` | ✅ fixed |
+| P3.17 | TC-ADV: blake3_hex_or_passthrough uppercase/short-hex edges untested | Test Coverage (adv) | `src/cache.rs:709-721` | ✅ fixed |
+| P3.18 | RB: SystemTime → i64 cache cast wraps in 2554 | Robustness | `src/cache.rs:349-352, 551-555` | ✅ fixed |
+| P3.19 | RB: libc_exdev hardcodes 18 — wrong on Windows (ERROR_NOT_SAME_DEVICE=17) | Robustness | `src/slot/mod.rs:644-647` | ✅ fixed |
+| P3.20 | RB: cache prune --older-than DAYS computes negative cutoff for huge values | Robustness | `src/cache.rs:548, 551-555` | ✅ fixed |
+| P3.21 | RB: serve/data.rs i64.max(0) as u32 grew to 8 sites (was 3) | Robustness | `src/serve/data.rs` (8 sites) | ✅ fixed |
+| P3.22 | RB: Daemon socket-thread join detaches on timeout but logs "joined cleanly" | Robustness | `src/cli/watch.rs:2374-2400` | ✅ fixed |
+| P3.23 | SHL: diff EMBEDDING_BATCH_SIZE=1000 doesn't scale with model dim | Scaling | `src/diff.rs:158` | ✅ fixed |
+| P3.24 | SHL: Daemon worker_threads=min(num_cpus,4) hardcoded — caps large machines | Scaling | `src/cli/watch.rs:115-119` | ✅ fixed |
+| P3.25 | SHL: train_data MAX_SHOW_SIZE=50MB hardcoded — silent skip on big files | Scaling | `src/train_data/git.rs:167` | ✅ fixed |
+| P3.26 | EX: BatchCmd::is_pipeable is a separate match outside command registry | Extensibility | `src/cli/batch/commands.rs:325-538` | 📋 issue #1137 |
+| P3.27 | EX: LlmProvider resolver hand-codes 2 providers — no registry | Extensibility | `src/llm/mod.rs:200-398` | 📋 issue #1138 |
+| P3.28 | EX: Tree-sitter query files no startup self-test (registry consistency) | Extensibility | `src/language/queries/*.scm` | ✅ fixed |
+| P3.29 | EX: find_project_root markers list hardcoded — could be data | Extensibility | `src/cli/config.rs:155-162` | ✅ fixed |
+| P3.30 | EX: structural_matchers per-language fn — no shared library | Extensibility | `src/language/mod.rs:191,345` | 📋 issue #1139 |
+| P3.31 | EX: Embedder constructor no per-preset extras hook | Extensibility | `src/embedder/models.rs:163-300` | 📋 issue #1140 |
+| P3.32 | PB: EmbeddingCache/QueryCache hardcode ~/.cache/cqs on Windows | Platform | `src/cache.rs:80-84, 1399-1403` | ✅ fixed |
+| P3.33 | PB: dispatch_drift/diff JSON file fields use display() in suggest.rs/types.rs | Platform | `src/suggest.rs:101`, `src/store/types.rs:220` | ✅ fixed |
+| P3.34 | PB: find_ld_library_dir splits on `:` — no Windows arm | Platform | `src/embedder/provider.rs:115-123` | ✅ fixed |
+| P3.35 | PB: index.lock advisory on Linux but mandatory on Windows; doc gap | Platform | `src/cli/files.rs:120-213` | ✅ fixed |
+| P3.36 | PB: is_wsl_drvfs_path misses //wsl.localhost and uppercase mounts | Platform | `src/config.rs:92-101` | ✅ fixed |
+| P3.37 | PB: blame git_file = replace('\\', "/") — Windows verbatim prefix slips through | Platform | `src/cli/commands/io/blame.rs:113-115` | ✅ fixed |
+| P3.38 | PB: daemon_socket_path falls back to temp_dir silently — log differing trust | Platform | `src/daemon_translate.rs:179-188` | ✅ fixed |
+| P3.39 | DS: write_slot_model/write_active_slot skip parent-dir fsync after rename | Data Safety | `src/slot/mod.rs:237-406` | ✅ fixed |
+| P3.40 | DS: update_umap_coords_batch uses TEMP TABLE shared across calls | Data Safety | `src/store/chunks/crud.rs:392-450` | ✅ fixed |
+| P3.41 | PF: reindex_files allocates N empty Embedding placeholders | Performance | `src/cli/watch.rs:2918-2924` | ✅ fixed |
+| P3.42 | PF: prepare_for_embedding always issues store-cache query even on full global hit | Performance | `src/cli/pipeline/embedding.rs:64-82` | ✅ fixed |
+| P3.43 | PF: Daemon socket walks args array twice (validation + extraction) | Performance | `src/cli/watch.rs:266-297` | ✅ fixed |
+| P3.44 | PF: build_graph edge-dedup HashSet keys clone (file,caller,callee) per row | Performance | `src/serve/data.rs:367-373` | ✅ fixed |
+| P3.45 | PF: extract_imports HashSet<String> allocates per candidate even on duplicate | Performance | `src/where_to_add.rs:258-276` | ✅ fixed |
+| P3.46 | PF: Watch reindex cached embedding clone via .get instead of .remove | Performance | `src/cli/watch.rs:2879-2887` | ✅ fixed |
+| P3.47 | RM: LocalProvider worker threads use default 2MB stack — 128MB at concurrency=64 | Resource Mgmt | `src/llm/local.rs:163-256` | ✅ fixed (partial: ceiling reduced 64→16; per-worker stack_size deferred — requires lifting workers out of `thread::scope` since `Scope::spawn` lacks a stack-size hook) |
+| P3.48 | RM: LocalProvider::http no pool_max_idle / idle_timeout | Resource Mgmt | `src/llm/local.rs:97-100` | ✅ fixed |
+| P3.49 | TC-HAP: cmd_similar (CLI) has no integration test | Test Coverage | `src/cli/commands/search/similar.rs:41` | ✅ fixed (already covered by `tests/cli_similar_test.rs` — TC-HAP-1.29-7 envelope shape + self-exclusion + unknown-name error) |
+| P3.50 | TC-HAP: cmd_ci happy path untested; only error paths tested | Test Coverage | `src/cli/commands/review/ci.rs:9` | ✅ fixed (already covered by `tests/cli_train_review_test.rs::test_ci_happy_path_non_empty_diff_emits_full_report`) |
+| P3.51 | TC-HAP: cmd_gather (CLI) untested; only library gather() tested | Test Coverage | `src/cli/commands/search/gather.rs:77` | ✅ fixed (already covered by `tests/cli_gather_test.rs` — TC-HAP-1.29-9 envelope + token-budget) |
+| P3.52 | TC-HAP: dispatch_line no happy-path test for valid command | Test Coverage | `src/cli/batch/mod.rs:557` | ✅ fixed (added `test_dispatch_line_stats_emits_success_envelope_shape`) |
+| P3.53 | TC-HAP: select_provider/detect_provider untested (#1120 split) | Test Coverage | `src/embedder/provider.rs:171-258` | ✅ fixed (added `tests` mod with `select_provider_caches_first_call`, `detect_provider_returns_valid_variant`, `execution_provider_is_debug_and_copy`) |
 
 ## P4 — Defer / Issues
 
 | # | Title | Category | Location | Disposition | Status |
 |---|-------|----------|----------|-------------|--------|
-| P4.1 | AuthToken::from_string cfg-gated, alphabet invariant relies on docstring | Security | `src/serve/auth.rs:75-78, 218` | issue (hardening) | pending |
-| P4.2 | Path=/ cookie scope on 127.0.0.1 — multiple cqs serve on same host stomp | Security | `src/serve/auth.rs:211-214` | issue (browser cookie limit) | pending |
-| P4.3 | Auth state ignored by quiet=true — Option<AuthToken> permits silent no-auth | Security | `src/serve/mod.rs:78-83` | issue (type-state refactor) | pending |
+| P4.1 | AuthToken::from_string cfg-gated, alphabet invariant relies on docstring | Security | `src/serve/auth.rs:75-78, 218` | issue (hardening) | 📋 issue #1134 |
+| P4.2 | Path=/ cookie scope on 127.0.0.1 — multiple cqs serve on same host stomp | Security | `src/serve/auth.rs:211-214` | issue (browser cookie limit) | 📋 issue #1135 |
+| P4.3 | Auth state ignored by quiet=true — Option<AuthToken> permits silent no-auth | Security | `src/serve/mod.rs:78-83` | issue (type-state refactor) | 📋 issue #1136 |
 
 ## Summary
 

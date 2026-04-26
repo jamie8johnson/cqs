@@ -2551,4 +2551,53 @@ mod tests {
             );
         }
     }
+
+    // ===== P3.52 — dispatch_line success-envelope shape pinning =====
+    //
+    // The existing tests cover error/adversarial paths (NUL bytes, ANSI
+    // escapes, unbalanced quotes, unknown commands) and counter bumps,
+    // but no test asserts the *shape* of a successful response — that
+    // `error` is `null`, `data` carries the documented fields, and the
+    // envelope `version` is set. A regression that swapped `data` and
+    // `error` placements (or dropped the `version` key) would slip past
+    // every existing assertion.
+    #[test]
+    fn test_dispatch_line_stats_emits_success_envelope_shape() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        let mut sink = Vec::new();
+
+        ctx.dispatch_line("stats", &mut sink);
+
+        let output = String::from_utf8(sink).unwrap();
+        let line = output.lines().next().unwrap_or("");
+        let parsed: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("stats envelope must parse as JSON ({e}): {output}"));
+
+        // Strict success-envelope shape.
+        assert_eq!(
+            parsed["version"],
+            crate::cli::json_envelope::JSON_OUTPUT_VERSION,
+            "envelope must carry the published version, got {output}"
+        );
+        assert!(
+            parsed["error"].is_null(),
+            "stats success envelope must have error=null, got {output}"
+        );
+        assert!(
+            parsed["data"].is_object(),
+            "stats data must be an object, got {output}"
+        );
+
+        // Stats-specific shape: `total_chunks` is the load-bearing field.
+        // An init-only store reports 0; the type just has to be numeric.
+        assert!(
+            parsed["data"]["total_chunks"].is_number(),
+            "stats response must include total_chunks (numeric), got {output}"
+        );
+
+        // Counter invariant — success bumps query, leaves errors alone.
+        assert_eq!(ctx.query_count.load(Ordering::Relaxed), 1);
+        assert_eq!(ctx.error_count.load(Ordering::Relaxed), 0);
+    }
 }

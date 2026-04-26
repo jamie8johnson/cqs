@@ -621,7 +621,7 @@ macro_rules! for_each_command {
                     cmd_gather(&super::commands::GatherContext {
                         ctx: &$ctx,
                         query: &args.query,
-                        expand: args.expand,
+                        expand: args.depth,
                         direction: args.direction,
                         limit: args.limit,
                         max_tokens: args.tokens,

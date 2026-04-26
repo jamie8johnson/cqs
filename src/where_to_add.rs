@@ -256,16 +256,18 @@ const MAX_IMPORT_COUNT: usize = 5;
 /// Deduplicates imports using a HashSet and caps at `max` entries. This is the
 /// shared extraction logic used by all language arms in `extract_patterns`.
 fn extract_imports(chunks: &[ChunkSummary], prefixes: &[&str], max: usize) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut imports = Vec::new();
+    // P3.45: dedupe via borrowed `&str` keys; allocate the owned `String`
+    // only on accept (when the line is actually pushed into `imports`).
+    // The previous shape did `seen.insert(trimmed.to_string())` for every
+    // candidate line — including lines that were dropped because `imports`
+    // had already hit `max` — wasting one allocation per duplicate hit.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut imports: Vec<String> = Vec::new();
     for chunk in chunks {
         for line in chunk.content.lines() {
             let trimmed = line.trim();
             for &prefix in prefixes {
-                if trimmed.starts_with(prefix)
-                    && imports.len() < max
-                    && seen.insert(trimmed.to_string())
-                {
+                if trimmed.starts_with(prefix) && imports.len() < max && seen.insert(trimmed) {
                     imports.push(trimmed.to_string());
                     break;
                 }

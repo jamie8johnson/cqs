@@ -158,13 +158,14 @@ pub(crate) fn run_eval(
 
         hits.push(QueryHit { category, rank });
 
-        // Progress every 10 queries (or at least every 5s) to stderr so long
-        // evals show life. Mirrors the python harness logging cadence.
+        // Progress every 10 queries (or at least every 5s). Routed through
+        // `tracing::info!` so it honors `RUST_LOG`, JSON-log redirect, and
+        // any future structured-logs sink. Use `RUST_LOG=cqs=info` to see.
         if (idx + 1) % 10 == 0 || last_progress.elapsed().as_secs() >= 5 {
             let done = hits.len() + skipped;
             let elapsed = started.elapsed().as_secs_f64().max(0.001);
             let qps = done as f64 / elapsed;
-            eprintln!("[eval] {}/{} queries ({:.1} q/s)", done, total_queries, qps);
+            tracing::info!(done, total = total_queries, qps, "eval progress");
             last_progress = Instant::now();
         }
     }

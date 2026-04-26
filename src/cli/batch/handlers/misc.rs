@@ -23,7 +23,7 @@ pub(in crate::cli::batch) fn dispatch_gather(
     let embedder = ctx.embedder()?;
 
     let opts = cqs::GatherOptions {
-        expand_depth: args.expand.clamp(0, 5),
+        expand_depth: args.depth.clamp(0, 5),
         direction: args.direction,
         limit: args.limit.clamp(1, 100),
         ..cqs::GatherOptions::default()
