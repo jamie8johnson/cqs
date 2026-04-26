@@ -15,7 +15,7 @@ use cqs::hnsw::HnswIndex;
 use cqs::parser::{ChunkType, Language, Parser};
 use cqs::store::{ModelInfo, SearchFilter, Store};
 use cqs::VectorIndex;
-use cqs::{generate_nl_description, generate_nl_with_call_context, CallContext};
+use cqs::{generate_nl_description, generate_nl_with_call_context_and_summary, CallContext};
 use eval_common::{fixture_path, hard_fixture_path, EvalCase, HARD_EVAL_CASES, HOLDOUT_EVAL_CASES};
 use std::collections::HashMap;
 use tempfile::TempDir;
@@ -68,7 +68,15 @@ fn enrich_with_call_context(store: &Store, embedder: &Embedder) -> usize {
             };
 
             let chunk: cqs::parser::Chunk = cs.into();
-            let nl = generate_nl_with_call_context(&chunk, &ctx, &callee_doc_freq, 5, 5);
+            let nl = generate_nl_with_call_context_and_summary(
+                &chunk,
+                &ctx,
+                &callee_doc_freq,
+                5,
+                5,
+                None,
+                None,
+            );
             batch.push((cs.id.clone(), nl));
 
             if batch.len() >= 64 {

@@ -200,12 +200,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         // P2.17: daemon protocol errors now surface as `Err` instead of being
         // logged-and-fall-through. Transport-level failures still return
         // `Ok(None)` so CLI fallback works for those.
-        match try_daemon_query(&project_cqs_dir, &cli)? {
-            Some(output) => {
-                print!("{}", output);
-                return Ok(());
-            }
-            None => {}
+        if let Some(output) = try_daemon_query(&project_cqs_dir, &cli)? {
+            print!("{}", output);
+            return Ok(());
         }
     }
 
