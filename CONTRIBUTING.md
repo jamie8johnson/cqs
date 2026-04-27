@@ -184,7 +184,14 @@ src/
     staleness.rs - Proactive staleness warnings for search results
     telemetry.rs - Optional command usage logging (CQS_TELEMETRY=1)
     store.rs    - Store opening utilities, CommandContext, vector index building
-    watch.rs    - File watcher for incremental reindexing
+    watch/      - File watcher + daemon (split from watch.rs in PR #1147)
+      mod.rs    - WatchConfig/WatchState, cmd_watch entry point, gitignore + WSL helpers
+      socket.rs - Unix-socket daemon client handler (handle_socket_client)
+      runtime.rs - SIGTERM flag, build_shared_runtime
+      rebuild.rs - HNSW background rebuild orchestration + EmbedderBackoff
+      gc.rs     - Daemon startup/periodic GC sweeps + last_indexed_mtime prune
+      events.rs - collect_events + process_file_changes + process_note_changes
+      reindex.rs - reindex_files + reindex_notes + SPLADE encoder helpers
   language/     - Tree-sitter language support (54 languages + L5X/L5K)
     mod.rs      - Language enum (define_languages! macro), LanguageRegistry, LanguageDef, ChunkType
     languages.rs - All 54 language definitions (LanguageDef statics with ..DEFAULTS) + custom functions
