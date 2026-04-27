@@ -91,7 +91,7 @@ tree-sitter-dart = { version = "0.1", optional = true }
 
 # ML (CUDA/TensorRT added for non-macOS targets below)
 ort = "2.0.0-rc.12"
-tokenizers = { version = "0.22", features = ["http"] }
+tokenizers = { version = "0.23", features = ["http"] }
 hf-hub = "0.4.3"
 ndarray = "0.17"
 # cuVS requires ndarray 0.15, import separately for gpu-index
