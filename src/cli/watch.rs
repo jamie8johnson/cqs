@@ -652,7 +652,14 @@ struct WatchState {
 /// closing the TOCTOU between the rebuild thread's snapshot and `recv`.
 struct PendingRebuild {
     rx: std::sync::mpsc::Receiver<RebuildOutcome>,
-    delta: Vec<(String, Embedding)>,
+    /// P1.17 / #1124: each entry carries the chunk's `content_hash` alongside
+    /// (id, embedding) so the swap-time drain can compare against the
+    /// rebuild thread's snapshot. An id-only dedup would silently drop the
+    /// fresh embedding for any chunk that was re-embedded mid-rebuild
+    /// (snapshot has the OLD vector under the same id; delta has the NEW
+    /// one) — the HNSW would carry the stale vector until the next
+    /// threshold rebuild.
+    delta: Vec<(String, Embedding, String)>,
     started_at: std::time::Instant,
     /// P2.71: held so daemon shutdown can `join` (or detect the thread is
     /// finished) instead of leaking a detached worker. `None` if the spawn
@@ -665,6 +672,17 @@ struct PendingRebuild {
     delta_saturated: bool,
 }
 
+/// P1.17 / #1124: the rebuild thread reports both the freshly-built
+/// `HnswIndex` AND the per-id `content_hash` snapshot the build consumed.
+/// The drain path needs the snapshot map to detect mid-rebuild
+/// re-embeddings — without it, a hash-aware dedup would have to issue a
+/// second SQL query (and lose snapshot consistency under concurrent
+/// writers).
+pub(crate) struct RebuildResult {
+    pub index: HnswIndex,
+    pub snapshot_hashes: std::collections::HashMap<String, String>,
+}
+
 /// P2.72: cap on per-rebuild delta size. A stale-rebuild that runs longer
 /// than expected (very large index, slow disk) accumulates one entry per
 /// chunk re-embedded by the watch loop. Without a cap a multi-GB embedding
@@ -673,7 +691,7 @@ struct PendingRebuild {
 /// next threshold rebuild's fresh SQLite scan.
 const MAX_PENDING_REBUILD_DELTA: usize = 5_000;
 
-type RebuildOutcome = Result<Option<HnswIndex>, anyhow::Error>;
+type RebuildOutcome = Result<Option<RebuildResult>, anyhow::Error>;
 
 /// Track exponential backoff state for embedder initialization retries.
 ///
@@ -1050,12 +1068,17 @@ fn spawn_hnsw_rebuild(
                         "base HNSW rebuild failed in background; router falls back to enriched-only"
                     ),
                 }
-                Ok(enriched)
+                // P1.17 / #1124: package the (index, snapshot_hashes) pair
+                // so the drain can detect mid-rebuild re-embeddings.
+                Ok(enriched.map(|(index, snapshot_hashes)| RebuildResult {
+                    index,
+                    snapshot_hashes,
+                }))
             })();
             let elapsed_ms = started_at.elapsed().as_millis();
             match &result {
-                Ok(Some(idx)) => tracing::info!(
-                    vectors = idx.len(),
+                Ok(Some(r)) => tracing::info!(
+                    vectors = r.index.len(),
                     elapsed_ms,
                     context,
                     "background HNSW rebuild complete"
@@ -1127,7 +1150,10 @@ fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mut WatchStat
         .expect("pending_rebuild was Some when we held a borrow");
 
     match outcome {
-        Ok(Some(mut new_index)) => {
+        Ok(Some(RebuildResult {
+            index: mut new_index,
+            snapshot_hashes,
+        })) => {
             // P2.72: if the delta saturated, the rebuilt index is missing
             // events that we dropped on the floor; swapping it in would
             // silently lose those chunks. Discard instead — the next
@@ -1148,18 +1174,28 @@ fn drain_pending_rebuild(cfg: &WatchConfig, store: &Store, state: &mut WatchStat
                 }
                 return;
             }
-            // Replay captured delta — but skip ids the rebuild thread already
-            // saw via its store snapshot, so we don't double-insert. (hnsw_rs
-            // has no dedup; duplicate ids would create twin vectors that bloat
-            // the graph until the next threshold cleans them up.)
-            let known: std::collections::HashSet<&str> =
-                new_index.ids().iter().map(String::as_str).collect();
+            // P1.17 / #1124: replay captured delta — skip only entries
+            // whose (id, content_hash) match the snapshot. An id that was
+            // re-embedded mid-rebuild has a NEW hash in delta but the
+            // snapshot baked in the OLD vector; the entry must replay so
+            // the fresh embedding lands in the swapped HNSW. Pure id-only
+            // dedup (the pre-fix shape) silently dropped these and left
+            // the HNSW serving stale vectors until the next threshold
+            // rebuild.
+            //
+            // Trade-off when an id IS re-embedded: `insert_batch` on
+            // hnsw_rs adds a duplicate node (no deletion API). That's the
+            // same orphan situation as the existing fast-incremental path
+            // — search post-filters by SQLite, so the orphan is invisible
+            // to callers. The next threshold rebuild cleans it up.
             let to_replay: Vec<(String, Embedding)> = pending
                 .delta
                 .into_iter()
-                .filter(|(id, _)| !known.contains(id.as_str()))
+                .filter(|(id, _, hash)| {
+                    snapshot_hashes.get(id.as_str()).is_none_or(|sh| sh != hash)
+                })
+                .map(|(id, emb, _)| (id, emb))
                 .collect();
-            drop(known);
             if !to_replay.is_empty() {
                 let items: Vec<(String, &[f32])> = to_replay
                     .iter()
@@ -2886,9 +2922,13 @@ fn process_file_changes(cfg: &WatchConfig, store: &Store, state: &mut WatchState
                             // in the HNSW graph (hnsw_rs has no deletion). Orphans are
                             // harmless: search post-filters against live SQLite chunk
                             // IDs. They're cleaned on the next threshold rebuild.
+                            //
+                            // P1.17 / #1124: `pairs` carries content_hash as the
+                            // third tuple slot for the rebuild-window path; the
+                            // incremental insert only needs (id, embedding).
                             let items: Vec<(String, &[f32])> = pairs
                                 .iter()
-                                .map(|(id, emb)| (id.clone(), emb.as_slice()))
+                                .map(|(id, emb, _hash)| (id.clone(), emb.as_slice()))
                                 .collect();
                             match index.insert_batch(&items) {
                                 Ok(n) => {
@@ -4224,15 +4264,28 @@ mod tests {
         assert_eq!(new_idx.len(), 3);
 
         let (tx, rx) = std::sync::mpsc::channel();
-        tx.send(Ok(Some(new_idx))).unwrap();
+        tx.send(Ok(Some(RebuildResult {
+            index: new_idx,
+            // No overlap between delta ids and snapshot — all replay.
+            snapshot_hashes: std::collections::HashMap::new(),
+        })))
+        .unwrap();
         drop(tx);
 
         let mut state = test_watch_state();
         state.pending_rebuild = Some(PendingRebuild {
             rx,
             delta: vec![
-                ("delta_a".to_string(), cqs::Embedding::new(vec![1.0; dim])),
-                ("delta_b".to_string(), cqs::Embedding::new(vec![0.5; dim])),
+                (
+                    "delta_a".to_string(),
+                    cqs::Embedding::new(vec![1.0; dim]),
+                    "h_delta_a".to_string(),
+                ),
+                (
+                    "delta_b".to_string(),
+                    cqs::Embedding::new(vec![0.5; dim]),
+                    "h_delta_b".to_string(),
+                ),
             ],
             started_at: std::time::Instant::now(),
             handle: None,
@@ -4258,25 +4311,159 @@ mod tests {
         assert!(state.pending_rebuild.is_none());
     }
 
+    /// P1.17 / #1124: when a chunk is re-embedded mid-rebuild, the snapshot
+    /// has the OLD vector under the same id while delta has the NEW vector
+    /// + new content_hash. The drain must REPLAY the delta entry so the
+    /// fresh embedding lands in the swapped HNSW. The pre-fix code dedup'd
+    /// by id-only and silently dropped these updates.
+    ///
+    /// We can't query hnsw_rs for "give me the embedding stored under id X"
+    /// (it's a graph, not a kv store) and there's no deletion API, so we
+    /// assert the side-effect: the swapped index contains MORE entries
+    /// than the snapshot alone (orphan + replayed vector both present),
+    /// and a search by the FRESH embedding returns id "a" with cosine ≈ 1.0.
+    #[test]
+    fn test_rebuild_window_re_embedding_replays_fresh_vector() {
+        let dim = 4;
+
+        // Snapshot has id "a" baked in with hash h_v1 (and an unrelated id "z"
+        // so the index isn't trivially empty).
+        let snapshot_batch: Vec<(String, cqs::Embedding)> = vec![
+            (
+                "a".to_string(),
+                cqs::Embedding::new(vec![1.0, 0.0, 0.0, 0.0]),
+            ),
+            (
+                "z".to_string(),
+                cqs::Embedding::new(vec![0.0, 0.0, 0.0, 1.0]),
+            ),
+        ];
+        let snapshot_iter = std::iter::once(Ok::<_, cqs::store::StoreError>(snapshot_batch));
+        let new_idx = cqs::hnsw::HnswIndex::build_batched_with_dim(snapshot_iter, 2, dim)
+            .expect("build snapshot index");
+        assert_eq!(new_idx.len(), 2, "snapshot starts with 2 entries");
+
+        let mut snapshot_hashes = std::collections::HashMap::new();
+        snapshot_hashes.insert("a".to_string(), "h_v1".to_string());
+        snapshot_hashes.insert("z".to_string(), "h_z".to_string());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Ok(Some(RebuildResult {
+            index: new_idx,
+            snapshot_hashes,
+        })))
+        .unwrap();
+        drop(tx);
+
+        // Delta has "a" again, but with a NEW embedding and a NEW content_hash —
+        // i.e. the file was re-embedded between the snapshot and the swap.
+        // The fresh vector points along axis 1, distinct from the snapshot's
+        // axis-0 vector, so we can tell them apart by search.
+        let fresh_embedding = cqs::Embedding::new(vec![0.0, 1.0, 0.0, 0.0]);
+
+        let mut state = test_watch_state();
+        state.pending_rebuild = Some(PendingRebuild {
+            rx,
+            delta: vec![(
+                "a".to_string(),
+                fresh_embedding.clone(),
+                "h_v2".to_string(), // hash differs from snapshot's "h_v1"
+            )],
+            started_at: std::time::Instant::now(),
+            handle: None,
+            delta_saturated: false,
+        });
+
+        let fix = drain_test_fixture(dim);
+        let cfg = test_watch_config(
+            fix.tmp.path(),
+            fix.tmp.path(),
+            &fix.notes_path,
+            &fix.supported_ext,
+        );
+
+        drain_pending_rebuild(&cfg, &fix.store, &mut state);
+
+        let idx = state.hnsw_index.expect("rebuild was swapped in");
+        // The fresh vector was REPLAYED — index now contains 3 nodes
+        // (snapshot's "a" + "z" + replayed "a"). hnsw_rs has no deletion,
+        // so both vectors for "a" coexist as duplicate-id orphans; that's
+        // the same trade-off as the fast-incremental path. Search
+        // post-filters via SQLite in production, which collapses the
+        // duplicates into one logical hit.
+        assert_eq!(
+            idx.len(),
+            3,
+            "fresh re-embedding must be replayed (snapshot 2 + 1 replay)"
+        );
+
+        // Crucial assertion: searching by the FRESH embedding returns id "a".
+        // Pre-fix, the replay was skipped, so the only "a" in the index was
+        // the snapshot's axis-0 vector, and querying the axis-1 fresh vector
+        // would surface "z" or "a" with poor cosine. After the fix, the
+        // axis-1 vector is in the index under "a" with cosine ≈ 1.0.
+        let hits = idx.search(&fresh_embedding, 1);
+        assert!(!hits.is_empty(), "search must return at least one hit");
+        let top = &hits[0];
+        assert_eq!(
+            top.id, "a",
+            "top hit for fresh embedding must be the re-embedded chunk \"a\""
+        );
+        assert!(
+            top.score > 0.99,
+            "top hit cosine must be near 1.0 (fresh vector is in the index); got {}",
+            top.score
+        );
+
+        assert!(state.pending_rebuild.is_none());
+    }
+
     #[test]
     fn drain_pending_rebuild_dedups_against_known_ids() {
-        // The rebuild thread already includes c0..c2 in its snapshot. Replaying
-        // those same ids would double-insert (hnsw_rs has no dedup) — drain
-        // must filter them against `new_index.ids()` first.
+        // P1.17 / #1124: dedup is now (id, content_hash)-aware, not id-only.
+        // The rebuild thread snapshotted c0/c1/c2 with hashes h0/h1/h2.
+        // Delta replays c0 with the SAME hash h0 (true duplicate — must be
+        // skipped), c1 with the same hash h1 (skipped), and c_new with a
+        // brand-new id (must replay). c0/c1 with matching hashes would
+        // double-insert under the pre-fix code; the new dedup uses the
+        // snapshot hashes the rebuild produced.
         let dim = 4;
         let new_idx = synthetic_owned_index(3, dim); // ids: c0, c1, c2
 
+        let mut snapshot_hashes = std::collections::HashMap::new();
+        snapshot_hashes.insert("c0".to_string(), "h0".to_string());
+        snapshot_hashes.insert("c1".to_string(), "h1".to_string());
+        snapshot_hashes.insert("c2".to_string(), "h2".to_string());
+
         let (tx, rx) = std::sync::mpsc::channel();
-        tx.send(Ok(Some(new_idx))).unwrap();
+        tx.send(Ok(Some(RebuildResult {
+            index: new_idx,
+            snapshot_hashes,
+        })))
+        .unwrap();
         drop(tx);
 
         let mut state = test_watch_state();
         state.pending_rebuild = Some(PendingRebuild {
             rx,
             delta: vec![
-                ("c0".to_string(), cqs::Embedding::new(vec![9.0; dim])),
-                ("c1".to_string(), cqs::Embedding::new(vec![9.0; dim])),
-                ("c_new".to_string(), cqs::Embedding::new(vec![9.0; dim])),
+                // Same id + same hash → genuine duplicate, skip.
+                (
+                    "c0".to_string(),
+                    cqs::Embedding::new(vec![9.0; dim]),
+                    "h0".to_string(),
+                ),
+                (
+                    "c1".to_string(),
+                    cqs::Embedding::new(vec![9.0; dim]),
+                    "h1".to_string(),
+                ),
+                // Brand-new id → snapshot didn't see it, must replay.
+                (
+                    "c_new".to_string(),
+                    cqs::Embedding::new(vec![9.0; dim]),
+                    "h_new".to_string(),
+                ),
             ],
             started_at: std::time::Instant::now(),
             handle: None,
@@ -4298,7 +4485,7 @@ mod tests {
         assert_eq!(
             idx.len(),
             4,
-            "3 from new_idx + 1 genuinely-new delta entry — duplicates skipped"
+            "3 from new_idx + 1 genuinely-new delta entry — same-hash duplicates skipped"
         );
         assert!(idx.ids().iter().any(|id| id == "c_new"));
     }

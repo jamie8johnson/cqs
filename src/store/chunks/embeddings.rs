@@ -74,14 +74,23 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// Get (chunk_id, embedding) pairs for chunks with matching content hashes.
-    /// Unlike `get_embeddings_by_hashes` (which keys by content_hash), this returns
-    /// the chunk ID alongside the embedding — exactly what HNSW `insert_batch` needs.
-    /// Batches queries in groups of 500 to stay within SQLite's parameter limit (~999).
+    /// Get `(chunk_id, embedding, content_hash)` triples for chunks with
+    /// matching content hashes.
+    ///
+    /// Unlike `get_embeddings_by_hashes` (which keys by content_hash), this
+    /// returns the chunk ID alongside the embedding — exactly what HNSW
+    /// `insert_batch` needs. The `content_hash` is also returned so callers
+    /// (e.g. the watch reindex path that pushes into `pending.delta`) can
+    /// pair each fresh embedding with the hash it was generated from
+    /// (#1124). The hash is read from the same row, so it's consistent
+    /// with the embedding bytes returned.
+    ///
+    /// Batches queries in groups of 500 to stay within SQLite's parameter
+    /// limit (~999).
     pub fn get_chunk_ids_and_embeddings_by_hashes(
         &self,
         hashes: &[&str],
-    ) -> Result<Vec<(String, Embedding)>, StoreError> {
+    ) -> Result<Vec<(String, Embedding, String)>, StoreError> {
         let _span = tracing::debug_span!(
             "get_chunk_ids_and_embeddings_by_hashes",
             count = hashes.len()
@@ -99,7 +108,7 @@ impl<Mode> Store<Mode> {
             for batch in hashes.chunks(BATCH_SIZE) {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 let sql = format!(
-                    "SELECT id, embedding FROM chunks WHERE content_hash IN ({})",
+                    "SELECT id, embedding, content_hash FROM chunks WHERE content_hash IN ({})",
                     placeholders
                 );
 
@@ -114,6 +123,7 @@ impl<Mode> Store<Mode> {
                 for row in rows {
                     let id: String = row.get(0);
                     let bytes: Vec<u8> = row.get(1);
+                    let hash: String = row.get(2);
                     match bytes_to_embedding(&bytes, dim) {
                         // TC-ADV-1: same finiteness guard as
                         // `get_embeddings_by_hashes`. NaN/Inf values would
@@ -122,7 +132,7 @@ impl<Mode> Store<Mode> {
                         // warn instead.
                         Ok(embedding) => match Embedding::try_new(embedding) {
                             Ok(e) => {
-                                result.push((id, e));
+                                result.push((id, e, hash));
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -302,17 +312,23 @@ mod tests {
             .unwrap();
 
         // Good chunk present, bad chunk absent.
-        let ids: Vec<&str> = result.iter().map(|(id, _)| id.as_str()).collect();
+        let ids: Vec<&str> = result.iter().map(|(id, _, _)| id.as_str()).collect();
         assert!(ids.contains(&good.id.as_str()), "good id missing: {ids:?}");
         assert!(
             !ids.contains(&bad_id.as_str()),
             "NaN-containing chunk id must be filtered out: {ids:?}"
         );
-        // All returned embeddings are finite.
-        for (id, emb) in &result {
+        // All returned embeddings are finite, and content_hash threaded
+        // through is the chunk's stored hash (paired with the same row).
+        for (id, emb, hash) in &result {
             assert!(
                 emb.as_slice().iter().all(|v| v.is_finite()),
                 "embedding for id={id} must be finite"
+            );
+            assert_eq!(
+                hash.len(),
+                64,
+                "content_hash for id={id} must be a 64-char hex string"
             );
         }
     }
@@ -345,8 +361,10 @@ mod tests {
         assert_eq!(result.len(), 3, "Should return all 3 inserted chunks");
 
         // Build a lookup by chunk id for order-independent assertions
-        let by_id: std::collections::HashMap<&str, &Embedding> =
-            result.iter().map(|(id, emb)| (id.as_str(), emb)).collect();
+        let by_id: std::collections::HashMap<&str, (&Embedding, &str)> = result
+            .iter()
+            .map(|(id, emb, hash)| (id.as_str(), (emb, hash.as_str())))
+            .collect();
 
         assert!(by_id.contains_key(chunk1.id.as_str()));
         assert!(by_id.contains_key(chunk2.id.as_str()));
@@ -354,16 +372,22 @@ mod tests {
 
         // Verify embeddings match (cosine similarity ~1.0 with themselves)
         let cos1 =
-            crate::math::cosine_similarity(by_id[chunk1.id.as_str()].as_slice(), emb1.as_slice())
+            crate::math::cosine_similarity(by_id[chunk1.id.as_str()].0.as_slice(), emb1.as_slice())
                 .unwrap();
         let cos2 =
-            crate::math::cosine_similarity(by_id[chunk2.id.as_str()].as_slice(), emb2.as_slice())
+            crate::math::cosine_similarity(by_id[chunk2.id.as_str()].0.as_slice(), emb2.as_slice())
                 .unwrap();
         let cos3 =
-            crate::math::cosine_similarity(by_id[chunk3.id.as_str()].as_slice(), emb3.as_slice())
+            crate::math::cosine_similarity(by_id[chunk3.id.as_str()].0.as_slice(), emb3.as_slice())
                 .unwrap();
         assert!(cos1 > 0.99, "emb1 round-trip similarity: {cos1}");
         assert!(cos2 > 0.99, "emb2 round-trip similarity: {cos2}");
         assert!(cos3 > 0.99, "emb3 round-trip similarity: {cos3}");
+
+        // Each row's content_hash is paired with its own chunk's hash
+        // (single SQL pass — no cross-row mixing).
+        assert_eq!(by_id[chunk1.id.as_str()].1, chunk1.content_hash);
+        assert_eq!(by_id[chunk2.id.as_str()].1, chunk2.content_hash);
+        assert_eq!(by_id[chunk3.id.as_str()].1, chunk3.content_hash);
     }
 }
