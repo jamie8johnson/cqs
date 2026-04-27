@@ -2,26 +2,28 @@
 
 ## Right Now
 
-**v1.30.0 released 2026-04-25.** Tag pushed (`68bfaca5`), GitHub release workflow building binaries, `cqs 1.30.0` published to crates.io, local `~/.cargo/bin/cqs` rebuilt and `cqs-watch` daemon restarted. Today's session (2026-04-25) closed out the remaining v1.29.0 audit umbrella (#1095), shipped #956 Phase A scaffolding, landed cache+slots (#1105) + fixture refresh (#1109) + nomic-coderank preset (#1110), and cut the v1.30.0 release.
+**v1.30.0 released 2026-04-25.** Post-release polish has continued landing on main; today's session (2026-04-27) cleared an 8-PR cleanup batch.
 
-**This session's merged PRs** (newest first):
+**Landed since v1.30.0 release:**
+- **#1146** — `fix(daemon): #1127 — short-hold mutex via BatchView snapshot dispatch`. Daemon BatchContext mutex now held only across `checkout_view_from_arc` (microseconds); handlers run outside the lock against a `BatchView`. Two slow queries (gather + task) now overlap on wall-clock instead of serializing.
+- **#1147** — `refactor(watch): split watch.rs into watch/ module`. 5,711-line `cli/watch.rs` carved into 10 submodules: `mod.rs` (1,206 lines) + `socket` / `runtime` / `rebuild` / `gc` / `events` / `reindex` / `daemon` / `tests` / `adversarial_socket_tests`. Agent-readable file sizes; CONTRIBUTING.md Architecture Overview updated.
+- **#1148** + **#1154** — roadmap docs: queue USearch + SIMD brute-force as IndexBackend candidates; queue 5 watch-mode improvements (adaptive debounce / `cqs status --watch` / whitespace-canonical hash / parallel reindex across slots / kill periodic rebuild).
+- **#1149-#1153** — 5 dependabot bumps merged today: `lru` 0.17→0.18, `blake3` 1.8.4→1.8.5, `rayon` 1.11→1.12, `tokenizers` 0.22.2→0.23.1, `assert_cmd` 2.2.0→2.2.1.
+- **#1155** — raise `open-pull-requests-limit` from 5 to 10 in `.github/dependabot.yml`. Today's batch hit the cap exactly; raising gives 2× headroom while preserving per-dep granularity (preference: no grouping).
 
-| PR | Closes | Title |
-|---|---|---|
-| **#1120** | — *(Phase A only)* | `refactor(embedder): ExecutionProvider feature split — Phase A (#956)` — `gpu-index` → `cuda-index` rename + alias, `ep-coreml`/`ep-rocm` cargo features, cfg-gated enum variants, per-backend probe blocks. CUDA path byte-identical. Phase B (CoreML/macOS runner) + Phase C (ROCm/AMD) deferred. |
-| **#1119** | #1115 #1116 | `perf: v1.29.0 audit micro-fixes` — `forward_bfs_multi` for `suggest_tests` (`O(callers × graph)` → `O(tests + edges)`); thread-local scratch buffer in daemon socket handler |
-| **#1118** | #1096 (SEC-7) | `fix(serve): per-launch auth token` — 256-bit URL-safe base64 token, constant-time compare, three credential surfaces (Bearer / cookie / `?token=`), HttpOnly+SameSite=Strict cookie handoff |
-| **#1117** | #1047 | `fix(language): macro-generated ChunkType::human_name` — exhaustive `define_chunk_types!` macro removes catch-all that silently fell through for new variants |
-| #1114 | #1097 (EX-1) | `refactor: single-registration command registry` — collapses 5+ exhaustive matches into one `for_each_command!` table |
-| #1113 | #1090 | `fix(watch): non-blocking HNSW rebuilds` |
-| #1112 | #1042 #1049 #1091 #1107 #1108 | `fix: 5-issue batch` — clears most of the v1.29.0 audit P4 backlog |
-| #1111 | — | `chore(tears+roadmap): post-#1105 / cache+slots / embedder A/B state` |
-| #1110 | — | `feat(embedder): add nomic-coderank preset (CodeRankEmbed-137M)` |
-| #1109 | — | `chore(evals): refresh v3.v2 fixture line_starts` |
+**Up next — v1.30.0 audit P2 scoring cluster.** Three eval-relevant enhancement issues from the v1.30.0 audit:
 
-**Outstanding issues**: down to 9 open (was 19 yesterday). Two tier-2 (#956 EP-decouple — Phase A landed, B/C still open; #916 mmap SPLADE), one cosmetic (#1102 LLM provider log string), three Windows-specific tier-3 (#1043 #1044 — both need Windows test env), three external-blocked tier-3 (#717 hnsw_rs lib swap, #255 pre-built indexes infra, #106 ort 2.0 stable). See ROADMAP.md "Open Issues".
+- **#1132** (P2.90: `ScoringOverrides` knob touches 4 sites; needs shared resolver) — eval-neutral. Do first.
+- **#1131** (P2.89: Vector index backend selection is hand-coded; needs `IndexBackend` trait) — eval-neutral. Lands the trait scaffolding for USearch + SIMD brute-force later.
+- **#1130** (P2.88: Adding third score signal requires touching two fusion paths) — eval-required A/B; blocked by #1132 + #1131.
 
-### Today's session (2026-04-25) — what landed
+Plan order: #1132 → #1131 → #1130. The first two cleanly factor without changing retrieval behavior; the third becomes a localized RRF/scoring change once the foundation lands.
+
+After P2: #1133 (P2.91 NoteEntry taxonomy), four P3 ergonomics issues (#1137-#1140), three P4 auth/serve bugs (#1134-#1136), or the queued roadmap items (USearch / SIMD brute-force / watch-mode improvements).
+
+**Local state:** working tree clean post-#1155 merge. Binary at `cqs 1.30.0` with all 5 dep bumps installed (`~/.cargo/bin/cqs`). Index refreshed to 18,760 chunks. `cqs-watch` daemon running on the new binary.
+
+### v1.30.0 release session (2026-04-25) — what landed
 
 **Merged (this session):**
 - **#1103 — `chore(tears): post-#1101 / #1100 session state`**. Updated PROJECT_CONTINUITY for the v1.29.1/cache+slots state.
@@ -116,13 +118,14 @@ Things clippy 1.95 caught when running with `-D warnings`:
 
 ### Architecture state
 
-- **Version:** v1.29.0 (crates.io published 2026-04-23 22:58 UTC; GitHub Release workflow #24863038721 building binaries; tag `v1.29.0` at commit `21b5f6e6`)
-- **Local binary:** `~/.cargo/bin/cqs` at 1.29.0; daemon restarted post-install
-- **Index:** 15,488 chunks across 598 files, **schema v22** (umap_x/umap_y columns, opt-in via `cqs index --umap`)
-- **Tests:** ~2963 pass + 51 ignored locally without `gpu-index` (matches CI invocation). Library + integration suite all in regular CI in ~2 min added (was ~130 min nightly cron)
-- **Production R@5 on v3.v2 test:** 68.8% (from v1.28.3 baseline; no retrieval changes in v1.29.0)
-- **cqs-watch daemon:** running v1.29.0 release binary; CUDA context warm in P2 (~2-3 GB VRAM, expected idle floor with model resident)
-- **`cqs serve`:** 4 views available — `2d` / `3d` / `hierarchy` / `cluster`. Run `cqs index --umap` first to populate the cluster view's coords.
+- **Version:** v1.30.0 (crates.io published 2026-04-25; tag `v1.30.0` at commit `68bfaca5`)
+- **Local binary:** `~/.cargo/bin/cqs` at 1.30.0 with today's 5 dep bumps; `cqs-watch` daemon restarted post-install
+- **Index:** 18,760 chunks, **schema v22** (umap_x/umap_y columns, opt-in via `cqs index --umap`)
+- **Tests:** ~3001 pass + 51 ignored locally with `cuda-index` (post-#1105 + cache+slots additions). Full suite in CI in ~2 min added per PR
+- **Production R@5 on v3.v2 (refreshed 2026-04-25):** test 63.3% / dev 74.3% with default BGE-large; CodeRankEmbed opt-in preset gets test 67.0% / dev 69.7% (R@1 wins, R@20 loses)
+- **cqs-watch daemon:** running v1.30.0 release binary; daemon mutex now short-hold (post-#1146); BatchView snapshot dispatch lets concurrent slow queries overlap
+- **`cqs serve`:** 4 views — `2d` / `3d` / `hierarchy` / `cluster`. Run `cqs index --umap` first to populate the cluster view's coords.
+- **Watch module structure (post-#1147):** `src/cli/watch/{mod,socket,runtime,rebuild,gc,events,reindex,daemon,tests,adversarial_socket_tests}.rs` — `mod.rs` is orchestration (1,206 lines), submodules carry the I/O / lifecycle / per-event plumbing.
 
 ### Roadmap parked (highest-value)
 
@@ -183,17 +186,33 @@ None. Working tree clean post-release.
 
 3.7-5.5pp gap between canonical and refreshed-current is real corpus-drift attrition (5,413 new chunks since 2026-04-20, ~30% of corpus). Not a search regression. The v3.v2 fixture is the canonical eval slate; v4 fixtures (1526/split, 14× v3 N) exist for any future A/B that needs tighter noise floors. Long-term inoculation against fixture drift would be relaxing eval gold-match to `(file, name, chunk_type)` only — out of scope for this round.
 
-## Open issues (9 open)
+## Open issues (16 open)
+
+**v1.30.0 audit cluster (P2/P3/P4 — filed post-release):**
+
+| # | Title | Bucket |
+|---|---|---|
+| 1140 | EX-V1.30-4: Embedder preset extras map (deferred-friendly) | P3 ergonomics |
+| 1139 | EX-V1.30-3: structural_matchers shared library | P3 ergonomics |
+| 1138 | EX-V1.30-2: LlmProvider resolver via registry slice | P3 ergonomics |
+| 1137 | EX-V1.30-1: Lift BatchCmd::is_pipeable into the registry | P3 ergonomics |
+| 1136 | P4.3: Auth state ignored by quiet=true — Option<AuthToken> permits silent no-auth | P4 auth bug |
+| 1135 | P4.2: cookie Path=/ on 127.0.0.1 — multiple cqs serve stomp on same host | P4 auth bug |
+| 1134 | P4.1: AuthToken::from_string alphabet invariant relies on docstring | P4 auth bug |
+| 1133 | P2.91: NoteEntry has no kind/tag taxonomy — only sentiment | P2 enhancement |
+| **1132** | **P2.90: ScoringOverrides knob touches 4 sites; needs shared resolver** | **P2 — next up (eval-neutral)** |
+| **1131** | **P2.89: Vector index backend selection is hand-coded; needs IndexBackend trait** | **P2 — next up (eval-neutral)** |
+| **1130** | **P2.88: Adding third score signal requires touching two fusion paths** | **P2 — next up (eval A/B)** |
+
+**Pre-v1.30.0 backlog (still open):**
 
 | # | Title | Tier | Status |
 |---|---|---|---|
-| 1102 | llm: batch.rs log says "Claude API" regardless of provider | cosmetic | open — small wording fix |
 | 1044 | Windows `cqs watch` can't stop cleanly — DB corruption risk | tier-3, bug | needs Windows test env |
 | 1043 | `is_slow_mmap_fs` ignores Windows network drives | tier-3, perf | needs Windows test env |
-| 956 | ExecutionProvider — decouple gpu-index from CUDA | tier-2, refactor | **PR #1120 in flight (Phase A scaffolding); Phase B/C blocked on macOS / AMD hardware** |
 | 916 | mmap SPLADE index (PF-11) | tier-2, perf | smaller win than originally claimed |
 | 717 | HNSW fully in RAM, no mmap (RM-40) | tier-3, perf | hnsw_rs lib limitation; would need lib swap |
 | 255 | Pre-built reference packages (downloadable indexes) | tier-3, infra | needs signing/registry design |
 | 106 | ort dependency is pre-release RC | tier-3, dep | blocked upstream (pykeio) |
 
-**Closed this session (2026-04-25 batch):** #1042, #1047, #1048, #1049, #1090, #1091, #1095 (umbrella, split + closed), #1096, #1097, #1104, #1107, #1108, #1115, #1116. #1115/#1116 were filed and closed in the same session (split from #1095, fixed in #1119).
+**Closed in v1.29.x → v1.30.0 release window:** #1042, #1047, #1048, #1049, #1090, #1091, #1095 (umbrella, split + closed), #1096, #1097, #1102, #1104, #1107, #1108, #1115, #1116, #956 Phase A scaffolding (Phase B/C still open as the umbrella). #1127 closed by #1146 today.
