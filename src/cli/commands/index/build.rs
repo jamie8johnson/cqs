@@ -870,18 +870,28 @@ fn hnsw_batch_size() -> usize {
 /// Notes are excluded from HNSW — they use brute-force search from SQLite
 /// so that notes are immediately searchable without rebuild.
 pub(crate) fn build_hnsw_index(store: &Store, cqs_dir: &Path) -> Result<Option<usize>> {
-    Ok(build_hnsw_index_owned(store, cqs_dir)?.map(|h| h.len()))
+    Ok(build_hnsw_index_owned(store, cqs_dir)?.map(|(h, _)| h.len()))
 }
 
-/// Build HNSW index and return the Owned index for continued incremental use.
+/// Build HNSW index and return the Owned index plus a per-id `content_hash`
+/// snapshot for continued incremental use.
 ///
 /// Builds from all chunk embeddings in the store, saves to disk, and returns
-/// the `HnswIndex` (Owned variant). Used by watch mode to keep a mutable index
-/// in memory for `insert_batch` calls on subsequent file changes.
+/// `(HnswIndex, snapshot_hashes)` where `snapshot_hashes[id]` is the
+/// `content_hash` the embedding was generated from. Used by watch mode to
+/// keep a mutable index in memory for `insert_batch` calls and (on the
+/// background-rebuild path, #1124) to detect entries that were re-embedded
+/// mid-rebuild — the swap-time drain replays them with the fresh vector
+/// instead of dedup'ing them by id-only and silently dropping the update.
+///
+/// Both the embeddings and the hashes come from a single SQL pass via
+/// [`Store::embedding_and_hash_batches`] so they're consistent under
+/// concurrent writers (WAL snapshot isolation only holds within a
+/// transaction).
 pub(crate) fn build_hnsw_index_owned<M>(
     store: &cqs::store::Store<M>,
     cqs_dir: &Path,
-) -> Result<Option<HnswIndex>> {
+) -> Result<Option<(HnswIndex, std::collections::HashMap<String, String>)>> {
     let chunk_count = store.chunk_count().context("Failed to read chunk count")? as usize;
     let _span = tracing::info_span!("build_hnsw_index_owned", chunk_count).entered();
 
@@ -891,12 +901,27 @@ pub(crate) fn build_hnsw_index_owned<M>(
 
     let batch_size = hnsw_batch_size();
 
-    let chunk_batches = store.embedding_batches(batch_size);
+    // Tee the (id, embedding, hash) stream: HNSW build consumes
+    // (id, embedding) pairs while we accumulate (id, hash) into a side map.
+    // Single SQL pass — no second query, no risk of the hash drifting from
+    // the embedding under concurrent writers.
+    let mut snapshot_hashes: std::collections::HashMap<String, String> =
+        std::collections::HashMap::with_capacity(chunk_count);
+    let chunk_batches = store.embedding_and_hash_batches(batch_size).map(|batch| {
+        batch.map(|triples| {
+            let mut pairs = Vec::with_capacity(triples.len());
+            for (id, emb, hash) in triples {
+                snapshot_hashes.insert(id.clone(), hash);
+                pairs.push((id, emb));
+            }
+            pairs
+        })
+    });
 
     let hnsw = HnswIndex::build_batched_with_dim(chunk_batches, chunk_count, store.dim())?;
     hnsw.save(cqs_dir, "index")?;
 
-    Ok(Some(hnsw))
+    Ok(Some((hnsw, snapshot_hashes)))
 }
 
 /// Build the Phase 5 base HNSW index from `embedding_base` and save as
@@ -1022,10 +1047,24 @@ mod tests {
         let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
 
-        let idx = build_hnsw_index_owned(&store, &cqs_dir)
+        let (idx, snapshot_hashes) = build_hnsw_index_owned(&store, &cqs_dir)
             .expect("build_hnsw_index_owned must succeed")
             .expect("non-empty store must produce an index");
         assert_eq!(idx.len(), n, "index len must equal seeded chunk count");
+        // P1.17 (#1124): snapshot must carry one (id, content_hash) entry
+        // per built vector so the rebuild-window drain can detect stale
+        // entries.
+        assert_eq!(
+            snapshot_hashes.len(),
+            n,
+            "snapshot_hashes must contain one entry per chunk"
+        );
+        for id in idx.ids() {
+            assert!(
+                snapshot_hashes.contains_key(id),
+                "snapshot_hashes missing id {id}"
+            );
+        }
         // The hnsw save side-effect should land at `<cqs_dir>/index.hnsw.*`.
         // We can't easily round-trip-load without exposing private save
         // path constants, so just verify the in-memory state is correct.

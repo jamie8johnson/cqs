@@ -186,6 +186,36 @@ impl<Mode> Store<Mode> {
         }
     }
 
+    /// Stream `(id, embedding, content_hash)` triples in batches.
+    ///
+    /// Same cursor-paginated single-pass shape as [`Store::embedding_batches`],
+    /// but each row also carries the chunk's `content_hash`. This is the
+    /// snapshot path used by the background HNSW rebuild thread (see #1124):
+    /// the rebuild needs both the vector (to feed HNSW build) and the hash
+    /// it was built from (so the swap-time drain can detect entries that
+    /// were re-embedded mid-rebuild and replay the fresh vector instead of
+    /// dropping it as a "duplicate id").
+    ///
+    /// Single SQL pass — `embedding` and `content_hash` come from the same
+    /// row read so they're consistent under concurrent writers (WAL snapshot
+    /// isolation only holds within a transaction).
+    ///
+    /// Sync-only: internally uses `block_on`. Call from the same context as
+    /// [`Store::embedding_batches`].
+    pub fn embedding_and_hash_batches(
+        &self,
+        batch_size: usize,
+    ) -> impl Iterator<Item = Result<Vec<(String, Embedding, String)>, StoreError>> + '_ {
+        let _span =
+            tracing::debug_span!("embedding_and_hash_batches", batch_size = batch_size).entered();
+        EmbeddingHashBatchIterator {
+            store: self,
+            batch_size,
+            last_rowid: 0,
+            done: false,
+        }
+    }
+
     /// Stream `embedding_base` rows in batches for the Phase 5 dual HNSW build.
     ///
     /// Rows with NULL `embedding_base` are skipped — that happens after the
@@ -558,6 +588,89 @@ impl<'a, Mode> Iterator for EmbeddingBatchIterator<'a, Mode> {
 // This is guaranteed by the check at the start of `next()`.
 impl<'a, Mode> std::iter::FusedIterator for EmbeddingBatchIterator<'a, Mode> {}
 
+/// Iterator for streaming `(id, embedding, content_hash)` triples.
+///
+/// Mirrors [`EmbeddingBatchIterator`]'s cursor pagination but reads the
+/// `content_hash` column in the same SQL pass so the hash is consistent
+/// with the embedding bytes the snapshot returned (#1124). Used only for
+/// the background-rebuild snapshot path; the regular `embedding` column
+/// (no hash) flows through [`EmbeddingBatchIterator`].
+struct EmbeddingHashBatchIterator<'a, Mode> {
+    store: &'a Store<Mode>,
+    batch_size: usize,
+    last_rowid: i64,
+    done: bool,
+}
+
+impl<'a, Mode> Iterator for EmbeddingHashBatchIterator<'a, Mode> {
+    type Item = Result<Vec<(String, Embedding, String)>, StoreError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.done {
+                return None;
+            }
+
+            let result = self.store.rt.block_on(async {
+                let sql = "SELECT rowid, id, embedding, content_hash FROM chunks \
+                           WHERE rowid > ?1 AND embedding IS NOT NULL \
+                           ORDER BY rowid ASC LIMIT ?2";
+                let rows: Vec<_> = sqlx::query(sql)
+                    .bind(self.last_rowid)
+                    .bind(self.batch_size as i64)
+                    .fetch_all(&self.store.pool)
+                    .await?;
+
+                let rows_fetched = rows.len();
+                let mut max_rowid = self.last_rowid;
+
+                let batch: Vec<(String, Embedding, String)> = rows
+                    .into_iter()
+                    .filter_map(|row| {
+                        let rowid: i64 = row.get(0);
+                        let id: String = row.get(1);
+                        let bytes: Vec<u8> = row.get(2);
+                        let hash: String = row.get(3);
+                        if rowid > max_rowid {
+                            max_rowid = rowid;
+                        }
+                        match bytes_to_embedding(&bytes, self.store.dim) {
+                            Ok(emb) => Some((id, Embedding::new(emb), hash)),
+                            Err(e) => {
+                                tracing::warn!(chunk_id = %id, error = %e, "Skipping corrupt embedding in hash-batch iterator");
+                                None
+                            }
+                        }
+                    })
+                    .collect();
+
+                Ok::<_, StoreError>((batch, rows_fetched, max_rowid))
+            });
+
+            match result {
+                Ok((batch, rows_fetched, _)) if batch.is_empty() && rows_fetched == 0 => {
+                    self.done = true;
+                    return None;
+                }
+                Ok((batch, _, max_rowid)) => {
+                    self.last_rowid = max_rowid;
+                    if batch.is_empty() {
+                        continue;
+                    } else {
+                        return Some(Ok(batch));
+                    }
+                }
+                Err(e) => {
+                    self.done = true;
+                    return Some(Err(e));
+                }
+            }
+        }
+    }
+}
+
+impl<'a, Mode> std::iter::FusedIterator for EmbeddingHashBatchIterator<'a, Mode> {}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_utils::make_chunk;
@@ -609,6 +722,48 @@ mod tests {
     fn test_embedding_batches_empty_store() {
         let (store, _dir) = setup_store();
         let batches: Vec<_> = store.embedding_batches(10).collect();
+        assert!(batches.is_empty());
+    }
+
+    /// P1.17 / #1124: `embedding_and_hash_batches` must yield each chunk's
+    /// `(id, embedding, content_hash)` together from a single SQL pass —
+    /// the rebuild snapshot relies on hash↔embedding consistency.
+    #[test]
+    fn test_embedding_and_hash_batches_pairs_id_and_hash_per_row() {
+        let (store, _dir) = setup_store();
+
+        let chunks: Vec<_> = (0..6)
+            .map(|i| make_chunk(&format!("fn_{}", i), &format!("src/{}.rs", i)))
+            .collect();
+        let expected_hashes: std::collections::HashMap<String, String> = chunks
+            .iter()
+            .map(|c| (c.id.clone(), c.content_hash.clone()))
+            .collect();
+        let pairs: Vec<_> = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.clone(), mock_embedding(i as f32)))
+            .collect();
+        store.upsert_chunks_batch(&pairs, Some(100)).unwrap();
+
+        let triples: Vec<_> = store
+            .embedding_and_hash_batches(4)
+            .filter_map(|b| b.ok())
+            .flatten()
+            .collect();
+        assert_eq!(triples.len(), 6);
+        for (id, _emb, hash) in &triples {
+            let want = expected_hashes
+                .get(id)
+                .unwrap_or_else(|| panic!("unexpected id from iterator: {id}"));
+            assert_eq!(hash, want, "hash for id {id} must match upsert hash");
+        }
+    }
+
+    #[test]
+    fn test_embedding_and_hash_batches_empty_store() {
+        let (store, _dir) = setup_store();
+        let batches: Vec<_> = store.embedding_and_hash_batches(10).collect();
         assert!(batches.is_empty());
     }
 
