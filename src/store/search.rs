@@ -1,37 +1,28 @@
 //! Search methods for the Store (FTS, name search, RRF fusion).
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use super::helpers::{self, ChunkRow, SearchResult};
 use super::{sanitize_fts_query, ChunkSummary, Store, StoreError};
 use crate::nl::normalize_for_fts;
-
-/// Config-level override for RRF K, set by CLI before first search.
-static RRF_K_CONFIG_OVERRIDE: OnceLock<f32> = OnceLock::new();
+use crate::search::scoring::knob;
 
 /// Set the RRF K override from a `ScoringOverrides` config.
-/// Must be called before the first search; subsequent calls are no-ops (OnceLock).
+/// Must be called before the first search; subsequent calls are no-ops
+/// (delegates to [`knob::set_overrides_from_config`], which is OnceLock).
 pub fn set_rrf_k_from_config(overrides: &crate::config::ScoringOverrides) {
     if let Some(k) = overrides.rrf_k {
-        let _ = RRF_K_CONFIG_OVERRIDE.set(k);
+        let mut map = HashMap::new();
+        map.insert("rrf_k".to_string(), k);
+        knob::set_overrides_from_config(&map);
     }
 }
 
-/// PF-2: RRF constant K, cached on first access. Defaults to 60.0.
-/// Priority: config override > `CQS_RRF_K` env var > default 60.0.
+/// PF-2: RRF constant K. Resolved via the shared knob table — see
+/// `src/search/scoring/knob.rs` for the resolution order
+/// (config → `CQS_RRF_K` env → default 60.0).
 fn rrf_k() -> f32 {
-    static K: OnceLock<f32> = OnceLock::new();
-    *K.get_or_init(|| {
-        // EXT-5: Config override takes precedence over env var
-        if let Some(&k) = RRF_K_CONFIG_OVERRIDE.get() {
-            return k;
-        }
-        std::env::var("CQS_RRF_K")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(60.0)
-    })
+    knob::resolve_knob("rrf_k")
 }
 
 impl<Mode> Store<Mode> {
