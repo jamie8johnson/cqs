@@ -7,15 +7,11 @@ use super::{sanitize_fts_query, ChunkSummary, Store, StoreError};
 use crate::nl::normalize_for_fts;
 use crate::search::scoring::knob;
 
-/// Set the RRF K override from a `ScoringOverrides` config.
+/// Push a `[scoring]` section's knob overrides into the shared resolver.
 /// Must be called before the first search; subsequent calls are no-ops
 /// (delegates to [`knob::set_overrides_from_config`], which is OnceLock).
 pub fn set_rrf_k_from_config(overrides: &crate::config::ScoringOverrides) {
-    if let Some(k) = overrides.rrf_k {
-        let mut map = HashMap::new();
-        map.insert("rrf_k".to_string(), k);
-        knob::set_overrides_from_config(&map);
-    }
+    knob::set_overrides_from_config(&overrides.knobs);
 }
 
 /// PF-2: RRF constant K. Resolved via the shared knob table — see

@@ -1251,15 +1251,13 @@ fn collect_config_summary(project_root: &Path, config: &cqs::config::Config) -> 
         });
     }
     if let Some(scoring) = &config.scoring {
+        // Surface every knob the user actually set, sorted by knob-table
+        // order so the output is stable regardless of HashMap iteration.
         let mut parts = Vec::new();
-        if let Some(v) = scoring.name_exact {
-            parts.push(format!("name_exact={}", v));
-        }
-        if let Some(v) = scoring.splade_alpha {
-            parts.push(format!("splade_alpha={}", v));
-        }
-        if let Some(v) = scoring.rrf_k {
-            parts.push(format!("rrf_k={}", v));
+        for knob in cqs::search::knob::SCORING_KNOBS.iter() {
+            if let Some(v) = scoring.get(knob.name) {
+                parts.push(format!("{}={}", knob.name, v));
+            }
         }
         if parts.is_empty() {
             parts.push("(present)".to_string());

@@ -48,6 +48,10 @@ pub struct ScoringKnob {
 
 /// All f32 scoring knobs. Adding a knob is one row here plus one
 /// `resolve_knob` call at the consumer site.
+///
+/// Bounds (`min`, `max`) are enforced both at config-load clamping
+/// (`Config::clamp_values`) and at resolve time (out-of-range env values
+/// fall back to `default`). Names match the TOML keys under `[scoring]`.
 pub static SCORING_KNOBS: &[ScoringKnob] = &[
     ScoringKnob {
         name: "rrf_k",
@@ -68,6 +72,82 @@ pub static SCORING_KNOBS: &[ScoringKnob] = &[
         min: 0.0001,
         max: 100.0,
         cache: false,
+    },
+    // Score-tier knobs (mirror the `ScoringConfig::DEFAULT` consts in
+    // `src/search/scoring/config.rs`). Consumed via
+    // `ScoringConfig::current()` — the override path now flows from
+    // `[scoring]` config → `resolve_knob` → live ScoringConfig snapshot.
+    ScoringKnob {
+        name: "name_exact",
+        env_var: None,
+        default: 1.0,
+        min: 0.0,
+        max: 2.0,
+        cache: true,
+    },
+    ScoringKnob {
+        name: "name_contains",
+        env_var: None,
+        default: 0.8,
+        min: 0.0,
+        max: 2.0,
+        cache: true,
+    },
+    ScoringKnob {
+        name: "name_contained_by",
+        env_var: None,
+        default: 0.6,
+        min: 0.0,
+        max: 2.0,
+        cache: true,
+    },
+    ScoringKnob {
+        name: "name_max_overlap",
+        env_var: None,
+        default: 0.5,
+        min: 0.0,
+        max: 2.0,
+        cache: true,
+    },
+    ScoringKnob {
+        name: "note_boost_factor",
+        env_var: None,
+        default: 0.15,
+        min: 0.0,
+        max: 1.0,
+        cache: true,
+    },
+    ScoringKnob {
+        name: "importance_test",
+        env_var: None,
+        default: 0.70,
+        min: 0.0,
+        max: 1.0,
+        cache: true,
+    },
+    ScoringKnob {
+        name: "importance_private",
+        env_var: None,
+        default: 0.80,
+        min: 0.0,
+        max: 1.0,
+        cache: true,
+    },
+    ScoringKnob {
+        name: "parent_boost_per_child",
+        env_var: None,
+        default: 0.05,
+        min: 0.0,
+        max: 0.5,
+        cache: true,
+    },
+    ScoringKnob {
+        name: "parent_boost_cap",
+        env_var: None,
+        default: 1.15,
+        min: 1.0,
+        max: 2.0,
+        cache: true,
     },
 ];
 
@@ -149,6 +229,13 @@ fn resolve_uncached(knob: &ScoringKnob) -> f32 {
 /// logged at WARN. Out-of-range values are clamped to `[min, max]`
 /// at resolve time, not here.
 pub fn set_overrides_from_config(overrides: &HashMap<String, f32>) {
+    let _ = CONFIG_OVERRIDES.set(build_override_map(overrides));
+}
+
+/// Pure helper extracted from [`set_overrides_from_config`] for unit
+/// testing without `OnceLock` pollution. Filters `overrides` down to
+/// known knob names and warns on unknown keys.
+fn build_override_map(overrides: &HashMap<String, f32>) -> HashMap<&'static str, f32> {
     let mut map: HashMap<&'static str, f32> = HashMap::new();
     for knob in SCORING_KNOBS.iter() {
         if let Some(&v) = overrides.get(knob.name) {
@@ -163,7 +250,7 @@ pub fn set_overrides_from_config(overrides: &HashMap<String, f32>) {
             );
         }
     }
-    let _ = CONFIG_OVERRIDES.set(map);
+    map
 }
 
 #[cfg(test)]
@@ -232,15 +319,26 @@ mod tests {
     }
 
     #[test]
-    fn set_overrides_warns_on_unknown_key_but_stores_known() {
-        // OnceLock can't be reset between tests, so this one only
-        // verifies `set_overrides_from_config` doesn't crash on a
-        // mixed map. We don't assert on the override behavior here
-        // because the static is shared with other test cases.
+    fn build_override_map_keeps_known_drops_unknown() {
+        // Pure function, no OnceLock side effects — safe to call
+        // freely from tests. `set_overrides_from_config` is tested
+        // indirectly via the config-load integration tests in
+        // `src/config.rs`.
         let mut map = HashMap::new();
         map.insert("rrf_k".to_string(), 99.0);
+        map.insert("name_exact".to_string(), 1.5);
         map.insert("nonexistent_knob".to_string(), 1.0);
-        // Just validates this doesn't panic.
-        set_overrides_from_config(&map);
+
+        let built = build_override_map(&map);
+        assert_eq!(built.get("rrf_k"), Some(&99.0));
+        assert_eq!(built.get("name_exact"), Some(&1.5));
+        assert!(!built.contains_key("nonexistent_knob"));
+    }
+
+    #[test]
+    fn build_override_map_empty_input_returns_empty() {
+        let empty = HashMap::new();
+        let built = build_override_map(&empty);
+        assert!(built.is_empty());
     }
 }

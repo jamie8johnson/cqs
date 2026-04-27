@@ -1,9 +1,20 @@
-//! Central scoring configuration constants.
+//! Central scoring configuration.
+//!
+//! `ScoringConfig` is the per-search snapshot of every score-tier knob
+//! (name match tiers, note boost factor, importance demotion weights,
+//! parent boost). The values come from
+//! [`crate::search::scoring::knob::resolve_knob`] — adding a new knob
+//! is one row in `SCORING_KNOBS`, not a field here.
+//!
+//! Consumers should call [`ScoringConfig::current`] to get the live
+//! snapshot (cached process-wide) and read fields off the result.
+//! `DEFAULT` is preserved as a const so tests and reference paths can
+//! anchor against the unchanged baseline values without going through
+//! the resolver.
 
-/// Central configuration for all search scoring constants.
-/// Consolidates name matching tiers, note boost factor, importance
-/// demotion weights, and parent boost parameters into one struct.
-/// Use `ScoringConfig::DEFAULT` everywhere — no scattered magic numbers.
+use std::sync::OnceLock;
+
+/// Per-search snapshot of score-tier knobs.
 pub(crate) struct ScoringConfig {
     pub name_exact: f32,
     pub name_contains: f32,
@@ -17,6 +28,12 @@ pub(crate) struct ScoringConfig {
 }
 
 impl ScoringConfig {
+    /// Baseline values. Mirrors the `default` column on each
+    /// score-tier row in
+    /// [`crate::search::scoring::knob::SCORING_KNOBS`]. Kept as a
+    /// const so test assertions and pre-resolver callers can anchor
+    /// against the unchanged defaults.
+    #[allow(dead_code)]
     pub const DEFAULT: Self = Self {
         name_exact: 1.0,
         name_contains: 0.8,
@@ -29,8 +46,28 @@ impl ScoringConfig {
         parent_boost_cap: 1.15,
     };
 
-    // CQ-7: `with_overrides` removed — was dead code (`#[allow(dead_code)]`).
-    // Scoring overrides from `[scoring]` in config are applied per-field where needed
-    // (e.g., `rrf_k` via `set_rrf_k_from_config`). If full config-driven scoring is
-    // added later, re-introduce this method with actual production callers.
+    /// Live snapshot of all score-tier knobs, resolved through
+    /// [`crate::search::scoring::knob::resolve_knob`]. Cached
+    /// process-wide on first call (every score-tier knob is
+    /// `cache: true` in `SCORING_KNOBS`).
+    ///
+    /// Returns `&'static Self` so callers can store the reference
+    /// across a search without copying the struct.
+    pub fn current() -> &'static Self {
+        static CURRENT: OnceLock<ScoringConfig> = OnceLock::new();
+        CURRENT.get_or_init(|| {
+            use super::knob::resolve_knob;
+            Self {
+                name_exact: resolve_knob("name_exact"),
+                name_contains: resolve_knob("name_contains"),
+                name_contained_by: resolve_knob("name_contained_by"),
+                name_max_overlap: resolve_knob("name_max_overlap"),
+                note_boost_factor: resolve_knob("note_boost_factor"),
+                importance_test: resolve_knob("importance_test"),
+                importance_private: resolve_knob("importance_private"),
+                parent_boost_per_child: resolve_knob("parent_boost_per_child"),
+                parent_boost_cap: resolve_knob("parent_boost_cap"),
+            }
+        })
+    }
 }

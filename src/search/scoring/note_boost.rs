@@ -12,7 +12,9 @@ use super::config::ScoringConfig;
 /// Checks if any note's mentions match the chunk's file path or name.
 /// When multiple notes match, takes the strongest absolute sentiment
 /// (preserving sign) to avoid averaging away strong signals.
-/// Returns a multiplier: `1.0 + sentiment * ScoringConfig::DEFAULT.note_boost_factor`
+/// Returns a multiplier: `1.0 + sentiment * note_boost_factor`,
+/// where `note_boost_factor` is resolved via the shared scoring-knob
+/// resolver (default 0.15; see [`crate::search::scoring::knob::SCORING_KNOBS`]).
 /// Production code uses [`NoteBoostIndex::boost`] for amortized O(1) lookups.
 /// This function is retained for unit tests.
 #[cfg(test)]
@@ -35,7 +37,7 @@ fn note_boost(file_path: &str, chunk_name: &str, notes: &[NoteSummary]) -> f32 {
         }
     }
     match strongest {
-        Some(s) => 1.0 + s * ScoringConfig::DEFAULT.note_boost_factor,
+        Some(s) => 1.0 + s * ScoringConfig::current().note_boost_factor,
         None => 1.0,
     }
 }
@@ -127,7 +129,7 @@ impl<'a> NoteBoostIndex<'a> {
         }
 
         match strongest {
-            Some(s) => 1.0 + s * ScoringConfig::DEFAULT.note_boost_factor,
+            Some(s) => 1.0 + s * ScoringConfig::current().note_boost_factor,
             None => 1.0,
         }
     }
@@ -221,7 +223,7 @@ impl OwnedNoteBoostIndex {
         }
 
         match strongest {
-            Some(s) => 1.0 + s * ScoringConfig::DEFAULT.note_boost_factor,
+            Some(s) => 1.0 + s * ScoringConfig::current().note_boost_factor,
             None => 1.0,
         }
     }

@@ -10,8 +10,8 @@
 
 mod candidate;
 mod config;
-pub(crate) mod knob;
 mod filter;
+pub mod knob;
 mod name_match;
 mod note_boost;
 

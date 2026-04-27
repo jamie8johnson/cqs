@@ -25,7 +25,7 @@ use super::note_boost::{NoteBoost, NoteBoostIndex};
 ///
 /// Returns 1.0 (no change) when demotion doesn't apply.
 pub(crate) fn chunk_importance(name: &str, file_path: &str) -> f32 {
-    let cfg = &ScoringConfig::DEFAULT;
+    let cfg = ScoringConfig::current();
     if crate::is_test_chunk(name, file_path) {
         return cfg.importance_test;
     }
@@ -72,7 +72,7 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
         if !parent_counts.values().any(|&c| c >= 2) {
             return;
         }
-        let cfg = &ScoringConfig::DEFAULT;
+        let cfg = ScoringConfig::current();
         let max_children = (cfg.parent_boost_cap - 1.0) / cfg.parent_boost_per_child;
         results
             .iter()
