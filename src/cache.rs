@@ -2467,8 +2467,11 @@ mod shared_runtime_tests {
         let got = q_cache.get("select x", "fp").expect("round-trip");
         assert_eq!(got.as_slice().len(), 8);
 
-        // Four live Arcs: shared_rt + the three consumers.
-        assert_eq!(Arc::strong_count(&shared_rt), 4);
+        // Five live Arcs: shared_rt + Store + Store's summary_queue (#1126)
+        // + EmbeddingCache + QueryCache. Store contributes two refs because
+        // it spawns a `PendingSummaryQueue` that holds its own `Arc<Runtime>`
+        // clone for `block_on` driving the queue's SQL writes.
+        assert_eq!(Arc::strong_count(&shared_rt), 5);
 
         // Drop consumers — runtime must outlive all of them already.
         drop(store);

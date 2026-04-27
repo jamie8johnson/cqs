@@ -287,14 +287,24 @@ pub fn doc_comment_pass(
         quiet: false,
         lock_dir,
     };
-    let api_results: HashMap<String, String> = phase2.submit_or_resume(
+    let phase2_result: Result<HashMap<String, String>, LlmError> = phase2.submit_or_resume(
         client.as_ref(),
         store,
         &batch_items,
         &|s| s.get_pending_doc_batch_id(),
         &|s, id| s.set_pending_doc_batch_id(id),
         &|c, items, max_tok| c.submit_doc_batch(items, max_tok),
-    )?;
+    );
+
+    // #1126 / P2.60: drain the per-Store summary queue regardless of
+    // success/failure. Streamed rows from `stream_summary_writer` are
+    // buffered in-memory; the final flush narrows the re-fetch window
+    // and is idempotent.
+    if let Err(e) = store.flush_pending_summaries() {
+        tracing::warn!(error = %e, "final flush of summary queue failed; rows retained for next run");
+    }
+
+    let api_results: HashMap<String, String> = phase2_result?;
 
     // Phase 3: Build results from cached + API responses
     // Deduplicate by content_hash: multiple chunks can share the same hash

@@ -494,37 +494,66 @@ impl Store<ReadWrite> {
         })
     }
 
+    /// Enqueue one streamed `llm_summaries` row into the per-Store
+    /// write-coalescing queue (#1126 / P2.60).
+    ///
+    /// The queue holds rows in-memory until either the row threshold or
+    /// the time interval is crossed, at which point a synchronous flush
+    /// drains every queued row inside one `begin_write()` transaction —
+    /// restoring the invariant that all `index.db` writes serialize
+    /// through `WRITE_LOCK`.
+    ///
+    /// Pre-#1126, the streaming callback executed `INSERT OR IGNORE`
+    /// directly against `&pool`, bypassing `WRITE_LOCK` and racing
+    /// concurrent reindex transactions for SQLite's exclusive lock with
+    /// 1 fsync per row. The queue restores both correctness (no race)
+    /// and throughput (one fsync per batch).
+    #[cfg(feature = "llm-summaries")]
+    pub fn queue_summary_write(&self, custom_id: &str, text: &str, model: &str, purpose: &str) {
+        self.summary_queue
+            .push(crate::store::summary_queue::PendingSummary {
+                custom_id: custom_id.to_string(),
+                text: text.to_string(),
+                model: model.to_string(),
+                purpose: purpose.to_string(),
+            });
+    }
+
+    /// Drain the queue (if any) under one `begin_write()` tx.
+    ///
+    /// Idempotent on an empty queue. Callers — every LLM pass and
+    /// `cmd_index` — invoke this unconditionally at safe points
+    /// (start, success, error, signal-interrupted exit) so a transient
+    /// flush failure during streaming retries on the next call. The
+    /// existing `fetch_batch_results` re-persist contract guarantees no
+    /// row is permanently lost if a flush misses; the next run re-fetches
+    /// it from the upstream batch.
+    #[cfg(feature = "llm-summaries")]
+    pub fn flush_pending_summaries(&self) -> Result<usize, StoreError> {
+        let _span = tracing::info_span!("flush_pending_summaries").entered();
+        self.summary_queue.flush()
+    }
+
     /// Build a streaming per-item persist callback for the local LLM provider.
     ///
     /// Returns a `Box<dyn Fn(&str, &str) + Send + Sync>` that can be handed to
     /// [`crate::llm::BatchProvider::set_on_item_complete`]. Each invocation
-    /// `cb(custom_id, text)` inserts one row into `llm_summaries` under the
-    /// given `purpose`, using `INSERT OR IGNORE` so redundant writes from the
-    /// final `fetch_batch_results` pass are no-ops.
+    /// `cb(custom_id, text)` enqueues one row into the per-Store
+    /// `summary_queue`. The queue drains under [`Store::begin_write`] when
+    /// either of its thresholds is crossed (rows ≥ N OR elapsed ≥ T), or
+    /// when callers call [`Store::flush_pending_summaries`] explicitly at
+    /// the end of an LLM pass / inside `cmd_index`.
     ///
-    /// The callback captures owned handles to the SQLite pool and runtime so
-    /// it can outlive any `&Store` reference on the caller's stack. Errors on
-    /// individual writes are logged at `warn!` and swallowed — losing one
-    /// streamed summary must not abort the batch.
-    /// P2.60 — known issue: this callback writes through `pool` directly,
-    /// bypassing the in-process `WRITE_LOCK` that every other Store mutator
-    /// acquires via `begin_write()`. Concurrent `reindex` (which holds the
-    /// lock for many seconds) contends with these per-row implicit-tx writes
-    /// for SQLite's exclusive lock, producing SQLITE_BUSY backoff and one
-    /// fsync per row.
+    /// The callback captures `Arc`-cloned handles to the queue, model, and
+    /// purpose so it can outlive any `&Store` reference on the caller's
+    /// stack. Enqueue is in-memory and infallible; the conditional flush
+    /// at threshold can fail (e.g. SQLITE_BUSY) — those errors are logged
+    /// and swallowed because `flush_pending_summaries` is idempotent and
+    /// the LLM-pass final flush will retry.
     ///
-    /// scope=structural — the right fix per the audit is a buffered queue
-    /// drained inside `begin_write()`. That requires either threading a
-    /// `&Store` lifetime through the boxed callback (currently the closure
-    /// only captures `pool` + `rt` so it can outlive the caller's stack
-    /// frame) or exposing `WRITE_LOCK` through a public `Arc<Mutex<()>>`
-    /// accessor on `Store` and synchronizing the callback against it from
-    /// outside.
-    ///
-    /// Interim mitigation: per-row failures are logged and swallowed so
-    /// SQLITE_BUSY surfaces as visible noise; the LLM batch fetch retry path
-    /// (`fetch_batch_results`) re-persists the lost summaries on the next
-    /// drain. Ship the queue refactor as a follow-on PR.
+    /// #1126 / P2.60: this path now goes through `WRITE_LOCK` via the
+    /// queue's flush. Concurrent reindex no longer collides — both sides
+    /// serialize through the same in-process mutex.
     #[cfg(feature = "llm-summaries")]
     pub fn stream_summary_writer(
         &self,
@@ -532,35 +561,14 @@ impl Store<ReadWrite> {
         purpose: String,
     ) -> crate::llm::provider::OnItemCallback {
         use std::sync::Arc;
-        let pool = self.pool.clone();
-        let rt = Arc::clone(&self.rt);
+        let queue = Arc::clone(&self.summary_queue);
         Box::new(move |custom_id: &str, text: &str| {
-            let now = chrono::Utc::now().to_rfc3339();
-            let pool = pool.clone();
-            let model = model.clone();
-            let purpose = purpose.clone();
-            let custom_id = custom_id.to_string();
-            let text = text.to_string();
-            let result = rt.block_on(async move {
-                sqlx::query(
-                    "INSERT OR IGNORE INTO llm_summaries \
-                     (content_hash, summary, model, purpose, created_at) \
-                     VALUES (?, ?, ?, ?, ?)",
-                )
-                .bind(&custom_id)
-                .bind(&text)
-                .bind(&model)
-                .bind(&purpose)
-                .bind(&now)
-                .execute(&pool)
-                .await
+            queue.push(crate::store::summary_queue::PendingSummary {
+                custom_id: custom_id.to_string(),
+                text: text.to_string(),
+                model: model.clone(),
+                purpose: purpose.clone(),
             });
-            if let Err(e) = result {
-                tracing::warn!(
-                    error = %e,
-                    "streaming summary persist failed, will retry via fetch_batch_results"
-                );
-            }
         })
     }
 

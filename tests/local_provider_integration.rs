@@ -156,6 +156,14 @@ fn item26_full_summary_pass_end_to_end() {
 /// succeed and fail. We run a 5-item batch against a server that succeeds
 /// for all items, and assert summaries land in SQLite. The specific
 /// partial-failure assertion is covered by the unit tests in `local.rs`.
+///
+/// #1126 / P2.60 contract update: with the write-coalescing queue,
+/// streamed rows are buffered in-memory until either a threshold-
+/// triggered flush OR the LLM-pass-end final flush drains them. This
+/// test now asserts (a) all 5 rows are visible after the pass returns
+/// (final flush is mandatory), AND (b) an explicit
+/// `flush_pending_summaries` call AFTER the pass is a no-op (the
+/// final flush already drained the queue).
 #[test]
 #[ignore]
 fn item27_streaming_persist_writes_each_item() {
@@ -184,11 +192,24 @@ fn item27_streaming_persist_writes_each_item() {
 
     clear_local_env();
 
-    // Streaming persist property: each item produces a row via the callback
-    // (INSERT OR IGNORE), plus the final `fetch_batch_results` pass writes
-    // again with INSERT OR REPLACE. Either way, 5 rows should be present.
+    // #1126 / P2.60: by the time `llm_summary_pass` returns, the
+    // queue's final flush has run and all 5 streamed rows are visible.
     assert_eq!(count, 5);
     let h_refs: Vec<&str> = hashes.iter().map(|s| s.as_str()).collect();
+    assert_eq!(count_summaries_for_purpose(&store, &h_refs, "summary"), 5);
+
+    // A second flush is idempotent — the queue is already drained, so
+    // this returns Ok(0) without an SQL round-trip. Pin that behavior
+    // so a regression that double-flushes (or fails on empty queue)
+    // surfaces here.
+    let post_pass_flush = store
+        .flush_pending_summaries()
+        .expect("post-pass flush must succeed (idempotent)");
+    assert_eq!(
+        post_pass_flush, 0,
+        "queue should already be drained by llm_summary_pass's final flush"
+    );
+    // And all rows still visible after the redundant flush.
     assert_eq!(count_summaries_for_purpose(&store, &h_refs, "summary"), 5);
 }
 
@@ -244,6 +265,11 @@ fn item28_re_run_skips_cached_items() {
 
 /// Spec item 29: concurrency=1 AND concurrency=4 produce equivalent output.
 /// Proves the worker pool is correct.
+///
+/// #1126 / P2.60: also pins that the write-coalescing queue's final
+/// flush observes all rows produced by all worker threads — a
+/// regression that lost rows from one of the workers' enqueues would
+/// surface here as a non-equal output set under different concurrency.
 #[test]
 #[ignore]
 fn item29_concurrency_produces_equivalent_output() {
@@ -276,6 +302,18 @@ fn item29_concurrency_produces_equivalent_output() {
         cqs::llm::llm_summary_pass(&store, true, &config, None).unwrap();
 
         clear_local_env();
+
+        // #1126 / P2.60: by the time `llm_summary_pass` returns, the
+        // final flush has drained the queue. A second flush should be
+        // a no-op (returns Ok(0)) — a regression that left rows
+        // stranded would show a non-zero residue here.
+        let residue = store
+            .flush_pending_summaries()
+            .expect("post-pass flush must succeed (idempotent)");
+        assert_eq!(
+            residue, 0,
+            "concurrency={c}: queue must be fully drained by the pass's final flush"
+        );
 
         // Pull the summaries via the public API.
         let h_refs: Vec<&str> = hashes.iter().map(|s| s.as_str()).collect();
