@@ -8,13 +8,13 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Subcommand;
 use colored::Colorize;
 
 use cqs::slot::{
-    active_slot_path, list_slots, read_active_slot, slot_dir, validate_slot_name,
-    write_active_slot, write_slot_model, DEFAULT_SLOT,
+    acquire_slots_lock, active_slot_path, list_slots, read_active_slot, slot_dir,
+    validate_slot_name, write_active_slot, write_slot_model, DEFAULT_SLOT,
 };
 
 use crate::cli::config::find_project_root;
@@ -86,6 +86,18 @@ pub(crate) enum SlotCommand {
 
 pub(crate) fn cmd_slot(cli: &Cli, subcmd: &SlotCommand) -> Result<()> {
     let _span = tracing::info_span!("cmd_slot").entered();
+
+    // P2.13: surface a hard error when `--slot` is passed at the global level.
+    // The global flag is a path-resolution input for *project-scoped* commands
+    // (search, index, …), but `cqs slot <subcmd>` already takes its target
+    // slot positionally. Silently ignoring the global meant `cqs slot create
+    // foo --slot bar` "succeeded" while ignoring `bar`. Fail loudly instead.
+    if cli.slot.is_some() {
+        anyhow::bail!(
+            "--slot has no effect on `cqs slot` subcommands (this command is project-scoped, slot targets are taken positionally)"
+        );
+    }
+
     let root = find_project_root();
     let project_cqs_dir = cqs::resolve_index_dir(&root);
     if !project_cqs_dir.exists() {
@@ -220,6 +232,12 @@ fn slot_create(project_cqs_dir: &Path, name: &str, model: Option<&str>, json: bo
     let _span = tracing::info_span!("slot_create", name, model).entered();
     validate_slot_name(name)?;
 
+    // P2.61 / P2.28: serialize lifecycle ops cross-process so two concurrent
+    // `slot create foo` calls (or create+promote+remove against the same name)
+    // can't interleave their read-validate-mutate steps and corrupt the active
+    // pointer. Lock is released when this function returns.
+    let _slots_lock = acquire_slots_lock(project_cqs_dir)?;
+
     let dir = slot_dir(project_cqs_dir, name);
     if dir.exists() {
         anyhow::bail!(
@@ -268,6 +286,11 @@ fn slot_create(project_cqs_dir: &Path, name: &str, model: Option<&str>, json: bo
 fn slot_promote(project_cqs_dir: &Path, name: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("slot_promote", name).entered();
     validate_slot_name(name)?;
+
+    // P2.61 / P2.28: see slot_create — exclusive lock prevents promote racing
+    // a concurrent remove of the same slot.
+    let _slots_lock = acquire_slots_lock(project_cqs_dir)?;
+
     let dir = slot_dir(project_cqs_dir, name);
     if !dir.exists() {
         let available = list_slots(project_cqs_dir).unwrap_or_default().join(", ");
@@ -299,6 +322,12 @@ fn slot_promote(project_cqs_dir: &Path, name: &str, json: bool) -> Result<()> {
 fn slot_remove(project_cqs_dir: &Path, name: &str, force: bool, json: bool) -> Result<()> {
     let _span = tracing::info_span!("slot_remove", name, force).entered();
     validate_slot_name(name)?;
+
+    // P2.61 / P2.28: hold exclusive lock across read_active_slot → list_slots
+    // → remove_dir_all so a concurrent promote can't change `active_slot`
+    // between steps and leave the system pointing at a deleted directory.
+    let _slots_lock = acquire_slots_lock(project_cqs_dir)?;
+
     let dir = slot_dir(project_cqs_dir, name);
     if !dir.exists() {
         let available = list_slots(project_cqs_dir).unwrap_or_default().join(", ");
@@ -310,7 +339,12 @@ fn slot_remove(project_cqs_dir: &Path, name: &str, force: bool, json: bool) -> R
     }
 
     let active = read_active_slot(project_cqs_dir).unwrap_or_else(|| DEFAULT_SLOT.to_string());
-    let mut all = list_slots(project_cqs_dir).unwrap_or_default();
+    // P2.21: don't mask `list_slots` failure as "only slot remaining" — that
+    // would falsely error on a transient FS hiccup. Surface the real cause so
+    // operators can fix it (permission denied, dir gone, etc.) instead of
+    // staring at a misleading "create another slot first" message.
+    let mut all =
+        list_slots(project_cqs_dir).context("Failed to list slots while validating remove")?;
     all.retain(|n| n != name);
 
     if name == active {
@@ -542,5 +576,49 @@ mod tests {
     fn slots_root_resolves_for_public_export() {
         let p = slots_root(Path::new("/proj/.cqs"));
         assert_eq!(p, Path::new("/proj/.cqs/slots"));
+    }
+
+    // ── P2.28: TOCTOU pin on concurrent slot lifecycle ───────────────────
+    //
+    // Two threads racing to create the same slot must produce a
+    // deterministic outcome: exactly one Ok, the other rejected with the
+    // "already exists" error. `acquire_slots_lock` (P2.61 fix) serializes
+    // the read-validate-mutate window so neither thread can observe the
+    // other's half-written state. Without the lock, both threads pass the
+    // `dir.exists()` check, both `create_dir_all`, and one's
+    // `write_slot_model` clobbers the other.
+    #[test]
+    fn slot_create_concurrent_same_name_produces_deterministic_outcome() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = with_slots(&[]);
+        let cqs = tmp.path().join(".cqs");
+        let cqs1 = cqs.clone();
+        let cqs2 = cqs.clone();
+
+        let h1 = std::thread::spawn(move || slot_create(&cqs1, "race", Some("bge-large"), true));
+        let h2 = std::thread::spawn(move || slot_create(&cqs2, "race", Some("e5-base"), true));
+        let r1 = h1.join().unwrap();
+        let r2 = h2.join().unwrap();
+
+        // Exactly one must succeed. With the slots.lock fix the failing
+        // arm hits the `dir.exists()` bail; without the fix, both could
+        // succeed and the slot.toml would be racy. Either way the OK-XOR
+        // contract must hold.
+        assert!(
+            r1.is_ok() ^ r2.is_ok(),
+            "exactly one of the racing slot_create calls must succeed (got {:?} / {:?})",
+            r1.as_ref().err().map(|e| e.to_string()),
+            r2.as_ref().err().map(|e| e.to_string()),
+        );
+
+        // The slot dir exists and the persisted model is one of the two
+        // requested models — never an empty/half-written file.
+        assert!(slot_dir(&cqs, "race").exists(), "slot dir must be present");
+        let model = cqs::slot::read_slot_model(&cqs, "race");
+        assert!(
+            model.as_deref() == Some("bge-large") || model.as_deref() == Some("e5-base"),
+            "persisted slot model must be one of the two requested values, got {:?}",
+            model
+        );
     }
 }

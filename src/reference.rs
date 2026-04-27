@@ -217,7 +217,7 @@ pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
     });
 
     if !refs.is_empty() {
-        tracing::info!("Loaded {} reference indexes", refs.len());
+        tracing::info!(count = refs.len(), "Loaded reference indexes");
     }
 
     refs
@@ -239,20 +239,45 @@ pub fn search_reference(
     let _span =
         tracing::info_span!("search_reference", name = %ref_idx.name, weight = ref_idx.weight, apply_weight)
             .entered();
+    // P2.50: when `apply_weight`, the underlying store search would
+    // otherwise filter at the raw threshold AND cap at `limit` — both
+    // computed before the post-weight retain step. That under-samples the
+    // corpus when `weight < 1`: a candidate that scores `0.6 * weight` may
+    // exceed the *post-weight* threshold yet get dropped by the *pre-weight*
+    // limit cap. Relax the store's threshold and over-fetch headroom so
+    // the post-weight retain + truncate sees the right pool.
+    let raw_threshold = if apply_weight && ref_idx.weight > 0.0 {
+        threshold / ref_idx.weight
+    } else {
+        threshold
+    };
+    let raw_limit = if apply_weight {
+        // 2× over-fetch leaves headroom for the post-weight retain step.
+        limit.saturating_mul(2).max(limit)
+    } else {
+        limit
+    };
     let mut results = ref_idx.store.search_filtered_with_index(
         query_embedding,
         filter,
-        limit,
-        threshold,
+        raw_limit,
+        raw_threshold,
         ref_idx.index.as_deref(),
     )?;
     if apply_weight {
         for r in &mut results {
             r.score *= ref_idx.weight;
         }
-        // Re-filter after weight: results that passed raw threshold may fall
-        // below after weighting (consistent with name_only path)
+        // Re-filter after weight against the *requested* threshold.
         results.retain(|r| r.score >= threshold);
+        // Stable tie-break on chunk id so two refs with identical scores
+        // produce deterministic merged ranking.
+        results.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then(a.chunk.id.cmp(&b.chunk.id))
+        });
+        results.truncate(limit);
     }
     Ok(results)
 }
@@ -272,12 +297,27 @@ pub fn search_reference_by_name(
     let _span =
         tracing::info_span!("search_reference_by_name", ref_name = %ref_idx.name, query = name, apply_weight)
             .entered();
-    let mut results = ref_idx.store.search_by_name(name, limit)?;
+    // P2.50: same shape as the embedding path — over-fetch from
+    // `search_by_name` so the post-weight retain doesn't see a pre-truncated
+    // pool. The existing `retain(|r| r.score * weight >= threshold)`
+    // boundary is correct; the gap was the pre-weight limit cap.
+    let raw_limit = if apply_weight {
+        limit.saturating_mul(2).max(limit)
+    } else {
+        limit
+    };
+    let mut results = ref_idx.store.search_by_name(name, raw_limit)?;
     if apply_weight {
         results.retain(|r| r.score * ref_idx.weight >= threshold);
         for r in &mut results {
             r.score *= ref_idx.weight;
         }
+        results.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then(a.chunk.id.cmp(&b.chunk.id))
+        });
+        results.truncate(limit);
     } else {
         results.retain(|r| r.score >= threshold);
     }

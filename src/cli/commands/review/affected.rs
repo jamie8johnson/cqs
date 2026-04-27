@@ -68,7 +68,7 @@ pub(crate) fn cmd_affected(
 
     // 5. Display
     if json {
-        let mut json_val = diff_impact_to_json(&result);
+        let mut json_val = diff_impact_to_json(&result)?;
         // Add overall risk
         json_val["overall_risk"] = serde_json::json!(overall_risk(&result).to_string());
         crate::cli::json_envelope::emit_json(&json_val)?;

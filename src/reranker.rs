@@ -43,11 +43,9 @@ const DEFAULT_RERANKER_BATCH: usize = 32;
 /// Reads `CQS_RERANKER_BATCH`; falls back to [`DEFAULT_RERANKER_BATCH`] when
 /// unset, unparseable, or zero.
 fn reranker_batch_size() -> usize {
-    std::env::var("CQS_RERANKER_BATCH")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|&n: &usize| n > 0)
-        .unwrap_or(DEFAULT_RERANKER_BATCH)
+    // P2.4: route through shared `parse_env_usize` so behavior matches the
+    // 24 other CQS_* knobs (missing/empty/garbage/zero -> default).
+    crate::limits::parse_env_usize("CQS_RERANKER_BATCH", DEFAULT_RERANKER_BATCH)
 }
 
 /// Resolve the reranker model source via the shared auxiliary-model
@@ -90,6 +88,10 @@ pub enum RerankerError {
         expected: String,
         actual: String,
     },
+    /// Caller supplied mismatched-length / otherwise invalid arguments.
+    /// Distinct from `Inference` so callers can pattern-match the bug.
+    #[error("Invalid arguments: {0}")]
+    InvalidArguments(String),
 }
 
 /// Convert any ort error to [`RerankerError::Inference`] via `.to_string()`.
@@ -120,11 +122,20 @@ pub struct Reranker {
     /// XLM-R variants) do not. Computed at session-init time by inspecting
     /// the model's input names. `None` means "session not yet loaded."
     expects_token_type_ids: Mutex<Option<bool>>,
+    /// Cached config-file `[reranker]` section so `resolve_reranker` honours
+    /// `preset` / `model_path` / `tokenizer_path` set in `.cqs.toml` (P1.7).
+    section: Option<AuxModelSection>,
 }
 
 impl Reranker {
-    /// Create a new reranker with lazy model loading
+    /// Create a new reranker with lazy model loading (config-less; CLI/env only).
     pub fn new() -> Result<Self, RerankerError> {
+        Self::with_section(None)
+    }
+
+    /// Create a reranker, threading a `[reranker]` config section through to
+    /// `resolve_reranker` so `.cqs.toml` preset / model_path are honoured (P1.7).
+    pub fn with_section(section: Option<AuxModelSection>) -> Result<Self, RerankerError> {
         let provider = select_provider();
         let max_length = match std::env::var("CQS_RERANKER_MAX_LENGTH") {
             Ok(val) => match val.parse::<usize>() {
@@ -150,6 +161,7 @@ impl Reranker {
             provider,
             max_length,
             expects_token_type_ids: Mutex::new(None),
+            section,
         })
     }
 
@@ -215,7 +227,15 @@ impl Reranker {
             return Ok(());
         }
         if results.len() != passages.len() {
-            return Err(RerankerError::Inference(format!(
+            // P3.11: structured warn so operators see the mismatch in journal,
+            // and surface `InvalidArguments` instead of `Inference` so callers
+            // can match on the caller-bug case distinctly from model errors.
+            tracing::warn!(
+                passages = passages.len(),
+                results = results.len(),
+                "rerank_with_passages: length mismatch — caller bug, refusing to score",
+            );
+            return Err(RerankerError::InvalidArguments(format!(
                 "passages length ({}) must match results length ({})",
                 passages.len(),
                 results.len()
@@ -443,7 +463,7 @@ impl Reranker {
         self.model_paths.get_or_try_init(|| {
             let _span = tracing::info_span!("reranker_model_resolve").entered();
 
-            let resolved = resolve_reranker(None)?;
+            let resolved = resolve_reranker(self.section.as_ref())?;
 
             // Local-bundle branch: resolver already verified the directory
             // existed when the override was path-like. For preset/default

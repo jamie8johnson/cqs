@@ -1319,13 +1319,9 @@ impl<Mode> Drop for Store<Mode> {
                 tracing::warn!(error = %e, "WAL checkpoint on drop failed (non-fatal)");
             }
         })) {
-            let msg = payload
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
-                .unwrap_or("unknown panic");
+            let msg = crate::panic_message(&payload);
             tracing::warn!(
-                panic = msg,
+                panic = %msg,
                 "WAL checkpoint panic caught in Store::drop (non-fatal)"
             );
         }

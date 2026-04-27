@@ -1,6 +1,11 @@
 //! Cross-project search via global project registry.
 //!
-//! Maintains a registry of indexed projects at `~/.config/cqs/projects.toml`.
+//! Maintains a registry of indexed projects in the platform config directory
+//! (via `dirs::config_dir()`):
+//! - Linux: `~/.config/cqs/projects.toml`
+//! - macOS: `~/Library/Application Support/cqs/projects.toml`
+//! - Windows: `%APPDATA%\cqs\projects.toml`
+//!
 //! Enables searching across all registered projects from anywhere.
 
 use std::path::{Path, PathBuf};
@@ -172,7 +177,12 @@ impl ProjectRegistry {
     }
 }
 
-/// Get the registry file path
+/// Get the registry file path.
+///
+/// Resolves via `dirs::config_dir()`:
+/// - Linux: `~/.config/cqs/projects.toml`
+/// - macOS: `~/Library/Application Support/cqs/projects.toml`
+/// - Windows: `%APPDATA%\cqs\projects.toml`
 fn registry_path() -> Result<PathBuf, ProjectError> {
     let config_dir = dirs::config_dir().ok_or(ProjectError::ConfigDirNotFound)?;
     Ok(config_dir.join("cqs").join("projects.toml"))

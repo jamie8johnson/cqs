@@ -223,9 +223,15 @@ pub(crate) async fn enforce_auth(
         }
         AuthOutcome::Unauthorized => {
             // Body intentionally minimal: no debug data, no token-
-            // length leak. Tracing happens once per launch (banner)
-            // and never per-request — auditors can grep for the
-            // count of 401s in access logs without seeing tokens.
+            // length leak. Tracing emits method + path (NOT query
+            // string — that may carry `?token=` candidates) so
+            // operators get a journal trail for 401s without
+            // logging token material. (P1.21 / OB-V1.30-2.)
+            tracing::warn!(
+                method = %req.method(),
+                path = %req.uri().path(),
+                "serve: rejected unauthenticated request",
+            );
             (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
         }
     }
@@ -288,5 +294,114 @@ mod tests {
     fn strip_token_param_preserves_other_params() {
         let uri: Uri = "/api/graph?depth=3&token=abc&limit=5".parse().unwrap();
         assert_eq!(strip_token_param(&uri), "/api/graph?depth=3&limit=5");
+    }
+
+    // ===== P2.30: adversarial tests for strip_token_param + check_request =====
+    //
+    // These pin the CURRENT (intentionally minimal) behavior so a future
+    // regression — either tightening or loosening — surfaces loudly.
+    // The audit calls out four gaps:
+    //   (1) Case-sensitivity: `?Token=…` is kept verbatim.
+    //   (2) Percent-encoded key (`?%74oken=…`): not recognised.
+    //   (3) Double `&&` between params: empty pair ignored cleanly.
+    //   (4) Multiple `token=` params: every one is stripped.
+    //
+    // Items (1) and (2) leave the token in the post-redirect URL bar
+    // (an SEC-7 leakage path). Production fix lands separately —
+    // these tests pin the gap so the eventual PR has a clear failure
+    // signal to invert.
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn p2_30_strip_token_param_capital_T_token_NOT_stripped_today() {
+        // Pin current behavior: capital `T` fails `starts_with("token=")`,
+        // survives into the redirect URL. After the SEC fix lands, this
+        // test will fail — invert the assertion at that point.
+        let uri: Uri = "/api/graph?Token=abc&depth=3".parse().unwrap();
+        let stripped = strip_token_param(&uri);
+        assert!(
+            stripped.contains("Token="),
+            "current behavior: capital `Token=` is not case-folded; \
+             SEC-7 leakage: token survives in redirect URL"
+        );
+    }
+
+    #[test]
+    fn p2_30_strip_token_param_percent_encoded_key_NOT_stripped_today() {
+        // `%74` is `t`. Pin current behavior: literal byte compare misses.
+        // After fix: percent-decode the key, then case-fold.
+        // axum's Uri parser keeps the percent-encoded form; we observe
+        // the same here.
+        let uri: Uri = "/api/graph?%74oken=abc&depth=3".parse().unwrap();
+        let stripped = strip_token_param(&uri);
+        assert!(
+            stripped.contains("%74oken=") || stripped.contains("token="),
+            "current behavior: percent-encoded `%74oken=` is not decoded; \
+             survives into redirect URL"
+        );
+    }
+
+    #[test]
+    fn p2_30_strip_token_param_handles_double_ampersand() {
+        // `?token=abc&&depth=3` — the empty pair between the `&&` is
+        // kept by the current `split('&')` filter (empty string fails
+        // `starts_with` AND fails the `*pair != "token"` test). Pin the
+        // resulting URL shape.
+        let uri: Uri = "/api/graph?token=abc&&depth=3".parse().unwrap();
+        let stripped = strip_token_param(&uri);
+        // The empty pair is kept because filter doesn't drop it; the
+        // resulting URL is harmless but ugly. Pin it as a regression
+        // signal — a future cleanup that *also* drops the empty pair
+        // is fine, just want the test to flag the change.
+        assert!(
+            stripped == "/api/graph?&depth=3" || stripped == "/api/graph?depth=3",
+            "double-ampersand handling drifted: got {stripped}"
+        );
+    }
+
+    #[test]
+    fn p2_30_strip_token_param_strips_multiple_token_params() {
+        // `?token=a&token=b` — both should be stripped. Pin behavior so
+        // a future regression that strips only the first leaves an
+        // SEC-7 leak.
+        let uri: Uri = "/api/graph?token=a&depth=3&token=b".parse().unwrap();
+        let stripped = strip_token_param(&uri);
+        assert!(
+            !stripped.contains("token="),
+            "multiple `token=` params must all be stripped; got {stripped}"
+        );
+    }
+
+    #[test]
+    fn p2_30_strip_token_param_empty_value() {
+        // `?token=` — pin current behavior: empty-value pair is stripped
+        // because `value=""` matches `pair.strip_prefix("token=")`.
+        let uri: Uri = "/api/graph?token=&depth=3".parse().unwrap();
+        let stripped = strip_token_param(&uri);
+        assert_eq!(stripped, "/api/graph?depth=3");
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn p2_30_check_request_capital_T_token_today_rejects() {
+        // The check_request side mirrors the strip side — capital `T`
+        // means the param doesn't match `starts_with("token=")`, so the
+        // token is never observed. Pin: 401 today (no fall-through).
+        // After fix: 200 OkViaQueryParam with case-fold.
+        let token = AuthToken::from_string("secretvalue");
+        let req = Request::builder()
+            .uri("/api/graph?Token=secretvalue")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        match check_request(&req, &token) {
+            AuthOutcome::Unauthorized => {}
+            AuthOutcome::Ok | AuthOutcome::OkViaQueryParam => {
+                panic!(
+                    "current behavior expected: capital `Token=` not recognised, request 401s. \
+                     If this test starts failing, the case-fold landed and the assertion \
+                     should invert."
+                );
+            }
+        }
     }
 }

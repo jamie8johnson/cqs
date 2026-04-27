@@ -207,7 +207,7 @@ impl HnswIndex {
     /// checksum verification on load ensures we never use a corrupted index.
     pub fn save(&self, dir: &Path, basename: &str) -> Result<(), HnswError> {
         let _span = tracing::debug_span!("hnsw_save", dir = %dir.display(), basename).entered();
-        tracing::info!("Saving HNSW index to {}/{}", dir.display(), basename);
+        tracing::info!(dir = %dir.display(), basename, "Saving HNSW index");
 
         // Verify ID map matches HNSW vector count before saving
         let hnsw_count = self.inner.with_hnsw(|h| h.get_nb_point());
@@ -635,7 +635,7 @@ impl HnswIndex {
         warn_wsl_advisory_locking(dir);
         tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW load lock (shared)");
 
-        tracing::info!("Loading HNSW index from {}/{}", dir.display(), basename);
+        tracing::info!(dir = %dir.display(), basename, "Loading HNSW index");
         verify_hnsw_checksums(dir, basename)?;
 
         // Check ID map file size to prevent OOM (limit configurable via CQS_HNSW_MAX_ID_MAP_BYTES)
@@ -768,7 +768,7 @@ impl HnswIndex {
             )));
         }
 
-        tracing::info!("HNSW index loaded: {} vectors", id_map.len());
+        tracing::info!(count = id_map.len(), "HNSW index loaded");
 
         Ok(Self {
             inner: HnswInner::Loaded(loaded),

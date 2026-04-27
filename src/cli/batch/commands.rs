@@ -370,10 +370,13 @@ impl BatchCmd {
 /// Best-effort: failures are silently ignored (never blocks batch mode).
 fn log_query(command: &str, query: &str) {
     use std::io::Write;
-    let Some(home) = dirs::home_dir() else {
+    // P3.32: prefer the platform's native cache dir; fall back to `~/.cache`
+    // for legacy behavior. Skip silently if neither is resolvable.
+    let Some(cache_root) = dirs::cache_dir().or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
+    else {
         return;
     };
-    let log_path = home.join(".cache/cqs/query_log.jsonl");
+    let log_path = cache_root.join("cqs").join("query_log.jsonl");
     let mut opts = std::fs::OpenOptions::new();
     opts.create(true).append(true);
     #[cfg(unix)]

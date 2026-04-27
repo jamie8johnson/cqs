@@ -159,9 +159,11 @@ pub(crate) struct SearchArgs {
 pub(crate) struct GatherArgs {
     /// Search query / question
     pub query: String,
-    /// Call graph expansion depth (0=seeds only, max 5)
-    #[arg(long, default_value = "1")]
-    pub expand: usize,
+    /// Call-graph BFS depth for gather expansion (0=seeds only, max 5).
+    /// Aligned with `onboard`/`impact`/`test-map` which already use `--depth`;
+    /// the legacy `--expand` form is kept as a visible alias.
+    #[arg(long, default_value = "1", visible_alias = "expand")]
+    pub depth: usize,
     /// Expansion direction: both, callers, callees
     #[arg(long, default_value = "both")]
     pub direction: cqs::GatherDirection,
@@ -613,4 +615,10 @@ pub(crate) struct IndexArgs {
     /// invocation; on large corpora (50k+ chunks) can take ~2 minutes CPU.
     #[arg(long)]
     pub umap: bool,
+    /// P2.12: emit a structured JSON envelope summarizing the index run on
+    /// completion. Suppresses progress prints in favor of a single
+    /// `{indexed_files, indexed_chunks, took_ms, model, …}` summary so
+    /// JSON-driven agents can chain `cqs init && cqs index --json`.
+    #[arg(long)]
+    pub json: bool,
 }

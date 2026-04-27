@@ -53,8 +53,11 @@ fn test_cache_stats_top_level_json_emits_envelope() {
     // zero entries).
     let dir = TempDir::new().expect("tempdir");
 
+    // P2.13: cache resolves project-scoped path when run inside a project.
+    // Set current_dir to tempdir so find_project_root() doesn't escape.
     let output = cqs_no_daemon()
         .args(["--json", "cache", "stats"])
+        .current_dir(dir.path())
         .env("HOME", dir.path())
         .env("XDG_DATA_HOME", dir.path())
         .env("XDG_CACHE_HOME", dir.path())
@@ -80,19 +83,17 @@ fn test_cache_stats_top_level_json_emits_envelope() {
     assert_eq!(parsed["version"], 1);
     assert!(parsed["error"].is_null(), "no error on success path");
 
-    // B.5: `total_size_mb` is a number, not a string. Programmatic consumers
-    // need to do arithmetic on it.
-    assert!(
-        parsed["data"]["total_size_mb"].is_number(),
-        "total_size_mb must be numeric (B.5), got: {}",
-        parsed["data"]["total_size_mb"]
-    );
+    // P2.16 dropped total_size_mb (bytes is canonical). Pin numeric bytes.
     assert!(
         parsed["data"]["total_size_bytes"].is_number(),
         "total_size_bytes must be numeric"
     );
     assert!(parsed["data"]["total_entries"].is_number());
     assert!(parsed["data"]["unique_models"].is_number());
+    assert!(
+        parsed["data"].get("total_size_mb").is_none(),
+        "P2.16: total_size_mb removed; use total_size_bytes"
+    );
 }
 
 /// Subcommand-level `--json` still works (precedence is OR, not override).
@@ -102,6 +103,7 @@ fn test_cache_stats_subcommand_json_emits_envelope() {
     let dir = TempDir::new().expect("tempdir");
     let output = cqs_no_daemon()
         .args(["cache", "stats", "--json"])
+        .current_dir(dir.path())
         .env("HOME", dir.path())
         .env("XDG_DATA_HOME", dir.path())
         .env("XDG_CACHE_HOME", dir.path())
@@ -111,7 +113,11 @@ fn test_cache_stats_subcommand_json_emits_envelope() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("envelope JSON parse");
-    assert!(parsed["data"]["total_size_mb"].is_number());
+    assert!(parsed["data"]["total_size_bytes"].is_number());
+    assert!(
+        parsed["data"].get("total_size_mb").is_none(),
+        "P2.16: total_size_mb removed"
+    );
 }
 
 // =============================================================================

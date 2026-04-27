@@ -217,7 +217,9 @@ impl Store<ReadWrite> {
         file: &Path,
         chunk_type_refs: &[crate::parser::ChunkTypeRefs],
     ) -> Result<(), StoreError> {
-        let file_display = file.display().to_string();
+        // P3.33: forward-slash normalization so the tracing span and any JSON
+        // emitted downstream don't surface Windows backslashes / verbatim prefixes.
+        let file_display = crate::normalize_path(file);
         let _span = tracing::info_span!("upsert_type_edges_for_file", file = %file_display, chunks = chunk_type_refs.len()).entered();
         if chunk_type_refs.is_empty() {
             return Ok(());

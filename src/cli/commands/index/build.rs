@@ -199,6 +199,11 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
 
     let _span = tracing::info_span!("cmd_index", force = force, dry_run = dry_run).entered();
 
+    // P2.12: capture wall-clock start so the optional JSON envelope can
+    // report `took_ms`. Honors both global `--json` and the local one.
+    let want_json = cli.json || args.json;
+    let json_start = std::time::Instant::now();
+
     if !cli.quiet {
         println!("Scanning files...");
     }
@@ -777,6 +782,34 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         let _ = std::fs::remove_file(&backup_path);
     }
 
+    // P2.12: emit a structured summary envelope when --json is set.
+    // Numbers come from the values already computed above so no extra DB
+    // round trip is incurred. Progress prints stayed on the human path —
+    // we don't gate them on `!want_json` since the index command's banner
+    // is informational and many callers tee stdout/stderr; only the
+    // *final* shape matters for the JSON contract.
+    if want_json {
+        let model_name = cli
+            .try_model_config()
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        let chunk_count = store.chunk_count().unwrap_or(0);
+        let obj = serde_json::json!({
+            "indexed_files": existing_files.len(),
+            "indexed_chunks": chunk_count,
+            "took_ms": json_start.elapsed().as_millis() as u64,
+            "model": model_name,
+            "total_embedded": total_embedded,
+            "total_cached": total_cached,
+            "gpu_failures": gpu_failures,
+            "pruned": pruned,
+            "parse_errors": stats.parse_errors,
+            "total_calls": stats.total_calls,
+            "total_type_edges": stats.total_type_edges,
+        });
+        crate::cli::json_envelope::emit_json(&obj)?;
+    }
+
     Ok(())
 }
 
@@ -910,3 +943,139 @@ pub(crate) fn build_hnsw_base_index<M>(
 // the library crate — those tests exercise populate-on-insert and
 // NULL-row skipping, which are the two branches that matter here.
 // The HNSW builder itself is covered by `hnsw::build` unit tests.
+
+// P2.86: TC-HAP — direct happy-path tests for the two HNSW build helpers
+// invoked by `cmd_index` and the watch loop. Lower-level unit tests cover
+// `embedding_batches` / `embedding_base_batches` and the HNSW builder, but
+// the join — store + cqs_dir → on-disk + in-memory index — had no direct
+// pin. These tests close that gap with a minimal `dim=16` corpus so the
+// HNSW build runs in milliseconds.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cqs::embedder::Embedding;
+    use cqs::parser::{Chunk, ChunkType, Language};
+    use cqs::store::ModelInfo;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn make_chunk(id: &str, dim: usize, seed: f32) -> (Chunk, Embedding) {
+        let content = format!("fn {}() {{ }}", id);
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let chunk = Chunk {
+            id: id.to_string(),
+            file: PathBuf::from("src/lib.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: id.to_string(),
+            signature: format!("fn {}()", id),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        // Distinct unit-ish vectors per chunk so the HNSW builder has
+        // something non-degenerate to insert.
+        let mut emb = vec![0.0_f32; dim];
+        emb[0] = seed;
+        emb[1] = 1.0 - seed;
+        (chunk, Embedding::new(emb))
+    }
+
+    /// Open a fresh store at the given dim and seed `n` chunks. Returns
+    /// the temp dir (kept alive for test lifetime) and `cqs_dir` path.
+    fn seed_store(n: usize, dim: usize) -> (TempDir, PathBuf) {
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+
+        let mut store = Store::open(&index_path).expect("open store");
+        store
+            .init(&ModelInfo::new("test/model", dim))
+            .expect("init store");
+        // `Store::open` sees no metadata on a fresh DB and defaults `dim`
+        // to EMBEDDING_DIM (1024). After `init` writes the real dim, sync
+        // the cached value so the upsert dim-check below sees `dim` and
+        // not the stale fallback.
+        store.set_dim(dim);
+        let pairs: Vec<_> = (0..n)
+            .map(|i| make_chunk(&format!("c{i}"), dim, (i as f32 + 1.0) * 0.1))
+            .collect();
+        if !pairs.is_empty() {
+            store.upsert_chunks_batch(&pairs, Some(0)).expect("upsert");
+        }
+        drop(store);
+        (dir, cqs_dir)
+    }
+
+    #[test]
+    fn build_hnsw_index_owned_returns_index_with_chunk_count() {
+        let dim = 16;
+        let n = 5;
+        let (_tmp, cqs_dir) = seed_store(n, dim);
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
+
+        let idx = build_hnsw_index_owned(&store, &cqs_dir)
+            .expect("build_hnsw_index_owned must succeed")
+            .expect("non-empty store must produce an index");
+        assert_eq!(idx.len(), n, "index len must equal seeded chunk count");
+        // The hnsw save side-effect should land at `<cqs_dir>/index.hnsw.*`.
+        // We can't easily round-trip-load without exposing private save
+        // path constants, so just verify the in-memory state is correct.
+    }
+
+    #[test]
+    fn build_hnsw_index_owned_returns_none_for_empty_store() {
+        let dim = 16;
+        let (_tmp, cqs_dir) = seed_store(0, dim);
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
+        let result = build_hnsw_index_owned(&store, &cqs_dir).expect("must not error");
+        assert!(
+            result.is_none(),
+            "empty store must yield None (no on-disk index, no in-memory index)"
+        );
+    }
+
+    #[test]
+    fn build_hnsw_base_index_returns_some_when_base_populated() {
+        // Phase 5 (v18): `upsert_chunks_batch` seeds embedding_base with the
+        // same bytes as the enriched embedding on insert (see
+        // `store::chunks::async_helpers`). So a freshly-seeded store has
+        // base_embedding_count == n, and the base HNSW build is not
+        // skipped. Pin that contract — a regression that stopped seeding
+        // embedding_base on insert would silently break the dual-index
+        // router.
+        let dim = 16;
+        let n = 4;
+        let (_tmp, cqs_dir) = seed_store(n, dim);
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
+        let result = build_hnsw_base_index(&store, &cqs_dir).expect("must not error");
+        assert_eq!(
+            result,
+            Some(n),
+            "base index must contain all {n} seeded chunks"
+        );
+    }
+
+    #[test]
+    fn build_hnsw_base_index_returns_none_for_empty_store() {
+        let dim = 16;
+        let (_tmp, cqs_dir) = seed_store(0, dim);
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
+        let result = build_hnsw_base_index(&store, &cqs_dir).expect("must not error");
+        assert!(
+            result.is_none(),
+            "empty store must yield None for base HNSW build"
+        );
+    }
+}

@@ -310,7 +310,14 @@ impl Cli {
 #[derive(Subcommand)]
 pub(super) enum Commands {
     /// Download model and create .cqs/
-    Init,
+    Init {
+        /// P2.12: emit a structured JSON envelope summarizing the init.
+        /// Keeps `cqs init` parity with the rest of the CLI's `--json`
+        /// contract; without this, JSON-driven agents had no way to confirm
+        /// the directory and model that got created.
+        #[arg(long)]
+        json: bool,
+    },
     /// One-line-per-function summary for a file
     Brief {
         /// File path (as stored in index, e.g. src/lib.rs)
@@ -664,6 +671,11 @@ pub(super) enum Commands {
         /// Cleaning rule tags (comma-separated, e.g. "aveva,generic") [default: all]
         #[arg(long)]
         clean_tags: Option<String>,
+        /// P2.12: emit a structured JSON envelope summarizing conversions.
+        /// Suppresses the per-file text rendering in favor of a
+        /// `{converted: [...], skipped: [...], took_ms}` summary.
+        #[arg(long)]
+        json: bool,
     },
     /// Export a HuggingFace model to ONNX format for use with cqs
     ExportModel {
@@ -757,7 +769,14 @@ pub(super) enum Commands {
     /// `cqs batch` JSON dance. No-op when no daemon is running — a fresh CLI
     /// process has no caches to invalidate.
     #[command(visible_alias = "invalidate")]
-    Refresh,
+    Refresh {
+        /// Emit a structured JSON envelope summarizing the refresh outcome.
+        /// P2.14: brings `cqs refresh` in line with the rest of the CLI's
+        /// `--json` contract; without this, JSON-driven agents had no way to
+        /// detect whether the daemon was actually running and got refreshed.
+        #[arg(long)]
+        json: bool,
+    },
     /// First-class eval harness: run query set against current index, print R@K
     Eval {
         #[command(flatten)]
@@ -1134,7 +1153,7 @@ mod tests {
         // Gather still accepts `--expand <N>` (graph depth).
         let cli = Cli::try_parse_from(["cqs", "gather", "alarm", "--expand", "2"]).unwrap();
         match cli.command {
-            Some(Commands::Gather { ref args, .. }) => assert_eq!(args.expand, 2),
+            Some(Commands::Gather { ref args, .. }) => assert_eq!(args.depth, 2),
             _ => panic!("expected Gather command"),
         }
     }

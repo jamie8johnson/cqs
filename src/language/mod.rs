@@ -1195,6 +1195,26 @@ mod tests {
         }
     }
 
+    /// P3.28: Every language with a tree-sitter grammar must ship a non-empty
+    /// `chunk_query`. An accidentally empty `chunks.scm` `include_str!`s as `""`
+    /// and silently emits zero chunks for that language — one assertion catches it.
+    #[test]
+    fn registry_languages_have_nonempty_chunk_query() {
+        for lang in Language::all_variants() {
+            let Some(def) = lang.try_def() else {
+                continue; // feature-disabled at compile time — skip
+            };
+            if def.grammar.is_none() {
+                continue; // markup/config languages without tree-sitter grammar
+            }
+            assert!(
+                !def.chunk_query.trim().is_empty(),
+                "{:?}: chunk_query is empty — silent zero-chunk language",
+                lang
+            );
+        }
+    }
+
     /// Every Language variant must have a `function_keywords` field accessible
     /// through `def()`. Empty `&[]` is the sentinel for "no fixed introducer
     /// keyword" (markup, config, JS/TS/Java/C# — all use the C-family

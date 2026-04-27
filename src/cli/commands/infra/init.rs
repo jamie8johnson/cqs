@@ -10,12 +10,18 @@ use crate::cli::{find_project_root, Cli};
 
 /// Initialize cqs in a project directory
 /// Creates `.cqs/` directory, downloads the embedding model, and warms up the embedder.
-pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
+pub(crate) fn cmd_init(cli: &Cli, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_init").entered();
     let root = find_project_root();
     let cqs_dir = root.join(cqs::INDEX_DIR);
 
-    if !cli.quiet {
+    // P2.12: when --json is set, suppress human progress prints to stderr-or-skip
+    // and emit a single envelope summarizing the result on success. The global
+    // `cli.json` and the local `--json` both honor it.
+    let want_json = cli.json || json;
+    let quiet = cli.quiet || want_json;
+
+    if !quiet {
         println!("Initializing cqs...");
     }
 
@@ -42,7 +48,7 @@ pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
     std::fs::write(&gitignore, gitignore_contents).context("Failed to create .gitignore")?;
 
     // Download model
-    if !cli.quiet {
+    if !quiet {
         // EX-V1.29-6: Read the exact preset-declared download size instead of
         // the old `dim >= 1024 ? "~1.3GB" : "~547MB"` heuristic. Custom models
         // (user-supplied repo) carry `None` and surface as "(size unknown)"
@@ -57,17 +63,30 @@ pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
     let embedder =
         Embedder::new(cli.try_model_config()?.clone()).context("Failed to initialize embedder")?;
 
-    if !cli.quiet {
+    if !quiet {
         println!("Detecting hardware... {}", embedder.provider());
     }
 
     // Warm up
     embedder.warm()?;
 
-    if !cli.quiet {
+    if !quiet {
         println!("Created .cqs/");
         println!();
         println!("Run 'cqs index' to index your codebase.");
+    }
+
+    if want_json {
+        let model_name = cli
+            .try_model_config()
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        let obj = serde_json::json!({
+            "initialized": true,
+            "cqs_dir": cqs_dir.display().to_string(),
+            "model": model_name,
+        });
+        crate::cli::json_envelope::emit_json(&obj)?;
     }
 
     Ok(())

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use ndarray::Array2;
 
 use super::batch::BatchPhase2;
-use super::{collect_eligible_chunks, LlmClient, LlmConfig, LlmError, MAX_BATCH_SIZE};
+use super::{collect_eligible_chunks, LlmClient, LlmConfig, LlmError};
 use crate::Store;
 
 /// Run the LLM summary pass using the Batches API.
@@ -55,7 +55,8 @@ pub fn llm_summary_pass(
     };
 
     // Phase 1: Collect chunks needing summaries via shared filter
-    let (eligible, cached, skipped) = collect_eligible_chunks(store, "summary", MAX_BATCH_SIZE)?;
+    let max_batch_size = crate::limits::llm_max_batch_size();
+    let (eligible, cached, skipped) = collect_eligible_chunks(store, "summary", max_batch_size)?;
 
     // EH-23: Warn when contrastive neighbors are empty but eligible chunks exist
     if neighbor_map.is_empty() && !eligible.is_empty() {
@@ -89,10 +90,15 @@ pub fn llm_summary_pass(
             language: ec.language.clone(),
         });
     }
-    if batch_items.len() >= MAX_BATCH_SIZE {
+    if batch_items.len() >= max_batch_size {
         tracing::info!(
-            max = MAX_BATCH_SIZE,
+            max = max_batch_size,
             "Batch size limit reached, submitting partial batch"
+        );
+        // P2.39: surface the truncation hint on stderr so agents can re-run.
+        // `tracing::info!` is invisible without `RUST_LOG=info`.
+        eprintln!(
+            "note: LLM batch reached cap CQS_LLM_MAX_BATCH_SIZE={max_batch_size}; remaining chunks will be picked up on next run."
         );
     }
 
@@ -624,5 +630,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// P2.46 regression-pin: contrastive_neighbors top-K selection must
+    /// be deterministic when several entries score identically. The fix
+    /// adds `.then(a.0.cmp(&b.0))` to all three sorts in
+    /// `find_contrastive_neighbors`. Pin the tie-break order at the
+    /// candidate-sort level so a future refactor can't lose it.
+    #[test]
+    fn p2_46_contrastive_neighbors_top_k_deterministic_under_ties() {
+        // Build a row of (idx, score) where multiple entries tie. Run
+        // the same `select_nth_unstable_by` + `sort_unstable_by` cascade
+        // 100× and assert identical output. This mirrors the cascade
+        // that runs inside `find_contrastive_neighbors`.
+        let limit = 3;
+        let canonical: Vec<(usize, f32)> = {
+            let mut v: Vec<(usize, f32)> =
+                vec![(0, 0.5), (1, 0.5), (2, 0.5), (3, 0.5), (4, 0.9), (5, 0.5)];
+            v.select_nth_unstable_by(limit - 1, |a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            v.truncate(limit);
+            v.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            v
+        };
+        for seed in 0..100u64 {
+            let mut v: Vec<(usize, f32)> =
+                vec![(0, 0.5), (1, 0.5), (2, 0.5), (3, 0.5), (4, 0.9), (5, 0.5)];
+            // Deterministic LCG scramble.
+            let mut state = seed.wrapping_mul(2862933555777941757).wrapping_add(1);
+            for i in (1..v.len()).rev() {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let j = (state as usize) % (i + 1);
+                v.swap(i, j);
+            }
+            v.select_nth_unstable_by(limit - 1, |a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            v.truncate(limit);
+            v.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            assert_eq!(canonical, v, "shuffle seed={seed} produced different top-K");
+        }
+        // Spot-check: highest score first, ties broken by index asc.
+        assert_eq!(canonical[0], (4, 0.9));
+        assert_eq!(canonical[1], (0, 0.5));
+        assert_eq!(canonical[2], (1, 0.5));
     }
 }

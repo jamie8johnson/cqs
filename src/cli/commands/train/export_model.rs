@@ -73,7 +73,7 @@ pub(crate) fn cmd_export_model(
     } else {
         println!("Edit model.toml to set dim and prefixes, then copy to your cqs.toml");
     }
-    tracing::info!("Model exported to {}", output.display());
+    tracing::info!(output = %output.display(), "Model exported");
     Ok(())
 }
 

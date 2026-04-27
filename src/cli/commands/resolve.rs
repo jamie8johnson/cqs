@@ -5,10 +5,25 @@
 use std::path::Path;
 
 use anyhow::Result;
-use cqs::config::Config;
+use cqs::config::{Config, ReferenceConfig};
 use cqs::reference::{self, ReferenceIndex};
 use cqs::store::{ReadOnly, Store};
 use cqs::ResolvedTarget;
+
+/// Find a reference's `ReferenceConfig` by name, returning the user-facing
+/// "not found" error consistently used by all reference commands.
+fn find_reference_config<'a>(config: &'a Config, name: &str) -> Result<&'a ReferenceConfig> {
+    config
+        .references
+        .iter()
+        .find(|r| r.name == name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
+                name
+            )
+        })
+}
 
 /// Resolve a target string to a [`ResolvedTarget`] (CLI wrapper).
 ///
@@ -26,6 +41,9 @@ pub fn resolve_target<Mode>(store: &Store<Mode>, target: &str) -> Result<Resolve
 pub(crate) fn find_reference(root: &Path, name: &str) -> Result<ReferenceIndex> {
     let _span = tracing::info_span!("find_reference", name).entered();
     let config = Config::load(root);
+    // Validate the reference name resolves before paying the cost of loading
+    // every reference index from disk.
+    find_reference_config(&config, name)?;
     let references = reference::load_references(&config.references);
     references
         .into_iter()
@@ -45,16 +63,7 @@ fn resolve_reference_db(root: &Path, ref_name: &str) -> Result<std::path::PathBu
     use anyhow::bail;
 
     let config = Config::load(root);
-    let ref_cfg = config
-        .references
-        .iter()
-        .find(|r| r.name == ref_name)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
-                ref_name
-            )
-        })?;
+    let ref_cfg = find_reference_config(&config, ref_name)?;
 
     // Refs use the same `.cqs/` layout as projects, so honor slot resolution
     // (post-migration: `.cqs/slots/<active>/index.db`; pre-migration:

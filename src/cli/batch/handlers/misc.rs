@@ -23,7 +23,7 @@ pub(in crate::cli::batch) fn dispatch_gather(
     let embedder = ctx.embedder()?;
 
     let opts = cqs::GatherOptions {
-        expand_depth: args.expand.clamp(0, 5),
+        expand_depth: args.depth.clamp(0, 5),
         direction: args.direction,
         limit: args.limit.clamp(1, 100),
         ..cqs::GatherOptions::default()
@@ -351,23 +351,13 @@ pub(in crate::cli::batch) fn dispatch_diff(
     let source_store = crate::cli::commands::resolve::resolve_reference_store(&ctx.root, source)?;
 
     let target_label = target.unwrap_or("project");
-    let target_store = if target_label == "project" {
-        // Reuse the batch context's store -- avoid re-opening
-        &ctx.store()
-    } else {
-        // Need to load a separate reference store
-        // We can't return a reference to a local, so use get_ref + borrow_ref
-        ctx.get_ref(target_label)?;
-        // Fall through to resolve below since we can't borrow RefMut as &Store
-        // directly. Use resolve_reference_store which opens a fresh Store.
-        &ctx.store() // placeholder -- replaced below
-    };
-
-    // For non-project targets, resolve properly
+    // P2.2: drop the dead `target_store` placeholder + duplicate match. The previous
+    // shape called `ctx.get_ref(target_label)?` then discarded the cached store,
+    // and re-opened via `resolve_reference_store` in the else arm anyway.
     let result = if target_label == "project" {
         cqs::semantic_diff(
             &source_store,
-            target_store,
+            &ctx.store(),
             source,
             target_label,
             threshold,
@@ -514,4 +504,68 @@ pub(in crate::cli::batch) fn dispatch_ping(ctx: &BatchContext) -> Result<serde_j
     let snapshot = ctx.ping_snapshot();
     serde_json::to_value(&snapshot)
         .map_err(|e| anyhow::anyhow!("Failed to serialize PingResponse: {e}"))
+}
+
+// P2.79: TC-HAP — embedder-free misc handler tests. `dispatch_ping`,
+// `dispatch_help`, and `dispatch_refresh` are the cheap healthcheck/
+// metadata surface and shipped with zero per-handler tests in the batch
+// module. Pin the contract here so a future regression in
+// `BatchContext::ping_snapshot` or the help text emitter surfaces locally.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::batch::create_test_context;
+    use cqs::store::{ModelInfo, Store};
+    use tempfile::TempDir;
+
+    fn empty_ctx() -> (TempDir, crate::cli::batch::BatchContext) {
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("ctx");
+        (dir, ctx)
+    }
+
+    #[test]
+    fn dispatch_ping_returns_serializable_snapshot() {
+        let (_dir, ctx) = empty_ctx();
+        let json = dispatch_ping(&ctx).expect("dispatch_ping");
+        assert!(
+            json.is_object(),
+            "ping must serialize as a JSON object, got: {json}"
+        );
+        let obj = json.as_object().unwrap();
+        assert!(!obj.is_empty(), "ping snapshot must not be empty");
+    }
+
+    #[test]
+    fn dispatch_help_carries_help_text() {
+        let json = dispatch_help().expect("dispatch_help");
+        let help = json
+            .get("help")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("response must carry `help` string, got: {json}"));
+        // Help output must mention at least one batch-mode command name.
+        // `search` has been a stable label since v0.x.
+        assert!(
+            help.to_lowercase().contains("search"),
+            "help text must mention at least one command, got: {help}"
+        );
+    }
+
+    #[test]
+    fn dispatch_refresh_succeeds_on_empty_store() {
+        let (_dir, ctx) = empty_ctx();
+        let json = dispatch_refresh(&ctx).expect("dispatch_refresh");
+        assert_eq!(
+            json.get("status").and_then(|v| v.as_str()),
+            Some("ok"),
+            "refresh must return status:ok, got: {json}"
+        );
+    }
 }

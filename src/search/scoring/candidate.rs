@@ -280,10 +280,24 @@ pub(crate) fn apply_scoring_pipeline(
     file_part: &str,
     ctx: &ScoringContext<'_>,
 ) -> Option<f32> {
+    // P1.16 defense-in-depth: clamp name_boost into [0.0, 1.0] regardless of
+    // where it originated. CLI uses parse_unit_f32 (clap-bounded) and config
+    // uses clamp_config_f32, but a future programmatic / deserialised path
+    // could bypass both, in which case `(1.0 - 5.0) * embedding` would
+    // sign-flip search results silently. Cheap insurance.
+    //
+    // P2.54: also clamp `embedding_score` into `[0.0, 1.0]` before the
+    // linear interpolation. Raw cosine can be negative for orthogonal-or-
+    // worse pairs, and a negative embedding contaminating the blend then
+    // hits the downstream `.max(0.0)` and silently deletes a good
+    // name-only match. Clamping inputs makes the blend always interpolate
+    // between two same-range numbers and never sign-flip.
+    let embedding_score = embedding_score.clamp(0.0, 1.0);
+    let name_boost = ctx.filter.name_boost.clamp(0.0, 1.0);
     let base_score = if let Some(matcher) = ctx.name_matcher {
         let n = name.unwrap_or("");
         let name_score = matcher.score(n);
-        (1.0 - ctx.filter.name_boost) * embedding_score + ctx.filter.name_boost * name_score
+        (1.0 - name_boost) * embedding_score + name_boost * name_score
     } else {
         embedding_score
     };

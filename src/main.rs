@@ -15,16 +15,25 @@ fn main() -> Result<()> {
     // Parse CLI first to check verbose flag
     let cli = cli::Cli::parse();
 
-    // Log to stderr to keep stdout clean for structured output
-    // --verbose flag sets debug level, otherwise use RUST_LOG or default to warn
+    // Log to stderr to keep stdout clean for structured output.
+    // P1.20 / OB-V1.30-1: --verbose flag sets debug level for cqs (everything
+    // else stays at info), otherwise honour RUST_LOG, defaulting to
+    // "cqs=info,warn,ort=error" so the ~150 span instrumentation sites in the
+    // codebase actually render without third-party noise.
     let filter = if cli.verbose {
-        EnvFilter::new("debug")
+        EnvFilter::new("cqs=debug,info")
     } else {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn,ort=error"))
+        EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("cqs=info,warn,ort=error"))
     };
 
+    // FmtSpan::CLOSE emits a synthetic event on span close with elapsed time —
+    // turns every `info_span!("foo", ...).entered()` into a "foo" + latency
+    // line in the journal automatically. Without it, only events emitted
+    // *inside* a span produce log lines; entry/exit pairs disappear.
     tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
         .with_writer(std::io::stderr)
         .init();
 

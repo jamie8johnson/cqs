@@ -162,7 +162,12 @@ pub mod cross_project {
     };
 }
 pub use impact::*;
-pub use nl::*;
+pub use nl::{
+    generate_nl_description, generate_nl_description_with_seq_len,
+    generate_nl_with_call_context_and_summary, generate_nl_with_template,
+    generate_nl_with_template_and_seq_len, normalize_for_fts, tokenize_identifier, CallContext,
+    NlTemplate,
+};
 pub use onboard::*;
 pub use project::*;
 pub use related::*;
@@ -452,6 +457,20 @@ pub fn temp_suffix() -> u64 {
         .finish()
 }
 
+/// Extract a human-readable message from a thread panic payload.
+///
+/// Handles `&str` and `String` payloads (the two common forms produced by
+/// `panic!`); falls back to `"unknown panic"` for any other type.
+pub fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 /// Serde serializer for `PathBuf` fields: forward-slash normalized.
 ///
 /// Use as `#[serde(serialize_with = "crate::serialize_path_normalized")]`
@@ -541,11 +560,10 @@ fn max_file_size() -> u64 {
 
 /// Enumerate files to index in a project directory.
 ///
-/// Respects .gitignore, skips hidden files and files larger than
-/// `CQS_MAX_FILE_SIZE` bytes (default 1MB — generated code can exceed this).
-/// Returns relative paths from the project root.
-///
-/// Shared file enumeration for consistent indexing.
+/// Respects `.gitignore` and `.cqsignore` (additive on top of `.gitignore`,
+/// both disabled by `no_ignore=true`); skips hidden files and files larger
+/// than `CQS_MAX_FILE_SIZE` bytes (default 1 MiB — generated code can
+/// exceed this). Returns relative paths from the project root.
 pub fn enumerate_files(
     root: &Path,
     extensions: &[&str],

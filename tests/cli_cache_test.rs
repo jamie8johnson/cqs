@@ -48,8 +48,14 @@ fn cqs_no_daemon() -> Command {
 fn test_cache_stats_empty_cache_emits_zero_envelope() {
     let dir = TempDir::new().expect("tempdir");
 
+    // Run from tempdir so `find_project_root()` doesn't escape into the
+    // surrounding cqs checkout (which has `.cqs/` and a populated
+    // per-project cache after PR #1105). `current_dir` MUST be set or the
+    // project-scoped cache_path resolution at cache_cmd.rs:68-76 picks up
+    // the parent repo's cache.
     let output = cqs_no_daemon()
         .args(["cache", "stats", "--json"])
+        .current_dir(dir.path())
         .env("HOME", dir.path())
         .env("XDG_DATA_HOME", dir.path())
         .env("XDG_CACHE_HOME", dir.path())
@@ -83,17 +89,17 @@ fn test_cache_stats_empty_cache_emits_zero_envelope() {
     let bytes = parsed["data"]["total_size_bytes"]
         .as_u64()
         .expect("total_size_bytes must be numeric");
-    // bytes is u64, always >= 0; we only assert numeric.
+    // bytes is u64, always >= 0; we only assert numeric and < 1 MB for
+    // a freshly-opened cache. P2.16 dropped `total_size_mb` (bytes is
+    // canonical), so we no longer assert that field exists.
     assert!(
         bytes < 1024 * 1024,
         "fresh-cache file should be tiny (<1 MB), got {bytes} bytes"
     );
-    let mb = parsed["data"]["total_size_mb"]
-        .as_f64()
-        .expect("total_size_mb must be numeric");
     assert!(
-        mb >= 0.0 && mb < 1.0,
-        "fresh-cache total_size_mb must be in [0, 1) MB. got: {mb}"
+        parsed["data"].get("total_size_mb").is_none(),
+        "P2.16: total_size_mb should be removed; bytes is canonical. got: {}",
+        parsed["data"]
     );
     assert_eq!(parsed["data"]["unique_models"], 0);
 }
@@ -108,6 +114,7 @@ fn test_cache_clear_empty_cache_returns_zero_deleted() {
 
     let output = cqs_no_daemon()
         .args(["cache", "clear", "--json"])
+        .current_dir(dir.path())
         .env("HOME", dir.path())
         .env("XDG_DATA_HOME", dir.path())
         .env("XDG_CACHE_HOME", dir.path())
@@ -150,6 +157,7 @@ fn test_cache_prune_zero_days_on_empty_returns_zero_pruned() {
 
     let output = cqs_no_daemon()
         .args(["cache", "prune", "0", "--json"])
+        .current_dir(dir.path())
         .env("HOME", dir.path())
         .env("XDG_DATA_HOME", dir.path())
         .env("XDG_CACHE_HOME", dir.path())

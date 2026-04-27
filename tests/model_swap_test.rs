@@ -116,9 +116,19 @@ fn test_model_list_includes_current() {
 
     let parsed: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|_| panic!("model list --json output must be JSON. got: {stdout}"));
-    let arr = parsed["data"]
-        .as_array()
-        .expect("model list --json data must be a JSON array");
+    // Inside a project (`.cqs/` present), the envelope `data` is an object
+    // `{ current: <name>, models: [...] }`. Outside a project, `data` is a
+    // bare array — but this test always seeds a `.cqs/`, so we expect the
+    // object form.
+    let data = &parsed["data"];
+    assert_eq!(
+        data["current"].as_str(),
+        Some("bge-large"),
+        "data.current must reflect seeded model. stdout={stdout} stderr={stderr}"
+    );
+    let arr = data["models"].as_array().unwrap_or_else(|| {
+        panic!("data.models must be a JSON array. stdout={stdout} stderr={stderr}")
+    });
     assert!(
         arr.len() >= 3,
         "expected at least 3 presets (bge-large, e5-base, v9-200k); got {arr:?}"

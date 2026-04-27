@@ -98,7 +98,8 @@ fn detect_dead_clusters<Mode>(
     // Group by file
     let mut by_file: HashMap<String, usize> = HashMap::new();
     for dead in &confident {
-        let file = dead.chunk.file.display().to_string();
+        // P3.33: emit forward-slash paths so JSON consumers don't see Windows backslashes.
+        let file = crate::normalize_path(&dead.chunk.file);
         *by_file.entry(file).or_default() += 1;
     }
 

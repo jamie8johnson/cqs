@@ -217,10 +217,13 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
 
     if config.references.is_empty() {
         if want_json {
-            // API-V1.29-2: emit empty-list envelope so agents piping through
-            // `jq` don't choke on "No references configured." text.
-            let empty: Vec<RefListEntry> = Vec::new();
-            crate::cli::json_envelope::emit_json(&empty)?;
+            // API-V1.29-2 + P2.15: emit `{references: []}` envelope so list
+            // commands share a uniform `data.<plural>` accessor across
+            // ref/model/project/slot/notes — matches the standard
+            // documented in `docs/audit-fix-prompts.md::P2.15`.
+            crate::cli::json_envelope::emit_json(&serde_json::json!({
+                "references": Vec::<RefListEntry>::new(),
+            }))?;
         } else {
             println!("No references configured.");
         }
@@ -258,7 +261,11 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
                 }
             })
             .collect();
-        crate::cli::json_envelope::emit_json(&refs)?;
+        // P2.15: wrap in `{references: [...]}` so the list shape matches
+        // slot/project/notes envelopes.
+        crate::cli::json_envelope::emit_json(&serde_json::json!({
+            "references": refs,
+        }))?;
         return Ok(());
     }
 

@@ -142,10 +142,18 @@ fn cmd_model_show(json: bool) -> Result<()> {
     let index_path = cqs::resolve_index_db(&cqs_dir);
 
     if !index_path.exists() {
-        bail!(
+        // P2.11: route bail through the JSON envelope when --json is set so
+        // `cqs --json model show` keeps the canonical {data, error, version}
+        // shape instead of dumping anyhow text to stderr.
+        let msg = format!(
             "No index at {}. Run `cqs init && cqs index` first.",
             index_path.display()
         );
+        if json {
+            crate::cli::json_envelope::emit_json_error("no_index", &msg)?;
+            std::process::exit(1);
+        }
+        bail!("{msg}");
     }
 
     let store = Store::open_readonly(&index_path)
@@ -227,7 +235,14 @@ fn cmd_model_list(json: bool) -> Result<()> {
         .collect();
 
     if json {
-        crate::cli::json_envelope::emit_json(&entries)?;
+        // P2.15: wrap in `{models: [...], current: <name>}` so list-shape
+        // envelopes match ref/project/slot. The per-row `current` bool stays
+        // for backward compatibility but the top-level field is canonical.
+        let current_name = entries.iter().find(|e| e.current).map(|e| e.name.clone());
+        crate::cli::json_envelope::emit_json(&serde_json::json!({
+            "models": entries,
+            "current": current_name,
+        }))?;
     } else {
         println!("{:<12} {:<6} {:<3} REPO", "NAME", "DIM", "CUR");
         println!("{}", "-".repeat(60));
@@ -253,22 +268,37 @@ fn cmd_model_swap(cli: &Cli, preset: &str, no_backup: bool, json: bool) -> Resul
     let _span = tracing::info_span!("cmd_model_swap", preset, no_backup).entered();
 
     // 1. Validate preset.
-    let new_cfg = ModelConfig::from_preset(preset).ok_or_else(|| {
-        let valid = ModelConfig::PRESET_NAMES.join(", ");
-        anyhow::anyhow!(
-            "Unknown preset '{preset}'. Valid presets: {valid}. Run `cqs model list` for repos."
-        )
-    })?;
+    // P2.11: emit JSON envelope error on bad preset / missing index so
+    // `cqs --json model swap …` returns structured output, not text.
+    let new_cfg = match ModelConfig::from_preset(preset) {
+        Some(c) => c,
+        None => {
+            let valid = ModelConfig::PRESET_NAMES.join(", ");
+            let msg = format!(
+                "Unknown preset '{preset}'. Valid presets: {valid}. Run `cqs model list` for repos."
+            );
+            if json {
+                crate::cli::json_envelope::emit_json_error("unknown_preset", &msg)?;
+                std::process::exit(1);
+            }
+            bail!("{msg}");
+        }
+    };
 
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs::resolve_index_db(&cqs_dir);
 
     if !index_path.exists() {
-        bail!(
+        let msg = format!(
             "No index at {}. Run `cqs init && cqs index --model {preset}` first.",
             index_path.display()
         );
+        if json {
+            crate::cli::json_envelope::emit_json_error("no_index", &msg)?;
+            std::process::exit(1);
+        }
+        bail!("{msg}");
     }
 
     // 2. Read current model. Used both for the no-op short-circuit and the
@@ -484,6 +514,11 @@ fn reindex_with_new_model(cli: &Cli, new_cfg: ModelConfig) -> Result<()> {
         #[cfg(feature = "llm-summaries")]
         max_hyde: None,
         umap: false,
+        // P2.12: model swap drives a programmatic reindex; we never want
+        // the swap path to spit a JSON envelope to stdout (the caller is
+        // already mid-text-rendering). Keep the inner index run on the
+        // text path regardless of the outer `--json`.
+        json: false,
     };
 
     cmd_index(&new_cli, &args)

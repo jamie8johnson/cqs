@@ -75,7 +75,7 @@ impl HnswIndex {
 
         let (id_map, data, nb_elem) = super::prepare_index_data(embeddings, dim)?;
 
-        tracing::info!("Building HNSW index with {} vectors", nb_elem);
+        tracing::info!(count = nb_elem, "Building HNSW index");
 
         // Create HNSW with cosine distance
         let mut hnsw = Hnsw::new(
@@ -233,7 +233,7 @@ impl HnswIndex {
             });
         }
 
-        tracing::info!("HNSW index built: {} vectors", id_map.len());
+        tracing::info!(count = id_map.len(), "HNSW index built");
 
         Ok(Self {
             inner: HnswInner::Owned(hnsw),

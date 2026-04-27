@@ -78,7 +78,8 @@ impl LocalProvider {
     /// Build a `LocalProvider` from a resolved [`LlmConfig`].
     ///
     /// Reads `CQS_LLM_API_KEY` (optional), `CQS_LOCAL_LLM_CONCURRENCY`
-    /// (default 4, clamped [1,64]), `CQS_LOCAL_LLM_TIMEOUT_SECS` (default 120).
+    /// (default 4, clamped [1,16] post-P3.47), `CQS_LOCAL_LLM_TIMEOUT_SECS`
+    /// (default 120).
     ///
     /// # Errors
     ///
@@ -88,15 +89,43 @@ impl LocalProvider {
     pub fn new(llm_config: LlmConfig) -> Result<Self, LlmError> {
         let _span = tracing::info_span!("local_provider_new").entered();
 
+        // P2.32: bail if `api_base` isn't HTTP/HTTPS. `reqwest` will fail
+        // *every* request individually, burning the full retry budget per
+        // item before surfacing the error — a 7.5s stall per call instead
+        // of a fail-fast at construction. Lightweight scheme check avoids
+        // pulling `url` as a direct dep just for this guard.
+        let api_base_lc = llm_config.api_base.to_ascii_lowercase();
+        if !api_base_lc.starts_with("http://") && !api_base_lc.starts_with("https://") {
+            return Err(LlmError::Api {
+                status: 0,
+                message: format!(
+                    "CQS_LLM_API_BASE must use http:// or https://; got: {}",
+                    llm_config.api_base
+                ),
+            });
+        }
+
         let concurrency = local_concurrency();
         let timeout = local_timeout();
         let api_key = std::env::var("CQS_LLM_API_KEY")
             .ok()
             .filter(|s| !s.is_empty());
 
+        // P2.36: align production redirect policy with the doctor probe
+        // (`Policy::limited(2)`). Same-origin HTTP→HTTPS redirects on
+        // bind-localhost are benign; a strict `none()` here disagreed
+        // with what doctor reported reachable, surprising operators.
+        //
+        // P3.48: cap idle pool to `concurrency` per-host with a 30s idle
+        // timeout. The default reqwest pool is unbounded with a 90s idle
+        // timeout — long-running indexing sessions accumulated stale
+        // sockets against vLLM/llama.cpp servers, leaking FDs without a
+        // matching outbound traffic spike.
         let http = Client::builder()
             .timeout(timeout)
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(reqwest::redirect::Policy::limited(2))
+            .pool_max_idle_per_host(concurrency)
+            .pool_idle_timeout(Duration::from_secs(30))
             .build()?;
 
         tracing::info!(
@@ -138,19 +167,25 @@ impl LocalProvider {
 
         let batch_id = uuid::Uuid::new_v4().to_string();
 
+        // P2.32: clamp worker count to item count. Submitting 1 item to 64
+        // workers spawned 63 idle threads that immediately exited via channel
+        // disconnect, but each one still tripped the OS thread create/destroy
+        // path. Cap at items.len() with a floor of 1.
+        let workers = self.concurrency.min(items.len()).max(1);
+
         let _span = tracing::info_span!(
             "local_batch_submit",
             provider = "local",
             model = %self.model,
             n = items.len(),
-            concurrency = self.concurrency,
+            concurrency = workers,
             batch_id = %batch_id,
             purpose,
         )
         .entered();
 
         let start = Instant::now();
-        let (tx, rx) = bounded::<&BatchSubmitItem>(self.concurrency.max(8) * 2);
+        let (tx, rx) = bounded::<&BatchSubmitItem>(workers.max(8) * 2);
 
         let results: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
         // Track auth failures across workers — if *every* item that attempted
@@ -163,7 +198,7 @@ impl LocalProvider {
         std::thread::scope(|s| {
             // Spawn workers first so the channel has consumers by the time the
             // feeder starts sending.
-            for worker_id in 0..self.concurrency {
+            for worker_id in 0..workers {
                 let rx_worker = rx.clone();
                 let url = format!("{}/chat/completions", self.api_base);
                 let results_ref = &results;
@@ -268,15 +303,17 @@ impl LocalProvider {
         // `std::thread::scope` guarantees all workers have joined at this
         // point — no dangling threads, no lost results.
 
-        let ok = *succeeded.lock().unwrap();
-        let err = *failed.lock().unwrap();
+        // Recover counters even on poison — counts are advisory and dropping
+        // them to 0 would mask real progress in the "complete" log.
+        let ok = *succeeded.lock().unwrap_or_else(|p| p.into_inner());
+        let err = *failed.lock().unwrap_or_else(|p| p.into_inner());
         let elapsed_ms = start.elapsed().as_millis() as u64;
 
         // Fatal-batch check: if every item that talked to the server saw
         // 401/403 on its first request, the credentials are wrong — abort
         // with a specific error instead of silently returning an empty stash.
-        let auth_fail = *auth_failures.lock().unwrap();
-        let auth_attempt = *auth_attempts.lock().unwrap();
+        let auth_fail = *auth_failures.lock().unwrap_or_else(|p| p.into_inner());
+        let auth_attempt = *auth_attempts.lock().unwrap_or_else(|p| p.into_inner());
         if auth_attempt > 0 && auth_fail == auth_attempt {
             tracing::error!(
                 url = %self.api_base,
@@ -301,12 +338,58 @@ impl LocalProvider {
             "local batch complete"
         );
 
-        // Move results into the stash under the batch id.
-        let results_map = results.into_inner().unwrap_or_default();
-        self.stash
-            .lock()
-            .unwrap()
-            .insert(batch_id.clone(), results_map);
+        // Move results into the stash under the batch id. On poison we recover
+        // the partially-populated map rather than silently substituting an
+        // empty one — losing partial results is worse than the panic risk.
+        let results_map = match results.into_inner() {
+            Ok(m) => m,
+            Err(poisoned) => {
+                tracing::error!(
+                    succeeded = ok,
+                    "results mutex poisoned during local batch — recovering inner state"
+                );
+                poisoned.into_inner()
+            }
+        };
+
+        // Invariant: if results_map.len() != ok, accounting drifted. Surface
+        // it loudly rather than shipping a short stash silently.
+        if results_map.len() != ok {
+            tracing::error!(
+                map_len = results_map.len(),
+                succeeded = ok,
+                "local batch accounting drift: results map size != succeeded count"
+            );
+            return Err(LlmError::BatchFailed(format!(
+                "local batch accounting drift: ok={ok} map_len={}",
+                results_map.len()
+            )));
+        }
+
+        // P2.73: cap the stash so a long-running daemon submitting batches
+        // without ever calling `fetch_batch_results` doesn't grow memory
+        // unbounded. 128 batches is plenty — production callers drain in
+        // submit order, so when this cap fires it's a leak signal.
+        const MAX_STASH_BATCHES: usize = 128;
+        let mut stash = self.stash.lock().unwrap_or_else(|p| p.into_inner());
+        while stash.len() >= MAX_STASH_BATCHES {
+            // Pick the lexicographically smallest UUID as a stable evictee —
+            // HashMap insertion order isn't preserved, and the alternative
+            // (rebuild as IndexMap) is more invasive than this finding warrants.
+            let stale_key = match stash.keys().min() {
+                Some(k) => k.clone(),
+                None => break,
+            };
+            stash.remove(&stale_key);
+            tracing::warn!(
+                batch_id = %stale_key,
+                cap = MAX_STASH_BATCHES,
+                "LocalProvider stash exceeded cap; evicting unfetched entry — \
+                 callers should drain via fetch_batch_results"
+            );
+        }
+        stash.insert(batch_id.clone(), results_map);
+        drop(stash);
 
         Ok(batch_id)
     }
@@ -387,13 +470,16 @@ impl LocalProvider {
 
                     // Track auth-failure statistics on the FIRST request only
                     // so we can abort the batch if every worker hit 401/403.
+                    // P2.35: recover poisoned mutexes via `into_inner` so an
+                    // earlier worker panic doesn't cascade into the rest of
+                    // the pool. Counters are advisory.
                     if is_first_attempt
                         && (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN)
                     {
-                        *auth_attempts.lock().unwrap() += 1;
-                        *auth_failures.lock().unwrap() += 1;
+                        *auth_attempts.lock().unwrap_or_else(|p| p.into_inner()) += 1;
+                        *auth_failures.lock().unwrap_or_else(|p| p.into_inner()) += 1;
                     } else if is_first_attempt {
-                        *auth_attempts.lock().unwrap() += 1;
+                        *auth_attempts.lock().unwrap_or_else(|p| p.into_inner()) += 1;
                     }
 
                     // Retriable: 429 (rate limit), 5xx. Skip: 4xx ≠ 429.
@@ -464,15 +550,54 @@ impl LocalProvider {
     }
 }
 
+/// Hard cap on response body size (RB-V1.30-1 / P1.10).
+///
+/// Summary outputs are typically a few hundred bytes; 4 MiB is ~1000× headroom.
+/// Larger bodies are a sign of a misbehaving or hostile endpoint and we'd
+/// rather error than OOM the daemon. Up to `local_concurrency()` (≤16) workers
+/// can be reading concurrently, so an unbounded read multiplies the risk.
+///
+/// Override via `CQS_LOCAL_LLM_MAX_BODY_BYTES` (must be > 0).
+///
+/// Not memoised: read on each response so tests can flip the cap without a
+/// process-wide cache. The env-var cost is negligible compared to the HTTP
+/// request that just completed.
+fn local_max_body_bytes() -> usize {
+    std::env::var("CQS_LOCAL_LLM_MAX_BODY_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(4 * 1024 * 1024)
+}
+
 /// Parse an OpenAI-compat `/v1/chat/completions` response, extracting the
 /// first choice's `message.content`.
 ///
 /// Returns:
 /// - `Ok(Some(text))` — non-empty content present
 /// - `Ok(None)` — valid JSON but `choices` is empty or `content` is null/empty
-/// - `Err(_)` — malformed JSON
+/// - `Err(_)` — malformed JSON or body exceeds [`local_max_body_bytes`]
+///
+/// The body is read with a length cap to defend against hostile / misbehaving
+/// servers that return multi-GB responses (P1.10 / RB-V1.30-1).
 fn parse_choices_content(resp: reqwest::blocking::Response) -> Result<Option<String>, LlmError> {
-    let body: serde_json::Value = resp.json()?;
+    use std::io::Read;
+    let cap = local_max_body_bytes();
+    let mut buf = Vec::with_capacity(8 * 1024);
+    // Read one byte beyond the cap so we can distinguish "exactly cap" from
+    // "exceeded cap".
+    resp.take(cap as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| LlmError::BatchFailed(format!("response body read failed: {e}")))?;
+    if buf.len() > cap {
+        return Err(LlmError::BatchFailed(format!(
+            "response body exceeds cap ({} > {} bytes)",
+            buf.len(),
+            cap
+        )));
+    }
+    let body: serde_json::Value = serde_json::from_slice(&buf)
+        .map_err(|e| LlmError::BatchFailed(format!("response body not valid JSON: {e}")))?;
     let content = body
         .get("choices")
         .and_then(|v| v.as_array())
@@ -487,10 +612,20 @@ fn parse_choices_content(resp: reqwest::blocking::Response) -> Result<Option<Str
     }
 }
 
-/// Read up to 256 bytes from an HTTP error response body for log context.
+/// Read up to 2 KiB from an HTTP error response body for log context.
 /// Returns the empty string if the body can't be read or is non-UTF-8.
+///
+/// Hard-capped at 2 KiB to bound log spam and prevent OOM on hostile error
+/// bodies (P1.10 / RB-V1.30-1). The caller further trims to the first 256
+/// chars so logs don't blow up either.
 fn body_preview(resp: reqwest::blocking::Response) -> String {
-    let body = resp.text().unwrap_or_default();
+    use std::io::Read;
+    const PREVIEW_CAP: u64 = 2 * 1024;
+    let mut buf = Vec::with_capacity(PREVIEW_CAP as usize);
+    if resp.take(PREVIEW_CAP).read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    let body = String::from_utf8_lossy(&buf);
     let cut = body
         .char_indices()
         .nth(256)
@@ -540,10 +675,18 @@ impl BatchProvider for LocalProvider {
     }
 
     fn fetch_batch_results(&self, batch_id: &str) -> Result<HashMap<String, String>, LlmError> {
-        // Drain the stash entry — returning empty if the id was already
-        // fetched or never existed.
-        let mut stash = self.stash.lock().unwrap();
-        Ok(stash.remove(batch_id).unwrap_or_default())
+        // P2.18: distinguish "already fetched / never submitted / silently
+        // evicted" from "no completed items in this batch" — the former is
+        // a hard error callers must surface; collapsing to an empty map hid
+        // data drift behind a successful return. P1.9: recover poisoned
+        // mutex via `into_inner` instead of cascading the panic.
+        let mut stash = self.stash.lock().unwrap_or_else(|p| p.into_inner());
+        match stash.remove(batch_id) {
+            Some(m) => Ok(m),
+            None => Err(LlmError::BatchNotFound(format!(
+                "local batch_id {batch_id} not found in stash — already fetched, evicted by stash cap, or submission silently lost results"
+            ))),
+        }
     }
 
     fn is_valid_batch_id(&self, id: &str) -> bool {
@@ -868,9 +1011,11 @@ mod tests {
         let first = provider.fetch_batch_results(&batch_id).unwrap();
         assert_eq!(first.len(), 1);
 
-        // Second fetch returns empty — stash was drained.
-        let second = provider.fetch_batch_results(&batch_id).unwrap();
-        assert!(second.is_empty());
+        // P2.18: second fetch returns BatchNotFound — distinguishes
+        // "already fetched" from "no items completed". Callers can no
+        // longer mistake a drained id for an empty batch.
+        let second = provider.fetch_batch_results(&batch_id);
+        assert!(matches!(second, Err(LlmError::BatchNotFound(_))));
 
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
     }
@@ -1064,14 +1209,16 @@ mod tests {
         assert_eq!(got, 1);
     }
 
-    // ===== Sad-path test 22: concurrency=9999 clamps to 64 =====
+    // ===== Sad-path test 22: concurrency=9999 clamps to 16 =====
+    // P3.47: ceiling reduced 64 → 16 — local endpoints saturate well
+    // before 16 workers and the unbounded shape was just stack churn.
     #[test]
-    fn concurrency_too_high_clamps_to_64() {
+    fn concurrency_too_high_clamps_to_16() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "9999");
         let got = local_concurrency();
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
-        assert_eq!(got, 64);
+        assert_eq!(got, 16);
     }
 
     // ===== Trait-level test: is_valid_batch_id =====
@@ -1138,6 +1285,78 @@ mod tests {
         assert_eq!(results.len(), 4);
         // Callback attempted 4×; panics caught.
         assert_eq!(cb_fires.load(Ordering::SeqCst), 4);
+
+        std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
+    }
+
+    // ===== P1.10 / RB-V1.30-1: oversized body capped =====
+    //
+    // A 200 OK response whose JSON body exceeds CQS_LOCAL_LLM_MAX_BODY_BYTES
+    // must be rejected (item recorded as failed, no panic, no OOM). We force
+    // a tiny cap (1 KiB) and serve a 64 KiB body so the test stays fast.
+    #[test]
+    fn oversized_response_body_capped_at_max() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
+        std::env::set_var("CQS_LOCAL_LLM_MAX_BODY_BYTES", "1024");
+        std::env::remove_var("CQS_LLM_API_KEY");
+
+        // Build a 200 OK response with a content field big enough to push the
+        // total JSON body well past the 1 KiB cap.
+        let huge: String = "x".repeat(64 * 1024);
+        let server = httpmock::MockServer::start();
+        let _m = server.mock(|when, then| {
+            when.method("POST").path("/v1/chat/completions");
+            then.status(200).json_body(serde_json::json!({
+                "choices": [{ "message": { "content": huge.clone() } }]
+            }));
+        });
+
+        let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
+        let provider = LocalProvider::new(config).unwrap();
+
+        // submit_batch_prebuilt must still succeed (returns a batch id) — the
+        // single item failed during parse and was recorded as failed, not
+        // bubbled up. Successful items count = 0; stash is empty.
+        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let results = provider.fetch_batch_results(&batch_id).unwrap();
+        assert!(
+            results.is_empty(),
+            "oversized body must not produce a stashed result, got: {:?}",
+            results
+        );
+
+        std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
+        std::env::remove_var("CQS_LOCAL_LLM_MAX_BODY_BYTES");
+    }
+
+    // ===== P1.10 / RB-V1.30-1: 4xx with large body — body_preview is capped =====
+    //
+    // body_preview() reads at most 2 KiB regardless of the response size. A
+    // misbehaving server returning a 1 MiB error body must not OOM the worker
+    // and must complete the non-retriable-4xx skip path. We just verify the
+    // batch finishes and the item is recorded as failed.
+    #[test]
+    fn fourxx_with_large_body_does_not_buffer_entire_body() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("CQS_LOCAL_LLM_CONCURRENCY", "1");
+        std::env::remove_var("CQS_LLM_API_KEY");
+
+        let huge: String = "y".repeat(1024 * 1024);
+        let server = httpmock::MockServer::start();
+        let _m = server.mock(|when, then| {
+            when.method("POST").path("/v1/chat/completions");
+            then.status(400).body(huge.clone());
+        });
+
+        let config = make_config(&format!("{}/v1", server.base_url()), "test-model");
+        let provider = LocalProvider::new(config).unwrap();
+        let batch_id = provider.submit_batch_prebuilt(&make_items(1), 100).unwrap();
+        let results = provider.fetch_batch_results(&batch_id).unwrap();
+        assert!(
+            results.is_empty(),
+            "4xx item must not produce a stashed result"
+        );
 
         std::env::remove_var("CQS_LOCAL_LLM_CONCURRENCY");
     }

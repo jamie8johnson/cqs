@@ -140,6 +140,10 @@ pub(super) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new((
 /// Restored to 64 with debug logging (PERF-45 investigation). If it crashes again,
 /// run with RUST_LOG=debug to capture batch_size/max_char_len/total_chars at failure.
 /// Configurable via `CQS_EMBED_BATCH_SIZE` environment variable.
+///
+/// Legacy entry point — kept for callers that don't have a `ModelConfig`
+/// in scope. New sites should prefer [`embed_batch_size_for`] which scales
+/// with the active model's `dim` and `max_seq_length`.
 pub(crate) fn embed_batch_size() -> usize {
     match std::env::var("CQS_EMBED_BATCH_SIZE") {
         Ok(val) => match val.parse::<usize>() {
@@ -157,4 +161,47 @@ pub(crate) fn embed_batch_size() -> usize {
         },
         Err(_) => 64,
     }
+}
+
+/// P2.41 — scale the embed batch size with the active model's dim & seq.
+///
+/// BGE-large (1024 dim, 512 seq) at batch=64 ≈ 130 MB per forward-pass tensor
+/// — the empirical sweet spot on RTX 4060 8 GB. Nomic-coderank (768 dim,
+/// 2048 seq) at batch=64 OOMs the same GPU because the tensor blows up to
+/// ~390 MB.
+///
+/// Holding the per-tensor footprint roughly constant across models:
+///   batch * seq * dim * 4 bytes ≈ 130 MB
+/// → `batch_baseline * (1024/dim) * (512/seq)` rounded to a power of 2,
+/// clamped to `[2, 256]`. The env override `CQS_EMBED_BATCH_SIZE` takes
+/// priority — operators with workloads they understand can pin a value.
+#[allow(dead_code)] // P2.41: opt-in helper; pipeline migration is a follow-on PR.
+pub(crate) fn embed_batch_size_for(model: &cqs::embedder::ModelConfig) -> usize {
+    if let Ok(val) = std::env::var("CQS_EMBED_BATCH_SIZE") {
+        if let Ok(size) = val.parse::<usize>() {
+            if size > 0 {
+                tracing::info!(batch_size = size, "CQS_EMBED_BATCH_SIZE override");
+                return size;
+            }
+        }
+        tracing::warn!(
+            value = %val,
+            "Invalid CQS_EMBED_BATCH_SIZE, falling back to model-derived default"
+        );
+    }
+    let dim = model.dim.max(1) as f64;
+    let seq = model.max_seq_length.max(1) as f64;
+    let baseline = 64.0_f64;
+    let dim_factor = 1024.0 / dim;
+    let seq_factor = (512.0 / seq).max(0.25);
+    let scaled = (baseline * dim_factor * seq_factor).max(1.0) as usize;
+    let rounded = scaled.next_power_of_two().clamp(2, 256);
+    tracing::debug!(
+        dim = model.dim,
+        seq = model.max_seq_length,
+        scaled,
+        rounded,
+        "embed_batch_size_for: model-derived default"
+    );
+    rounded
 }

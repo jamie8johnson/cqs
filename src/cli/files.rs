@@ -138,6 +138,29 @@ pub(crate) fn try_acquire_index_lock(cqs_dir: &Path) -> Result<Option<std::fs::F
 /// Acquire file lock to prevent concurrent indexing
 /// Writes PID to lock file for stale lock detection.
 ///
+/// # Concurrency contract by platform (P3.35)
+///
+/// `index.lock` uses Rust 1.89's `File::try_lock` (the std wrapper around
+/// `flock` on Unix and `LockFileEx` on Windows). The two platforms enforce
+/// fundamentally different contracts under the same API:
+///
+/// - **Linux / macOS — advisory.** `flock` only blocks other callers that
+///   also call `flock`/`File::try_lock`. A non-cqs writer (a test fixture
+///   that opens `index.db` directly, a stray `sqlite3` shell, an editor
+///   "save and reload") can ignore the lock and corrupt the DB. The lock
+///   protects cqs-vs-cqs concurrency only.
+/// - **Windows — mandatory.** `LockFileEx` is enforced by the kernel; any
+///   process that opens `index.db` while cqs holds the lock can see
+///   `ERROR_SHARING_VIOLATION`. Third-party tools (DB browsers, backup
+///   agents, antivirus on-access scanners) may fail with confusing errors.
+/// - **WSL `/mnt/c/` (drvfs).** Looks like Linux for the syscall but the
+///   underlying file is on NTFS. Treat the call as Linux-advisory for cqs
+///   semantics, but expect Windows-side processes to see the file as
+///   mandatorily locked.
+///
+/// On Windows we emit a one-shot `tracing::warn!` at first acquisition so
+/// operators can correlate third-party "sharing violation" errors with cqs.
+///
 /// P2 #31 (post-v1.27.0 audit): does NOT remove the lock file inode on
 /// stale-PID detection. Removing the inode races with peers in three windows:
 ///   1. PID lookup is approximate on Linux (zombies / PID namespaces /
@@ -160,6 +183,19 @@ pub(crate) fn try_acquire_index_lock(cqs_dir: &Path) -> Result<Option<std::fs::F
 /// also fails we return a clearer error mentioning the PID and the manual
 /// remediation path.
 pub(crate) fn acquire_index_lock(cqs_dir: &Path) -> Result<std::fs::File> {
+    // P3.35: emit a one-shot warning on Windows so operators can correlate
+    // third-party "sharing violation" errors with cqs holding index.lock.
+    #[cfg(windows)]
+    {
+        static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        WARNED.get_or_init(|| {
+            tracing::warn!(
+                "index.lock is mandatory on Windows — third-party tools opening \
+                 index.db may fail with sharing violations while cqs is running"
+            );
+        });
+    }
+
     let lock_path = cqs_dir.join("index.lock");
     let mut retried = false;
 

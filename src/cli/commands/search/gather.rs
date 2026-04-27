@@ -197,7 +197,11 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
             query.cyan(),
         );
         if result.expansion_capped {
-            println!("{}", "Warning: expansion capped at 200 nodes".yellow());
+            let cap = cqs::gather_max_nodes();
+            println!(
+                "{}",
+                format!("Warning: expansion capped at {cap} nodes").yellow()
+            );
         }
         if result.search_degraded {
             println!(

@@ -36,28 +36,6 @@ pub struct CallContext {
     pub callees: Vec<String>,
 }
 
-/// Generate NL description enriched with call graph context.
-///
-/// Used in the second indexing pass. Appends caller/callee names to the base
-/// Compact description, filtered by IDF to suppress high-frequency utilities.
-pub fn generate_nl_with_call_context(
-    chunk: &Chunk,
-    ctx: &CallContext,
-    callee_doc_freq: &std::collections::HashMap<String, f32>,
-    max_callers: usize,
-    max_callees: usize,
-) -> String {
-    generate_nl_with_call_context_and_summary(
-        chunk,
-        ctx,
-        callee_doc_freq,
-        max_callers,
-        max_callees,
-        None,
-        None,
-    )
-}
-
 /// Generate NL with call context and optional LLM summary (SQ-6).
 ///
 /// If a summary is provided, it's prepended to the NL for maximum embedding weight.
@@ -190,6 +168,14 @@ pub fn generate_nl_description(chunk: &Chunk) -> String {
     generate_nl_with_template(chunk, NlTemplate::Compact)
 }
 
+/// P2.38: same as [`generate_nl_description`] but takes the active model's
+/// `max_seq_length` so the section-chunk content budget scales with model
+/// capacity. New embedding-pipeline callers should prefer this over the
+/// env-only path.
+pub fn generate_nl_description_with_seq_len(chunk: &Chunk, model_max_seq_len: usize) -> String {
+    generate_nl_with_template_and_seq_len(chunk, NlTemplate::Compact, model_max_seq_len)
+}
+
 /// Generate NL description using a specific template variant.
 /// Check if an enrichment layer is skipped via CQS_SKIP_ENRICHMENT env var.
 /// Value is comma-separated: "signatures,callgraph,parent,filecontext,doc,summary,hyde"
@@ -206,7 +192,35 @@ fn is_enrichment_skipped(layer: &str) -> bool {
     skipped.iter().any(|s| s == layer)
 }
 
+/// P2.38: legacy 1-arg API kept for compatibility — defers to the
+/// `_with_seq_len` variant using the env override (or 512 default).
 pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String {
+    let model_max_seq = std::env::var("CQS_MAX_SEQ_LENGTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(512);
+    generate_nl_with_template_and_seq_len(chunk, template, model_max_seq)
+}
+
+/// P2.38: new entry point that takes the active model's `max_seq_length`
+/// from `ModelConfig` instead of hardcoding 512. BGE-large/E5/v9-200k all
+/// use 512 (so behavior is unchanged), but nomic-coderank uses 2048; the
+/// env-only path capped that at 25% of model capacity.
+pub fn generate_nl_with_template_and_seq_len(
+    chunk: &Chunk,
+    template: NlTemplate,
+    model_max_seq_len: usize,
+) -> String {
+    // P3.9: a single debug-level span at this root site covers all four NL
+    // generators (`generate_nl_description`, `generate_nl_description_with_seq_len`,
+    // `generate_nl_with_template`, and `_with_template_and_seq_len`).
+    let _span = tracing::debug_span!(
+        "generate_nl",
+        template = ?template,
+        chunk_kind = ?chunk.chunk_type,
+        len = chunk.content.len(),
+    )
+    .entered();
     // Section chunks (markdown): breadcrumb + name + content preview.
     // Markdown IS natural language, so we embed more content than code chunks.
     // Embedding models handle ~512 tokens (~2000 chars). Budget:
@@ -217,15 +231,11 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
             parts.push(chunk.signature.clone());
         }
         parts.push(chunk.name.clone());
-        // ~4 chars per token. Scale with model's max_seq_length via env override.
-        // Default 512 → 1800 chars. Larger models (8192 → ~32000 chars) get more context.
-        static MAX_SEQ: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        let max_seq = *MAX_SEQ.get_or_init(|| {
-            std::env::var("CQS_MAX_SEQ_LENGTH")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(512)
-        });
+        // ~4 chars per token. Scale with caller-supplied `model_max_seq_len`
+        // (P2.38). Env override `CQS_MAX_SEQ_LENGTH` still wins via the
+        // legacy entry point above — kept for tests and ad-hoc tuning.
+        // Default model 512 → 1800 chars; nomic-coderank 2048 → 8000 chars.
+        let max_seq = model_max_seq_len.max(64);
         let char_budget = max_seq.saturating_mul(4).saturating_sub(200).max(400);
         let preview: String = strip_markdown_noise(&chunk.content)
             .chars()
@@ -865,7 +875,7 @@ mod tests {
             callees: vec![],
         };
         let freq = std::collections::HashMap::new();
-        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
         assert!(nl.contains("Called by: main, serve"), "got: {}", nl);
         assert!(!nl.contains("Calls:"), "got: {}", nl);
     }
@@ -885,7 +895,7 @@ mod tests {
         freq.insert("log".to_string(), 0.15_f32); // above 10% threshold — filtered
         freq.insert("validate".to_string(), 0.05_f32); // below — kept
         freq.insert("save".to_string(), 0.02_f32); // below — kept
-        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
         assert!(nl.contains("Calls: validate, save"), "got: {}", nl);
         assert!(!nl.contains("log"), "log should be filtered, got: {}", nl);
     }
@@ -903,7 +913,7 @@ mod tests {
             callees: vec![],
         };
         let freq = std::collections::HashMap::new();
-        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 2, 5);
+        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 2, 5, None, None);
         assert!(nl.contains("Called by: a, b"), "got: {}", nl);
         assert!(!nl.contains(", c"), "c should be truncated, got: {}", nl);
     }
@@ -914,7 +924,8 @@ mod tests {
         let ctx = CallContext::default();
         let freq = std::collections::HashMap::new();
         let base = generate_nl_description(&chunk);
-        let enriched = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        let enriched =
+            generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
         assert_eq!(base, enriched);
     }
 
@@ -970,7 +981,7 @@ mod tests {
         freq.insert("log".to_string(), 0.15);
         freq.insert("rare_fn".to_string(), 0.02);
 
-        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        let nl = generate_nl_with_call_context_and_summary(&chunk, &ctx, &freq, 5, 5, None, None);
 
         // "log" should be filtered out (>= 0.10 threshold)
         assert!(

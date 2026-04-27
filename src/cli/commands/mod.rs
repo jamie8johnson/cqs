@@ -391,14 +391,22 @@ pub(crate) fn token_pack<T>(
             .then(a.cmp(&b))
     });
 
-    // Greedy pack in score order, tracking which indices to keep
+    // Greedy pack in score order, tracking which indices to keep.
+    //
+    // P1.18: when an oversized item appears mid-stream we `continue` rather
+    // than `break` so subsequent (smaller, lower-scored) items can still
+    // fit into the remaining budget. Score-ordered packing already prefers
+    // higher-relevance items; the greedy fall-through is the right rounding
+    // when one mid-list item won't fit.
     let mut used: usize = 0;
     let mut kept_any = false;
     let mut keep: Vec<bool> = vec![false; items.len()];
     for idx in order {
         let tokens = token_counts[idx] + json_overhead_per_item;
         if used + tokens > budget && kept_any {
-            break;
+            // Skip this oversized item but keep probing — smaller items
+            // later in score order may still fit.
+            continue;
         }
         if !kept_any && tokens > budget {
             // Always include at least one result, but cap at 10x budget to avoid

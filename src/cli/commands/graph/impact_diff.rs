@@ -52,7 +52,7 @@ pub(crate) fn cmd_impact_diff(
 
     // 5. Display
     if json {
-        let json_val = diff_impact_to_json(&result);
+        let json_val = diff_impact_to_json(&result)?;
         crate::cli::json_envelope::emit_json(&json_val)?;
     } else {
         display_diff_impact_text(&result, root);

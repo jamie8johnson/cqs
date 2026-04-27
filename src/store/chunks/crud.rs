@@ -392,15 +392,21 @@ impl Store<ReadWrite> {
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
 
+            // P3.40: TEMP TABLE is connection-scoped, not transaction-scoped.
+            // A prior call on the same pooled connection (or a rollback path
+            // that didn't reach the trailing DROP) can leave a stale
+            // `_update_umap` with the wrong row count. DROP first, then
+            // CREATE without IF NOT EXISTS so we always start from an empty
+            // table — no DELETE pre-clear needed.
+            sqlx::query("DROP TABLE IF EXISTS _update_umap")
+                .execute(&mut *tx)
+                .await?;
             sqlx::query(
-                "CREATE TEMP TABLE IF NOT EXISTS _update_umap \
+                "CREATE TEMP TABLE _update_umap \
                  (id TEXT PRIMARY KEY, umap_x REAL NOT NULL, umap_y REAL NOT NULL)",
             )
             .execute(&mut *tx)
             .await?;
-            sqlx::query("DELETE FROM _update_umap")
-                .execute(&mut *tx)
-                .await?;
 
             use crate::store::helpers::sql::max_rows_per_statement;
             const BATCH_SIZE: usize = max_rows_per_statement(3);
@@ -500,6 +506,25 @@ impl Store<ReadWrite> {
     /// it can outlive any `&Store` reference on the caller's stack. Errors on
     /// individual writes are logged at `warn!` and swallowed — losing one
     /// streamed summary must not abort the batch.
+    /// P2.60 — known issue: this callback writes through `pool` directly,
+    /// bypassing the in-process `WRITE_LOCK` that every other Store mutator
+    /// acquires via `begin_write()`. Concurrent `reindex` (which holds the
+    /// lock for many seconds) contends with these per-row implicit-tx writes
+    /// for SQLite's exclusive lock, producing SQLITE_BUSY backoff and one
+    /// fsync per row.
+    ///
+    /// scope=structural — the right fix per the audit is a buffered queue
+    /// drained inside `begin_write()`. That requires either threading a
+    /// `&Store` lifetime through the boxed callback (currently the closure
+    /// only captures `pool` + `rt` so it can outlive the caller's stack
+    /// frame) or exposing `WRITE_LOCK` through a public `Arc<Mutex<()>>`
+    /// accessor on `Store` and synchronizing the callback against it from
+    /// outside.
+    ///
+    /// Interim mitigation: per-row failures are logged and swallowed so
+    /// SQLITE_BUSY surfaces as visible noise; the LLM batch fetch retry path
+    /// (`fetch_batch_results`) re-persists the lost summaries on the next
+    /// drain. Ship the queue refactor as a follow-on PR.
     #[cfg(feature = "llm-summaries")]
     pub fn stream_summary_writer(
         &self,

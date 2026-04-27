@@ -27,7 +27,7 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use cqs::embedder::ModelConfig;
-use cqs::{Parser as CqParser, Store};
+use cqs::{panic_message, Parser as CqParser, Store};
 
 use embedding::{cpu_embed_stage, gpu_embed_stage};
 use parsing::{parser_stage, ParserStageContext};
@@ -218,17 +218,6 @@ pub(crate) fn run_index_pipeline(
     );
 
     Ok(stats)
-}
-
-/// Extract a human-readable message from a thread panic payload.
-fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic".to_string()
-    }
 }
 
 #[cfg(test)]

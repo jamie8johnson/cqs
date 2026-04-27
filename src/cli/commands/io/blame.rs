@@ -110,8 +110,12 @@ fn run_git_log_line_range(
         (start, end)
     };
 
-    // Normalize backslashes to forward slashes for git (PB-3: Windows compat)
-    let git_file = rel_file.replace('\\', "/");
+    // Normalize backslashes + strip Windows verbatim `\\?\` prefix for git.
+    // P3.37 (PB-3 follow-up): bare `replace('\\', "/")` turns `\\?\C:\...`
+    // into `//?/C:/...` which `git log -L start,end:<path>` parses as a
+    // pathspec containing a literal `?`. `normalize_slashes` strips the
+    // verbatim prefix first, so the resulting path matches the index entry.
+    let git_file = cqs::normalize_slashes(rel_file);
     let line_range = format!("{},{}:{}", start, end, git_file);
     let depth_str = depth.to_string();
 

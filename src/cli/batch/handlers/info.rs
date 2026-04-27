@@ -136,16 +136,10 @@ pub(in crate::cli::batch) fn dispatch_similar(
         .take(limit)
         .collect();
 
-    let json_results: Vec<serde_json::Value> = filtered
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "name": r.chunk.name,
-                "file": normalize_path(&r.chunk.file),
-                "score": r.score,
-            })
-        })
-        .collect();
+    // P2.1: emit canonical 9-field SearchResult shape so daemon/CLI parity holds.
+    // Previously the batch path emitted only {name, file, score}, drifting from
+    // the CLI's `r.to_json()` schema and breaking agents that expected uniform keys.
+    let json_results: Vec<serde_json::Value> = filtered.iter().map(|r| r.to_json()).collect();
 
     Ok(serde_json::json!({
         "results": json_results,
@@ -187,7 +181,7 @@ pub(in crate::cli::batch) fn dispatch_context(
         return Ok(crate::cli::commands::context::compact_to_json(
             &data,
             &normalized,
-        ));
+        )?);
     }
 
     if summary {
@@ -196,7 +190,7 @@ pub(in crate::cli::batch) fn dispatch_context(
         return Ok(crate::cli::commands::context::summary_to_json(
             &data,
             &normalized,
-        ));
+        )?);
     }
 
     // Full context -- with optional token packing
@@ -433,6 +427,92 @@ fn dispatch_read_focused(ctx: &BatchContext, focus: &str) -> Result<serde_json::
             "no_tests": h.test_count == 0,
         });
     }
+    // P2.23: surface warnings into the batch response as well so daemon
+    // consumers see why type-deps lookup may have come back empty.
+    if !result.warnings.is_empty() {
+        json["warnings"] = serde_json::json!(result.warnings);
+    }
 
     Ok(json)
+}
+
+// P2.79: TC-HAP — happy-path coverage for the embedder-free info dispatchers.
+// `dispatch_stats` was the only stats-shape test in the batch tree before this;
+// the integration suite (`tests/cli_batch_test.rs`) covers the dispatch line
+// parser but not the per-handler SQL → JSON contract. We pin
+// `dispatch_stats` here against a freshly-seeded store to catch any
+// regression in `build_stats` schema fields without paying the embedder
+// load cost.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::batch::create_test_context;
+    use cqs::embedder::Embedding;
+    use cqs::parser::{Chunk, ChunkType, Language};
+    use cqs::store::{ModelInfo, Store};
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn make_chunk(id: &str, name: &str) -> Chunk {
+        let content = format!("fn {name}() {{ }}");
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        Chunk {
+            id: id.to_string(),
+            file: PathBuf::from("src/lib.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {name}()"),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        }
+    }
+
+    fn seed_minimal_ctx() -> (TempDir, crate::cli::batch::BatchContext) {
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let embedding = Embedding::new(emb_vec);
+
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            let chunks = vec![(make_chunk("src/lib.rs:1:foo", "foo"), embedding)];
+            store.upsert_chunks_batch(&chunks, Some(0)).expect("upsert");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("ctx");
+        (dir, ctx)
+    }
+
+    #[test]
+    fn dispatch_stats_returns_expected_envelope_shape() {
+        let (_dir, ctx) = seed_minimal_ctx();
+        let json = dispatch_stats(&ctx).expect("dispatch_stats");
+        assert!(json.is_object(), "stats must be a JSON object, got: {json}");
+        // Pin the canonical CLI/daemon-parity field set the production
+        // `cmd_stats` emits — `total_chunks` is the smoke value.
+        let total = json
+            .get("total_chunks")
+            .unwrap_or_else(|| panic!("`total_chunks` missing in stats: {json}"));
+        assert!(
+            total.as_u64().is_some_and(|n| n >= 1),
+            "total_chunks must reflect the seeded chunk: got {total}"
+        );
+        // `errors` is always present (set from ctx.error_count, default 0).
+        assert!(
+            json.get("errors").and_then(|v| v.as_u64()).is_some(),
+            "stats must carry an `errors` field, got: {json}"
+        );
+    }
 }

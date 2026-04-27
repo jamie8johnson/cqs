@@ -113,6 +113,11 @@ pub(crate) fn build_file_note_header(
 pub(crate) struct FocusedReadResult {
     pub output: String,
     pub hints: Option<FunctionHints>,
+    /// P2.23: human-readable warnings emitted when an upstream batch query
+    /// returned `Err`. The previous `unwrap_or_else(_, HashMap::new())`
+    /// silently dropped type-definition lookups; agents now see exactly
+    /// what was missed instead of inferring it from absent JSON keys.
+    pub warnings: Vec<String>,
 }
 
 /// Build focused-read output: header + hints + notes + target + type deps.
@@ -227,12 +232,21 @@ pub(crate) fn build_focused_output<Mode>(
         .iter()
         .map(|t| t.type_name.as_str())
         .collect();
-    let batch_results = store
-        .search_by_names_batch(&type_names, 5)
-        .unwrap_or_else(|e| {
+    // P2.23: capture batch failure as a structured warning rather than
+    // silently empty the map. Type definitions still get omitted (the
+    // dependency surface is best-effort), but downstream JSON callers
+    // now see a `warnings` entry telling them why.
+    let mut warnings: Vec<String> = Vec::new();
+    let batch_results = match store.search_by_names_batch(&type_names, 5) {
+        Ok(m) => m,
+        Err(e) => {
             tracing::warn!(error = %e, "Failed to batch-lookup type definitions for focused read");
+            warnings.push(format!(
+                "search_by_names_batch failed: {e}; type definitions omitted"
+            ));
             std::collections::HashMap::new()
-        });
+        }
+    };
 
     for t in &filtered_types {
         let type_name = &t.type_name;
@@ -266,7 +280,11 @@ pub(crate) fn build_focused_output<Mode>(
         }
     }
 
-    Ok(FocusedReadResult { output, hints })
+    Ok(FocusedReadResult {
+        output,
+        hints,
+        warnings,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +314,12 @@ struct FocusedReadJsonOutput {
     content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     hints: Option<ReadHints>,
+    /// P2.23: warnings emitted by the underlying assembly (e.g.
+    /// `search_by_names_batch` failed). Mirrors `SummaryOutput::warnings`
+    /// per EH-V1.29-9 — agents need to distinguish "no type deps" from
+    /// "type-deps lookup failed silently".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
 }
 
 // ─── CLI commands ───────────────────────────────────────────────────────────
@@ -385,9 +409,14 @@ fn cmd_read_focused(
             focus: focus.to_string(),
             content: result.output,
             hints,
+            warnings: result.warnings.clone(),
         };
         crate::cli::json_envelope::emit_json(&output)?;
     } else {
+        // P2.23: surface warnings on stderr so non-JSON callers also see them.
+        for w in &result.warnings {
+            eprintln!("warning: {w}");
+        }
         print!("{}", result.output);
     }
 
@@ -424,6 +453,7 @@ mod tests {
                 no_callers: false,
                 no_tests: false,
             }),
+            warnings: Vec::new(),
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["focus"], "search");
@@ -431,6 +461,8 @@ mod tests {
         assert_eq!(json["hints"]["test_count"], 2);
         assert_eq!(json["hints"]["no_callers"], false);
         assert_eq!(json["hints"]["no_tests"], false);
+        // P2.23: warnings field omitted when empty.
+        assert!(json.get("warnings").is_none());
     }
 
     #[test]
@@ -439,10 +471,28 @@ mod tests {
             focus: "MyStruct".into(),
             content: "struct MyStruct {}".into(),
             hints: None,
+            warnings: Vec::new(),
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["focus"], "MyStruct");
         assert!(json.get("hints").is_none());
+    }
+
+    /// P2.23 regression-pin: `warnings` populated when batch lookup fails.
+    /// Verified at the JSON-shape level here; the production wiring goes
+    /// through `build_focused_output` which has integration coverage.
+    #[test]
+    fn focused_read_output_with_warnings() {
+        let output = FocusedReadJsonOutput {
+            focus: "MyStruct".into(),
+            content: "struct MyStruct {}".into(),
+            hints: None,
+            warnings: vec!["search_by_names_batch failed: db locked".into()],
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        let warns = json["warnings"].as_array().unwrap();
+        assert_eq!(warns.len(), 1);
+        assert!(warns[0].as_str().unwrap().contains("db locked"));
     }
 
     /// SEC-D.5: `validate_and_read_file` must produce identical error text

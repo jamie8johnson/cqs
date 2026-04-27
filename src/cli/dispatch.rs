@@ -197,7 +197,10 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     // requested slot wins instead of silently getting the daemon's slot.
     #[cfg(unix)]
     if cli.slot.is_none() && std::env::var("CQS_NO_DAEMON").as_deref() != Ok("1") {
-        if let Some(output) = try_daemon_query(&project_cqs_dir, &cli) {
+        // P2.17: daemon protocol errors now surface as `Err` instead of being
+        // logged-and-fall-through. Transport-level failures still return
+        // `Ok(None)` so CLI fallback works for those.
+        if let Some(output) = try_daemon_query(&project_cqs_dir, &cli)? {
             print!("{}", output);
             return Ok(());
         }
@@ -242,10 +245,16 @@ fn cmd_completions(shell: clap_complete::Shell) {
 }
 
 /// Try to forward the current command to a running daemon.
-/// Returns `Some(output)` if the daemon handled it, `None` if no daemon or
-/// the command is not daemon-dispatchable (index, watch, gc, init, etc.).
+///
+/// Returns:
+/// - `Ok(Some(output))` — daemon handled the request successfully.
+/// - `Ok(None)` — daemon not present, transport failed, or command isn't
+///   daemon-dispatchable (index/watch/gc/init/etc.); CLI should run inline.
+/// - `Err(_)` — daemon understood the request but returned a protocol-level
+///   error. P2.17: surface this as a real error rather than warn-and-retry,
+///   since CLI fallback can produce different results from the daemon path.
 #[cfg(unix)]
-fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
+fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<String>, anyhow::Error> {
     // OB-NEW-5: root span so every failed-transport fallback is traceable.
     // Commands doesn't derive Debug so we log the discriminant name instead.
     let cmd_label = cli
@@ -265,13 +274,13 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
     // None (= default search `cqs "query"`) is always daemon-dispatchable.
     if let Some(cmd) = &cli.command {
         if cmd.batch_support() == BatchSupport::Cli {
-            return None;
+            return Ok(None);
         }
     }
 
     let sock_path = super::daemon_socket_path(cqs_dir);
     if !sock_path.exists() {
-        return None;
+        return Ok(None);
     }
 
     use std::io::{BufRead, Write};
@@ -286,7 +295,7 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
                 stage = "connect",
                 "Daemon transport failed, falling back to CLI"
             );
-            return None;
+            return Ok(None);
         }
     };
 
@@ -336,11 +345,11 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
     let mut stream = stream;
     if let Err(e) = writeln!(stream, "{}", request) {
         tracing::debug!(error = %e, stage = "write", "Daemon transport failed, falling back to CLI");
-        return None;
+        return Ok(None);
     }
     if let Err(e) = stream.flush() {
         tracing::debug!(error = %e, stage = "flush", "Daemon transport failed, falling back to CLI");
-        return None;
+        return Ok(None);
     }
 
     // RB-NEW-4: bound the response so a rogue/buggy daemon can't force us to
@@ -360,7 +369,7 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
                 stage = "read",
                 "Daemon transport failed, falling back to CLI"
             );
-            return None;
+            return Ok(None);
         }
     };
     if bytes_read as u64 == max_daemon_response {
@@ -376,7 +385,7 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
             cap_mib,
             "Daemon response exceeded cap — falling back to CLI"
         );
-        return None;
+        return Ok(None);
     }
 
     let resp: serde_json::Value = match serde_json::from_str(response_line.trim()) {
@@ -387,7 +396,7 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
                 stage = "parse",
                 "Daemon transport failed, falling back to CLI"
             );
-            return None;
+            return Ok(None);
         }
     };
     let status = match resp.get("status").and_then(|v| v.as_str()) {
@@ -397,7 +406,7 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
                 stage = "parse",
                 "Daemon response missing 'status' field, falling back to CLI"
             );
-            return None;
+            return Ok(None);
         }
     };
     if status == "ok" {
@@ -418,7 +427,7 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
                     stage = "parse",
                     "Daemon ok response missing/unserializable output — falling back to CLI"
                 );
-                return None;
+                return Ok(None);
             }
         };
         let text = match output {
@@ -435,28 +444,25 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Option<String> {
                         stage = "parse",
                         "Daemon ok response missing/unserializable output — falling back to CLI"
                     );
-                    return None;
+                    return Ok(None);
                 }
             },
         };
-        return Some(text);
+        return Ok(Some(text));
     }
 
-    // EH-13: daemon understood the request but surfaced an error. Transport-level
-    // failures (connect/read/write) already returned `None` above, so reaching
-    // here means this is a daemon protocol error the user needs to see.
-    // Falling back to CLI now would mask daemon bugs — tell the user and
-    // suggest the CLI override if they want to retry outside the daemon.
+    // P2.17 / EH-13: daemon understood the request but surfaced an error.
+    // Transport-level failures (connect/read/write) already returned
+    // `Ok(None)` above, so reaching here means this is a daemon protocol
+    // error the user needs to see. Falling back to CLI here would mask
+    // daemon bugs and silently change results — return Err so the caller
+    // exits non-zero with the daemon's message.
     let msg = resp
         .get("message")
         .and_then(|v| v.as_str())
         .unwrap_or("daemon error");
     tracing::warn!(error = msg, "Daemon returned protocol-level error");
-    eprintln!("cqs: daemon error: {msg}");
-    eprintln!(
-        "hint: set CQS_NO_DAEMON=1 to run the command directly in the CLI (bypasses the daemon)."
-    );
-    // Still return None so we fall through to CLI path, but the user has been
-    // told why — no silent fallback.
-    None
+    Err(anyhow::anyhow!(
+        "daemon error: {msg}\nhint: set CQS_NO_DAEMON=1 to bypass the daemon"
+    ))
 }

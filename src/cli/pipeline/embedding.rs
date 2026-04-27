@@ -64,12 +64,27 @@ pub(super) fn prepare_for_embedding(
     // Step 2b: Check store for cached embeddings by content hash.
     // Skip when the embedder dim differs from store dim — prevents reusing
     // embeddings from a different model after model switching.
+    //
+    // P3.42: only issue the store SELECT for hashes the global cache didn't
+    // already satisfy. On a warm rebuild where every chunk hits the global
+    // cache, the previous shape did one bind-heavy SELECT for the full
+    // hash list and threw the result away. The `missed` filter is a free
+    // cost in that case and saves a non-trivial round trip when it bites.
     let mut existing = if dim == store.dim() {
-        match store.get_embeddings_by_hashes(&hashes) {
-            Ok(map) => map,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to fetch cached embeddings by hash");
-                HashMap::new()
+        let missed: Vec<&str> = hashes
+            .iter()
+            .copied()
+            .filter(|h| !global_hits.contains_key(*h))
+            .collect();
+        if missed.is_empty() {
+            HashMap::new()
+        } else {
+            match store.get_embeddings_by_hashes(&missed) {
+                Ok(map) => map,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to fetch cached embeddings by hash");
+                    HashMap::new()
+                }
             }
         }
     } else {

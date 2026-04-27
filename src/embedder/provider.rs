@@ -112,6 +112,14 @@ fn find_ort_provider_dir() -> Option<PathBuf> {
 }
 
 /// Find a writable directory from LD_LIBRARY_PATH (excluding the ORT cache)
+///
+/// P3.34 — Platform scope:
+/// On Linux this walks `LD_LIBRARY_PATH` (`:`-separated) and symlinks ORT
+/// provider `.so` files into the runtime's search dir. On Windows and macOS
+/// provider DLL/dylib resolution is delegated entirely to ORT's loader
+/// (Windows: `PATH` search; macOS: `DYLD_*` paths). If a future regression
+/// surfaces on those platforms, add an arm with `;`-split for `PATH` (Win)
+/// or `DYLD_LIBRARY_PATH` (mac).
 #[cfg(target_os = "linux")]
 fn find_ld_library_dir(ort_lib_dir: &Path) -> Option<PathBuf> {
     let ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
@@ -146,7 +154,7 @@ fn symlink_providers(src_dir: &Path, target_dir: &Path, libs: &[&str]) {
         }
 
         if let Err(e) = std::os::unix::fs::symlink(&src, &dst) {
-            tracing::debug!("Failed to symlink {}: {}", lib, e);
+            tracing::debug!(lib = %lib, error = %e, "Failed to symlink");
         }
     }
 }
@@ -302,4 +310,129 @@ pub(crate) fn create_session(
     };
 
     Ok(session)
+}
+
+#[cfg(test)]
+mod tests {
+    //! P3.53 — direct coverage for the post-#1120 provider split.
+    //!
+    //! `select_provider` and `detect_provider` were added by the
+    //! ExecutionProvider feature split (issue #956 Phase A) but never
+    //! gained dedicated tests. The cache-on-first-call invariant
+    //! (`OnceCell` semantics) and the cfg-gated probe order are the
+    //! contracts most likely to silently regress under future feature
+    //! splits — pin them here.
+    use super::*;
+
+    /// `select_provider` must be idempotent: subsequent calls return the
+    /// same `ExecutionProvider` value (OnceCell semantics). Hardware-agnostic;
+    /// only checks consistency, not which provider was selected.
+    #[test]
+    fn select_provider_caches_first_call() {
+        let p1 = select_provider();
+        let p2 = select_provider();
+        // ExecutionProvider isn't Eq/PartialEq, so compare by Debug repr —
+        // every variant carries enough info in Debug to detect drift.
+        assert_eq!(
+            format!("{p1:?}"),
+            format!("{p2:?}"),
+            "select_provider must return the same value on repeated calls"
+        );
+    }
+
+    /// P3.16: `find_ld_library_dir` must skip empty entries (`::` and
+    /// trailing `:`), reject paths whose first component matches the ORT
+    /// cache, and only return entries that exist on disk. Pinned via
+    /// `LD_LIBRARY_PATH = ":/tmp:"` — `/tmp` is the only non-empty,
+    /// non-ORT-cache entry that's guaranteed to exist on Unix CI.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn find_ld_library_dir_skips_empty_entries() {
+        use std::env;
+        // Env-mutating tests must serialize: reuse a module-local mutex.
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev = env::var_os("LD_LIBRARY_PATH");
+        // SAFETY: this test holds ENV_LOCK; no other test in this module
+        // touches LD_LIBRARY_PATH concurrently.
+        unsafe {
+            env::set_var("LD_LIBRARY_PATH", ":/tmp:");
+        }
+        // Use a dummy ORT cache path that doesn't overlap with any
+        // realistic LD_LIBRARY_PATH entry so the cache-skip filter doesn't
+        // eat `/tmp`.
+        let dir = find_ld_library_dir(Path::new("/nonexistent-ort-cache"));
+        assert_eq!(dir.as_deref(), Some(Path::new("/tmp")));
+        unsafe {
+            match prev {
+                Some(p) => env::set_var("LD_LIBRARY_PATH", p),
+                None => env::remove_var("LD_LIBRARY_PATH"),
+            }
+        }
+    }
+
+    /// P3.16: `find_ld_library_dir` must return `None` cleanly when
+    /// `LD_LIBRARY_PATH` is empty / unset — silent CPU fallback is the
+    /// production failure mode if this panics.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn find_ld_library_dir_handles_unset() {
+        use std::env;
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev = env::var_os("LD_LIBRARY_PATH");
+        unsafe {
+            env::remove_var("LD_LIBRARY_PATH");
+        }
+        let dir = find_ld_library_dir(Path::new("/nonexistent-ort-cache"));
+        assert!(dir.is_none(), "unset LD_LIBRARY_PATH must return None");
+        unsafe {
+            if let Some(p) = prev {
+                env::set_var("LD_LIBRARY_PATH", p);
+            }
+        }
+    }
+
+    /// P3.16: `ort_runtime_search_dir` must succeed on a normal Unix
+    /// process — `/proc/self/cmdline` is always populated. Pins that the
+    /// helper doesn't crash on a malformed cmdline (no NUL terminator
+    /// triggers the `position` early-return path); we can't induce that
+    /// in-process so we just verify the happy path returns *some* dir.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ort_runtime_search_dir_resolves_for_test_binary() {
+        let dir = ort_runtime_search_dir();
+        // The test binary always has a cmdline; the only None path is
+        // a UTF-8 failure or a missing NUL terminator, both impossible
+        // for cargo's harness on Linux.
+        assert!(dir.is_some(), "/proc/self/cmdline must resolve in-process");
+    }
+
+    /// `detect_provider` must always produce a valid `ExecutionProvider`.
+    /// Hardware availability decides which arm fires; pin only that the
+    /// function can't return without a value, and that the result formats
+    /// cleanly with `Debug` (a regression that broke the derive would
+    /// surface here before it reached the tracing field).
+    ///
+    /// We deliberately don't assert which variant is chosen — `ort` probes
+    /// TensorRT / CUDA / CoreML / ROCm unconditionally at runtime regardless
+    /// of our cargo features, so the answer is environment-dependent.
+    #[test]
+    fn detect_provider_returns_valid_variant() {
+        // Probe directly — `select_provider` would memoize whatever ran
+        // first in the test binary (could be from a different test).
+        let p = detect_provider();
+        let _ = format!("{p:?}");
+    }
+
+    /// Issue #956 Phase A enum: the always-on CPU variant must be `Copy`
+    /// (the cache hands out values by reading the OnceCell), and `Debug`
+    /// (every tracing event includes `provider = ?provider`).
+    #[test]
+    fn execution_provider_is_debug_and_copy() {
+        let p = ExecutionProvider::CPU;
+        let p2 = p; // exercises Copy
+        let _ = format!("{p:?}");
+        let _ = format!("{p2:?}");
+    }
 }

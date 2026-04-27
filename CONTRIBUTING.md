@@ -153,7 +153,8 @@ src/
   cli/          - Command-line interface (clap)
     mod.rs      - Top-level CLI module, re-exports
     definitions.rs - Clap argument definitions and command enum
-    dispatch.rs - Command dispatch (match on command, call handlers)
+    registry.rs - `for_each_command!` table; single source of truth for dispatch + variant_name + batch_support
+    dispatch.rs - Command dispatch helpers (entry points; per-command arms generated from `registry.rs`)
     commands/   - Command implementations (organized by category)
       mod.rs      - Top-level re-exports
       resolve.rs  - Target resolution (function name → chunk)
@@ -343,7 +344,7 @@ Checklist for every new command:
 1. **Implementation** — `src/cli/commands/<category>/<name>.rs` with the core logic (pick category: search/, graph/, review/, index/, io/, infra/, train/)
 2. **Category mod.rs** — add `mod <name>;` + `pub(crate) use <name>::*;` in `src/cli/commands/<category>/mod.rs`
 3. **CLI definition** — `Commands` enum variant in `src/cli/definitions.rs` with clap args
-4. **Dispatch** — match arm in `src/cli/dispatch.rs`
+4. **Registry row** — add a `(bind, wild, name, batch_support, body)` row to `group_a` or `group_b` in `src/cli/registry.rs`. The `for_each_command!` macro generates dispatch + variant_name + batch_support from this single row; a missing row is a compile error.
 5. **`--json` support** — serde serialization for programmatic output
 6. **Tracing** — `tracing::info_span!` at entry, `tracing::warn!` on error fallback
 7. **Error handling** — `Result` propagation, no bare `.unwrap_or_default()` in production

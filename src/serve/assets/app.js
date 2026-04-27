@@ -346,7 +346,7 @@
         </div>
         ${c.doc ? `<h4>doc</h4><pre>${escapeHtml(c.doc)}</pre>` : ""}
         <h4>source preview</h4>
-        <pre>${escapeHtml(c.content_preview)}</pre>
+        <pre>${c.content_preview === null ? "&lt;missing — DB column NULL&gt;" : escapeHtml(c.content_preview)}</pre>
         ${c.callers.length ? `<h4>callers (${c.callers.length})</h4><ul>${callerLis}</ul>` : ""}
         ${c.callees.length ? `<h4>callees (${c.callees.length})</h4><ul>${calleeLis}</ul>` : ""}
         ${c.tests.length ? `<h4>tests (${c.tests.length})</h4><ul>${testLis}</ul>` : ""}

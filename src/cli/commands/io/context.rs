@@ -68,7 +68,13 @@ pub(crate) struct CompactChunkEntry {
 }
 
 /// Serialize compact data to JSON.
-pub(crate) fn compact_to_json(data: &CompactData, path: &str) -> serde_json::Value {
+///
+/// P2.19: returns a `Result` so a `Serialize` impl bug surfaces as an error
+/// rather than coercing to `{}` and a tracing warn the caller can't see.
+pub(crate) fn compact_to_json(
+    data: &CompactData,
+    path: &str,
+) -> Result<serde_json::Value, serde_json::Error> {
     let entries: Vec<_> = data
         .chunks
         .iter()
@@ -91,10 +97,7 @@ pub(crate) fn compact_to_json(data: &CompactData, path: &str) -> serde_json::Val
         chunk_count: data.chunks.len(),
         chunks: entries,
     };
-    serde_json::to_value(&output).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to serialize CompactOutput");
-        serde_json::json!({})
-    })
+    serde_json::to_value(&output)
 }
 
 /// Full mode data: chunks with external callers, callees, and dependent files.
@@ -268,7 +271,7 @@ pub(crate) fn full_to_json(
     path: &str,
     content_set: Option<&HashSet<String>>,
     token_info: Option<(usize, usize)>,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, serde_json::Error> {
     let chunks: Vec<_> = data
         .chunks
         .iter()
@@ -317,10 +320,8 @@ pub(crate) fn full_to_json(
         token_budget: token_info.map(|(_, budget)| budget),
         warnings: data.warnings.clone(),
     };
-    serde_json::to_value(&output).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to serialize FullOutput");
-        serde_json::json!({})
-    })
+    // P2.19: surface Serialize bugs as Err rather than coerce to `{}`.
+    serde_json::to_value(&output)
 }
 
 /// Pack chunks by relevance (caller count descending) within a token budget.
@@ -385,7 +386,7 @@ pub(crate) fn cmd_context(
         }
 
         if json {
-            let output = compact_to_json(&data, path);
+            let output = compact_to_json(&data, path)?;
             crate::cli::json_envelope::emit_json(&output)?;
         } else {
             print_compact_terminal(&data, path);
@@ -403,7 +404,7 @@ pub(crate) fn cmd_context(
 
     if summary {
         if json {
-            let output = summary_to_json(&data, path);
+            let output = summary_to_json(&data, path)?;
             crate::cli::json_envelope::emit_json(&output)?;
         } else {
             print_summary_terminal(&data, path);
@@ -411,7 +412,7 @@ pub(crate) fn cmd_context(
     } else if json {
         let (content_set, token_info) =
             build_token_pack(store, &data.chunks, max_tokens, ctx.model_config())?;
-        let output = full_to_json(&data, path, content_set.as_ref(), token_info);
+        let output = full_to_json(&data, path, content_set.as_ref(), token_info)?;
         crate::cli::json_envelope::emit_json(&output)?;
     } else {
         let (content_set, token_info) =
@@ -435,10 +436,12 @@ fn build_token_pack<Mode>(
     };
     let embedder = cqs::Embedder::new(model_config.clone())?;
     let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
-    let caller_counts = store.get_caller_counts_batch(&names).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to fetch caller counts for token packing");
-        HashMap::new()
-    });
+    // P2.22: propagate the batch failure rather than silently degrading
+    // ranking to file-order. Token-packing without the caller-count
+    // signal produces a worse result than failing the command.
+    let caller_counts = store
+        .get_caller_counts_batch(&names)
+        .context("Failed to fetch caller counts for token packing — ranking signal required")?;
     let (included, used) = pack_by_relevance(chunks, &caller_counts, budget, &embedder);
     tracing::info!(
         chunks = included.len(),
@@ -473,7 +476,10 @@ pub(crate) struct SummaryChunkEntry {
     pub line_end: u32,
 }
 
-pub(crate) fn summary_to_json(data: &FullData, path: &str) -> serde_json::Value {
+pub(crate) fn summary_to_json(
+    data: &FullData,
+    path: &str,
+) -> Result<serde_json::Value, serde_json::Error> {
     let chunks: Vec<_> = data
         .chunks
         .iter()
@@ -495,10 +501,8 @@ pub(crate) fn summary_to_json(data: &FullData, path: &str) -> serde_json::Value 
         dependent_files: dep_files,
         warnings: data.warnings.clone(),
     };
-    serde_json::to_value(&output).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to serialize SummaryOutput");
-        serde_json::json!({})
-    })
+    // P2.19: surface Serialize bugs as Err rather than coerce to `{}`.
+    serde_json::to_value(&output)
 }
 
 fn print_compact_terminal(data: &CompactData, path: &str) {
@@ -666,7 +670,7 @@ mod tests {
             caller_counts,
             callee_counts,
         };
-        let json = compact_to_json(&data, "src/lib.rs");
+        let json = compact_to_json(&data, "src/lib.rs").unwrap();
 
         // Top-level fields
         assert_eq!(json["file"], "src/lib.rs");
@@ -698,7 +702,7 @@ mod tests {
             caller_counts: HashMap::new(),
             callee_counts: HashMap::new(),
         };
-        let json = compact_to_json(&data, "src/orphan.rs");
+        let json = compact_to_json(&data, "src/orphan.rs").unwrap();
 
         assert_eq!(json["chunks"][0]["caller_count"], 0);
         assert_eq!(json["chunks"][0]["callee_count"], 0);
@@ -726,7 +730,7 @@ mod tests {
             dependent_files,
             warnings: Vec::new(),
         };
-        let json = full_to_json(&data, "src/lib.rs", None, None);
+        let json = full_to_json(&data, "src/lib.rs", None, None).unwrap();
 
         // Top-level
         assert_eq!(json["file"], "src/lib.rs");
@@ -785,7 +789,7 @@ mod tests {
             dependent_files: HashSet::new(),
             warnings: Vec::new(),
         };
-        let json = full_to_json(&data, "src/lib.rs", None, Some((150, 500)));
+        let json = full_to_json(&data, "src/lib.rs", None, Some((150, 500))).unwrap();
 
         assert_eq!(json["token_count"], 150);
         assert_eq!(json["token_budget"], 500);
@@ -807,7 +811,7 @@ mod tests {
         let mut content_set = HashSet::new();
         content_set.insert("included".to_string());
 
-        let json = full_to_json(&data, "src/lib.rs", Some(&content_set), None);
+        let json = full_to_json(&data, "src/lib.rs", Some(&content_set), None).unwrap();
 
         let chunks_arr = json["chunks"].as_array().unwrap();
         assert!(
@@ -850,7 +854,7 @@ mod tests {
             },
             warnings: Vec::new(),
         };
-        let json = summary_to_json(&data, "src/lib.rs");
+        let json = summary_to_json(&data, "src/lib.rs").unwrap();
 
         assert_eq!(json["file"], "src/lib.rs");
         assert_eq!(json["chunk_count"], 2);
@@ -889,7 +893,7 @@ mod tests {
             caller_counts: HashMap::new(),
             callee_counts: HashMap::new(),
         };
-        let json = compact_to_json(&data, "src/lib.rs");
+        let json = compact_to_json(&data, "src/lib.rs").unwrap();
 
         let arr_len = json["chunks"].as_array().unwrap().len();
         let count_field = json["chunk_count"].as_u64().unwrap();
