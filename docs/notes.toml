@@ -1609,3 +1609,12 @@ mentions = [
     "ort",
     "cuda",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "Indirect prompt injection threat model: cqs is fundamentally a relay — code, comments, summaries, notes, references all flow into AI agent context unchanged. Filed #1166-#1170 for incremental hardening; SECURITY.md #1171 documents the surface. Subtle injections (biased-but-correct summary) remain unfixable; agent-side untrusted-input handling is the load-bearing layer."
+mentions = [
+    "SECURITY.md",
+    "llm_summaries",
+    "prompt_injection",
+]
