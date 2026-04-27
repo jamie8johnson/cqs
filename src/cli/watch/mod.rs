@@ -1,0 +1,1210 @@
+//! Watch mode - monitor for file changes and reindex
+//!
+//! ## Memory Usage
+//!
+//! Watch mode holds several resources in memory while idle:
+//!
+//! - **Parser**: ~1MB for tree-sitter queries (allocated immediately)
+//! - **Store**: SQLite connection pool with up to 4 connections (allocated immediately)
+//! - **Embedder**: ~500MB for ONNX model (lazy-loaded on first file change)
+//!
+//! The Embedder is the largest resource and is only loaded when files actually change.
+//! Once loaded, it remains in memory for fast subsequent reindexing. This tradeoff
+//! favors responsiveness over memory efficiency for long-running watch sessions.
+//!
+//! For memory-constrained environments, consider running `cqs index` manually instead
+//! of using watch mode.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, SystemTime};
+
+use anyhow::{bail, Context, Result};
+use notify::{Config, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
+use tracing::{info, info_span, warn};
+
+use cqs::embedder::{Embedder, Embedding, ModelConfig};
+use cqs::generate_nl_description;
+use cqs::hnsw::HnswIndex;
+use cqs::note::parse_notes;
+use cqs::parser::{ChunkTypeRefs, Parser as CqParser};
+use cqs::store::Store;
+
+use super::{check_interrupted, find_project_root, try_acquire_index_lock, Cli};
+
+#[cfg(unix)]
+mod socket;
+#[cfg(unix)]
+use socket::{
+    handle_socket_client, max_concurrent_daemon_clients, write_daemon_error, SocketCleanupGuard,
+};
+
+mod runtime;
+use runtime::build_shared_runtime;
+#[cfg(unix)]
+use runtime::{daemon_should_exit, install_sigterm_handler, is_shutdown_requested};
+
+mod rebuild;
+use rebuild::{
+    clear_hnsw_dirty_with_retry, drain_pending_rebuild, hnsw_rebuild_threshold,
+    resolve_index_aware_model_for_watch, spawn_hnsw_rebuild, try_init_embedder, EmbedderBackoff,
+    PendingRebuild, MAX_PENDING_REBUILD_DELTA,
+};
+#[cfg(test)]
+use rebuild::{RebuildOutcome, RebuildResult};
+
+mod gc;
+use gc::{prune_last_indexed_mtime, run_daemon_periodic_gc, run_daemon_startup_gc};
+#[cfg(test)]
+use gc::{LAST_INDEXED_PRUNE_AGE_SECS, LAST_INDEXED_PRUNE_SIZE_THRESHOLD};
+
+mod events;
+#[cfg(test)]
+use events::max_pending_files;
+use events::{collect_events, process_file_changes, process_note_changes};
+
+mod reindex;
+#[cfg(target_os = "linux")]
+use reindex::count_watchable_dirs;
+#[cfg(test)]
+use reindex::splade_batch_size;
+use reindex::{
+    build_splade_encoder_for_watch, db_file_identity, encode_splade_for_changed_files,
+    reindex_files, reindex_notes,
+};
+
+#[cfg(unix)]
+mod daemon;
+
+/// Immutable references shared across the watch loop.
+///
+/// Does not include `Store` because it is re-opened each cycle (DS-9).
+///
+/// RM-V1.25-28: `embedder` now points at a shared `Arc<OnceLock<Arc<Embedder>>>`
+/// that the daemon thread also holds. First side to populate it wins; the
+/// other side's future lazy-init short-circuits to the same instance.
+/// Eliminates the ~500 MB duplicate footprint that existed when the outer
+/// watch loop and the daemon thread each owned independent OnceLocks.
+struct WatchConfig<'a> {
+    root: &'a Path,
+    cqs_dir: &'a Path,
+    notes_path: &'a Path,
+    supported_ext: &'a HashSet<&'a str>,
+    parser: &'a CqParser,
+    embedder: &'a std::sync::OnceLock<std::sync::Arc<Embedder>>,
+    quiet: bool,
+    model_config: &'a ModelConfig,
+    /// #1002: gitignore matcher for the project. `None` if
+    /// `CQS_WATCH_RESPECT_GITIGNORE=0`, `--no-ignore` was passed, or the
+    /// `.gitignore` file is missing/unreadable. Wrapped in `RwLock` so the
+    /// watch loop can hot-swap it on `.gitignore` change without a restart.
+    gitignore: &'a std::sync::RwLock<Option<ignore::gitignore::Gitignore>>,
+    /// #1004: SPLADE encoder held resident in the daemon so incremental
+    /// reindex cycles can encode sparse vectors for new/changed chunks.
+    /// `None` when the SPLADE model is absent, fails to load, or
+    /// `CQS_WATCH_INCREMENTAL_SPLADE=0`. `Mutex` serializes GPU access
+    /// since the encoder holds a CUDA context.
+    splade_encoder: Option<&'a std::sync::Mutex<cqs::splade::SpladeEncoder>>,
+    /// #1129: project-scoped global embedding cache (per-project, shared
+    /// across slots). `Some` when the cache opened cleanly at daemon
+    /// startup; `None` when `CQS_CACHE_ENABLED=0` is set or the open
+    /// failed. `reindex_files` consults this cache before the store's
+    /// per-slot `chunks.embedding` lookup so a chunk hashed in one slot
+    /// (or under a previous model) doesn't pay GPU cost on every save.
+    /// Mirrors the bulk pipeline's `prepare_for_embedding` shape.
+    global_cache: Option<&'a cqs::cache::EmbeddingCache>,
+}
+
+/// Mutable session state that evolves across watch cycles.
+struct WatchState {
+    embedder_backoff: EmbedderBackoff,
+    pending_files: HashSet<PathBuf>,
+    pending_notes: bool,
+    last_event: std::time::Instant,
+    last_indexed_mtime: HashMap<PathBuf, SystemTime>,
+    hnsw_index: Option<HnswIndex>,
+    incremental_count: usize,
+    /// RM-V1.25-23: number of file events dropped this debounce cycle
+    /// because pending_files was at cap. Logged once per cycle in
+    /// process_file_changes, cleared after.
+    dropped_this_cycle: usize,
+    /// #1090: when a background HNSW rebuild is running, the watch loop
+    /// queues new (chunk_id, embedding) pairs here so they can be replayed
+    /// into the rebuilt Owned index before the swap. `None` while no
+    /// rebuild is in flight.
+    pending_rebuild: Option<PendingRebuild>,
+}
+
+/// PB-3: Check if a path is under a WSL DrvFS automount root.
+///
+/// Default automount root is `/mnt/`, but users can customize it via `automount.root`
+/// in `/etc/wsl.conf`. Reads the config once via `OnceLock` and caches the result.
+fn is_under_wsl_automount(path: &str) -> bool {
+    static AUTOMOUNT_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let root = AUTOMOUNT_ROOT
+        .get_or_init(|| parse_wsl_automount_root().unwrap_or_else(|| "/mnt/".to_string()));
+    path.starts_with(root.as_str())
+}
+
+/// Parse the `automount.root` value from `/etc/wsl.conf`.
+/// Returns `None` if the file doesn't exist or doesn't contain the setting.
+fn parse_wsl_automount_root() -> Option<String> {
+    let content = std::fs::read_to_string("/etc/wsl.conf").ok()?;
+    let mut in_automount = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_automount = trimmed
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim()
+                .eq_ignore_ascii_case("automount");
+            continue;
+        }
+        if in_automount {
+            if let Some((key, value)) = trimmed.split_once('=') {
+                if key.trim().eq_ignore_ascii_case("root") {
+                    let mut root = value.trim().to_string();
+                    // Ensure trailing slash for prefix matching
+                    if !root.ends_with('/') {
+                        root.push('/');
+                    }
+                    return Some(root);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// #1002: Build a `Gitignore` matcher rooted at the project, combining the
+/// root `.gitignore` with any nested `.gitignore` files discovered by a
+/// single shallow walk. Returns `None` under any of:
+///
+/// - `--no-ignore` is set (caller responsibility to pass `false`)
+/// - `CQS_WATCH_RESPECT_GITIGNORE=0` (feature flag kill-switch)
+/// - No `.gitignore` at project root (treated as "index everything")
+/// - `.gitignore` is unreadable or malformed (logged as warn, fall through)
+///
+/// When `Some`, the matcher is queried per-event in `collect_events`. The
+/// hardcoded `.cqs/` skip in `collect_events` remains in place as
+/// belt-and-suspenders so the system's own files are never indexed
+/// regardless of what `.gitignore` contains.
+fn build_gitignore_matcher(root: &Path) -> Option<ignore::gitignore::Gitignore> {
+    let _span = tracing::info_span!("build_gitignore_matcher").entered();
+
+    if std::env::var("CQS_WATCH_RESPECT_GITIGNORE").as_deref() == Ok("0") {
+        tracing::info!("CQS_WATCH_RESPECT_GITIGNORE=0 — gitignore filtering disabled");
+        return None;
+    }
+
+    let root_gitignore = root.join(".gitignore");
+    let root_cqsignore = root.join(".cqsignore");
+    if !root_gitignore.exists() && !root_cqsignore.exists() {
+        tracing::info!(
+            root = %root.display(),
+            "no .gitignore or .cqsignore at project root — watch will not filter"
+        );
+        return None;
+    }
+
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+
+    // Order matters for negation: later `add()` calls win on conflict.
+    // .gitignore first, then .cqsignore so cqs-specific overrides apply last.
+    if root_gitignore.exists() {
+        if let Some(err) = builder.add(&root_gitignore) {
+            tracing::warn!(
+                path = %root_gitignore.display(),
+                error = %err,
+                "root .gitignore unreadable or malformed — falling back to empty matcher"
+            );
+            return None;
+        }
+    }
+    if root_cqsignore.exists() {
+        if let Some(err) = builder.add(&root_cqsignore) {
+            tracing::warn!(
+                path = %root_cqsignore.display(),
+                error = %err,
+                "root .cqsignore unreadable or malformed — skipping it"
+            );
+        }
+    }
+
+    // Root-only .gitignore / .cqsignore in v1. Nested ignore files are not
+    // yet discovered — tracked as follow-up. `cqs index` uses the full
+    // `ignore` crate walk which supports nesting; the watch loop uses a
+    // per-event point query against a pre-built matcher and compile-time
+    // nesting would require rebuilding on every subdir change. Root-level
+    // covers the worktree-pollution + vendor-bundle motivating cases.
+
+    match builder.build() {
+        Ok(gi) => {
+            tracing::info!(
+                n_files = gi.num_ignores(),
+                "gitignore matcher loaded for watch loop"
+            );
+            Some(gi)
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "gitignore matcher build failed — watch will not filter by gitignore"
+            );
+            None
+        }
+    }
+}
+
+/// Watches the project for file changes and updates the code search index incrementally.
+///
+/// # Arguments
+///
+/// * `cli` - Command-line interface context
+/// * `debounce_ms` - Debounce interval in milliseconds for file change events
+/// * `no_ignore` - If true, skips `.gitignore` filtering in the watch loop (#1002).
+///   Mirrors the `cqs index --no-ignore` flag. When false (default), the watch
+///   loop queries the project's `.gitignore` for every event and ignores matches.
+///   Also overridable at runtime via `CQS_WATCH_RESPECT_GITIGNORE=0`.
+/// * `poll` - If true, uses polling instead of inotify for file system monitoring
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful completion, or an error if the index doesn't exist or watch setup fails.
+///
+/// # Errors
+///
+/// * If the project index is not found (user should run `cqs index` first)
+/// * If setting up file system watching fails
+pub fn cmd_watch(
+    cli: &Cli,
+    debounce_ms: u64,
+    no_ignore: bool,
+    poll: bool,
+    serve: bool,
+) -> Result<()> {
+    let _span = tracing::info_span!("cmd_watch", debounce_ms, poll, serve, no_ignore).entered();
+
+    // RM-V1.25-9: install SIGTERM handler *before* spawning the socket
+    // thread so both the main loop and the accept loop observe the
+    // shutdown flag immediately when systemd stops the unit.
+    #[cfg(unix)]
+    install_sigterm_handler();
+
+    let root = find_project_root();
+
+    // Auto-detect when polling is needed: WSL + DrvFS mount path.
+    //
+    // Detection is prefix-based rather than filesystem-based (statfs NTFS/FAT magic)
+    // because that's pragmatic: paths under DrvFS mounts in WSL are Windows filesystems
+    // (NTFS, FAT32, exFAT), none of which support inotify. A statfs check would give
+    // the same answer with more syscalls and less portability across WSL versions.
+    // If the project root is on a Linux filesystem inside WSL (e.g. /home/...), inotify works
+    // fine and we leave use_poll false.
+    // PB-21: Also detect //wsl.localhost/ and //wsl$/ UNC paths
+    // PB-3: Check /etc/wsl.conf for custom automount.root (default is /mnt/)
+    let use_poll = poll
+        || (cqs::config::is_wsl()
+            && root
+                .to_str()
+                .is_some_and(|p| p.starts_with("//wsl") || is_under_wsl_automount(p)));
+
+    if cqs::config::is_wsl() && !use_poll {
+        tracing::warn!("WSL detected: inotify may be unreliable on Windows filesystem mounts. Use --poll or 'cqs index' periodically.");
+    }
+
+    // SHL-V1.25-13: the 500ms default is tuned for inotify on native
+    // Linux. WSL DrvFS (/mnt/, //wsl$) exposes NTFS which has 1s mtime
+    // resolution — anything under ~1000ms risks double-fire for a single
+    // save. Poll mode also benefits from a longer window. When the user
+    // did not override via flag or env, auto-bump to 1500ms for these
+    // paths. `CQS_WATCH_DEBOUNCE_MS` takes precedence over the flag.
+    let debounce_ms = if let Some(env_ms) = std::env::var("CQS_WATCH_DEBOUNCE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        env_ms
+    } else if debounce_ms == 500 && use_poll {
+        tracing::info!(
+            "Auto-bumping watch debounce to 1500ms for WSL/poll mode (override via --debounce or CQS_WATCH_DEBOUNCE_MS)"
+        );
+        1500
+    } else {
+        debounce_ms
+    };
+
+    let project_cqs_dir = cqs::resolve_index_dir(&root);
+
+    // Migration: ensure legacy `.cqs/index.db` (if present) is moved to
+    // `.cqs/slots/default/` before watch hooks the index file. This is
+    // idempotent — the migration runs at top of `dispatch::run_with`
+    // already, so this is a belt-and-braces guard for daemon-only paths
+    // (cqs-watch systemd service launched directly via `cqs watch --serve`
+    // before any other CLI invocation triggered the migration).
+    if project_cqs_dir.exists() {
+        if let Err(e) = cqs::slot::migrate_legacy_index_to_default_slot(&project_cqs_dir) {
+            tracing::warn!(error = %e, "slot migration failed inside watch boot; continuing without it");
+        }
+    }
+
+    // Resolve active slot at daemon startup. The daemon binds to whichever
+    // slot is active at this moment; promotion afterwards requires a daemon
+    // restart per spec §Daemon.
+    let active_slot = cqs::slot::resolve_slot_name(cli.slot.as_deref(), &project_cqs_dir)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    tracing::info!(
+        slot = %active_slot.name,
+        source = active_slot.source.as_str(),
+        "daemon bound to slot"
+    );
+
+    let cqs_dir = if cqs::slot::slots_root(&project_cqs_dir).exists() {
+        cqs::resolve_slot_dir(&project_cqs_dir, &active_slot.name)
+    } else {
+        project_cqs_dir.clone()
+    };
+    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+
+    if !index_path.exists() {
+        bail!("No index found at {}. Run 'cqs index' first (or 'cqs index --slot {}' if the slot exists but is empty).", index_path.display(), active_slot.name);
+    }
+
+    // Socket listener BEFORE watcher scan — daemon is immediately queryable
+    // while the (potentially slow) poll watcher initializes.
+    // Unix domain sockets are not available on Windows.
+    #[cfg(unix)]
+    let mut socket_listener = if serve {
+        // Daemon socket is keyed by the project-level `.cqs/` dir so all
+        // slots share one socket — the daemon serves whichever slot was
+        // active at startup, but the socket is per-project not per-slot.
+        let sock_path = super::daemon_socket_path(&project_cqs_dir);
+        if sock_path.exists() {
+            match std::os::unix::net::UnixStream::connect(&sock_path) {
+                Ok(_) => {
+                    anyhow::bail!(
+                        "Another daemon is already listening on {}",
+                        sock_path.display()
+                    );
+                }
+                Err(_) => {
+                    // SEC-V1.25-15 / PB-V1.25-19: don't blindly unlink whatever
+                    // is at sock_path — an attacker (or a stale test artifact)
+                    // could leave a symlink or regular file there and trick us
+                    // into deleting something we shouldn't. Use symlink_metadata
+                    // (no follow) and refuse to remove anything that isn't a
+                    // socket or a plain file in the cqs dir.
+                    use std::os::unix::fs::FileTypeExt;
+                    match std::fs::symlink_metadata(&sock_path) {
+                        Ok(md) => {
+                            let ft = md.file_type();
+                            if ft.is_symlink() || ft.is_dir() {
+                                anyhow::bail!(
+                                    "Refusing to remove non-socket path {} (symlink/dir); resolve manually before starting daemon",
+                                    sock_path.display()
+                                );
+                            }
+                            if !(ft.is_socket() || ft.is_file()) {
+                                anyhow::bail!(
+                                    "Refusing to remove non-socket path {} (unexpected file type); resolve manually before starting daemon",
+                                    sock_path.display()
+                                );
+                            }
+                            if let Err(e) = std::fs::remove_file(&sock_path) {
+                                tracing::warn!(
+                                    error = %e,
+                                    path = %sock_path.display(),
+                                    "Failed to remove stale socket file"
+                                );
+                            } else {
+                                tracing::debug!(path = %sock_path.display(), "Removed stale socket file");
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            // Raced with another cleanup — nothing to do.
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                path = %sock_path.display(),
+                                "Failed to stat socket path before cleanup"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // SEC-D.6: between `bind()` (creates socket honoring umask) and
+        // `set_permissions(0o600)`, the socket inode is world-creatable
+        // for ~ms. On `/tmp` fallback (`XDG_RUNTIME_DIR` unset) any local
+        // user could connect during that window. Set umask to 0o077
+        // immediately before bind so the socket is born private, then
+        // restore. Keep the explicit chmod as belt-and-suspenders in case
+        // a future refactor drops the umask wrap.
+        //
+        // SAFETY: `libc::umask` is process-global. We do this on the daemon
+        // startup path before any concurrent file-creating code runs.
+        #[cfg(unix)]
+        let prev_umask = unsafe { libc::umask(0o077) };
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path)
+            .with_context(|| format!("Failed to bind socket at {}", sock_path.display()))?;
+        #[cfg(unix)]
+        unsafe {
+            libc::umask(prev_umask);
+        }
+        listener.set_nonblocking(true)?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) =
+                std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))
+            {
+                tracing::warn!(
+                    error = %e,
+                    path = %sock_path.display(),
+                    "Failed to set socket permissions to 0o600"
+                );
+            }
+        }
+        tracing::info!(
+            socket = %sock_path.display(),
+            pid = std::process::id(),
+            "Daemon listening"
+        );
+        if !cli.quiet {
+            println!("Daemon listening on {}", sock_path.display());
+        }
+        // OB-NEW-2: Self-maintaining env snapshot — iterate every CQS_*
+        // variable instead of a hardcoded whitelist that drifts as new
+        // knobs are added. Env vars set on client subprocesses do NOT
+        // affect daemon-served queries; only the daemon's own env applies.
+        let cqs_vars: Vec<(String, String)> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("CQS_"))
+            .collect();
+        tracing::info!(cqs_vars = ?cqs_vars, "Daemon env snapshot");
+        Some((listener, sock_path))
+    } else {
+        None
+    };
+    #[cfg(unix)]
+    let _socket_guard = socket_listener
+        .as_ref()
+        .map(|(_, path)| SocketCleanupGuard(path.clone()));
+    // PB-V1.25-2 / PB-V1.25-18: on non-unix platforms the daemon
+    // socket path is #[cfg(unix)]-only, so --serve would otherwise
+    // silently no-op. Warn both on stderr (so interactive users notice
+    // without --log-level=warn) and via tracing (for systemd-style
+    // journals that scrape our output).
+    #[cfg(not(unix))]
+    if serve {
+        eprintln!(
+            "Warning: --serve is unix-only (daemon socket uses Unix domain sockets); \
+             falling back to plain watch mode"
+        );
+        tracing::warn!("--serve requested on non-unix platform; daemon disabled");
+    }
+
+    // RM-V1.25-28: Allocate the shared embedder slot before spawning the
+    // daemon thread so the Arc can be cloned into the thread's closure
+    // and adopted by its BatchContext. The slot starts empty; whichever
+    // side initializes first (daemon via `ctx.warm()` or watch via
+    // `try_init_embedder`) wins and the other reuses the same Arc.
+    let shared_embedder: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Embedder>>> =
+        std::sync::Arc::new(std::sync::OnceLock::new());
+
+    // #968: Build ONE tokio runtime and share it across the outer Store
+    // (read-write, for reindex writes) and the daemon thread's inner
+    // Store (read-only, for queries) plus its EmbeddingCache/QueryCache.
+    // Without this each constructor spawned its own 1-4 worker threads
+    // that never overlapped usefully. `shared_rt` must be declared before
+    // the daemon thread spawn below so we can `Arc::clone` into the
+    // closure; it stays alive until this function returns, after the
+    // daemon thread is joined.
+    let shared_rt = build_shared_runtime()
+        .with_context(|| "Failed to build shared tokio runtime for daemon")?;
+
+    // Spawn dedicated socket handler thread — runs independently of the file
+    // watcher so queries are served immediately, even during the slow poll scan.
+    //
+    // RM-V1.25-8: keep the `JoinHandle` in a named `socket_thread` so the
+    // main loop can `.take().join()` it on shutdown with a bounded wait.
+    // Previously the handle was stashed under `_socket_thread` and dropped
+    // on function exit, detaching the thread. In that window the daemon's
+    // BatchContext (~500MB+ ONNX sessions, SQLite pool, HNSW Arc, optional
+    // CAGRA GPU resources) lived past the main loop's return with no
+    // WAL checkpoint and no `Drop` ordering. Under `cargo install` or shell
+    // Ctrl+C the orphaned thread could also block stdout writes.
+    #[cfg(unix)]
+    let mut socket_thread: Option<std::thread::JoinHandle<()>> = if serve {
+        if let Some((listener, _)) = socket_listener.take() {
+            // RM-V1.25-28: Clone the shared OnceLock into the daemon closure
+            // so both the outer watch loop and BatchContext see the same
+            // Arc<Embedder>.
+            let daemon_embedder = std::sync::Arc::clone(&shared_embedder);
+            // Index-aware model resolution for the daemon's embedder. Prefer
+            // the model recorded in the store metadata so a wrong-model
+            // CQS_EMBEDDING_MODEL doesn't silently produce zero-result queries
+            // (the dim mismatch otherwise only surfaces as a tracing::warn!).
+            // See ROADMAP.md "Embedder swap workflow" for the longer story.
+            let daemon_model_config =
+                resolve_index_aware_model_for_watch(&index_path, &root, cli.model.as_deref())?;
+            // #968: Clone the shared runtime handle into the daemon closure so
+            // its BatchContext opens its Store/EmbeddingCache/QueryCache on
+            // the same multi-thread pool as the outer watch loop.
+            let daemon_runtime = Arc::clone(&shared_rt);
+            // Stays non-blocking: the accept loop below polls so it can
+            // notice SHUTDOWN_REQUESTED on SIGTERM (RM-V1.25-9).
+            let thread = daemon::spawn_daemon_thread(
+                listener,
+                daemon_embedder,
+                daemon_model_config,
+                daemon_runtime,
+            );
+            Some(thread)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let parser = CqParser::new()?;
+    let supported_ext: HashSet<_> = parser.supported_extensions().iter().cloned().collect();
+
+    println!(
+        "Watching {} for changes (Ctrl+C to stop)...",
+        root.display()
+    );
+    println!(
+        "Code extensions: {}",
+        supported_ext.iter().cloned().collect::<Vec<_>>().join(", ")
+    );
+    println!("Also watching: docs/notes.toml");
+
+    // v1.22.0 audit DS-W2 / OB-22 / PB-NEW-6: watch does not run SPLADE
+    // encoding on new chunks. The v20 trigger on `chunks` DELETE ensures
+    // sparse correctness (the persisted splade.index.bin gets invalidated
+    // when chunks are removed), but newly-added chunks have no sparse
+    // vectors until a manual `cqs index` runs. If a user has
+    // CQS_SPLADE_MODEL set expecting full SPLADE coverage to be
+    // maintained live, tell them up front that they still need to rerun
+    // `cqs index` for fresh coverage on new chunks.
+    if cqs::splade::resolve_splade_model_dir().is_some() {
+        println!(
+            "⚠ SPLADE model configured but watch mode does not refresh sparse vectors for \
+             newly-added chunks. Run 'cqs index' after a stable edit session to restore \
+             full SPLADE coverage. Sparse correctness for removed chunks is maintained \
+             automatically via the v20 schema trigger."
+        );
+        tracing::warn!(
+            "Watch mode does not re-run SPLADE encoding — new chunks will have no sparse \
+             vectors until manual 'cqs index'. Removals are handled via the v20 chunks-delete \
+             trigger."
+        );
+    }
+
+    let (tx, rx) = mpsc::channel();
+
+    // #1091: poll interval is separate from debounce. PollWatcher walks the
+    // entire tree on every tick — on WSL DrvFS each entry is a 9P round-trip,
+    // so 1500ms (the prior debounce-derived default) burns ~8% of one core
+    // continuously on a ~16k-file tree. Default to 5000ms (still fast enough
+    // for save → reindex), override with `CQS_WATCH_POLL_MS`. Inotify watchers
+    // ignore the value but the field exists in `Config`, so we set it
+    // unconditionally and let the watcher type decide.
+    let poll_ms = std::env::var("CQS_WATCH_POLL_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&ms| ms >= 100)
+        .unwrap_or(5000);
+    let config = Config::default().with_poll_interval(Duration::from_millis(poll_ms));
+
+    // Box<dyn Watcher> so both watcher types work with the same variable
+    let mut watcher: Box<dyn Watcher> = if use_poll {
+        println!("Using poll watcher (interval: {}ms)", poll_ms);
+        Box::new(PollWatcher::new(tx, config)?)
+    } else {
+        Box::new(RecommendedWatcher::new(tx, config)?)
+    };
+
+    // P2.74: warn when the project tree approaches the inotify watch limit.
+    // notify::watch(Recursive) registers a watch per directory; on distros
+    // with the old default of 8192 a moderately-deep monorepo exhausts the
+    // limit and per-subdir registration failures are silent. We don't fail
+    // here — the watch still works for whatever directories were registered
+    // — but we emit a loud warning with the recommended fix so operators
+    // know why some saves stopped triggering reindex.
+    #[cfg(target_os = "linux")]
+    if !use_poll {
+        if let Ok(limit_str) = std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches") {
+            if let Ok(limit) = limit_str.trim().parse::<usize>() {
+                let dir_count = count_watchable_dirs(&root);
+                if dir_count * 10 > limit * 9 {
+                    tracing::warn!(
+                        dir_count,
+                        limit,
+                        "inotify watch limit nearly exhausted — saves in some subdirectories \
+                         may not trigger reindex. Either run `cqs watch --poll` or raise the \
+                         limit with: sudo sysctl -w fs.inotify.max_user_watches={}",
+                        limit * 4
+                    );
+                    if !cli.quiet {
+                        eprintln!(
+                            "[warn] inotify watch limit ({}) nearly exhausted by {} dirs in this tree.\n\
+                             [warn]   Either run `cqs watch --poll` or raise the limit:\n\
+                             [warn]     sudo sysctl -w fs.inotify.max_user_watches={}",
+                            limit, dir_count, limit * 4
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    watcher.watch(&root, RecursiveMode::Recursive)?;
+
+    let debounce = Duration::from_millis(debounce_ms);
+    let notes_path = root.join("docs/notes.toml");
+    let cqs_dir = dunce::canonicalize(&cqs_dir).unwrap_or_else(|e| {
+        tracing::debug!(path = %cqs_dir.display(), error = %e, "canonicalize failed, using original");
+        cqs_dir
+    });
+    let notes_path = dunce::canonicalize(&notes_path).unwrap_or_else(|e| {
+        tracing::debug!(path = %notes_path.display(), error = %e, "canonicalize failed, using original");
+        notes_path
+    });
+
+    // Embedder is declared above (before daemon thread spawn) so its
+    // OnceLock can be shared with the daemon thread — see RM-V1.25-28.
+
+    // Open store and reuse across reindex operations within a cycle.
+    // Re-opened after each reindex cycle to clear stale OnceLock caches (DS-9).
+    // #968: `shared_rt` is declared above the daemon-thread spawn so the
+    // closure can `Arc::clone` it; the outer store shares that runtime
+    // here so the daemon's inner read-only store and its caches all run
+    // on one multi-thread pool instead of three isolated runtimes.
+    let mut store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
+        .with_context(|| format!("Failed to open store at {}", index_path.display()))?;
+
+    // DS-W5: Track the database file identity so we detect when `cqs index --force`
+    // replaces it. Without this check, watch's Store handle would point at the
+    // orphaned (renamed) inode and writes would silently vanish.
+    let mut db_id = db_file_identity(&index_path);
+
+    // Persistent HNSW state for incremental updates.
+    //
+    // The watch loop keeps an *Owned* HnswIndex in memory so `insert_batch`
+    // (line ~2480 below) can append new chunks without rebuilding the graph
+    // from scratch. After every `hnsw_rebuild_threshold()` incremental inserts
+    // we trigger a full rebuild to clean orphan vectors (hnsw_rs has no
+    // delete; updated chunks leave their old vectors behind).
+    //
+    // #1090: at startup we load the persisted index from disk for instant
+    // search availability, and *immediately* spawn a background rebuild so
+    // we end up with an Owned variant ready before the first file save —
+    // without paying a 10-15s cold-start hit. The Loaded variant cannot be
+    // mutated (hnsw_rs constraint), so without this swap the first save
+    // after restart would fail incremental insert and force a synchronous
+    // full rebuild, blocking the editor for 15s. Spawning the rebuild
+    // off-thread keeps the daemon responsive throughout.
+    //
+    // DS-35: starting `incremental_count` at threshold/2 (when we loaded an
+    // existing index) means stale orphans from prior sessions get cleaned
+    // sooner; the cleanup is now async too via the same pending_rebuild path.
+    let (hnsw_index, incremental_count, pending_rebuild) =
+        match HnswIndex::load_with_dim(cqs_dir.as_ref(), "index", store.dim()) {
+            Ok(index) => {
+                let n = index.len();
+                info!(vectors = n, "Loaded existing HNSW index from disk");
+                // Spawn background rebuild so we get an Owned variant ASAP
+                // (incremental insert needs Owned, Loaded is immutable).
+                let pending = spawn_hnsw_rebuild(
+                    cqs_dir.clone(),
+                    index_path.clone(),
+                    store.dim(),
+                    "startup_owned_swap",
+                );
+                (Some(index), hnsw_rebuild_threshold() / 2, Some(pending))
+            }
+            Err(ref e) if matches!(e, cqs::hnsw::HnswError::NotFound(_)) => {
+                tracing::debug!("No prior HNSW index, starting fresh");
+                (None, 0, None)
+            }
+            Err(e) => {
+                // v1.22.0 audit EH-7: previously `Err(_) => (None, 0)` treated
+                // DimensionMismatch, IO errors, and corruption the same as
+                // "first run." Now logs so the operator sees why the prior
+                // index was discarded.
+                tracing::warn!(error = %e, "Existing HNSW index unusable, rebuilding from scratch");
+                (None, 0, None)
+            }
+        };
+
+    // Index-aware model resolution: prefer the model recorded in the open
+    // store metadata over CLI flag / env / config / default. Without this,
+    // running `cqs watch` with `CQS_EMBEDDING_MODEL=wrong-model` would embed
+    // new chunks with a different dim than the index, corrupting
+    // incremental reindex.
+    let stored_model_for_watch = store.stored_model_name();
+    let project_config_for_watch = cqs::config::Config::load(&root);
+    let model_config_owned = ModelConfig::resolve_for_query(
+        stored_model_for_watch.as_deref(),
+        cli.model.as_deref(),
+        project_config_for_watch.embedding.as_ref(),
+    )
+    .apply_env_overrides();
+    tracing::info!(
+        stored = stored_model_for_watch.as_deref().unwrap_or("<none>"),
+        resolved = %model_config_owned.name,
+        dim = model_config_owned.dim,
+        "Watch loop resolved index-aware model config"
+    );
+    let model_config = &model_config_owned;
+
+    // #1002: build the gitignore matcher once at startup. `no_ignore` (CLI)
+    // and `CQS_WATCH_RESPECT_GITIGNORE=0` (env) both disable it. Held in
+    // `RwLock<Option<_>>` so a future follow-up can hot-swap on
+    // `.gitignore` change without restart; v1 builds it once.
+    let gitignore = std::sync::RwLock::new(if no_ignore {
+        tracing::info!("--no-ignore passed — gitignore filtering disabled");
+        None
+    } else {
+        build_gitignore_matcher(&root)
+    });
+
+    // #1024: Daemon startup GC. Two-pass sweep — drop chunks whose origin
+    // is gone from disk (Pass 1) and drop chunks whose path is now matched
+    // by `.gitignore` (Pass 2, retroactive cleanup of pre-v1.26.0 worktree
+    // pollution). Only runs in `--serve` mode (the systemd unit) and is
+    // disabled by `CQS_DAEMON_STARTUP_GC=0`. Synchronous on the main
+    // thread so the daemon socket sees a clean index from the first
+    // accepted connection.
+    //
+    // Acquires the index lock non-blockingly via `try_acquire_index_lock`
+    // — if a concurrent `cqs index` already holds the lock, we skip the
+    // startup pass and let the next periodic-GC tick catch up. Blocking
+    // here would defeat `cqs index`'s expectation that the daemon
+    // releases the lock between reindex cycles.
+    if serve {
+        match try_acquire_index_lock(&cqs_dir) {
+            Ok(Some(gc_lock)) => {
+                // EH-V1.29-8: Recover from RwLock poison. A poisoned read
+                // usually means a writer panicked mid-update; the previously-
+                // written matcher is still valid data. Dropping to "no
+                // matcher" silently re-indexes ignored files (including
+                // `.env.secret`). `into_inner()` on the `PoisonError` keeps
+                // the matcher visible.
+                let matcher_guard = match gitignore.read() {
+                    Ok(g) => Some(g),
+                    Err(poisoned) => {
+                        tracing::error!(
+                            "Gitignore RwLock poisoned — recovering. Previous matcher is still valid; indexing continues with it."
+                        );
+                        Some(poisoned.into_inner())
+                    }
+                };
+                let matcher_ref = matcher_guard.as_ref().and_then(|g| g.as_ref());
+                run_daemon_startup_gc(&store, &root, &parser, matcher_ref);
+                // Explicit drop so the read lock is released before the watch
+                // loop starts taking it on every event.
+                drop(matcher_guard);
+                drop(gc_lock);
+                // Clear caches so subsequent queries observe the pruned rows.
+                store.clear_caches();
+                db_id = db_file_identity(&index_path);
+            }
+            Ok(None) => {
+                tracing::info!(
+                    "Daemon startup GC: index lock held by another process — skipping (periodic GC will catch up)"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Daemon startup GC: failed to acquire index lock — skipping"
+                );
+            }
+        }
+    }
+
+    // #1004: build the SPLADE encoder once at startup. `None` means
+    // incremental SPLADE is disabled for this daemon lifetime — either
+    // the model isn't configured, failed to load, or the operator set
+    // `CQS_WATCH_INCREMENTAL_SPLADE=0`. Existing sparse vectors in the
+    // DB are preserved in all cases.
+    let splade_encoder_storage = build_splade_encoder_for_watch().map(std::sync::Mutex::new);
+    let splade_encoder_ref: Option<&std::sync::Mutex<cqs::splade::SpladeEncoder>> =
+        splade_encoder_storage.as_ref();
+
+    // #1129: open the project-scoped global embedding cache once at daemon
+    // startup so reindex cycles can hit it without paying open() per cycle.
+    // Mirrors the bulk pipeline's gating on `CQS_CACHE_ENABLED=0`. Open
+    // failure is best-effort: log and continue with `None`, identical to
+    // the bulk path's degradation.
+    //
+    // Reuse `shared_rt` so this Cache piggybacks on the same worker pool
+    // as the outer Store, daemon Store/Cache, etc. (#968).
+    let global_cache_storage: Option<cqs::cache::EmbeddingCache> = {
+        if std::env::var("CQS_CACHE_ENABLED").as_deref() == Ok("0") {
+            tracing::info!(
+                "CQS_CACHE_ENABLED=0 — global embedding cache disabled for watch reindex"
+            );
+            None
+        } else {
+            let cache_path = cqs::cache::EmbeddingCache::project_default_path(&project_cqs_dir);
+            match cqs::cache::EmbeddingCache::open_with_runtime(
+                &cache_path,
+                Some(Arc::clone(&shared_rt)),
+            ) {
+                Ok(c) => {
+                    tracing::info!(
+                        path = %cache_path.display(),
+                        "Watch reindex global embedding cache opened"
+                    );
+                    Some(c)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        path = %cache_path.display(),
+                        "Watch reindex global cache unavailable; proceeding without it"
+                    );
+                    None
+                }
+            }
+        }
+    };
+    let global_cache_ref: Option<&cqs::cache::EmbeddingCache> = global_cache_storage.as_ref();
+
+    let watch_cfg = WatchConfig {
+        root: &root,
+        cqs_dir: &cqs_dir,
+        notes_path: &notes_path,
+        supported_ext: &supported_ext,
+        parser: &parser,
+        embedder: shared_embedder.as_ref(),
+        quiet: cli.quiet,
+        model_config,
+        gitignore: &gitignore,
+        splade_encoder: splade_encoder_ref,
+        global_cache: global_cache_ref,
+    };
+
+    let mut state = WatchState {
+        embedder_backoff: EmbedderBackoff::new(),
+        pending_files: HashSet::new(),
+        pending_notes: false,
+        last_event: std::time::Instant::now(),
+        // Track last-indexed mtime per file to skip duplicate WSL/NTFS events.
+        // On WSL, inotify over 9P delivers repeated events for the same file change.
+        // Bounded: pruned when >10k entries or >1k entries on single-file reindex.
+        last_indexed_mtime: HashMap::with_capacity(1024),
+        hnsw_index,
+        incremental_count,
+        dropped_this_cycle: 0,
+        pending_rebuild,
+    };
+
+    let mut cycles_since_clear: u32 = 0;
+    // RM-V1.25-5: Track last eviction of the global embedding cache so
+    // the reindex path only trims once per hour, keeping the WAL file
+    // from churning on every micro-edit.
+    let mut last_cache_evict = std::time::Instant::now();
+
+    // #1024: Track last periodic GC tick. Initialised to "now" so the
+    // first periodic sweep doesn't fire until the full interval
+    // (`daemon_periodic_gc_interval_secs()`) has elapsed after startup —
+    // the startup pass already covered the initial state.
+    // Disabled when --serve is off (this is a daemon-only feature) or
+    // when CQS_DAEMON_PERIODIC_GC=0.
+    let periodic_gc_enabled =
+        serve && std::env::var("CQS_DAEMON_PERIODIC_GC").as_deref() != Ok("0");
+    if !periodic_gc_enabled && serve {
+        tracing::info!("CQS_DAEMON_PERIODIC_GC=0 — periodic idle-time GC disabled");
+    }
+    let mut last_periodic_gc = std::time::Instant::now();
+
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Ok(event)) => {
+                collect_events(&event, &watch_cfg, &mut state);
+            }
+            Ok(Err(e)) => {
+                warn!(error = %e, "Watch error");
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let should_process = (!state.pending_files.is_empty() || state.pending_notes)
+                    && state.last_event.elapsed() >= debounce;
+
+                if should_process {
+                    cycles_since_clear = 0;
+
+                    // DS-1: Acquire index lock before reindexing. If another process
+                    // (cqs index, cqs gc) holds it, skip this cycle.
+                    let lock = match try_acquire_index_lock(&cqs_dir) {
+                        Ok(Some(lock)) => lock,
+                        Ok(None) => {
+                            info!("Index lock held by another process, skipping reindex cycle");
+                            continue;
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to create index lock file");
+                            continue;
+                        }
+                    };
+
+                    // DS-W5: Detect if `cqs index --force` replaced the database
+                    // while we were waiting. If so, reopen the Store before processing
+                    // any changes — otherwise writes go to the orphaned inode.
+                    let current_id = db_file_identity(&index_path);
+                    if current_id != db_id {
+                        info!("index.db replaced (likely cqs index --force), reopening store");
+                        drop(store);
+                        // #968: reuse the shared runtime on re-open so the
+                        // replacement store keeps running on the same
+                        // multi-thread worker pool as its predecessor.
+                        store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
+                            .with_context(|| {
+                                format!(
+                                    "Failed to re-open store at {} after DB replacement",
+                                    index_path.display()
+                                )
+                            })?;
+                        // db_id updated below in the DS-9 reopen path
+                        state.hnsw_index = None;
+                        state.incremental_count = 0;
+                    }
+
+                    if !state.pending_files.is_empty() {
+                        process_file_changes(&watch_cfg, &store, &mut state);
+                    }
+
+                    if state.pending_notes {
+                        state.pending_notes = false;
+                        process_note_changes(&root, &store, cli.quiet);
+                    }
+
+                    // DS-9: Re-open Store to clear stale OnceLock caches
+                    // (call_graph_cache, test_chunks_cache). The documented contract
+                    // in store/mod.rs requires re-opening after index changes.
+                    // DS-9 / RM-6: Clear caches instead of full re-open.
+                    // Avoids pool teardown + runtime creation + PRAGMA setup
+                    // on every reindex cycle over 24/7 systemd lifetime.
+                    store.clear_caches();
+                    db_id = db_file_identity(&index_path);
+
+                    // RM-V1.25-5: Periodically evict the global embedding
+                    // cache so long-running watch sessions don't let the
+                    // shared ~/.cache/cqs/embeddings.db grow past its
+                    // CQS_CACHE_MAX_SIZE cap (default 10GB). Gated by
+                    // `last_cache_evict.elapsed()` so we don't churn the
+                    // SQLite file on every single reindex cycle.
+                    //
+                    // #968: reuse the shared runtime so this one-shot eviction
+                    // piggybacks on the existing worker pool rather than
+                    // spinning up a fresh current_thread runtime.
+                    if last_cache_evict.elapsed() >= Duration::from_secs(3600) {
+                        let project_cqs_dir = cqs::resolve_index_dir(&root);
+                        let cache_path =
+                            cqs::cache::EmbeddingCache::project_default_path(&project_cqs_dir);
+                        super::batch::evict_embeddings_cache_with_runtime(
+                            &cache_path,
+                            "watch reindex cycle",
+                            Some(Arc::clone(&shared_rt)),
+                        );
+                        last_cache_evict = std::time::Instant::now();
+                    }
+
+                    // DS-1: Release lock after all reindex work (including HNSW rebuild)
+                    drop(lock);
+                } else {
+                    cycles_since_clear += 1;
+                    // Clear embedder session and HNSW index after ~5 minutes idle
+                    // (3000 cycles at 100ms). Frees GPU/memory when watch is idle.
+                    //
+                    // RM-V1.25-28: the shared Arc<Embedder> is also held by
+                    // the daemon thread's BatchContext. clear_session is
+                    // safe either way: the ONNX session is behind a Mutex
+                    // and the tokenizer is Mutex<Option<Arc<…>>>.
+                    if cycles_since_clear >= 3000 {
+                        if let Some(emb) = shared_embedder.get() {
+                            emb.clear_session();
+                        }
+                        state.hnsw_index = None;
+                        state.incremental_count = 0;
+                        cycles_since_clear = 0;
+                    }
+
+                    // #1024: Idle-time periodic GC. Only fires when
+                    //   (a) `--serve` is on AND `CQS_DAEMON_PERIODIC_GC` != "0",
+                    //   (b) the last actual file event was more than
+                    //       `daemon_periodic_gc_idle_secs()` ago (so a long
+                    //       burst of edits never triggers GC mid-burst), AND
+                    //   (c) the previous tick was more than
+                    //       `daemon_periodic_gc_interval_secs()` ago.
+                    // The bounded sweep (cap = daemon_periodic_gc_cap()) keeps
+                    // each tick's write transaction short.
+                    //
+                    // Acquires the same `acquire_index_lock` semantics by
+                    // calling `try_acquire_index_lock` — if `cqs index` or
+                    // `cqs gc` is running, the GC tick skips and tries again
+                    // on the next interval.
+                    if periodic_gc_enabled
+                        && state.last_event.elapsed()
+                            >= Duration::from_secs(super::limits::daemon_periodic_gc_idle_secs())
+                        && last_periodic_gc.elapsed()
+                            >= Duration::from_secs(super::limits::daemon_periodic_gc_interval_secs())
+                    {
+                        match try_acquire_index_lock(&cqs_dir) {
+                            Ok(Some(gc_lock)) => {
+                                // EH-V1.29-8: Same poison-recovery as startup
+                                // GC above — silently dropping to "no matcher"
+                                // would let periodic GC re-index gitignored
+                                // files (the very ones the matcher was built
+                                // to exclude).
+                                let matcher_guard = match gitignore.read() {
+                                    Ok(g) => Some(g),
+                                    Err(poisoned) => {
+                                        tracing::error!(
+                                            "Gitignore RwLock poisoned — recovering. Previous matcher is still valid; periodic GC continues with it."
+                                        );
+                                        Some(poisoned.into_inner())
+                                    }
+                                };
+                                let matcher_ref = matcher_guard.as_ref().and_then(|g| g.as_ref());
+                                run_daemon_periodic_gc(&store, &root, &parser, matcher_ref);
+                                drop(matcher_guard);
+                                drop(gc_lock);
+                                // Clear caches so the next query observes the pruned rows.
+                                store.clear_caches();
+                                db_id = db_file_identity(&index_path);
+                            }
+                            Ok(None) => {
+                                tracing::debug!("Periodic GC: index lock held, skipping this tick");
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "Periodic GC: failed to acquire index lock — skipping tick"
+                                );
+                            }
+                        }
+                        // Always advance the timer so a wedged lock or
+                        // failed enumerate doesn't make us retry every loop.
+                        last_periodic_gc = std::time::Instant::now();
+                    }
+                }
+
+                // Socket queries handled by dedicated thread (see _socket_thread above).
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!(
+                    "File watcher disconnected unexpectedly. \
+                     Hint: Restart 'cqs watch' to resume monitoring."
+                );
+            }
+        }
+
+        if check_interrupted() {
+            println!("\nStopping watch...");
+            break;
+        }
+
+        #[cfg(unix)]
+        if is_shutdown_requested() {
+            tracing::info!("SIGTERM received, draining watch loop");
+            if !cli.quiet {
+                println!("\nSIGTERM received, stopping watch...");
+            }
+            break;
+        }
+    }
+
+    // RM-V1.25-8: bounded join of the daemon socket thread. The thread
+    // already observes `daemon_should_exit()` at the top of its accept
+    // loop (Ctrl+C and SIGTERM both satisfy it), so in the common case
+    // this returns within one poll cycle (~100ms). Enforce an outer
+    // timeout so a wedged handler (e.g. waiting on a long embedder
+    // inference) can't keep the process alive past ~5 s after the
+    // user asked it to stop.
+    #[cfg(unix)]
+    if let Some(handle) = socket_thread.take() {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let poll = Duration::from_millis(50);
+        let mut handle_opt = Some(handle);
+        while std::time::Instant::now() < deadline {
+            match handle_opt.as_ref() {
+                Some(h) if h.is_finished() => {
+                    if let Err(e) = handle_opt.take().unwrap().join() {
+                        tracing::warn!(?e, "Daemon socket thread panicked during shutdown");
+                    } else {
+                        tracing::info!("Daemon socket thread joined cleanly");
+                    }
+                    break;
+                }
+                Some(_) => std::thread::sleep(poll),
+                None => break,
+            }
+        }
+        if handle_opt.is_some() {
+            // P3.22: log audit verified — the warn fires whenever the deadline
+            // expires before `is_finished()` returns true, so journal output
+            // reflects reality (no silent detach masquerading as "joined
+            // cleanly"). The "joined cleanly" line above is reachable only
+            // from the `is_finished` arm, which already calls `.join()`.
+            tracing::warn!(
+                deadline_secs = 5,
+                "Daemon socket thread did not exit within shutdown window — detaching (BatchContext Drop may race with process exit; in-flight embedder inference is the usual culprit)"
+            );
+            // Intentionally drop `handle_opt` to detach — preserved as the
+            // pre-fix behaviour, only when the 5 s budget is exhausted.
+        }
+    }
+
+    // P2.71: bounded join of the in-flight HNSW rebuild thread (if any).
+    // Without this, the rebuild thread is detached on daemon shutdown — a
+    // long rebuild keeps writing to disk after the process is "done" and may
+    // race the next startup. The rebuild thread doesn't observe a shutdown
+    // flag yet (audit calls cancellation a follow-on issue), so we bound the
+    // wait at 30s — the common case is a near-finished rebuild that completes
+    // in <1s, and a stalled rebuild gets detached with a loud warning.
+    if let Some(mut pending) = state.pending_rebuild.take() {
+        if let Some(handle) = pending.handle.take() {
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let poll = Duration::from_millis(100);
+            let mut handle_opt = Some(handle);
+            while std::time::Instant::now() < deadline {
+                match handle_opt.as_ref() {
+                    Some(h) if h.is_finished() => {
+                        if let Err(e) = handle_opt.take().unwrap().join() {
+                            tracing::warn!(
+                                ?e,
+                                "Background HNSW rebuild thread panicked during shutdown"
+                            );
+                        } else {
+                            tracing::info!("Background HNSW rebuild thread joined cleanly");
+                        }
+                        break;
+                    }
+                    Some(_) => std::thread::sleep(poll),
+                    None => break,
+                }
+            }
+            if handle_opt.is_some() {
+                tracing::warn!(
+                    "Background HNSW rebuild thread did not finish within 30s shutdown window — detaching"
+                );
+                // Drop to detach; rebuild thread keeps running until the
+                // process exits, but at least we logged it.
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(all(test, unix))]
+mod adversarial_socket_tests;
