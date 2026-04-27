@@ -100,6 +100,10 @@ The classifier-accuracy / per-query-α-regression / soft-routing / fused-head fa
 
 Core finding: R@5 is alpha-insensitive on this corpus state across [0, 1]. The Oracle test's +9.2pp ceiling came from category-driven per-category default flips, not continuous-α refinement. **Routing-side levers (which α, which category, which routing weight) are exhausted.** Future R@5 work should target signal-side levers (chunking, embedder, multi-granularity index) under paired-reindex protocol.
 
+**Index backends (signal-side, recall-leaning):**
+- [ ] **USearch backend** — same algorithm class as HNSW, but its tuning lets you push `ef_search` higher cheaply. We're at limit=20 with eval R@5 = 63.3% test / 74.3% dev; if recall is leaving points on the table (vs ranking), bumping recall via `ef_search` is the cheapest knob. USearch makes that knob less expensive. Plugs into the `IndexBackend` trait introduced by [#1131](https://github.com/jamie8johnson/cqs/issues/1131).
+- [ ] **SIMD brute-force fast path under ~5K chunks** — exact cosine, recall = 1.0 by construction. Wouldn't move our 17K-chunk eval, but would close the small-project gap and remove an index-build variable from per-slot A/Bs. Plugs into `IndexBackend` as a higher-priority backend that fires when `chunk_count < threshold`.
+
 **Embedder swap workflow (repeatable model A/B):**
 - [x] **Index-aware embedder resolution.** Shipped — `src/cli/store.rs:138` `model_config()` reads `Store::stored_model_name()` and overrides env/CLI via `ModelConfig::resolve_for_query`. Closes the `CQS_EMBEDDING_MODEL=foo` foot-gun where queries against a `bar`-model index silently returned zero results.
 - [x] **Embedder abstraction.** [#949](https://github.com/jamie8johnson/cqs/issues/949) closed. `ModelConfig` carries `input_names` / `output_name` / `pooling` / `tokenizer`; non-BERT models (Jina v3, Stella, GTE, custom) can be added as config entries rather than encoder forks.
