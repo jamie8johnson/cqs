@@ -183,11 +183,14 @@ pub(crate) async fn backup_before_migrate(
 /// In-process callers that need to keep working after restore must drop the
 /// returning `Store` and reopen a fresh handle.
 ///
-/// scope=structural — full enforcement requires the migration caller in
-/// `src/store/migrations.rs:106-128` to drop the pool and run a
-/// `PRAGMA wal_checkpoint(TRUNCATE)` before invoking this. That sweep is
-/// out of scope for this batch (touches the migration runtime contract);
-/// documenting the contract here so the caller-side fix has a clear target.
+/// Enforcement: the only production caller is [`super::migrations::migrate`],
+/// which takes its `SqlitePool` by value and runs
+/// `PRAGMA wal_checkpoint(TRUNCATE)` + `pool.close().await` before invoking
+/// this function on the failure path. Test coverage:
+/// `test_migrate_failure_closes_pool_before_restore_no_phantom_inode` opens
+/// a fresh pool against the same path after a forced migration failure and
+/// asserts the restored bytes are visible — proves the file replace landed
+/// on the inode the path resolves to, not an orphaned descriptor.
 pub(crate) fn restore_from_backup(db_path: &Path, backup_db: &Path) -> Result<(), StoreError> {
     let _span = tracing::info_span!("restore_from_backup").entered();
     copy_triplet(backup_db, db_path)?;

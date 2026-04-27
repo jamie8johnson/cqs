@@ -977,6 +977,23 @@ fn open_with_config_impl<Mode>(
         })?;
     }
 
+    // P2.59 / issue #1125: run the schema-version check + migration BEFORE
+    // constructing `Store`. `migrations::migrate` takes the pool by value so
+    // it can `.close().await` before `restore_from_backup` runs an
+    // `atomic_replace` over the DB file — SQLite's documented restore
+    // protocol requires zero open connections during the file replace, and
+    // doing it after `Store` is built would mean the pool is owned by a
+    // struct that outlives the migration call. The pool we got back is
+    // either the same one (no migration needed, or migration succeeded) or
+    // we propagate the error and let the caller handle it. On migration
+    // failure the pool was consumed and the DB has been restored from the
+    // backup; the caller (typically `cqs index --force`) needs to retry.
+    let pool = rt.block_on(migrations::check_and_migrate_schema(
+        pool,
+        path,
+        helpers::CURRENT_SCHEMA_VERSION,
+    ))?;
+
     // Read dim from metadata before constructing Store (avoid unsafe mutation).
     // Defaults to EMBEDDING_DIM for fresh/pre-v15 databases without dimensions key.
     let dim = rt
@@ -1025,7 +1042,6 @@ fn open_with_config_impl<Mode>(
     // Skip model name validation on open — dimension is validated at embed time,
     // and configurable models (v1.7.0) can legitimately use any model name.
     // Model mismatch is checked at index time via check_model_version_with().
-    store.check_schema_version(path)?;
     store.check_cq_version();
 
     Ok(store)

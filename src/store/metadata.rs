@@ -3,13 +3,15 @@
 #![allow(clippy::await_holding_lock)]
 //! Metadata get/set and version validation for the Store.
 
+#[cfg(test)]
 use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(test)]
 use super::helpers::DEFAULT_MODEL_NAME;
-use super::migrations;
-use super::{NoteSummary, ReadWrite, Store, StoreError, CURRENT_SCHEMA_VERSION};
+#[cfg(test)]
+use super::CURRENT_SCHEMA_VERSION;
+use super::{NoteSummary, ReadWrite, Store, StoreError};
 
 /// Which HNSW index a dirty-flag operation applies to.
 ///
@@ -36,17 +38,25 @@ impl HnswKind {
 }
 
 impl<Mode> Store<Mode> {
-    /// Validates and optionally migrates the database schema version to match the current expected version.
-    /// Queries the metadata table for the stored schema version and compares it against the current version. If the stored version is older, attempts to migrate the schema. Returns an error if the stored version is newer than the current version (indicating the database is incompatible), if the schema is corrupted, or if migration fails without a supported migration path.
-    /// # Arguments
-    /// `path` - The file path to the database, used for error reporting.
-    /// # Returns
-    /// Returns `Ok(())` if the schema version is valid and matches the current version, or if migration succeeds. Returns `Err(StoreError)` if the schema is newer than supported, corrupted, or migration fails.
-    /// # Errors
-    /// - `StoreError::SchemaNewerThanCq` - The stored schema version is newer than the current version.
-    /// - `StoreError::Corruption` - The stored schema version is not a valid integer.
-    /// - `StoreError::SchemaMismatch` - Schema migration is not supported for the version difference.
-    /// - Other `StoreError` variants from database access or migration failures.
+    /// Validates the database schema version against the current expected
+    /// version. **Does not run migrations** — migrations require the pool
+    /// by value and run before `Store` is constructed
+    /// (see [`super::migrations::check_and_migrate_schema`] and the
+    /// callsite in [`super::open_with_config_impl`]). Kept on `Store`
+    /// for tests that exercise the version-validation logic against a
+    /// live store after open.
+    ///
+    /// Returns:
+    /// - `Ok(())` for fresh DBs (metadata table missing, key missing) and
+    ///   for DBs whose `schema_version` matches `CURRENT_SCHEMA_VERSION`.
+    /// - `Err(StoreError::SchemaNewerThanCq)` if the index is from a
+    ///   future cqs version.
+    /// - `Err(StoreError::Corruption)` if `schema_version` is unparseable.
+    /// - `Err(StoreError::SchemaMismatch)` if the version is older than
+    ///   current — a state that should be impossible after `open` since
+    ///   migration runs first; if you see this, something opened the DB
+    ///   bypassing `open_with_config_impl`.
+    #[cfg(test)]
     pub(crate) fn check_schema_version(&self, path: &Path) -> Result<(), StoreError> {
         let _span = tracing::info_span!("check_schema_version").entered();
         let path_str = path.display().to_string();
@@ -79,25 +89,16 @@ impl<Mode> Store<Mode> {
                 return Err(StoreError::SchemaNewerThanCq(version));
             }
             if version < CURRENT_SCHEMA_VERSION && version > 0 {
-                // Attempt migration instead of failing. `path` flows into
-                // the migration's backup/restore pipeline (#953) — a
-                // filesystem snapshot of the DB is taken before DDL runs
-                // so a mid-migration failure can be rolled back atomically.
-                match migrations::migrate(&self.pool, path, version, CURRENT_SCHEMA_VERSION).await {
-                    Ok(()) => {
-                        tracing::info!(
-                            path = %path_str,
-                            from = version,
-                            to = CURRENT_SCHEMA_VERSION,
-                            "Schema migrated successfully"
-                        );
-                    }
-                    Err(StoreError::MigrationNotSupported(from, to)) => {
-                        // No migration available, fall back to original error
-                        return Err(StoreError::SchemaMismatch(path_str, from, to));
-                    }
-                    Err(e) => return Err(e),
-                }
+                // Migration runs in `open_with_config_impl` before `Store` is
+                // constructed (P2.59). Reaching this branch on a live store
+                // means something bypassed open() and stamped a stale
+                // `schema_version` after migration completed — surface that
+                // as a SchemaMismatch instead of trying to re-migrate.
+                return Err(StoreError::SchemaMismatch(
+                    path_str,
+                    version,
+                    CURRENT_SCHEMA_VERSION,
+                ));
             }
             Ok(())
         })

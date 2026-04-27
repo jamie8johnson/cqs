@@ -64,19 +64,40 @@ use super::helpers::CURRENT_SCHEMA_VERSION;
 /// "duplicate column name" on a perfectly healthy DB. The double-check under
 /// the transaction's implicit exclusive lock prevents this: the second
 /// process sees the version has already advanced and short-circuits.
+///
+/// ## Pool ownership (P2.59 / issue #1125)
+///
+/// `migrate` takes ownership of `pool` by value because the failure path must
+/// `.close().await` the pool before `restore_from_backup` runs `atomic_replace`
+/// over `db_path`. SQLite's in-process pool holds file descriptors against the
+/// old inode; if those descriptors stay open across the file replace, queries
+/// through them see the unlinked-old inode while readers from new processes
+/// see the restored DB. The WAL/SHM sidecars copied alongside the main DB land
+/// on the new inode, but the pool's mmap'd sidecars belong to the old —
+/// silent two-state divergence.
+///
+/// Returns:
+/// - `Ok(pool)` on success: the pool is the same one passed in, still usable.
+/// - `Err(_)` on failure: the pool has been **consumed and closed** as part of
+///   the restore protocol (when a backup was taken) or is dropped silently
+///   (when no backup was available). The caller must reopen a fresh pool
+///   against `db_path` to continue. The DB on disk is in its pre-migrate state
+///   on the with-backup path, or in whatever state the rolled-back transaction
+///   left it on the no-backup path (typically pre-migrate because all DDL ran
+///   inside a single `pool.begin()`).
 pub async fn migrate(
-    pool: &SqlitePool,
+    pool: SqlitePool,
     db_path: &Path,
     from: i32,
     to: i32,
-) -> Result<(), StoreError> {
+) -> Result<SqlitePool, StoreError> {
     let _span = tracing::info_span!("migrate", from, to).entered();
 
     if from == to {
         // Fast path: no work to do. Do NOT take a backup — this path runs
         // on every `cqs` command when the DB is already at the current
         // version, and a disk write here would be unacceptable overhead.
-        return Ok(());
+        return Ok(pool);
     }
     if from > to {
         return Err(StoreError::SchemaNewerThanCq(from));
@@ -90,9 +111,13 @@ pub async fn migrate(
 
     // Snapshot the DB before any DDL runs. On failure the restore path uses
     // `atomic_replace` to put the DB back in its pre-migrate state.
-    let backup_path = backup::backup_before_migrate(pool, db_path, from, to).await?;
+    //
+    // Borrowing &pool here is fine: backup_before_migrate runs a
+    // `wal_checkpoint(FULL)` and a file copy; we still own the pool when it
+    // returns, and the failure-path close-and-restore happens below.
+    let backup_path = backup::backup_before_migrate(&pool, db_path, from, to).await?;
 
-    match run_migration_tx(pool, from, to).await {
+    match run_migration_tx(&pool, from, to).await {
         Ok(()) => {
             tracing::info!(new_version = to, "Schema migration complete");
             // Best-effort prune of older backups; failure here is not a
@@ -100,16 +125,35 @@ pub async fn migrate(
             if let Err(e) = backup::prune_old_backups(db_path) {
                 tracing::warn!(error = %e, "Failed to prune old migration backups");
             }
-            Ok(())
+            Ok(pool)
         }
         Err(e) => {
+            // P2.59: close the pool BEFORE atomic_replace overwrites the DB
+            // file. Otherwise pool descriptors keep mmap'ing the unlinked
+            // old inode while subsequent opens see the restored backup —
+            // silent two-state divergence. Drain WAL first so the on-disk
+            // bytes after close reflect the post-DDL state we're about to
+            // discard, and the restore overwrites a quiesced file.
             if let Some(ref bak) = backup_path {
+                if let Err(checkpoint_err) = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .execute(&pool)
+                    .await
+                {
+                    tracing::warn!(
+                        error = %checkpoint_err,
+                        "wal_checkpoint(TRUNCATE) before restore failed (non-fatal)"
+                    );
+                }
+                pool.close().await;
+                // The pool is closed; descriptors against the old inode are
+                // released. Now atomic_replace can safely swap the DB file.
+
                 match backup::restore_from_backup(db_path, bak) {
                     Ok(()) => {
                         tracing::warn!(
                             error = %e,
                             backup = %bak.display(),
-                            "Migration failed; DB restored from backup"
+                            "Migration failed; pool closed and DB restored from backup"
                         );
                     }
                     Err(restore_err) => {
@@ -127,16 +171,102 @@ pub async fn migrate(
                         );
                     }
                 }
+                Err(e)
             } else {
+                // No backup was taken (env opt-out): the migration's DDL ran
+                // inside a transaction that already rolled back, so the DB
+                // file is still in its pre-migrate state. The pool was never
+                // closed, but we drop it here to keep the API uniform —
+                // callers receiving Err must reopen regardless of which
+                // failure path fired.
                 tracing::warn!(
                     error = %e,
                     db = %db_path.display(),
                     "Migration failed and no backup was available for restore. \
                      Run 'cqs index --force' to rebuild from source."
                 );
+                drop(pool);
+                Err(e)
             }
-            Err(e)
         }
+    }
+}
+
+/// Read the stored `schema_version` and migrate to the current version if
+/// needed. Designed to be called from `Store::open` *before* the `Store`
+/// struct is constructed so the pool can be handed off to `migrate()` by
+/// value — a hard requirement of the P2.59 close-and-restore protocol.
+///
+/// Returns the (possibly-the-same, possibly-migrated) pool on success.
+/// On migration failure the pool is consumed (see [`migrate`]); the caller
+/// must reopen if they want to continue.
+///
+/// `current_version` is normally [`super::helpers::CURRENT_SCHEMA_VERSION`],
+/// passed in as a parameter so tests can target intermediate versions
+/// without flipping a process-global constant.
+pub async fn check_and_migrate_schema(
+    pool: SqlitePool,
+    db_path: &Path,
+    current_version: i32,
+) -> Result<SqlitePool, StoreError> {
+    let _span = tracing::info_span!("check_and_migrate_schema").entered();
+
+    // Read the stored schema version. A "no such table" error means the
+    // metadata table hasn't been created yet (fresh DB pre-init), which is
+    // a legitimate post-open state — return the pool untouched.
+    let row: Option<(String,)> =
+        match sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+            .fetch_optional(&pool)
+            .await
+        {
+            Ok(r) => r,
+            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => {
+                return Ok(pool);
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+    let version: i32 = match row {
+        Some((s,)) => s.parse().map_err(|e| {
+            StoreError::Corruption(format!(
+                "schema_version '{}' is not a valid integer: {}",
+                s, e
+            ))
+        })?,
+        // EH-22: missing key is OK — init() hasn't been called yet on a
+        // fresh DB. After init(), schema_version is guaranteed present.
+        None => 0,
+    };
+
+    if version > current_version {
+        return Err(StoreError::SchemaNewerThanCq(version));
+    }
+    if version <= 0 || version >= current_version {
+        // Either fresh-DB sentinel (0) or already current — no migration.
+        return Ok(pool);
+    }
+
+    // Migration needed. Hand the pool off by value so migrate() can close it
+    // around the file replace. On failure the pool is consumed; surface
+    // SchemaMismatch for unsupported migrations so the CLI gets a clearer
+    // error than the raw MigrationNotSupported (which encodes from/to as
+    // anonymous integers).
+    match migrate(pool, db_path, version, current_version).await {
+        Ok(p) => {
+            tracing::info!(
+                path = %db_path.display(),
+                from = version,
+                to = current_version,
+                "Schema migrated successfully"
+            );
+            Ok(p)
+        }
+        Err(StoreError::MigrationNotSupported(from, to)) => Err(StoreError::SchemaMismatch(
+            db_path.display().to_string(),
+            from,
+            to,
+        )),
+        Err(e) => Err(e),
     }
 }
 
@@ -751,7 +881,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, &db_path, 15, 15).await;
+            let result = migrate(pool, &db_path, 15, 15).await;
             assert!(result.is_ok(), "same-version migration should be no-op");
         });
     }
@@ -777,7 +907,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, &db_path, 15, 14).await;
+            let result = migrate(pool, &db_path, 15, 14).await;
             assert!(result.is_err(), "downgrade should fail");
             match result.unwrap_err() {
                 StoreError::SchemaNewerThanCq(v) => assert_eq!(v, 15),
@@ -852,8 +982,10 @@ mod tests {
             .unwrap();
             assert!(table_check.is_none(), "type_edges should not exist yet");
 
-            // Run migration from v10 to v11
-            migrate(&pool, &db_path, 10, 11).await.unwrap();
+            // Run migration from v10 to v11. P2.59: migrate consumes the pool
+            // by value so the failure path can close it before the file
+            // replace; we rebind to the returned pool to keep using it.
+            let pool = migrate(pool, &db_path, 10, 11).await.unwrap();
 
             // Verify type_edges now exists
             let table_check: Option<(String,)> = sqlx::query_as(
@@ -959,7 +1091,7 @@ mod tests {
                 .unwrap();
 
             // Run migration from v12 to v13
-            migrate(&pool, &db_path, 12, 13).await.unwrap();
+            let pool = migrate(pool, &db_path, 12, 13).await.unwrap();
 
             // Verify enrichment_hash column exists by inserting a row that uses it
             sqlx::query(
@@ -1070,7 +1202,7 @@ mod tests {
             assert!(table_check.is_none(), "llm_summaries should not exist yet");
 
             // Run migration from v13 to v14
-            migrate(&pool, &db_path, 13, 14).await.unwrap();
+            let pool = migrate(pool, &db_path, 13, 14).await.unwrap();
 
             // Verify llm_summaries table exists
             let table_check: Option<(String,)> = sqlx::query_as(
@@ -1189,7 +1321,7 @@ mod tests {
                 .unwrap();
 
             // Run migration from v14 to v15
-            migrate(&pool, &db_path, 14, 15).await.unwrap();
+            let pool = migrate(pool, &db_path, 14, 15).await.unwrap();
 
             // Verify dimensions updated to 768
             let dims: (String,) =
@@ -1283,7 +1415,7 @@ mod tests {
             .unwrap();
 
             // Run migration from v15 to v16
-            migrate(&pool, &db_path, 15, 16).await.unwrap();
+            let pool = migrate(pool, &db_path, 15, 16).await.unwrap();
 
             // Verify existing rows have purpose='summary'
             let count: (i64,) =
@@ -1387,7 +1519,7 @@ mod tests {
                 .unwrap();
 
             // Run full chain migration from v12 to v14
-            migrate(&pool, &db_path, 12, 14).await.unwrap();
+            let pool = migrate(pool, &db_path, 12, 14).await.unwrap();
 
             // Verify enrichment_hash column exists (from v12→v13)
             sqlx::query(
@@ -1460,7 +1592,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, &db_path, 8, 11).await;
+            let result = migrate(pool, &db_path, 8, 11).await;
             assert!(result.is_err(), "unsupported range should fail");
             match result.unwrap_err() {
                 StoreError::MigrationNotSupported(from, to) => {
@@ -1543,7 +1675,7 @@ mod tests {
             .await
             .unwrap();
 
-            migrate(&pool, &db_path, 17, 18).await.unwrap();
+            let pool = migrate(pool, &db_path, 17, 18).await.unwrap();
 
             // Column exists and defaults to NULL for pre-existing rows.
             let (embedding_existing, embedding_base): (Vec<u8>, Option<Vec<u8>>) =
@@ -1641,12 +1773,12 @@ mod tests {
                 .unwrap();
 
             // First call: 17→18 succeeds.
-            migrate(&pool, &db_path, 17, 18).await.unwrap();
+            let pool = migrate(pool, &db_path, 17, 18).await.unwrap();
 
             // Second call at the same target version: should be a no-op.
             // This is the property users actually depend on — re-running
             // `cqs index` should not fail just because the schema is current.
-            migrate(&pool, &db_path, 18, 18).await.unwrap();
+            let _pool = migrate(pool, &db_path, 18, 18).await.unwrap();
         });
     }
 
@@ -1762,7 +1894,7 @@ mod tests {
             .unwrap();
 
             // Run the migration.
-            migrate(&pool, &db_path, 18, 19).await.unwrap();
+            let pool = migrate(pool, &db_path, 18, 19).await.unwrap();
 
             // Orphan rows dropped, live rows survive.
             let (count,): (i64,) = sqlx::query_as(
@@ -1918,7 +2050,7 @@ mod tests {
             }
 
             // Run v19 → v20 migration.
-            migrate(&pool, &db_path, 19, 20).await.unwrap();
+            let pool = migrate(pool, &db_path, 19, 20).await.unwrap();
 
             // Migration itself bumps the generation once.
             let (gen_after_migration,): (String,) =
@@ -2116,7 +2248,7 @@ mod tests {
             .await
             .unwrap();
 
-            migrate(&pool, &db_path, 19, 20).await.unwrap();
+            let _pool = migrate(pool, &db_path, 19, 20).await.unwrap();
 
             // Enumerate backups — exactly one should exist after this run.
             let backups: Vec<_> = std::fs::read_dir(dir.path())
@@ -2239,7 +2371,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            let err = migrate(&pool, &db_path, 17, 19).await.unwrap_err();
+            // P2.59: migrate consumes the pool by value. On the failure
+            // path it closes the pool internally before restore runs, so
+            // we don't need a separate close here.
+            let err = migrate(pool, &db_path, 17, 19).await.unwrap_err();
             match err {
                 StoreError::Runtime(msg) => assert!(
                     msg.contains("injected failure"),
@@ -2248,13 +2383,6 @@ mod tests {
                 ),
                 other => panic!("expected Runtime(injected failure), got: {:?}", other),
             }
-            // Close the pool so the WAL is finalised and the on-disk bytes
-            // reflect the restored state rather than in-memory cache.
-            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-                .execute(&pool)
-                .await
-                .ok();
-            pool.close().await;
         });
 
         TEST_FAIL_AFTER_VERSION.with(|c| c.set(0));
@@ -2267,6 +2395,205 @@ mod tests {
             post_migrate_bytes, pre_migrate_bytes,
             "DB file bytes must match pre-migrate state after failed migration + restore"
         );
+    }
+
+    /// P2.59 / issue #1125: when a migration fails, the live pool must be
+    /// closed BEFORE `restore_from_backup`'s `atomic_replace` runs over the
+    /// DB file. Otherwise pool descriptors keep mmap'ing the unlinked old
+    /// inode while subsequent opens see the restored backup — silent
+    /// two-state divergence where in-process queries can read stale rows
+    /// from the orphaned old inode while readers from new processes see the
+    /// restored DB.
+    ///
+    /// This test simulates the daemon scenario from the issue: a long-lived
+    /// pool is open, a migration runs and fails, then we verify that:
+    /// 1. A fresh pool opened against the same path AFTER migrate returns
+    ///    sees the restored pre-migrate state — proves the file replace
+    ///    landed correctly.
+    /// 2. The pool that was passed into migrate has been consumed (compile-
+    ///    time enforcement via the value-taking signature). The error path
+    ///    inside migrate closes the pool before atomic_replace, so the
+    ///    descriptors against the orphaned inode are released.
+    /// 3. The sentinel row written pre-migrate is readable through the
+    ///    fresh pool. If migrate had skipped the close-and-restore protocol,
+    ///    the file replace could have left the sentinel readable only
+    ///    through the orphaned pool — which by now is gone.
+    #[test]
+    fn test_migrate_failure_closes_pool_before_restore_no_phantom_inode() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Phase 1: build a v17 DB with a sentinel row, checkpoint+close so
+        // the on-disk bytes reflect the full state. The sentinel is what
+        // we read back via the fresh pool after migration failure to
+        // verify the restore landed on the inode the fresh open sees.
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true)
+                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                        .synchronous(sqlx::sqlite::SqliteSynchronous::Full),
+                )
+                .await
+                .unwrap();
+            sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    enrichment_version INTEGER NOT NULL DEFAULT 0
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '17')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            // Sentinel row — the value is what we assert post-restore.
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, \
+                    name, signature, content, content_hash, line_start, line_end, \
+                    embedding, created_at, updated_at) \
+                 VALUES ('sentinel-1', 'file:lib.rs', 'file', 'rust', 'function', \
+                    'sentinel_marker', 'fn sentinel()', 'fn sentinel() {}', \
+                    'pre_migrate_hash', 1, 5, X'cafe', '2026-04-25', '2026-04-25')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+        });
+
+        // Phase 2: open a FRESH pool and run migrate(17 -> 19). The hook
+        // makes migration step v18 fire its DDL then fail — the failure
+        // path must close this pool internally before atomic_replace
+        // restores the backup. We don't keep a handle to the pool after
+        // migrate consumes it; the value-taking signature enforces that.
+        TEST_FAIL_AFTER_VERSION.with(|c| c.set(18));
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(false)
+                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                        .synchronous(sqlx::sqlite::SqliteSynchronous::Full),
+                )
+                .await
+                .unwrap();
+
+            let err = migrate(pool, &db_path, 17, 19).await.unwrap_err();
+            // pool is consumed at this point — the borrow checker would
+            // reject any further use. That alone enforces the close-before-
+            // restore invariant: migrate cannot return Err with a still-open
+            // pool because the signature returns SqlitePool only on Ok.
+            assert!(
+                matches!(&err, StoreError::Runtime(msg) if msg.contains("injected failure")),
+                "expected injected-failure error, got: {:?}",
+                err
+            );
+        });
+
+        TEST_FAIL_AFTER_VERSION.with(|c| c.set(0));
+
+        // Phase 3: open a FRESH pool against the same path. This simulates
+        // a CLI invocation arriving after the daemon's failed migration —
+        // it must see the restored DB on the inode the path resolves to,
+        // not an orphaned post-DDL state.
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(false)
+                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                        .synchronous(sqlx::sqlite::SqliteSynchronous::Full),
+                )
+                .await
+                .unwrap();
+
+            // Schema must be back at v17 — the v18 ALTER was rolled back
+            // and the DB on disk is whatever the backup captured.
+            let (version,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                version, "17",
+                "fresh pool must see pre-migrate schema_version on the restored inode"
+            );
+
+            // Sentinel row from phase 1 must be readable. If atomic_replace
+            // had landed on a different inode than the fresh pool resolves,
+            // either the row would be missing or the WAL/SHM mismatch
+            // would yield a "database disk image is malformed" error.
+            let row: Option<(String, String)> =
+                sqlx::query_as("SELECT name, content_hash FROM chunks WHERE id = 'sentinel-1'")
+                    .fetch_optional(&pool)
+                    .await
+                    .expect(
+                        "fresh-pool query against the restored DB must succeed — \
+                 if it errors, atomic_replace landed on a phantom inode",
+                    );
+            assert_eq!(
+                row,
+                Some((
+                    "sentinel_marker".to_string(),
+                    "pre_migrate_hash".to_string()
+                )),
+                "sentinel row from pre-migrate state must be readable via fresh pool — \
+                 if it's missing or mutated, the file replace happened against an \
+                 orphaned inode while the live pool was still mmap'd"
+            );
+
+            // The v18 column must NOT exist — confirms the failed v17→v18
+            // ALTER did not leak through the restore.
+            let columns: Vec<(String,)> =
+                sqlx::query_as("SELECT name FROM pragma_table_info('chunks')")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            let has_embedding_base = columns.iter().any(|(n,)| n == "embedding_base");
+            assert!(
+                !has_embedding_base,
+                "embedding_base (v18 column) must NOT exist after failed v17→v18 + restore — \
+                 if present, the DDL leaked past the restore"
+            );
+
+            pool.close().await;
+        });
     }
 
     /// Issue #953, prune policy: after a successful migrate, only the newest
@@ -2321,7 +2648,7 @@ mod tests {
                 .unwrap();
             seed_v19_schema(&pool).await;
 
-            migrate(&pool, &db_path, 19, 20).await.unwrap();
+            let _pool = migrate(pool, &db_path, 19, 20).await.unwrap();
         });
 
         // After migrate, the prune keeps KEEP_BACKUPS (2) newest. This run
@@ -2428,7 +2755,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            migrate(&pool, &db_path, 19, 20).await.unwrap();
+            let pool = migrate(pool, &db_path, 19, 20).await.unwrap();
             pool.close().await;
         });
 
@@ -2616,7 +2943,7 @@ mod tests {
             .unwrap();
 
             // Run v20 → v21 migration.
-            migrate(&pool, &db_path, 20, 21).await.unwrap();
+            let pool = migrate(pool, &db_path, 20, 21).await.unwrap();
 
             // Schema version bumped.
             let (v,): (String,) =
@@ -2733,7 +3060,7 @@ mod tests {
             .unwrap();
 
             // Run v21 → v22 migration.
-            migrate(&pool, &db_path, 21, 22).await.unwrap();
+            let pool = migrate(pool, &db_path, 21, 22).await.unwrap();
 
             // Schema version bumped.
             let (v,): (String,) =
