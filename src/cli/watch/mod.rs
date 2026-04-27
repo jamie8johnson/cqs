@@ -50,8 +50,15 @@ mod rebuild;
 use rebuild::{
     clear_hnsw_dirty_with_retry, drain_pending_rebuild, hnsw_rebuild_threshold,
     resolve_index_aware_model_for_watch, spawn_hnsw_rebuild, try_init_embedder, EmbedderBackoff,
-    PendingRebuild, RebuildOutcome, RebuildResult, MAX_PENDING_REBUILD_DELTA,
+    PendingRebuild, MAX_PENDING_REBUILD_DELTA,
 };
+#[cfg(test)]
+use rebuild::{RebuildOutcome, RebuildResult};
+
+mod gc;
+use gc::{prune_last_indexed_mtime, run_daemon_periodic_gc, run_daemon_startup_gc};
+#[cfg(test)]
+use gc::{LAST_INDEXED_PRUNE_AGE_SECS, LAST_INDEXED_PRUNE_SIZE_THRESHOLD};
 
 /// P2.74: count directories under `root` that `notify::RecommendedWatcher`
 /// would register an inotify watch on, honoring `.gitignore` so we don't
@@ -96,49 +103,6 @@ fn max_pending_files() -> usize {
             .and_then(|v| v.parse().ok())
             .unwrap_or(10_000)
     })
-}
-
-/// #969: recency threshold for pruning `last_indexed_mtime`.
-///
-/// Entries older than this are dropped when the map grows past
-/// `LAST_INDEXED_PRUNE_SIZE_THRESHOLD`. 1 day is long enough to survive an
-/// overnight idle (the map skips duplicate events on re-indexed files) but
-/// short enough that stale entries from deleted/moved files age out without
-/// a per-entry `stat()` syscall. Previously the prune called `Path::exists()`
-/// on every entry, which stalls the watch thread on WSL 9P mounts (up to 5000
-/// serial syscalls). The map's `SystemTime` values make the recency check a
-/// pure in-memory comparison.
-///
-/// Tunable by editing this constant; intentionally not an env var to avoid
-/// knob proliferation. Re-adding a file on its next watch event is a trivial
-/// insert — this threshold is a cache-size safety valve, not a correctness
-/// invariant.
-const LAST_INDEXED_PRUNE_AGE_SECS: u64 = 86_400;
-
-/// #969: size threshold that triggers the `last_indexed_mtime` prune.
-///
-/// Lowered from 10K to 5K in RM-4 because the map only needs to span one
-/// debounce cycle's worth of dedup signal.
-const LAST_INDEXED_PRUNE_SIZE_THRESHOLD: usize = 5_000;
-
-/// #969: O(n) in-memory prune of `last_indexed_mtime` by recency.
-///
-/// Replaces a per-entry `Path::exists()` loop that issued a `stat()` syscall
-/// for every tracked file. On WSL 9P mounts, that stalled the watch thread for
-/// seconds on bulk reindex cycles. The recency check is a `SystemTime`
-/// comparison — no I/O.
-///
-/// Returns the number of entries removed (useful for tracing and tests).
-fn prune_last_indexed_mtime(map: &mut HashMap<PathBuf, SystemTime>) -> usize {
-    if map.len() <= LAST_INDEXED_PRUNE_SIZE_THRESHOLD {
-        return 0;
-    }
-    let before = map.len();
-    let cutoff = SystemTime::now()
-        .checked_sub(Duration::from_secs(LAST_INDEXED_PRUNE_AGE_SECS))
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-    map.retain(|_, mtime| *mtime >= cutoff);
-    before - map.len()
 }
 
 /// Immutable references shared across the watch loop.
@@ -370,190 +334,6 @@ fn build_splade_encoder_for_watch() -> Option<cqs::splade::SpladeEncoder> {
                  coverage will drift until manual 'cqs index'"
             );
             None
-        }
-    }
-}
-
-/// #1024: Default cap on the number of distinct origins examined per
-/// idle-time periodic GC tick. Keeps each tick short — at ~10k origins the
-/// matcher walk is microseconds-scale, but capping keeps the write
-/// transaction's lock window small even on much larger indexes. Override
-/// with `CQS_DAEMON_PERIODIC_GC_CAP` (parsed at first read).
-const DAEMON_PERIODIC_GC_CAP_DEFAULT: usize = 1000;
-
-// #1024 / SHL-V1.29-9: Idle-time periodic GC interval and idle gap live
-// in `super::limits` behind `daemon_periodic_gc_interval_secs()` and
-// `daemon_periodic_gc_idle_secs()` so they honor
-// `CQS_DAEMON_PERIODIC_GC_INTERVAL_SECS` / `CQS_DAEMON_PERIODIC_GC_IDLE_SECS`,
-// matching the sibling `daemon_periodic_gc_cap()` resolver pattern below.
-
-/// #1024: Read `CQS_DAEMON_PERIODIC_GC_CAP` once and cache. Keeps the
-/// hot path free of repeated env lookups on every tick.
-fn daemon_periodic_gc_cap() -> usize {
-    static CACHE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *CACHE.get_or_init(|| {
-        std::env::var("CQS_DAEMON_PERIODIC_GC_CAP")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DAEMON_PERIODIC_GC_CAP_DEFAULT)
-    })
-}
-
-/// #1024: Run the daemon's startup GC sweep — Pass 1 (drop chunks for
-/// files no longer on disk) and Pass 2 (drop chunks for paths now matched
-/// by `.gitignore`). Runs once when `cqs watch --serve` starts, before
-/// the first request is served. Both passes are best-effort: failures are
-/// logged at warn and the daemon proceeds with whatever rows survived.
-///
-/// The eval-reliability motivating case: a `cqs index --force` on a
-/// long-running index dropped chunk count by 30 % (15 517 → 10 748). The
-/// extra 4 769 rows were a mix of deleted files and gitignored worktree
-/// pollution that accumulated before v1.26.0 added gitignore-respect to
-/// `cqs watch`. The startup pass closes that gap incrementally so the
-/// daemon converges to the same state a `--force` reindex would produce,
-/// without paying the embed cost.
-///
-/// Disable with `CQS_DAEMON_STARTUP_GC=0`.
-fn run_daemon_startup_gc(
-    store: &Store,
-    root: &Path,
-    parser: &CqParser,
-    matcher: Option<&ignore::gitignore::Gitignore>,
-) {
-    let _span = tracing::info_span!("daemon_startup_gc").entered();
-
-    if std::env::var("CQS_DAEMON_STARTUP_GC").as_deref() == Ok("0") {
-        tracing::info!("CQS_DAEMON_STARTUP_GC=0 — daemon startup GC disabled");
-        return;
-    }
-
-    // before/after counts are best-effort; if `stats()` fails we still run
-    // the prunes (the alternative is silent skip on a transient SQLite
-    // hiccup, which defeats the purpose of having a startup sweep).
-    let before = store.stats().map(|s| s.total_chunks).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to read stats() before startup GC");
-        0
-    });
-
-    // Pass 1: prune chunks for files no longer on disk. Re-uses the same
-    // `prune_missing` path that `cqs gc` and `cqs index` call.
-    let exts = parser.supported_extensions();
-    let after_missing = match cqs::enumerate_files(root, &exts, false) {
-        Ok(files) => {
-            let file_set: std::collections::HashSet<_> = files.into_iter().collect();
-            match store.prune_missing(&file_set, root) {
-                Ok(n) => {
-                    if n > 0 {
-                        tracing::info!(pruned = n, "Daemon startup GC: pruned missing-file chunks");
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Daemon startup GC: prune_missing failed — continuing");
-                }
-            }
-            store.stats().map(|s| s.total_chunks).unwrap_or(before)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Daemon startup GC: enumerate_files failed — skipping prune_missing");
-            before
-        }
-    };
-
-    // Pass 2: retroactive gitignore prune. v1.26.0 only filters new events;
-    // pre-v1.26.0 rows (or rows added by `cqs index` before the
-    // gitignore-respect change) need this sweep to disappear.
-    let after = if let Some(gi) = matcher {
-        match store.prune_gitignored(gi, root, None) {
-            Ok(n) => {
-                if n > 0 {
-                    tracing::info!(pruned = n, "Daemon startup GC: pruned gitignored chunks");
-                }
-                store
-                    .stats()
-                    .map(|s| s.total_chunks)
-                    .unwrap_or(after_missing)
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Daemon startup GC: prune_gitignored failed — continuing");
-                after_missing
-            }
-        }
-    } else {
-        tracing::debug!("No gitignore matcher available — skipping retroactive gitignore prune");
-        after_missing
-    };
-
-    let pruned_missing = before.saturating_sub(after_missing);
-    let pruned_ignored = after_missing.saturating_sub(after);
-
-    tracing::info!(
-        before,
-        after_missing,
-        after,
-        pruned_missing,
-        pruned_ignored,
-        "Daemon startup GC complete"
-    );
-}
-
-/// #1024: Run the periodic idle-time GC sweep. Called from the main loop
-/// when `last_event` is older than `daemon_periodic_gc_idle_secs()` and
-/// the previous GC ran more than `daemon_periodic_gc_interval_secs()` ago.
-///
-/// Bounded: examines at most `daemon_periodic_gc_cap()` distinct origins
-/// per pass so a single tick never holds the write transaction longer
-/// than necessary. The cap means a deeply-polluted index converges over
-/// many ticks rather than one big stop-the-world prune.
-///
-/// Disable with `CQS_DAEMON_PERIODIC_GC=0`.
-fn run_daemon_periodic_gc(
-    store: &Store,
-    root: &Path,
-    parser: &CqParser,
-    matcher: Option<&ignore::gitignore::Gitignore>,
-) {
-    let _span = tracing::info_span!("daemon_periodic_gc").entered();
-
-    let cap = daemon_periodic_gc_cap();
-
-    // Pass 1: missing-file prune. `enumerate_files` is the heavier call
-    // here (one full walk of the tree); running it on idle is fine —
-    // by definition there is no contention.
-    let exts = parser.supported_extensions();
-    match cqs::enumerate_files(root, &exts, false) {
-        Ok(files) => {
-            let file_set: std::collections::HashSet<_> = files.into_iter().collect();
-            match store.prune_missing(&file_set, root) {
-                Ok(n) if n > 0 => {
-                    tracing::info!(pruned = n, "Periodic GC: pruned missing-file chunks");
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, "Periodic GC: prune_missing failed");
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Periodic GC: enumerate_files failed");
-        }
-    }
-
-    // Pass 2: bounded gitignore prune. `cap` limits how many origins this
-    // tick examines, so a deeply-polluted index converges over many ticks
-    // rather than one giant batch.
-    if let Some(gi) = matcher {
-        match store.prune_gitignored(gi, root, Some(cap)) {
-            Ok(n) if n > 0 => {
-                tracing::info!(
-                    pruned = n,
-                    cap,
-                    "Periodic GC: pruned gitignored chunks (capped batch)"
-                );
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(error = %e, "Periodic GC: prune_gitignored failed");
-            }
         }
     }
 }
