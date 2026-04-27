@@ -87,7 +87,7 @@ tree-sitter-razor = { version = "0.1", optional = true }
 tree-sitter-vb-dotnet = { version = "0.1", optional = true }
 tree-sitter-vue = { version = "0.1", package = "tree-sitter-vue-next", optional = true }
 tree-sitter-structured-text = { version = "0.1", optional = true }
-tree-sitter-dart = { version = "0.1", optional = true }
+tree-sitter-dart = { version = "0.2", optional = true }
 
 # ML (CUDA/TensorRT added for non-macOS targets below)
 ort = "2.0.0-rc.12"
