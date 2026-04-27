@@ -7,6 +7,7 @@
 //! CLI flags override all config file values.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -161,23 +162,42 @@ pub struct AuxModelSection {
 }
 
 /// Optional overrides for search scoring parameters.
-/// All fields are optional — unset fields fall through to `ScoringConfig::DEFAULT`.
-/// Loaded from the `[scoring]` section of `.cqs.toml` or `~/.config/cqs/config.toml`.
+///
+/// Loaded from the `[scoring]` section of `.cqs.toml` or
+/// `~/.config/cqs/config.toml`. Every key under that section is collected
+/// into [`ScoringOverrides::knobs`] and matched against
+/// [`crate::search::scoring::knob::SCORING_KNOBS`] at resolve time —
+/// adding a new scoring knob is one row in that table, no field churn here.
+///
+/// Known knob names (full set in [`crate::search::scoring::knob`]): `rrf_k`,
+/// `type_boost`, `name_exact`, `name_contains`, `name_contained_by`,
+/// `name_max_overlap`, `note_boost_factor`, `importance_test`,
+/// `importance_private`, `parent_boost_per_child`, `parent_boost_cap`.
+/// Unknown keys are logged at WARN; out-of-range values are clamped at
+/// load time using each knob's `[min, max]`.
+///
+/// # TOML constraint
+///
+/// `#[serde(flatten)]` over a `HashMap<String, f32>` requires every key
+/// under `[scoring]` to deserialize as an `f32` — nested tables (e.g.
+/// `[scoring.advanced]`) would fail to parse. None exist today; if a
+/// non-`f32` knob is added later, switch to a typed wrapper.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default)]
 pub struct ScoringOverrides {
-    pub name_exact: Option<f32>,
-    pub name_contains: Option<f32>,
-    pub name_contained_by: Option<f32>,
-    pub name_max_overlap: Option<f32>,
-    pub note_boost_factor: Option<f32>,
-    pub importance_test: Option<f32>,
-    pub importance_private: Option<f32>,
-    pub parent_boost_per_child: Option<f32>,
-    pub parent_boost_cap: Option<f32>,
-    pub splade_alpha: Option<f32>,
-    /// RRF fusion constant K (default 60.0). Override via config or `CQS_RRF_K` env var.
-    pub rrf_k: Option<f32>,
+    /// Flat map of knob name → value, populated from every key under
+    /// `[scoring]` in the config file. Use [`Self::get`] to read named
+    /// knobs without indexing into the map directly.
+    #[serde(flatten)]
+    pub knobs: HashMap<String, f32>,
+}
+
+impl ScoringOverrides {
+    /// Look up an override by knob name. Returns `None` if the knob
+    /// was not set in the config file.
+    pub fn get(&self, name: &str) -> Option<f32> {
+        self.knobs.get(name).copied()
+    }
 }
 
 /// Configuration options loaded from config files
@@ -448,32 +468,30 @@ impl Config {
             }
         }
         if let Some(ref mut s) = self.scoring {
-            if let Some(ref mut v) = s.name_exact {
-                clamp_config_f32(v, "scoring.name_exact", 0.0, 2.0);
-            }
-            if let Some(ref mut v) = s.name_contains {
-                clamp_config_f32(v, "scoring.name_contains", 0.0, 2.0);
-            }
-            if let Some(ref mut v) = s.name_contained_by {
-                clamp_config_f32(v, "scoring.name_contained_by", 0.0, 2.0);
-            }
-            if let Some(ref mut v) = s.name_max_overlap {
-                clamp_config_f32(v, "scoring.name_max_overlap", 0.0, 2.0);
-            }
-            if let Some(ref mut v) = s.note_boost_factor {
-                clamp_config_f32(v, "scoring.note_boost_factor", 0.0, 1.0);
-            }
-            if let Some(ref mut v) = s.importance_test {
-                clamp_config_f32(v, "scoring.importance_test", 0.0, 1.0);
-            }
-            if let Some(ref mut v) = s.importance_private {
-                clamp_config_f32(v, "scoring.importance_private", 0.0, 1.0);
-            }
-            if let Some(ref mut v) = s.parent_boost_per_child {
-                clamp_config_f32(v, "scoring.parent_boost_per_child", 0.0, 0.5);
-            }
-            if let Some(ref mut v) = s.parent_boost_cap {
-                clamp_config_f32(v, "scoring.parent_boost_cap", 1.0, 2.0);
+            // Clamp known knobs to their [min, max]; warn + drop unknown keys.
+            // Each knob's bounds live in `SCORING_KNOBS` — adding a new knob
+            // doesn't change anything here.
+            let known: std::collections::HashSet<&'static str> =
+                crate::search::scoring::knob::SCORING_KNOBS
+                    .iter()
+                    .map(|k| k.name)
+                    .collect();
+            s.knobs.retain(|key, _| {
+                if known.contains(key.as_str()) {
+                    true
+                } else {
+                    tracing::warn!(
+                        key = %key,
+                        "Unknown key in [scoring] config — dropping (no such knob)"
+                    );
+                    false
+                }
+            });
+            for k in crate::search::scoring::knob::SCORING_KNOBS.iter() {
+                if let Some(v) = s.knobs.get_mut(k.name) {
+                    let label = format!("scoring.{}", k.name);
+                    clamp_config_f32(v, &label, k.min, k.max);
+                }
             }
         }
     }
@@ -1350,9 +1368,9 @@ llm_max_tokens = 200
         "#;
         let config: Config = toml::from_str(toml).unwrap();
         let s = config.scoring.as_ref().unwrap();
-        assert!((s.name_exact.unwrap() - 0.9).abs() < f32::EPSILON);
-        assert!((s.note_boost_factor.unwrap() - 0.25).abs() < f32::EPSILON);
-        assert!(s.name_contains.is_none());
+        assert!((s.get("name_exact").unwrap() - 0.9).abs() < f32::EPSILON);
+        assert!((s.get("note_boost_factor").unwrap() - 0.25).abs() < f32::EPSILON);
+        assert!(s.get("name_contains").is_none());
     }
 
     #[test]
@@ -1374,12 +1392,26 @@ llm_max_tokens = 200
         let config = Config::load(dir.path());
         let s = config.scoring.as_ref().unwrap();
         assert!(
-            (s.name_exact.unwrap() - 2.0).abs() < f32::EPSILON,
+            (s.get("name_exact").unwrap() - 2.0).abs() < f32::EPSILON,
             "name_exact clamped to 2.0"
         );
         assert!(
-            (s.importance_test.unwrap() - 0.0).abs() < f32::EPSILON,
+            (s.get("importance_test").unwrap() - 0.0).abs() < f32::EPSILON,
             "importance_test clamped to 0.0"
+        );
+    }
+
+    #[test]
+    fn test_scoring_overrides_drops_unknown_keys() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".cqs.toml");
+        std::fs::write(&config_path, "[scoring]\nrrf_k = 80.0\nbogus_knob = 99.0\n").unwrap();
+        let config = Config::load(dir.path());
+        let s = config.scoring.as_ref().unwrap();
+        assert_eq!(s.get("rrf_k"), Some(80.0));
+        assert!(
+            s.get("bogus_knob").is_none(),
+            "unknown keys must be dropped at config load"
         );
     }
 
@@ -1477,23 +1509,23 @@ llm_max_tokens = 200
     fn test_scoring_overrides_merge() {
         let base = Config {
             scoring: Some(ScoringOverrides {
-                name_exact: Some(0.9),
-                ..Default::default()
+                knobs: [("name_exact".to_string(), 0.9_f32)].into_iter().collect(),
             }),
             ..Default::default()
         };
         let over = Config {
             scoring: Some(ScoringOverrides {
-                note_boost_factor: Some(0.3),
-                ..Default::default()
+                knobs: [("note_boost_factor".to_string(), 0.3_f32)]
+                    .into_iter()
+                    .collect(),
             }),
             ..Default::default()
         };
         // Project overrides user — whole scoring section replaced
         let merged = base.override_with(over);
         let s = merged.scoring.unwrap();
-        assert!((s.note_boost_factor.unwrap() - 0.3).abs() < f32::EPSILON);
+        assert!((s.get("note_boost_factor").unwrap() - 0.3).abs() < f32::EPSILON);
         // base scoring was replaced, not field-merged
-        assert!(s.name_exact.is_none());
+        assert!(s.get("name_exact").is_none());
     }
 }

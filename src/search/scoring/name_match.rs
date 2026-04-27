@@ -123,7 +123,7 @@ impl NameMatcher {
     /// eliminate the on-the-fly tokenize pass, but requires a schema
     /// migration.
     pub fn score(&self, name: &str) -> f32 {
-        let cfg = &ScoringConfig::DEFAULT;
+        let cfg = ScoringConfig::current();
 
         // Fast path: both strings ASCII. Byte-wise case-insensitive
         // comparisons skip `to_lowercase()` allocation for the exact and
@@ -524,7 +524,7 @@ mod tests {
     /// Mirror the pre-refactor algorithm verbatim so we can confirm the new
     /// implementation produces identical scores across a range of inputs.
     fn legacy_score(query: &str, name: &str) -> f32 {
-        let cfg = &ScoringConfig::DEFAULT;
+        let cfg = ScoringConfig::current();
         let query_lower = query.to_lowercase();
         let query_words: Vec<String> = tokenize_identifier(query);
         legacy_score_with_prebuilt(&query_lower, &query_words, name, cfg)
@@ -634,7 +634,7 @@ mod tests {
         // we can detect regressions without cherry-picking old revisions.
         // Query tokenization is hoisted out of the loop to match production's
         // `NameMatcher::new` + per-candidate `score()` shape.
-        let cfg = &ScoringConfig::DEFAULT;
+        let cfg = ScoringConfig::current();
         let legacy_query_lower = "parseConfig".to_lowercase();
         let legacy_query_words = tokenize_identifier("parseConfig");
         let start = std::time::Instant::now();
@@ -715,7 +715,7 @@ mod tests {
         let q = "p"; // will exact-match token "p"
         let expected = {
             // Run the legacy algorithm to produce the reference score.
-            let cfg = &ScoringConfig::DEFAULT;
+            let cfg = ScoringConfig::current();
             let query_lower = q.to_lowercase();
             let query_words: Vec<String> = tokenize_identifier(q);
             legacy_score_with_prebuilt(&query_lower, &query_words, name, cfg)

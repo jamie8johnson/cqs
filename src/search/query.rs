@@ -27,60 +27,17 @@ use super::scoring::{
 };
 use super::synonyms::expand_query_for_fts;
 
-/// Default multiplicative boost applied to chunks whose type matches the
-/// router-provided type hints. Phase 5 placeholder; never empirically swept.
-pub(crate) const DEFAULT_TYPE_BOOST_FACTOR: f32 = 1.2;
-
 /// Resolve the type-boost factor used by `finalize_results` Step 4b.
 ///
-/// Reads `CQS_TYPE_BOOST` from the environment if set; otherwise falls back
-/// to [`DEFAULT_TYPE_BOOST_FACTOR`] (1.2x). Invalid values (non-numeric,
-/// non-finite, ≤ 0) log a warning and fall back to the default — we never
-/// want a typo'd env var to multiply scores by zero or NaN.
-///
-/// Re-reads the env var on every call (env::var is a single syscall and we
-/// hit this at most once per search). This is the contract that
-/// `evals/run_sweep.py` relies on: spawn a fresh `cqs` invocation per value
-/// of `CQS_TYPE_BOOST`, no process-level caching to defeat the sweep.
+/// Multiplicative boost applied to chunks whose type matches the
+/// router-provided type hints. Phase 5 placeholder; never empirically
+/// swept. Default + bounds + env var name live on the `type_boost` row
+/// in [`crate::search::scoring::knob::SCORING_KNOBS`]; the row's
+/// `cache: false` setting is load-bearing — `evals/run_sweep.py`
+/// mutates `CQS_TYPE_BOOST` between queries within the same `cqs`
+/// process and expects every call to re-read the env.
 pub(crate) fn type_boost_factor() -> f32 {
-    let raw = match std::env::var("CQS_TYPE_BOOST") {
-        Ok(v) => v,
-        Err(_) => {
-            tracing::debug!(
-                factor = DEFAULT_TYPE_BOOST_FACTOR,
-                "CQS_TYPE_BOOST unset, using default type boost"
-            );
-            return DEFAULT_TYPE_BOOST_FACTOR;
-        }
-    };
-    match raw.parse::<f32>() {
-        Ok(v) if v.is_finite() && v > 0.0 => {
-            tracing::debug!(
-                factor = v,
-                source = "CQS_TYPE_BOOST",
-                "Type boost factor set from env var"
-            );
-            v
-        }
-        Ok(v) => {
-            tracing::warn!(
-                raw = %raw,
-                parsed = v,
-                fallback = DEFAULT_TYPE_BOOST_FACTOR,
-                "CQS_TYPE_BOOST is non-finite or non-positive — using default"
-            );
-            DEFAULT_TYPE_BOOST_FACTOR
-        }
-        Err(e) => {
-            tracing::warn!(
-                raw = %raw,
-                error = %e,
-                fallback = DEFAULT_TYPE_BOOST_FACTOR,
-                "CQS_TYPE_BOOST not parseable as f32 — using default"
-            );
-            DEFAULT_TYPE_BOOST_FACTOR
-        }
-    }
+    crate::search::scoring::knob::resolve_knob("type_boost")
 }
 
 impl<Mode> Store<Mode> {
@@ -996,8 +953,9 @@ impl<Mode> Store<Mode> {
 
 #[cfg(test)]
 mod tests {
-    use super::{type_boost_factor, DEFAULT_TYPE_BOOST_FACTOR};
+    use super::type_boost_factor;
     use crate::parser::{ChunkType, Language};
+    use crate::search::scoring::knob;
     use crate::store::helpers::SearchFilter;
     use crate::test_helpers::{mock_embedding, setup_store};
     use std::path::PathBuf;
@@ -1426,7 +1384,7 @@ mod tests {
     fn test_type_boost_factor_default_when_unset() {
         let _guard = TYPE_BOOST_ENV_LOCK.lock().unwrap();
         std::env::remove_var("CQS_TYPE_BOOST");
-        assert_eq!(type_boost_factor(), DEFAULT_TYPE_BOOST_FACTOR);
+        assert_eq!(type_boost_factor(), knob::knob("type_boost").default);
     }
 
     /// Valid float values are honored.
@@ -1450,7 +1408,7 @@ mod tests {
     fn test_type_boost_factor_empty_falls_back() {
         let _guard = TYPE_BOOST_ENV_LOCK.lock().unwrap();
         std::env::set_var("CQS_TYPE_BOOST", "");
-        assert_eq!(type_boost_factor(), DEFAULT_TYPE_BOOST_FACTOR);
+        assert_eq!(type_boost_factor(), knob::knob("type_boost").default);
         std::env::remove_var("CQS_TYPE_BOOST");
     }
 
@@ -1462,7 +1420,7 @@ mod tests {
             std::env::set_var("CQS_TYPE_BOOST", garbage);
             assert_eq!(
                 type_boost_factor(),
-                DEFAULT_TYPE_BOOST_FACTOR,
+                knob::knob("type_boost").default,
                 "CQS_TYPE_BOOST={garbage:?} should fall back to default",
             );
         }
@@ -1481,7 +1439,7 @@ mod tests {
             std::env::set_var("CQS_TYPE_BOOST", unsafe_val);
             assert_eq!(
                 type_boost_factor(),
-                DEFAULT_TYPE_BOOST_FACTOR,
+                knob::knob("type_boost").default,
                 "CQS_TYPE_BOOST={unsafe_val:?} must be rejected — \
                  a non-positive or non-finite boost would corrupt scoring",
             );

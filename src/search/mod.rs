@@ -9,6 +9,11 @@ pub mod router;
 pub(crate) mod scoring;
 pub(crate) mod synonyms;
 
+// Re-export the shared scoring-knob table so binary-side code (e.g.
+// `cqs doctor`) can iterate `SCORING_KNOBS` without exposing the rest
+// of the `scoring` module (which is `pub(crate)` for the moment).
+pub use scoring::knob;
+
 use crate::store::helpers::{ChunkSummary, SearchResult};
 use crate::store::{Store, StoreError};
 
